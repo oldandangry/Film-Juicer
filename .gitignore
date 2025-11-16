@@ -1,0 +1,45 @@
+# VS user state
+.vs/
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+[Bb]in/
+[Oo]bj/
+Debug*/
+Release*/
+x64/
+x86/
+ARM*/
+ipch/
+*.opendb
+*.VC.db
+
+# Intermediates
+*.obj
+*.pch
+*.pdb
+*.idb
+*.ilk
+*.tlog
+*.log
+
+# Packaging / deps
+packages/
+vcpkg_installed/
+.conan/
+*.nupkg
+
+# Others
+*.cache
+*.tmp
+*.temp
+*.rsp
+*.lastbuildstate
+*.zip
+/third_party/nlohmann/json.hpp
+/DaVinci_Resolve_17_Wide_Gamut_Intermediate.pdf
+/AGENTS.md

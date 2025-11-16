@@ -1,0 +1,72 @@
+# --- Core: normalize text ---
+* text=auto
+
+# Visual Studio project/solution metadata (keep CRLF on checkout)
+*.sln      text eol=crlf
+*.vcxproj  text eol=crlf
+*.filters  text eol=crlf
+*.props    text eol=crlf
+*.targets  text eol=crlf
+# If you also have C# tooling in the tree:
+*.csproj   text eol=crlf
+
+# Source and headers (let auto handle them)
+*.c        text
+*.cpp      text
+*.h        text
+*.hpp      text
+*.inl      text
+*.ixx      text             
+*.rc       text            
+*.def      text
+*.manifest text
+*.natvis   text
+*.props    text
+*.cmake    text
+CMakeLists.txt text
+*.hlsl     text
+*.glsl     text
+
+# Documentation & config as text
+*.md       text
+*.txt      text
+*.json     text
+*.yml      text
+*.yaml     text
+*.xml      text
+*.ini      text
+.editorconfig text
+.gitattributes text
+.gitignore text
+
+# Scripts: enforce OS-appropriate EOL on checkout
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+*.ps1      text eol=crlf
+*.sh       text eol=lf
+
+# --- Binary & artifacts: never diff/merge/normalize ---
+# (binary implies -diff; add -text to block normalization explicitly)
+*.png  binary -text
+*.jpg  binary -text
+*.jpeg binary -text
+*.gif  binary -text
+*.tif  binary -text
+*.bmp  binary -text
+*.ico  binary -text
+*.exe  binary -text
+*.dll  binary -text
+*.lib  binary -text
+*.pdb  binary -text
+*.obj  binary -text
+*.pch  binary -text
+*.ilk  binary -text
+*.idb  binary -text
+*.zip  binary -text
+*.7z   binary -text
+*.tar  binary -text
+*.gz   binary -text
+*.rar  binary -text
+*.pdf  binary -text
+
+*.csv text eol=lf
