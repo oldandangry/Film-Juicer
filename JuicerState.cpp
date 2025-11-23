@@ -413,12 +413,6 @@ namespace {
         return std::fabs(a - b) <= eps;
     }
 
-    inline std::uint64_t identity_color_runtime_hash() {
-        static const std::uint64_t h =
-            Hash::hash_bytes("identity_color_runtime", sizeof("identity_color_runtime") - 1);
-        return h;
-    }
-
     static Spectral::Curve build_blackbody_curve(float temperature) {
         Spectral::Curve curve;
         if (!(temperature > 0.0f)) {
@@ -2231,7 +2225,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->negativeStaticKey.tablesHash = target->tablesScan.tablesHash;
     target->negativeStaticKey.densityRangeHash = target->negativeDensityRange.digest;
     target->negativeStaticKey.glareHash = negGlareHash;
-    target->negativeStaticKey.colorRuntimeHash = identity_color_runtime_hash();
+    target->negativeStaticKey.colorRuntimeHash = Scanner::identity_color_runtime_hash();
     target->negativeStaticKey.lutResolution = lutRes;
     Scanner::finalize_static_key(target->negativeStaticKey);
 
@@ -2240,7 +2234,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printStaticKey.tablesHash = target->tablesPrint.tablesHash;
     target->printStaticKey.densityRangeHash = target->printDensityRange.digest;
     target->printStaticKey.glareHash = printGlareHash;
-    target->printStaticKey.colorRuntimeHash = identity_color_runtime_hash();
+    target->printStaticKey.colorRuntimeHash = Scanner::identity_color_runtime_hash();
     target->printStaticKey.lutResolution = lutRes;
     Scanner::finalize_static_key(target->printStaticKey);
 
@@ -2261,6 +2255,24 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printMediumRuntime.glare = target->printGlare;
     target->printMediumRuntime.color = nullptr;
     target->printMediumRuntime.staticKey = target->printStaticKey;
+
+    auto reset_optics_runtime = [](ScannerOptics::Runtime& rt) {
+        rt.lut.cpu.clear();
+        rt.lut.hash = 0;
+        rt.lut.res = 0;
+        rt.lut.valid = false;
+        rt.key = Scanner::ScannerKey{};
+        rt.glare.amount.clear();
+        rt.glare.tmp.clear();
+        rt.glare.valid = false;
+        rt.glare.seedHash = 0;
+    };
+    if (&S.workA == target) {
+        reset_optics_runtime(S.scannerRuntimeA);
+    }
+    else if (&S.workB == target) {
+        reset_optics_runtime(S.scannerRuntimeB);
+    }
 
     ++target->buildCounter;
 

@@ -14,6 +14,7 @@
 #include "ColorTransforms.h"
 #include "Couplers.h"
 #include "ParamNames.h"
+#include "OutputEncoding.h"
 
 // Forward-declare WorkingState so we don't create header cycles
 struct WorkingState;
@@ -117,7 +118,13 @@ namespace Scanner {
         bool valid = false;
     };
 
-    struct ColorRuntime;
+    struct ColorRuntime {
+        float cat02[9]{ 0.0f };
+        float xyzToRgb[9]{ 0.0f };
+        float illuminantXYZ[3]{ 0.0f, 0.0f, 0.0f };
+        OutputEncoding::Params encoding{};
+        std::uint64_t hash = 0;
+    };
 
     struct ScannerMediumRuntime {
         ScannerMedium medium = ScannerMedium::Negative;
@@ -139,6 +146,12 @@ namespace Scanner {
             static_cast<std::uint64_t>(key.lutResolution)
         };
         key.hash = Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    inline std::uint64_t identity_color_runtime_hash() {
+        static const std::uint64_t h =
+            Hash::hash_bytes("identity_color_runtime", sizeof("identity_color_runtime") - 1);
+        return h;
     }
 
     inline void finalize_runtime_key(ScannerRuntimeKey& key) {

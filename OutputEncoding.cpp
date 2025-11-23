@@ -84,6 +84,12 @@ namespace OutputEncoding {
             return std::isfinite(v) ? v : 0.0f;
         }
 
+        inline void copy_identity(Matrix3x3& m) {
+            for (int i = 0; i < 9; ++i) {
+                m.m[i] = (i % 4 == 0) ? 1.0f : 0.0f;
+            }
+        }
+
         inline bool isSceneLinear(ColorSpace cs) {
             switch (cs) {
             case ColorSpace::ACES2065_1:
@@ -236,38 +242,88 @@ namespace OutputEncoding {
         }
     }
 
+    Matrix3x3 dwg_to_output_matrix(ColorSpace cs) {
+        Matrix3x3 out{};
+        const Mat3* src = nullptr;
+        switch (cs) {
+        case ColorSpace::sRGB:
+        case ColorSpace::Rec709:
+            src = &kDWG_to_BT709;
+            break;
+        case ColorSpace::DCI_P3:
+            src = &kDWG_to_DCI_P3;
+            break;
+        case ColorSpace::DisplayP3:
+            src = &kDWG_to_DisplayP3;
+            break;
+        case ColorSpace::AdobeRGB:
+            src = &kDWG_to_AdobeRGB;
+            break;
+        case ColorSpace::ITU_R_BT2020:
+            src = &kDWG_to_BT2020;
+            break;
+        case ColorSpace::ProPhotoRGB:
+            src = &kDWG_to_ProPhoto;
+            break;
+        case ColorSpace::ACES2065_1:
+            src = &kDWG_to_ACES2065;
+            break;
+        case ColorSpace::DaVinciWideGamutIntermediate:
+            // Identity matrix: DWG to DWG
+            copy_identity(out);
+            return out;
+        default:
+            break;
+        }
+        if (!src) {
+            copy_identity(out);
+            return out;
+        }
+        for (int i = 0; i < 9; ++i) {
+            out.m[i] = src->m[i];
+        }
+        return out;
+    }
+
     void applyEncoding(const Params& params, float rgb[3]) {
-        float converted[3];
-        convertFromDWG(params.colorSpace, rgb, converted);
+        float linear[3];
+        if (params.inputIsOutputSpace) {
+            linear[0] = sanitizeSceneLinear(rgb[0]);
+            linear[1] = sanitizeSceneLinear(rgb[1]);
+            linear[2] = sanitizeSceneLinear(rgb[2]);
+        }
+        else {
+            convertFromDWG(params.colorSpace, rgb, linear);
+        }
 
         if (params.preserveLinearRange) {
-            rgb[0] = converted[0];
-            rgb[1] = converted[1];
-            rgb[2] = converted[2];
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
             return;
         }
 
         if (params.applyCctfEncoding) {
             if (hasEncoding(params.colorSpace)) {
-                rgb[0] = applyEncodingChannel(params.colorSpace, converted[0]);
-                rgb[1] = applyEncodingChannel(params.colorSpace, converted[1]);
-                rgb[2] = applyEncodingChannel(params.colorSpace, converted[2]);
+                rgb[0] = applyEncodingChannel(params.colorSpace, linear[0]);
+                rgb[1] = applyEncodingChannel(params.colorSpace, linear[1]);
+                rgb[2] = applyEncodingChannel(params.colorSpace, linear[2]);
             }
             else if (isSceneLinear(params.colorSpace)) {
-                rgb[0] = sanitizeSceneLinear(converted[0]);
-                rgb[1] = sanitizeSceneLinear(converted[1]);
-                rgb[2] = sanitizeSceneLinear(converted[2]);
+                rgb[0] = sanitizeSceneLinear(linear[0]);
+                rgb[1] = sanitizeSceneLinear(linear[1]);
+                rgb[2] = sanitizeSceneLinear(linear[2]);
             }
             else {
-                rgb[0] = clamp01(converted[0]);
-                rgb[1] = clamp01(converted[1]);
-                rgb[2] = clamp01(converted[2]);
+                rgb[0] = clamp01(linear[0]);
+                rgb[1] = clamp01(linear[1]);
+                rgb[2] = clamp01(linear[2]);
             }
         }
         else {
-            rgb[0] = clamp01(converted[0]);
-            rgb[1] = clamp01(converted[1]);
-            rgb[2] = clamp01(converted[2]);
+            rgb[0] = clamp01(linear[0]);
+            rgb[1] = clamp01(linear[1]);
+            rgb[2] = clamp01(linear[2]);
         }
     }
 

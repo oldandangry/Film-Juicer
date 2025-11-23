@@ -20,6 +20,7 @@
 #include "SpectralProcessing.h"
 #include "WorkingState.h"
 #include "ofxImageEffect.h"
+#include "ScannerOptics.h"
 
 extern const std::string gDataDir;
 
@@ -186,6 +187,9 @@ struct InstanceState {
     double autoExposureMaskRenderScaleY = 0.0;
     std::uintptr_t autoExposureMaskClipToken = 0;
     std::vector<double> autoExposureMaskWeights;
+
+    ScannerOptics::Runtime scannerRuntimeA;
+    ScannerOptics::Runtime scannerRuntimeB;
 
     WorkingState* inactive() {
         WorkingState* a = activeWS.load(std::memory_order_acquire);

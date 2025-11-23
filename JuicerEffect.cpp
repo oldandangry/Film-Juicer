@@ -835,6 +835,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setDirRuntime(dirRT);
     proc.setWorkingState(ws, wsReady);
     proc.setPrintRuntime(prt, printReady);
+    proc.setInstanceState(_state.get());
     const std::uint32_t frameVersion = _state
         ? _state->frameBoundsVersion.load(std::memory_order_acquire)
         : 0;
@@ -847,6 +848,9 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
     proc.setExposure(filmExposureScale);
     proc.setOutputEncoding(outputEncodingParams);
+    const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
+    proc.setClipToken(renderClipToken);
+    proc.setFrameTime(args.time);
     proc.setRenderWindowRect(roi);
     proc.setGPURenderArgs(args);
 

@@ -15,6 +15,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace JuicerProc {
     void copyNonFloatRect(OFX::Image* src, OFX::Image* dst);
@@ -62,6 +63,8 @@ namespace JuicerProc {
     };
 }
 
+struct InstanceState;
+
 // Full class declaration
 class JuicerProcessor : public OFX::ImageProcessor {
 public:
@@ -79,6 +82,9 @@ public:
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
     void setExposure(float exposureScale);
     void setOutputEncoding(const OutputEncoding::Params& p);
+    void setInstanceState(InstanceState* s);
+    void setClipToken(std::uintptr_t token);
+    void setFrameTime(double time);
     void setFrameBoundsVersion(std::uint32_t v);
     void setPixelSizeUm(float pixelSizeUm);
 
@@ -116,11 +122,14 @@ private:
 
     const Print::Runtime* _prt;
     const WorkingState* _ws;
+    InstanceState* _instanceState = nullptr;
     bool _wsReady;
     bool _printReady;
 
     float _exposureScale;
     OutputEncoding::Params _outputEncoding;
+    std::uintptr_t _clipToken = 0;
+    std::uint64_t _frameTimeHash = 0;
 
     JuicerProc::StageScratch _scratch;
     JuicerProc::DensityBuffer _density;
