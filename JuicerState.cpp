@@ -785,7 +785,6 @@ uint64_t hash_params(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.sigma * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.high * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.spatialSigmaMicrometers * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.scannerUseLut));
     h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
     h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
     h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
