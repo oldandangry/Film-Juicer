@@ -567,17 +567,18 @@ namespace ScannerOptics {
                         if (abortFlag.load(std::memory_order_relaxed)) {
                             break;
                         }
-                        float* dstPix = nullptr;
                         const float* srcPix = nullptr;
-                        const size_t rowOffsetBytes = size_t(yOff) * size_t(ctx.dstView.strideBytes);
-                        float* dstRow = reinterpret_cast<float*>(reinterpret_cast<char*>(ctx.dstView.r) + rowOffsetBytes);
-                        dstPix = dstRow + size_t(xOff * ctx.nComponents);
                         if (ctx.srcImage) {
                             srcPix = reinterpret_cast<const float*>(ctx.srcImage->getPixelAddress(originX + xOff, y));
                         }
-                        if (!dstPix) {
+                        if (!ctx.dstView.r) {
                             continue;
                         }
+                        const ptrdiff_t rowOffsetBytes =
+                            ctx.dstView.strideBytes * static_cast<ptrdiff_t>(yOff);
+                        float* dstRow = reinterpret_cast<float*>(
+                            reinterpret_cast<char*>(ctx.dstView.r) + rowOffsetBytes);
+                        float* dstPix = dstRow + size_t(xOff * ctx.nComponents);
                         const size_t idx = rowOffset + size_t(xOff);
                         float rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
                         OutputEncoding::applyEncoding(ctx.color->encoding, rgbOut);
