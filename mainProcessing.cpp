@@ -24,6 +24,7 @@
 #include "WorkingState.h"
 #include "Print.h"
 #include "Scanner.h"
+#include "ScannerOptics.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
 
@@ -515,9 +516,9 @@ bool JuicerProcessor::ensureDensityCapacity(int width, int height) {
     }
     const size_t planeSize = size_t(width) * size_t(height);
     try {
-    _density.c.resize(planeSize);
-    _density.m.resize(planeSize);
-    _density.y.resize(planeSize);
+        _density.c.resize(planeSize);
+        _density.m.resize(planeSize);
+        _density.y.resize(planeSize);
     }
     catch (...) {
         JTRACE("SCAN", "FATAL: failed to allocate density slab");
@@ -761,6 +762,223 @@ void JuicerProcessor::convertNegativeToPrint(const RenderContext& ctx, unsigned 
     }
 }
 
+namespace ScannerOptics {
+
+    void render_density_to_rgb(const RenderContext& ctx) {
+        if (!ctx.medium || !ctx.density || !ctx.dstImage || !ctx.srcImage) {
+            JTRACE("SCAN", "FATAL: scanner render context incomplete");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+
+        const Scanner::ScannerMediumRuntime& medium = *ctx.medium;
+        const Scanner::ScannerDensityBuffer& density = *ctx.density;
+        const Spectral::SpectralTables* tables = medium.tables;
+        if (!tables || tables->K <= 0) {
+            JTRACE("SCAN", "FATAL: scanner spectral tables unavailable");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (tables->tablesHash != medium.staticKey.tablesHash || medium.staticKey.hash == 0) {
+            JTRACE("SCAN", "FATAL: scanner static key/table hash mismatch");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (tables->illuminantHash != 0 && medium.illuminant.hash != 0 &&
+            tables->illuminantHash != medium.illuminant.hash) {
+            JTRACE("SCAN", "FATAL: scanner illuminant hash mismatch");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (medium.range.digest == 0) {
+            JTRACE("SCAN", "FATAL: scanner density range missing or invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+
+        const int width = ctx.bounds.x2 - ctx.bounds.x1;
+        const int height = ctx.bounds.y2 - ctx.bounds.y1;
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        const size_t total = size_t(width) * size_t(height);
+        if (density.width != width || density.height != height || density.stride != width ||
+            density.c.size() < total || density.m.size() < total || density.y.size() < total) {
+            JTRACE("SCAN", "FATAL: density slab does not match render bounds");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+
+        (void)ctx.scannerKey;
+        (void)ctx.settings;
+        const bool useBaseline = (ctx.hasBaseline && tables->hasBaseline);
+        const bool useBaselineTables = useBaseline;
+
+        const unsigned int nThreads = std::max(1u, ctx.threadCount);
+        const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
+
+        std::vector<float> rgbR(total, 0.0f);
+        std::vector<float> rgbG(total, 0.0f);
+        std::vector<float> rgbB(total, 0.0f);
+
+        std::atomic<bool> abortFlag{ false };
+        std::atomic<bool> failure{ false };
+        std::vector<std::thread> threads;
+        threads.reserve(nThreads);
+
+        // Stage A: densities -> linear RGB
+        for (unsigned int t = 0; t < nThreads; ++t) {
+            const int yStart = rowsPerThread * int(t);
+            const int yEnd = std::min(height, rowsPerThread * int(t + 1));
+            threads.emplace_back([&, yStart, yEnd]() {
+                for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
+                    if (ctx.abort.abortRequested()) {
+                        abortFlag.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+                    const size_t rowOffset = size_t(yOff) * size_t(width);
+                    for (int xOff = 0; xOff < width; ++xOff) {
+                        if (abortFlag.load(std::memory_order_relaxed)) {
+                            break;
+                        }
+                        const size_t idx = rowOffset + size_t(xOff);
+                        float D_cmy[3] = { density.c[idx], density.m[idx], density.y[idx] }; // C, M, Y order
+                        float D_norm[3];
+                        if (medium.medium == Scanner::ScannerMedium::Negative) {
+                            Scanner::normalize_film_density(medium.range, D_cmy, D_norm);
+                        }
+                        else {
+                            Scanner::normalize_print_density(medium.range, D_cmy, D_norm);
+                        }
+                        if (!std::isfinite(D_norm[0]) || !std::isfinite(D_norm[1]) || !std::isfinite(D_norm[2])) {
+                            abortFlag.store(true, std::memory_order_relaxed);
+                            failure.store(true, std::memory_order_relaxed);
+                            break;
+                        }
+                        float XYZ[3] = { 0.0f, 0.0f, 0.0f };
+                        if (useBaselineTables) {
+                            Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_cmy, XYZ);
+                        }
+                        else {
+                            Spectral::dyes_to_XYZ_given_tables(*tables, D_cmy, XYZ);
+                        }
+                        float rgbOut[3] = { 0.0f, 0.0f, 0.0f };
+                        Spectral::XYZ_to_DWG_linear_adapted(*tables, XYZ, rgbOut);
+                        if (!std::isfinite(rgbOut[0]) || !std::isfinite(rgbOut[1]) || !std::isfinite(rgbOut[2])) {
+                            abortFlag.store(true, std::memory_order_relaxed);
+                            failure.store(true, std::memory_order_relaxed);
+                            break;
+                        }
+                        rgbR[idx] = std::max(0.0f, rgbOut[0]);
+                        rgbG[idx] = std::max(0.0f, rgbOut[1]);
+                        rgbB[idx] = std::max(0.0f, rgbOut[2]);
+                    }
+                }
+                });
+        }
+
+        for (std::thread& th : threads) {
+            if (th.joinable()) th.join();
+        }
+        threads.clear();
+
+        if (failure.load(std::memory_order_relaxed)) {
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (abortFlag.load(std::memory_order_relaxed)) {
+            return;
+        }
+
+        // Stage B: lens blur (optional)
+        const bool applyBlur = std::isfinite(ctx.options.lensBlurSigmaPx) && ctx.options.lensBlurSigmaPx > 0.0f;
+        const bool applyUnsharp = std::isfinite(ctx.options.unsharpSigmaPx) &&
+            ctx.options.unsharpSigmaPx > 0.0f &&
+            std::isfinite(ctx.options.unsharpAmount) &&
+            ctx.options.unsharpAmount != 0.0f;
+
+        if (applyBlur) {
+            std::vector<float> kernel;
+            JuicerProc::buildGaussianKernel(ctx.options.lensBlurSigmaPx, kernel);
+            std::vector<float> tmp;
+            JuicerProc::blurChannelSeparable(rgbR, tmp, rgbR, width, height, kernel);
+            JuicerProc::blurChannelSeparable(rgbG, tmp, rgbG, width, height, kernel);
+            JuicerProc::blurChannelSeparable(rgbB, tmp, rgbB, width, height, kernel);
+        }
+
+        if (applyUnsharp) {
+            std::vector<float> kernel;
+            JuicerProc::buildGaussianKernel(ctx.options.unsharpSigmaPx, kernel);
+            std::vector<float> tmp;
+            std::vector<float> blurred(total, 0.0f);
+
+            JuicerProc::blurChannelSeparable(rgbR, tmp, blurred, width, height, kernel);
+            for (size_t i = 0; i < total; ++i) {
+                float v = rgbR[i] + ctx.options.unsharpAmount * (rgbR[i] - blurred[i]);
+                if (!std::isfinite(v)) v = 0.0f;
+                rgbR[i] = std::max(0.0f, v);
+            }
+
+            JuicerProc::blurChannelSeparable(rgbG, tmp, blurred, width, height, kernel);
+            for (size_t i = 0; i < total; ++i) {
+                float v = rgbG[i] + ctx.options.unsharpAmount * (rgbG[i] - blurred[i]);
+                if (!std::isfinite(v)) v = 0.0f;
+                rgbG[i] = std::max(0.0f, v);
+            }
+
+            JuicerProc::blurChannelSeparable(rgbB, tmp, blurred, width, height, kernel);
+            for (size_t i = 0; i < total; ++i) {
+                float v = rgbB[i] + ctx.options.unsharpAmount * (rgbB[i] - blurred[i]);
+                if (!std::isfinite(v)) v = 0.0f;
+                rgbB[i] = std::max(0.0f, v);
+            }
+        }
+
+        // Stage C: write to destination with output encoding
+        abortFlag.store(false, std::memory_order_relaxed);
+        threads.reserve(nThreads);
+        const int originX = ctx.bounds.x1;
+        const int originY = ctx.bounds.y1;
+        for (unsigned int t = 0; t < nThreads; ++t) {
+            const int yStart = rowsPerThread * int(t);
+            const int yEnd = std::min(height, rowsPerThread * int(t + 1));
+            threads.emplace_back([&, yStart, yEnd]() {
+                for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
+                    if (ctx.abort.abortRequested()) {
+                        abortFlag.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+                    const int y = originY + yOff;
+                    const size_t rowOffset = size_t(yOff) * size_t(width);
+                    for (int xOff = 0; xOff < width; ++xOff) {
+                        if (abortFlag.load(std::memory_order_relaxed)) {
+                            break;
+                        }
+                        const int x = originX + xOff;
+                        float* dstPix = reinterpret_cast<float*>(ctx.dstImage->getPixelAddress(x, y));
+                        const float* srcPix = reinterpret_cast<const float*>(ctx.srcImage->getPixelAddress(x, y));
+                        if (!dstPix || !srcPix) {
+                            continue;
+                        }
+                        const size_t idx = rowOffset + size_t(xOff);
+                        float rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
+                        OutputEncoding::applyEncoding(ctx.encoding, rgbOut);
+                        dstPix[0] = rgbOut[0];
+                        dstPix[1] = rgbOut[1];
+                        dstPix[2] = rgbOut[2];
+                        if (ctx.nComponents == 4) {
+                            dstPix[3] = srcPix ? srcPix[3] : 1.0f;
+                        }
+                    }
+                }
+                });
+        }
+
+        for (std::thread& th : threads) {
+            if (th.joinable()) th.join();
+        }
+
+        if (abortFlag.load(std::memory_order_relaxed)) {
+            return;
+        }
+    }
+
+} // namespace ScannerOptics
+
 void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigned int threadCount) {
     if (!_ws || !_wsReady) {
         return;
@@ -792,7 +1010,10 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     scannerKey.staticKey = staticKey;
     scannerKey.runtimeKey = runtimeKey;
     Scanner::finalize_scanner_key(scannerKey);
-    (void)scannerKey;
+    if (scannerKey.hash == 0) {
+        JTRACE("HASH", "FATAL: scanner combined key invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
 
     const Spectral::SpectralTables* tables = mediumRuntime->tables;
     if (!tables || tables->K <= 0) {
@@ -807,178 +1028,30 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         JTRACE("SCAN", "FATAL: scanner density range missing or invalid");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    const Scanner::ScannerDensityRange& range = mediumRuntime->range;
-
-    const bool useBaseline = (_ws->hasBaseline && tables->hasBaseline);
-    const unsigned int nThreads = std::max(1u, threadCount);
-    const int width = ctx.width;
-    const int height = ctx.height;
-    const int originX = ctx.window.x1;
-    const int originY = ctx.window.y1;
-    const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
-    const size_t total = size_t(width) * size_t(height);
-
-    std::vector<float> rgbR(total, 0.0f);
-    std::vector<float> rgbG(total, 0.0f);
-    std::vector<float> rgbB(total, 0.0f);
-
-    std::atomic<bool> abortFlag{ false };
-    std::atomic<bool> failure{ false };
-    std::vector<std::thread> threads;
-    threads.reserve(nThreads);
-
-    // Stage A: densities -> linear RGB
-    for (unsigned int t = 0; t < nThreads; ++t) {
-        const int yStart = rowsPerThread * int(t);
-        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
-        threads.emplace_back([&, yStart, yEnd]() {
-            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
-                if (_effect.abort()) {
-                    abortFlag.store(true, std::memory_order_relaxed);
-                    break;
-                }
-                const size_t rowOffset = size_t(yOff) * size_t(width);
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    if (abortFlag.load(std::memory_order_relaxed)) {
-                        break;
-                    }
-                    const size_t idx = rowOffset + size_t(xOff);
-                    float D_cmy[3] = { _density.c[idx], _density.m[idx], _density.y[idx] }; // C, M, Y order
-                    float D_norm[3];
-                    if (mediumRuntime->medium == Scanner::ScannerMedium::Negative) {
-                        Scanner::normalize_film_density(range, D_cmy, D_norm);
-                    }
-                    else {
-                        Scanner::normalize_print_density(range, D_cmy, D_norm);
-                    }
-                    if (!std::isfinite(D_norm[0]) || !std::isfinite(D_norm[1]) || !std::isfinite(D_norm[2])) {
-                        abortFlag.store(true, std::memory_order_relaxed);
-                        failure.store(true, std::memory_order_relaxed);
-                        break;
-                    }
-                    float XYZ[3] = { 0.0f, 0.0f, 0.0f };
-                    if (useBaseline) {
-                        Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_cmy, XYZ);
-                    }
-                    else {
-                        Spectral::dyes_to_XYZ_given_tables(*tables, D_cmy, XYZ);
-                    }
-                    float rgbOut[3] = { 0.0f, 0.0f, 0.0f };
-                    Spectral::XYZ_to_DWG_linear_adapted(*tables, XYZ, rgbOut);
-                    if (!std::isfinite(rgbOut[0]) || !std::isfinite(rgbOut[1]) || !std::isfinite(rgbOut[2])) {
-                        abortFlag.store(true, std::memory_order_relaxed);
-                        failure.store(true, std::memory_order_relaxed);
-                        break;
-                    }
-                    rgbR[idx] = std::max(0.0f, rgbOut[0]);
-                    rgbG[idx] = std::max(0.0f, rgbOut[1]);
-                    rgbB[idx] = std::max(0.0f, rgbOut[2]);
-                }
-            }
-            });
-    }
-
-    for (std::thread& th : threads) {
-        if (th.joinable()) th.join();
-    }
-    threads.clear();
-
-    if (failure.load(std::memory_order_relaxed)) {
+    const std::uint64_t illumHash = tables->illuminantHash;
+    if (illumHash != 0 && mediumRuntime->illuminant.hash != 0 && illumHash != mediumRuntime->illuminant.hash) {
+        JTRACE("SCAN", "FATAL: scanner illuminant hash mismatch for medium");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    if (abortFlag.load(std::memory_order_relaxed)) {
-        return;
-    }
 
-    // Stage B: lens blur (optional)
-    const bool applyBlur = std::isfinite(_scannerOptions.lensBlurSigmaPx) && _scannerOptions.lensBlurSigmaPx > 0.0f;
-    const bool applyUnsharp = std::isfinite(_scannerOptions.unsharpSigmaPx) &&
-        _scannerOptions.unsharpSigmaPx > 0.0f &&
-        std::isfinite(_scannerOptions.unsharpAmount) &&
-        _scannerOptions.unsharpAmount != 0.0f;
+    ScannerOptics::RenderContext optCtx{};
+    optCtx.medium = mediumRuntime;
+    optCtx.density = &_density;
+    optCtx.scratch = &_scratch;
+    optCtx.srcImage = _srcImg;
+    optCtx.dstImage = _dstImg;
+    optCtx.nComponents = _nComponents;
+    optCtx.bounds = ctx.window;
+    optCtx.options = _scannerOptions;
+    optCtx.settings = _scannerSettings;
+    optCtx.encoding = _outputEncoding;
+    optCtx.runtimeKey = runtimeKey;
+    optCtx.scannerKey = scannerKey;
+    optCtx.hasBaseline = (_ws ? _ws->hasBaseline : false);
+    optCtx.threadCount = std::max(1u, threadCount);
+    optCtx.abort.shouldAbort = [this]() -> bool { return _effect.abort(); };
 
-    if (applyBlur) {
-        std::vector<float> kernel;
-        JuicerProc::buildGaussianKernel(_scannerOptions.lensBlurSigmaPx, kernel);
-        std::vector<float> tmp;
-        JuicerProc::blurChannelSeparable(rgbR, tmp, rgbR, width, height, kernel);
-        JuicerProc::blurChannelSeparable(rgbG, tmp, rgbG, width, height, kernel);
-        JuicerProc::blurChannelSeparable(rgbB, tmp, rgbB, width, height, kernel);
-    }
-
-    if (applyUnsharp) {
-        std::vector<float> kernel;
-        JuicerProc::buildGaussianKernel(_scannerOptions.unsharpSigmaPx, kernel);
-        std::vector<float> tmp;
-        std::vector<float> blurred(total, 0.0f);
-
-        JuicerProc::blurChannelSeparable(rgbR, tmp, blurred, width, height, kernel);
-        for (size_t i = 0; i < total; ++i) {
-            float v = rgbR[i] + _scannerOptions.unsharpAmount * (rgbR[i] - blurred[i]);
-            if (!std::isfinite(v)) v = 0.0f;
-            rgbR[i] = std::max(0.0f, v);
-        }
-
-        JuicerProc::blurChannelSeparable(rgbG, tmp, blurred, width, height, kernel);
-        for (size_t i = 0; i < total; ++i) {
-            float v = rgbG[i] + _scannerOptions.unsharpAmount * (rgbG[i] - blurred[i]);
-            if (!std::isfinite(v)) v = 0.0f;
-            rgbG[i] = std::max(0.0f, v);
-        }
-
-        JuicerProc::blurChannelSeparable(rgbB, tmp, blurred, width, height, kernel);
-        for (size_t i = 0; i < total; ++i) {
-            float v = rgbB[i] + _scannerOptions.unsharpAmount * (rgbB[i] - blurred[i]);
-            if (!std::isfinite(v)) v = 0.0f;
-            rgbB[i] = std::max(0.0f, v);
-        }
-    }
-
-    // Stage C: write to destination with output encoding
-    abortFlag.store(false, std::memory_order_relaxed);
-    threads.reserve(nThreads);
-    for (unsigned int t = 0; t < nThreads; ++t) {
-        const int yStart = rowsPerThread * int(t);
-        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
-        threads.emplace_back([&, yStart, yEnd]() {
-            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
-                if (_effect.abort()) {
-                    abortFlag.store(true, std::memory_order_relaxed);
-                    break;
-                }
-                const int y = originY + yOff;
-                const size_t rowOffset = size_t(yOff) * size_t(width);
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    if (abortFlag.load(std::memory_order_relaxed)) {
-                        break;
-                    }
-                    const int x = originX + xOff;
-                    float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
-                    const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-                    if (!dstPix || !srcPix) {
-                        continue;
-                    }
-                    const size_t idx = rowOffset + size_t(xOff);
-                    float rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
-                    OutputEncoding::applyEncoding(_outputEncoding, rgbOut);
-                    dstPix[0] = rgbOut[0];
-                    dstPix[1] = rgbOut[1];
-                    dstPix[2] = rgbOut[2];
-                    if (_nComponents == 4) {
-                        dstPix[3] = srcPix ? srcPix[3] : 1.0f;
-                    }
-                }
-            }
-            });
-    }
-
-    for (std::thread& th : threads) {
-        if (th.joinable()) th.join();
-    }
-
-    if (abortFlag.load(std::memory_order_relaxed)) {
-        return;
-    }
+    ScannerOptics::render_density_to_rgb(optCtx);
 }
 
 void JuicerProcessor::processImpl() {

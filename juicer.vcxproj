@@ -209,6 +209,7 @@
     <ClInclude Include="ProfileJSONLoader.h" />
     <ClInclude Include="RebuildWorkingStateInternals.h" />
     <ClInclude Include="Scanner.h" />
+    <ClInclude Include="ScannerOptics.h" />
     <ClInclude Include="SpectralContext.h" />
     <ClInclude Include="SpectralData.h" />
     <ClInclude Include="SpectralProcessing.h" />

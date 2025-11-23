@@ -149,5 +149,8 @@
     <ClInclude Include="SpectralData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ScannerOptics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
