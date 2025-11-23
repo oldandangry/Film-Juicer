@@ -13,7 +13,7 @@ The goal is to make Film-Juicer’s scanner path numerically identical to **agx-
 - This refactor is CPU-only and parity-first. GPU kernels, device uploads, and any backend/pool abstractions are out of scope here and will land in a separate follow-up once CPU parity is locked.
 - All scanner spectra stay on the canonical 380–780 nm @ 5 nm axis. Every ingest/resample (`json_wavelengths_match_reference_axis()`, `install_standard_illuminant()`, `resample_pairs_*`) must prove the axis matches and hard-fail on mismatches; no alternate axes or per-backend resampling tweaks are allowed.
 - Data layout stays GPU-friendly but CPU-owned: planar CMY SoA buffers with consistent stride/origin and 32-byte alignment. That layout is fixed for this refactor so the later GPU branch can reuse it without changing CPU code.
-- **Progress:** Step 1 completed (scanner UI/hash helpers/grain+glare ingestion landed); Step 2 completed (per-medium scanner illuminants/ranges hashed, viewing override removed); Steps 3–7 pending.
+- **Progress:** Restarted; Step 1 completed (UI/hash/profile ingestion). Step 2 is next.
 
 ---
 
@@ -54,7 +54,7 @@ _Status: completed (hash helpers added; scanner optics/LUT UI threaded; profile 
     *Mitigation*: Do exactly what agx does—treat the profile as invalid. If `glare` is missing (e.g. the `_oc` research variants), abort the ingest and surface a `JTRACE` pointing back to the JSON so the asset gets fixed instead of silently fabricating defaults.
 
 ### Step 2 – Rebuild `WorkingState` scanner metadata per medium (negative & print)
-_Status: completed (profile viewing illuminants hashed into WorkingState with density ranges/flags; viewing override removed)._
+_Status: pending (restart; viewing-illuminant/caching/density-range rebuild still to do)._
 - **Implementation notes**
   - Phase this work across at least three deltas: (1) viewing-illuminant cleanup + `ScannerIlluminant` struct (delete the UI override, enforce profile names, reuse the Step 1 hash helpers); (2) spectral-table/cache integration (extend `Spectral::SpectralTables` with `illuminantHash`, add accessors, make the legacy scanner path consume the new structs); (3) density-range capture + per-medium validity flags (post-glare-removal measurement, flag plumbing, fatal error surfaces). Each chunk stands on its own and keeps regressions localized.
 - **Tasks**
@@ -71,6 +71,7 @@ _Status: completed (profile viewing illuminants hashed into WorkingState with de
 	    *Mitigation*: Mirror the exact `_normalize_film_density` / `_normalize_print_density` formulas, abort when any channel lacks a finite max (all-NaN/inf or missing inputs), always refresh the stored range/hash on rebuild, and only emit a warning when deltas exceed the diagnostic epsilon so parity changes propagate instead of being suppressed.
 
 ### Step 3 – Introduce a shared density staging layer (the missing bridge)
+_Status: completed (single SoA slab with negative fill, in-place print bridge, scanner handoff consumes staged densities with ROI disabled)._
 **Plan of attack (ship as incremental milestones)**
   1. **Stage 1 slab + negative density writer**: introduce a single lightweight `DensityBuffer` wrapper (CMY SoA: three `std::vector<float>` planes in C/M/Y order, row-major, width-sized stride) with `originX`, `originY`, `width`, `height`, and `stride` metadata. Port the existing RGB→density logic (scalar + spatial DIR) into a full-frame pass that fills this slab for the current bounds; legacy print/scanner paths keep using temporary AoS triples until the handoff lands.
   2. **In-place print conversion**: split `run_print_pipeline_from_dir_corrected_densities` into `negative_density_to_print_raw()` + `print_raw_to_density()`, run the enlarger pipeline as a second full-frame pass that reads negative CMY from the slab and overwrites it with print CMY when `PrintBypass=false`. When bypassed, Stage 2 is skipped and the slab stays negative.

@@ -7,6 +7,7 @@
 #include "SpectralProcessing.h"
 #include "FilmProcessing.h"
 #include "Couplers.h"
+#include "ProfileJSONLoader.h"
 
 // Forward declaration
 namespace Print {
@@ -20,6 +21,9 @@ struct WorkingState {
     Spectral::Curve densB;
     Spectral::Curve densG;
     Spectral::Curve densR;
+    Profiles::GrainMetadata grain;
+    Profiles::ProfileGlare negativeGlare;
+    Profiles::ProfileGlare printGlare;
 
     // Sensitivity curves from profile (per agx-emulsion parity: pre-balanced, not runtime balanced)
     Spectral::Curve sensB;

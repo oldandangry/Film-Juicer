@@ -5,9 +5,12 @@
 
 #include "ofxsImageEffect.h"
 #include "JuicerState.h"
+#include "Scanner.h"
 
 namespace Scanner {
     struct Params;
+    struct Options;
+    struct Settings;
 }
 
 namespace Print {
@@ -30,6 +33,8 @@ namespace OFX {
     class Image;
     class DoubleParam;
     class ChoiceParam;
+    class Double2DParam;
+    class IntParam;
     class BooleanParam;
     struct InstanceChangedArgs;
     struct RenderArguments;
@@ -85,7 +90,9 @@ private:
     };
 
     ExposureParams gatherExposureParams() const;
-    Scanner::Params gatherScannerParams() const;
+    Scanner::Options gatherScannerOptions() const;
+    Scanner::Settings gatherScannerSettings() const;
+    Scanner::Params buildLegacyScannerParams(const Scanner::Options& opts, const Scanner::Settings& settings) const;
     Print::Params gatherPrintParams() const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
     AutoExposureResult computeAutoExposure(
@@ -142,10 +149,10 @@ private:
 #endif
 
     // Scanner and print params
-    OFX::BooleanParam* _pScanEnabled = nullptr;
-    OFX::BooleanParam* _pScanAuto = nullptr;
-    OFX::DoubleParam* _pScanTargetY = nullptr;
-    OFX::DoubleParam* _pScanFilmLongEdge = nullptr;
+    OFX::DoubleParam* _pScannerLensBlur = nullptr;
+    OFX::Double2DParam* _pScannerUnsharp = nullptr;
+    OFX::BooleanParam* _pScannerUseLut = nullptr;
+    OFX::IntParam* _pScannerLutResolution = nullptr;
 
     OFX::BooleanParam* _pPrintBypass = nullptr;
     OFX::DoubleParam* _pPrintExposure = nullptr;

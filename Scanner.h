@@ -2,8 +2,12 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
+#include "Hash.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "Couplers.h"
@@ -15,34 +19,89 @@ struct WorkingState;
 
 namespace Scanner {
 
-    struct Params {
-        bool enabled = false;
-        bool autoExposure = true;
-        float targetY = 0.18f;
-        float filmLongEdgeMm = 36.0f;
+    enum class ScannerMedium : int {
+        Negative = 0,
+        Print = 1
     };
 
-    inline void fetch_params(OfxParameterSuiteV1* paramSuite, OfxParamSetHandle paramSet, Params& out) {
-        if (!paramSuite || !paramSet) { out = {}; out.autoExposure = true; out.targetY = 0.18f; return; }
-        OfxParamHandle hEnabled = nullptr, hAutoExp = nullptr, hTargetY = nullptr, hFilmLongEdge = nullptr;
-        paramSuite->paramGetHandle(paramSet, "ScannerEnabled", &hEnabled, nullptr);
-        paramSuite->paramGetHandle(paramSet, "ScannerAutoExposure", &hAutoExp, nullptr);
-        paramSuite->paramGetHandle(paramSet, "ScannerTargetY", &hTargetY, nullptr);
-        paramSuite->paramGetHandle(paramSet, JuicerParams::kScannerFilmLongEdgeMm, &hFilmLongEdge, nullptr);
-        int enabled = 0, autoExp = 1;
-        double targetY = 0.18;
-        double filmLongEdge = 36.0;
-        if (hEnabled) paramSuite->paramGetValue(hEnabled, &enabled);
-        if (hAutoExp) paramSuite->paramGetValue(hAutoExp, &autoExp);
-        if (hTargetY) paramSuite->paramGetValue(hTargetY, &targetY);
-        if (hFilmLongEdge) paramSuite->paramGetValue(hFilmLongEdge, &filmLongEdge);
-        out.enabled = (enabled != 0);
-        out.autoExposure = (autoExp != 0);
-        out.targetY = static_cast<float>(targetY);
-        out.filmLongEdgeMm = (std::isfinite(filmLongEdge) && filmLongEdge > 0.0)
-            ? static_cast<float>(filmLongEdge)
-            : 36.0f;
+    struct Options {
+        float lensBlurSigmaPx = 0.55f;
+        float unsharpSigmaPx = 0.7f;
+        float unsharpAmount = 1.0f;
+    };
+
+    struct Settings {
+        bool useLut = true;
+        std::uint32_t lutResolution = 17;
+    };
+
+    struct ScannerDensityRange {
+        float min_cmy[3]{ 0.0f, 0.0f, 0.0f };
+        float max_cmy[3]{ 0.0f, 0.0f, 0.0f };
+        float inv_max_cmy[3]{ 0.0f, 0.0f, 0.0f };
+        std::uint64_t digest = 0;
+    };
+
+    struct ScannerStaticKey {
+        ScannerMedium medium = ScannerMedium::Negative;
+        std::uint64_t tablesHash = 0;
+        std::uint64_t densityRangeHash = 0;
+        std::uint64_t glareHash = 0;
+        std::uint64_t colorRuntimeHash = 0;
+        std::uint32_t lutResolution = 0;
+        std::uint64_t hash = 0;
+    };
+
+    struct ScannerRuntimeKey {
+        std::uint64_t settingsHash = 0;
+        std::uint32_t frameBoundsVersion = 0;
+        std::uint64_t hash = 0;
+    };
+
+    struct ScannerKey {
+        ScannerStaticKey staticKey;
+        ScannerRuntimeKey runtimeKey;
+        std::uint64_t hash = 0;
+    };
+
+    struct SpectralLutBuffer {
+        std::vector<float> cpu;
+        std::uint64_t hash = 0;
+        std::uint32_t res = 0;
+        bool valid = false;
+    };
+
+    inline void finalize_static_key(ScannerStaticKey& key) {
+        const std::uint64_t fields[] = {
+            static_cast<std::uint64_t>(key.medium),
+            key.tablesHash,
+            key.densityRangeHash,
+            key.glareHash,
+            key.colorRuntimeHash,
+            static_cast<std::uint64_t>(key.lutResolution)
+        };
+        key.hash = Hash::hash_bytes(fields, sizeof(fields));
     }
+
+    inline void finalize_runtime_key(ScannerRuntimeKey& key) {
+        const std::uint64_t fields[] = {
+            key.settingsHash,
+            static_cast<std::uint64_t>(key.frameBoundsVersion)
+        };
+        key.hash = Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    inline void finalize_scanner_key(ScannerKey& key) {
+        finalize_static_key(key.staticKey);
+        finalize_runtime_key(key.runtimeKey);
+        const std::uint64_t fields[] = { key.staticKey.hash, key.runtimeKey.hash };
+        key.hash = Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    // Legacy compatibility shim (to be removed in later stages).
+    struct Params {
+        bool enabled = true;
+    };
 
     inline void simulate_scanner(
         const float rgbIn[3],

@@ -458,6 +458,11 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
     : OFX::ImageProcessor(effect)
     , _srcImg(nullptr)
     , _nComponents(0)
+    , _scannerParams{}
+    , _scannerOptions{}
+    , _scannerSettings{}
+    , _printParams{}
+    , _dirRT{}
     , _prt(nullptr)
     , _ws(nullptr)
     , _wsReady(false)
@@ -475,6 +480,8 @@ void JuicerProcessor::setSrcDst(OFX::Image* src, OFX::Image* dst) {
 void JuicerProcessor::setRenderWindowRect(const OfxRectI& rect) { setRenderWindow(rect); }
 void JuicerProcessor::setComponents(int n) { _nComponents = n; }
 void JuicerProcessor::setScannerParams(const Scanner::Params& p) { _scannerParams = p; }
+void JuicerProcessor::setScannerOptions(const Scanner::Options& o) { _scannerOptions = o; }
+void JuicerProcessor::setScannerSettings(const Scanner::Settings& s) { _scannerSettings = s; }
 void JuicerProcessor::setPrintParams(const Print::Params& p) { _printParams = p; }
 void JuicerProcessor::setDirRuntime(const Couplers::Runtime& rt) { _dirRT = rt; }
 void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {

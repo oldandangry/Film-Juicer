@@ -13,6 +13,21 @@ namespace Profiles {
         std::string type;
     };
 
+    struct ProfileGlare {
+        bool active = false;
+        float percent = 0.0f;
+        float roughness = 0.0f;
+        float blur = 0.0f;
+        float compensationRemovalFactor = 0.0f;
+        float compensationRemovalDensity = 0.0f;
+        float compensationRemovalTransition = 0.0f;
+    };
+
+    struct GrainMetadata {
+        bool active = false;
+        std::array<float, 3> densityMin{ {0.0f, 0.0f, 0.0f} };
+    };
+
     struct DirCouplersProfile {
         bool hasData = false;
         bool active = false;
@@ -66,6 +81,12 @@ namespace Profiles {
         std::array<float, 3> cameraFilterIR{ {1.0f, 675.0f, 15.0f} };
         bool hasCameraFilterUV = false;
         bool hasCameraFilterIR = false;
+
+        std::string type;
+        ProfileGlare glare;
+        GrainMetadata grain;
+        bool hasGlare = false;
+        bool hasGrain = false;
     };
 
     bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile);

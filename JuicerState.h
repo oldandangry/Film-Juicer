@@ -69,6 +69,8 @@ struct BaseState {
     std::array<float, 3> cameraFilterUV{ {1.0f, 410.0f, 8.0f} };
     std::array<float, 3> cameraFilterIR{ {1.0f, 675.0f, 15.0f} };
     bool cameraFilterDefined = false;
+    Profiles::GrainMetadata grain;
+    Profiles::ProfileGlare glare;
 };
 
 struct ParamSnapshot {
@@ -83,6 +85,10 @@ struct ParamSnapshot {
     double sigma = 1.0, high = 0.0;
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
+    double scannerLensBlurSigmaPx = 0.55;
+    std::array<double, 2> scannerUnsharpMask{ {0.7, 1.0} };
+    int scannerUseLut = 1;
+    int scannerLutResolution = 17;
     double spatialSigmaMicrometers = 0.0;
     bool cameraFilterOverride = false;
     std::array<double, 3> cameraFilterUV{ {1.0, 410.0, 8.0} };

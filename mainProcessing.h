@@ -64,6 +64,8 @@ public:
     void setRenderWindowRect(const OfxRectI& rect);
     void setComponents(int n);
     void setScannerParams(const Scanner::Params& p);
+    void setScannerOptions(const Scanner::Options& o);
+    void setScannerSettings(const Scanner::Settings& s);
     void setPrintParams(const Print::Params& p);
     void setDirRuntime(const Couplers::Runtime& rt);
     void setWorkingState(const WorkingState* ws, bool wsReady);
@@ -91,6 +93,8 @@ private:
     int _nComponents;
 
     Scanner::Params _scannerParams;
+    Scanner::Options _scannerOptions;
+    Scanner::Settings _scannerSettings;
     Print::Params _printParams;
     Couplers::Runtime _dirRT;
 

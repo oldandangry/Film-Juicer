@@ -266,6 +266,7 @@ namespace Print {
             out.glareCompensationFactor = 0.0f;
             out.glareCompensationDensity = 1.2f;
             out.glareCompensationTransition = 0.3f;
+            out.glare = Profiles::ProfileGlare{};
 
             if (runtime) {
                 runtime->hasMidNeutralDensity = false;
@@ -276,6 +277,8 @@ namespace Print {
                 runtime->sensitivityNeutralCorr = { 1.0f, 1.0f, 1.0f };
                 runtime->referenceIlluminant.clear();
                 runtime->viewingIlluminant.clear();
+                runtime->glare = Profiles::ProfileGlare{};
+                runtime->densityCurvesRaw = DensityCurves{};
             }
         }
 
@@ -540,13 +543,6 @@ namespace Print {
             }
             return out;
         }
-
-        struct DensityCurves {
-            DoublePairs cyan;
-            DoublePairs magenta;
-            DoublePairs yellow;
-            bool usedJson = false;
-        };
 
         DensityCurves load_density_curves(const JsonProfileContext& ctx,
             const std::string& dir,
@@ -1120,7 +1116,7 @@ namespace Print {
             return (density1 - density0) / denom;
         }
 
-        bool remove_glare_compensation_from_curves(Profile& profile, DensityCurves& curves)
+        bool remove_glare_compensation_from_curves_internal(Profile& profile, DensityCurves& curves)
         {
             if (!profile.hasGlareCompensation || profile.glareCompensationFactor <= 0.0f) {
                 return false;
@@ -1389,6 +1385,48 @@ namespace Print {
 
     } // namespace
 
+    bool remove_glare_compensation_from_curves(Profile& profile, DensityCurves& curves) {
+        return remove_glare_compensation_from_curves_internal(profile, curves);
+    }
+
+    bool rebuild_density_curves(Profile& profile, const DensityCurves& curves) {
+        const bool densityCurvesOk = build_density_curves(profile, curves.cyan, curves.magenta, curves.yellow);
+
+        sanitize_density_curve(profile.dcY);
+        sanitize_density_curve(profile.dcM);
+        sanitize_density_curve(profile.dcC);
+        dedup_strict_curve(profile.dcY);
+        dedup_strict_curve(profile.dcM);
+        dedup_strict_curve(profile.dcC);
+        subtract_curve_min(profile.dcY);
+        subtract_curve_min(profile.dcM);
+        subtract_curve_min(profile.dcC);
+        return densityCurvesOk;
+    }
+
+    void recompute_mid_neutral(Profile& profile, Runtime* runtime) {
+        const float nanLogE = std::numeric_limits<float>::quiet_NaN();
+        profile.hasMidNeutralLogE = false;
+        profile.midNeutralLogE = { nanLogE, nanLogE, nanLogE };
+        if (profile.hasMidNeutralDensity) {
+            std::array<float, 3> logE{ nanLogE, nanLogE, nanLogE };
+            bool okC = invert_density_curve_at_target(profile.dcC, profile.midNeutralDensity[0], logE[0]);
+            bool okM = invert_density_curve_at_target(profile.dcM, profile.midNeutralDensity[1], logE[1]);
+            bool okY = invert_density_curve_at_target(profile.dcY, profile.midNeutralDensity[2], logE[2]);
+            profile.hasMidNeutralLogE = okC && okM && okY;
+            if (profile.hasMidNeutralLogE) {
+                profile.midNeutralLogE = logE;
+            }
+        }
+
+        if (runtime) {
+            runtime->hasMidNeutralDensity = profile.hasMidNeutralDensity;
+            runtime->midNeutralDensity = profile.midNeutralDensity;
+            runtime->hasMidNeutralLogE = profile.hasMidNeutralLogE;
+            runtime->midNeutralLogE = profile.midNeutralLogE;
+        }
+    }
+
     void load_profile_from_dir(const std::string& dir,
         Profile& out,
         const std::string& jsonProfilePath,
@@ -1399,6 +1437,19 @@ namespace Print {
         reset_profile_state(out, runtime);
 
         JsonProfileContext jsonCtx = load_json_profile(jsonProfilePath);
+        if (!jsonCtx.hasProfile) {
+            JTRACE("PRINT", std::string("FATAL: missing JSON profile '") + jsonProfilePath + "' for print paper (glare metadata required)");
+            return;
+        }
+
+        out.glare = jsonCtx.profile.glare;
+        out.hasGlareCompensation = jsonCtx.profile.hasGlareCompensation;
+        out.glareCompensationFactor = jsonCtx.profile.glareCompensationFactor;
+        out.glareCompensationDensity = jsonCtx.profile.glareCompensationDensity;
+        out.glareCompensationTransition = jsonCtx.profile.glareCompensationTransition;
+        if (runtime) {
+            runtime->glare = out.glare;
+        }
 
         FloatPairs c_eps = load_csv_pairs_silent(dir + "dye_density_c.csv");
         FloatPairs m_eps = load_csv_pairs_silent(dir + "dye_density_m.csv");
@@ -1428,6 +1479,9 @@ namespace Print {
             densityCurves.cyan.clear();
             densityCurves.magenta.clear();
             densityCurves.yellow.clear();
+        }
+        if (runtime) {
+            runtime->densityCurvesRaw = densityCurves;
         }
 
         // Per agx-emulsion parity: print paper sensitivities are used AS-IS from the profile.
@@ -1480,49 +1534,15 @@ namespace Print {
             return;
         }
 
-        remove_glare_compensation_from_curves(out, densityCurves);
-
         // Print paper sensitivities are not balanced, so no neutral exposure probe needed here.
         // (Neutral exposure probing applies only to film development, not print paper.)
-
-        const bool densityCurvesOk = build_density_curves(out, densityCurves.cyan, densityCurves.magenta, densityCurves.yellow);
-
-        sanitize_density_curve(out.dcY);
-        sanitize_density_curve(out.dcM);
-        sanitize_density_curve(out.dcC);
-        dedup_strict_curve(out.dcY);
-        dedup_strict_curve(out.dcM);
-        dedup_strict_curve(out.dcC);
-        subtract_curve_min(out.dcY);
-        subtract_curve_min(out.dcM);
-        subtract_curve_min(out.dcC);
+        const bool densityCurvesOk = rebuild_density_curves(out, densityCurves);
 
         BaselineCurves baselineCurves = load_baseline_csvs(dir);
         float baselineScale = 1.0f;
         merge_baseline_with_json(jsonCtx, baselineCurves, baselineScale);
         apply_baseline_to_profile(baselineCurves, baselineScale, out);
-
-        const float nanLogE = std::numeric_limits<float>::quiet_NaN();
-        out.hasMidNeutralLogE = false;
-        out.midNeutralLogE = { nanLogE, nanLogE, nanLogE };
-        if (out.hasMidNeutralDensity) {
-            std::array<float, 3> logE{ nanLogE, nanLogE, nanLogE };
-            bool okC = invert_density_curve_at_target(out.dcC, out.midNeutralDensity[0], logE[0]);
-            bool okM = invert_density_curve_at_target(out.dcM, out.midNeutralDensity[1], logE[1]);
-            bool okY = invert_density_curve_at_target(out.dcY, out.midNeutralDensity[2], logE[2]);
-            out.hasMidNeutralLogE = okC && okM && okY;
-            if (out.hasMidNeutralLogE) {
-                out.midNeutralLogE = logE;
-            }
-            if (runtime) {
-                runtime->hasMidNeutralLogE = out.hasMidNeutralLogE;
-                runtime->midNeutralLogE = out.midNeutralLogE;
-            }
-        }
-        else if (runtime) {
-            runtime->hasMidNeutralLogE = false;
-            runtime->midNeutralLogE = { nanLogE, nanLogE, nanLogE };
-        }
+        recompute_mid_neutral(out, runtime);
 
         out.logEOffC = 0.0f;
         out.logEOffM = 0.0f;

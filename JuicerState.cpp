@@ -648,6 +648,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.cameraFilterUV = { {1.0f, 410.0f, 8.0f} };
     S.base.cameraFilterIR = { {1.0f, 675.0f, 15.0f} };
     S.base.cameraFilterDefined = false;
+    S.base.grain = Profiles::GrainMetadata{};
+    S.base.glare = Profiles::ProfileGlare{};
 
     if (stock.jsonKey.empty()) {
         JTRACE("STOCK", "film stock missing JSON key; cannot load profile");
@@ -697,6 +699,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         S.couplerProfileSpatialSigmaValid = false;
     }
     S.base.maskingCouplers = profile.maskingCouplers;
+    S.base.grain = profile.grain;
+    S.base.glare = profile.glare;
     JTRACE("STOCK", std::string("loaded agx profile json: ") + stock.jsonKey);
     if (!dc_r.empty() && !dc_g.empty() && !dc_b.empty()) {
         std::ostringstream oss;
@@ -1526,6 +1530,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target = S.inactive();
     }
     target->negParams = negParams;
+    target->grain = S.base.grain;
+    target->negativeGlare = S.base.glare;
 
     auto average_positive = [](const auto& values) -> float {
         float sum = 0.0f;
@@ -1579,22 +1585,42 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target->tablesRef = Spectral::SpectralTables{};
     }
 
-    if (Print::profile_is_valid(S.printRT.profile) &&
-        S.printRT.illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K))
+    std::unique_ptr<Print::Runtime> printRuntimeCopy = std::make_unique<Print::Runtime>(S.printRT);
+    Print::Profile printProfile = printRuntimeCopy->profile;
+    Print::DensityCurves printCurves = printRuntimeCopy->densityCurvesRaw;
+    bool printDensityOk = !printCurves.cyan.empty() &&
+        !printCurves.magenta.empty() &&
+        !printCurves.yellow.empty();
+    if (printDensityOk && printProfile.glare.compensationRemovalFactor > 0.0f) {
+        Print::remove_glare_compensation_from_curves(printProfile, printCurves);
+    }
+    if (printDensityOk) {
+        printDensityOk = Print::rebuild_density_curves(printProfile, printCurves);
+    }
+    Print::recompute_mid_neutral(printProfile, printRuntimeCopy.get());
+    printRuntimeCopy->profile = printProfile;
+    printRuntimeCopy->glare = printProfile.glare;
+
+    if (printDensityOk &&
+        Print::profile_is_valid(printProfile) &&
+        printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K))
     {
         Spectral::build_tables_from_curves_non_global(
-            /*epsY*/ S.printRT.profile.epsY,
-            /*epsM*/ S.printRT.profile.epsM,
-            /*epsC*/ S.printRT.profile.epsC,
+            /*epsY*/ printProfile.epsY,
+            /*epsM*/ printProfile.epsM,
+            /*epsC*/ printProfile.epsC,
             /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
-            /*illumView*/ S.printRT.illumView,
-            /*baseMin*/ S.printRT.profile.baseMin,
-            /*baseMid*/ S.printRT.profile.baseMid,
-            /*hasBaseline*/ S.printRT.profile.hasBaseline,
+            /*illumView*/ printRuntimeCopy->illumView,
+            /*baseMin*/ printProfile.baseMin,
+            /*baseMid*/ printProfile.baseMid,
+            /*hasBaseline*/ printProfile.hasBaseline,
             printBaselineMixReference,
             target->tablesPrint);
     }
     else {
+        if (!printDensityOk) {
+            JTRACE("BUILD", "FATAL: missing spectral data (print profile) after glare processing");
+        }
         target->tablesPrint = Spectral::SpectralTables{};
     }
 
@@ -1925,7 +1951,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         Spectral::set_dir_runtime_snapshot(snap);
     }
 
-    target->printRT = std::make_unique<Print::Runtime>(S.printRT);
+    target->printRT = std::move(printRuntimeCopy);
+    target->printGlare = target->printRT ? target->printRT->glare : Profiles::ProfileGlare{};
 
     ++target->buildCounter;
 

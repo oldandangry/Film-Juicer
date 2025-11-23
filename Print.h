@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <initializer_list>
+#include <utility>
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
@@ -47,6 +48,13 @@ namespace Print {
     constexpr float kDefaultNeutralY = 0.9f;
     constexpr float kDefaultNeutralM = 0.5f;
     constexpr float kDefaultNeutralC = 0.35f;
+
+    struct DensityCurves {
+        std::vector<std::pair<double, double>> cyan;
+        std::vector<std::pair<double, double>> magenta;
+        std::vector<std::pair<double, double>> yellow;
+        bool usedJson = false;
+    };
 
     struct Profile;
 
@@ -113,6 +121,7 @@ namespace Print {
         float glareCompensationFactor = 0.0f;
         float glareCompensationDensity = 1.2f;
         float glareCompensationTransition = 0.3f;
+        Profiles::ProfileGlare glare;
         float logEOffC = 0.0f, logEOffM = 0.0f, logEOffY = 0.0f; // legacy per-channel logE offsets (unused)
         std::array<float, 3> gammaFactor{ {1.0f, 1.0f, 1.0f} };
 
@@ -159,6 +168,8 @@ namespace Print {
         Spectral::Curve illumView;     // pinned to gShape
         std::string referenceIlluminant;
         std::string viewingIlluminant;
+        Profiles::ProfileGlare glare;
+        DensityCurves densityCurvesRaw;
 
         // New: dichroic filter transmittance curves (normalized 0..1, pinned to gShape)
         Spectral::Curve filterY;
@@ -226,6 +237,9 @@ namespace Print {
         }
         return true;
     }
+    bool remove_glare_compensation_from_curves(Profile& profile, DensityCurves& curves);
+    bool rebuild_density_curves(Profile& profile, const DensityCurves& curves);
+    void recompute_mid_neutral(Profile& profile, Runtime* runtime = nullptr);
     void load_profile_from_dir(const std::string& dir, Profile& out,
         const std::string& jsonProfilePath = std::string(), Runtime* runtime = nullptr);
 

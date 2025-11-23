@@ -240,6 +240,13 @@ namespace Profiles {
             return std::nullopt;
         }
 
+        std::string to_lower_ascii(std::string value) {
+            for (char& c : value) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            return value;
+        }
+
         bool json_wavelengths_match_reference_axis(const Json& wavelengths, std::string_view sourceLabel) {
             const std::string labelStr = sourceLabel.empty()
                 ? std::string("profile JSON")
@@ -489,6 +496,9 @@ namespace Profiles {
             const Json& info = root["info"];
             if (info.contains("densitometer") && info["densitometer"].is_string()) {
                 outProfile.densitometer = info["densitometer"].get<std::string>();
+            }
+            if (info.contains("type") && info["type"].is_string()) {
+                outProfile.type = to_lower_ascii(info["type"].get<std::string>());
             }
             if (info.contains("reference_illuminant") && info["reference_illuminant"].is_string()) {
                 const std::string raw = info["reference_illuminant"].get<std::string>();
@@ -773,6 +783,11 @@ namespace Profiles {
             return false;
         }
 
+        outProfile.type = to_lower_ascii(outProfile.type);
+        const bool isPaper = outProfile.type == "paper" ||
+            outProfile.type == "print" || outProfile.type == "print_paper";
+        const bool isNegative = !isPaper;
+
         if (root.contains("dir_couplers")) {
             parse_dir_couplers(root["dir_couplers"], outProfile.dirCouplers);
         }
@@ -781,24 +796,103 @@ namespace Profiles {
             parse_masking_couplers(root["masking_couplers"], outProfile.maskingCouplers);
         }
 
-        if (root.contains("glare")) {
-            const Json& glareNode = root["glare"];
-            if (glareNode.is_object()) {
-                bool any = false;
-                if (auto val = parse_optional_float(glareNode.value("compensation_removal_factor", Json{}))) {
-                    outProfile.glareCompensationFactor = *val;
-                    any = true;
-                }
-                if (auto val = parse_optional_float(glareNode.value("compensation_removal_density", Json{}))) {
-                    outProfile.glareCompensationDensity = *val;
-                    any = true;
-                }
-                if (auto val = parse_optional_float(glareNode.value("compensation_removal_transition", Json{}))) {
-                    outProfile.glareCompensationTransition = *val;
-                    any = true;
-                }
-                outProfile.hasGlareCompensation = any;
+        auto log_glare_failure = [&](const std::string& field) {
+            std::ostringstream oss;
+            oss << "FATAL: missing or invalid glare field '" << field << "' in profile '" << jsonPath << "'";
+            JTRACE("PROFILE", oss.str());
+        };
+
+        if (!root.contains("glare") || !root["glare"].is_object()) {
+            log_glare_failure("glare");
+            return false;
+        }
+
+        const Json& glareNode = root["glare"];
+        ProfileGlare glare{};
+        auto require_bool = [&](const char* key, bool& dst)->bool {
+            auto it = glareNode.find(key);
+            if (it != glareNode.end() && it->is_boolean()) {
+                dst = it->get<bool>();
+                return true;
             }
+            log_glare_failure(key);
+            return false;
+        };
+        auto require_float = [&](const char* key, float& dst)->bool {
+            auto val = parse_optional_float(glareNode.value(key, Json{}));
+            if (val && std::isfinite(*val)) {
+                dst = *val;
+                return true;
+            }
+            log_glare_failure(key);
+            return false;
+        };
+
+        if (!require_bool("active", glare.active)) return false;
+        if (!require_float("percent", glare.percent)) return false;
+        if (!require_float("roughness", glare.roughness)) return false;
+        if (!require_float("blur", glare.blur)) return false;
+
+        if (isPaper) {
+            if (!require_float("compensation_removal_factor", glare.compensationRemovalFactor)) return false;
+            if (!require_float("compensation_removal_density", glare.compensationRemovalDensity)) return false;
+            if (!require_float("compensation_removal_transition", glare.compensationRemovalTransition)) return false;
+        }
+        else {
+            if (auto val = parse_optional_float(glareNode.value("compensation_removal_factor", Json{}))) {
+                if (std::isfinite(*val)) glare.compensationRemovalFactor = *val;
+            }
+            if (auto val = parse_optional_float(glareNode.value("compensation_removal_density", Json{}))) {
+                if (std::isfinite(*val)) glare.compensationRemovalDensity = *val;
+            }
+            if (auto val = parse_optional_float(glareNode.value("compensation_removal_transition", Json{}))) {
+                if (std::isfinite(*val)) glare.compensationRemovalTransition = *val;
+            }
+        }
+
+        outProfile.glare = glare;
+        outProfile.hasGlare = true;
+        outProfile.hasGlareCompensation = true;
+        outProfile.glareCompensationFactor = glare.compensationRemovalFactor;
+        outProfile.glareCompensationDensity = glare.compensationRemovalDensity;
+        outProfile.glareCompensationTransition = glare.compensationRemovalTransition;
+
+        if (isNegative) {
+            auto log_grain_failure = [&](const std::string& field) {
+                std::ostringstream oss;
+                oss << "FATAL: missing or invalid grain field '" << field << "' in profile '" << jsonPath << "'";
+                JTRACE("PROFILE", oss.str());
+            };
+            if (!root.contains("grain") || !root["grain"].is_object()) {
+                log_grain_failure("grain");
+                return false;
+            }
+            const Json& grainNode = root["grain"];
+            GrainMetadata grain{};
+            auto activeIt = grainNode.find("active");
+            if (activeIt == grainNode.end() || !activeIt->is_boolean()) {
+                log_grain_failure("active");
+                return false;
+            }
+            grain.active = activeIt->get<bool>();
+            if (!grainNode.contains("density_min") || !grainNode["density_min"].is_array() ||
+                grainNode["density_min"].size() < 3) {
+                log_grain_failure("density_min");
+                return false;
+            }
+            for (size_t i = 0; i < 3; ++i) {
+                auto val = parse_optional_float(grainNode["density_min"][i]);
+                if (!val || !std::isfinite(*val)) {
+                    log_grain_failure("density_min");
+                    return false;
+                }
+                grain.densityMin[i] = *val;
+            }
+            outProfile.grain = grain;
+            outProfile.hasGrain = true;
+        }
+        else {
+            outProfile.hasGrain = false;
         }
 
         return true;

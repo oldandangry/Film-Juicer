@@ -248,23 +248,60 @@ JuicerEffect::ExposureParams JuicerEffect::gatherExposureParams() const {
     return params;
 }
 
-Scanner::Params JuicerEffect::gatherScannerParams() const {
+Scanner::Options JuicerEffect::gatherScannerOptions() const {
+    Scanner::Options opts{};
+    double blurSigma = opts.lensBlurSigmaPx;
+    if (_pScannerLensBlur) {
+        _pScannerLensBlur->getValue(blurSigma);
+    }
+    if (!std::isfinite(blurSigma)) {
+        blurSigma = 0.55;
+    }
+    blurSigma = std::clamp(blurSigma, 0.0, 10.0);
+    opts.lensBlurSigmaPx = static_cast<float>(blurSigma);
+
+    double unsharpSigma = opts.unsharpSigmaPx;
+    double unsharpAmount = opts.unsharpAmount;
+    if (_pScannerUnsharp) {
+        _pScannerUnsharp->getValue(unsharpSigma, unsharpAmount);
+    }
+    if (!std::isfinite(unsharpSigma)) {
+        unsharpSigma = 0.7;
+    }
+    if (!std::isfinite(unsharpAmount)) {
+        unsharpAmount = 1.0;
+    }
+    unsharpSigma = std::clamp(unsharpSigma, 0.0, 5.0);
+    unsharpAmount = std::clamp(unsharpAmount, 0.0, 3.0);
+    opts.unsharpSigmaPx = static_cast<float>(unsharpSigma);
+    opts.unsharpAmount = static_cast<float>(unsharpAmount);
+    return opts;
+}
+
+Scanner::Settings JuicerEffect::gatherScannerSettings() const {
+    Scanner::Settings settings{};
+    bool useLut = settings.useLut;
+    if (_pScannerUseLut) {
+        _pScannerUseLut->getValue(useLut);
+    }
+    settings.useLut = useLut;
+    int lutRes = static_cast<int>(settings.lutResolution);
+    if (_pScannerLutResolution) {
+        _pScannerLutResolution->getValue(lutRes);
+    }
+    if (lutRes < 17 || lutRes > 128) {
+        lutRes = 17;
+    }
+    settings.lutResolution = static_cast<std::uint32_t>(lutRes);
+    return settings;
+}
+
+Scanner::Params JuicerEffect::buildLegacyScannerParams(
+    const Scanner::Options&,
+    const Scanner::Settings&) const
+{
     Scanner::Params params{};
-    bool scanEnabled = false;
-    bool scanAuto = true;
-    double scanY = 0.18;
-    double scanFilmMm = 36.0;
-    if (_pScanEnabled) _pScanEnabled->getValue(scanEnabled);
-    if (_pScanAuto) _pScanAuto->getValue(scanAuto);
-    if (_pScanTargetY) _pScanTargetY->getValue(scanY);
-    if (_pScanFilmLongEdge) _pScanFilmLongEdge->getValue(scanFilmMm);
-    params.enabled = scanEnabled;
-    params.autoExposure = scanAuto;
-    params.targetY = static_cast<float>(scanY);
-    params.filmLongEdgeMm =
-        (std::isfinite(scanFilmMm) && scanFilmMm > 0.0)
-        ? static_cast<float>(scanFilmMm)
-        : 36.0f;
+    params.enabled = true;
     return params;
 }
 
@@ -317,6 +354,7 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     AutoExposureResult result{};
     result.exposureScale = 1.0f;
     result.autoEV = 0.0;
+    (void)scannerParams;
 
     if (!srcImg) {
         result.exposureScale = static_cast<float>(std::pow(2.0, exposureParams.sliderEV));
@@ -701,10 +739,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pCouplersSpatialSigma = fetchDoubleParam(Couplers::kParamCouplersSpatialSigma);
 #endif
 
-        _pScanEnabled = fetchBooleanParam("ScannerEnabled");
-        _pScanAuto = fetchBooleanParam("ScannerAutoExposure");
-        _pScanTargetY = fetchDoubleParam("ScannerTargetY");
-        _pScanFilmLongEdge = fetchDoubleParam(JuicerParams::kScannerFilmLongEdgeMm);
+        _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
+        _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
+        _pScannerUseLut = fetchBooleanParam(JuicerParams::kScannerUseLut);
+        _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
 
         _pPrintBypass = fetchBooleanParam("PrintBypass");
         _pPrintExposure = fetchDoubleParam("PrintExposure");
@@ -794,7 +832,9 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         }
     }
     const ExposureParams exposureParams = gatherExposureParams();
-    Scanner::Params scannerParams = gatherScannerParams();
+    const Scanner::Options scannerOptions = gatherScannerOptions();
+    const Scanner::Settings scannerSettings = gatherScannerSettings();
+    Scanner::Params scannerParams = buildLegacyScannerParams(scannerOptions, scannerSettings);
     Print::Params printParams = gatherPrintParams();
     OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
 
@@ -840,6 +880,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setSrcDst(srcImg.get(), dstImg.get());
     proc.setComponents(nComponents);
     proc.setScannerParams(scannerParams);
+    proc.setScannerOptions(scannerOptions);
+    proc.setScannerSettings(scannerSettings);
     proc.setPrintParams(printParams);
     proc.setDirRuntime(dirRT);
     proc.setWorkingState(ws, wsReady);
@@ -918,6 +960,15 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     if (_pCouplersSpatialSigma) _pCouplersSpatialSigma->getValue(spatial);
     P.spatialSigmaMicrometers = spatial;
 #endif
+    if (_pScannerLensBlur) _pScannerLensBlur->getValue(P.scannerLensBlurSigmaPx);
+    if (_pScannerUnsharp) {
+        double sigma = P.scannerUnsharpMask[0];
+        double amount = P.scannerUnsharpMask[1];
+        _pScannerUnsharp->getValue(sigma, amount);
+        P.scannerUnsharpMask = { sigma, amount };
+    }
+    if (_pScannerUseLut) { bool v = true; _pScannerUseLut->getValue(v); P.scannerUseLut = v ? 1 : 0; }
+    if (_pScannerLutResolution) _pScannerLutResolution->getValue(P.scannerLutResolution);
     return P;
 }
 
@@ -940,9 +991,9 @@ void JuicerEffect::bootstrap_after_attach() {
         : std::string();
     Print::load_profile_from_dir(printDir, _state->printRT.profile, printProfileJson, &_state->printRT);
     _state->printRT.hasMidNeutralDensity = _state->printRT.profile.hasMidNeutralDensity;
-    _state->printRT.midNeutralDensity = std::move(_state->printRT.profile.midNeutralDensity);
+    _state->printRT.midNeutralDensity = _state->printRT.profile.midNeutralDensity;
     _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
-    _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
+    _state->printRT.midNeutralLogE = _state->printRT.profile.midNeutralLogE;
 
     // Load film stock before applying metadata-driven illuminant defaults
     _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);

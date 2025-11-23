@@ -195,6 +195,7 @@
     <ClInclude Include="FilmProcessing.h" />
     <ClInclude Include="Illuminants.h" />
     <ClInclude Include="IlluminantKeys.h" />
+    <ClInclude Include="Hash.h" />
     <ClInclude Include="JuicerEffect.h" />
     <ClInclude Include="JuicerState.h" />
     <ClInclude Include="LogExposureOffsets.h" />

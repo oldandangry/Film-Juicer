@@ -353,30 +353,49 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
 
 #endif
 
-    // Scanner group
+    // Scanner optics and math
+    OFX::GroupParamDescriptor* grpScannerOptics = desc.defineGroupParam("ScannerOptics");
+    if (grpScannerOptics) grpScannerOptics->setLabel("Scanner Optics");
+    OFX::GroupParamDescriptor* grpScannerMath = desc.defineGroupParam("ScannerMath");
+    if (grpScannerMath) grpScannerMath->setLabel("Scanner Math");
     {
-        OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("ScannerEnabled");
-        p->setLabel("Scanner enabled");
-        p->setDefault(false);
+        OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
+        p->setLabel("Scanner lens blur (px)");
+        p->setHint("Gaussian blur sigma in pixels for scanner optics.");
+        p->setDefault(0.55);
+        p->setRange(0.0, 10.0);
+        p->setDisplayRange(0.0, 3.0);
+        if (grpScannerOptics) p->setParent(*grpScannerOptics);
+        p->setEvaluateOnChange(true);
     }
     {
-        OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("ScannerAutoExposure");
-        p->setLabel("Auto exposure compensation");
+        OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kScannerUnsharpMask);
+        p->setLabel("Scanner unsharp mask");
+        p->setHint("Unsharp sigma (px) and amount applied after scanner blur.");
+        p->setDefault(0.7, 1.0);
+        p->setRange(0.0, 0.0, 5.0, 3.0);
+        p->setDisplayRange(0.0, 0.0, 5.0, 3.0);
+        p->setDimensionLabels("Sigma (px)", "Amount");
+        if (grpScannerOptics) p->setParent(*grpScannerOptics);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kScannerUseLut);
+        p->setLabel("Scanner use LUT");
         p->setDefault(true);
+        if (grpScannerMath) p->setParent(*grpScannerMath);
+        p->setHint("Enable precomputed scanner spectral LUTs.");
+        p->setEvaluateOnChange(true);
     }
     {
-        OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("ScannerTargetY");
-        p->setLabel("Scanner target Y");
-        p->setDefault(0.184);
-        p->setDisplayRange(0.01, 1.0);
-    }
-    {
-        OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kScannerFilmLongEdgeMm);
-        p->setLabel("Film long edge (mm)");
-        p->setDefault(36.0);
-        p->setRange(1.0, 400.0);
-        p->setDisplayRange(24.0, 320.0);
-        p->setHint("Scanner output long edge in millimeters; used for scanner auto gain/scale.");
+        OFX::IntParamDescriptor* p = desc.defineIntParam(JuicerParams::kScannerLutResolution);
+        p->setLabel("Scanner LUT resolution");
+        p->setDefault(17);
+        p->setRange(17, 128);
+        p->setDisplayRange(17, 128);
+        if (grpScannerMath) p->setParent(*grpScannerMath);
+        p->setHint("Cube resolution for scanner spectral LUTs.");
+        p->setEvaluateOnChange(true);
     }
 
     // Print group
