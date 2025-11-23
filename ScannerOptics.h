@@ -55,10 +55,10 @@ namespace ScannerOptics {
         const Scanner::ScannerDensityBuffer* density = nullptr;
         Runtime* runtime = nullptr;
         OFX::Image* srcImage = nullptr;
-        OFX::Image* dstImage = nullptr;
         const Scanner::ColorRuntime* color = nullptr;
         int nComponents = 0;
         OfxRectI bounds{};
+        PlaneView dstView{};
         Scanner::Options options{};
         Scanner::Settings settings{};
         Scanner::ScannerRuntimeKey runtimeKey{};
@@ -66,6 +66,7 @@ namespace ScannerOptics {
         std::uint64_t seedBase = 0;
         bool hasBaseline = false;
         unsigned int threadCount = 1;
+        bool copyAlpha = false;
         RenderAbortHandle abort{};
     };
 

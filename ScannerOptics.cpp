@@ -95,47 +95,86 @@ namespace {
         }
     }
 
-    inline void sample_trilinear(const Scanner::SpectralLutBuffer& lut, const float D_norm[3], float out[3]) {
-        const std::uint32_t res = std::max(1u, lut.res);
-        const float scale = (res > 1u) ? float(res - 1u) : 1.0f;
+    inline float mitchell_weight(float t) {
+        const float B = 1.0f / 3.0f;
+        const float C = 1.0f / 3.0f;
+        const float x = std::fabs(t);
+        if (x < 1.0f) {
+            return (1.0f / 6.0f) * ((12.0f - 9.0f * B - 6.0f * C) * x * x * x
+                + (-18.0f + 12.0f * B + 6.0f * C) * x * x
+                + (6.0f - 2.0f * B));
+        }
+        else if (x < 2.0f) {
+            return (1.0f / 6.0f) * ((-B - 6.0f * C) * x * x * x
+                + (6.0f * B + 30.0f * C) * x * x
+                + (-12.0f * B - 48.0f * C) * x
+                + (8.0f * B + 24.0f * C));
+        }
+        return 0.0f;
+    }
+
+    inline int reflect_index(int idx, int size) {
+        if (size <= 1) return 0;
+        if (idx < 0) return -idx;
+        if (idx >= size) return 2 * (size - 1) - idx;
+        return idx;
+    }
+
+    inline void sample_cubic(const Scanner::SpectralLutBuffer& lut, const float D_norm[3], float out[3]) {
+        const int res = static_cast<int>(std::max(1u, lut.res));
+        const float scale = (res > 1) ? float(res - 1) : 1.0f;
         const float fx = std::clamp(D_norm[0] * scale, 0.0f, scale);
         const float fy = std::clamp(D_norm[1] * scale, 0.0f, scale);
         const float fz = std::clamp(D_norm[2] * scale, 0.0f, scale);
-        const int x0 = int(std::floor(fx));
-        const int y0 = int(std::floor(fy));
-        const int z0 = int(std::floor(fz));
-        const int x1 = std::min(x0 + 1, int(res) - 1);
-        const int y1 = std::min(y0 + 1, int(res) - 1);
-        const int z1 = std::min(z0 + 1, int(res) - 1);
-        const float tx = fx - float(x0);
-        const float ty = fy - float(y0);
-        const float tz = fz - float(z0);
+
+        const int xBase = static_cast<int>(std::floor(fx));
+        const int yBase = static_cast<int>(std::floor(fy));
+        const int zBase = static_cast<int>(std::floor(fz));
+        const float tx = fx - float(xBase);
+        const float ty = fy - float(yBase);
+        const float tz = fz - float(zBase);
+
+        float wx[4], wy[4], wz[4];
+        wx[0] = mitchell_weight(tx + 1.0f);
+        wx[1] = mitchell_weight(tx);
+        wx[2] = mitchell_weight(tx - 1.0f);
+        wx[3] = mitchell_weight(tx - 2.0f);
+        wy[0] = mitchell_weight(ty + 1.0f);
+        wy[1] = mitchell_weight(ty);
+        wy[2] = mitchell_weight(ty - 1.0f);
+        wy[3] = mitchell_weight(ty - 2.0f);
+        wz[0] = mitchell_weight(tz + 1.0f);
+        wz[1] = mitchell_weight(tz);
+        wz[2] = mitchell_weight(tz - 1.0f);
+        wz[3] = mitchell_weight(tz - 2.0f);
+
         auto lut_at = [&](int xi, int yi, int zi, int c) -> float {
             const size_t idx = (size_t(zi) * size_t(res) + size_t(yi)) * size_t(res) + size_t(xi);
             const size_t base = idx * 3 + size_t(c);
             if (base >= lut.cpu.size()) return 0.0f;
             return lut.cpu[base];
             };
-        for (int c = 0; c < 3; ++c) {
-            const float c000 = lut_at(x0, y0, z0, c);
-            const float c100 = lut_at(x1, y0, z0, c);
-            const float c010 = lut_at(x0, y1, z0, c);
-            const float c110 = lut_at(x1, y1, z0, c);
-            const float c001 = lut_at(x0, y0, z1, c);
-            const float c101 = lut_at(x1, y0, z1, c);
-            const float c011 = lut_at(x0, y1, z1, c);
-            const float c111 = lut_at(x1, y1, z1, c);
 
-            const float c00 = c000 * (1.0f - tx) + c100 * tx;
-            const float c10 = c010 * (1.0f - tx) + c110 * tx;
-            const float c01 = c001 * (1.0f - tx) + c101 * tx;
-            const float c11 = c011 * (1.0f - tx) + c111 * tx;
-
-            const float c0 = c00 * (1.0f - ty) + c10 * ty;
-            const float c1 = c01 * (1.0f - ty) + c11 * ty;
-
-            out[c] = c0 * (1.0f - tz) + c1 * tz;
+        float sum[3] = { 0.0f, 0.0f, 0.0f };
+        float wsum = 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            const int xi = reflect_index(xBase - 1 + i, res);
+            for (int j = 0; j < 4; ++j) {
+                const int yj = reflect_index(yBase - 1 + j, res);
+                for (int k = 0; k < 4; ++k) {
+                    const int zk = reflect_index(zBase - 1 + k, res);
+                    const float w = wx[i] * wy[j] * wz[k];
+                    wsum += w;
+                    for (int c = 0; c < 3; ++c) {
+                        sum[c] += w * lut_at(xi, yj, zk, c);
+                    }
+                }
+            }
         }
+        const float inv = (wsum != 0.0f) ? (1.0f / wsum) : 0.0f;
+        out[0] = sum[0] * inv;
+        out[1] = sum[1] * inv;
+        out[2] = sum[2] * inv;
     }
 
     inline float hash_to_uniform(std::uint64_t h) {
@@ -161,13 +200,9 @@ namespace {
         return std::exp(mu + sigma * normalSample);
     }
 
-    inline void ensure_runtime_key(ScannerOptics::Runtime& runtime, const Scanner::ScannerKey& key) {
-        runtime.key = key;
-    }
-
-    inline bool should_rebuild_lut(const ScannerOptics::Runtime& runtime, const Scanner::ScannerKey& key) {
+    inline bool should_rebuild_lut(const ScannerOptics::Runtime& runtime, const Scanner::ScannerKey& key, bool keyChanged) {
         if (!runtime.lut.valid) return true;
-        if (runtime.key.hash != key.hash) return true;
+        if (keyChanged) return true;
         if (runtime.lut.hash != Hash::hash_bytes(&key.staticKey.hash, sizeof(key.staticKey.hash))) return true;
         return false;
     }
@@ -204,7 +239,7 @@ namespace ScannerOptics {
     }
 
     void render_density_to_rgb(const RenderContext& ctx) {
-        if (!ctx.medium || !ctx.density || !ctx.dstImage || !ctx.srcImage || !ctx.runtime) {
+        if (!ctx.medium || !ctx.density || !ctx.runtime) {
             JTRACE("SCAN", "FATAL: scanner render context incomplete");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
@@ -214,7 +249,12 @@ namespace ScannerOptics {
         }
 
         Runtime& runtime = *ctx.runtime;
-        ensure_runtime_key(runtime, ctx.scannerKey);
+        const std::uint64_t prevStatic = runtime.key.staticKey.hash;
+        const std::uint64_t prevRuntime = runtime.key.runtimeKey.hash;
+        runtime.key = ctx.scannerKey;
+        const bool staticKeyChanged = (prevStatic != ctx.scannerKey.staticKey.hash);
+        const bool runtimeKeyChanged = (prevRuntime != ctx.scannerKey.runtimeKey.hash);
+        const bool keyChanged = staticKeyChanged || runtimeKeyChanged;
 
         const Scanner::ScannerMediumRuntime& medium = *ctx.medium;
         const Scanner::ScannerDensityBuffer& density = *ctx.density;
@@ -250,7 +290,7 @@ namespace ScannerOptics {
 
         // Prepare LUT if needed
         const bool useLut = ctx.settings.useLut;
-        if (useLut && should_rebuild_lut(runtime, ctx.scannerKey)) {
+        if (useLut && should_rebuild_lut(runtime, ctx.scannerKey, staticKeyChanged)) {
             const std::uint32_t res = std::max(17u, ctx.scannerKey.staticKey.lutResolution);
             runtime.lut.cpu.assign(size_t(res) * size_t(res) * size_t(res) * 3u, 0.0f);
             runtime.lut.res = res;
@@ -302,9 +342,13 @@ namespace ScannerOptics {
         }
 
         // Prepare blur/unsharp kernels
-        build_gaussian_kernel(ctx.options.lensBlurSigmaPx, runtime.blurKernel);
+        if (keyChanged || runtime.blurKernel.empty()) {
+            build_gaussian_kernel(ctx.options.lensBlurSigmaPx, runtime.blurKernel);
+        }
+        if (keyChanged || runtime.unsharpKernel.empty()) {
+            build_gaussian_kernel(ctx.options.unsharpSigmaPx, runtime.unsharpKernel);
+        }
         runtime.unsharpAmount = ctx.options.unsharpAmount;
-        build_gaussian_kernel(ctx.options.unsharpSigmaPx, runtime.unsharpKernel);
 
         // Prepare glare cache when active
         const bool glareActive = medium.glare.active && medium.glare.percent > 0.0f;
@@ -429,7 +473,7 @@ namespace ScannerOptics {
                         }
                         float logXYZ[3];
                         if (useLut && runtime.lut.valid) {
-                            sample_trilinear(runtime.lut, D_norm, logXYZ);
+                            sample_cubic(runtime.lut, D_norm, logXYZ);
                         }
                         else {
                             spectral_eval(D_norm, logXYZ);
@@ -506,10 +550,8 @@ namespace ScannerOptics {
 
         // Stage D: write to destination with output encoding
         abortFlag.store(false, std::memory_order_relaxed);
-        threads.reserve(nThreads);
         const int originX = ctx.bounds.x1;
         const int originY = ctx.bounds.y1;
-        const bool copyAlpha = (ctx.nComponents == 4);
         for (unsigned int t = 0; t < nThreads; ++t) {
             const int yStart = rowsPerThread * int(t);
             const int yEnd = std::min(height, rowsPerThread * int(t + 1));
@@ -525,10 +567,15 @@ namespace ScannerOptics {
                         if (abortFlag.load(std::memory_order_relaxed)) {
                             break;
                         }
-                        const int x = originX + xOff;
-                        float* dstPix = reinterpret_cast<float*>(ctx.dstImage->getPixelAddress(x, y));
-                        const float* srcPix = reinterpret_cast<const float*>(ctx.srcImage->getPixelAddress(x, y));
-                        if (!dstPix || !srcPix) {
+                        float* dstPix = nullptr;
+                        const float* srcPix = nullptr;
+                        const size_t rowOffsetBytes = size_t(yOff) * size_t(ctx.dstView.strideBytes);
+                        float* dstRow = reinterpret_cast<float*>(reinterpret_cast<char*>(ctx.dstView.r) + rowOffsetBytes);
+                        dstPix = dstRow + size_t(xOff * ctx.nComponents);
+                        if (ctx.srcImage) {
+                            srcPix = reinterpret_cast<const float*>(ctx.srcImage->getPixelAddress(originX + xOff, y));
+                        }
+                        if (!dstPix) {
                             continue;
                         }
                         const size_t idx = rowOffset + size_t(xOff);
@@ -537,8 +584,8 @@ namespace ScannerOptics {
                         dstPix[0] = rgbOut[0];
                         dstPix[1] = rgbOut[1];
                         dstPix[2] = rgbOut[2];
-                        if (copyAlpha) {
-                            dstPix[3] = srcPix[3];
+                        if (ctx.copyAlpha) {
+                            dstPix[3] = (srcPix && ctx.copyAlpha) ? srcPix[3] : 1.0f;
                         }
                     }
                 }

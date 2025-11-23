@@ -865,10 +865,21 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     optCtx.density = &_density;
     optCtx.runtime = opticsRuntime;
     optCtx.srcImage = _srcImg;
-    optCtx.dstImage = _dstImg;
     optCtx.color = colorPtr;
     optCtx.nComponents = _nComponents;
     optCtx.bounds = ctx.window;
+    optCtx.copyAlpha = (_nComponents == 4);
+    optCtx.dstView.originX = ctx.window.x1;
+    optCtx.dstView.originY = ctx.window.y1;
+    optCtx.dstView.width = ctx.width;
+    optCtx.dstView.height = ctx.height;
+    optCtx.dstView.strideBytes = _dstImg ? _dstImg->getRowBytes() : 0;
+    optCtx.dstView.r = (_dstImg)
+        ? reinterpret_cast<float*>(_dstImg->getPixelAddress(ctx.window.x1, ctx.window.y1))
+        : nullptr;
+    optCtx.dstView.g = optCtx.dstView.r;
+    optCtx.dstView.b = optCtx.dstView.r;
+    optCtx.dstView.a = (_dstImg && _nComponents == 4) ? optCtx.dstView.r + 3 : nullptr;
     optCtx.options = _scannerOptions;
     optCtx.settings = _scannerSettings;
     optCtx.runtimeKey = runtimeKey;
