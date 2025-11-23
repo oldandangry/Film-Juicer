@@ -788,11 +788,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         JTRACE("SCAN", "FATAL: scanner medium runtime missing");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    const Scanner::ScannerStaticKey& staticKey = mediumRuntime->staticKey;
-    if (staticKey.hash == 0) {
-        JTRACE("SCAN", "FATAL: scanner static key missing or invalid");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
+    Scanner::ScannerStaticKey staticKey = mediumRuntime->staticKey;
 
     Scanner::ScannerRuntimeKey runtimeKey{};
     runtimeKey.settingsHash = hash_scanner_settings(_scannerSettings, _scannerOptions);
@@ -802,15 +798,6 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
     Scanner::finalize_runtime_key(runtimeKey);
-
-    Scanner::ScannerKey scannerKey{};
-    scannerKey.staticKey = staticKey;
-    scannerKey.runtimeKey = runtimeKey;
-    Scanner::finalize_scanner_key(scannerKey);
-    if (scannerKey.hash == 0) {
-        JTRACE("HASH", "FATAL: scanner combined key invalid");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
 
     const Spectral::SpectralTables* tables = mediumRuntime->tables;
     if (!tables || tables->K <= 0) {
@@ -831,6 +818,29 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
+    Scanner::ColorRuntime colorRT = ScannerOptics::build_color_runtime(*mediumRuntime, _outputEncoding);
+    const Scanner::ColorRuntime* colorPtr = mediumRuntime->color ? mediumRuntime->color : &colorRT;
+    const std::uint64_t colorHash = colorPtr ? colorPtr->hash : 0ull;
+    if (colorHash == 0) {
+        JTRACE("HASH", "FATAL: scanner color runtime hash invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    staticKey.colorRuntimeHash = colorHash;
+    Scanner::finalize_static_key(staticKey);
+    if (staticKey.hash == 0) {
+        JTRACE("SCAN", "FATAL: scanner static key missing or invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    Scanner::ScannerKey scannerKey{};
+    scannerKey.staticKey = staticKey;
+    scannerKey.runtimeKey = runtimeKey;
+    Scanner::finalize_scanner_key(scannerKey);
+    if (scannerKey.hash == 0) {
+        JTRACE("HASH", "FATAL: scanner combined key invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
     ScannerOptics::Runtime* opticsRuntime = nullptr;
     if (_instanceState) {
         std::lock_guard<std::mutex> lock(_instanceState->m);
@@ -845,9 +855,6 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     if (!opticsRuntime) {
         opticsRuntime = &fallbackRuntime;
     }
-
-    Scanner::ColorRuntime colorRT = ScannerOptics::build_color_runtime(*mediumRuntime, _outputEncoding);
-    const Scanner::ColorRuntime* colorPtr = mediumRuntime->color ? mediumRuntime->color : &colorRT;
 
     const std::uint64_t buildCounter = _ws ? _ws->buildCounter : 0;
     const std::uint64_t seedFields[3] = {

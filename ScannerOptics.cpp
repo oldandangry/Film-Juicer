@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <thread>
 
 #include "Hash.h"
@@ -213,6 +214,46 @@ namespace {
         return false;
     }
 
+    inline std::uint64_t hash_color_runtime(
+        const Scanner::ScannerMediumRuntime& medium,
+        const OutputEncoding::Params& encoding)
+    {
+        const std::uint64_t fields[] = {
+            Scanner::identity_color_runtime_hash(),
+            static_cast<std::uint64_t>(encoding.colorSpace),
+            static_cast<std::uint64_t>(encoding.applyCctfEncoding),
+            static_cast<std::uint64_t>(encoding.preserveLinearRange),
+            static_cast<std::uint64_t>(medium.medium)
+        };
+        return Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    inline void log_scanner_keys(
+        const char* label,
+        const Scanner::ScannerKey& key,
+        const Scanner::ScannerMediumRuntime& medium,
+        const Scanner::Settings& settings,
+        const Spectral::SpectralTables* tables)
+    {
+        std::ostringstream oss;
+        oss << label
+            << " medium=" << static_cast<int>(medium.medium)
+            << " static=" << key.staticKey.hash
+            << " tablesHash=" << key.staticKey.tablesHash
+            << " densityRangeHash=" << key.staticKey.densityRangeHash
+            << " glareHash=" << key.staticKey.glareHash
+            << " colorHash=" << key.staticKey.colorRuntimeHash
+            << " lutRes=" << key.staticKey.lutResolution
+            << " useLut=" << (settings.useLut ? 1 : 0)
+            << " settingsHash=" << key.runtimeKey.settingsHash
+            << " frameBoundsV=" << key.runtimeKey.frameBoundsVersion;
+        if (tables) {
+            oss << " tables.tablesHash=" << tables->tablesHash
+                << " tables.illumHash=" << tables->illuminantHash;
+        }
+        JTRACE("SCAN", oss.str());
+    }
+
 } // namespace
 
 namespace ScannerOptics {
@@ -240,7 +281,7 @@ namespace ScannerOptics {
         rt.illuminantXYZ[0] = medium.illuminant.whiteXYZ[0];
         rt.illuminantXYZ[1] = medium.illuminant.whiteXYZ[1];
         rt.illuminantXYZ[2] = medium.illuminant.whiteXYZ[2];
-        rt.hash = Scanner::identity_color_runtime_hash();
+        rt.hash = hash_color_runtime(medium, rt.encoding);
         return rt;
     }
 
@@ -268,6 +309,10 @@ namespace ScannerOptics {
         const Scanner::ScannerMediumRuntime& medium = *ctx.medium;
         const Scanner::ScannerDensityBuffer& density = *ctx.density;
         const Spectral::SpectralTables* tables = medium.tables;
+        if (staticKeyChanged || settingsChanged || frameBoundsChanged) {
+            log_scanner_keys("scanner runtime rebuild",
+                ctx.scannerKey, medium, ctx.settings, tables);
+        }
         if (!tables || tables->K <= 0) {
             JTRACE("SCAN", "FATAL: scanner spectral tables unavailable");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -346,6 +391,16 @@ namespace ScannerOptics {
                 ctx.scannerKey.staticKey.lutResolution, 17u, 128u);
             runtime.lut.cpu.assign(size_t(res) * size_t(res) * size_t(res) * 3u, 0.0f);
             runtime.lut.res = res;
+            {
+                std::ostringstream oss;
+                oss << "build LUT res=" << res
+                    << " staticKey=" << ctx.scannerKey.staticKey.hash
+                    << " colorHash=" << ctx.scannerKey.staticKey.colorRuntimeHash
+                    << " tablesHash=" << ctx.scannerKey.staticKey.tablesHash
+                    << " densityRangeHash=" << ctx.scannerKey.staticKey.densityRangeHash
+                    << " glareHash=" << ctx.scannerKey.staticKey.glareHash;
+                JTRACE("SCAN", oss.str());
+            }
             for (std::uint32_t z = 0; z < res; ++z) {
                 const float nz = (res > 1u) ? float(z) / float(res - 1u) : 0.0f;
                 for (std::uint32_t y = 0; y < res; ++y) {
