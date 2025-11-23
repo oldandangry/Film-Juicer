@@ -77,11 +77,13 @@ struct WorkingState {
     Scanner::ScannerIlluminant negativeScannerIlluminant;
     Scanner::ScannerDensityRange negativeDensityRange;
     Scanner::ScannerStaticKey negativeStaticKey;
+    Scanner::ScannerMediumRuntime negativeMediumRuntime;
 
     // Per-instance scanner metadata for print viewing path
     Scanner::ScannerIlluminant printScannerIlluminant;
     Scanner::ScannerDensityRange printDensityRange;
     Scanner::ScannerStaticKey printStaticKey;
+    Scanner::ScannerMediumRuntime printMediumRuntime;
 
     // SPD reconstruction per-instance (non-global)
     float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
@@ -111,15 +113,21 @@ inline void sample_negative_densities(
     float D_out[3],
     DirSampleMode mode = DirSampleMode::ApplyRuntime)
 {
-    auto sample_with_curves = [&](const Spectral::Curve& cB,
+    auto sample_layers = [&](const Spectral::Curve& cB,
         const Spectral::Curve& cG,
         const Spectral::Curve& cR,
         const float le[3],
-        float D_out_local[3]) {
-            D_out_local[0] = Spectral::sample_density_at_logE(cB, le[0], ws.gammaFactorB);
-            D_out_local[1] = Spectral::sample_density_at_logE(cG, le[1], ws.gammaFactorG);
-            D_out_local[2] = Spectral::sample_density_at_logE(cR, le[2], ws.gammaFactorR);
+        float layerD_out[3]) {
+            layerD_out[0] = Spectral::sample_density_at_logE(cB, le[0], ws.gammaFactorB); // Yellow (blue layer)
+            layerD_out[1] = Spectral::sample_density_at_logE(cG, le[1], ws.gammaFactorG); // Magenta (green layer)
+            layerD_out[2] = Spectral::sample_density_at_logE(cR, le[2], ws.gammaFactorR); // Cyan (red layer)
         };
+
+    auto write_cmy = [](const float layerD[3], float D_out_local[3]) {
+        D_out_local[0] = layerD[2]; // C from red layer
+        D_out_local[1] = layerD[1]; // M from green layer
+        D_out_local[2] = layerD[0]; // Y from blue layer
+    };
 
     const Spectral::Curve& precorrectedB = ws.dirPrecorrected ? ws.dirDensB : ws.densB;
     const Spectral::Curve& precorrectedG = ws.dirPrecorrected ? ws.dirDensG : ws.densG;
@@ -127,11 +135,13 @@ inline void sample_negative_densities(
 
 #ifdef JUICER_ENABLE_COUPLERS
     if (mode == DirSampleMode::ApplyRuntime && dirRT.active) {
-        float D_pre[3];
-        sample_with_curves(ws.densB, ws.densG, ws.densR, logE, D_pre);
-        Couplers::ApplyInputLogE io{ {logE[0], logE[1], logE[2]}, {D_pre[0], D_pre[1], D_pre[2]} };
+        float layerPre[3];
+        sample_layers(ws.densB, ws.densG, ws.densR, logE, layerPre);
+        Couplers::ApplyInputLogE io{ {logE[0], logE[1], logE[2]}, {layerPre[0], layerPre[1], layerPre[2]} };
         Couplers::apply_runtime_logE_with_curves(io, dirRT, ws.densB, ws.densG, ws.densR);
-        sample_with_curves(precorrectedB, precorrectedG, precorrectedR, io.logE, D_out);
+        float layerPost[3];
+        sample_layers(precorrectedB, precorrectedG, precorrectedR, io.logE, layerPost);
+        write_cmy(layerPost, D_out);
         return;
     }
 #else
@@ -139,5 +149,7 @@ inline void sample_negative_densities(
     (void)mode;
 #endif
 
-    sample_with_curves(ws.densB, ws.densG, ws.densR, logE, D_out);
+    float layerD[3];
+    sample_layers(ws.densB, ws.densG, ws.densR, logE, layerD);
+    write_cmy(layerD, D_out);
 }

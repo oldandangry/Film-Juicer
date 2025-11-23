@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Hash.h"
+#include "ProfileJSONLoader.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "Couplers.h"
@@ -36,9 +37,9 @@ namespace Scanner {
     };
 
     struct DensityBuffer {
-        std::vector<float> c;
-        std::vector<float> m;
-        std::vector<float> y;
+        std::vector<float> c; // cyan dye density (from red layer)
+        std::vector<float> m; // magenta dye density (from green layer)
+        std::vector<float> y; // yellow dye density (from blue layer)
         int originX = 0;
         int originY = 0;
         int width = 0;
@@ -62,6 +63,30 @@ namespace Scanner {
         float inv_max_cmy[3]{ 0.0f, 0.0f, 0.0f };
         std::uint64_t digest = 0;
     };
+
+    inline void normalize_film_density(const ScannerDensityRange& range, const float D_cmy[3], float D_norm[3]) {
+        D_norm[0] = (D_cmy[0] + range.min_cmy[0]) * range.inv_max_cmy[0];
+        D_norm[1] = (D_cmy[1] + range.min_cmy[1]) * range.inv_max_cmy[1];
+        D_norm[2] = (D_cmy[2] + range.min_cmy[2]) * range.inv_max_cmy[2];
+    }
+
+    inline void denormalize_film_density(const ScannerDensityRange& range, const float D_norm[3], float D_cmy[3]) {
+        D_cmy[0] = D_norm[0] / range.inv_max_cmy[0] - range.min_cmy[0];
+        D_cmy[1] = D_norm[1] / range.inv_max_cmy[1] - range.min_cmy[1];
+        D_cmy[2] = D_norm[2] / range.inv_max_cmy[2] - range.min_cmy[2];
+    }
+
+    inline void normalize_print_density(const ScannerDensityRange& range, const float D_cmy[3], float D_norm[3]) {
+        D_norm[0] = D_cmy[0] * range.inv_max_cmy[0];
+        D_norm[1] = D_cmy[1] * range.inv_max_cmy[1];
+        D_norm[2] = D_cmy[2] * range.inv_max_cmy[2];
+    }
+
+    inline void denormalize_print_density(const ScannerDensityRange& range, const float D_norm[3], float D_cmy[3]) {
+        D_cmy[0] = D_norm[0] / range.inv_max_cmy[0];
+        D_cmy[1] = D_norm[1] / range.inv_max_cmy[1];
+        D_cmy[2] = D_norm[2] / range.inv_max_cmy[2];
+    }
 
     struct ScannerStaticKey {
         ScannerMedium medium = ScannerMedium::Negative;
@@ -90,6 +115,18 @@ namespace Scanner {
         std::uint64_t hash = 0;
         std::uint32_t res = 0;
         bool valid = false;
+    };
+
+    struct ColorRuntime;
+
+    struct ScannerMediumRuntime {
+        ScannerMedium medium = ScannerMedium::Negative;
+        const Spectral::SpectralTables* tables = nullptr;
+        ScannerDensityRange range;
+        ScannerIlluminant illuminant;
+        Profiles::ProfileGlare glare;
+        const ColorRuntime* color = nullptr;
+        ScannerStaticKey staticKey;
     };
 
     inline void finalize_static_key(ScannerStaticKey& key) {

@@ -2244,6 +2244,24 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printStaticKey.lutResolution = lutRes;
     Scanner::finalize_static_key(target->printStaticKey);
 
+    target->negativeMediumRuntime = Scanner::ScannerMediumRuntime{};
+    target->negativeMediumRuntime.medium = Scanner::ScannerMedium::Negative;
+    target->negativeMediumRuntime.tables = (target->tablesScan.K > 0) ? &target->tablesScan : nullptr;
+    target->negativeMediumRuntime.range = target->negativeDensityRange;
+    target->negativeMediumRuntime.illuminant = target->negativeScannerIlluminant;
+    target->negativeMediumRuntime.glare = target->negativeGlare;
+    target->negativeMediumRuntime.color = nullptr;
+    target->negativeMediumRuntime.staticKey = target->negativeStaticKey;
+
+    target->printMediumRuntime = Scanner::ScannerMediumRuntime{};
+    target->printMediumRuntime.medium = Scanner::ScannerMedium::Print;
+    target->printMediumRuntime.tables = (target->tablesPrint.K > 0) ? &target->tablesPrint : nullptr;
+    target->printMediumRuntime.range = target->printDensityRange;
+    target->printMediumRuntime.illuminant = target->printScannerIlluminant;
+    target->printMediumRuntime.glare = target->printGlare;
+    target->printMediumRuntime.color = nullptr;
+    target->printMediumRuntime.staticKey = target->printStaticKey;
+
     ++target->buildCounter;
 
     {

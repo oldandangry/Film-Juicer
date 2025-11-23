@@ -413,7 +413,7 @@ namespace Print {
 
 
 
-    // Compute negative transmittance T_neg(λ) from over-B+F densities D_neg using per-instance data
+    // Compute negative transmittance T_neg(λ) from over-B+F densities D_neg (CMY order) using per-instance data
     inline void negative_T_from_dyes(const WorkingState& ws,
         const float D_neg[3],
         std::vector<float>& Tneg_out)
@@ -443,9 +443,9 @@ namespace Print {
                 ? ws.baseMin.linear[i]
                 : 0.0f;
 
-            const float Dlambda = D_neg[0] * epsY_at(i)
-                + D_neg[1] * epsM_at(i)
-                + D_neg[2] * epsC_at(i)
+            const float Dlambda = D_neg[0] * epsC_at(i) // C
+                + D_neg[1] * epsM_at(i) // M
+                + D_neg[2] * epsY_at(i) // Y
                 + baseSpectral;
 
             if (!std::isfinite(Dlambda)) {
@@ -868,24 +868,22 @@ namespace Print {
         const Couplers::Runtime& dirRT,
         float densities[3])
     {
+        // densities are C/M/Y; dMax is per-layer [B,G,R] -> [Y,M,C]
+        const float layerMax[3] = {
+            (std::isfinite(dirRT.dMax[2]) && dirRT.dMax[2] > 0.0f) ? dirRT.dMax[2]
+            : (std::isfinite(ws.dMax[2]) && ws.dMax[2] > 0.0f ? ws.dMax[2] : 1.0f), // C from red layer
+            (std::isfinite(dirRT.dMax[1]) && dirRT.dMax[1] > 0.0f) ? dirRT.dMax[1]
+            : (std::isfinite(ws.dMax[1]) && ws.dMax[1] > 0.0f ? ws.dMax[1] : 1.0f), // M from green layer
+            (std::isfinite(dirRT.dMax[0]) && dirRT.dMax[0] > 0.0f) ? dirRT.dMax[0]
+            : (std::isfinite(ws.dMax[0]) && ws.dMax[0] > 0.0f ? ws.dMax[0] : 1.0f)  // Y from blue layer
+        };
         for (int i = 0; i < 3; ++i) {
             float v = densities[i];
             if (!std::isfinite(v) || v < 0.0f) {
                 v = 0.0f;
             }
 
-            float dMax = 0.0f;
-            const float dirDmax = dirRT.dMax[i];
-            if (std::isfinite(dirDmax) && dirDmax > 0.0f) {
-                dMax = dirDmax;
-            }
-            else {
-                const float wsDmax = ws.dMax[i];
-                if (std::isfinite(wsDmax) && wsDmax > 0.0f) {
-                    dMax = wsDmax;
-                }
-            }
-
+            float dMax = layerMax[i];
             if (dMax <= 0.0f) {
                 dMax = 1.0f;
             }

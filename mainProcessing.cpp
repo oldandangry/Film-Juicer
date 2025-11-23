@@ -515,9 +515,9 @@ bool JuicerProcessor::ensureDensityCapacity(int width, int height) {
     }
     const size_t planeSize = size_t(width) * size_t(height);
     try {
-        _density.c.resize(planeSize);
-        _density.m.resize(planeSize);
-        _density.y.resize(planeSize);
+    _density.c.resize(planeSize);
+    _density.m.resize(planeSize);
+    _density.y.resize(planeSize);
     }
     catch (...) {
         JTRACE("SCAN", "FATAL: failed to allocate density slab");
@@ -617,9 +617,12 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
                             leR2 = dirR.lambda_nm.front();
                         }
 
-                        D_cmy[0] = Spectral::sample_density_at_logE(dirB, leB2, _ws->gammaFactorB);
-                        D_cmy[1] = Spectral::sample_density_at_logE(dirG, leG2, _ws->gammaFactorG);
-                        D_cmy[2] = Spectral::sample_density_at_logE(dirR, leR2, _ws->gammaFactorR);
+                        const float dY = Spectral::sample_density_at_logE(dirB, leB2, _ws->gammaFactorB);
+                        const float dM = Spectral::sample_density_at_logE(dirG, leG2, _ws->gammaFactorG);
+                        const float dC = Spectral::sample_density_at_logE(dirR, leR2, _ws->gammaFactorR);
+                        D_cmy[0] = dC; // C
+                        D_cmy[1] = dM; // M
+                        D_cmy[2] = dY; // Y
                     }
                     else {
                         const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
@@ -659,9 +662,9 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
                     }
 
                     Print::clamp_negative_densities_to_dmax(*_ws, _dirRT, D_cmy);
-                    _density.c[idx] = D_cmy[0];
-                    _density.m[idx] = D_cmy[1];
-                    _density.y[idx] = D_cmy[2];
+                    _density.c[idx] = D_cmy[0]; // C
+                    _density.m[idx] = D_cmy[1]; // M
+                    _density.y[idx] = D_cmy[2]; // Y
                 }
             }
             });
@@ -716,7 +719,7 @@ void JuicerProcessor::convertNegativeToPrint(const RenderContext& ctx, unsigned 
                     const size_t idx = rowOffset + size_t(xOff);
                     float raw[3];
                     float D_print[3];
-                    float D_neg[3] = { _density.c[idx], _density.m[idx], _density.y[idx] };
+                    float D_neg[3] = { _density.c[idx], _density.m[idx], _density.y[idx] }; // C,M,Y order
                     const PrintBridgeStatus rawStatus = negative_density_to_print_raw(
                         *_ws,
                         *_prt,
@@ -738,7 +741,7 @@ void JuicerProcessor::convertNegativeToPrint(const RenderContext& ctx, unsigned 
                         failure.store(true, std::memory_order_relaxed);
                         break;
                     }
-                    _density.c[idx] = D_print[0];
+                    _density.c[idx] = D_print[0]; // C,M,Y
                     _density.m[idx] = D_print[1];
                     _density.y[idx] = D_print[2];
                 }
@@ -763,13 +766,15 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         return;
     }
 
-    const Scanner::ScannerMedium medium = ctx.printActive
-        ? Scanner::ScannerMedium::Print
-        : Scanner::ScannerMedium::Negative;
-    const Scanner::ScannerStaticKey* staticKey = ctx.printActive
-        ? &_ws->printStaticKey
-        : &_ws->negativeStaticKey;
-    if (!staticKey || staticKey->hash == 0) {
+    const Scanner::ScannerMediumRuntime* mediumRuntime = ctx.printActive
+        ? &_ws->printMediumRuntime
+        : &_ws->negativeMediumRuntime;
+    if (!mediumRuntime) {
+        JTRACE("SCAN", "FATAL: scanner medium runtime missing");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    const Scanner::ScannerStaticKey& staticKey = mediumRuntime->staticKey;
+    if (staticKey.hash == 0) {
         JTRACE("SCAN", "FATAL: scanner static key missing or invalid");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
@@ -784,25 +789,25 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     Scanner::finalize_runtime_key(runtimeKey);
 
     Scanner::ScannerKey scannerKey{};
-    scannerKey.staticKey = *staticKey;
+    scannerKey.staticKey = staticKey;
     scannerKey.runtimeKey = runtimeKey;
     Scanner::finalize_scanner_key(scannerKey);
     (void)scannerKey;
 
-    const Spectral::SpectralTables* tables = nullptr;
-    if (medium == Scanner::ScannerMedium::Print) {
-        tables = &_ws->tablesPrint;
-    }
-    else if (_ws->tablesScan.K > 0) {
-        tables = &_ws->tablesScan;
-    }
-    else if (_ws->tablesView.K > 0) {
-        tables = &_ws->tablesView;
-    }
+    const Spectral::SpectralTables* tables = mediumRuntime->tables;
     if (!tables || tables->K <= 0) {
         JTRACE("SCAN", "FATAL: scanner spectral tables unavailable");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
+    if (tables->tablesHash != staticKey.tablesHash) {
+        JTRACE("SCAN", "FATAL: scanner tables hash mismatch for medium");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (mediumRuntime->range.digest == 0) {
+        JTRACE("SCAN", "FATAL: scanner density range missing or invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    const Scanner::ScannerDensityRange& range = mediumRuntime->range;
 
     const bool useBaseline = (_ws->hasBaseline && tables->hasBaseline);
     const unsigned int nThreads = std::max(1u, threadCount);
@@ -838,7 +843,19 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
                         break;
                     }
                     const size_t idx = rowOffset + size_t(xOff);
-                    float D_cmy[3] = { _density.c[idx], _density.m[idx], _density.y[idx] };
+                    float D_cmy[3] = { _density.c[idx], _density.m[idx], _density.y[idx] }; // C, M, Y order
+                    float D_norm[3];
+                    if (mediumRuntime->medium == Scanner::ScannerMedium::Negative) {
+                        Scanner::normalize_film_density(range, D_cmy, D_norm);
+                    }
+                    else {
+                        Scanner::normalize_print_density(range, D_cmy, D_norm);
+                    }
+                    if (!std::isfinite(D_norm[0]) || !std::isfinite(D_norm[1]) || !std::isfinite(D_norm[2])) {
+                        abortFlag.store(true, std::memory_order_relaxed);
+                        failure.store(true, std::memory_order_relaxed);
+                        break;
+                    }
                     float XYZ[3] = { 0.0f, 0.0f, 0.0f };
                     if (useBaseline) {
                         Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_cmy, XYZ);

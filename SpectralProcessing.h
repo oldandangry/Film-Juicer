@@ -1258,13 +1258,16 @@ namespace Spectral {
 
     inline void dyes_to_XYZ_given_tables(
         const SpectralTables& T,
-        const float dyes[3],
+        const float dyes_cmy[3],
         float XYZ[3])
     {
+        // dyes_cmy[0]=C, [1]=M, [2]=Y
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         for (int i = 0; i < K; ++i) {
-            const float Dlambda = dyes[0] * T.epsY[i] + dyes[1] * T.epsM[i] + dyes[2] * T.epsC[i];
+            const float Dlambda = dyes_cmy[0] * T.epsC[i]
+                + dyes_cmy[1] * T.epsM[i]
+                + dyes_cmy[2] * T.epsY[i];
             if (!std::isfinite(Dlambda)) {
                 continue;
             }
@@ -1281,7 +1284,7 @@ namespace Spectral {
 
     inline void dyes_to_XYZ_with_baseline_given_tables(
         const SpectralTables& T,
-        const float dyes[3],
+        const float dyes_cmy[3],
         float XYZ[3])
     {
         float mix = 0.0f;
@@ -1289,7 +1292,7 @@ namespace Spectral {
             float sum = 0.0f;
             int count = 0;
             for (int c = 0; c < 3; ++c) {
-                float v = dyes[c];
+                float v = dyes_cmy[c];
                 if (std::isfinite(v) && v > 0.0f) {
                     sum += v;
                     ++count;
@@ -1307,9 +1310,9 @@ namespace Spectral {
             const float baseSpectral = T.hasBaseline
                 ? (T.baseMin[i] + mix * (T.baseMid[i] - T.baseMin[i]))
                 : 0.0f;
-            const float Dlambda = dyes[0] * T.epsY[i]
-                + dyes[1] * T.epsM[i]
-                + dyes[2] * T.epsC[i]
+            const float Dlambda = dyes_cmy[0] * T.epsC[i]
+                + dyes_cmy[1] * T.epsM[i]
+                + dyes_cmy[2] * T.epsY[i]
                 + baseSpectral;
             if (!std::isfinite(Dlambda)) {
                 continue;
@@ -1325,7 +1328,7 @@ namespace Spectral {
         XYZ[2] = (float)(Z * s);
     }
 
-    inline void dyes_to_XYZ_given_Ee(const float* dyes, float XYZ[3]) {
+    inline void dyes_to_XYZ_given_Ee(const float* dyes_cmy, float XYZ[3]) {
         BaselineCtx base;
         base.hasBaseline = false;
         base.baseMin = nullptr;
@@ -1334,7 +1337,7 @@ namespace Spectral {
 
 #if defined(__AVX2__)
         integrate_dyes_to_XYZ_avx2(
-            dyes[0], dyes[1], dyes[2],
+            /*dY*/ dyes_cmy[2], /*dM*/ dyes_cmy[1], /*dC*/ dyes_cmy[0],
             gEpsYTable.data(), gEpsMTable.data(), gEpsCTable.data(),
             gAx.data(), gAy.data(), gAz.data(),
             gShape.K, base, XYZ);
@@ -1342,9 +1345,9 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = gShape.K;
         for (int i = 0; i < K; ++i) {
-            const float Dlambda = dyes[0] * gEpsYTable[i]
-                + dyes[1] * gEpsMTable[i]
-                + dyes[2] * gEpsCTable[i];
+            const float Dlambda = dyes_cmy[0] * gEpsCTable[i]
+                + dyes_cmy[1] * gEpsMTable[i]
+                + dyes_cmy[2] * gEpsYTable[i];
             if (!std::isfinite(Dlambda)) {
                 continue;
             }
@@ -1361,7 +1364,7 @@ namespace Spectral {
     }
 
 
-    inline void dyes_to_XYZ_given_Ee_with_baseline(const float* dyes, float neutralW, float XYZ[3]) {
+    inline void dyes_to_XYZ_given_Ee_with_baseline(const float* dyes_cmy, float neutralW, float XYZ[3]) {
         const float mix = std::clamp(neutralW, 0.0f, 1.0f);
         BaselineCtx base;
         const bool tablesReady =
@@ -1377,7 +1380,7 @@ namespace Spectral {
 
 #if defined(__AVX2__)
         integrate_dyes_to_XYZ_avx2(
-            dyes[0], dyes[1], dyes[2],
+            /*dY*/ dyes_cmy[2], /*dM*/ dyes_cmy[1], /*dC*/ dyes_cmy[0],
             gEpsYTable.data(), gEpsMTable.data(), gEpsCTable.data(),
             gAx.data(), gAy.data(), gAz.data(),
             gShape.K, base, XYZ);
@@ -1392,9 +1395,9 @@ namespace Spectral {
                 baseSpectral = minV + base.mix * (midV - minV);
             }
 
-            const float Dlambda = dyes[0] * gEpsYTable[i]
-                + dyes[1] * gEpsMTable[i]
-                + dyes[2] * gEpsCTable[i]
+            const float Dlambda = dyes_cmy[0] * gEpsCTable[i]
+                + dyes_cmy[1] * gEpsMTable[i]
+                + dyes_cmy[2] * gEpsYTable[i]
                 + baseSpectral;
             if (!std::isfinite(Dlambda)) {
                 continue;
