@@ -276,6 +276,21 @@ namespace ScannerOptics {
             JTRACE("SCAN", "FATAL: scanner density range missing or invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+        const float invYn = tables->invYn;
+        if (!(std::isfinite(invYn) && invYn > 0.0f)) {
+            JTRACE("SCAN", "FATAL: scanner tables contain invalid invYn");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        float invNormalization = invYn;
+        if (std::isfinite(medium.illuminant.normalization) && medium.illuminant.normalization > 0.0f) {
+            invNormalization = 1.0f / medium.illuminant.normalization;
+        }
+        if (!(std::isfinite(invNormalization) && invNormalization > 0.0f)) {
+            JTRACE("SCAN", "FATAL: scanner illuminant normalization invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        const float scaleToIlluminant = invNormalization / invYn;
+        const bool useBaseline = ctx.hasBaseline && tables->hasBaseline;
         const int width = ctx.bounds.x2 - ctx.bounds.x1;
         const int height = ctx.bounds.y2 - ctx.bounds.y1;
         if (width <= 0 || height <= 0) {
@@ -288,31 +303,38 @@ namespace ScannerOptics {
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
 
+        auto spectral_to_logXYZ = [&](const float D_norm[3], float logXYZ[3]) {
+            float D_denorm[3];
+            if (medium.medium == Scanner::ScannerMedium::Negative) {
+                Scanner::denormalize_film_density(medium.range, D_norm, D_denorm);
+            }
+            else {
+                Scanner::denormalize_print_density(medium.range, D_norm, D_denorm);
+            }
+            float XYZ[3] = { 0.0f, 0.0f, 0.0f };
+            if (useBaseline) {
+                Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_denorm, XYZ);
+            }
+            else {
+                Spectral::dyes_to_XYZ_given_tables(*tables, D_denorm, XYZ);
+            }
+            if (scaleToIlluminant != 1.0f) {
+                XYZ[0] *= scaleToIlluminant;
+                XYZ[1] *= scaleToIlluminant;
+                XYZ[2] *= scaleToIlluminant;
+            }
+            logXYZ[0] = std::log10(std::max(0.0f, XYZ[0]) + 1e-10f);
+            logXYZ[1] = std::log10(std::max(0.0f, XYZ[1]) + 1e-10f);
+            logXYZ[2] = std::log10(std::max(0.0f, XYZ[2]) + 1e-10f);
+        };
+
         // Prepare LUT if needed
         const bool useLut = ctx.settings.useLut;
         if (useLut && should_rebuild_lut(runtime, ctx.scannerKey, staticKeyChanged)) {
-            const std::uint32_t res = std::max(17u, ctx.scannerKey.staticKey.lutResolution);
+            const std::uint32_t res = std::clamp(
+                ctx.scannerKey.staticKey.lutResolution, 17u, 128u);
             runtime.lut.cpu.assign(size_t(res) * size_t(res) * size_t(res) * 3u, 0.0f);
             runtime.lut.res = res;
-            auto spectral_calc = [&](const float D_norm[3], float logXYZ[3]) {
-                float D_denorm[3];
-                if (medium.medium == Scanner::ScannerMedium::Negative) {
-                    Scanner::denormalize_film_density(medium.range, D_norm, D_denorm);
-                }
-                else {
-                    Scanner::denormalize_print_density(medium.range, D_norm, D_denorm);
-                }
-                float XYZ[3] = { 0.0f, 0.0f, 0.0f };
-                if (ctx.hasBaseline && tables->hasBaseline) {
-                    Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_denorm, XYZ);
-                }
-                else {
-                    Spectral::dyes_to_XYZ_given_tables(*tables, D_denorm, XYZ);
-                }
-                logXYZ[0] = std::log10(std::max(0.0f, XYZ[0]) + 1e-10f);
-                logXYZ[1] = std::log10(std::max(0.0f, XYZ[1]) + 1e-10f);
-                logXYZ[2] = std::log10(std::max(0.0f, XYZ[2]) + 1e-10f);
-            };
             for (std::uint32_t z = 0; z < res; ++z) {
                 const float nz = (res > 1u) ? float(z) / float(res - 1u) : 0.0f;
                 for (std::uint32_t y = 0; y < res; ++y) {
@@ -322,7 +344,7 @@ namespace ScannerOptics {
                         const size_t idx = (size_t(z) * size_t(res) + size_t(y)) * size_t(res) + size_t(x);
                         float logXYZ[3];
                         const float D_norm[3] = { nx, ny, nz };
-                        spectral_calc(D_norm, logXYZ);
+                        spectral_to_logXYZ(D_norm, logXYZ);
                         if (!std::isfinite(logXYZ[0]) || !std::isfinite(logXYZ[1]) || !std::isfinite(logXYZ[2])) {
                             JTRACE("SCAN", "FATAL: invalid LUT sample during spectral computation");
                             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -422,26 +444,6 @@ namespace ScannerOptics {
         std::vector<std::thread> threads;
         threads.reserve(nThreads);
 
-        auto spectral_eval = [&](const float D_norm[3], float logXYZ[3]) {
-            float D_denorm[3];
-            if (medium.medium == Scanner::ScannerMedium::Negative) {
-                Scanner::denormalize_film_density(medium.range, D_norm, D_denorm);
-            }
-            else {
-                Scanner::denormalize_print_density(medium.range, D_norm, D_denorm);
-            }
-            float XYZ[3] = { 0.0f, 0.0f, 0.0f };
-            if (ctx.hasBaseline && tables->hasBaseline) {
-                Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_denorm, XYZ);
-            }
-            else {
-                Spectral::dyes_to_XYZ_given_tables(*tables, D_denorm, XYZ);
-            }
-            logXYZ[0] = std::log10(std::max(0.0f, XYZ[0]) + 1e-10f);
-            logXYZ[1] = std::log10(std::max(0.0f, XYZ[1]) + 1e-10f);
-            logXYZ[2] = std::log10(std::max(0.0f, XYZ[2]) + 1e-10f);
-        };
-
         // Stage A: density -> linear RGB
         for (unsigned int t = 0; t < nThreads; ++t) {
             const int yStart = rowsPerThread * int(t);
@@ -476,7 +478,7 @@ namespace ScannerOptics {
                             sample_cubic(runtime.lut, D_norm, logXYZ);
                         }
                         else {
-                            spectral_eval(D_norm, logXYZ);
+                            spectral_to_logXYZ(D_norm, logXYZ);
                         }
                         float xyz[3] = {
                             std::pow(10.0f, logXYZ[0]),
