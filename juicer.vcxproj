@@ -182,6 +182,7 @@
     <ClCompile Include="OutputEncoding.cpp" />
     <ClCompile Include="Print.cpp" />
     <ClCompile Include="ProfileJSONLoader.cpp" />
+    <ClCompile Include="Scanner.cpp" />
     <ClCompile Include="SpectralContext.cpp" />
     <ClCompile Include="SpectralMathAVX.cpp">
       <EnableEnhancedInstructionSet Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">AdvancedVectorExtensions2</EnableEnhancedInstructionSet>

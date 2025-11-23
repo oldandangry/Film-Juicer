@@ -77,7 +77,6 @@ struct ParamSnapshot {
     int filmStockIndex = 0;
     int printPaperIndex = 0;
     int refIll = 0;
-    int viewIll = 0;
     int enlIll = 3;
     int couplersActive = 1;
     double couplersAmount = 1.0;
@@ -120,7 +119,6 @@ struct CouplerDirtyFlags {
 struct IlluminantOverrideFlags {
     bool reference = false;
     bool enlarger = false;
-    bool viewing = false;
 };
 
 struct InstanceState {
@@ -160,7 +158,6 @@ struct InstanceState {
     std::atomic<float> spatialSigmaPixelsCanonical{ 0.0f };
 
     std::string filmReferenceIlluminant;
-    std::string filmViewingIlluminant;
 
     // Auto-exposure cache (per frame / build)
     std::mutex autoExposureMutex;

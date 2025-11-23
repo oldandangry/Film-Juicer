@@ -487,19 +487,6 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDefault(3);
         p->setEvaluateOnChange(true);
     }
-    {
-        OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam("ViewingIlluminant");
-        p->setLabel("Viewing illuminant");
-        p->appendOption("D65");
-        p->appendOption("D55");
-        p->appendOption("D50");
-        p->appendOption("TH-KG3-L");
-        p->appendOption("T");
-        p->appendOption("K75P");
-        p->appendOption("Equal energy");
-        p->setDefault(0);
-        p->setEvaluateOnChange(true);
-    }
 
     // Output encoding group
     {

@@ -12,9 +12,11 @@
 #include <fstream>
 #include <stdexcept>
 #include <initializer_list>
+#include <cstdint>
 #include "SpectralContext.h"
 #include "AkimaInterpolator.h"
 #include "Logging.h"
+#include "Hash.h"
 
 namespace Spectral {
 
@@ -74,6 +76,10 @@ namespace Spectral {
 
         // Reference density used to compute baseline interpolation mix (0 => use baseMin).
         float baselineMixReference = 0.0f;
+
+        // Hashes used for scanner caches (agx parity)
+        std::uint64_t illuminantHash = 0;
+        std::uint64_t tablesHash = 0;
     };
 
     // ============================================================================

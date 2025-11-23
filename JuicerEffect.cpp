@@ -719,7 +719,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pFilmStock = fetchChoiceParam(kParamFilmStock);
         _pPrintPaper = fetchChoiceParam(kParamPrintPaper);
         _pRefIll = fetchChoiceParam("ReferenceIlluminant");
-        _pViewIll = fetchChoiceParam("ViewingIlluminant");
         _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
@@ -944,7 +943,6 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     if (_pFilmStock)      _pFilmStock->getValue(P.filmStockIndex);
     if (_pPrintPaper)     _pPrintPaper->getValue(P.printPaperIndex);
     if (_pRefIll)         _pRefIll->getValue(P.refIll);
-    if (_pViewIll)        _pViewIll->getValue(P.viewIll);
     if (_pEnlIll)         _pEnlIll->getValue(P.enlIll);
     if (_pInputColorSpace) _pInputColorSpace->getValue(P.inputColorSpace);
     if (_pInputCctfDecoding) { bool v = false; _pInputCctfDecoding->getValue(v); P.inputCctfDecoding = v ? 1 : 0; }
@@ -1001,7 +999,6 @@ void JuicerEffect::bootstrap_after_attach() {
     // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
     applyMetadataIlluminantDefaults(P);
     Print::build_illuminant_from_choice(P.enlIll, _state->printRT, _state->dataDir, /*forEnlarger*/true);
-    Print::build_illuminant_from_choice(P.viewIll, _state->printRT, _state->dataDir, /*forEnlarger*/false);
 
     // Load dichroic filters (Durst Digital Light by default)
     const std::string durstDir = ensure_trailing_separator(
@@ -1134,17 +1131,11 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P) {
     const std::string& filmRef = !_state->filmReferenceIlluminant.empty()
         ? _state->filmReferenceIlluminant
         : _state->base.referenceIlluminant;
-    const std::string& filmView = !_state->filmViewingIlluminant.empty()
-        ? _state->filmViewingIlluminant
-        : _state->base.viewingIlluminant;
     const std::string& printRef = _state->printRT.referenceIlluminant;
     const std::string& printView = _state->printRT.viewingIlluminant;
 
     std::string refSource = !filmRef.empty() ? filmRef : (!printRef.empty() ? printRef : printView);
     std::string enlSource = !printRef.empty() ? printRef : (!filmRef.empty() ? filmRef : printView);
-    std::string viewSource = !printView.empty() ? printView
-        : (!filmView.empty() ? filmView
-            : (!refSource.empty() ? refSource : enlSource));
 
     const bool wasSuppressed = _state->suppressParamEvents;
     _state->suppressParamEvents = true;
@@ -1164,7 +1155,6 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P) {
 
     tryApply(_pRefIll, P.refIll, _state->illuminantOverride.reference, refSource);
     tryApply(_pEnlIll, P.enlIll, _state->illuminantOverride.enlarger, enlSource);
-    tryApply(_pViewIll, P.viewIll, _state->illuminantOverride.viewing, viewSource);
 
     _state->suppressParamEvents = wasSuppressed;
 
@@ -1321,9 +1311,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         else if (std::strcmp(changedNameOrNull, kParamEnlargerIlluminant) == 0) {
             _state->illuminantOverride.enlarger = true;
         }
-        else if (std::strcmp(changedNameOrNull, kParamViewingIllum) == 0) {
-            _state->illuminantOverride.viewing = true;
-        }
     }
 
     bool printReloaded = false;
@@ -1368,7 +1355,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     if (printReloaded || filmReloaded) {
         applyMetadataIlluminantDefaults(P);
         Print::build_illuminant_from_choice(P.enlIll, _state->printRT, _state->dataDir, /*forEnlarger*/true);
-        Print::build_illuminant_from_choice(P.viewIll, _state->printRT, _state->dataDir, /*forEnlarger*/false);
     }
 
     bool neutralApplied = false;

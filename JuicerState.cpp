@@ -20,6 +20,7 @@
 #include <vector>
 #include <cstdlib>
 #include <cstdint>
+#include <iterator>
 
 #include "nlohmann/json.hpp"
 
@@ -412,6 +413,12 @@ namespace {
         return std::fabs(a - b) <= eps;
     }
 
+    inline std::uint64_t identity_color_runtime_hash() {
+        static const std::uint64_t h =
+            Hash::hash_bytes("identity_color_runtime", sizeof("identity_color_runtime") - 1);
+        return h;
+    }
+
     static Spectral::Curve build_blackbody_curve(float temperature) {
         Spectral::Curve curve;
         if (!(temperature > 0.0f)) {
@@ -529,6 +536,241 @@ namespace {
         }
         return Spectral::Curve{};
     }
+
+    static bool curve_matches_reference_axis(const Spectral::Curve& curve) {
+        const size_t expected = static_cast<size_t>(Spectral::gShape.K);
+        if (curve.linear.size() != expected || curve.lambda_nm.size() != expected) {
+            return false;
+        }
+        constexpr float kAxisMatchTolerance = 1e-3f;
+        for (size_t i = 0; i < expected; ++i) {
+            const float lambda = curve.lambda_nm[i];
+            if (!std::isfinite(lambda) ||
+                std::abs(lambda - Spectral::gShape.wavelengths[i]) > kAxisMatchTolerance) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool build_scanner_illuminant(
+        const std::string& dataDir,
+        const std::string& source,
+        const char* label,
+        Scanner::ScannerIlluminant& out)
+    {
+        out = Scanner::ScannerIlluminant{};
+        if (source.empty()) {
+            std::ostringstream oss;
+            oss << "FATAL: missing viewing illuminant for " << label;
+            JTRACE("ILLUM", oss.str());
+            return false;
+        }
+
+        Spectral::Curve curve = build_illuminant_from_string(dataDir, source);
+        if (!curve_matches_reference_axis(curve)) {
+            std::ostringstream oss;
+            oss << "FATAL: viewing illuminant '" << source
+                << "' for " << label << " not pinned to agx axis";
+            JTRACE("ILLUM", oss.str());
+            return false;
+        }
+
+        const int K = Spectral::gShape.K;
+        const auto& xBar = Spectral::gXBar.linear;
+        const auto& yBar = Spectral::gYBar.linear;
+        const auto& zBar = Spectral::gZBar.linear;
+        if (xBar.size() != static_cast<size_t>(K) ||
+            yBar.size() != static_cast<size_t>(K) ||
+            zBar.size() != static_cast<size_t>(K)) {
+            std::ostringstream oss;
+            oss << "FATAL: CMFs unavailable for " << label << " (K mismatch)";
+            JTRACE("ILLUM", oss.str());
+            return false;
+        }
+
+        double sumX = 0.0;
+        double sumY = 0.0;
+        double sumZ = 0.0;
+        for (int i = 0; i < K; ++i) {
+            const float spd = curve.linear[static_cast<size_t>(i)];
+            const float xb = xBar[static_cast<size_t>(i)];
+            const float yb = yBar[static_cast<size_t>(i)];
+            const float zb = zBar[static_cast<size_t>(i)];
+            if (!(std::isfinite(spd) && std::isfinite(xb) && std::isfinite(yb) && std::isfinite(zb))) {
+                std::ostringstream oss;
+                oss << "FATAL: non-finite CMF/SPD sample in " << label << " illuminant";
+                JTRACE("ILLUM", oss.str());
+                return false;
+            }
+            sumX += static_cast<double>(spd) * static_cast<double>(xb);
+            sumY += static_cast<double>(spd) * static_cast<double>(yb);
+            sumZ += static_cast<double>(spd) * static_cast<double>(zb);
+        }
+
+        if (!(std::isfinite(sumY) && sumY > 0.0)) {
+            std::ostringstream oss;
+            oss << "FATAL: invalid luminance sum for " << label << " (Yn=" << sumY << ")";
+            JTRACE("ILLUM", oss.str());
+            return false;
+        }
+
+        out.curve = std::move(curve);
+        out.normalization = static_cast<float>(sumY);
+        const double invYn = 1.0 / sumY;
+        out.whiteXYZ[0] = static_cast<float>(sumX * invYn);
+        out.whiteXYZ[1] = 1.0f;
+        out.whiteXYZ[2] = static_cast<float>(sumZ * invYn);
+
+        const double whiteSum = sumX + sumY + sumZ;
+        if (!(std::isfinite(whiteSum) && whiteSum > 0.0)) {
+            JTRACE("ILLUM", "FATAL: invalid white sum while building scanner illuminant");
+            return false;
+        }
+        out.whiteXY[0] = static_cast<float>(sumX / whiteSum);
+        out.whiteXY[1] = static_cast<float>(sumY / whiteSum);
+
+        std::vector<float> hashSamples = out.curve.linear;
+        hashSamples.push_back(out.normalization);
+        out.hash = Hash::hash_float_span(hashSamples.data(), hashSamples.size());
+        if (out.hash == 0) {
+            std::ostringstream oss;
+            oss << "FATAL: failed to hash viewing illuminant for " << label;
+            JTRACE("ILLUM", oss.str());
+            return false;
+        }
+        return true;
+    }
+
+    static bool nanmax_curve(const Spectral::Curve& curve, float& outMax) {
+        if (curve.linear.empty()) {
+            return false;
+        }
+        double m = -std::numeric_limits<double>::infinity();
+        bool found = false;
+        for (float v : curve.linear) {
+            if (std::isfinite(v)) {
+                m = std::max(m, static_cast<double>(v));
+                found = true;
+            }
+        }
+        if (!found || !std::isfinite(m)) {
+            return false;
+        }
+        outMax = static_cast<float>(m);
+        return std::isfinite(outMax);
+    }
+
+    static std::uint64_t hash_glare(const Profiles::ProfileGlare& glare) {
+        const float floats[] = {
+            glare.percent,
+            glare.roughness,
+            glare.blur,
+            glare.compensationRemovalFactor,
+            glare.compensationRemovalDensity,
+            glare.compensationRemovalTransition
+        };
+        for (float v : floats) {
+            if (!std::isfinite(v)) {
+                JTRACE("HASH", "FATAL: non-finite glare parameter encountered while hashing");
+                return 0;
+            }
+        }
+        const std::uint64_t activeHash = Hash::hash_bytes(&glare.active, sizeof(glare.active));
+        const std::uint64_t paramsHash = Hash::hash_float_span(floats, std::size(floats));
+        const std::uint64_t fields[] = { activeHash, paramsHash };
+        return Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    static bool compute_negative_density_range(
+        const Spectral::Curve& densB,
+        const Spectral::Curve& densG,
+        const Spectral::Curve& densR,
+        const Profiles::GrainMetadata& grain,
+        Scanner::ScannerDensityRange& outRange)
+    {
+        outRange = Scanner::ScannerDensityRange{};
+        for (int i = 0; i < 3; ++i) {
+            const float v = grain.densityMin[static_cast<size_t>(i)];
+            if (!std::isfinite(v)) {
+                JTRACE("BUILD", "FATAL: non-finite grain density_min for negative medium");
+                return false;
+            }
+            outRange.min_cmy[i] = v;
+        }
+
+        float maxC = 0.0f, maxM = 0.0f, maxY = 0.0f;
+        const bool okC = nanmax_curve(densR, maxC);
+        const bool okM = nanmax_curve(densG, maxM);
+        const bool okY = nanmax_curve(densB, maxY);
+        if (!(okC && okM && okY)) {
+            JTRACE("BUILD", "FATAL: failed to capture negative density maxima (post-glare)");
+            return false;
+        }
+
+        outRange.max_cmy[0] = maxC + outRange.min_cmy[0];
+        outRange.max_cmy[1] = maxM + outRange.min_cmy[1];
+        outRange.max_cmy[2] = maxY + outRange.min_cmy[2];
+
+        for (int i = 0; i < 3; ++i) {
+            const float v = outRange.max_cmy[i];
+            if (!(std::isfinite(v) && v > 0.0f)) {
+                JTRACE("BUILD", "FATAL: invalid negative density range (non-positive max)");
+                return false;
+            }
+            outRange.inv_max_cmy[i] = 1.0f / v;
+        }
+
+        float hashVals[6] = {
+            outRange.min_cmy[0], outRange.min_cmy[1], outRange.min_cmy[2],
+            outRange.max_cmy[0], outRange.max_cmy[1], outRange.max_cmy[2]
+        };
+        outRange.digest = Hash::hash_float_span(hashVals, std::size(hashVals));
+        if (outRange.digest == 0) {
+            JTRACE("HASH", "FATAL: failed to hash negative density range");
+            return false;
+        }
+        return true;
+    }
+
+    static bool compute_print_density_range(
+        const Print::Profile& profile,
+        Scanner::ScannerDensityRange& outRange)
+    {
+        outRange = Scanner::ScannerDensityRange{};
+        float maxC = 0.0f, maxM = 0.0f, maxY = 0.0f;
+        const bool okC = nanmax_curve(profile.dcC, maxC);
+        const bool okM = nanmax_curve(profile.dcM, maxM);
+        const bool okY = nanmax_curve(profile.dcY, maxY);
+        if (!(okC && okM && okY)) {
+            JTRACE("BUILD", "FATAL: failed to capture print density maxima (post-glare)");
+            return false;
+        }
+
+        outRange.max_cmy[0] = maxC;
+        outRange.max_cmy[1] = maxM;
+        outRange.max_cmy[2] = maxY;
+
+        for (int i = 0; i < 3; ++i) {
+            const float v = outRange.max_cmy[i];
+            if (!(std::isfinite(v) && v > 0.0f)) {
+                JTRACE("BUILD", "FATAL: invalid print density range (non-positive max)");
+                return false;
+            }
+            outRange.inv_max_cmy[i] = 1.0f / v;
+        }
+
+        float hashVals[6] = {
+            outRange.min_cmy[0], outRange.min_cmy[1], outRange.min_cmy[2],
+            outRange.max_cmy[0], outRange.max_cmy[1], outRange.max_cmy[2]
+        };
+        outRange.digest = Hash::hash_float_span(hashVals, std::size(hashVals));
+        if (outRange.digest == 0) {
+            JTRACE("HASH", "FATAL: failed to hash print density range");
+            return false;
+        }
+        return true;
+    }
 }
 
 uint64_t hash_params(const ParamSnapshot& p) {
@@ -540,7 +782,6 @@ uint64_t hash_params(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
     h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
     h = mix(h, static_cast<uint64_t>(p.refIll));
-    h = mix(h, static_cast<uint64_t>(p.viewIll));
     h = mix(h, static_cast<uint64_t>(p.enlIll));
     h = mix(h, static_cast<uint64_t>(p.couplersActive));
     h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
@@ -643,7 +884,6 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.referenceIlluminant.clear();
     S.base.viewingIlluminant.clear();
     S.filmReferenceIlluminant.clear();
-    S.filmViewingIlluminant.clear();
     S.base.dyeDensityMinFactor = 1.0f;
     S.base.cameraFilterUV = { {1.0f, 410.0f, 8.0f} };
     S.base.cameraFilterIR = { {1.0f, 675.0f, 15.0f} };
@@ -684,7 +924,6 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.referenceIlluminant = profile.referenceIlluminant;
     S.base.viewingIlluminant = profile.viewingIlluminant;
     S.filmReferenceIlluminant = S.base.referenceIlluminant;
-    S.filmViewingIlluminant = S.base.viewingIlluminant;
     S.base.dirCouplers = profile.dirCouplers;
     S.base.cameraFilterUV = profile.cameraFilterUV;
     S.base.cameraFilterIR = profile.cameraFilterIR;
@@ -930,13 +1169,26 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     Print::build_illuminant_from_choice(P.enlIll, S.printRT, S.dataDir, /*forEnlarger*/true);
-    Print::build_illuminant_from_choice(P.viewIll, S.printRT, S.dataDir, /*forEnlarger*/false);
+    Scanner::ScannerIlluminant printScannerIlluminant;
+    if (!build_scanner_illuminant(S.dataDir, S.printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
+        lk.unlock();
+        return;
+    }
+    S.printRT.illumView = printScannerIlluminant.curve;
     {
         std::ostringstream oss;
         oss << "Enl illum K=" << static_cast<int>(S.printRT.illumEnlarger.linear.size())
             << " View illum K=" << static_cast<int>(S.printRT.illumView.linear.size());
         JTRACE("BUILD", oss.str());
     }
+
+    Scanner::ScannerIlluminant negativeScannerIlluminant;
+    if (!build_scanner_illuminant(S.dataDir, S.base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
+        lk.unlock();
+        return;
+    }
+    Scanner::ScannerDensityRange negativeDensityRange;
+    bool negativeRangeOk = false;
 
     Spectral::Curve epsY = S.base.epsY;
     Spectral::Curve epsM = S.base.epsM;
@@ -1553,13 +1805,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         ? average_positive(S.printRT.midNeutralDensity)
         : 0.0f;
 
-    Spectral::build_tables_from_curves_non_global(
-        /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
-        /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
-        /*illumView*/ S.printRT.illumView,
-        /*baseMin*/ baseMin, /*baseMid*/ baseMid, /*hasBaseline*/ hasBaseline,
-        baselineMixReference,
-        target->tablesView);
+        Spectral::build_tables_from_curves_non_global(
+            /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
+            /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
+            /*illumView*/ S.printRT.illumView,
+            /*baseMin*/ baseMin, /*baseMid*/ baseMid, /*hasBaseline*/ hasBaseline,
+            baselineMixReference,
+            target->tablesView,
+            printScannerIlluminant.hash);
 
     if (hasRefIlluminant) {
         Spectral::build_tables_from_curves_non_global(
@@ -1588,6 +1841,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     std::unique_ptr<Print::Runtime> printRuntimeCopy = std::make_unique<Print::Runtime>(S.printRT);
     Print::Profile printProfile = printRuntimeCopy->profile;
     Print::DensityCurves printCurves = printRuntimeCopy->densityCurvesRaw;
+    Scanner::ScannerDensityRange printDensityRange;
+    bool printRangeOk = false;
     bool printDensityOk = !printCurves.cyan.empty() &&
         !printCurves.magenta.empty() &&
         !printCurves.yellow.empty();
@@ -1596,6 +1851,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
     if (printDensityOk) {
         printDensityOk = Print::rebuild_density_curves(printProfile, printCurves);
+        if (printDensityOk) {
+            printRangeOk = compute_print_density_range(printProfile, printDensityRange);
+            printDensityOk = printRangeOk;
+        }
     }
     Print::recompute_mid_neutral(printProfile, printRuntimeCopy.get());
     printRuntimeCopy->profile = printProfile;
@@ -1615,31 +1874,21 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             /*baseMid*/ printProfile.baseMid,
             /*hasBaseline*/ printProfile.hasBaseline,
             printBaselineMixReference,
-            target->tablesPrint);
+            target->tablesPrint,
+            printScannerIlluminant.hash);
     }
     else {
         if (!printDensityOk) {
             JTRACE("BUILD", "FATAL: missing spectral data (print profile) after glare processing");
         }
         target->tablesPrint = Spectral::SpectralTables{};
+        return;
     }
 
-    Spectral::Curve illumScan;
-    const std::string& scanIlluminantSource = !S.filmViewingIlluminant.empty()
-        ? S.filmViewingIlluminant
-        : S.base.viewingIlluminant;
-    if (!scanIlluminantSource.empty()) {
-        illumScan = build_illuminant_from_string(S.dataDir, scanIlluminantSource);
-    }
-    if (illumScan.linear.empty() || static_cast<int>(illumScan.linear.size()) != Spectral::gShape.K) {
-        if (!scanIlluminantSource.empty()) {
-            JTRACE("BUILD", std::string("Scanner illuminant '") + scanIlluminantSource + "' failed to load; attempting D50 fallback");
-        }
-        illumScan = Spectral::build_curve_D50_pinned(
-            make_data_subpath(S.dataDir, { "illuminants", "D50.csv" }));
-        if (illumScan.linear.empty() || static_cast<int>(illumScan.linear.size()) != Spectral::gShape.K) {
-            JTRACE("BUILD", "Scanner illuminant D50 fallback also failed; scanner tables will be invalid");
-        }
+    Spectral::Curve illumScan = negativeScannerIlluminant.curve;
+    if (illumScan.linear.size() != static_cast<size_t>(Spectral::gShape.K)) {
+        JTRACE("BUILD", "FATAL: scanner illuminant for negative medium is invalid");
+        return;
     }
     Spectral::build_tables_from_curves_non_global(
         /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
@@ -1647,7 +1896,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         /*illumView*/ illumScan,
         /*baseMin*/ baseMin, /*baseMid*/ baseMid, /*hasBaseline*/ hasBaseline,
         baselineMixReference,
-        target->tablesScan);
+        target->tablesScan,
+        negativeScannerIlluminant.hash);
 
     if (hasRefIlluminant && target->tablesRef.K > 0) {
         const bool validWhite =
@@ -1857,6 +2107,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->dMax[1] = dirRT.dMax[1];
     target->dMax[2] = dirRT.dMax[2];
 
+    negativeRangeOk = compute_negative_density_range(
+        target->densB, target->densG, target->densR, target->grain, negativeDensityRange);
+    if (!negativeRangeOk) {
+        return;
+    }
+
     S.spatialSigmaCacheValid.store(false, std::memory_order_release);
 
     {
@@ -1864,12 +2120,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         reuseCtx.activeBuildCounter = S.activeBuildCounter;
         reuseCtx.lastHash = S.lastHash;
         reuseCtx.lastFilmStock = S.lastParams.filmStockIndex;
-        reuseCtx.lastViewIll = S.lastParams.viewIll;
         reuseCtx.lastEnlargerIll = S.lastParams.enlIll;
 
         const WorkingState* prev = S.activeWS.load(std::memory_order_acquire);
         if (RebuildWorkingState::can_reuse_negative_params(
-            reuseCtx, prev, *target, P.filmStockIndex, P.viewIll, P.enlIll)) {
+            reuseCtx, prev, *target, P.filmStockIndex, P.enlIll)) {
             // Only reuse metadata that is guaranteed to be identical. Density
             // curves and dMax are left untouched so freshly computed values stay
             // active after rebuilds (agx-emulsion parity for stock/illuminant swaps).
@@ -1953,6 +2208,41 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     target->printRT = std::move(printRuntimeCopy);
     target->printGlare = target->printRT ? target->printRT->glare : Profiles::ProfileGlare{};
+    target->negativeScannerIlluminant = negativeScannerIlluminant;
+    target->printScannerIlluminant = printScannerIlluminant;
+    target->negativeDensityRange = negativeDensityRange;
+    target->printDensityRange = printDensityRange;
+
+    const std::uint32_t lutRes =
+        static_cast<std::uint32_t>(std::clamp(P.scannerLutResolution, 17, 128));
+    const std::uint64_t negGlareHash = hash_glare(target->negativeGlare);
+    const std::uint64_t printGlareHash = hash_glare(target->printGlare);
+    if (negGlareHash == 0 || printGlareHash == 0) {
+        JTRACE("HASH", "FATAL: failed to hash glare parameters");
+        return;
+    }
+    if (target->tablesScan.tablesHash == 0 || target->tablesPrint.tablesHash == 0) {
+        JTRACE("HASH", "FATAL: scanner table hashes invalid");
+        return;
+    }
+
+    target->negativeStaticKey = Scanner::ScannerStaticKey{};
+    target->negativeStaticKey.medium = Scanner::ScannerMedium::Negative;
+    target->negativeStaticKey.tablesHash = target->tablesScan.tablesHash;
+    target->negativeStaticKey.densityRangeHash = target->negativeDensityRange.digest;
+    target->negativeStaticKey.glareHash = negGlareHash;
+    target->negativeStaticKey.colorRuntimeHash = identity_color_runtime_hash();
+    target->negativeStaticKey.lutResolution = lutRes;
+    Scanner::finalize_static_key(target->negativeStaticKey);
+
+    target->printStaticKey = Scanner::ScannerStaticKey{};
+    target->printStaticKey.medium = Scanner::ScannerMedium::Print;
+    target->printStaticKey.tablesHash = target->tablesPrint.tablesHash;
+    target->printStaticKey.densityRangeHash = target->printDensityRange.digest;
+    target->printStaticKey.glareHash = printGlareHash;
+    target->printStaticKey.colorRuntimeHash = identity_color_runtime_hash();
+    target->printStaticKey.lutResolution = lutRes;
+    Scanner::finalize_static_key(target->printStaticKey);
 
     ++target->buildCounter;
 

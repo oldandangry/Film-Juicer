@@ -69,6 +69,9 @@
     <ClCompile Include="Print.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Scanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="SpectralContext.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

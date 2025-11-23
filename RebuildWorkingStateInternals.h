@@ -11,7 +11,6 @@ namespace RebuildWorkingState {
         std::uint64_t activeBuildCounter = 0;
         std::uint64_t lastHash = 0;
         int lastFilmStock = 0;
-        int lastViewIll = 0;
         int lastEnlargerIll = 0;
     };
 
@@ -32,12 +31,10 @@ namespace RebuildWorkingState {
 
     inline bool negative_inputs_match(const NegativeReuseContext& ctx,
         int filmStockIndex,
-        int viewIll,
         int enlargerIll)
     {
         return (ctx.lastHash != 0) &&
             (ctx.lastFilmStock == filmStockIndex) &&
-            (ctx.lastViewIll == viewIll) &&
             (ctx.lastEnlargerIll == enlargerIll);
     }
 
@@ -45,7 +42,6 @@ namespace RebuildWorkingState {
         const WorkingState* prev,
         const WorkingState& candidate,
         int filmStockIndex,
-        int viewIll,
         int enlargerIll)
     {
         if (!prev) {
@@ -57,7 +53,7 @@ namespace RebuildWorkingState {
         if (prev->buildCounter != ctx.activeBuildCounter) {
             return false;
         }
-        if (!negative_inputs_match(ctx, filmStockIndex, viewIll, enlargerIll)) {
+        if (!negative_inputs_match(ctx, filmStockIndex, enlargerIll)) {
             return false;
         }
         if (!dir_runtime_equivalent(prev->dirRT, candidate.dirRT)) {

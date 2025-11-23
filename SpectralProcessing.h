@@ -14,6 +14,7 @@
 #include <sstream>
 #include <fstream>
 #include <stdexcept>
+#include <cstdint>
 #include "SpectralData.h"
 #include "SpectralContext.h"
 #include "NpyLoader.h"
@@ -1010,7 +1011,8 @@ namespace Spectral {
         const Curve& illumView,
         const Curve& baseMin, const Curve& baseMid, bool hasBaseline,
         float baselineMixReference,
-        SpectralTables& T)
+        SpectralTables& T,
+        std::uint64_t illuminantHash = 0)
     {
         const int K = gShape.K;
         T.K = K;
@@ -1084,6 +1086,41 @@ namespace Spectral {
             T.baseMid.assign(K, 0.0f);
             T.baselineMixReference = 0.0f;
         }
+
+        T.illuminantHash = illuminantHash;
+        if (T.illuminantHash == 0 && hasIll &&
+            static_cast<int>(illumView.linear.size()) == K) {
+            T.illuminantHash = Hash::hash_float_span(illumView.linear.data(), illumView.linear.size());
+        }
+
+        auto hash_vec = [](const std::vector<float>& v) -> std::uint64_t {
+            return Hash::hash_float_span(v.data(), v.size());
+            };
+        auto hash_scalar = [](float v) -> std::uint64_t {
+            return Hash::hash_float_span(&v, 1);
+            };
+        const std::uint64_t tableFields[] = {
+            T.illuminantHash,
+            hash_vec(T.lambda),
+            hash_scalar(T.deltaLambda),
+            hash_scalar(T.invYn),
+            Hash::hash_float_span(T.whiteXYZ, 3),
+            Hash::hash_float_span(T.refIllumWhiteXYZ, 3),
+            hash_vec(T.Ax),
+            hash_vec(T.Ay),
+            hash_vec(T.Az),
+            hash_vec(T.Xbar),
+            hash_vec(T.Ybar),
+            hash_vec(T.Zbar),
+            hash_vec(T.epsC),
+            hash_vec(T.epsM),
+            hash_vec(T.epsY),
+            hash_vec(T.baseMin),
+            hash_vec(T.baseMid),
+            hash_scalar(T.baselineMixReference),
+            Hash::hash_bytes(&T.hasBaseline, sizeof(T.hasBaseline))
+        };
+        T.tablesHash = Hash::hash_bytes(tableFields, sizeof(tableFields));
     }
 
     inline void reconstruct_Ee_from_DWG_RGB_with_tables(

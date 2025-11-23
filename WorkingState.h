@@ -8,6 +8,7 @@
 #include "FilmProcessing.h"
 #include "Couplers.h"
 #include "ProfileJSONLoader.h"
+#include "Scanner.h"
 
 // Forward declaration
 namespace Print {
@@ -73,6 +74,14 @@ struct WorkingState {
 
     // Per-instance spectral tables for scanner/negative viewing (D50 parity)
     Spectral::SpectralTables tablesScan;
+    Scanner::ScannerIlluminant negativeScannerIlluminant;
+    Scanner::ScannerDensityRange negativeDensityRange;
+    Scanner::ScannerStaticKey negativeStaticKey;
+
+    // Per-instance scanner metadata for print viewing path
+    Scanner::ScannerIlluminant printScannerIlluminant;
+    Scanner::ScannerDensityRange printDensityRange;
+    Scanner::ScannerStaticKey printStaticKey;
 
     // SPD reconstruction per-instance (non-global)
     float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };

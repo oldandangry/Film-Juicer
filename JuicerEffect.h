@@ -47,7 +47,6 @@ namespace OFX {
 #define kParamContrast "Contrast"   // unitless
 #define kParamSpectralMode "SpectralUpsampling"
 #define kParamReferenceIlluminant "ReferenceIlluminant"
-#define kParamViewingIllum  "ViewingIlluminant"
 #define kParamEnlargerIlluminant "EnlargerIlluminant"
 
 // Film stock parameter
@@ -128,7 +127,6 @@ private:
     OFX::ChoiceParam* _pFilmStock = nullptr;
     OFX::ChoiceParam* _pPrintPaper = nullptr;
     OFX::ChoiceParam* _pRefIll = nullptr;
-    OFX::ChoiceParam* _pViewIll = nullptr;
     OFX::ChoiceParam* _pEnlIll = nullptr;
     OFX::ChoiceParam* _pInputColorSpace = nullptr;
     OFX::BooleanParam* _pInputCctfDecoding = nullptr;
