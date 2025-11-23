@@ -38,6 +38,8 @@ namespace Scanner {
     };
 
     struct DensityBuffer {
+        // CMY dye densities in SoA form; `medium` tags whether the slab holds negative or print data.
+        ScannerMedium medium = ScannerMedium::Negative;
         std::vector<float> c; // cyan dye density (from red layer)
         std::vector<float> m; // magenta dye density (from green layer)
         std::vector<float> y; // yellow dye density (from blue layer)

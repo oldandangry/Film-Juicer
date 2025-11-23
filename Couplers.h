@@ -600,7 +600,7 @@ namespace Couplers {
     // LogE-domain couplers runtime (agx parity)
     struct ApplyInputLogE {
         float logE[3]; // per-layer log10 exposure, including any per-layer offsets used to sample curves
-        float D[3];    // current dye densities Y,M,C at those logE (used only to compute correction)
+        float D[3];    // current layer densities B/G/R at those logE (used only to compute correction)
     };
 
 

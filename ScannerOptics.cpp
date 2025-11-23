@@ -321,6 +321,10 @@ namespace ScannerOptics {
             JTRACE("SCAN", "FATAL: scanner static key/table hash mismatch");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+        if (density.medium != medium.medium) {
+            JTRACE("SCAN", "FATAL: density slab medium does not match scanner medium runtime");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
         if (tables->illuminantHash != 0 && medium.illuminant.hash != 0 &&
             tables->illuminantHash != medium.illuminant.hash) {
             JTRACE("SCAN", "FATAL: scanner illuminant hash mismatch");

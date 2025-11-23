@@ -550,6 +550,8 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
         return;
     }
 
+    _density.medium = Scanner::ScannerMedium::Negative;
+
     if (ctx.useSpatialDIR) {
         auto fetchRGB = [&](int xx, int yy, float rgb[3])->bool {
             const int x = ctx.window.x1 + xx;
@@ -767,6 +769,11 @@ void JuicerProcessor::convertNegativeToPrint(const RenderContext& ctx, unsigned 
         if (th.joinable()) th.join();
     }
 
+    if (!failure.load(std::memory_order_relaxed) &&
+        !abortFlag.load(std::memory_order_relaxed)) {
+        _density.medium = Scanner::ScannerMedium::Print;
+    }
+
     if (failure.load(std::memory_order_relaxed)) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
@@ -786,6 +793,10 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         : &_ws->negativeMediumRuntime;
     if (!mediumRuntime) {
         JTRACE("SCAN", "FATAL: scanner medium runtime missing");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (_density.medium != mediumRuntime->medium) {
+        JTRACE("SCAN", "FATAL: density slab medium does not match selected scanner medium");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
     Scanner::ScannerStaticKey staticKey = mediumRuntime->staticKey;
