@@ -200,10 +200,16 @@ namespace {
         return std::exp(mu + sigma * normalSample);
     }
 
-    inline bool should_rebuild_lut(const ScannerOptics::Runtime& runtime, const Scanner::ScannerKey& key, bool keyChanged) {
+    inline bool should_rebuild_lut(
+        const ScannerOptics::Runtime& runtime,
+        const Scanner::ScannerStaticKey& staticKey,
+        bool staticKeyChanged)
+    {
         if (!runtime.lut.valid) return true;
-        if (keyChanged) return true;
-        if (runtime.lut.hash != Hash::hash_bytes(&key.staticKey.hash, sizeof(key.staticKey.hash))) return true;
+        if (staticKeyChanged) return true;
+        const std::uint64_t expected =
+            Hash::hash_bytes(&staticKey.hash, sizeof(staticKey.hash));
+        if (runtime.lut.hash != expected) return true;
         return false;
     }
 
@@ -250,11 +256,14 @@ namespace ScannerOptics {
 
         Runtime& runtime = *ctx.runtime;
         const std::uint64_t prevStatic = runtime.key.staticKey.hash;
-        const std::uint64_t prevRuntime = runtime.key.runtimeKey.hash;
+        const std::uint64_t prevGlareHash = runtime.key.staticKey.glareHash;
+        const Scanner::ScannerRuntimeKey prevRuntimeKey = runtime.key.runtimeKey;
         runtime.key = ctx.scannerKey;
         const bool staticKeyChanged = (prevStatic != ctx.scannerKey.staticKey.hash);
-        const bool runtimeKeyChanged = (prevRuntime != ctx.scannerKey.runtimeKey.hash);
-        const bool keyChanged = staticKeyChanged || runtimeKeyChanged;
+        const bool settingsChanged =
+            prevRuntimeKey.settingsHash != ctx.scannerKey.runtimeKey.settingsHash;
+        const bool frameBoundsChanged =
+            prevRuntimeKey.frameBoundsVersion != ctx.scannerKey.runtimeKey.frameBoundsVersion;
 
         const Scanner::ScannerMediumRuntime& medium = *ctx.medium;
         const Scanner::ScannerDensityBuffer& density = *ctx.density;
@@ -293,6 +302,8 @@ namespace ScannerOptics {
         const bool useBaseline = ctx.hasBaseline && tables->hasBaseline;
         const int width = ctx.bounds.x2 - ctx.bounds.x1;
         const int height = ctx.bounds.y2 - ctx.bounds.y1;
+        const int originX = ctx.bounds.x1;
+        const int originY = ctx.bounds.y1;
         if (width <= 0 || height <= 0) {
             return;
         }
@@ -330,7 +341,7 @@ namespace ScannerOptics {
 
         // Prepare LUT if needed
         const bool useLut = ctx.settings.useLut;
-        if (useLut && should_rebuild_lut(runtime, ctx.scannerKey, staticKeyChanged)) {
+        if (useLut && should_rebuild_lut(runtime, ctx.scannerKey.staticKey, staticKeyChanged)) {
             const std::uint32_t res = std::clamp(
                 ctx.scannerKey.staticKey.lutResolution, 17u, 128u);
             runtime.lut.cpu.assign(size_t(res) * size_t(res) * size_t(res) * 3u, 0.0f);
@@ -364,10 +375,10 @@ namespace ScannerOptics {
         }
 
         // Prepare blur/unsharp kernels
-        if (keyChanged || runtime.blurKernel.empty()) {
+        if (staticKeyChanged || settingsChanged || runtime.blurKernel.empty()) {
             build_gaussian_kernel(ctx.options.lensBlurSigmaPx, runtime.blurKernel);
         }
-        if (keyChanged || runtime.unsharpKernel.empty()) {
+        if (staticKeyChanged || settingsChanged || runtime.unsharpKernel.empty()) {
             build_gaussian_kernel(ctx.options.unsharpSigmaPx, runtime.unsharpKernel);
         }
         runtime.unsharpAmount = ctx.options.unsharpAmount;
@@ -375,32 +386,37 @@ namespace ScannerOptics {
         // Prepare glare cache when active
         const bool glareActive = medium.glare.active && medium.glare.percent > 0.0f;
         if (glareActive) {
-            const std::uint64_t seedFields[3] = {
+            const std::uint64_t seedFields[4] = {
                 ctx.seedBase,
-                ctx.scannerKey.hash,
-                medium.staticKey.glareHash
+                static_cast<std::uint64_t>(ctx.runtimeKey.frameBoundsVersion),
+                medium.staticKey.glareHash,
+                static_cast<std::uint64_t>(medium.medium)
             };
             const std::uint64_t glareSeed = Hash::hash_bytes(seedFields, sizeof(seedFields));
             const bool dimsChanged = runtime.glare.width != width || runtime.glare.height != height;
-            if (!runtime.glare.valid || dimsChanged ||
-                runtime.glare.seedHash != glareSeed ||
-                runtime.glare.key.hash != ctx.scannerKey.hash) {
+            const bool seedChanged = runtime.glare.seedHash != glareSeed;
+            const bool glareParamsChanged = prevGlareHash != ctx.scannerKey.staticKey.glareHash;
+            if (!runtime.glare.valid || dimsChanged || seedChanged || glareParamsChanged || frameBoundsChanged) {
                 runtime.glare.amount.assign(total, 0.0f);
                 runtime.glare.tmp.assign(total, 0.0f);
                 for (int y = 0; y < height; ++y) {
                     for (int x = 0; x < width; ++x) {
-                        const std::uint64_t mix1[5] = {
+                        const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
+                        const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
+                        const std::uint64_t mix1[6] = {
                             glareSeed,
                             static_cast<std::uint64_t>(medium.medium),
-                            static_cast<std::uint64_t>(x),
-                            static_cast<std::uint64_t>(y),
+                            0ull,
+                            absX,
+                            absY,
                             0ull
                         };
-                        const std::uint64_t mix2[5] = {
+                        const std::uint64_t mix2[6] = {
                             glareSeed,
                             static_cast<std::uint64_t>(medium.medium),
-                            static_cast<std::uint64_t>(x),
-                            static_cast<std::uint64_t>(y),
+                            0ull,
+                            absX,
+                            absY,
                             1ull
                         };
                         const float n = box_muller(
@@ -552,8 +568,6 @@ namespace ScannerOptics {
 
         // Stage D: write to destination with output encoding
         abortFlag.store(false, std::memory_order_relaxed);
-        const int originX = ctx.bounds.x1;
-        const int originY = ctx.bounds.y1;
         for (unsigned int t = 0; t < nThreads; ++t) {
             const int yStart = rowsPerThread * int(t);
             const int yEnd = std::min(height, rowsPerThread * int(t + 1));
