@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -33,6 +34,19 @@ namespace Scanner {
         bool useLut = true;
         std::uint32_t lutResolution = 17;
     };
+
+    struct DensityBuffer {
+        std::vector<float> c;
+        std::vector<float> m;
+        std::vector<float> y;
+        int originX = 0;
+        int originY = 0;
+        int width = 0;
+        int height = 0;
+        std::ptrdiff_t stride = 0;
+    };
+
+    using ScannerDensityBuffer = DensityBuffer;
 
     struct ScannerIlluminant {
         Spectral::Curve curve;

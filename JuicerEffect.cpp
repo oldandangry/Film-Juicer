@@ -9,6 +9,8 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <atomic>
+#include <limits>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -520,45 +522,7 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         }
     }
 
-    auto valid_dim = [](double v) -> bool {
-        return std::isfinite(v) && v > 0.0;
-        };
-
-    double canonicalWidth = 0.0;
-    double canonicalHeight = 0.0;
-
-    const OfxPointD projectSize = getProjectSize();
-    if (valid_dim(projectSize.x) && valid_dim(projectSize.y)) {
-        canonicalWidth = projectSize.x;
-        canonicalHeight = projectSize.y;
-    }
-
-    if (_src && (!valid_dim(canonicalWidth) || !valid_dim(canonicalHeight))) {
-        try {
-            const OfxRectD rod = _src->getRegionOfDefinition(args.time);
-            const double rodWidth = rod.x2 - rod.x1;
-            const double rodHeight = rod.y2 - rod.y1;
-            if (valid_dim(rodWidth) && valid_dim(rodHeight)) {
-                canonicalWidth = rodWidth;
-                canonicalHeight = rodHeight;
-            }
-        }
-        catch (...) {
-            // Ignore failures; we'll fall back to image dimensions below.
-        }
-    }
-    if (!valid_dim(canonicalWidth) || !valid_dim(canonicalHeight)) {
-        if (_state) {
-            const double cachedW = _state->spatialSigmaCanonicalWidth.load(std::memory_order_acquire);
-            const double cachedH = _state->spatialSigmaCanonicalHeight.load(std::memory_order_acquire);
-            if (valid_dim(cachedW) && valid_dim(cachedH)) {
-                canonicalWidth = cachedW;
-                canonicalHeight = cachedH;
-            }
-        }
-    }
-    if (!valid_dim(canonicalWidth)) canonicalWidth = static_cast<double>(fullWidth);
-    if (!valid_dim(canonicalHeight)) canonicalHeight = static_cast<double>(fullHeight);
+    auto valid_positive = [](double v) -> bool { return std::isfinite(v) && v > 0.0; };
 
     double filmLongEdgeMm = 35.0;
     if (_pCameraFilmFormat) {
@@ -568,73 +532,24 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
             filmLongEdgeMm = filmFormat;
         }
     }
-    float canonicalSigmaPixels = 0.0f;
+
+    const double widthPx = static_cast<double>(fullWidth);
+    const double heightPx = static_cast<double>(fullHeight);
+    const double longEdgePx = std::max(widthPx, heightPx);
+
+    float sigmaPixels = 0.0f;
     const float sigmaMicrometers = dirRT.spatialSigmaMicrometers;
-    if (sigmaMicrometers > 0.0f && valid_dim(canonicalWidth) && valid_dim(canonicalHeight)) {
-        const auto nearly_equal_double_local = [](double a, double b) {
-            const double diff = std::fabs(a - b);
-            const double scale = std::max({ 1.0, std::fabs(a), std::fabs(b) });
-            return diff <= scale * 1e-9;
-            };
-        const auto nearly_equal_float = [](float a, float b) {
-            const float diff = std::fabs(a - b);
-            const float scale = std::max({ 1.0f, std::fabs(a), std::fabs(b) });
-            return diff <= scale * 1e-6f;
-            };
-
-        bool cacheHit = false;
-        if (_state) {
-            const bool cacheValid = _state->spatialSigmaCacheValid.load(std::memory_order_acquire);
-            if (cacheValid) {
-                const float cachedMic = _state->spatialSigmaMicrometers.load(std::memory_order_relaxed);
-                const double cachedW = _state->spatialSigmaCanonicalWidth.load(std::memory_order_relaxed);
-                const double cachedH = _state->spatialSigmaCanonicalHeight.load(std::memory_order_relaxed);
-                const double cachedFilm = _state->spatialSigmaCameraFilmMm.load(std::memory_order_relaxed);
-                const float cachedSigma = _state->spatialSigmaPixelsCanonical.load(std::memory_order_relaxed);
-                if (nearly_equal_float(cachedMic, sigmaMicrometers) &&
-                    nearly_equal_double_local(cachedW, canonicalWidth) &&
-                    nearly_equal_double_local(cachedH, canonicalHeight) &&
-                    nearly_equal_double_local(cachedFilm, filmLongEdgeMm)) {
-                    canonicalSigmaPixels = cachedSigma;
-                    cacheHit = true;
-                }
-            }
+    if (sigmaMicrometers > 0.0f && valid_positive(longEdgePx) && valid_positive(filmLongEdgeMm)) {
+        sigmaPixels = Couplers::spatial_sigma_pixels_from_micrometers(
+            sigmaMicrometers,
+            filmLongEdgeMm,
+            widthPx,
+            heightPx);
+        if (!std::isfinite(sigmaPixels) || sigmaPixels < 0.0f) {
+            sigmaPixels = 0.0f;
         }
-
-        if (!cacheHit) {
-            canonicalSigmaPixels = Couplers::spatial_sigma_pixels_from_micrometers(
-                sigmaMicrometers,
-                filmLongEdgeMm,
-                canonicalWidth,
-                canonicalHeight);
-            if (_state) {
-                _state->spatialSigmaCanonicalWidth.store(canonicalWidth, std::memory_order_release);
-                _state->spatialSigmaCanonicalHeight.store(canonicalHeight, std::memory_order_release);
-                _state->spatialSigmaCameraFilmMm.store(filmLongEdgeMm, std::memory_order_release);
-                _state->spatialSigmaMicrometers.store(sigmaMicrometers, std::memory_order_release);
-                _state->spatialSigmaPixelsCanonical.store(canonicalSigmaPixels, std::memory_order_release);
-                _state->spatialSigmaCacheValid.store(true, std::memory_order_release);
-            }
-        }
-
-        double scaleX = (std::isfinite(args.renderScale.x) && args.renderScale.x > 0.0)
-            ? args.renderScale.x
-            : 1.0;
-        double scaleY = (std::isfinite(args.renderScale.y) && args.renderScale.y > 0.0)
-            ? args.renderScale.y
-            : 1.0;
-        double renderScaleFactor = std::max(scaleX, scaleY);
-        if (!(std::isfinite(renderScaleFactor)) || renderScaleFactor <= 0.0) {
-            renderScaleFactor = 1.0;
-        }
-        float scaledSigma = canonicalSigmaPixels * static_cast<float>(renderScaleFactor);
-        if (!std::isfinite(scaledSigma) || scaledSigma < 0.0f) scaledSigma = 0.0f;
-        if (scaledSigma > 25.0f) scaledSigma = 25.0f;
-        dirRT.spatialSigmaPixels = scaledSigma;
     }
-    else {
-        dirRT.spatialSigmaPixels = 0.0f;
-    }
+    dirRT.spatialSigmaPixels = sigmaPixels;
 
     return dirRT;
 }
@@ -797,6 +712,21 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
 
     const OfxRectI fullBounds = srcImg->getBounds();
+    if (_state) {
+        std::lock_guard<std::mutex> lock(_state->m);
+        const OfxRectI prev = _state->cachedFrameBounds;
+        const bool changed = prev.x1 != fullBounds.x1 || prev.y1 != fullBounds.y1 ||
+            prev.x2 != fullBounds.x2 || prev.y2 != fullBounds.y2;
+        if (changed) {
+            _state->cachedFrameBounds = fullBounds;
+            std::uint32_t next = _state->frameBoundsVersion.load(std::memory_order_relaxed);
+            next = (next == std::numeric_limits<std::uint32_t>::max()) ? next : (next + 1U);
+            if (next == 0) {
+                next = 1;
+            }
+            _state->frameBoundsVersion.store(next, std::memory_order_release);
+        }
+    }
 
     // ROI: args.renderWindow if provided; otherwise use image bounds
     OfxRectI roi = args.renderWindow;
@@ -808,6 +738,26 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (width <= 0 || height <= 0) return;
     const int fullWidth = fullBounds.x2 - fullBounds.x1;
     const int fullHeight = fullBounds.y2 - fullBounds.y1;
+    const bool fullFrame = (roi.x1 == fullBounds.x1 && roi.y1 == fullBounds.y1 &&
+        roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
+    if (!fullFrame) {
+        JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    double filmFormatMm = 35.0;
+    if (_pCameraFilmFormat) {
+        double filmFormat = 35.0;
+        _pCameraFilmFormat->getValue(filmFormat);
+        if (std::isfinite(filmFormat) && filmFormat > 0.0) {
+            filmFormatMm = filmFormat;
+        }
+    }
+    const double longEdgePx = static_cast<double>(std::max(fullWidth, fullHeight));
+    float pixelSizeUm = 0.0f;
+    if (std::isfinite(filmFormatMm) && filmFormatMm > 0.0 && longEdgePx > 0.0) {
+        pixelSizeUm = static_cast<float>((filmFormatMm * 1000.0) / longEdgePx);
+    }
 
     // Ensure bootstrap has run before we rely on parameter state
     if (_state && !_state->baseLoaded) {
@@ -885,6 +835,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setDirRuntime(dirRT);
     proc.setWorkingState(ws, wsReady);
     proc.setPrintRuntime(prt, printReady);
+    const std::uint32_t frameVersion = _state
+        ? _state->frameBoundsVersion.load(std::memory_order_acquire)
+        : 0;
+    proc.setFrameBoundsVersion(frameVersion);
+    proc.setPixelSizeUm(pixelSizeUm);
     float filmExposureScale = autoExposure.exposureScale;
     // Per agx-emulsion parity: autoExposure.exposureScale already encodes 2^(autoEV + sliderEV).
     if (!std::isfinite(filmExposureScale) || filmExposureScale <= 0.0f) {

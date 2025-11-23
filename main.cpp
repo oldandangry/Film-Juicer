@@ -186,7 +186,7 @@ void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc)
     desc.setSingleInstance(false);
     desc.setHostFrameThreading(false);
     desc.setSupportsMultiResolution(true);
-    desc.setSupportsTiles(true);
+    desc.setSupportsTiles(false);
     desc.setRenderThreadSafety(OFX::eRenderFullySafe);
 }
 
@@ -199,14 +199,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::ClipDescriptor* src = desc.defineClip(kOfxImageEffectSimpleSourceClipName);
         src->addSupportedComponent(OFX::ePixelComponentRGBA);
         src->addSupportedComponent(OFX::ePixelComponentRGB);
-        src->setSupportsTiles(true);
+        src->setSupportsTiles(false);
         src->setOptional(false);
     }
     {
         OFX::ClipDescriptor* dst = desc.defineClip(kOfxImageEffectOutputClipName);
         dst->addSupportedComponent(OFX::ePixelComponentRGBA);
         dst->addSupportedComponent(OFX::ePixelComponentRGB);
-        dst->setSupportsTiles(true);
+        dst->setSupportsTiles(false);
     }
 
     // Parameters — mirror current define semantics (names, defaults, ranges)

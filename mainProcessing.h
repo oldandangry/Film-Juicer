@@ -18,6 +18,7 @@
 
 namespace JuicerProc {
     void copyNonFloatRect(OFX::Image* src, OFX::Image* dst);
+    using DensityBuffer = Scanner::DensityBuffer;
 
     // Separable Gaussian kernel builder, with radius cap for safety. Kept inline so
     // tests can exercise it without linking the processing translation unit.
@@ -53,6 +54,12 @@ namespace JuicerProc {
         std::vector<float> Tneg, Ee_expose, Ee_filtered, Tprint, Ee_viewed;
         std::vector<float> Tpreflash, Ee_preflash;
     };
+
+    struct StageScratch {
+        SpatialDIRWorkspace dirWorkspace;
+        std::vector<float> gaussianKernel;
+        std::vector<PrintPipelineScratch> printScratchPerWorker;
+    };
 }
 
 // Full class declaration
@@ -72,22 +79,31 @@ public:
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
     void setExposure(float exposureScale);
     void setOutputEncoding(const OutputEncoding::Params& p);
+    void setFrameBoundsVersion(std::uint32_t v);
+    void setPixelSizeUm(float pixelSizeUm);
 
+    void process() override;
     void multiThreadProcessImages(OfxRectI procWindow) override;
 
 private:
     struct RenderContext {
         OfxRectI window{};
-        int tileWidth = 0;
-        int tileHeight = 0;
+        int width = 0;
+        int height = 0;
         bool useSpatialDIR = false;
+        bool printActive = false;
         float exposureScaleSafe = 1.0f;
         float kMidSpectral = 1.0f;
+        float pixelSizeUm = 0.0f;
     };
 
-    RenderContext prepareRenderContext(const OfxRectI& procWindow) const;
-    void renderSpatialDIR(const RenderContext& ctx);
-    void renderScalar(const RenderContext& ctx);
+    RenderContext prepareRenderContext() const;
+    bool ensureDensityCapacity(int width, int height);
+    void writeNegativeDensities(const RenderContext& ctx, unsigned int threadCount);
+    void convertNegativeToPrint(const RenderContext& ctx, unsigned int threadCount);
+    void renderScannerFromDensity(const RenderContext& ctx, unsigned int threadCount);
+
+    void processImpl();
 
     OFX::Image* _srcImg;
     int _nComponents;
@@ -106,9 +122,10 @@ private:
     float _exposureScale;
     OutputEncoding::Params _outputEncoding;
 
-    std::vector<float> _gaussianKernel;
-    JuicerProc::SpatialDIRWorkspace _dirWorkspace;
-    JuicerProc::PrintPipelineScratch _printScratch;
+    JuicerProc::StageScratch _scratch;
+    JuicerProc::DensityBuffer _density;
+    std::uint32_t _frameBoundsVersion = 0;
+    float _pixelSizeUm = 0.0f;
 };
 // Test-facing wrappers to access internal spatial utilities without changing production behavior.
 namespace JuicerProcTest {

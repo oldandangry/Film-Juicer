@@ -6,6 +6,9 @@
 #include <cstring>
 #include <cstdint>
 #include <string>
+#include <atomic>
+#include <thread>
+#include <sstream>
 
 // Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
 #pragma warning(push)
@@ -106,6 +109,39 @@ namespace JuicerProc {
 
 // --- Spatial DIR: defensive curve utilities (monotonic + robust interpolation) ---
 
+static unsigned int compute_thread_count(int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return 1u;
+    }
+    const unsigned int w = static_cast<unsigned int>(width);
+    const unsigned int h = static_cast<unsigned int>(height);
+    unsigned int nCPUs = (std::min(w, 4096u) * h) / 4096u;
+    if (nCPUs == 0) {
+        nCPUs = 1;
+    }
+    const unsigned int maxThreads = OFX::MultiThread::getNumCPUs();
+    if (maxThreads > 0) {
+        nCPUs = std::min(nCPUs, maxThreads);
+    }
+    return std::max(1u, nCPUs);
+}
+
+static std::uint64_t hash_scanner_settings(const Scanner::Settings& settings, const Scanner::Options& options) {
+    const std::uint64_t lutHash = Hash::hash_bytes(&settings.useLut, sizeof(settings.useLut));
+    const float fields[3] = {
+        options.lensBlurSigmaPx,
+        options.unsharpSigmaPx,
+        options.unsharpAmount
+    };
+    const std::uint64_t optHash = Hash::hash_float_span(fields, 3);
+    if (lutHash == 0 || optHash == 0) {
+        JTRACE("HASH", "FATAL: invalid scanner settings for hashing");
+        return 0;
+    }
+    const std::uint64_t combined[2] = { lutHash, optHash };
+    return Hash::hash_bytes(combined, sizeof(combined));
+}
+
 static inline bool curve_ok(const Spectral::Curve& c) {
     const size_t N = c.lambda_nm.size();
     if (N < 2 || c.linear.size() != N) return false;
@@ -123,41 +159,33 @@ static inline bool curve_ok(const Spectral::Curve& c) {
 
 namespace {
 
-    static bool run_print_pipeline_from_dir_corrected_densities(
+    enum class PrintBridgeStatus {
+        kOk = 0,
+        kInvalidTables,
+        kNaNRaw,
+        kNaNDensity
+    };
+
+    static PrintBridgeStatus negative_density_to_print_raw(
         const WorkingState& ws,
         const Print::Runtime& prt,
         const Print::Params& prm,
         const float D_cmy[3],
         float kMid_spectral,
-        float rgbOut[3],
-        JuicerProc::PrintPipelineScratch& scratch,
-        int debug_x = -1,
-        int debug_y = -1)
+        float rawOut[3],
+        JuicerProc::PrintPipelineScratch& scratch)
     {
         const int viewK = ws.tablesView.K;
         const int printK = ws.tablesPrint.K;
         const int shapeK = Spectral::gShape.K;
-        if (viewK <= 0 || printK <= 0 || shapeK <= 0) {
-            JTRACE("PRINT", std::string("print pipeline aborted: non-positive spectral length view=")
-                + std::to_string(viewK)
-                + " print=" + std::to_string(printK)
-                + " gShape=" + std::to_string(shapeK));
-            return false;
-        }
-        if (viewK != printK || viewK != shapeK) {
-            JTRACE("PRINT", std::string("print pipeline aborted: spectral length mismatch view=")
-                + std::to_string(viewK)
-                + " print=" + std::to_string(printK)
-                + " gShape=" + std::to_string(shapeK));
-            return false;
+        if (viewK <= 0 || printK <= 0 || shapeK <= 0 || viewK != printK || viewK != shapeK) {
+            return PrintBridgeStatus::kInvalidTables;
         }
 
         const int K = shapeK;
         auto& Tneg = scratch.Tneg;
         auto& Ee_expose = scratch.Ee_expose;
         auto& Ee_filtered = scratch.Ee_filtered;
-        auto& Tprint = scratch.Tprint;
-        auto& Ee_viewed = scratch.Ee_viewed;
         auto& Tpreflash = scratch.Tpreflash;
         auto& Ee_preflash = scratch.Ee_preflash;
 
@@ -192,104 +220,41 @@ namespace {
             Ee_filtered[i] = std::max(0.0f, Ee_expose[i] * fTotal);
         }
 
-        // SPD DEBUG: Log spectral data for center pixel to compare with Python reference
-        if (debug_x >= 0 && debug_y >= 0) {
-            // Key wavelengths: 450nm (blue), 520nm (green), 650nm (red)
-            // Spectral shape: 380-780nm in 5nm steps, so index = (wavelength - 380) / 5
-            const int idx_450 = (450 - 380) / 5;  // index 14
-            const int idx_520 = (520 - 380) / 5;  // index 28
-            const int idx_650 = (650 - 380) / 5;  // index 54
-
-            std::ostringstream oss1, oss2, oss3, oss4;
-            oss1 << "SPD_TRACE pixel(" << debug_x << "," << debug_y << "): Filter amounts: Y=" << yAmount << " M=" << mAmount << " C=" << cAmount;
-            oss2 << "SPD_TRACE pixel(" << debug_x << "," << debug_y << "): Tneg[450nm]=" << Tneg[idx_450] << " [520nm]=" << Tneg[idx_520] << " [650nm]=" << Tneg[idx_650];
-            oss3 << "SPD_TRACE pixel(" << debug_x << "," << debug_y << "): Ee_expose[450nm]=" << Ee_expose[idx_450] << " [520nm]=" << Ee_expose[idx_520] << " [650nm]=" << Ee_expose[idx_650];
-            oss4 << "SPD_TRACE pixel(" << debug_x << "," << debug_y << "): Ee_filtered[450nm]=" << Ee_filtered[idx_450] << " [520nm]=" << Ee_filtered[idx_520] << " [650nm]=" << Ee_filtered[idx_650];
-            JTRACE("SPECTRAL", oss1.str());
-            JTRACE("SPECTRAL", oss2.str());
-            JTRACE("SPECTRAL", oss3.str());
-            JTRACE("SPECTRAL", oss4.str());
-        }
-
-        float raw[3];
-        Print::raw_exposures_from_filtered_light(prt.profile, Ee_filtered, raw);
+        Print::raw_exposures_from_filtered_light(prt.profile, Ee_filtered, rawOut);
 
         const float expPrint = std::isfinite(prm.exposure)
             ? std::max(0.0f, prm.exposure)
             : 1.0f;
         const float rawScale = expPrint * kMid_spectral;
-        raw[0] *= rawScale;
-        raw[1] *= rawScale;
-        raw[2] *= rawScale;
+        rawOut[0] *= rawScale;
+        rawOut[1] *= rawScale;
+        rawOut[2] *= rawScale;
 
         if (std::isfinite(prm.preflashExposure) && prm.preflashExposure > 0.0f) {
             float rawPre[3];
             Print::compute_preflash_raw(prt, ws, Tpreflash, Ee_preflash, rawPre);
-            raw[0] += rawPre[0] * prm.preflashExposure;
-            raw[1] += rawPre[1] * prm.preflashExposure;
-            raw[2] += rawPre[2] * prm.preflashExposure;
+            rawOut[0] += rawPre[0] * prm.preflashExposure;
+            rawOut[1] += rawPre[1] * prm.preflashExposure;
+            rawOut[2] += rawPre[2] * prm.preflashExposure;
         }
 
-        float D_print[3];
+        if (!std::isfinite(rawOut[0]) || !std::isfinite(rawOut[1]) || !std::isfinite(rawOut[2])) {
+            return PrintBridgeStatus::kNaNRaw;
+        }
+
+        return PrintBridgeStatus::kOk;
+    }
+
+    static PrintBridgeStatus print_raw_to_density(
+        const Print::Runtime& prt,
+        const float raw[3],
+        float D_print[3])
+    {
         Print::print_densities_from_Eprint(prt.profile, raw, D_print);
-
-        // SPD DEBUG: Log print densities and raw exposures
-        if (debug_x >= 0 && debug_y >= 0) {
-            std::ostringstream oss1, oss2;
-            oss1 << "PRINT_DENSITY pixel(" << debug_x << "," << debug_y << "): raw[B/G/R]=" << raw[0] << "/" << raw[1] << "/" << raw[2];
-            oss2 << "PRINT_DENSITY pixel(" << debug_x << "," << debug_y << "): D_print[C/M/Y]=" << D_print[0] << "/" << D_print[1] << "/" << D_print[2];
-            JTRACE("SPECTRAL", oss1.str());
-            JTRACE("SPECTRAL", oss2.str());
+        if (!std::isfinite(D_print[0]) || !std::isfinite(D_print[1]) || !std::isfinite(D_print[2])) {
+            return PrintBridgeStatus::kNaNDensity;
         }
-
-        Print::print_T_from_dyes(prt.profile, D_print, Tprint);
-        if (int(Tprint.size()) < K) {
-            Tprint.resize(size_t(K), 0.0f);
-        }
-
-        // SPD DEBUG: Log print transmittance SPD
-        if (debug_x >= 0 && debug_y >= 0) {
-            const int idx_450 = 14;
-            const int idx_520 = 28;
-            const int idx_650 = 54;
-            std::ostringstream oss;
-            oss << "PRINT_T pixel(" << debug_x << "," << debug_y << "): Tprint[450nm]=" << Tprint[idx_450] << " [520nm]=" << Tprint[idx_520] << " [650nm]=" << Tprint[idx_650];
-            JTRACE("SPECTRAL", oss.str());
-        }
-
-        Ee_viewed.resize(size_t(K));
-        for (int i = 0; i < K; ++i) {
-            const float Ev = (prt.illumView.linear.size() > size_t(i))
-                ? prt.illumView.linear[i]
-                : 1.0f;
-            Ee_viewed[i] = std::max(0.0f, Ev * Tprint[i]);
-        }
-
-        // SPD DEBUG: Log scanner viewing SPD
-        if (debug_x >= 0 && debug_y >= 0) {
-            const int idx_450 = 14;
-            const int idx_520 = 28;
-            const int idx_650 = 54;
-            std::ostringstream oss;
-            oss << "SCANNER_SPD pixel(" << debug_x << "," << debug_y << "): Ee_viewed[450nm]=" << Ee_viewed[idx_450] << " [520nm]=" << Ee_viewed[idx_520] << " [650nm]=" << Ee_viewed[idx_650];
-            JTRACE("SPECTRAL", oss.str());
-        }
-
-        float XYZ[3];
-        Spectral::Ee_to_XYZ_given_tables(ws.tablesPrint, Ee_viewed, XYZ);
-
-        // SPD DEBUG: Log final XYZ and RGB output
-        if (debug_x >= 0 && debug_y >= 0) {
-            std::ostringstream oss;
-            oss << "FINAL_OUTPUT pixel(" << debug_x << "," << debug_y << "): XYZ=" << XYZ[0] << "/" << XYZ[1] << "/" << XYZ[2];
-            JTRACE("SPECTRAL", oss.str());
-        }
-
-        Spectral::XYZ_to_DWG_linear_adapted(ws.tablesPrint, XYZ, rgbOut);
-        rgbOut[0] = std::max(0.0f, rgbOut[0]);
-        rgbOut[1] = std::max(0.0f, rgbOut[1]);
-        rgbOut[2] = std::max(0.0f, rgbOut[2]);
-        return true;
+        return PrintBridgeStatus::kOk;
     }
 
     template <typename FetchRGB, typename AbortCheck>
@@ -469,6 +434,10 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
     , _printReady(false)
     , _exposureScale(1.0f)
     , _outputEncoding{}
+    , _scratch{}
+    , _density{}
+    , _frameBoundsVersion(0)
+    , _pixelSizeUm(0.0f)
 {
 }
 
@@ -503,19 +472,28 @@ void JuicerProcessor::setOutputEncoding(const OutputEncoding::Params& p) {
     _outputEncoding = p;
 }
 
-JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext(const OfxRectI& procWindow) const {
-    RenderContext ctx;
-    ctx.window = procWindow;
-    ctx.tileWidth = procWindow.x2 - procWindow.x1;
-    ctx.tileHeight = procWindow.y2 - procWindow.y1;
+void JuicerProcessor::setFrameBoundsVersion(std::uint32_t v) {
+    _frameBoundsVersion = v;
+}
+
+void JuicerProcessor::setPixelSizeUm(float pixelSizeUm) {
+    _pixelSizeUm = pixelSizeUm;
+}
+
+JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
+    RenderContext ctx{};
+    ctx.window = _renderWindow;
+    ctx.width = _renderWindow.x2 - _renderWindow.x1;
+    ctx.height = _renderWindow.y2 - _renderWindow.y1;
     ctx.exposureScaleSafe = (std::isfinite(_exposureScale) && _exposureScale > 0.0f)
         ? _exposureScale
         : 1.0f;
     ctx.useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) &&
         _dirRT.spatialSigmaPixels > 0.0f && _nComponents >= 3 && _wsReady && _ws);
+    ctx.printActive = (_wsReady && _ws && _printReady && _prt && !_printParams.bypass);
 
     ctx.kMidSpectral = 1.0f;
-    if (_wsReady && _ws && _printReady && _prt && !_printParams.bypass) {
+    if (ctx.printActive) {
         const float exposureCompScale = _printParams.exposureCompensationEnabled
             ? _printParams.exposureCompensationScale
             : 1.0f;
@@ -527,226 +505,532 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext(const OfxRe
             exposureCompScale);
     }
 
+    ctx.pixelSizeUm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? _pixelSizeUm : 0.0f;
     return ctx;
 }
 
-void JuicerProcessor::renderSpatialDIR(const RenderContext& ctx) {
-    const int tileW = ctx.tileWidth;
-    const int tileH = ctx.tileHeight;
+bool JuicerProcessor::ensureDensityCapacity(int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    const size_t planeSize = size_t(width) * size_t(height);
+    try {
+        _density.c.resize(planeSize);
+        _density.m.resize(planeSize);
+        _density.y.resize(planeSize);
+    }
+    catch (...) {
+        JTRACE("SCAN", "FATAL: failed to allocate density slab");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    _density.width = width;
+    _density.height = height;
+    _density.originX = _renderWindow.x1;
+    _density.originY = _renderWindow.y1;
+    _density.stride = width;
+    return true;
+}
 
-    auto& dirWorkspace = _dirWorkspace;
+void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned int threadCount) {
+    if (!_ws || !_wsReady || ctx.width <= 0 || ctx.height <= 0) {
+        return;
+    }
 
-    auto fetchRGB = [&](int xx, int yy, float rgb[3])->bool {
-        const int x = ctx.window.x1 + xx;
-        const int y = ctx.window.y1 + yy;
-        const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-        if (!srcPix) return false;
-        rgb[0] = srcPix[0];
-        rgb[1] = srcPix[1];
-        rgb[2] = srcPix[2];
-        return true;
-        };
-
-    auto abortCheck = [&]() -> bool { return _effect.abort(); };
-
-    buildSpatialDIRCorrections(
-        tileW,
-        tileH,
-        *_ws,
-        _dirRT,
-        ctx.exposureScaleSafe,
-        fetchRGB,
-        abortCheck,
-        dirWorkspace,
-        _gaussianKernel);
-
-    const bool runPrint = _printReady && _prt && !_printParams.bypass;
-
-    for (int yy = 0; yy < tileH; ++yy) {
-        if (_effect.abort()) break;
-        for (int xx = 0; xx < tileW; ++xx) {
+    if (ctx.useSpatialDIR) {
+        auto fetchRGB = [&](int xx, int yy, float rgb[3])->bool {
             const int x = ctx.window.x1 + xx;
             const int y = ctx.window.y1 + yy;
-
-            float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
             const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-            if (!dstPix || !srcPix) {
-                continue;
-            }
+            if (!srcPix) return false;
+            rgb[0] = srcPix[0];
+            rgb[1] = srcPix[1];
+            rgb[2] = srcPix[2];
+            return true;
+            };
 
-            float rgbOut[3] = { srcPix[0], srcPix[1], srcPix[2] };
+        auto abortCheck = [&]() -> bool { return _effect.abort(); };
 
-            const size_t idx = size_t(yy * tileW + xx);
-            float leB2 = dirWorkspace.logE_B[idx] - dirWorkspace.corrYBlur[idx];
-            float leG2 = dirWorkspace.logE_G[idx] - dirWorkspace.corrMBlur[idx];
-            float leR2 = dirWorkspace.logE_R[idx] - dirWorkspace.corrCBlur[idx];
+        buildSpatialDIRCorrections(
+            ctx.width,
+            ctx.height,
+            *_ws,
+            _dirRT,
+            ctx.exposureScaleSafe,
+            fetchRGB,
+            abortCheck,
+            _scratch.dirWorkspace,
+            _scratch.gaussianKernel);
+    }
 
-            if (!std::isfinite(leB2) && !_ws->densB.lambda_nm.empty()) {
-                leB2 = _ws->densB.lambda_nm.front();
-            }
-            if (!std::isfinite(leG2) && !_ws->densG.lambda_nm.empty()) {
-                leG2 = _ws->densG.lambda_nm.front();
-            }
-            if (!std::isfinite(leR2) && !_ws->densR.lambda_nm.empty()) {
-                leR2 = _ws->densR.lambda_nm.front();
-            }
+    const Spectral::SpectralTables* tablesSPD =
+        (_ws->spdReady && _ws->tablesRef.K > 0) ? &_ws->tablesRef : nullptr;
+    const float* sInv = _ws->spdReady ? _ws->spdSInv : nullptr;
+    const bool spdReady = _ws->spdReady;
 
-            const Spectral::Curve& dirB = (_ws->dirPrecorrected ? _ws->dirDensB : _ws->densB);
-            const Spectral::Curve& dirG = (_ws->dirPrecorrected ? _ws->dirDensG : _ws->densG);
-            const Spectral::Curve& dirR = (_ws->dirPrecorrected ? _ws->dirDensR : _ws->densR);
+    const Spectral::Curve& dirB = (_ws->dirPrecorrected ? _ws->dirDensB : _ws->densB);
+    const Spectral::Curve& dirG = (_ws->dirPrecorrected ? _ws->dirDensG : _ws->densG);
+    const Spectral::Curve& dirR = (_ws->dirPrecorrected ? _ws->dirDensR : _ws->densR);
 
-            // SPD DEBUG: Log film exposure before density lookup (center pixel only)
-            const int center_x = _renderWindow.x1 + (_renderWindow.x2 - _renderWindow.x1) / 2;
-            const int center_y = _renderWindow.y1 + (_renderWindow.y2 - _renderWindow.y1) / 2;
-            if (x == center_x && y == center_y) {
-                std::ostringstream oss;
-                oss << "FILM_EXPOSURE pixel(" << x << "," << y << "): logE[B/G/R]=" << leB2 << "/" << leG2 << "/" << leR2;
-                JTRACE("SPECTRAL", oss.str());
-            }
+    std::atomic<bool> abortFlag{ false };
+    std::atomic<bool> failure{ false };
+    const int width = ctx.width;
+    const int height = ctx.height;
+    const int originX = ctx.window.x1;
+    const int originY = ctx.window.y1;
 
-            float D_cmy[3];
-            D_cmy[0] = Spectral::sample_density_at_logE(dirB, leB2, _ws->gammaFactorB);
-            D_cmy[1] = Spectral::sample_density_at_logE(dirG, leG2, _ws->gammaFactorG);
-            D_cmy[2] = Spectral::sample_density_at_logE(dirR, leR2, _ws->gammaFactorR);
+    const unsigned int nThreads = std::max(1u, threadCount);
+    const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
+    std::vector<std::thread> threads;
+    threads.reserve(nThreads);
 
-            // SPD DEBUG: Log film densities after lookup (center pixel only)
-            if (x == center_x && y == center_y) {
-                std::ostringstream oss;
-                oss << "FILM_DENSITY pixel(" << x << "," << y << "): D_cmy[C/M/Y]=" << D_cmy[0] << "/" << D_cmy[1] << "/" << D_cmy[2];
-                JTRACE("SPECTRAL", oss.str());
-            }
+    for (unsigned int t = 0; t < nThreads; ++t) {
+        const int yStart = rowsPerThread * int(t);
+        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
+        threads.emplace_back([&, yStart, yEnd, t]() {
+            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
+                if (_effect.abort()) {
+                    abortFlag.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                const int y = originY + yOff;
+                const size_t rowOffset = size_t(yOff) * size_t(width);
+                for (int xOff = 0; xOff < width; ++xOff) {
+                    if (abortFlag.load(std::memory_order_relaxed)) {
+                        break;
+                    }
+                    const int x = originX + xOff;
+                    const size_t idx = rowOffset + size_t(xOff);
+                    float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
 
-            Print::clamp_negative_densities_to_dmax(*_ws, _dirRT, D_cmy);
+                    if (ctx.useSpatialDIR) {
+                        float leB2 = _scratch.dirWorkspace.logE_B[idx] - _scratch.dirWorkspace.corrYBlur[idx];
+                        float leG2 = _scratch.dirWorkspace.logE_G[idx] - _scratch.dirWorkspace.corrMBlur[idx];
+                        float leR2 = _scratch.dirWorkspace.logE_R[idx] - _scratch.dirWorkspace.corrCBlur[idx];
 
-            if (runPrint) {
-                // Pass debug coordinates for center pixel logging
-                const int center_x = _renderWindow.x1 + (_renderWindow.x2 - _renderWindow.x1) / 2;
-                const int center_y = _renderWindow.y1 + (_renderWindow.y2 - _renderWindow.y1) / 2;
-                const int dbg_x = (x == center_x && y == center_y) ? x : -1;
-                const int dbg_y = (x == center_x && y == center_y) ? y : -1;
+                        if (!std::isfinite(leB2) && !dirB.lambda_nm.empty()) {
+                            leB2 = dirB.lambda_nm.front();
+                        }
+                        if (!std::isfinite(leG2) && !dirG.lambda_nm.empty()) {
+                            leG2 = dirG.lambda_nm.front();
+                        }
+                        if (!std::isfinite(leR2) && !dirR.lambda_nm.empty()) {
+                            leR2 = dirR.lambda_nm.front();
+                        }
 
-                if (!run_print_pipeline_from_dir_corrected_densities(
-                    *_ws,
-                    *_prt,
-                    _printParams,
-                    D_cmy,
-                    ctx.kMidSpectral,
-                    rgbOut,
-                    _printScratch,
-                    dbg_x,
-                    dbg_y))
-                {
-                    OutputEncoding::applyEncoding(_outputEncoding, rgbOut);
-                    dstPix[0] = rgbOut[0];
-                    dstPix[1] = rgbOut[1];
-                    dstPix[2] = rgbOut[2];
-                    if (_nComponents == 4) dstPix[3] = srcPix[3];
-                    continue;
+                        D_cmy[0] = Spectral::sample_density_at_logE(dirB, leB2, _ws->gammaFactorB);
+                        D_cmy[1] = Spectral::sample_density_at_logE(dirG, leG2, _ws->gammaFactorG);
+                        D_cmy[2] = Spectral::sample_density_at_logE(dirR, leR2, _ws->gammaFactorR);
+                    }
+                    else {
+                        const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
+                        if (!srcPix) {
+                            _density.c[idx] = 0.0f;
+                            _density.m[idx] = 0.0f;
+                            _density.y[idx] = 0.0f;
+                            continue;
+                        }
+                        float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
+                        float E[3];
+                        Spectral::rgb_input_to_film_raw(
+                            rgbIn, E, ctx.exposureScaleSafe,
+                            _ws->filmRaw,
+                            tablesSPD,
+                            sInv,
+                            spdReady,
+                            _ws->sensB, _ws->sensG, _ws->sensR);
+
+                        float logE[3] = {
+                            std::log10(std::max(0.0f, E[0]) + 1e-10f),
+                            std::log10(std::max(0.0f, E[1]) + 1e-10f),
+                            std::log10(std::max(0.0f, E[2]) + 1e-10f)
+                        };
+
+                        if (!std::isfinite(logE[0]) && !dirB.lambda_nm.empty()) {
+                            logE[0] = dirB.lambda_nm.front();
+                        }
+                        if (!std::isfinite(logE[1]) && !dirG.lambda_nm.empty()) {
+                            logE[1] = dirG.lambda_nm.front();
+                        }
+                        if (!std::isfinite(logE[2]) && !dirR.lambda_nm.empty()) {
+                            logE[2] = dirR.lambda_nm.front();
+                        }
+
+                        sample_negative_densities(*_ws, _dirRT, logE, D_cmy);
+                    }
+
+                    Print::clamp_negative_densities_to_dmax(*_ws, _dirRT, D_cmy);
+                    _density.c[idx] = D_cmy[0];
+                    _density.m[idx] = D_cmy[1];
+                    _density.y[idx] = D_cmy[2];
                 }
             }
-            else {
-                const Spectral::SpectralTables* tables = nullptr;
-                if (_ws->tablesScan.K > 0) {
-                    tables = &_ws->tablesScan;
-                }
-                else if (_ws->tablesView.K > 0) {
-                    tables = &_ws->tablesView;
-                }
+            });
+    }
 
-                if (tables) {
+    for (std::thread& th : threads) {
+        if (th.joinable()) th.join();
+    }
+
+    if (failure.load(std::memory_order_relaxed)) {
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (abortFlag.load(std::memory_order_relaxed)) {
+        return;
+    }
+}
+
+void JuicerProcessor::convertNegativeToPrint(const RenderContext& ctx, unsigned int threadCount) {
+    if (!ctx.printActive || !_ws || !_prt) {
+        return;
+    }
+
+    const unsigned int nThreads = std::max(1u, threadCount);
+    _scratch.printScratchPerWorker.resize(nThreads);
+    std::atomic<bool> abortFlag{ false };
+    std::atomic<bool> failure{ false };
+
+    const int width = ctx.width;
+    const int height = ctx.height;
+    const int originX = ctx.window.x1;
+    const int originY = ctx.window.y1;
+    const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
+
+    std::vector<std::thread> threads;
+    threads.reserve(nThreads);
+
+    for (unsigned int t = 0; t < nThreads; ++t) {
+        const int yStart = rowsPerThread * int(t);
+        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
+        threads.emplace_back([&, yStart, yEnd, t]() {
+            JuicerProc::PrintPipelineScratch& scratch = _scratch.printScratchPerWorker[t];
+            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
+                if (_effect.abort()) {
+                    abortFlag.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                const size_t rowOffset = size_t(yOff) * size_t(width);
+                for (int xOff = 0; xOff < width; ++xOff) {
+                    if (abortFlag.load(std::memory_order_relaxed)) {
+                        break;
+                    }
+                    const size_t idx = rowOffset + size_t(xOff);
+                    float raw[3];
+                    float D_print[3];
+                    float D_neg[3] = { _density.c[idx], _density.m[idx], _density.y[idx] };
+                    const PrintBridgeStatus rawStatus = negative_density_to_print_raw(
+                        *_ws,
+                        *_prt,
+                        _printParams,
+                        D_neg,
+                        ctx.kMidSpectral,
+                        raw,
+                        scratch);
+                    if (rawStatus != PrintBridgeStatus::kOk) {
+                        JTRACE("PRINT", "FATAL: failed to convert negative densities to print raw exposure");
+                        abortFlag.store(true, std::memory_order_relaxed);
+                        failure.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+                    const PrintBridgeStatus densStatus = print_raw_to_density(*_prt, raw, D_print);
+                    if (densStatus != PrintBridgeStatus::kOk) {
+                        JTRACE("PRINT", "FATAL: failed to convert print raw exposure to densities");
+                        abortFlag.store(true, std::memory_order_relaxed);
+                        failure.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+                    _density.c[idx] = D_print[0];
+                    _density.m[idx] = D_print[1];
+                    _density.y[idx] = D_print[2];
+                }
+            }
+            });
+    }
+
+    for (std::thread& th : threads) {
+        if (th.joinable()) th.join();
+    }
+
+    if (failure.load(std::memory_order_relaxed)) {
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (abortFlag.load(std::memory_order_relaxed)) {
+        return;
+    }
+}
+
+void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigned int threadCount) {
+    if (!_ws || !_wsReady) {
+        return;
+    }
+
+    const Scanner::ScannerMedium medium = ctx.printActive
+        ? Scanner::ScannerMedium::Print
+        : Scanner::ScannerMedium::Negative;
+    const Scanner::ScannerStaticKey* staticKey = ctx.printActive
+        ? &_ws->printStaticKey
+        : &_ws->negativeStaticKey;
+    if (!staticKey || staticKey->hash == 0) {
+        JTRACE("SCAN", "FATAL: scanner static key missing or invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    Scanner::ScannerRuntimeKey runtimeKey{};
+    runtimeKey.settingsHash = hash_scanner_settings(_scannerSettings, _scannerOptions);
+    runtimeKey.frameBoundsVersion = _frameBoundsVersion;
+    if (runtimeKey.settingsHash == 0) {
+        JTRACE("HASH", "FATAL: scanner runtime settings hash invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    Scanner::finalize_runtime_key(runtimeKey);
+
+    Scanner::ScannerKey scannerKey{};
+    scannerKey.staticKey = *staticKey;
+    scannerKey.runtimeKey = runtimeKey;
+    Scanner::finalize_scanner_key(scannerKey);
+    (void)scannerKey;
+
+    const Spectral::SpectralTables* tables = nullptr;
+    if (medium == Scanner::ScannerMedium::Print) {
+        tables = &_ws->tablesPrint;
+    }
+    else if (_ws->tablesScan.K > 0) {
+        tables = &_ws->tablesScan;
+    }
+    else if (_ws->tablesView.K > 0) {
+        tables = &_ws->tablesView;
+    }
+    if (!tables || tables->K <= 0) {
+        JTRACE("SCAN", "FATAL: scanner spectral tables unavailable");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    const bool useBaseline = (_ws->hasBaseline && tables->hasBaseline);
+    const unsigned int nThreads = std::max(1u, threadCount);
+    const int width = ctx.width;
+    const int height = ctx.height;
+    const int originX = ctx.window.x1;
+    const int originY = ctx.window.y1;
+    const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
+    const size_t total = size_t(width) * size_t(height);
+
+    std::vector<float> rgbR(total, 0.0f);
+    std::vector<float> rgbG(total, 0.0f);
+    std::vector<float> rgbB(total, 0.0f);
+
+    std::atomic<bool> abortFlag{ false };
+    std::atomic<bool> failure{ false };
+    std::vector<std::thread> threads;
+    threads.reserve(nThreads);
+
+    // Stage A: densities -> linear RGB
+    for (unsigned int t = 0; t < nThreads; ++t) {
+        const int yStart = rowsPerThread * int(t);
+        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
+        threads.emplace_back([&, yStart, yEnd]() {
+            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
+                if (_effect.abort()) {
+                    abortFlag.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                const size_t rowOffset = size_t(yOff) * size_t(width);
+                for (int xOff = 0; xOff < width; ++xOff) {
+                    if (abortFlag.load(std::memory_order_relaxed)) {
+                        break;
+                    }
+                    const size_t idx = rowOffset + size_t(xOff);
+                    float D_cmy[3] = { _density.c[idx], _density.m[idx], _density.y[idx] };
                     float XYZ[3] = { 0.0f, 0.0f, 0.0f };
-                    const bool useBaseline = _ws->hasBaseline && tables->hasBaseline;
                     if (useBaseline) {
                         Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_cmy, XYZ);
                     }
                     else {
                         Spectral::dyes_to_XYZ_given_tables(*tables, D_cmy, XYZ);
                     }
-
+                    float rgbOut[3] = { 0.0f, 0.0f, 0.0f };
                     Spectral::XYZ_to_DWG_linear_adapted(*tables, XYZ, rgbOut);
-                    rgbOut[0] = std::max(0.0f, rgbOut[0]);
-                    rgbOut[1] = std::max(0.0f, rgbOut[1]);
-                    rgbOut[2] = std::max(0.0f, rgbOut[2]);
+                    if (!std::isfinite(rgbOut[0]) || !std::isfinite(rgbOut[1]) || !std::isfinite(rgbOut[2])) {
+                        abortFlag.store(true, std::memory_order_relaxed);
+                        failure.store(true, std::memory_order_relaxed);
+                        break;
+                    }
+                    rgbR[idx] = std::max(0.0f, rgbOut[0]);
+                    rgbG[idx] = std::max(0.0f, rgbOut[1]);
+                    rgbB[idx] = std::max(0.0f, rgbOut[2]);
                 }
             }
+            });
+    }
 
-            OutputEncoding::applyEncoding(_outputEncoding, rgbOut);
-            dstPix[0] = rgbOut[0];
-            dstPix[1] = rgbOut[1];
-            dstPix[2] = rgbOut[2];
-            if (_nComponents == 4) dstPix[3] = srcPix[3];
+    for (std::thread& th : threads) {
+        if (th.joinable()) th.join();
+    }
+    threads.clear();
+
+    if (failure.load(std::memory_order_relaxed)) {
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (abortFlag.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    // Stage B: lens blur (optional)
+    const bool applyBlur = std::isfinite(_scannerOptions.lensBlurSigmaPx) && _scannerOptions.lensBlurSigmaPx > 0.0f;
+    const bool applyUnsharp = std::isfinite(_scannerOptions.unsharpSigmaPx) &&
+        _scannerOptions.unsharpSigmaPx > 0.0f &&
+        std::isfinite(_scannerOptions.unsharpAmount) &&
+        _scannerOptions.unsharpAmount != 0.0f;
+
+    if (applyBlur) {
+        std::vector<float> kernel;
+        JuicerProc::buildGaussianKernel(_scannerOptions.lensBlurSigmaPx, kernel);
+        std::vector<float> tmp;
+        JuicerProc::blurChannelSeparable(rgbR, tmp, rgbR, width, height, kernel);
+        JuicerProc::blurChannelSeparable(rgbG, tmp, rgbG, width, height, kernel);
+        JuicerProc::blurChannelSeparable(rgbB, tmp, rgbB, width, height, kernel);
+    }
+
+    if (applyUnsharp) {
+        std::vector<float> kernel;
+        JuicerProc::buildGaussianKernel(_scannerOptions.unsharpSigmaPx, kernel);
+        std::vector<float> tmp;
+        std::vector<float> blurred(total, 0.0f);
+
+        JuicerProc::blurChannelSeparable(rgbR, tmp, blurred, width, height, kernel);
+        for (size_t i = 0; i < total; ++i) {
+            float v = rgbR[i] + _scannerOptions.unsharpAmount * (rgbR[i] - blurred[i]);
+            if (!std::isfinite(v)) v = 0.0f;
+            rgbR[i] = std::max(0.0f, v);
         }
+
+        JuicerProc::blurChannelSeparable(rgbG, tmp, blurred, width, height, kernel);
+        for (size_t i = 0; i < total; ++i) {
+            float v = rgbG[i] + _scannerOptions.unsharpAmount * (rgbG[i] - blurred[i]);
+            if (!std::isfinite(v)) v = 0.0f;
+            rgbG[i] = std::max(0.0f, v);
+        }
+
+        JuicerProc::blurChannelSeparable(rgbB, tmp, blurred, width, height, kernel);
+        for (size_t i = 0; i < total; ++i) {
+            float v = rgbB[i] + _scannerOptions.unsharpAmount * (rgbB[i] - blurred[i]);
+            if (!std::isfinite(v)) v = 0.0f;
+            rgbB[i] = std::max(0.0f, v);
+        }
+    }
+
+    // Stage C: write to destination with output encoding
+    abortFlag.store(false, std::memory_order_relaxed);
+    threads.reserve(nThreads);
+    for (unsigned int t = 0; t < nThreads; ++t) {
+        const int yStart = rowsPerThread * int(t);
+        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
+        threads.emplace_back([&, yStart, yEnd]() {
+            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
+                if (_effect.abort()) {
+                    abortFlag.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                const int y = originY + yOff;
+                const size_t rowOffset = size_t(yOff) * size_t(width);
+                for (int xOff = 0; xOff < width; ++xOff) {
+                    if (abortFlag.load(std::memory_order_relaxed)) {
+                        break;
+                    }
+                    const int x = originX + xOff;
+                    float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
+                    const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
+                    if (!dstPix || !srcPix) {
+                        continue;
+                    }
+                    const size_t idx = rowOffset + size_t(xOff);
+                    float rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
+                    OutputEncoding::applyEncoding(_outputEncoding, rgbOut);
+                    dstPix[0] = rgbOut[0];
+                    dstPix[1] = rgbOut[1];
+                    dstPix[2] = rgbOut[2];
+                    if (_nComponents == 4) {
+                        dstPix[3] = srcPix ? srcPix[3] : 1.0f;
+                    }
+                }
+            }
+            });
+    }
+
+    for (std::thread& th : threads) {
+        if (th.joinable()) th.join();
+    }
+
+    if (abortFlag.load(std::memory_order_relaxed)) {
+        return;
     }
 }
 
-void JuicerProcessor::renderScalar(const RenderContext& ctx) {
-    const bool printActive = (_wsReady && _ws && _printReady && _prt && !_printParams.bypass);
-    const float kMid_spectral = printActive ? ctx.kMidSpectral : 1.0f;
-
-    for (int y = ctx.window.y1; y < ctx.window.y2; ++y) {
-        if (_effect.abort()) break;
-
-        if (_nComponents >= 3) {
-            for (int x = ctx.window.x1; x < ctx.window.x2; ++x) {
-                float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
-                const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-                if (!dstPix || !srcPix) continue;
-
-                float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
-                float rgbOut[3] = { rgbIn[0],  rgbIn[1],  rgbIn[2] };
-
-                if (_wsReady && _ws) {
-                    if (_printParams.bypass || !_printReady || !_prt) {
-                        Scanner::simulate_scanner(
-                            rgbIn, rgbOut,
-                            _scannerParams, _dirRT, *_ws,
-                            ctx.exposureScaleSafe);
-                    }
-                    else {
-                        Print::simulate_print_pixel(
-                            rgbIn, _printParams,
-                            *_prt, _dirRT, *_ws,
-                            ctx.exposureScaleSafe,
-                            kMid_spectral,
-                            rgbOut);
-                    }
-                }
-
-                OutputEncoding::applyEncoding(_outputEncoding, rgbOut);
-                dstPix[0] = rgbOut[0];
-                dstPix[1] = rgbOut[1];
-                dstPix[2] = rgbOut[2];
-                if (_nComponents == 4) dstPix[3] = srcPix[3];
-            }
-        }
-        else if (_nComponents == 1) {
-            for (int x = ctx.window.x1; x < ctx.window.x2; ++x) {
-                float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
-                const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-                if (dstPix && srcPix) dstPix[0] = srcPix[0];
-            }
-        }
-    }
-}
-
-void JuicerProcessor::multiThreadProcessImages(OfxRectI procWindow) {
+void JuicerProcessor::processImpl() {
     if (!_srcImg || !_dstImg) return;
+
+    if (_isEnabledOpenCLRender || _isEnabledCudaRender || _isEnabledMetalRender) {
+        JTRACE("SCAN", "FATAL: GPU paths are unsupported in scanner staging");
+        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+    }
+
+    if (_nComponents < 1) {
+        return;
+    }
+
+    const bool wsReady = _wsReady && _ws;
+    if (!wsReady || _nComponents < 3) {
+        for (int y = _renderWindow.y1; y < _renderWindow.y2; ++y) {
+            for (int x = _renderWindow.x1; x < _renderWindow.x2; ++x) {
+                float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
+                const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
+                if (!dstPix || !srcPix) {
+                    continue;
+                }
+                if (_nComponents >= 3) {
+                    float rgbOut[3] = { srcPix[0], srcPix[1], srcPix[2] };
+                    OutputEncoding::applyEncoding(_outputEncoding, rgbOut);
+                    dstPix[0] = rgbOut[0];
+                    dstPix[1] = rgbOut[1];
+                    dstPix[2] = rgbOut[2];
+                    if (_nComponents == 4) {
+                        dstPix[3] = srcPix[3];
+                    }
+                }
+                else if (_nComponents == 1) {
+                    dstPix[0] = srcPix[0];
+                }
+            }
+        }
+        return;
+    }
 
 #if defined(JUICER_SPD_DEBUG)
     Spectral::spd_probe_reset();
 #endif
 
-    auto curvesReady = [&]()->bool {
-        if (!_ws) return false;
-        return curve_ok(_ws->densB) && curve_ok(_ws->densG) && curve_ok(_ws->densR);
-        };
-
-    RenderContext ctx = prepareRenderContext(procWindow);
-
-    if (ctx.useSpatialDIR && curvesReady()) {
-        renderSpatialDIR(ctx);
+    RenderContext ctx = prepareRenderContext();
+    if (ctx.width <= 0 || ctx.height <= 0) {
+        return;
     }
-    else {
-        renderScalar(ctx);
+
+    const unsigned int threadCount = compute_thread_count(ctx.width, ctx.height);
+    ensureDensityCapacity(ctx.width, ctx.height);
+    writeNegativeDensities(ctx, threadCount);
+    if (_effect.abort()) {
+        return;
     }
+    if (ctx.printActive) {
+        convertNegativeToPrint(ctx, threadCount);
+    }
+    if (_effect.abort()) {
+        return;
+    }
+    renderScannerFromDensity(ctx, threadCount);
+}
+
+void JuicerProcessor::process() {
+    processImpl();
+}
+
+void JuicerProcessor::multiThreadProcessImages(OfxRectI) {
+    processImpl();
 }
