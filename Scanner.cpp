@@ -67,7 +67,7 @@ namespace Scanner {
         }
 
         float XYZ[3] = { 0.0f, 0.0f, 0.0f };
-        if (ws.hasBaseline && tables->hasBaseline) {
+        if (tables->hasBaseline) { // baseline follows active medium tables (agx parity)
             Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_cmy, XYZ);
         }
         else {
@@ -82,4 +82,3 @@ namespace Scanner {
     }
 
 } // namespace Scanner
-

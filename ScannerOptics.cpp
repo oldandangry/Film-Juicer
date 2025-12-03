@@ -348,7 +348,7 @@ namespace ScannerOptics {
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
         const float scaleToIlluminant = invNormalization / invYn;
-        const bool useBaseline = ctx.hasBaseline && tables->hasBaseline;
+        const bool useBaseline = tables->hasBaseline; // per-medium baseline; do not gate on film state
         const int width = ctx.bounds.x2 - ctx.bounds.x1;
         const int height = ctx.bounds.y2 - ctx.bounds.y1;
         const int originX = ctx.bounds.x1;

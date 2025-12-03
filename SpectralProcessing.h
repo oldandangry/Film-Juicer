@@ -1074,12 +1074,12 @@ namespace Spectral {
             T.baseMin = baseMin.linear;
             if ((int)baseMid.linear.size() == K) {
                 T.baseMid = baseMid.linear;
-                T.baselineMixReference = std::max(0.0f, baselineMixReference);
             }
             else {
                 T.baseMid.assign(K, 0.0f);
-                T.baselineMixReference = 0.0f;
             }
+            // agx-emulsion parity: baseline mixing uses only baseMin; keep mix reference disabled.
+            T.baselineMixReference = 0.0f;
         }
         else {
             T.baseMin.assign(K, 0.0f);
@@ -1287,29 +1287,11 @@ namespace Spectral {
         const float dyes_cmy[3],
         float XYZ[3])
     {
-        float mix = 0.0f;
-        if (T.hasBaseline && T.baselineMixReference > 1e-6f) {
-            float sum = 0.0f;
-            int count = 0;
-            for (int c = 0; c < 3; ++c) {
-                float v = dyes_cmy[c];
-                if (std::isfinite(v) && v > 0.0f) {
-                    sum += v;
-                    ++count;
-                }
-            }
-            if (count > 0) {
-                const float avg = sum / static_cast<float>(count);
-                mix = std::clamp(avg / T.baselineMixReference, 0.0f, 1.0f);
-            }
-        }
-
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         for (int i = 0; i < K; ++i) {
-            const float baseSpectral = T.hasBaseline
-                ? (T.baseMin[i] + mix * (T.baseMid[i] - T.baseMin[i]))
-                : 0.0f;
+            // agx-emulsion applies only the min baseline (dye_density[:,3] scaled); ignore mid column.
+            const float baseSpectral = T.hasBaseline ? T.baseMin[i] : 0.0f;
             const float Dlambda = dyes_cmy[0] * T.epsC[i]
                 + dyes_cmy[1] * T.epsM[i]
                 + dyes_cmy[2] * T.epsY[i]
@@ -1388,12 +1370,9 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = gShape.K;
         for (int i = 0; i < K; ++i) {
-            float baseSpectral = 0.0f;
-            if (base.hasBaseline && base.baseMin && base.baseMid) {
-                const float minV = base.baseMin[i];
-                const float midV = base.baseMid[i];
-                baseSpectral = minV + base.mix * (midV - minV);
-            }
+            float baseSpectral = (base.hasBaseline && base.baseMin)
+                ? base.baseMin[i]
+                : 0.0f;
 
             const float Dlambda = dyes_cmy[0] * gEpsCTable[i]
                 + dyes_cmy[1] * gEpsMTable[i]
