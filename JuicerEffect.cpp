@@ -912,6 +912,9 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     }
     if (_pScannerUseLut) { bool v = true; _pScannerUseLut->getValue(v); P.scannerUseLut = v ? 1 : 0; }
     if (_pScannerLutResolution) _pScannerLutResolution->getValue(P.scannerLutResolution);
+    if (_pOutputColorSpace) _pOutputColorSpace->getValue(P.outputColorSpace);
+    if (_pOutputCctfEncoding) { bool v = true; _pOutputCctfEncoding->getValue(v); P.outputCctfEncoding = v ? 1 : 0; }
+    if (_pOutputLinearPassThrough) { bool v = false; _pOutputLinearPassThrough->getValue(v); P.outputLinearPassThrough = v ? 1 : 0; }
     return P;
 }
 

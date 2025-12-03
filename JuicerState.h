@@ -90,6 +90,9 @@ struct ParamSnapshot {
     int scannerUseLut = 1;
     int scannerLutResolution = 17;
     double spatialSigmaMicrometers = 0.0;
+    int outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
+    int outputCctfEncoding = 1;
+    int outputLinearPassThrough = 0;
     bool cameraFilterOverride = false;
     std::array<double, 3> cameraFilterUV{ {1.0, 410.0, 8.0} };
     std::array<double, 3> cameraFilterIR{ {1.0, 675.0, 15.0} };

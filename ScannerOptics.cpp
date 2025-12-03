@@ -12,6 +12,7 @@
 #include "Hash.h"
 #include "Logging.h"
 #include "OutputEncoding.h"
+#include "GeneratedColorSpaces.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 
@@ -216,14 +217,21 @@ namespace {
 
     inline std::uint64_t hash_color_runtime(
         const Scanner::ScannerMediumRuntime& medium,
-        const OutputEncoding::Params& encoding)
+        const OutputEncoding::Params& encoding,
+        const GeneratedColorSpaces::ColorSpaceEntry& outSpace)
     {
-        const std::uint64_t fields[] = {
-            Scanner::identity_color_runtime_hash(),
-            static_cast<std::uint64_t>(encoding.colorSpace),
+        const std::uint64_t encFields[] = {
+            static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
             static_cast<std::uint64_t>(encoding.applyCctfEncoding),
             static_cast<std::uint64_t>(encoding.preserveLinearRange),
-            static_cast<std::uint64_t>(medium.medium)
+            static_cast<std::uint64_t>(encoding.inputIsOutputSpace)
+        };
+        const std::uint64_t encHash = Hash::hash_bytes(encFields, sizeof(encFields));
+        const std::uint64_t fields[] = {
+            outSpace.hash,
+            medium.illuminant.hash,
+            static_cast<std::uint64_t>(medium.medium),
+            encHash
         };
         return Hash::hash_bytes(fields, sizeof(fields));
     }
@@ -263,25 +271,32 @@ namespace ScannerOptics {
         const OutputEncoding::Params& outputEncoding)
     {
         Scanner::ColorRuntime rt{};
+        if (medium.illuminant.hash == 0) {
+            JTRACE("HASH", "FATAL: scanner illuminant hash invalid for color runtime");
+            return rt;
+        }
+        const GeneratedColorSpaces::ColorSpaceEntry& outSpace =
+            GeneratedColorSpaces::get(outputEncoding.colorSpace);
+        if (outSpace.hash == 0) {
+            JTRACE("HASH", "FATAL: generated color space hash invalid");
+            return rt;
+        }
         Spectral::Mat3 adapt = Spectral::build_chromatic_adaptation_matrix(
             medium.illuminant.whiteXYZ,
-            Spectral::gDWG_WhitePoint_XYZ);
+            outSpace.whiteXYZ);
         for (int i = 0; i < 9; ++i) {
             rt.cat02[i] = adapt.m[i];
         }
 
-        const OutputEncoding::Matrix3x3 dwgToOut = OutputEncoding::dwg_to_output_matrix(outputEncoding.colorSpace);
-        float dwgToOutMul[9];
-        mat3_mul(dwgToOut.m, Spectral::gDWG_XYZ_to_RGB.m, dwgToOutMul);
         for (int i = 0; i < 9; ++i) {
-            rt.xyzToRgb[i] = dwgToOutMul[i];
+            rt.xyzToRgb[i] = outSpace.xyzToRgb[i];
         }
         rt.encoding = outputEncoding;
         rt.encoding.inputIsOutputSpace = true;
         rt.illuminantXYZ[0] = medium.illuminant.whiteXYZ[0];
         rt.illuminantXYZ[1] = medium.illuminant.whiteXYZ[1];
         rt.illuminantXYZ[2] = medium.illuminant.whiteXYZ[2];
-        rt.hash = hash_color_runtime(medium, rt.encoding);
+        rt.hash = hash_color_runtime(medium, rt.encoding, outSpace);
         return rt;
     }
 

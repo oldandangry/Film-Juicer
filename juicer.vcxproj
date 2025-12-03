@@ -182,6 +182,7 @@
     <ClCompile Include="OutputEncoding.cpp" />
     <ClCompile Include="Print.cpp" />
     <ClCompile Include="ProfileJSONLoader.cpp" />
+    <ClCompile Include="GeneratedColorSpaces.cpp" />
     <ClCompile Include="ScannerOptics.cpp" />
     <ClCompile Include="SpectralContext.cpp" />
     <ClCompile Include="SpectralMathAVX.cpp">
@@ -214,6 +215,7 @@
     <ClInclude Include="SpectralData.h" />
     <ClInclude Include="SpectralProcessing.h" />
     <ClInclude Include="SpectralTypes.h" />
+    <ClInclude Include="GeneratedColorSpaces.h" />
     <ClInclude Include="WorkingState.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

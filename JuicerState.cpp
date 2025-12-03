@@ -788,6 +788,9 @@ uint64_t hash_params(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
     h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
     h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
+    h = mix(h, static_cast<uint64_t>(p.outputColorSpace));
+    h = mix(h, static_cast<uint64_t>(p.outputCctfEncoding));
+    h = mix(h, static_cast<uint64_t>(p.outputLinearPassThrough));
     h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
     if (p.cameraFilterOverride) {
         auto mix_triplet = [&](const std::array<double, 3>& triplet) {
@@ -2208,6 +2211,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->negativeDensityRange = negativeDensityRange;
     target->printDensityRange = printDensityRange;
 
+    OutputEncoding::Params scannerEncoding{};
+    scannerEncoding.colorSpace = OutputEncoding::colorSpaceFromIndex(P.outputColorSpace);
+    scannerEncoding.applyCctfEncoding = (P.outputCctfEncoding != 0);
+    scannerEncoding.preserveLinearRange = (P.outputLinearPassThrough != 0);
+    scannerEncoding.inputIsOutputSpace = true;
+
     const std::uint32_t lutRes =
         static_cast<std::uint32_t>(std::clamp(P.scannerLutResolution, 17, 128));
     const std::uint64_t negGlareHash = hash_glare(target->negativeGlare);
@@ -2221,12 +2230,38 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         return;
     }
 
+    // Build color runtimes for both media before finalizing static keys
+    target->negativeMediumRuntime = Scanner::ScannerMediumRuntime{};
+    target->negativeMediumRuntime.medium = Scanner::ScannerMedium::Negative;
+    target->negativeMediumRuntime.tables = (target->tablesScan.K > 0) ? &target->tablesScan : nullptr;
+    target->negativeMediumRuntime.range = target->negativeDensityRange;
+    target->negativeMediumRuntime.illuminant = target->negativeScannerIlluminant;
+    target->negativeMediumRuntime.glare = target->negativeGlare;
+
+    target->printMediumRuntime = Scanner::ScannerMediumRuntime{};
+    target->printMediumRuntime.medium = Scanner::ScannerMedium::Print;
+    target->printMediumRuntime.tables = (target->tablesPrint.K > 0) ? &target->tablesPrint : nullptr;
+    target->printMediumRuntime.range = target->printDensityRange;
+    target->printMediumRuntime.illuminant = target->printScannerIlluminant;
+    target->printMediumRuntime.glare = target->printGlare;
+
+    target->negativeColorRuntime = ScannerOptics::build_color_runtime(
+        target->negativeMediumRuntime,
+        scannerEncoding);
+    target->printColorRuntime = ScannerOptics::build_color_runtime(
+        target->printMediumRuntime,
+        scannerEncoding);
+    if (target->negativeColorRuntime.hash == 0 || target->printColorRuntime.hash == 0) {
+        JTRACE("HASH", "FATAL: scanner color runtime hash invalid");
+        return;
+    }
+
     target->negativeStaticKey = Scanner::ScannerStaticKey{};
     target->negativeStaticKey.medium = Scanner::ScannerMedium::Negative;
     target->negativeStaticKey.tablesHash = target->tablesScan.tablesHash;
     target->negativeStaticKey.densityRangeHash = target->negativeDensityRange.digest;
     target->negativeStaticKey.glareHash = negGlareHash;
-    target->negativeStaticKey.colorRuntimeHash = Scanner::identity_color_runtime_hash();
+    target->negativeStaticKey.colorRuntimeHash = target->negativeColorRuntime.hash;
     target->negativeStaticKey.lutResolution = lutRes;
     Scanner::finalize_static_key(target->negativeStaticKey);
 
@@ -2235,26 +2270,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printStaticKey.tablesHash = target->tablesPrint.tablesHash;
     target->printStaticKey.densityRangeHash = target->printDensityRange.digest;
     target->printStaticKey.glareHash = printGlareHash;
-    target->printStaticKey.colorRuntimeHash = Scanner::identity_color_runtime_hash();
+    target->printStaticKey.colorRuntimeHash = target->printColorRuntime.hash;
     target->printStaticKey.lutResolution = lutRes;
     Scanner::finalize_static_key(target->printStaticKey);
 
-    target->negativeMediumRuntime = Scanner::ScannerMediumRuntime{};
-    target->negativeMediumRuntime.medium = Scanner::ScannerMedium::Negative;
-    target->negativeMediumRuntime.tables = (target->tablesScan.K > 0) ? &target->tablesScan : nullptr;
-    target->negativeMediumRuntime.range = target->negativeDensityRange;
-    target->negativeMediumRuntime.illuminant = target->negativeScannerIlluminant;
-    target->negativeMediumRuntime.glare = target->negativeGlare;
-    target->negativeMediumRuntime.color = nullptr;
+    target->negativeMediumRuntime.color = &target->negativeColorRuntime;
     target->negativeMediumRuntime.staticKey = target->negativeStaticKey;
 
-    target->printMediumRuntime = Scanner::ScannerMediumRuntime{};
-    target->printMediumRuntime.medium = Scanner::ScannerMedium::Print;
-    target->printMediumRuntime.tables = (target->tablesPrint.K > 0) ? &target->tablesPrint : nullptr;
-    target->printMediumRuntime.range = target->printDensityRange;
-    target->printMediumRuntime.illuminant = target->printScannerIlluminant;
-    target->printMediumRuntime.glare = target->printGlare;
-    target->printMediumRuntime.color = nullptr;
+    target->printMediumRuntime.color = &target->printColorRuntime;
     target->printMediumRuntime.staticKey = target->printStaticKey;
 
     auto reset_optics_runtime = [](ScannerOptics::Runtime& rt) {

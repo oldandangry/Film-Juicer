@@ -14,7 +14,7 @@ The goal is to make Film-Juicer’s scanner path numerically identical to **agx-
 - All scanner spectra stay on the canonical 380–780 nm @ 5 nm axis. Every ingest/resample (`json_wavelengths_match_reference_axis()`, `install_standard_illuminant()`, `resample_pairs_*`) must prove the axis matches and hard-fail on mismatches; no alternate axes or per-backend resampling tweaks are allowed.
 - Data layout stays GPU-friendly but CPU-owned: planar CMY SoA buffers with consistent stride/origin and 32-byte alignment. That layout is fixed for this refactor so the later GPU branch can reuse it without changing CPU code.
 - **Progress:** Steps 1–5 completed (UI/hash/profile ingestion through CPU-only SoA staging with active colour). Step 6 is next.
-  - **Current:** Steps 1–5 are implemented in code (UI/hash/profile ingestion; per-medium illuminants/tables/ranges/caches; SoA staging + print bridge; scanner optics TU with LUT/blur/unsharp/glare; CPU-only enforcement with legacy AoS scanner removed). GPU paths are fatal. Color runtime now applies CAT02 + DWG→output matrices (not the identity placeholder the Step 5 text assumes).
+  - **Current:** Steps 1–6 are implemented in code (UI/hash/profile ingestion; per-medium illuminants/tables/ranges/caches; SoA staging + print bridge; scanner optics TU with LUT/blur/unsharp/glare; CPU-only enforcement with legacy AoS scanner removed; generated colour space tables with cached per-medium colour runtimes). GPU paths are fatal. Color runtime now adapts from the scanner illuminant white directly into the chosen output space using the generated XYZ→RGB matrices and cached encoding flags.
 
 ---
 
@@ -136,6 +136,7 @@ _Status: completed (single SoA slab with negative fill, in-place print bridge, s
     *Mitigation*: Keep hashes/logging enabled, and rely on the manual A/B crop renders plus logged keys to catch drift before merging; Step 6 will install the generated tables and definitive hashes.
 
 ### Step 6 – Match agx’s color adaptation and output encoding
+- **Status:** completed (generated colour tables checked in; per-medium colour runtimes built during WorkingState rebuild with hashed output params; scanner optics consumes cached CAT02/output matrices and skips per-render colour recompute).
 - **Implementation notes**
   - Colour is already active (CAT02 + DWG→output) but relies on hard-coded matrices and per-render rebuilds. Ship this step in three parts: (1) add the colourspace generator + generated tables, extend `ColorRuntime`/`OutputEncoding::Params` with `inputIsOutputSpace`, and precompute per-medium runtimes during `WorkingState` rebuilds using the generated constants; (2) update `ScannerOptics` to consume those cached `ColorRuntime` structs (CAT02 + XYZ→RGB + flag) so renders stop recomputing; (3) finish parity by wiring generator outputs into scanner and `OutputEncoding`, adapting from the scanner illuminant white directly to the output white, and tightening LUT/cache keys to include the new colour hashes. Each change is testable on its own.
 - **Tasks**

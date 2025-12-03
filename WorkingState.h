@@ -77,12 +77,14 @@ struct WorkingState {
     Scanner::ScannerIlluminant negativeScannerIlluminant;
     Scanner::ScannerDensityRange negativeDensityRange;
     Scanner::ScannerStaticKey negativeStaticKey;
+    Scanner::ColorRuntime negativeColorRuntime;
     Scanner::ScannerMediumRuntime negativeMediumRuntime;
 
     // Per-instance scanner metadata for print viewing path
     Scanner::ScannerIlluminant printScannerIlluminant;
     Scanner::ScannerDensityRange printDensityRange;
     Scanner::ScannerStaticKey printStaticKey;
+    Scanner::ColorRuntime printColorRuntime;
     Scanner::ScannerMediumRuntime printMediumRuntime;
 
     // SPD reconstruction per-instance (non-global)
