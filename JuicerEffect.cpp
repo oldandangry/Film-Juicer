@@ -298,15 +298,6 @@ Scanner::Settings JuicerEffect::gatherScannerSettings() const {
     return settings;
 }
 
-Scanner::Params JuicerEffect::buildLegacyScannerParams(
-    const Scanner::Options&,
-    const Scanner::Settings&) const
-{
-    Scanner::Params params{};
-    params.enabled = true;
-    return params;
-}
-
 Print::Params JuicerEffect::gatherPrintParams() const {
     Print::Params params{};
     bool bypass = true;
@@ -350,13 +341,11 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     const OFX::RenderArguments& args,
     OFX::Image* srcImg,
     const OfxRectI& fullBounds,
-    const Scanner::Params& scannerParams,
     const ExposureParams& exposureParams) const {
 
     AutoExposureResult result{};
     result.exposureScale = 1.0f;
     result.autoEV = 0.0;
-    (void)scannerParams;
 
     if (!srcImg) {
         result.exposureScale = static_cast<float>(std::pow(2.0, exposureParams.sliderEV));
@@ -783,7 +772,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const ExposureParams exposureParams = gatherExposureParams();
     const Scanner::Options scannerOptions = gatherScannerOptions();
     const Scanner::Settings scannerSettings = gatherScannerSettings();
-    Scanner::Params scannerParams = buildLegacyScannerParams(scannerOptions, scannerSettings);
     Print::Params printParams = gatherPrintParams();
     OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
 
@@ -791,7 +779,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         args,
         srcImg.get(),
         fullBounds,
-        scannerParams,
         exposureParams);
 
 #ifdef JUICER_ENABLE_COUPLERS
@@ -828,7 +815,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     JuicerProcessor proc(*this);
     proc.setSrcDst(srcImg.get(), dstImg.get());
     proc.setComponents(nComponents);
-    proc.setScannerParams(scannerParams);
     proc.setScannerOptions(scannerOptions);
     proc.setScannerSettings(scannerSettings);
     proc.setPrintParams(printParams);

@@ -8,7 +8,6 @@
 #include "Scanner.h"
 
 namespace Scanner {
-    struct Params;
     struct Options;
     struct Settings;
 }
@@ -91,14 +90,12 @@ private:
     ExposureParams gatherExposureParams() const;
     Scanner::Options gatherScannerOptions() const;
     Scanner::Settings gatherScannerSettings() const;
-    Scanner::Params buildLegacyScannerParams(const Scanner::Options& opts, const Scanner::Settings& settings) const;
     Print::Params gatherPrintParams() const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
     AutoExposureResult computeAutoExposure(
         const OFX::RenderArguments& args,
         OFX::Image* srcImg,
         const OfxRectI& fullBounds,
-        const Scanner::Params& scannerParams,
         const ExposureParams& exposureParams) const;
 #ifdef JUICER_ENABLE_COUPLERS
     Couplers::Runtime prepareCouplers(

@@ -73,7 +73,6 @@ public:
     void setSrcDst(OFX::Image* src, OFX::Image* dst);
     void setRenderWindowRect(const OfxRectI& rect);
     void setComponents(int n);
-    void setScannerParams(const Scanner::Params& p);
     void setScannerOptions(const Scanner::Options& o);
     void setScannerSettings(const Scanner::Settings& s);
     void setPrintParams(const Print::Params& p);
@@ -114,7 +113,6 @@ private:
     OFX::Image* _srcImg;
     int _nComponents;
 
-    Scanner::Params _scannerParams;
     Scanner::Options _scannerOptions;
     Scanner::Settings _scannerSettings;
     Print::Params _printParams;

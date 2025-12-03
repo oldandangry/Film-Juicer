@@ -425,7 +425,6 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
     : OFX::ImageProcessor(effect)
     , _srcImg(nullptr)
     , _nComponents(0)
-    , _scannerParams{}
     , _scannerOptions{}
     , _scannerSettings{}
     , _printParams{}
@@ -450,7 +449,6 @@ void JuicerProcessor::setSrcDst(OFX::Image* src, OFX::Image* dst) {
 
 void JuicerProcessor::setRenderWindowRect(const OfxRectI& rect) { setRenderWindow(rect); }
 void JuicerProcessor::setComponents(int n) { _nComponents = n; }
-void JuicerProcessor::setScannerParams(const Scanner::Params& p) { _scannerParams = p; }
 void JuicerProcessor::setScannerOptions(const Scanner::Options& o) { _scannerOptions = o; }
 void JuicerProcessor::setScannerSettings(const Scanner::Settings& s) { _scannerSettings = s; }
 void JuicerProcessor::setPrintParams(const Print::Params& p) { _printParams = p; }
@@ -788,6 +786,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         return;
     }
 
+    // The scanner now consumes only the staged CMY density slab; legacy RGB entry points are removed.
     const Scanner::ScannerMediumRuntime* mediumRuntime = ctx.printActive
         ? &_ws->printMediumRuntime
         : &_ws->negativeMediumRuntime;
@@ -914,8 +913,9 @@ void JuicerProcessor::processImpl() {
     if (!_srcImg || !_dstImg) return;
 
     if (_isEnabledOpenCLRender || _isEnabledCudaRender || _isEnabledMetalRender) {
+        // CPU-only staging layer: GPU/device paths are intentionally disabled until parity lands.
         JTRACE("SCAN", "FATAL: GPU paths are unsupported in scanner staging");
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
     if (_nComponents < 1) {

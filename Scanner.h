@@ -12,7 +12,6 @@
 #include "ProfileJSONLoader.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
-#include "Couplers.h"
 #include "ParamNames.h"
 #include "OutputEncoding.h"
 
@@ -170,18 +169,5 @@ namespace Scanner {
         const std::uint64_t fields[] = { key.staticKey.hash, key.runtimeKey.hash };
         key.hash = Hash::hash_bytes(fields, sizeof(fields));
     }
-
-    // Legacy compatibility shim (to be removed in later stages).
-    struct Params {
-        bool enabled = true;
-    };
-
-    void simulate_scanner(
-        const float rgbIn[3],
-        float rgbOut[3],
-        const Scanner::Params& scannerParams,
-        const Couplers::Runtime& dirRT,
-        const WorkingState& ws,
-        float exposureScale);
 
 } // namespace Scanner

@@ -69,9 +69,6 @@
     <ClCompile Include="Print.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Scanner.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="ScannerOptics.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
