@@ -31,68 +31,49 @@ namespace OutputEncoding {
         }
 
         inline float clamp01(float v) {
-            if (!std::isfinite(v)) {
-                return 0.0f;
-            }
             if (v <= 0.0f) return 0.0f;
             if (v >= 1.0f) return 1.0f;
             return v;
         }
 
-        inline float sanitizeSceneLinear(float v) {
-            return std::isfinite(v) ? v : 0.0f;
-        }
-
         inline float encode_gamma(float v, float exponent) {
-            const float linear = clamp01(v);
-            const float encoded = static_cast<float>(std::pow(linear, exponent));
-            return clamp01(encoded);
+            return static_cast<float>(std::pow(v, exponent));
         }
 
         inline float encode_sRGB(float v) {
-            const float linear = clamp01(v);
-            if (linear <= 0.0031308f) {
-                return 12.92f * linear;
+            if (v <= 0.0031308f) {
+                return 12.92f * v;
             }
-            const float encoded = 1.055f * static_cast<float>(std::pow(linear, 1.0f / 2.4f)) - 0.055f;
-            return clamp01(encoded);
+            return 1.055f * static_cast<float>(std::pow(v, 1.0f / 2.4f)) - 0.055f;
         }
 
         inline float encode_BT2020(float v, float a, float b) {
-            const float linear = clamp01(v);
-            if (linear < b) {
-                return clamp01(linear * 4.5f);
+            if (v < b) {
+                return v * 4.5f;
             }
-            const float encoded = a * static_cast<float>(std::pow(linear, 0.45f)) - (a - 1.0f);
-            return clamp01(encoded);
+            return a * static_cast<float>(std::pow(v, 0.45f)) - (a - 1.0f);
         }
 
         inline float encode_ProPhoto(float v, float threshold, float exponent) {
-            const float linear = clamp01(v);
-            if (linear < threshold) {
-                return clamp01(linear * 16.0f);
+            if (v < threshold) {
+                return v * 16.0f;
             }
-            const float encoded = static_cast<float>(std::pow(linear, exponent));
-            return clamp01(encoded);
+            return static_cast<float>(std::pow(v, exponent));
         }
 
         inline float encode_DaVinciIntermediate(float v, const GeneratedColorSpaces::CctfParams& cctf) {
-            if (!std::isfinite(v)) {
-                return 0.0f;
-            }
             const float linear = std::max(0.0f, v);
             if (linear <= cctf.linearCutoff) {
-                return clamp01(linear * cctf.d);
+                return linear * cctf.d;
             }
-            const float encoded = (static_cast<float>(std::log2(linear + cctf.a)) + cctf.b) * cctf.c;
-            return clamp01(encoded);
+            return (static_cast<float>(std::log2(linear + cctf.a)) + cctf.b) * cctf.c;
         }
 
         inline float encode_channel(const GeneratedColorSpaces::CctfParams& cctf, float v) {
             using Kind = GeneratedColorSpaces::CctfKind;
             switch (cctf.kind) {
             case Kind::Linear:
-                return sanitizeSceneLinear(v);
+                return v;
             case Kind::Gamma:
                 return encode_gamma(v, cctf.gamma);
             case Kind::SRGB:
@@ -125,9 +106,9 @@ namespace OutputEncoding {
         const auto& outSpace = GeneratedColorSpaces::get(params.colorSpace);
         float linear[3];
         if (params.inputIsOutputSpace) {
-            linear[0] = sanitizeSceneLinear(rgb[0]);
-            linear[1] = sanitizeSceneLinear(rgb[1]);
-            linear[2] = sanitizeSceneLinear(rgb[2]);
+            linear[0] = rgb[0];
+            linear[1] = rgb[1];
+            linear[2] = rgb[2];
         }
         else {
             const Matrix3x3 m = dwg_to_output_matrix(params.colorSpace);
@@ -148,10 +129,15 @@ namespace OutputEncoding {
             rgb[2] = encode_channel(outSpace.cctf, linear[2]);
         }
         else {
-            rgb[0] = clamp01(linear[0]);
-            rgb[1] = clamp01(linear[1]);
-            rgb[2] = clamp01(linear[2]);
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
         }
+
+        // Single post-encoding clamp (agx parity: encode first, then clip)
+        rgb[0] = clamp01(rgb[0]);
+        rgb[1] = clamp01(rgb[1]);
+        rgb[2] = clamp01(rgb[2]);
     }
 
 } // namespace OutputEncoding

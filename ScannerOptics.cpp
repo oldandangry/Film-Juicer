@@ -590,9 +590,10 @@ namespace ScannerOptics {
                             failure.store(true, std::memory_order_relaxed);
                             break;
                         }
-                        rgbR[idx] = std::max(0.0f, rgbOut[0]);
-                        rgbG[idx] = std::max(0.0f, rgbOut[1]);
-                        rgbB[idx] = std::max(0.0f, rgbOut[2]);
+                        // agx-emulsion parity: keep signed linear RGB through optics; defer clipping to post-encoding.
+                        rgbR[idx] = rgbOut[0];
+                        rgbG[idx] = rgbOut[1];
+                        rgbB[idx] = rgbOut[2];
                     }
                 }
                 });
@@ -626,17 +627,18 @@ namespace ScannerOptics {
             blur_separable(rgbR, tmp, blurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
                 float v = rgbR[i] + ctx.options.unsharpAmount * (rgbR[i] - blurred[i]);
-                rgbR[i] = std::isfinite(v) ? std::max(0.0f, v) : 0.0f;
+                // agx-emulsion parity: allow overshoot/undershoot; clip only after encoding.
+                rgbR[i] = std::isfinite(v) ? v : 0.0f;
             }
             blur_separable(rgbG, tmp, blurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
                 float v = rgbG[i] + ctx.options.unsharpAmount * (rgbG[i] - blurred[i]);
-                rgbG[i] = std::isfinite(v) ? std::max(0.0f, v) : 0.0f;
+                rgbG[i] = std::isfinite(v) ? v : 0.0f;
             }
             blur_separable(rgbB, tmp, blurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
                 float v = rgbB[i] + ctx.options.unsharpAmount * (rgbB[i] - blurred[i]);
-                rgbB[i] = std::isfinite(v) ? std::max(0.0f, v) : 0.0f;
+                rgbB[i] = std::isfinite(v) ? v : 0.0f;
             }
         }
 
