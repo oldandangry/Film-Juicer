@@ -41,7 +41,7 @@ namespace {
             kernel.push_back(1.0f);
             return;
         }
-        const int radiusRaw = std::max(1, int(std::ceil(3.0f * sigma)));
+        const int radiusRaw = std::max(1, int(std::ceil(4.0f * sigma)));
         const int radius = std::min(radiusRaw, 75);
         kernel.resize(size_t(2 * radius + 1));
         const float s2 = sigma * sigma * 2.0f;
@@ -125,9 +125,9 @@ namespace {
     inline void sample_cubic(const Scanner::SpectralLutBuffer& lut, const float D_norm[3], float out[3]) {
         const int res = static_cast<int>(std::max(1u, lut.res));
         const float scale = (res > 1) ? float(res - 1) : 1.0f;
-        const float fx = std::clamp(D_norm[0] * scale, 0.0f, scale);
-        const float fy = std::clamp(D_norm[1] * scale, 0.0f, scale);
-        const float fz = std::clamp(D_norm[2] * scale, 0.0f, scale);
+        const float fx = D_norm[0] * scale;
+        const float fy = D_norm[1] * scale;
+        const float fz = D_norm[2] * scale;
 
         const int xBase = static_cast<int>(std::floor(fx));
         const int yBase = static_cast<int>(std::floor(fy));
