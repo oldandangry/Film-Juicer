@@ -680,20 +680,8 @@ namespace Print {
             ? gammaFactor
             : 1.0f;
 
-        float le = logE;
-        const float axisMin = dc.lambda_nm.front() / gammaSafe;
-        const float axisMax = dc.lambda_nm.back() / gammaSafe;
-        if (!std::isfinite(le)) {
-            le = axisMin;
-        }
-        else if (axisMin <= axisMax) {
-            le = std::clamp(le, axisMin, axisMax);
-        }
-        else {
-            le = axisMin;
-        }
-
-        float sample = Spectral::sample_density_at_logE(dc, le, gammaSafe);
+        // Gamma applied inside sample_density_at_logE.
+        float sample = Spectral::sample_density_at_logE(dc, logE, gammaSafe);
         if (!std::isfinite(sample)) {
             sample = 0.0f;
         }
