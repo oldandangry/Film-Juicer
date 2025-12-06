@@ -787,6 +787,18 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     }
 
     // The scanner now consumes only the staged CMY density slab; legacy RGB entry points are removed.
+    if (ctx.printActive) {
+        if (!_ws->printScannerValid) {
+            JTRACE("SCAN", "FATAL: print scanner runtime invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+    }
+    else {
+        if (!_ws->negativeScannerValid) {
+            JTRACE("SCAN", "FATAL: negative scanner runtime invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+    }
     const Scanner::ScannerMediumRuntime* mediumRuntime = ctx.printActive
         ? &_ws->printMediumRuntime
         : &_ws->negativeMediumRuntime;
@@ -924,7 +936,11 @@ void JuicerProcessor::processImpl() {
     }
 
     const bool wsReady = _wsReady && _ws;
-    if (!wsReady || _nComponents < 3) {
+    if (!wsReady) {
+        JTRACE("BUILD", "FATAL: working state unavailable; cannot render");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (_nComponents < 3) {
         for (int y = _renderWindow.y1; y < _renderWindow.y2; ++y) {
             for (int x = _renderWindow.x1; x < _renderWindow.x2; ++x) {
                 float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
@@ -932,17 +948,7 @@ void JuicerProcessor::processImpl() {
                 if (!dstPix || !srcPix) {
                     continue;
                 }
-                if (_nComponents >= 3) {
-                    float rgbOut[3] = { srcPix[0], srcPix[1], srcPix[2] };
-                    OutputEncoding::applyEncoding(_outputEncoding, rgbOut);
-                    dstPix[0] = rgbOut[0];
-                    dstPix[1] = rgbOut[1];
-                    dstPix[2] = rgbOut[2];
-                    if (_nComponents == 4) {
-                        dstPix[3] = srcPix[3];
-                    }
-                }
-                else if (_nComponents == 1) {
+                if (_nComponents == 1) {
                     dstPix[0] = srcPix[0];
                 }
             }

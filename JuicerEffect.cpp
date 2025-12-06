@@ -484,7 +484,8 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
 Couplers::Runtime JuicerEffect::prepareCouplers(
     const OFX::RenderArguments& args,
     int fullWidth,
-    int fullHeight) const {
+    int fullHeight,
+    float pixelSizeUm) const {
 
     Couplers::Runtime dirRT{};
     if (!(_state && _state->baseLoaded)) {
@@ -513,29 +514,38 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
 
     auto valid_positive = [](double v) -> bool { return std::isfinite(v) && v > 0.0; };
 
-    double filmLongEdgeMm = 35.0;
-    if (_pCameraFilmFormat) {
-        double filmFormat = 35.0;
-        _pCameraFilmFormat->getValue(filmFormat);
-        if (std::isfinite(filmFormat) && filmFormat > 0.0) {
-            filmLongEdgeMm = filmFormat;
-        }
-    }
-
-    const double widthPx = static_cast<double>(fullWidth);
-    const double heightPx = static_cast<double>(fullHeight);
-    const double longEdgePx = std::max(widthPx, heightPx);
-
     float sigmaPixels = 0.0f;
     const float sigmaMicrometers = dirRT.spatialSigmaMicrometers;
-    if (sigmaMicrometers > 0.0f && valid_positive(longEdgePx) && valid_positive(filmLongEdgeMm)) {
-        sigmaPixels = Couplers::spatial_sigma_pixels_from_micrometers(
-            sigmaMicrometers,
-            filmLongEdgeMm,
-            widthPx,
-            heightPx);
+    if (sigmaMicrometers > 0.0f && valid_positive(pixelSizeUm)) {
+        sigmaPixels = sigmaMicrometers / pixelSizeUm;
         if (!std::isfinite(sigmaPixels) || sigmaPixels < 0.0f) {
             sigmaPixels = 0.0f;
+        }
+    }
+    else {
+        // Fallback to legacy geometry if pixelSizeUm was not available
+        double filmLongEdgeMm = 35.0;
+        if (_pCameraFilmFormat) {
+            double filmFormat = 35.0;
+            _pCameraFilmFormat->getValue(filmFormat);
+            if (std::isfinite(filmFormat) && filmFormat > 0.0) {
+                filmLongEdgeMm = filmFormat;
+            }
+        }
+
+        const double widthPx = static_cast<double>(fullWidth);
+        const double heightPx = static_cast<double>(fullHeight);
+        const double longEdgePx = std::max(widthPx, heightPx);
+
+        if (sigmaMicrometers > 0.0f && valid_positive(longEdgePx) && valid_positive(filmLongEdgeMm)) {
+            sigmaPixels = Couplers::spatial_sigma_pixels_from_micrometers(
+                sigmaMicrometers,
+                filmLongEdgeMm,
+                widthPx,
+                heightPx);
+            if (!std::isfinite(sigmaPixels) || sigmaPixels < 0.0f) {
+                sigmaPixels = 0.0f;
+            }
         }
     }
     dirRT.spatialSigmaPixels = sigmaPixels;
@@ -561,6 +571,12 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
     const bool baselineReady = (!ws || !ws->hasBaseline) ||
         (ws->baseMin.linear.size() == static_cast<size_t>(Spectral::gShape.K));
 
+    const bool negativeScannerReady = ws && ws->negativeScannerValid &&
+        ws->negativeMediumRuntime.staticKey.hash != 0 &&
+        ws->negativeMediumRuntime.range.digest != 0 &&
+        ws->negativeMediumRuntime.tables &&
+        ws->negativeMediumRuntime.tables->K == Spectral::gShape.K;
+
     info.workingStateReady = (ws && ws->buildCounter > 0 &&
         ws->tablesView.K == Spectral::gShape.K &&
         ws->tablesView.epsY.size() == static_cast<size_t>(Spectral::gShape.K) &&
@@ -569,16 +585,24 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
         baselineReady &&
         !ws->densB.lambda_nm.empty() && !ws->densB.linear.empty() &&
         !ws->densG.lambda_nm.empty() && !ws->densG.linear.empty() &&
-        !ws->densR.lambda_nm.empty() && !ws->densR.linear.empty());
+        !ws->densR.lambda_nm.empty() && !ws->densR.linear.empty() &&
+        negativeScannerReady);
 
     const Print::Runtime* prt = info.printRuntime;
+    const bool printScannerReady = ws && ws->printScannerValid &&
+        ws->printMediumRuntime.staticKey.hash != 0 &&
+        ws->printMediumRuntime.range.digest != 0 &&
+        ws->printMediumRuntime.tables &&
+        ws->printMediumRuntime.tables->K == Spectral::gShape.K;
+
     info.printRuntimeReady =
         (prt != nullptr) &&
         Print::profile_is_valid(prt->profile) &&
         prt->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K) &&
         prt->illumEnlarger.linear.size() == static_cast<size_t>(Spectral::gShape.K) &&
         (ws && ws->tablesPrint.K == Spectral::gShape.K) &&
-        info.workingStateReady;
+        info.workingStateReady &&
+        printScannerReady;
 
     return info;
 }
@@ -782,7 +806,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         exposureParams);
 
 #ifdef JUICER_ENABLE_COUPLERS
-    Couplers::Runtime dirRT = prepareCouplers(args, fullWidth, fullHeight);
+    Couplers::Runtime dirRT = prepareCouplers(args, fullWidth, fullHeight, pixelSizeUm);
 #else
     Couplers::Runtime dirRT{};
 #endif
@@ -793,13 +817,14 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const Print::Runtime* prt = wsInfo.printRuntime;
     const bool wsReady = wsInfo.workingStateReady;
     const bool printReady = wsInfo.printRuntimeReady;
-    if (!printReady) {
-        if (prt && !Print::profile_is_valid(prt->profile)) {
-            JTRACE("PRINT", "profile invalid: missing print sensitivities or curves; bypassing print path");
-        }
-        else if (prt) {
-            JTRACE("PRINT", "print runtime invalid: illuminants not pinned or working tables not ready; bypassing print path");
-        }
+    if (!wsReady) {
+        JTRACE("BUILD", "FATAL: working state not ready; aborting render");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    if (!printParams.bypass && !printReady) {
+        JTRACE("PRINT", "FATAL: print runtime not ready while print path requested");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
     // --- Print exposure compensation via spectral mid-gray probe (agx parity) ---

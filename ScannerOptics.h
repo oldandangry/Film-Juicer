@@ -27,6 +27,7 @@ namespace ScannerOptics {
     };
 
     struct GlareCache {
+        // Channel-major storage: [X channel | Y channel | Z channel], each width*height samples.
         std::vector<float> amount;
         std::vector<float> tmp;
         Scanner::ScannerKey key{};

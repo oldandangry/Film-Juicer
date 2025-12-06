@@ -372,6 +372,7 @@ namespace ScannerOptics {
             return;
         }
         const size_t total = size_t(width) * size_t(height);
+        const size_t channelSize = total;
         if (density.width != width || density.height != height || density.stride != width ||
             density.c.size() < total || density.m.size() < total || density.y.size() < total) {
             JTRACE("SCAN", "FATAL: density slab does not match render bounds");
@@ -471,42 +472,51 @@ namespace ScannerOptics {
             const bool seedChanged = runtime.glare.seedHash != glareSeed;
             const bool glareParamsChanged = prevGlareHash != ctx.scannerKey.staticKey.glareHash;
             if (!runtime.glare.valid || dimsChanged || seedChanged || glareParamsChanged || frameBoundsChanged) {
-                runtime.glare.amount.assign(total, 0.0f);
-                runtime.glare.tmp.assign(total, 0.0f);
+                const size_t channelSize = total;
+                runtime.glare.amount.assign(channelSize * 3u, 0.0f);
+                runtime.glare.tmp.assign(channelSize * 3u, 0.0f);
                 for (int y = 0; y < height; ++y) {
                     for (int x = 0; x < width; ++x) {
                         const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
                         const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
-                        const std::uint64_t mix1[6] = {
-                            glareSeed,
-                            static_cast<std::uint64_t>(medium.medium),
-                            0ull,
-                            absX,
-                            absY,
-                            0ull
-                        };
-                        const std::uint64_t mix2[6] = {
-                            glareSeed,
-                            static_cast<std::uint64_t>(medium.medium),
-                            0ull,
-                            absX,
-                            absY,
-                            1ull
-                        };
-                        const float n = box_muller(
-                            Hash::hash_bytes(mix1, sizeof(mix1)),
-                            Hash::hash_bytes(mix2, sizeof(mix2)));
-                        const float mean = static_cast<float>(medium.glare.percent);
-                        const float stddev = static_cast<float>(medium.glare.roughness * medium.glare.percent);
-                        float glare = lognormal_from_mean_std(std::max(0.0f, mean), std::max(0.0f, stddev), n);
                         const size_t idx = size_t(y) * size_t(width) + size_t(x);
-                        runtime.glare.amount[idx] = glare;
+                        for (int channel = 0; channel < 3; ++channel) {
+                            const std::uint64_t mix1[6] = {
+                                glareSeed,
+                                static_cast<std::uint64_t>(medium.medium),
+                                static_cast<std::uint64_t>(channel),
+                                absX,
+                                absY,
+                                0ull
+                            };
+                            const std::uint64_t mix2[6] = {
+                                glareSeed,
+                                static_cast<std::uint64_t>(medium.medium),
+                                static_cast<std::uint64_t>(channel),
+                                absX,
+                                absY,
+                                1ull
+                            };
+                            const float n = box_muller(
+                                Hash::hash_bytes(mix1, sizeof(mix1)),
+                                Hash::hash_bytes(mix2, sizeof(mix2)));
+                            const float mean = static_cast<float>(medium.glare.percent);
+                            const float stddev = static_cast<float>(medium.glare.roughness * medium.glare.percent);
+                            float glare = lognormal_from_mean_std(std::max(0.0f, mean), std::max(0.0f, stddev), n);
+                            runtime.glare.amount[size_t(channel) * channelSize + idx] = glare;
+                        }
                     }
                 }
                 if (medium.glare.blur > 0.0f) {
                     std::vector<float> glareKernel;
                     build_gaussian_kernel(static_cast<float>(medium.glare.blur), glareKernel);
-                    blur_separable(runtime.glare.amount, runtime.glare.tmp, runtime.glare.amount, width, height, glareKernel);
+                    for (int channel = 0; channel < 3; ++channel) {
+                        float* channelData = runtime.glare.amount.data() + size_t(channel) * channelSize;
+                        std::vector<float> channelBuf(channelData, channelData + channelSize);
+                        std::vector<float> tmpBuf;
+                        blur_separable(channelBuf, tmpBuf, channelBuf, width, height, glareKernel);
+                        std::copy(channelBuf.begin(), channelBuf.end(), channelData);
+                    }
                 }
                 for (float& g : runtime.glare.amount) {
                     g = g / 100.0f;
@@ -576,10 +586,12 @@ namespace ScannerOptics {
                             std::pow(10.0f, logXYZ[2])
                         };
                         if (runtime.glare.valid) {
-                            const float glare = runtime.glare.amount[idx];
-                            xyz[0] += glare * ctx.color->illuminantXYZ[0];
-                            xyz[1] += glare * ctx.color->illuminantXYZ[1];
-                            xyz[2] += glare * ctx.color->illuminantXYZ[2];
+                            const float glareX = runtime.glare.amount[idx];
+                            const float glareY = runtime.glare.amount[channelSize + idx];
+                            const float glareZ = runtime.glare.amount[2u * channelSize + idx];
+                            xyz[0] += glareX * ctx.color->illuminantXYZ[0];
+                            xyz[1] += glareY * ctx.color->illuminantXYZ[1];
+                            xyz[2] += glareZ * ctx.color->illuminantXYZ[2];
                         }
                         float adapted[3];
                         mat3_mul_vec(ctx.color->cat02, xyz, adapted);

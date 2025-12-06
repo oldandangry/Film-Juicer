@@ -87,6 +87,11 @@ struct WorkingState {
     Scanner::ColorRuntime printColorRuntime;
     Scanner::ScannerMediumRuntime printMediumRuntime;
 
+    // Validity flags for scanner media
+    bool negativeScannerValid = false;
+    bool printScannerValid = false;
+    bool printGlareCompensated = false;
+
     // SPD reconstruction per-instance (non-global)
     float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
     bool  spdReady = false;

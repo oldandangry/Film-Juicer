@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <filesystem>
 #include <cctype>
 #include <cfloat>
@@ -1779,6 +1780,58 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         S.renderCv.wait(lk);
         target = S.inactive();
     }
+
+    auto reset_optics_runtime = [](ScannerOptics::Runtime& rt) {
+        rt.lut.cpu.clear();
+        rt.lut.hash = 0;
+        rt.lut.res = 0;
+        rt.lut.valid = false;
+        rt.key = Scanner::ScannerKey{};
+        rt.glare.amount.clear();
+        rt.glare.tmp.clear();
+        rt.glare.valid = false;
+        rt.glare.seedHash = 0;
+        rt.glare.width = 0;
+        rt.glare.height = 0;
+    };
+
+    auto invalidate_scanner_state = [&](WorkingState& ws) {
+        ws.negativeScannerValid = false;
+        ws.printScannerValid = false;
+        ws.printGlareCompensated = false;
+        ws.negativeStaticKey = Scanner::ScannerStaticKey{};
+        ws.printStaticKey = Scanner::ScannerStaticKey{};
+        ws.negativeColorRuntime = Scanner::ColorRuntime{};
+        ws.printColorRuntime = Scanner::ColorRuntime{};
+        ws.negativeMediumRuntime = Scanner::ScannerMediumRuntime{};
+        ws.printMediumRuntime = Scanner::ScannerMediumRuntime{};
+        ws.negativeDensityRange.digest = 0;
+        ws.printDensityRange.digest = 0;
+        if (&S.workA == &ws) {
+            reset_optics_runtime(S.scannerRuntimeA);
+        }
+        else if (&S.workB == &ws) {
+            reset_optics_runtime(S.scannerRuntimeB);
+        }
+    };
+
+    struct FailureGuard {
+        InstanceState& state;
+        WorkingState* target;
+        std::function<void(WorkingState&)> invalidate;
+        bool committed = false;
+        ~FailureGuard() {
+            if (!committed && target) {
+                invalidate(*target);
+                state.activeWS.store(nullptr, std::memory_order_release);
+            }
+        }
+    } failureGuard{ S, target, invalidate_scanner_state };
+
+    target->negativeScannerValid = false;
+    target->printScannerValid = false;
+    target->printGlareCompensated = false;
+
     target->negParams = negParams;
     target->grain = S.base.grain;
     target->negativeGlare = S.base.glare;
@@ -2280,17 +2333,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printMediumRuntime.color = &target->printColorRuntime;
     target->printMediumRuntime.staticKey = target->printStaticKey;
 
-    auto reset_optics_runtime = [](ScannerOptics::Runtime& rt) {
-        rt.lut.cpu.clear();
-        rt.lut.hash = 0;
-        rt.lut.res = 0;
-        rt.lut.valid = false;
-        rt.key = Scanner::ScannerKey{};
-        rt.glare.amount.clear();
-        rt.glare.tmp.clear();
-        rt.glare.valid = false;
-        rt.glare.seedHash = 0;
-    };
+    target->negativeScannerValid = true;
+    target->printScannerValid = true;
+    target->printGlareCompensated = (printProfile.glare.compensationRemovalFactor > 0.0f);
+    failureGuard.committed = true;
+
     if (&S.workA == target) {
         reset_optics_runtime(S.scannerRuntimeA);
     }

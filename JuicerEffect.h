@@ -101,7 +101,8 @@ private:
     Couplers::Runtime prepareCouplers(
         const OFX::RenderArguments& args,
         int fullWidth,
-        int fullHeight) const;
+        int fullHeight,
+        float pixelSizeUm) const;
 #endif
     WorkingStateInfo prepareWorkingState() const;
 
