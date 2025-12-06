@@ -343,6 +343,60 @@ namespace Spectral {
         return ok;
     }
 
+    // Build a curve from axis-aligned samples without any sanitize/sort/clamp.
+    inline bool build_curve_on_reference_axis_from_aligned_pairs(
+        Curve& curve,
+        const std::vector<std::pair<float, float>>& pairs,
+        bool clampNegative = false)
+    {
+        if (pairs.size() != static_cast<size_t>(SpectralShape::K)) {
+            return false;
+        }
+        curve.lambda_nm.resize(pairs.size());
+        curve.linear.resize(pairs.size());
+        for (size_t i = 0; i < pairs.size(); ++i) {
+            const float expected = gShape.wavelengths[i];
+            if (std::abs(pairs[i].first - expected) > 1e-6f) {
+                return false;
+            }
+            curve.lambda_nm[i] = expected;
+            float v = pairs[i].second;
+            if (clampNegative && std::isfinite(v) && v < 0.0f) {
+                v = 0.0f;
+            }
+            curve.linear[i] = v;
+        }
+        return true;
+    }
+
+    inline bool build_curve_on_reference_axis_from_log10_aligned_pairs(
+        Curve& curve,
+        const std::vector<std::pair<float, float>>& logPairs)
+    {
+        if (logPairs.size() != static_cast<size_t>(SpectralShape::K)) {
+            return false;
+        }
+        curve.lambda_nm.resize(logPairs.size());
+        curve.linear.resize(logPairs.size());
+        for (size_t i = 0; i < logPairs.size(); ++i) {
+            const float expected = gShape.wavelengths[i];
+            if (std::abs(logPairs[i].first - expected) > 1e-6f) {
+                return false;
+            }
+            curve.lambda_nm[i] = expected;
+            const float logV = logPairs[i].second;
+            float lin = 0.0f;
+            if (std::isfinite(logV)) {
+                lin = std::pow(10.0f, logV);
+                if (!std::isfinite(lin) || lin < 0.0f) {
+                    lin = 0.0f;
+                }
+            }
+            curve.linear[i] = lin; // NaNs become 0 per np.nan_to_num parity
+        }
+        return true;
+    }
+
     inline void sort_and_build(Curve& curve, const std::vector<std::pair<float, float>>& pairs) {
         if (pairs.empty()) {
             curve.lambda_nm.clear();
@@ -491,6 +545,59 @@ namespace Spectral {
 
     inline void assign_reference_axis(std::vector<float>& lambda) {
         lambda.assign(gShape.wavelengths.begin(), gShape.wavelengths.end());
+    }
+
+    inline const std::vector<float>& reference_log_exposure_axis() {
+        static const std::vector<float> axis = []() {
+            std::vector<float> v;
+            v.reserve(kLogExposureSamples);
+            for (int i = 0; i < kLogExposureSamples; ++i) {
+                v.push_back(kLogExposureMin + static_cast<float>(i) * kLogExposureDelta);
+            }
+            return v;
+        }();
+        return axis;
+    }
+
+    inline bool log_exposure_axis_matches_reference(const std::vector<float>& axis) {
+        if (axis.size() != static_cast<size_t>(kLogExposureSamples)) {
+            return false;
+        }
+        for (int i = 0; i < kLogExposureSamples; ++i) {
+            const float expected = kLogExposureMin + static_cast<float>(i) * kLogExposureDelta;
+            if (std::abs(axis[static_cast<size_t>(i)] - expected) > 1e-6f) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    inline bool build_curve_on_log_exposure_axis(
+        Curve& curve,
+        const std::vector<std::pair<float, float>>& pairs,
+        bool clampNegative = false)
+    {
+        if (pairs.size() != static_cast<size_t>(kLogExposureSamples)) {
+            return false;
+        }
+        // Require monotonic increasing logE to avoid broken interpolation.
+        for (size_t i = 1; i < pairs.size(); ++i) {
+            if (!(pairs[i].first > pairs[i - 1].first)) {
+                return false;
+            }
+        }
+
+        curve.lambda_nm.resize(pairs.size());
+        curve.linear.resize(pairs.size());
+        for (size_t i = 0; i < pairs.size(); ++i) {
+            curve.lambda_nm[i] = pairs[i].first;
+            float v = pairs[i].second;
+            if (clampNegative && std::isfinite(v) && v < 0.0f) {
+                v = 0.0f;
+            }
+            curve.linear[i] = v;
+        }
+        return true;
     }
 
     inline void lock_shape_to_reference_axis() {

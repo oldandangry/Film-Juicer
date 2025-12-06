@@ -897,6 +897,24 @@ namespace Spectral {
             }
 
             // 2) Sample all curves on the working grid (size-safe)
+            const bool illumSizeMismatch = !gIlluminantCurve.linear.empty() &&
+                ((int)gIlluminantCurve.linear.size() != K ||
+                    gIlluminantCurve.lambda_nm.size() != gIlluminantCurve.linear.size());
+            bool illumAxisMismatch = false;
+            if (!illumSizeMismatch && !gIlluminantCurve.linear.empty()) {
+                for (int i = 0; i < K; ++i) {
+                    const float expected = gShape.wavelengths[i];
+                    if (std::abs(gIlluminantCurve.lambda_nm[i] - expected) > 1e-3f) {
+                        illumAxisMismatch = true;
+                        break;
+                    }
+                }
+            }
+            const bool illumUseDirect = !illumSizeMismatch && !illumAxisMismatch;
+            if ((illumSizeMismatch || illumAxisMismatch) && !gIlluminantCurve.linear.empty()) {
+                JTRACE("SPECTRAL", "Illuminant axis/size mismatch; falling back to equal-energy for precompute");
+            }
+
             for (int i = 0; i < K; ++i) {
                 const float l = gLambda[i];
 
@@ -924,8 +942,8 @@ namespace Spectral {
                 gBaselineMinTable[i] = (gHasBaseline && (int)gBaseMin.linear.size() == K) ? gBaseMin.linear[i] : 0.0f;
                 gBaselineMidTable[i] = (gHasBaseline && (int)gBaseMid.linear.size() == K) ? gBaseMid.linear[i] : 0.0f;
 
-                // Illuminant: only direct index if sizes match; otherwise fallback to equal-energy for this sample
-                if (!gIlluminantCurve.linear.empty() && (int)gIlluminantCurve.linear.size() == K) {
+                // Illuminant: only direct index if axis/size match; otherwise fallback to equal-energy for this sample
+                if (!gIlluminantCurve.linear.empty() && illumUseDirect) {
                     gIllumTable[i] = gIlluminantCurve.linear[i];
                 }
                 else {

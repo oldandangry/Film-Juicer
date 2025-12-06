@@ -20,6 +20,7 @@
 #include "Logging.h"
 #include "IlluminantKeys.h"
 #include "SpectralTypes.h"
+#include "SpectralData.h"
 
 namespace Profiles {
     namespace {
@@ -73,40 +74,42 @@ namespace Profiles {
         }
 
         void sanitize_non_finite_literals(std::string& text) {
+            // Replace bare non-finite tokens with string sentinels that will be
+            // accepted by the JSON parser and decoded later.
             static constexpr std::array<std::pair<std::string_view, std::string_view>, 33> kReplacements{ {
-                { "-infinity", "null" },
-                { "+infinity", "null" },
-                { "infinity", "null" },
-                { "-inf", "null" },
-                { "+inf", "null" },
-                { "inf", "null" },
-                { "-nan", "null" },
-                { "+nan", "null" },
-                { "nan", "null" },
-                { "-1.#inf", "null" },
-                { "+1.#inf", "null" },
-                { "1.#inf", "null" },
-                { "-1.#ind", "null" },
-                { "+1.#ind", "null" },
-                { "1.#ind", "null" },
-                { "-1.#nan", "null" },
-                { "+1.#nan", "null" },
-                { "1.#nan", "null" },
-                { "-1.#qnan", "null" },
-                { "+1.#qnan", "null" },
-                { "1.#qnan", "null" },
-                { "-1.#snan", "null" },
-                { "+1.#snan", "null" },
-                { "1.#snan", "null" },
-                { "-nan(ind)", "null" },
-                { "+nan(ind)", "null" },
-                { "nan(ind)", "null" },
-                { "-nan(qnan)", "null" },
-                { "+nan(qnan)", "null" },
-                { "nan(qnan)", "null" },
-                { "-nan(snan)", "null" },
-                { "+nan(snan)", "null" },
-                { "nan(snan)", "null" }
+                { "-infinity", "\"__-inf__\"" },
+                { "+infinity", "\"__inf__\"" },
+                { "infinity",  "\"__inf__\"" },
+                { "-inf",      "\"__-inf__\"" },
+                { "+inf",      "\"__inf__\"" },
+                { "inf",       "\"__inf__\"" },
+                { "-nan",      "\"__nan__\"" },
+                { "+nan",      "\"__nan__\"" },
+                { "nan",       "\"__nan__\"" },
+                { "-1.#inf",   "\"__-inf__\"" },
+                { "+1.#inf",   "\"__inf__\"" },
+                { "1.#inf",    "\"__inf__\"" },
+                { "-1.#ind",   "\"__-inf__\"" },
+                { "+1.#ind",   "\"__inf__\"" },
+                { "1.#ind",    "\"__inf__\"" },
+                { "-1.#nan",   "\"__nan__\"" },
+                { "+1.#nan",   "\"__nan__\"" },
+                { "1.#nan",    "\"__nan__\"" },
+                { "-1.#qnan",  "\"__nan__\"" },
+                { "+1.#qnan",  "\"__nan__\"" },
+                { "1.#qnan",   "\"__nan__\"" },
+                { "-1.#snan",  "\"__nan__\"" },
+                { "+1.#snan",  "\"__nan__\"" },
+                { "1.#snan",   "\"__nan__\"" },
+                { "-nan(ind)", "\"__nan__\"" },
+                { "+nan(ind)", "\"__nan__\"" },
+                { "nan(ind)",  "\"__nan__\"" },
+                { "-nan(qnan)","\"__nan__\"" },
+                { "+nan(qnan)","\"__nan__\"" },
+                { "nan(qnan)", "\"__nan__\"" },
+                { "-nan(snan)","\"__nan__\"" },
+                { "+nan(snan)","\"__nan__\"" },
+                { "nan(snan)", "\"__nan__\"" }
             } };
 
             bool inString = false;
@@ -188,13 +191,15 @@ namespace Profiles {
             std::ostringstream oss;
             oss << file.rdbuf();
             std::string text = oss.str();
-
-            // agx-emulsion profiles encode missing spectral samples as non-finite literals.
-            // Replace with JSON null so the parser can ingest the document.
             sanitize_non_finite_literals(text);
 
+            // Upstream agx-emulsion allows NaN/Inf literals via Python json (allow_nan=True).
+            // Keep them intact so downstream NaN handling mirrors agx.
             try {
-                out = Json::parse(text);
+                out = Json::parse(text,
+                    /*cb*/nullptr,
+                    /*allow_exceptions*/true,
+                    /*ignore_comments*/true);
             }
             catch (const Json::parse_error& e) {
                 JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': " + e.what());
@@ -240,6 +245,50 @@ namespace Profiles {
             return std::nullopt;
         }
 
+        std::optional<float> decode_nonfinite_sentinel(const Json& node) {
+            if (!node.is_string()) {
+                return std::nullopt;
+            }
+            const std::string& str = node.get_ref<const std::string&>();
+            if (str == "__nan__") {
+                return std::numeric_limits<float>::quiet_NaN();
+            }
+            if (str == "__inf__") {
+                return std::numeric_limits<float>::infinity();
+            }
+            if (str == "__-inf__") {
+                return -std::numeric_limits<float>::infinity();
+            }
+            return std::nullopt;
+        }
+
+        std::optional<float> parse_optional_float_allow_nan(const Json& node) {
+            if (auto special = decode_nonfinite_sentinel(node)) {
+                return special;
+            }
+            if (node.is_number_float() || node.is_number_integer()) {
+                float v = static_cast<float>(node.get<double>());
+                if (std::isfinite(v) || std::isnan(v)) {
+                    return v;
+                }
+            }
+            else if (node.is_string()) {
+                const std::string& str = node.get_ref<const std::string&>();
+                const char* begin = str.c_str();
+                char* end = nullptr;
+                errno = 0;
+                const float v = std::strtof(begin, &end);
+                if (end != begin && end == begin + str.size() && errno == 0 &&
+                    (std::isfinite(v) || std::isnan(v))) {
+                    return v;
+                }
+            }
+            else if (node.is_boolean()) {
+                return node.get<bool>() ? 1.0f : 0.0f;
+            }
+            return std::nullopt;
+        }
+
         std::string to_lower_ascii(std::string value) {
             for (char& c : value) {
                 c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -264,7 +313,6 @@ namespace Profiles {
                 return false;
             }
 
-            constexpr float kToleranceNm = 0.25f;
             for (int i = 0; i < Spectral::kNumSamples; ++i) {
                 std::optional<float> wlOpt = parse_optional_float(wavelengths[i]);
                 if (!wlOpt) {
@@ -275,7 +323,7 @@ namespace Profiles {
                     return false;
                 }
                 const float expected = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
-                if (std::abs(*wlOpt - expected) > kToleranceNm) {
+                if (*wlOpt != expected) {
                     std::ostringstream oss;
                     oss << "JSON wavelength mismatch at index " << i
                         << " (" << labelStr << "): expected "
@@ -615,113 +663,86 @@ namespace Profiles {
         if (!json_wavelengths_match_reference_axis(wavelengths, wavelengthLabel)) {
             return false;
         }
+        if (dyeDensity.size() != Spectral::kNumSamples) {
+            JTRACE("PROFILE", "dye_density sample count mismatch; expected 81 samples");
+            return false;
+        }
 
-        const size_t sampleCount = std::min(wavelengths.size(), dyeDensity.size());
-        outProfile.dyeC.reserve(sampleCount);
-        outProfile.dyeM.reserve(sampleCount);
-        outProfile.dyeY.reserve(sampleCount);
-        outProfile.baseMin.reserve(sampleCount);
-        outProfile.baseMid.reserve(sampleCount);
+        outProfile.dyeC.reserve(Spectral::kNumSamples);
+        outProfile.dyeM.reserve(Spectral::kNumSamples);
+        outProfile.dyeY.reserve(Spectral::kNumSamples);
+        outProfile.baseMin.reserve(Spectral::kNumSamples);
+        outProfile.baseMid.reserve(Spectral::kNumSamples);
 
-        size_t missingDyeSamples = 0;
-        size_t missingBaselineSamples = 0;
-        for (size_t i = 0; i < sampleCount; ++i) {
+        for (size_t i = 0; i < Spectral::kNumSamples; ++i) {
+            const float wl = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
             std::optional<float> wlOpt = parse_optional_float(wavelengths[i]);
-            if (!wlOpt) {
+            if (!wlOpt || *wlOpt != wl) {
+                JTRACE("PROFILE", "JSON wavelength mismatch during ingest; rejecting profile");
+                return false;
+            }
+            const Json& row = dyeDensity[i];
+            if (!row.is_array()) {
+                JTRACE("PROFILE", "dye_density row missing or not array; inserting NaNs");
+                outProfile.dyeC.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
+                outProfile.dyeM.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
+                outProfile.dyeY.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
+                outProfile.baseMin.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
+                outProfile.baseMid.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
                 continue;
             }
-            const float wl = *wlOpt;
 
-            const Json& row = dyeDensity[i];
-            const bool isArray = row.is_array();
-            const Json* cNode = (isArray && row.size() > 0) ? &row[0] : nullptr;
-            const Json* mNode = (isArray && row.size() > 1) ? &row[1] : nullptr;
-            const Json* yNode = (isArray && row.size() > 2) ? &row[2] : nullptr;
-            const Json* baseMinNode = (isArray && row.size() > 3) ? &row[3] : nullptr;
-            const Json* baseMidNode = (isArray && row.size() > 4) ? &row[4] : nullptr;
-
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.dyeC, wl, cNode)) {
-                ++missingDyeSamples;
-            }
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.dyeM, wl, mNode)) {
-                ++missingDyeSamples;
-            }
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.dyeY, wl, yNode)) {
-                ++missingDyeSamples;
-            }
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.baseMin, wl, baseMinNode)) {
-                ++missingBaselineSamples;
-            }
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.baseMid, wl, baseMidNode)) {
-                ++missingBaselineSamples;
-            }
-        }
-
-        if (missingDyeSamples > 0) {
-            JTRACE("PROFILE", std::to_string(missingDyeSamples) + " dye-density samples missing or invalid; inserted NaN placeholders");
-        }
-        if (missingBaselineSamples > 0) {
-            JTRACE("PROFILE", std::to_string(missingBaselineSamples) + " baseline samples missing or invalid; inserted NaN placeholders");
-        }
-
-        auto ensure_channel_has_samples = [](const std::vector<std::pair<float, float>>& samples,
-            const char* channelLabel) -> bool {
-                if (count_finite_samples(samples) == 0) {
-                    JTRACE("PROFILE", std::string(channelLabel) + " channel contains no finite samples; rejecting profile");
-                    return false;
-                }
-                return true;
+            auto get = [&](size_t idx)->std::optional<float> {
+                if (idx >= row.size()) return std::nullopt;
+                return parse_optional_float_allow_nan(row[idx]);
             };
+            auto cVal = get(0);
+            auto mVal = get(1);
+            auto yVal = get(2);
+            auto baseMinVal = get(3);
+            auto baseMidVal = get(4);
 
-        if (!ensure_channel_has_samples(outProfile.dyeC, "dye-density C") ||
-            !ensure_channel_has_samples(outProfile.dyeM, "dye-density M") ||
-            !ensure_channel_has_samples(outProfile.dyeY, "dye-density Y"))
-        {
-            return false;
-        }
-        if (!ensure_channel_has_samples(outProfile.baseMin, "baseline min") ||
-            !ensure_channel_has_samples(outProfile.baseMid, "baseline mid"))
-        {
-            return false;
+            outProfile.dyeC.emplace_back(wl, cVal.value_or(std::numeric_limits<float>::quiet_NaN()));
+            outProfile.dyeM.emplace_back(wl, mVal.value_or(std::numeric_limits<float>::quiet_NaN()));
+            outProfile.dyeY.emplace_back(wl, yVal.value_or(std::numeric_limits<float>::quiet_NaN()));
+            outProfile.baseMin.emplace_back(wl, baseMinVal.value_or(std::numeric_limits<float>::quiet_NaN()));
+            outProfile.baseMid.emplace_back(wl, baseMidVal.value_or(std::numeric_limits<float>::quiet_NaN()));
         }
 
         // Log sensitivity curves (RGB order in the source profile).
-        if (data.contains("log_sensitivity")) {
-            const Json& logSens = data["log_sensitivity"];
-            if (logSens.is_array()) {
-                const size_t sensCount = std::min(wavelengths.size(), logSens.size());
-                outProfile.logSensR.reserve(sensCount);
-                outProfile.logSensG.reserve(sensCount);
-                outProfile.logSensB.reserve(sensCount);
-                for (size_t i = 0; i < sensCount; ++i) {
-                    std::optional<float> wlOpt = parse_optional_float(wavelengths[i]);
-                    if (!wlOpt) {
-                        continue;
-                    }
-                    const float wl = *wlOpt;
-                    const Json& row = logSens[i];
-
-                    const Json* rNode = nullptr;
-                    const Json* gNode = nullptr;
-                    const Json* bNode = nullptr;
-                    if (row.is_array()) {
-                        if (row.size() > 0) rNode = &row[0];
-                        if (row.size() > 1) gNode = &row[1];
-                        if (row.size() > 2) bNode = &row[2];
-                    }
-
-                    append_spectral_pair_with_nan_if_missing(outProfile.logSensR, wl, rNode);
-                    append_spectral_pair_with_nan_if_missing(outProfile.logSensG, wl, gNode);
-                    append_spectral_pair_with_nan_if_missing(outProfile.logSensB, wl, bNode);
-                }
-            }
-        }
-
-        if (!ensure_channel_has_samples(outProfile.logSensR, "log sensitivity R") ||
-            !ensure_channel_has_samples(outProfile.logSensG, "log sensitivity G") ||
-            !ensure_channel_has_samples(outProfile.logSensB, "log sensitivity B"))
-        {
+        if (!data.contains("log_sensitivity")) {
             return false;
+        }
+        const Json& logSens = data["log_sensitivity"];
+        if (!logSens.is_array() || logSens.size() != Spectral::kNumSamples) {
+            JTRACE("PROFILE", "log_sensitivity must be an array of 81 rows");
+            return false;
+        }
+        outProfile.logSensR.reserve(Spectral::kNumSamples);
+        outProfile.logSensG.reserve(Spectral::kNumSamples);
+        outProfile.logSensB.reserve(Spectral::kNumSamples);
+        for (size_t i = 0; i < Spectral::kNumSamples; ++i) {
+            const float wl = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
+            std::optional<float> wlOpt = parse_optional_float(wavelengths[i]);
+            if (!wlOpt || *wlOpt != wl) {
+                JTRACE("PROFILE", "log_sensitivity wavelength mismatch; rejecting profile");
+                return false;
+            }
+            const Json& row = logSens[i];
+            if (!row.is_array() || row.size() != 3) {
+                JTRACE("PROFILE", "log_sensitivity rows must contain exactly 3 channels");
+                return false;
+            }
+            auto rVal = parse_optional_float_allow_nan(row[0]);
+            auto gVal = parse_optional_float_allow_nan(row[1]);
+            auto bVal = parse_optional_float_allow_nan(row[2]);
+            if (!(rVal && gVal && bVal)) {
+                JTRACE("PROFILE", "non-numeric log_sensitivity entry; rejecting profile");
+                return false;
+            }
+            outProfile.logSensR.emplace_back(wl, *rVal);
+            outProfile.logSensG.emplace_back(wl, *gVal);
+            outProfile.logSensB.emplace_back(wl, *bVal);
         }
 
         // Density curves (log exposure domain shared by all channels).
@@ -733,43 +754,87 @@ namespace Profiles {
         if (!logExposure.is_array() || !densityCurves.is_array()) {
             return false;
         }
-        const size_t curveCount = std::min(logExposure.size(), densityCurves.size());
-        outProfile.densityCurveR.reserve(curveCount);
-        outProfile.densityCurveG.reserve(curveCount);
-        outProfile.densityCurveB.reserve(curveCount);
-        size_t missingCurveSamples = 0;
-        for (size_t i = 0; i < curveCount; ++i) {
-            std::optional<float> logEOpt = parse_optional_float(logExposure[i]);
+        if (logExposure.size() != Spectral::kLogExposureSamples ||
+            densityCurves.size() != Spectral::kLogExposureSamples) {
+            JTRACE("PROFILE", "log_exposure/density_curves length mismatch; expected 256 samples");
+            return false;
+        }
+
+        outProfile.densityCurveR.reserve(Spectral::kLogExposureSamples);
+        outProfile.densityCurveG.reserve(Spectral::kLogExposureSamples);
+        outProfile.densityCurveB.reserve(Spectral::kLogExposureSamples);
+
+        float prevLogE = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < Spectral::kLogExposureSamples; ++i) {
+            auto logEOpt = parse_optional_float(logExposure[i]);
             if (!logEOpt) {
-                continue;
+                JTRACE("PROFILE", "non-numeric log_exposure entry; rejecting profile");
+                return false;
             }
             const float logE = *logEOpt;
+            if (!(logE > prevLogE)) {
+                JTRACE("PROFILE", "log_exposure not strictly increasing; rejecting profile");
+                return false;
+            }
+            prevLogE = logE;
+
             const Json& row = densityCurves[i];
-            const bool isArray = row.is_array();
-            const Json* rNode = (isArray && row.size() > 0) ? &row[0] : nullptr;
-            const Json* gNode = (isArray && row.size() > 1) ? &row[1] : nullptr;
-            const Json* bNode = (isArray && row.size() > 2) ? &row[2] : nullptr;
-
-
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.densityCurveR, logE, rNode)) {
-                ++missingCurveSamples;
+            if (!row.is_array() || row.size() != 3) {
+                JTRACE("PROFILE", "density_curves rows must contain exactly 3 channels");
+                return false;
             }
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.densityCurveG, logE, gNode)) {
-                ++missingCurveSamples;
+            auto rVal = parse_optional_float_allow_nan(row[0]);
+            auto gVal = parse_optional_float_allow_nan(row[1]);
+            auto bVal = parse_optional_float_allow_nan(row[2]);
+            if (!(rVal && gVal && bVal)) {
+                JTRACE("PROFILE", "non-numeric density_curves entry; rejecting profile");
+                return false;
             }
-            if (!append_spectral_pair_with_nan_if_missing(outProfile.densityCurveB, logE, bNode)) {
-                ++missingCurveSamples;
-            }
+            outProfile.densityCurveR.emplace_back(logE, *rVal);
+            outProfile.densityCurveG.emplace_back(logE, *gVal);
+            outProfile.densityCurveB.emplace_back(logE, *bVal);
         }
 
-        if (missingCurveSamples > 0) {
-            JTRACE("PROFILE", std::to_string(missingCurveSamples) + " density-curve samples missing or invalid; inserted NaN placeholders");
-        }
-        if (!ensure_channel_has_samples(outProfile.densityCurveR, "density curve R") ||
-            !ensure_channel_has_samples(outProfile.densityCurveG, "density curve G") ||
-            !ensure_channel_has_samples(outProfile.densityCurveB, "density curve B"))
-        {
-            return false;
+        // Optional density_curves_layers (256 x 3 x 3)
+        if (data.contains("density_curves_layers")) {
+            const Json& layers = data["density_curves_layers"];
+            if (!layers.is_array()) {
+                JTRACE("PROFILE", "density_curves_layers present but not an array; rejecting profile");
+                return false;
+            }
+            if (layers.size() != Spectral::kLogExposureSamples) {
+                JTRACE("PROFILE", "density_curves_layers length mismatch; rejecting profile");
+                return false;
+            }
+            outProfile.hasDensityCurvesLayers = true;
+            for (size_t i = 0; i < layers.size(); ++i) {
+                auto logEOpt = parse_optional_float(logExposure[i]);
+                if (!logEOpt) {
+                    JTRACE("PROFILE", "density_curves_layers log_exposure missing; rejecting profile");
+                    return false;
+                }
+                const float logE = *logEOpt;
+                const Json& row = layers[i];
+                if (!row.is_array() || row.size() != 3) {
+                    JTRACE("PROFILE", "density_curves_layers rows must contain 3 sublayers");
+                    return false;
+                }
+                for (size_t layer = 0; layer < 3; ++layer) {
+                    const Json& sub = row[layer];
+                    if (!sub.is_array() || sub.size() != 3) {
+                        JTRACE("PROFILE", "density_curves_layers sublayer must contain 3 channels");
+                        return false;
+                    }
+                    for (size_t ch = 0; ch < 3; ++ch) {
+                        auto v = parse_optional_float_allow_nan(sub[ch]);
+                        if (!v) {
+                            JTRACE("PROFILE", "non-numeric density_curves_layers entry; rejecting profile");
+                            return false;
+                        }
+                        outProfile.densityCurvesLayers[layer][ch].emplace_back(logE, *v);
+                    }
+                }
+            }
         }
 
         // Require the core spectral assets to be present.

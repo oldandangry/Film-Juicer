@@ -16,6 +16,13 @@ namespace Spectral {
     inline constexpr int kNumSamples = static_cast<int>((kLambdaMax - kLambdaMin) / kDelta) + 1;
     static_assert(kNumSamples == 81, "Spectral grid must be 380..780 nm at 5 nm.");
 
+    // Log-exposure axis (matches agx-emulsion LOG_EXPOSURE np.linspace(-3,4,256))
+    inline constexpr float kLogExposureMin = -3.0f;
+    inline constexpr float kLogExposureMax = 4.0f;
+    inline constexpr int kLogExposureSamples = 256;
+    inline constexpr float kLogExposureDelta =
+        (kLogExposureMax - kLogExposureMin) / static_cast<float>(kLogExposureSamples - 1);
+
     struct PrecomputeStatus {
         std::atomic<uint64_t> illumVersion{ 0 };
         std::atomic<uint64_t> lastPrecomputeIllumVersion{ ~uint64_t{ 0 } };

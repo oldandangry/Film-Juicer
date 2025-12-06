@@ -877,6 +877,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     std::vector<std::pair<float, float>> dc_r;
     std::vector<std::pair<float, float>> dc_g;
     std::vector<std::pair<float, float>> dc_b;
+    std::array<std::array<std::vector<std::pair<float, float>>, 3>, 3> dc_layers{};
 
     S.base.densityMidNeutral.clear();
     S.base.logExposureMidNeutral.clear();
@@ -889,6 +890,10 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.cameraFilterDefined = false;
     S.base.grain = Profiles::GrainMetadata{};
     S.base.glare = Profiles::ProfileGlare{};
+    S.base.hasDensityCurvesLayers = false;
+    for (auto& layer : S.base.densityCurvesLayers) {
+        for (auto& ch : layer) ch.clear();
+    }
 
     if (stock.jsonKey.empty()) {
         JTRACE("STOCK", "film stock missing JSON key; cannot load profile");
@@ -912,6 +917,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     dc_b = std::move(profile.densityCurveB);
     dmin = std::move(profile.baseMin);
     dmid = std::move(profile.baseMid);
+    dc_layers = std::move(profile.densityCurvesLayers);
     if (std::isfinite(profile.dyeDensityMinFactor) && profile.dyeDensityMinFactor >= 0.0f) {
         S.base.dyeDensityMinFactor = profile.dyeDensityMinFactor;
     }
@@ -939,6 +945,18 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.maskingCouplers = profile.maskingCouplers;
     S.base.grain = profile.grain;
     S.base.glare = profile.glare;
+    if (profile.hasDensityCurvesLayers) {
+        S.base.hasDensityCurvesLayers = true;
+        for (size_t layer = 0; layer < dc_layers.size(); ++layer) {
+            for (size_t ch = 0; ch < dc_layers[layer].size(); ++ch) {
+                S.base.densityCurvesLayers[layer][ch].clear();
+                S.base.densityCurvesLayers[layer][ch].reserve(dc_layers[layer][ch].size());
+                for (const auto& sample : dc_layers[layer][ch]) {
+                    S.base.densityCurvesLayers[layer][ch].push_back(sample.second);
+                }
+            }
+        }
+    }
     JTRACE("STOCK", std::string("loaded agx profile json: ") + stock.jsonKey);
     if (!dc_r.empty() && !dc_g.empty() && !dc_b.empty()) {
         std::ostringstream oss;
@@ -980,16 +998,21 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         return false;
     }
 
-    const bool epsYOk = Spectral::build_curve_on_reference_axis_from_linear_pairs(S.base.epsY, y_data);
-    const bool epsMOk = Spectral::build_curve_on_reference_axis_from_linear_pairs(S.base.epsM, m_data);
-    const bool epsCOk = Spectral::build_curve_on_reference_axis_from_linear_pairs(S.base.epsC, c_data);
+    const bool epsYOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.epsY, y_data);
+    const bool epsMOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.epsM, m_data);
+    const bool epsCOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.epsC, c_data);
 
-    const bool sensBOk = Spectral::build_curve_on_reference_axis_from_log10_pairs(S.base.sensB, b_sens);
-    const bool sensGOk = Spectral::build_curve_on_reference_axis_from_log10_pairs(S.base.sensG, g_sens);
-    const bool sensROk = Spectral::build_curve_on_reference_axis_from_log10_pairs(S.base.sensR, r_sens);
+    const bool sensBOk = Spectral::build_curve_on_reference_axis_from_log10_aligned_pairs(S.base.sensB, b_sens);
+    const bool sensGOk = Spectral::build_curve_on_reference_axis_from_log10_aligned_pairs(S.base.sensG, g_sens);
+    const bool sensROk = Spectral::build_curve_on_reference_axis_from_log10_aligned_pairs(S.base.sensR, r_sens);
+
+    const bool densBOk = Spectral::build_curve_on_log_exposure_axis(S.base.densB, dc_b);
+    const bool densGOk = Spectral::build_curve_on_log_exposure_axis(S.base.densG, dc_g);
+    const bool densROk = Spectral::build_curve_on_log_exposure_axis(S.base.densR, dc_r);
 
     const bool dyeOk = epsYOk && epsMOk && epsCOk;
     const bool sensOk = sensBOk && sensGOk && sensROk;
+    const bool densOk = densBOk && densGOk && densROk;
 
     if (!dyeOk) {
         std::ostringstream oss;
@@ -1006,16 +1029,20 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         JTRACE("STOCK", oss.str());
     }
 
-    if (!(dyeOk && sensOk)) {
+    if (!densOk) {
+        std::ostringstream oss;
+        oss << "density curve build failure (B=" << (densBOk ? "ok" : "empty")
+            << ", G=" << (densGOk ? "ok" : "empty")
+            << ", R=" << (densROk ? "ok" : "empty") << ")";
+        JTRACE("STOCK", oss.str());
+    }
+
+    if (!(dyeOk && sensOk && densOk)) {
         std::ostringstream fatal;
         fatal << "FATAL: missing spectral data (film profile '" << stock.jsonKey << "')";
         JTRACE("STOCK", fatal.str());
         return false;
     }
-
-    Spectral::sort_and_build(S.base.densB, dc_b);
-    Spectral::sort_and_build(S.base.densG, dc_g);
-    Spectral::sort_and_build(S.base.densR, dc_r);
 
     auto subtract_baseline_floor = [](Spectral::Curve& curve) {
         if (curve.linear.empty()) return;
@@ -1036,8 +1063,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     subtract_baseline_floor(S.base.densG);
     subtract_baseline_floor(S.base.densR);
 
-    const bool baseMinOk = Spectral::build_curve_on_reference_axis_from_linear_pairs(S.base.baseMin, dmin);
-    const bool baseMidOk = Spectral::build_curve_on_reference_axis_from_linear_pairs(S.base.baseMid, dmid);
+    const bool baseMinOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMin, dmin);
+    const bool baseMidOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMid, dmid);
     S.base.hasBaseline = baseMinOk && baseMidOk && !S.base.baseMin.linear.empty();
     if (!(baseMinOk && baseMidOk)) {
         std::ostringstream oss;
@@ -1223,6 +1250,17 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             }
         }
     }
+
+    // agx-emulsion parity: baseline curves are nan_to_num'ed before table building/hashing.
+    auto nan_to_num_curve = [](Spectral::Curve& c) {
+        for (float& v : c.linear) {
+            if (!std::isfinite(v) || v < 0.0f) {
+                v = 0.0f;
+            }
+        }
+        };
+    nan_to_num_curve(baseMin);
+    nan_to_num_curve(baseMid);
 
 
     // Per agx-emulsion parity: film profiles contain sensitivities that are ALREADY balanced
@@ -1915,6 +1953,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         Print::profile_is_valid(printProfile) &&
         printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K))
     {
+        nan_to_num_curve(printProfile.baseMin);
+        nan_to_num_curve(printProfile.baseMid);
         Spectral::build_tables_from_curves_non_global(
             /*epsY*/ printProfile.epsY,
             /*epsM*/ printProfile.epsM,

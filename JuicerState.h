@@ -58,6 +58,8 @@ struct BaseState {
     Spectral::Curve sensB, sensG, sensR;
     Spectral::Curve densB, densG, densR;
     Spectral::Curve baseMin, baseMid;
+    std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{}; // [layer][channel] values on LOG_EXPOSURE axis
+    bool hasDensityCurvesLayers = false;
     float dyeDensityMinFactor = 1.0f;
     std::array<float, 3> gammaFactor{ {1.0f, 1.0f, 1.0f} };
     bool hasBaseline = false;

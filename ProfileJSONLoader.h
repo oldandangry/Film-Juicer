@@ -69,10 +69,12 @@ namespace Profiles {
         std::vector<std::pair<float, float>> logSensR;
         std::vector<std::pair<float, float>> logSensG;
         std::vector<std::pair<float, float>> logSensB;
-                
+
         std::vector<std::pair<float, float>> densityCurveR;
         std::vector<std::pair<float, float>> densityCurveG;
         std::vector<std::pair<float, float>> densityCurveB;
+        std::array<std::array<std::vector<std::pair<float, float>>, 3>, 3> densityCurvesLayers{}; // [layer][channel]
+        bool hasDensityCurvesLayers = false;
 
         DirCouplersProfile dirCouplers;
         MaskingCouplersProfile maskingCouplers;
