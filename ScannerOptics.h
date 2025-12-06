@@ -27,7 +27,7 @@ namespace ScannerOptics {
     };
 
     struct GlareCache {
-        // Channel-major storage: [X channel | Y channel | Z channel], each width*height samples.
+        // Single glare scalar per pixel, blurred once and shared across XYZ.
         std::vector<float> amount;
         std::vector<float> tmp;
         Scanner::ScannerKey key{};
