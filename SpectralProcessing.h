@@ -1259,21 +1259,6 @@ namespace Spectral {
         layerExposures_from_sceneSPD_with_curves(Ee_scene, sB, sG, sR, E, exposureScale, !useHanatos);
     }
 
-    // -------------------------------------------------------------------------
-    // 4. SPECTRAL INTEGRATION (~100 lines)
-    // -------------------------------------------------------------------------
-
-    // AVX2 forward declaration (defined in SpectralMathAVX.cpp)
-#if defined(__AVX2__)
-    void integrate_dyes_to_XYZ_avx2(
-        float dY, float dM, float dC,
-        const float* epsY, const float* epsM, const float* epsC,
-        const float* Ax, const float* Ay, const float* Az,
-        int K,
-        const BaselineCtx& base,
-        float XYZ_out[3]);
-#endif
-
     inline void dyes_to_XYZ_given_tables(
         const SpectralTables& T,
         const float dyes_cmy[3],
@@ -1326,89 +1311,6 @@ namespace Spectral {
         XYZ[0] = (float)(X * s);
         XYZ[1] = (float)(Y * s);
         XYZ[2] = (float)(Z * s);
-    }
-
-    inline void dyes_to_XYZ_given_Ee(const float* dyes_cmy, float XYZ[3]) {
-        BaselineCtx base;
-        base.hasBaseline = false;
-        base.baseMin = nullptr;
-        base.baseMid = nullptr;
-        base.mix = 0.0f;
-
-#if defined(__AVX2__)
-        integrate_dyes_to_XYZ_avx2(
-            /*dY*/ dyes_cmy[2], /*dM*/ dyes_cmy[1], /*dC*/ dyes_cmy[0],
-            gEpsYTable.data(), gEpsMTable.data(), gEpsCTable.data(),
-            gAx.data(), gAy.data(), gAz.data(),
-            gShape.K, base, XYZ);
-#else
-        double X = 0.0, Y = 0.0, Z = 0.0;
-        const int K = gShape.K;
-        for (int i = 0; i < K; ++i) {
-            const float Dlambda = dyes_cmy[0] * gEpsCTable[i]
-                + dyes_cmy[1] * gEpsMTable[i]
-                + dyes_cmy[2] * gEpsYTable[i];
-            if (!std::isfinite(Dlambda)) {
-                continue;
-            }
-            const float T = std::exp(-kLn10 * Dlambda);
-            X += T * gAx[i];
-            Y += T * gAy[i];
-            Z += T * gAz[i];
-        }
-        const float s = gInvYn;
-        XYZ[0] = static_cast<float>(X * s);
-        XYZ[1] = static_cast<float>(Y * s);
-        XYZ[2] = static_cast<float>(Z * s);
-#endif
-    }
-
-
-    inline void dyes_to_XYZ_given_Ee_with_baseline(const float* dyes_cmy, float neutralW, float XYZ[3]) {
-        const float mix = std::clamp(neutralW, 0.0f, 1.0f);
-        BaselineCtx base;
-        const bool tablesReady =
-            !gBaselineMinTable.empty() &&
-            !gBaselineMidTable.empty() &&
-            gBaselineMinTable.size() == static_cast<size_t>(gShape.K) &&
-            gBaselineMidTable.size() == static_cast<size_t>(gShape.K);
-
-        base.hasBaseline = gHasBaseline && tablesReady;
-        base.baseMin = tablesReady ? gBaselineMinTable.data() : nullptr;
-        base.baseMid = tablesReady ? gBaselineMidTable.data() : nullptr;
-        base.mix = mix;
-
-#if defined(__AVX2__)
-        integrate_dyes_to_XYZ_avx2(
-            /*dY*/ dyes_cmy[2], /*dM*/ dyes_cmy[1], /*dC*/ dyes_cmy[0],
-            gEpsYTable.data(), gEpsMTable.data(), gEpsCTable.data(),
-            gAx.data(), gAy.data(), gAz.data(),
-            gShape.K, base, XYZ);
-#else
-        double X = 0.0, Y = 0.0, Z = 0.0;
-        const int K = gShape.K;
-        for (int i = 0; i < K; ++i) {
-            float baseSpectral = (base.hasBaseline && base.baseMin)
-                ? base.baseMin[i]
-                : 0.0f;
-
-            const float Dlambda = dyes_cmy[0] * gEpsCTable[i]
-                + dyes_cmy[1] * gEpsMTable[i]
-                + dyes_cmy[2] * gEpsYTable[i]
-                + baseSpectral;
-            if (!std::isfinite(Dlambda)) {
-                continue;
-            }
-            const float T = std::exp(-kLn10 * Dlambda);
-            X += T * gAx[i];
-            Y += T * gAy[i];
-            Z += T * gAz[i];
-        }
-        const float s = gInvYn;
-        XYZ[0] = static_cast<float>(X * s);
-        XYZ[1] = static_cast<float>(Y * s);
-        XYZ[2] = static_cast<float>(Z * s);
-#endif
     }
 
     // Integrate spectral irradiance under CMFs (stored as Spectral::Curve) to XYZ

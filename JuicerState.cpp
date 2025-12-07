@@ -1935,6 +1935,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     bool printDensityOk = !printCurves.cyan.empty() &&
         !printCurves.magenta.empty() &&
         !printCurves.yellow.empty();
+    bool printRuntimeOk = false;
     if (printDensityOk && printProfile.glare.compensationRemovalFactor > 0.0f) {
         Print::remove_glare_compensation_from_curves(printProfile, printCurves);
     }
@@ -1967,13 +1968,16 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             printBaselineMixReference,
             target->tablesPrint,
             printScannerIlluminant.hash);
+        printRuntimeOk = true;
     }
     else {
         if (!printDensityOk) {
             JTRACE("BUILD", "FATAL: missing spectral data (print profile) after glare processing");
         }
+        else {
+            JTRACE("BUILD", "FATAL: print profile invalid or viewing illuminant missing");
+        }
         target->tablesPrint = Spectral::SpectralTables{};
-        return;
     }
 
     Spectral::Curve illumScan = negativeScannerIlluminant.curve;
@@ -2313,13 +2317,21 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     const std::uint32_t lutRes =
         static_cast<std::uint32_t>(std::clamp(P.scannerLutResolution, 17, 128));
     const std::uint64_t negGlareHash = hash_glare(target->negativeGlare);
-    const std::uint64_t printGlareHash = hash_glare(target->printGlare);
-    if (negGlareHash == 0 || printGlareHash == 0) {
-        JTRACE("HASH", "FATAL: failed to hash glare parameters");
+    const std::uint64_t printGlareHash = printRuntimeOk ? hash_glare(target->printGlare) : 0;
+    if (negGlareHash == 0) {
+        JTRACE("HASH", "FATAL: failed to hash negative glare parameters");
         return;
     }
-    if (target->tablesScan.tablesHash == 0 || target->tablesPrint.tablesHash == 0) {
-        JTRACE("HASH", "FATAL: scanner table hashes invalid");
+    if (printRuntimeOk && printGlareHash == 0) {
+        JTRACE("HASH", "FATAL: failed to hash print glare parameters");
+        return;
+    }
+    if (target->tablesScan.tablesHash == 0) {
+        JTRACE("HASH", "FATAL: scanner table hash invalid for negative medium");
+        return;
+    }
+    if (printRuntimeOk && target->tablesPrint.tablesHash == 0) {
+        JTRACE("HASH", "FATAL: scanner table hash invalid for print medium");
         return;
     }
 
@@ -2341,12 +2353,21 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->negativeColorRuntime = ScannerOptics::build_color_runtime(
         target->negativeMediumRuntime,
         scannerEncoding);
-    target->printColorRuntime = ScannerOptics::build_color_runtime(
-        target->printMediumRuntime,
-        scannerEncoding);
-    if (target->negativeColorRuntime.hash == 0 || target->printColorRuntime.hash == 0) {
-        JTRACE("HASH", "FATAL: scanner color runtime hash invalid");
+    if (target->negativeColorRuntime.hash == 0) {
+        JTRACE("HASH", "FATAL: scanner color runtime hash invalid for negative medium");
         return;
+    }
+    if (printRuntimeOk) {
+        target->printColorRuntime = ScannerOptics::build_color_runtime(
+            target->printMediumRuntime,
+            scannerEncoding);
+        if (target->printColorRuntime.hash == 0) {
+            JTRACE("HASH", "FATAL: scanner color runtime hash invalid for print medium");
+            return;
+        }
+    }
+    else {
+        target->printColorRuntime = Scanner::ColorRuntime{};
     }
 
     target->negativeStaticKey = Scanner::ScannerStaticKey{};
@@ -2359,23 +2380,25 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     Scanner::finalize_static_key(target->negativeStaticKey);
 
     target->printStaticKey = Scanner::ScannerStaticKey{};
-    target->printStaticKey.medium = Scanner::ScannerMedium::Print;
-    target->printStaticKey.tablesHash = target->tablesPrint.tablesHash;
-    target->printStaticKey.densityRangeHash = target->printDensityRange.digest;
-    target->printStaticKey.glareHash = printGlareHash;
-    target->printStaticKey.colorRuntimeHash = target->printColorRuntime.hash;
-    target->printStaticKey.lutResolution = lutRes;
-    Scanner::finalize_static_key(target->printStaticKey);
+    if (printRuntimeOk) {
+        target->printStaticKey.medium = Scanner::ScannerMedium::Print;
+        target->printStaticKey.tablesHash = target->tablesPrint.tablesHash;
+        target->printStaticKey.densityRangeHash = target->printDensityRange.digest;
+        target->printStaticKey.glareHash = printGlareHash;
+        target->printStaticKey.colorRuntimeHash = target->printColorRuntime.hash;
+        target->printStaticKey.lutResolution = lutRes;
+        Scanner::finalize_static_key(target->printStaticKey);
+    }
 
     target->negativeMediumRuntime.color = &target->negativeColorRuntime;
     target->negativeMediumRuntime.staticKey = target->negativeStaticKey;
 
-    target->printMediumRuntime.color = &target->printColorRuntime;
+    target->printMediumRuntime.color = printRuntimeOk ? &target->printColorRuntime : nullptr;
     target->printMediumRuntime.staticKey = target->printStaticKey;
 
     target->negativeScannerValid = true;
-    target->printScannerValid = true;
-    target->printGlareCompensated = (printProfile.glare.compensationRemovalFactor > 0.0f);
+    target->printScannerValid = printRuntimeOk;
+    target->printGlareCompensated = (printRuntimeOk && printProfile.glare.compensationRemovalFactor > 0.0f);
     failureGuard.committed = true;
 
     if (&S.workA == target) {
