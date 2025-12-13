@@ -39,8 +39,8 @@ namespace ScannerOptics {
 
     struct Runtime {
         Scanner::SpectralLutBuffer lut;
-        std::vector<float> blurKernel;
-        std::vector<float> unsharpKernel;
+        std::vector<double> blurKernel;
+        std::vector<double> unsharpKernel;
         float unsharpAmount = 0.0f;
         GlareCache glare;
         Scanner::ScannerKey key{};

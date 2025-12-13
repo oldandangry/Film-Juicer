@@ -89,6 +89,65 @@ namespace OutputEncoding {
             }
         }
 
+        inline double clamp01d(double v) {
+            if (v <= 0.0) return 0.0;
+            if (v >= 1.0) return 1.0;
+            return v;
+        }
+
+        inline double encode_gammad(double v, double exponent) {
+            return std::pow(v, exponent);
+        }
+
+        inline double encode_sRGBd(double v) {
+            if (v <= 0.0031308) {
+                return 12.92 * v;
+            }
+            return 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
+        }
+
+        inline double encode_BT2020d(double v, double a, double b) {
+            if (v < b) {
+                return v * 4.5;
+            }
+            return a * std::pow(v, 0.45) - (a - 1.0);
+        }
+
+        inline double encode_ProPhotod(double v, double threshold, double exponent) {
+            if (v < threshold) {
+                return v * 16.0;
+            }
+            return std::pow(v, exponent);
+        }
+
+        inline double encode_DaVinciIntermediated(double v, const GeneratedColorSpaces::CctfParams& cctf) {
+            const double linear = std::max(0.0, v);
+            if (linear <= static_cast<double>(cctf.linearCutoff)) {
+                return linear * static_cast<double>(cctf.d);
+            }
+            return (std::log2(linear + static_cast<double>(cctf.a)) + static_cast<double>(cctf.b)) * static_cast<double>(cctf.c);
+        }
+
+        inline double encode_channel_double(const GeneratedColorSpaces::CctfParams& cctf, double v) {
+            using Kind = GeneratedColorSpaces::CctfKind;
+            switch (cctf.kind) {
+            case Kind::Linear:
+                return v;
+            case Kind::Gamma:
+                return encode_gammad(v, static_cast<double>(cctf.gamma));
+            case Kind::SRGB:
+                return encode_sRGBd(v);
+            case Kind::BT2020:
+                return encode_BT2020d(v, static_cast<double>(cctf.a), static_cast<double>(cctf.b));
+            case Kind::ProPhoto:
+                return encode_ProPhotod(v, static_cast<double>(cctf.linearCutoff), static_cast<double>(cctf.gamma));
+            case Kind::DaVinciIntermediate:
+                return encode_DaVinciIntermediated(v, cctf);
+            default:
+                return clamp01d(v);
+            }
+        }
+
     } // namespace
 
     Matrix3x3 dwg_to_output_matrix(ColorSpace cs) {
@@ -138,6 +197,49 @@ namespace OutputEncoding {
         rgb[0] = clamp01(rgb[0]);
         rgb[1] = clamp01(rgb[1]);
         rgb[2] = clamp01(rgb[2]);
+    }
+
+    void applyEncoding(const Params& params, double rgb[3]) {
+        const auto& outSpace = GeneratedColorSpaces::get(params.colorSpace);
+        double linear[3];
+        if (params.inputIsOutputSpace) {
+            linear[0] = rgb[0];
+            linear[1] = rgb[1];
+            linear[2] = rgb[2];
+        }
+        else {
+            const Matrix3x3 m = dwg_to_output_matrix(params.colorSpace);
+            double mat[9] = {
+                static_cast<double>(m.m[0]), static_cast<double>(m.m[1]), static_cast<double>(m.m[2]),
+                static_cast<double>(m.m[3]), static_cast<double>(m.m[4]), static_cast<double>(m.m[5]),
+                static_cast<double>(m.m[6]), static_cast<double>(m.m[7]), static_cast<double>(m.m[8])
+            };
+            linear[0] = mat[0] * rgb[0] + mat[1] * rgb[1] + mat[2] * rgb[2];
+            linear[1] = mat[3] * rgb[0] + mat[4] * rgb[1] + mat[5] * rgb[2];
+            linear[2] = mat[6] * rgb[0] + mat[7] * rgb[1] + mat[8] * rgb[2];
+        }
+
+        if (params.preserveLinearRange) {
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
+            return;
+        }
+
+        if (params.applyCctfEncoding) {
+            rgb[0] = encode_channel_double(outSpace.cctf, linear[0]);
+            rgb[1] = encode_channel_double(outSpace.cctf, linear[1]);
+            rgb[2] = encode_channel_double(outSpace.cctf, linear[2]);
+        }
+        else {
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
+        }
+
+        rgb[0] = clamp01d(rgb[0]);
+        rgb[1] = clamp01d(rgb[1]);
+        rgb[2] = clamp01d(rgb[2]);
     }
 
 } // namespace OutputEncoding

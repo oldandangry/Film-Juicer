@@ -113,7 +113,7 @@ namespace Scanner {
     };
 
     struct SpectralLutBuffer {
-        std::vector<float> cpu;
+        std::vector<double> cpu;
         std::uint64_t hash = 0;
         std::uint32_t res = 0;
         bool valid = false;

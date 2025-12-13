@@ -60,4 +60,5 @@ namespace OutputEncoding {
 
     Matrix3x3 dwg_to_output_matrix(ColorSpace cs);
     void applyEncoding(const Params& params, float rgb[3]);
+    void applyEncoding(const Params& params, double rgb[3]);
 }

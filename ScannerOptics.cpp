@@ -18,7 +18,8 @@
 
 namespace {
 
-    inline void mat3_mul_vec(const float m[9], const float v[3], float out[3]) {
+    template <typename Scalar>
+    inline void mat3_mul_vec(const Scalar m[9], const Scalar v[3], Scalar out[3]) {
         out[0] = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
         out[1] = m[3] * v[0] + m[4] * v[1] + m[5] * v[2];
         out[2] = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
@@ -35,28 +36,31 @@ namespace {
         }
     }
 
-    inline void build_gaussian_kernel(float sigma, std::vector<float>& kernel) {
+    template <typename Scalar>
+    inline void build_gaussian_kernel(float sigma, std::vector<Scalar>& kernel) {
         kernel.clear();
         if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
-            kernel.push_back(1.0f);
+            kernel.push_back(static_cast<Scalar>(1.0));
             return;
         }
         const int radiusRaw = std::max(1, int(std::ceil(4.0f * sigma)));
         const int radius = std::min(radiusRaw, 75);
         kernel.resize(size_t(2 * radius + 1));
-        const float s2 = sigma * sigma * 2.0f;
-        float wsum = 0.0f;
+        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
+        double wsum = 0.0;
         for (int i = -radius; i <= radius; ++i) {
-            const float w = std::exp(-(i * i) / s2);
-            kernel[size_t(i + radius)] = w;
+            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
+            kernel[size_t(i + radius)] = static_cast<Scalar>(w);
             wsum += w;
         }
-        for (float& w : kernel) w /= wsum;
+        const Scalar invW = (wsum != 0.0) ? static_cast<Scalar>(1.0 / wsum) : static_cast<Scalar>(0.0);
+        for (Scalar& w : kernel) w *= invW;
     }
 
-    void blur_separable(const std::vector<float>& src, std::vector<float>& tmp, std::vector<float>& dst,
-        int width, int height, const std::vector<float>& k) {
-        tmp.assign(size_t(width * height), 0.0f);
+    template <typename Scalar>
+    void blur_separable(const std::vector<Scalar>& src, std::vector<Scalar>& tmp, std::vector<Scalar>& dst,
+        int width, int height, const std::vector<Scalar>& k) {
+        tmp.assign(size_t(width * height), static_cast<Scalar>(0.0));
         const int radius = int(k.size() / 2);
         auto reflectIndex = [](int idx, int size) -> int {
             if (size <= 1) {
@@ -73,10 +77,10 @@ namespace {
             return idx;
             };
         for (int y = 0; y < height; ++y) {
-            const float* srow = &src[size_t(y * width)];
-            float* trow = &tmp[size_t(y * width)];
+            const Scalar* srow = &src[size_t(y * width)];
+            Scalar* trow = &tmp[size_t(y * width)];
             for (int x = 0; x < width; ++x) {
-                float acc = 0.0f;
+                Scalar acc = static_cast<Scalar>(0.0);
                 for (int j = -radius; j <= radius; ++j) {
                     const int xx = reflectIndex(x + j, width);
                     acc += srow[xx] * k[size_t(j + radius)];
@@ -84,10 +88,10 @@ namespace {
                 trow[x] = acc;
             }
         }
-        dst.assign(size_t(width * height), 0.0f);
+        dst.assign(size_t(width * height), static_cast<Scalar>(0.0));
         for (int x = 0; x < width; ++x) {
             for (int y = 0; y < height; ++y) {
-                float acc = 0.0f;
+                Scalar acc = static_cast<Scalar>(0.0);
                 for (int j = -radius; j <= radius; ++j) {
                     const int yy = reflectIndex(y + j, height);
                     acc += tmp[size_t(yy * width + x)] * k[size_t(j + radius)];
@@ -97,22 +101,22 @@ namespace {
         }
     }
 
-    inline float mitchell_weight(float t) {
-        const float B = 1.0f / 3.0f;
-        const float C = 1.0f / 3.0f;
-        const float x = std::fabs(t);
-        if (x < 1.0f) {
-            return (1.0f / 6.0f) * ((12.0f - 9.0f * B - 6.0f * C) * x * x * x
-                + (-18.0f + 12.0f * B + 6.0f * C) * x * x
-                + (6.0f - 2.0f * B));
+    inline double mitchell_weight(double t) {
+        const double B = 1.0 / 3.0;
+        const double C = 1.0 / 3.0;
+        const double x = std::fabs(t);
+        if (x < 1.0) {
+            return (1.0 / 6.0) * ((12.0 - 9.0 * B - 6.0 * C) * x * x * x
+                + (-18.0 + 12.0 * B + 6.0 * C) * x * x
+                + (6.0 - 2.0 * B));
         }
-        else if (x < 2.0f) {
-            return (1.0f / 6.0f) * ((-B - 6.0f * C) * x * x * x
-                + (6.0f * B + 30.0f * C) * x * x
-                + (-12.0f * B - 48.0f * C) * x
-                + (8.0f * B + 24.0f * C));
+        else if (x < 2.0) {
+            return (1.0 / 6.0) * ((-B - 6.0 * C) * x * x * x
+                + (6.0 * B + 30.0 * C) * x * x
+                + (-12.0 * B - 48.0 * C) * x
+                + (8.0 * B + 24.0 * C));
         }
-        return 0.0f;
+        return 0.0;
     }
 
     inline int reflect_index(int idx, int size) {
@@ -122,50 +126,50 @@ namespace {
         return idx;
     }
 
-    inline void sample_cubic(const Scanner::SpectralLutBuffer& lut, const float D_norm[3], float out[3]) {
+    inline void sample_cubic(const Scanner::SpectralLutBuffer& lut, const double D_norm[3], double out[3]) {
         const int res = static_cast<int>(std::max(1u, lut.res));
-        const float scale = (res > 1) ? float(res - 1) : 1.0f;
-        const float fx = D_norm[0] * scale;
-        const float fy = D_norm[1] * scale;
-        const float fz = D_norm[2] * scale;
+        const double scale = (res > 1) ? static_cast<double>(res - 1) : 1.0;
+        const double fx = D_norm[0] * scale;
+        const double fy = D_norm[1] * scale;
+        const double fz = D_norm[2] * scale;
 
         const int xBase = static_cast<int>(std::floor(fx));
         const int yBase = static_cast<int>(std::floor(fy));
         const int zBase = static_cast<int>(std::floor(fz));
-        const float tx = fx - float(xBase);
-        const float ty = fy - float(yBase);
-        const float tz = fz - float(zBase);
+        const double tx = fx - static_cast<double>(xBase);
+        const double ty = fy - static_cast<double>(yBase);
+        const double tz = fz - static_cast<double>(zBase);
 
-        float wx[4], wy[4], wz[4];
-        wx[0] = mitchell_weight(tx + 1.0f);
+        double wx[4], wy[4], wz[4];
+        wx[0] = mitchell_weight(tx + 1.0);
         wx[1] = mitchell_weight(tx);
-        wx[2] = mitchell_weight(tx - 1.0f);
-        wx[3] = mitchell_weight(tx - 2.0f);
-        wy[0] = mitchell_weight(ty + 1.0f);
+        wx[2] = mitchell_weight(tx - 1.0);
+        wx[3] = mitchell_weight(tx - 2.0);
+        wy[0] = mitchell_weight(ty + 1.0);
         wy[1] = mitchell_weight(ty);
-        wy[2] = mitchell_weight(ty - 1.0f);
-        wy[3] = mitchell_weight(ty - 2.0f);
-        wz[0] = mitchell_weight(tz + 1.0f);
+        wy[2] = mitchell_weight(ty - 1.0);
+        wy[3] = mitchell_weight(ty - 2.0);
+        wz[0] = mitchell_weight(tz + 1.0);
         wz[1] = mitchell_weight(tz);
-        wz[2] = mitchell_weight(tz - 1.0f);
-        wz[3] = mitchell_weight(tz - 2.0f);
+        wz[2] = mitchell_weight(tz - 1.0);
+        wz[3] = mitchell_weight(tz - 2.0);
 
-        auto lut_at = [&](int xi, int yi, int zi, int c) -> float {
+        auto lut_at = [&](int xi, int yi, int zi, int c) -> double {
             const size_t idx = (size_t(zi) * size_t(res) + size_t(yi)) * size_t(res) + size_t(xi);
             const size_t base = idx * 3 + size_t(c);
-            if (base >= lut.cpu.size()) return 0.0f;
+            if (base >= lut.cpu.size()) return 0.0;
             return lut.cpu[base];
             };
 
-        float sum[3] = { 0.0f, 0.0f, 0.0f };
-        float wsum = 0.0f;
+        double sum[3] = { 0.0, 0.0, 0.0 };
+        double wsum = 0.0;
         for (int i = 0; i < 4; ++i) {
             const int xi = reflect_index(xBase - 1 + i, res);
             for (int j = 0; j < 4; ++j) {
                 const int yj = reflect_index(yBase - 1 + j, res);
                 for (int k = 0; k < 4; ++k) {
                     const int zk = reflect_index(zBase - 1 + k, res);
-                    const float w = wx[i] * wy[j] * wz[k];
+                    const double w = wx[i] * wy[j] * wz[k];
                     wsum += w;
                     for (int c = 0; c < 3; ++c) {
                         sum[c] += w * lut_at(xi, yj, zk, c);
@@ -173,10 +177,39 @@ namespace {
                 }
             }
         }
-        const float inv = (wsum != 0.0f) ? (1.0f / wsum) : 0.0f;
+        const double inv = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
         out[0] = sum[0] * inv;
         out[1] = sum[1] * inv;
         out[2] = sum[2] * inv;
+    }
+
+    inline void dyes_to_XYZ_given_tables_double(
+        const Spectral::SpectralTables& T,
+        const double dyes_cmy[3],
+        double XYZ[3],
+        bool useBaseline)
+    {
+        double X = 0.0, Y = 0.0, Z = 0.0;
+        const int K = T.K;
+        constexpr double kLn10d = 2.302585092994046;
+        for (int i = 0; i < K; ++i) {
+            const double baseSpectral = (useBaseline && T.hasBaseline) ? static_cast<double>(T.baseMin[i]) : 0.0;
+            const double Dlambda = dyes_cmy[0] * static_cast<double>(T.epsC[i])
+                + dyes_cmy[1] * static_cast<double>(T.epsM[i])
+                + dyes_cmy[2] * static_cast<double>(T.epsY[i])
+                + baseSpectral;
+            if (!std::isfinite(Dlambda)) {
+                continue;
+            }
+            const double Tlambda = std::exp(-kLn10d * Dlambda);
+            X += Tlambda * static_cast<double>(T.Ax[i]);
+            Y += Tlambda * static_cast<double>(T.Ay[i]);
+            Z += Tlambda * static_cast<double>(T.Az[i]);
+        }
+        const double s = static_cast<double>(T.invYn);
+        XYZ[0] = X * s;
+        XYZ[1] = Y * s;
+        XYZ[2] = Z * s;
     }
 
     inline float hash_to_uniform(std::uint64_t h) {
@@ -349,20 +382,20 @@ namespace ScannerOptics {
             JTRACE("SCAN", "FATAL: scanner density range missing or invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        const float invYn = tables->invYn;
-        if (!(std::isfinite(invYn) && invYn > 0.0f)) {
+        const double invYn = static_cast<double>(tables->invYn);
+        if (!(std::isfinite(invYn) && invYn > 0.0)) {
             JTRACE("SCAN", "FATAL: scanner tables contain invalid invYn");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        float invNormalization = invYn;
+        double invNormalization = invYn;
         if (std::isfinite(medium.illuminant.normalization) && medium.illuminant.normalization > 0.0f) {
-            invNormalization = 1.0f / medium.illuminant.normalization;
+            invNormalization = 1.0 / static_cast<double>(medium.illuminant.normalization);
         }
-        if (!(std::isfinite(invNormalization) && invNormalization > 0.0f)) {
+        if (!(std::isfinite(invNormalization) && invNormalization > 0.0)) {
             JTRACE("SCAN", "FATAL: scanner illuminant normalization invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        const float scaleToIlluminant = invNormalization / invYn;
+        const double scaleToIlluminant = invNormalization / invYn;
         const bool useBaseline = tables->hasBaseline; // per-medium baseline; do not gate on film state
         const int width = ctx.bounds.x2 - ctx.bounds.x1;
         const int height = ctx.bounds.y2 - ctx.bounds.y1;
@@ -379,29 +412,29 @@ namespace ScannerOptics {
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
 
-        auto spectral_to_logXYZ = [&](const float D_norm[3], float logXYZ[3]) {
-            float D_denorm[3];
+        auto spectral_to_logXYZ = [&](const double D_norm[3], double logXYZ[3]) {
+            double D_denorm[3];
             if (medium.medium == Scanner::ScannerMedium::Negative) {
-                Scanner::denormalize_film_density(medium.range, D_norm, D_denorm);
+                D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]) - static_cast<double>(medium.range.min_cmy[0]);
+                D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]) - static_cast<double>(medium.range.min_cmy[1]);
+                D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]) - static_cast<double>(medium.range.min_cmy[2]);
             }
             else {
-                Scanner::denormalize_print_density(medium.range, D_norm, D_denorm);
+                D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]);
+                D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]);
+                D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]);
             }
-            float XYZ[3] = { 0.0f, 0.0f, 0.0f };
-            if (useBaseline) {
-                Spectral::dyes_to_XYZ_with_baseline_given_tables(*tables, D_denorm, XYZ);
-            }
-            else {
-                Spectral::dyes_to_XYZ_given_tables(*tables, D_denorm, XYZ);
-            }
-            if (scaleToIlluminant != 1.0f) {
+            double XYZ[3] = { 0.0, 0.0, 0.0 };
+            dyes_to_XYZ_given_tables_double(*tables, D_denorm, XYZ, useBaseline);
+            if (scaleToIlluminant != 1.0) {
                 XYZ[0] *= scaleToIlluminant;
                 XYZ[1] *= scaleToIlluminant;
                 XYZ[2] *= scaleToIlluminant;
             }
-            logXYZ[0] = std::log10(std::max(0.0f, XYZ[0]) + 1e-10f);
-            logXYZ[1] = std::log10(std::max(0.0f, XYZ[1]) + 1e-10f);
-            logXYZ[2] = std::log10(std::max(0.0f, XYZ[2]) + 1e-10f);
+            constexpr double kEps = 1e-10;
+            logXYZ[0] = std::log10(std::max(0.0, XYZ[0]) + kEps);
+            logXYZ[1] = std::log10(std::max(0.0, XYZ[1]) + kEps);
+            logXYZ[2] = std::log10(std::max(0.0, XYZ[2]) + kEps);
         };
 
         // Prepare LUT if needed
@@ -409,7 +442,7 @@ namespace ScannerOptics {
         if (useLut && should_rebuild_lut(runtime, ctx.scannerKey.staticKey, staticKeyChanged)) {
             const std::uint32_t res = std::clamp(
                 ctx.scannerKey.staticKey.lutResolution, 17u, 128u);
-            runtime.lut.cpu.assign(size_t(res) * size_t(res) * size_t(res) * 3u, 0.0f);
+            runtime.lut.cpu.assign(size_t(res) * size_t(res) * size_t(res) * 3u, 0.0);
             runtime.lut.res = res;
             {
                 std::ostringstream oss;
@@ -422,14 +455,14 @@ namespace ScannerOptics {
                 JTRACE("SCAN", oss.str());
             }
             for (std::uint32_t z = 0; z < res; ++z) {
-                const float nz = (res > 1u) ? float(z) / float(res - 1u) : 0.0f;
+                const double nz = (res > 1u) ? double(z) / double(res - 1u) : 0.0;
                 for (std::uint32_t y = 0; y < res; ++y) {
-                    const float ny = (res > 1u) ? float(y) / float(res - 1u) : 0.0f;
+                    const double ny = (res > 1u) ? double(y) / double(res - 1u) : 0.0;
                     for (std::uint32_t x = 0; x < res; ++x) {
-                        const float nx = (res > 1u) ? float(x) / float(res - 1u) : 0.0f;
+                        const double nx = (res > 1u) ? double(x) / double(res - 1u) : 0.0;
                         const size_t idx = (size_t(z) * size_t(res) + size_t(y)) * size_t(res) + size_t(x);
-                        float logXYZ[3];
-                        const float D_norm[3] = { nx, ny, nz };
+                        double logXYZ[3];
+                        const double D_norm[3] = { nx, ny, nz };
                         spectral_to_logXYZ(D_norm, logXYZ);
                         if (!std::isfinite(logXYZ[0]) || !std::isfinite(logXYZ[1]) || !std::isfinite(logXYZ[2])) {
                             JTRACE("SCAN", "FATAL: invalid LUT sample during spectral computation");
@@ -526,9 +559,16 @@ namespace ScannerOptics {
         const unsigned int nThreads = std::max(1u, ctx.threadCount);
         const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
 
-        std::vector<float> rgbR(total, 0.0f);
-        std::vector<float> rgbG(total, 0.0f);
-        std::vector<float> rgbB(total, 0.0f);
+        double cat02[9];
+        double xyzToRgb[9];
+        for (int i = 0; i < 9; ++i) {
+            cat02[i] = static_cast<double>(ctx.color->cat02[i]);
+            xyzToRgb[i] = static_cast<double>(ctx.color->xyzToRgb[i]);
+        }
+
+        std::vector<double> rgbR(total, 0.0);
+        std::vector<double> rgbG(total, 0.0);
+        std::vector<double> rgbB(total, 0.0);
 
         std::atomic<bool> abortFlag{ false };
         std::atomic<bool> failure{ false };
@@ -552,40 +592,44 @@ namespace ScannerOptics {
                         }
                         const size_t idx = rowOffset + size_t(xOff);
                         float D_cmy[3] = { density.c[idx], density.m[idx], density.y[idx] };
-                        float D_norm[3];
+                        double D_norm[3];
                         if (medium.medium == Scanner::ScannerMedium::Negative) {
-                            Scanner::normalize_film_density(medium.range, D_cmy, D_norm);
+                            D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(medium.range.min_cmy[0])) * static_cast<double>(medium.range.inv_max_cmy[0]);
+                            D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(medium.range.min_cmy[1])) * static_cast<double>(medium.range.inv_max_cmy[1]);
+                            D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(medium.range.min_cmy[2])) * static_cast<double>(medium.range.inv_max_cmy[2]);
                         }
                         else {
-                            Scanner::normalize_print_density(medium.range, D_cmy, D_norm);
+                            D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(medium.range.inv_max_cmy[0]);
+                            D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(medium.range.inv_max_cmy[1]);
+                            D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(medium.range.inv_max_cmy[2]);
                         }
                         if (!std::isfinite(D_norm[0]) || !std::isfinite(D_norm[1]) || !std::isfinite(D_norm[2])) {
                             abortFlag.store(true, std::memory_order_relaxed);
                             failure.store(true, std::memory_order_relaxed);
                             break;
                         }
-                        float logXYZ[3];
+                        double logXYZ[3];
                         if (useLut && runtime.lut.valid) {
                             sample_cubic(runtime.lut, D_norm, logXYZ);
                         }
                         else {
                             spectral_to_logXYZ(D_norm, logXYZ);
                         }
-                        float xyz[3] = {
-                            std::pow(10.0f, logXYZ[0]),
-                            std::pow(10.0f, logXYZ[1]),
-                            std::pow(10.0f, logXYZ[2])
+                        double xyz[3] = {
+                            std::pow(10.0, logXYZ[0]),
+                            std::pow(10.0, logXYZ[1]),
+                            std::pow(10.0, logXYZ[2])
                         };
                         if (runtime.glare.valid) {
                             const float glare = runtime.glare.amount[idx];
-                            xyz[0] += glare * ctx.color->illuminantXYZ[0];
-                            xyz[1] += glare * ctx.color->illuminantXYZ[1];
-                            xyz[2] += glare * ctx.color->illuminantXYZ[2];
+                            xyz[0] += static_cast<double>(glare) * static_cast<double>(ctx.color->illuminantXYZ[0]);
+                            xyz[1] += static_cast<double>(glare) * static_cast<double>(ctx.color->illuminantXYZ[1]);
+                            xyz[2] += static_cast<double>(glare) * static_cast<double>(ctx.color->illuminantXYZ[2]);
                         }
-                        float adapted[3];
-                        mat3_mul_vec(ctx.color->cat02, xyz, adapted);
-                        float rgbOut[3];
-                        mat3_mul_vec(ctx.color->xyzToRgb, adapted, rgbOut);
+                        double adapted[3];
+                        mat3_mul_vec(cat02, xyz, adapted);
+                        double rgbOut[3];
+                        mat3_mul_vec(xyzToRgb, adapted, rgbOut);
                         if (!std::isfinite(rgbOut[0]) || !std::isfinite(rgbOut[1]) || !std::isfinite(rgbOut[2])) {
                             abortFlag.store(true, std::memory_order_relaxed);
                             failure.store(true, std::memory_order_relaxed);
@@ -614,7 +658,7 @@ namespace ScannerOptics {
 
         // Stage B: lens blur
         if (ctx.options.lensBlurSigmaPx > 0.0f && runtime.blurKernel.size() > 1) {
-            std::vector<float> tmp;
+            std::vector<double> tmp;
             blur_separable(rgbR, tmp, rgbR, width, height, runtime.blurKernel);
             blur_separable(rgbG, tmp, rgbG, width, height, runtime.blurKernel);
             blur_separable(rgbB, tmp, rgbB, width, height, runtime.blurKernel);
@@ -623,23 +667,23 @@ namespace ScannerOptics {
         // Stage C: unsharp mask
         if (ctx.options.unsharpSigmaPx > 0.0f && std::isfinite(ctx.options.unsharpAmount) && ctx.options.unsharpAmount != 0.0f &&
             runtime.unsharpKernel.size() > 1) {
-            std::vector<float> tmp;
-            std::vector<float> blurred(total, 0.0f);
+            std::vector<double> tmp;
+            std::vector<double> blurred(total, 0.0);
             blur_separable(rgbR, tmp, blurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
-                float v = rgbR[i] + ctx.options.unsharpAmount * (rgbR[i] - blurred[i]);
+                double v = rgbR[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbR[i] - blurred[i]);
                 // agx-emulsion parity: allow overshoot/undershoot; clip only after encoding.
-                rgbR[i] = std::isfinite(v) ? v : 0.0f;
+                rgbR[i] = std::isfinite(v) ? v : 0.0;
             }
             blur_separable(rgbG, tmp, blurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
-                float v = rgbG[i] + ctx.options.unsharpAmount * (rgbG[i] - blurred[i]);
-                rgbG[i] = std::isfinite(v) ? v : 0.0f;
+                double v = rgbG[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbG[i] - blurred[i]);
+                rgbG[i] = std::isfinite(v) ? v : 0.0;
             }
             blur_separable(rgbB, tmp, blurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
-                float v = rgbB[i] + ctx.options.unsharpAmount * (rgbB[i] - blurred[i]);
-                rgbB[i] = std::isfinite(v) ? v : 0.0f;
+                double v = rgbB[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbB[i] - blurred[i]);
+                rgbB[i] = std::isfinite(v) ? v : 0.0;
             }
         }
 
@@ -673,11 +717,11 @@ namespace ScannerOptics {
                             reinterpret_cast<char*>(ctx.dstView.r) + rowOffsetBytes);
                         float* dstPix = dstRow + size_t(xOff * ctx.nComponents);
                         const size_t idx = rowOffset + size_t(xOff);
-                        float rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
+                        double rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
                         OutputEncoding::applyEncoding(ctx.color->encoding, rgbOut);
-                        dstPix[0] = rgbOut[0];
-                        dstPix[1] = rgbOut[1];
-                        dstPix[2] = rgbOut[2];
+                        dstPix[0] = static_cast<float>(rgbOut[0]);
+                        dstPix[1] = static_cast<float>(rgbOut[1]);
+                        dstPix[2] = static_cast<float>(rgbOut[2]);
                         if (ctx.copyAlpha) {
                             dstPix[3] = (srcPix && ctx.copyAlpha) ? srcPix[3] : 1.0f;
                         }
