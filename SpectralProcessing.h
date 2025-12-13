@@ -1088,20 +1088,31 @@ namespace Spectral {
 
         T.hasBaseline = hasBaseline &&
             (int)baseMin.linear.size() == K;
+        T.baseMin.assign(K, 0.0f);
+        T.baseMid.assign(K, 0.0f);
+        T.baseMinValid.assign(K, 0);
+        T.baseMidValid.assign(K, 0);
         if (T.hasBaseline) {
-            T.baseMin = baseMin.linear;
-            if ((int)baseMid.linear.size() == K) {
-                T.baseMid = baseMid.linear;
+            for (int i = 0; i < K; ++i) {
+                const float v = baseMin.linear[i];
+                if (std::isfinite(v)) {
+                    T.baseMin[i] = std::max(0.0f, v);
+                    T.baseMinValid[i] = 1;
+                }
             }
-            else {
-                T.baseMid.assign(K, 0.0f);
+            if ((int)baseMid.linear.size() == K) {
+                for (int i = 0; i < K; ++i) {
+                    const float v = baseMid.linear[i];
+                    if (std::isfinite(v)) {
+                        T.baseMid[i] = std::max(0.0f, v);
+                        T.baseMidValid[i] = 1;
+                    }
+                }
             }
             // agx-emulsion parity: baseline mixing uses only baseMin; keep mix reference disabled.
             T.baselineMixReference = 0.0f;
         }
         else {
-            T.baseMin.assign(K, 0.0f);
-            T.baseMid.assign(K, 0.0f);
             T.baselineMixReference = 0.0f;
         }
 
@@ -1135,6 +1146,8 @@ namespace Spectral {
             hash_vec(T.epsY),
             hash_vec(T.baseMin),
             hash_vec(T.baseMid),
+            Hash::hash_bytes(T.baseMinValid.data(), T.baseMinValid.size()),
+            Hash::hash_bytes(T.baseMidValid.data(), T.baseMidValid.size()),
             hash_scalar(T.baselineMixReference),
             Hash::hash_bytes(&T.hasBaseline, sizeof(T.hasBaseline))
         };
@@ -1293,6 +1306,11 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         for (int i = 0; i < K; ++i) {
+            if (T.hasBaseline &&
+                static_cast<size_t>(i) < T.baseMinValid.size() &&
+                T.baseMinValid[static_cast<size_t>(i)] == 0) {
+                continue;
+            }
             // agx-emulsion applies only the min baseline (dye_density[:,3] scaled); ignore mid column.
             const float baseSpectral = T.hasBaseline ? T.baseMin[i] : 0.0f;
             const float Dlambda = dyes_cmy[0] * T.epsC[i]

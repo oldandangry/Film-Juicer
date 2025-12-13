@@ -72,6 +72,10 @@ namespace Spectral {
 
         // Baseline (optional) and flag
         std::vector<float> baseMin, baseMid;
+        // Baseline validity masks (1 = original sample finite, 0 = missing/non-finite).
+        // Per agx-emulsion parity: skip wavelengths where baseMin was non-finite, which matches
+        // density->light NaN handling (NaN transmitted light forced to 0 contribution).
+        std::vector<std::uint8_t> baseMinValid, baseMidValid;
         bool hasBaseline = false;
 
         // Reference density used to compute baseline interpolation mix (0 => use baseMin).

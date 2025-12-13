@@ -1241,26 +1241,26 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         for (float& v : baseMin.linear) {
             if (std::isfinite(v)) {
                 v *= dyeDensityMinScale;
+                if (v < 0.0f) {
+                    v = 0.0f;
+                }
             }
-            else {
+        }
+    }
+    if (hasBaseline) {
+        for (float& v : baseMin.linear) {
+            if (std::isfinite(v) && v < 0.0f) {
                 v = 0.0f;
             }
-            if (v < 0.0f) {
+        }
+        for (float& v : baseMid.linear) {
+            if (std::isfinite(v) && v < 0.0f) {
                 v = 0.0f;
             }
         }
     }
-
-    // agx-emulsion parity: baseline curves are nan_to_num'ed before table building/hashing.
-    auto nan_to_num_curve = [](Spectral::Curve& c) {
-        for (float& v : c.linear) {
-            if (!std::isfinite(v) || v < 0.0f) {
-                v = 0.0f;
-            }
-        }
-        };
-    nan_to_num_curve(baseMin);
-    nan_to_num_curve(baseMid);
+    // agx-emulsion parity: baseline NaNs are preserved in working-state curves and handled as
+    // "0 contribution" during integration via SpectralTables baseline validity masks.
 
 
     // Per agx-emulsion parity: film profiles contain sensitivities that are ALREADY balanced
@@ -1954,8 +1954,19 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         Print::profile_is_valid(printProfile) &&
         printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K))
     {
-        nan_to_num_curve(printProfile.baseMin);
-        nan_to_num_curve(printProfile.baseMid);
+        if (printProfile.hasBaseline) {
+            for (float& v : printProfile.baseMin.linear) {
+                if (std::isfinite(v) && v < 0.0f) {
+                    v = 0.0f;
+                }
+            }
+            for (float& v : printProfile.baseMid.linear) {
+                if (std::isfinite(v) && v < 0.0f) {
+                    v = 0.0f;
+                }
+            }
+        }
+        printRuntimeCopy->profile = printProfile;
         Spectral::build_tables_from_curves_non_global(
             /*epsY*/ printProfile.epsY,
             /*epsM*/ printProfile.epsM,
@@ -2041,7 +2052,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             };
         const bool ok_dens = finiteCurve(densB) && finiteCurve(densG) && finiteCurve(densR);
         const bool ok_sens = finiteCurve(sensB) && finiteCurve(sensG) && finiteCurve(sensR);
-        const bool ok_base = finiteCurve(baseMin) && finiteCurve(baseMid);
+        const bool ok_base = !hasBaseline ||
+            (static_cast<int>(baseMin.linear.size()) == Spectral::gShape.K &&
+                static_cast<int>(baseMid.linear.size()) == Spectral::gShape.K);
         const bool ok_tables =
             (target->tablesView.K == Spectral::gShape.K) &&
             (target->tablesScan.K == Spectral::gShape.K) &&
