@@ -187,7 +187,8 @@ namespace {
         const Spectral::SpectralTables& T,
         const double dyes_cmy[3],
         double XYZ[3],
-        bool useBaseline)
+        bool useBaseline,
+        double invNormalization)
     {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
@@ -206,10 +207,9 @@ namespace {
             Y += Tlambda * static_cast<double>(T.Ay[i]);
             Z += Tlambda * static_cast<double>(T.Az[i]);
         }
-        const double s = static_cast<double>(T.invYn);
-        XYZ[0] = X * s;
-        XYZ[1] = Y * s;
-        XYZ[2] = Z * s;
+        XYZ[0] = X * invNormalization;
+        XYZ[1] = Y * invNormalization;
+        XYZ[2] = Z * invNormalization;
     }
 
     inline float hash_to_uniform(std::uint64_t h) {
@@ -378,24 +378,60 @@ namespace ScannerOptics {
             JTRACE("SCAN", "FATAL: scanner illuminant hash mismatch");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+        if (tables->illuminantHash == 0 || medium.illuminant.hash == 0) {
+            JTRACE("SCAN", "FATAL: scanner illuminant hash missing");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
         if (medium.range.digest == 0) {
             JTRACE("SCAN", "FATAL: scanner density range missing or invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        const double invYn = static_cast<double>(tables->invYn);
-        if (!(std::isfinite(invYn) && invYn > 0.0)) {
+        const double tablesInvYn = static_cast<double>(tables->invYn);
+        if (!(std::isfinite(tablesInvYn) && tablesInvYn > 0.0)) {
             JTRACE("SCAN", "FATAL: scanner tables contain invalid invYn");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        double invNormalization = invYn;
-        if (std::isfinite(medium.illuminant.normalization) && medium.illuminant.normalization > 0.0f) {
-            invNormalization = 1.0 / static_cast<double>(medium.illuminant.normalization);
+        if (!(std::isfinite(medium.illuminant.normalization) && medium.illuminant.normalization > 0.0f)) {
+            JTRACE("SCAN", "FATAL: scanner illuminant normalization invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+        const double invNormalization = 1.0 / static_cast<double>(medium.illuminant.normalization);
         if (!(std::isfinite(invNormalization) && invNormalization > 0.0)) {
             JTRACE("SCAN", "FATAL: scanner illuminant normalization invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        const double scaleToIlluminant = invNormalization / invYn;
+        for (int i = 0; i < 3; ++i) {
+            if (!std::isfinite(medium.illuminant.whiteXYZ[i])) {
+                JTRACE("SCAN", "FATAL: scanner illuminant whiteXYZ invalid");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+        }
+        if (!(medium.illuminant.whiteXYZ[1] > 0.0f)) {
+            JTRACE("SCAN", "FATAL: scanner illuminant whiteXYZ has invalid Y component");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        {
+            constexpr double kTolInvYnRel = 1e-5;
+            const double invYnFromIll = invNormalization;
+            const double invYnFromTables = tablesInvYn;
+            const double denom = std::max(1e-30, std::abs(invYnFromIll));
+            const double rel = std::abs(invYnFromIll - invYnFromTables) / denom;
+            if (!(std::isfinite(rel) && rel <= kTolInvYnRel)) {
+                JTRACE("SCAN", "FATAL: scanner illuminant normalization disagrees with tables invYn");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+        }
+        {
+            constexpr double kTolWhiteAbs = 1e-3;
+            for (int i = 0; i < 3; ++i) {
+                const double a = static_cast<double>(tables->whiteXYZ[i]);
+                const double b = static_cast<double>(medium.illuminant.whiteXYZ[i]);
+                if (!(std::isfinite(a) && std::isfinite(b) && std::abs(a - b) <= kTolWhiteAbs)) {
+                    JTRACE("SCAN", "FATAL: scanner tables whiteXYZ disagrees with illuminant whiteXYZ");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+        }
         const bool useBaseline = tables->hasBaseline; // per-medium baseline; do not gate on film state
         const int width = ctx.bounds.x2 - ctx.bounds.x1;
         const int height = ctx.bounds.y2 - ctx.bounds.y1;
@@ -425,12 +461,7 @@ namespace ScannerOptics {
                 D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]);
             }
             double XYZ[3] = { 0.0, 0.0, 0.0 };
-            dyes_to_XYZ_given_tables_double(*tables, D_denorm, XYZ, useBaseline);
-            if (scaleToIlluminant != 1.0) {
-                XYZ[0] *= scaleToIlluminant;
-                XYZ[1] *= scaleToIlluminant;
-                XYZ[2] *= scaleToIlluminant;
-            }
+            dyes_to_XYZ_given_tables_double(*tables, D_denorm, XYZ, useBaseline, invNormalization);
             constexpr double kEps = 1e-10;
             logXYZ[0] = std::log10(std::max(0.0, XYZ[0]) + kEps);
             logXYZ[1] = std::log10(std::max(0.0, XYZ[1]) + kEps);
