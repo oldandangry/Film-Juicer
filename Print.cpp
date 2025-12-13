@@ -510,17 +510,26 @@ namespace Print {
             const FloatPairs& y_eps,
             Profile& out)
         {
-            using Spectral::build_curve_on_reference_axis_from_linear_pairs;
-            FloatPairs cSan = c_eps;
-            FloatPairs mSan = m_eps;
-            FloatPairs ySan = y_eps;
-            pad_pairs_to_shape_domain(cSan);
-            pad_pairs_to_shape_domain(mSan);
-            pad_pairs_to_shape_domain(ySan);
+            auto build_eps_curve = [](Spectral::Curve& dst, const FloatPairs& pairs) -> bool {
+                // JSON profiles are authored on the reference axis and may contain NaNs at spectral edges.
+                // Preserve missingness (NaNs) here; downstream SpectralTables will turn it into a validity mask.
+                if (Spectral::samples_follow_reference_axis(pairs)) {
+                    return Spectral::build_curve_on_reference_axis_from_aligned_pairs(
+                        dst, pairs, /*clampNegative*/false);
+                }
 
-            const bool cOk = build_curve_on_reference_axis_from_linear_pairs(out.epsC, cSan);
-            const bool mOk = build_curve_on_reference_axis_from_linear_pairs(out.epsM, mSan);
-            const bool yOk = build_curve_on_reference_axis_from_linear_pairs(out.epsY, ySan);
+                // CSV input is expected to be finite; keep existing pad/resample behavior.
+                FloatPairs sanitized = pairs;
+                pad_pairs_to_shape_domain(sanitized);
+                const std::vector<std::pair<float, float>> resampled =
+                    Spectral::resample_pairs_linear_to_reference_axis(sanitized);
+                return Spectral::build_curve_on_reference_axis_from_aligned_pairs(
+                    dst, resampled, /*clampNegative*/false);
+                };
+
+            const bool cOk = build_eps_curve(out.epsC, c_eps);
+            const bool mOk = build_eps_curve(out.epsM, m_eps);
+            const bool yOk = build_eps_curve(out.epsY, y_eps);
             return cOk && mOk && yOk;
         }
 
@@ -1342,8 +1351,6 @@ namespace Print {
             float baselineScale,
             Profile& out)
         {
-            using Spectral::build_curve_on_reference_axis_from_linear_pairs;
-
             if (curves.minPairs.empty() || curves.midPairs.empty()) {
                 out.baseMin.lambda_nm.clear();
                 out.baseMin.linear.clear();
@@ -1367,11 +1374,19 @@ namespace Print {
                 scale_samples(scaledMid);
             }
 
-            pad_pairs_to_shape_domain(scaledMin, std::nullopt, std::nullopt);
-            pad_pairs_to_shape_domain(scaledMid, std::nullopt, std::nullopt);
+            auto build_baseline_curve = [](Spectral::Curve& dst, FloatPairs& pairs) -> bool {
+                if (Spectral::samples_follow_reference_axis(pairs)) {
+                    // Preserve NaNs (missingness) and clamp only finite negatives.
+                    return Spectral::build_curve_on_reference_axis_from_aligned_pairs(
+                        dst, pairs, /*clampNegative*/true);
+                }
 
-            const bool minOk = build_curve_on_reference_axis_from_linear_pairs(out.baseMin, scaledMin);
-            const bool midOk = build_curve_on_reference_axis_from_linear_pairs(out.baseMid, scaledMid);
+                pad_pairs_to_shape_domain(pairs, std::nullopt, std::nullopt);
+                return Spectral::build_curve_on_reference_axis_from_linear_pairs(dst, pairs);
+                };
+
+            const bool minOk = build_baseline_curve(out.baseMin, scaledMin);
+            const bool midOk = build_baseline_curve(out.baseMid, scaledMid);
             out.hasBaseline = minOk && midOk;
             if (!out.hasBaseline) {
                 std::ostringstream warn;

@@ -439,8 +439,21 @@ namespace Print {
             };
 
         for (int i = 0; i < K; ++i) {
-            const float baseSpectral = hasBL
-                ? ws.baseMin.linear[i]
+            if (static_cast<size_t>(i) < ws.tablesView.epsValid.size() &&
+                ws.tablesView.epsValid[static_cast<size_t>(i)] == 0) {
+                Tneg_out[i] = 0.0f;
+                continue;
+            }
+            if (hasBL &&
+                static_cast<size_t>(i) < ws.tablesView.baseMinValid.size() &&
+                ws.tablesView.baseMinValid[static_cast<size_t>(i)] == 0) {
+                Tneg_out[i] = 0.0f;
+                continue;
+            }
+
+            const float baseSpectral = hasBL &&
+                static_cast<size_t>(i) < ws.tablesView.baseMin.size()
+                ? ws.tablesView.baseMin[static_cast<size_t>(i)]
                 : 0.0f;
 
             const float Dlambda = D_neg[0] * epsC_at(i) // C

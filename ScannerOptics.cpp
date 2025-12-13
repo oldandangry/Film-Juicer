@@ -194,6 +194,11 @@ namespace {
         const int K = T.K;
         constexpr double kLn10d = 2.302585092994046;
         for (int i = 0; i < K; ++i) {
+            if (!T.epsValid.empty() &&
+                static_cast<size_t>(i) < T.epsValid.size() &&
+                T.epsValid[static_cast<size_t>(i)] == 0) {
+                continue;
+            }
             if (useBaseline && T.hasBaseline &&
                 static_cast<size_t>(i) < T.baseMinValid.size() &&
                 T.baseMinValid[static_cast<size_t>(i)] == 0) {

@@ -1040,6 +1040,7 @@ namespace Spectral {
         T.epsY.resize(K);
         T.epsM.resize(K);
         T.epsC.resize(K);
+        T.epsValid.assign(K, 0);
         T.Xbar.resize(K);
         T.Ybar.resize(K);
         T.Zbar.resize(K);
@@ -1052,12 +1053,30 @@ namespace Spectral {
         double sumAx = 0.0;
         double sumAy = 0.0;
         double sumAz = 0.0;
+        const bool hasEpsY = (!epsY.linear.empty() && (int)epsY.linear.size() == K);
+        const bool hasEpsM = (!epsM.linear.empty() && (int)epsM.linear.size() == K);
+        const bool hasEpsC = (!epsC.linear.empty() && (int)epsC.linear.size() == K);
         for (int i = 0; i < K; ++i) {
             const float l = T.lambda[i];
 
-            T.epsY[i] = (!epsY.linear.empty() && (int)epsY.linear.size() == K) ? epsY.linear[i] : eps_yellow(l);
-            T.epsM[i] = (!epsM.linear.empty() && (int)epsM.linear.size() == K) ? epsM.linear[i] : eps_magenta(l);
-            T.epsC[i] = (!epsC.linear.empty() && (int)epsC.linear.size() == K) ? epsC.linear[i] : eps_cyan(l);
+            const float ey = hasEpsY ? epsY.linear[i] : eps_yellow(l);
+            const float em = hasEpsM ? epsM.linear[i] : eps_magenta(l);
+            const float ec = hasEpsC ? epsC.linear[i] : eps_cyan(l);
+            const bool epsFinite = std::isfinite(ey) && std::isfinite(em) && std::isfinite(ec);
+            if (epsFinite) {
+                // agx-emulsion uses dye coefficients as-authored; do not clamp negatives.
+                T.epsY[i] = ey;
+                T.epsM[i] = em;
+                T.epsC[i] = ec;
+                T.epsValid[i] = 1;
+            }
+            else {
+                // Hash-safe placeholder: values are 0 but missingness is preserved via epsValid.
+                T.epsY[i] = 0.0f;
+                T.epsM[i] = 0.0f;
+                T.epsC[i] = 0.0f;
+                T.epsValid[i] = 0;
+            }
 
             T.Xbar[i] = (!xbar.linear.empty() && (int)xbar.linear.size() == K) ? xbar.linear[i] : cie_xbar(l);
             T.Ybar[i] = (!ybar.linear.empty() && (int)ybar.linear.size() == K) ? ybar.linear[i] : cie_ybar(l);
@@ -1144,6 +1163,7 @@ namespace Spectral {
             hash_vec(T.epsC),
             hash_vec(T.epsM),
             hash_vec(T.epsY),
+            Hash::hash_bytes(T.epsValid.data(), T.epsValid.size()),
             hash_vec(T.baseMin),
             hash_vec(T.baseMid),
             Hash::hash_bytes(T.baseMinValid.data(), T.baseMinValid.size()),
@@ -1281,6 +1301,11 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         for (int i = 0; i < K; ++i) {
+            if (!T.epsValid.empty() &&
+                static_cast<size_t>(i) < T.epsValid.size() &&
+                T.epsValid[static_cast<size_t>(i)] == 0) {
+                continue;
+            }
             const float Dlambda = dyes_cmy[0] * T.epsC[i]
                 + dyes_cmy[1] * T.epsM[i]
                 + dyes_cmy[2] * T.epsY[i];
@@ -1306,6 +1331,11 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         for (int i = 0; i < K; ++i) {
+            if (!T.epsValid.empty() &&
+                static_cast<size_t>(i) < T.epsValid.size() &&
+                T.epsValid[static_cast<size_t>(i)] == 0) {
+                continue;
+            }
             if (T.hasBaseline &&
                 static_cast<size_t>(i) < T.baseMinValid.size() &&
                 T.baseMinValid[static_cast<size_t>(i)] == 0) {

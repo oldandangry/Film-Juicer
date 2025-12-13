@@ -69,6 +69,10 @@ namespace Spectral {
 
         // Dye extinction tables
         std::vector<float> epsY, epsM, epsC;
+        // Dye extinction validity mask (1 = original samples finite for all C/M/Y, 0 = missing/non-finite).
+        // Per agx-emulsion parity: any wavelength with a NaN dye coefficient yields NaN density, which is
+        // turned into 0 transmitted light. We mirror this by skipping those wavelengths during integration.
+        std::vector<std::uint8_t> epsValid;
 
         // Baseline (optional) and flag
         std::vector<float> baseMin, baseMid;
