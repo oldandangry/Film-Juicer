@@ -32,7 +32,7 @@ namespace Scanner {
     };
 
     struct Settings {
-        bool useLut = true;
+        bool useLut = false;
         std::uint32_t lutResolution = 17;
     };
 
