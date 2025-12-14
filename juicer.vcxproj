@@ -195,6 +195,7 @@
     <ClInclude Include="ColorTransforms.h" />
     <ClInclude Include="Couplers.h" />
     <ClInclude Include="FilmProcessing.h" />
+    <ClInclude Include="GaussianSciPy.h" />
     <ClInclude Include="Illuminants.h" />
     <ClInclude Include="IlluminantKeys.h" />
     <ClInclude Include="Hash.h" />

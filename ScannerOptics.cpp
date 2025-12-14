@@ -15,6 +15,7 @@
 #include "GeneratedColorSpaces.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
+#include "GaussianSciPy.h"
 
 namespace {
 
@@ -43,7 +44,7 @@ namespace {
             kernel.push_back(static_cast<Scalar>(1.0));
             return;
         }
-        const int radiusRaw = std::max(1, int(std::ceil(4.0f * sigma)));
+        const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f);
         const int radius = std::min(radiusRaw, 75);
         kernel.resize(size_t(2 * radius + 1));
         const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;

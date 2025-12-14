@@ -11,6 +11,7 @@
 #include <optional>
 #include <sstream>
 #include <utility>
+#include "GaussianSciPy.h"
 #include "IlluminantKeys.h"
 
 extern const std::string gDataDir;
@@ -1041,21 +1042,15 @@ namespace Print {
             if (input.empty()) {
                 return input;
             }
-            if (!(sigmaSamples > 0.0)) {
-                return input;
-            }
-            const double sigma = std::max(0.0, sigmaSamples);
-            if (sigma < 1e-6) {
-                return input;
-            }
 
-            const int radius = static_cast<int>(std::ceil(std::max(1.0, sigma * 3.0)));
-            if (radius <= 0) {
+            const int radius = JuicerGaussian::scipy_gaussian_radius(sigmaSamples, 4.0);
+            if (radius == 0) {
                 return input;
             }
 
             const int size = static_cast<int>(input.size());
             std::vector<double> kernel(static_cast<size_t>(radius * 2 + 1));
+            const double sigma = sigmaSamples;
             const double invTwoSigmaSq = 1.0 / (2.0 * sigma * sigma);
             double norm = 0.0;
             for (int k = -radius; k <= radius; ++k) {
