@@ -675,7 +675,6 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
                         sample_negative_densities(*_ws, _dirRT, logE, D_cmy);
                     }
 
-                    Print::clamp_negative_densities_to_dmax(*_ws, _dirRT, D_cmy);
                     _density.c[idx] = D_cmy[0]; // C
                     _density.m[idx] = D_cmy[1]; // M
                     _density.y[idx] = D_cmy[2]; // Y

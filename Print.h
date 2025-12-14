@@ -863,40 +863,6 @@ namespace Print {
 #endif // JUICER_TESTS
     // <<< END INSERT REMOVE AFTER USE
 
-
-    inline void clamp_negative_densities_to_dmax(
-        const WorkingState& ws,
-        const Couplers::Runtime& dirRT,
-        float densities[3])
-    {
-        // densities are C/M/Y; dMax is per-layer [B,G,R] -> [Y,M,C]
-        const float layerMax[3] = {
-            (std::isfinite(dirRT.dMax[2]) && dirRT.dMax[2] > 0.0f) ? dirRT.dMax[2]
-            : (std::isfinite(ws.dMax[2]) && ws.dMax[2] > 0.0f ? ws.dMax[2] : 1.0f), // C from red layer
-            (std::isfinite(dirRT.dMax[1]) && dirRT.dMax[1] > 0.0f) ? dirRT.dMax[1]
-            : (std::isfinite(ws.dMax[1]) && ws.dMax[1] > 0.0f ? ws.dMax[1] : 1.0f), // M from green layer
-            (std::isfinite(dirRT.dMax[0]) && dirRT.dMax[0] > 0.0f) ? dirRT.dMax[0]
-            : (std::isfinite(ws.dMax[0]) && ws.dMax[0] > 0.0f ? ws.dMax[0] : 1.0f)  // Y from blue layer
-        };
-        for (int i = 0; i < 3; ++i) {
-            float v = densities[i];
-            if (!std::isfinite(v) || v < 0.0f) {
-                v = 0.0f;
-            }
-
-            float dMax = layerMax[i];
-            if (dMax <= 0.0f) {
-                dMax = 1.0f;
-            }
-
-            if (v > dMax) {
-                v = dMax;
-            }
-
-            densities[i] = v;
-        }
-    }
-
     // Full pixel pipeline when print is active
     inline void simulate_print_pixel(const float rgbIn[3],
         const Params& prm,
@@ -936,8 +902,6 @@ namespace Print {
 
         float D_neg[3];
         sample_negative_densities(ws, dirRT, logE, D_neg);
-
-        clamp_negative_densities_to_dmax(ws, dirRT, D_neg);
 
         // 2) Negative transmittance with optional baseline blend    
         thread_local std::vector<float> Tneg, Ee_expose, Tprint, Ee_viewed;
