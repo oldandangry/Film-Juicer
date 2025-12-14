@@ -867,90 +867,55 @@ namespace Print {
             const DoublePairs& m_dc,
             const DoublePairs& y_dc)
         {
-            if (!c_dc.empty()) Spectral::sort_and_build(out.dcC, demote_pairs(c_dc));
-            if (!m_dc.empty()) Spectral::sort_and_build(out.dcM, demote_pairs(m_dc));
-            if (!y_dc.empty()) Spectral::sort_and_build(out.dcY, demote_pairs(y_dc));
+            auto build_channel = [&](Spectral::Curve& dst, const DoublePairs& src, const char* label) -> bool {
+                if (src.empty()) {
+                    dst.lambda_nm.clear();
+                    dst.linear.clear();
+                    return false;
+                }
 
-            const bool cOk = !out.dcC.linear.empty();
-            const bool mOk = !out.dcM.linear.empty();
-            const bool yOk = !out.dcY.linear.empty();
+                // agx-emulsion parity: preserve NaNs in density curves (toe region). These NaNs must
+                // propagate through interpolation and only later become 0 transmitted light.
+                FloatPairs pairs = demote_pairs(src);
+                std::sort(pairs.begin(), pairs.end(),
+                    [](const auto& a, const auto& b) { return a.first < b.first; });
+
+                constexpr float kDedupEps = 1e-6f;
+                FloatPairs deduped;
+                deduped.reserve(pairs.size());
+                for (const auto& p : pairs) {
+                    if (!deduped.empty() && std::fabs(p.first - deduped.back().first) <= kDedupEps) {
+                        deduped.back().second = p.second;
+                        continue;
+                    }
+                    deduped.push_back(p);
+                }
+
+                const bool ok = Spectral::build_curve_on_log_exposure_axis(dst, deduped, /*clampNegative*/false);
+                if (!ok) {
+                    dst.lambda_nm.clear();
+                    dst.linear.clear();
+                    std::ostringstream warn;
+                    warn << "WARN: density curve build failed"
+                        << " (" << label << " samples=" << deduped.size() << ")";
+                    JTRACE("PRINT", warn.str());
+                }
+                return ok;
+                };
+
+            const bool cOk = build_channel(out.dcC, c_dc, "C");
+            const bool mOk = build_channel(out.dcM, m_dc, "M");
+            const bool yOk = build_channel(out.dcY, y_dc, "Y");
             if (!(cOk && mOk && yOk)) {
                 std::ostringstream warn;
                 warn << "WARN: density curve assembly failed"
-                    << " (C=" << (cOk ? "ok" : "empty after filter")
-                    << ", M=" << (mOk ? "ok" : "empty after filter")
-                    << ", Y=" << (yOk ? "ok" : "empty after filter")
+                    << " (C=" << (cOk ? "ok" : "fail")
+                    << ", M=" << (mOk ? "ok" : "fail")
+                    << ", Y=" << (yOk ? "ok" : "fail")
                     << ")";
                 JTRACE("PRINT", warn.str());
             }
             return cOk && mOk && yOk;
-        }
-
-        void sanitize_density_curve(Spectral::Curve& c)
-        {
-            float prev = (c.linear.empty() || !std::isfinite(c.linear[0])) ? 0.0f : c.linear[0];
-            for (size_t i = 0; i < c.linear.size(); ++i) {
-                float cur = c.linear[i];
-                if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
-                if (cur < prev) cur = prev;
-                c.linear[i] = cur;
-                prev = cur;
-            }
-        }
-
-        void dedup_strict_curve(Spectral::Curve& c)
-        {
-            if (c.lambda_nm.size() != c.linear.size() || c.lambda_nm.empty()) return;
-            std::vector<float> X = c.lambda_nm;
-            std::vector<float> Y = c.linear;
-            std::vector<float> X2; X2.reserve(X.size());
-            std::vector<float> Y2; Y2.reserve(Y.size());
-            float lastX = X[0];
-            float lastY = std::isfinite(Y[0]) ? std::max(0.0f, Y[0]) : 0.0f;
-            X2.push_back(lastX);
-            Y2.push_back(lastY);
-            const float eps = 1e-6f;
-            for (size_t i = 1; i < X.size(); ++i) {
-                float xi = X[i];
-                float yi = std::isfinite(Y[i]) ? std::max(0.0f, Y[i]) : 0.0f;
-                if (!std::isfinite(xi)) continue;
-                if (xi <= lastX + eps) {
-                    X2.back() = lastX;
-                    Y2.back() = std::max(Y2.back(), yi);
-                    continue;
-                }
-                X2.push_back(xi);
-                Y2.push_back(yi);
-                lastX = xi;
-            }
-            if (X2.size() >= 2) {
-                c.lambda_nm = std::move(X2);
-                c.linear = std::move(Y2);
-            }
-        }
-
-        void subtract_curve_min(Spectral::Curve& c)
-        {
-            if (c.linear.empty()) {
-                return;
-            }
-            float minVal = std::numeric_limits<float>::infinity();
-            for (float v : c.linear) {
-                if (std::isfinite(v)) {
-                    minVal = std::min(minVal, v);
-                }
-            }
-            if (!std::isfinite(minVal)) {
-                return;
-            }
-            for (float& v : c.linear) {
-                if (!std::isfinite(v)) {
-                    v = 0.0f;
-                }
-                else {
-                    v = std::max(0.0f, v - minVal);
-                }
-            }
         }
 
         bool invert_density_curve_at_target(const Spectral::Curve& curve, float targetDensity, float& outLogE)
@@ -1401,16 +1366,8 @@ namespace Print {
 
     bool rebuild_density_curves(Profile& profile, const DensityCurves& curves) {
         const bool densityCurvesOk = build_density_curves(profile, curves.cyan, curves.magenta, curves.yellow);
-
-        sanitize_density_curve(profile.dcY);
-        sanitize_density_curve(profile.dcM);
-        sanitize_density_curve(profile.dcC);
-        dedup_strict_curve(profile.dcY);
-        dedup_strict_curve(profile.dcM);
-        dedup_strict_curve(profile.dcC);
-        subtract_curve_min(profile.dcY);
-        subtract_curve_min(profile.dcM);
-        subtract_curve_min(profile.dcC);
+        // agx-emulsion parity: do not "heal" NaNs (toe) or baseline-shift print density curves.
+        // NaNs must propagate through sampling and become 0 transmitted light in density->light.
         return densityCurvesOk;
     }
 

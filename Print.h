@@ -694,11 +694,7 @@ namespace Print {
             : 1.0f;
 
         // Gamma applied inside sample_density_at_logE.
-        float sample = Spectral::sample_density_at_logE(dc, logE, gammaSafe);
-        if (!std::isfinite(sample)) {
-            sample = 0.0f;
-        }
-        return sample;
+        return Spectral::sample_density_at_logE(dc, logE, gammaSafe);
     }
 
     // Build print densities from print exposures (C/M/Y order, parity with agx-emulsion)
@@ -712,10 +708,13 @@ namespace Print {
         D_print[1] = interpolate_density_gamma(p.dcM, lEm, p.gammaFactor[1]);
         D_print[2] = interpolate_density_gamma(p.dcY, lEy, p.gammaFactor[2]);
 
-        // Densities are optical densities (OD); clamp to non-negative to prevent T>1.
-        D_print[0] = std::max(0.0f, D_print[0]);
-        D_print[1] = std::max(0.0f, D_print[1]);
-        D_print[2] = std::max(0.0f, D_print[2]);
+        // Densities are optical densities (OD); clamp finite values to non-negative to prevent T>1.
+        // agx-emulsion parity: do not convert NaN -> 0 density (NaN should become 0 transmitted light later).
+        for (int i = 0; i < 3; ++i) {
+            if (std::isfinite(D_print[i]) && D_print[i] < 0.0f) {
+                D_print[i] = 0.0f;
+            }
+        }
 
     }
 

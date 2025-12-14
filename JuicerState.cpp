@@ -1056,7 +1056,15 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             return;
         }
         for (float& v : curve.linear) {
-            v = std::max(0.0f, v - minVal);
+            // agx-emulsion parity (density curves): preserve authored NaNs through sampling; do not
+            // convert NaN -> 0 density (which would lift shadows). agx does `curve -= nanmin(curve)`.
+            if (std::isfinite(v)) {
+                v -= minVal;
+                // Guard against tiny negatives from float error; keep NaNs untouched.
+                if (v < 0.0f) {
+                    v = 0.0f;
+                }
+            }
         }
         };
     subtract_baseline_floor(S.base.densB);
@@ -1344,11 +1352,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     sanitize_curve(sensG);
     sanitize_curve(sensR);
 
-
-    sanitize_curve(densB);
-    sanitize_curve(densG);
-    sanitize_curve(densR);
-
     Spectral::Curve densBForCalibration = densB;
     Spectral::Curve densGForCalibration = densG;
     Spectral::Curve densRForCalibration = densR;
@@ -1500,83 +1503,37 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
 #ifdef JUICER_ENABLE_COUPLERS
         if (dirRT.active) {
-            Spectral::Curve densB_corr, densG_corr, densR_corr;
-            Couplers::precorrect_density_curves_before_DIR_into(
-                dirRT.M, dirRT.highShift,
-                densB, densG, densR,
-                densB_corr, densG_corr, densR_corr);
-            dirDensB = std::move(densB_corr);
-            dirDensG = std::move(densG_corr);
-            dirDensR = std::move(densR_corr);
-            precorrectApplied = true;
+            auto has_nonfinite_density = [](const Spectral::Curve& c) -> bool {
+                for (float v : c.linear) {
+                    if (!std::isfinite(v)) {
+                        return true;
+                    }
+                }
+                return false;
+                };
+
+            // agx-emulsion parity: density curves may contain intentional toe NaNs. DIR pre-correction
+            // must not "heal" them into 0 densities; if authored NaNs exist, skip pre-correction and
+            // let NaNs propagate through sampling to "0 transmitted light" downstream.
+            if (has_nonfinite_density(densB) || has_nonfinite_density(densG) || has_nonfinite_density(densR)) {
+                precorrectApplied = false;
+                JTRACE("BUILD", "precorrect: skipped (density curves contain non-finite samples; NaN toe parity)");
+            }
+            else {
+                Spectral::Curve densB_corr, densG_corr, densR_corr;
+                Couplers::precorrect_density_curves_before_DIR_into(
+                    dirRT.M, dirRT.highShift,
+                    densB, densG, densR,
+                    densB_corr, densG_corr, densR_corr);
+                dirDensB = std::move(densB_corr);
+                dirDensG = std::move(densG_corr);
+                dirDensR = std::move(densR_corr);
+                precorrectApplied = true;
+            }
         }
 #else
         (void)dirRT;
 #endif
-
-        sanitize_curve(densB);
-        sanitize_curve(densG);
-        sanitize_curve(densR);
-        sanitize_curve(dirDensB);
-        sanitize_curve(dirDensG);
-        sanitize_curve(dirDensR);
-        JTRACE("BUILD", "precorrect: densR/G/B sanitized");
-
-        auto enforce_monotone_curve = [](Spectral::Curve& c) {
-            float prev = (c.linear.empty() || !std::isfinite(c.linear[0])) ? 0.0f : c.linear[0];
-            for (size_t i = 0; i < c.linear.size(); ++i) {
-                float cur = c.linear[i];
-                if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
-                if (cur < prev) cur = prev;
-                c.linear[i] = cur;
-                prev = cur;
-            }
-            };
-        enforce_monotone_curve(densB);
-        enforce_monotone_curve(densG);
-        enforce_monotone_curve(densR);
-        enforce_monotone_curve(dirDensB);
-        enforce_monotone_curve(dirDensG);
-        enforce_monotone_curve(dirDensR);
-
-        JTRACE("BUILD", "precorrect: monotonicity enforced on densR/G/B");
-        auto dedup_strict_curve = [](Spectral::Curve& c) {
-            if (c.lambda_nm.size() != c.linear.size() || c.lambda_nm.empty()) return;
-            std::vector<float> X = c.lambda_nm;
-            std::vector<float> Y = c.linear;
-            std::vector<float> X2; X2.reserve(X.size());
-            std::vector<float> Y2; Y2.reserve(Y.size());
-            float lastX = X[0];
-            float lastY = std::isfinite(Y[0]) ? std::max(0.0f, Y[0]) : 0.0f;
-            X2.push_back(lastX);
-            Y2.push_back(lastY);
-            const float eps = 1e-6f;
-            for (size_t i = 1; i < X.size(); ++i) {
-                float xi = X[i];
-                float yi = std::isfinite(Y[i]) ? std::max(0.0f, Y[i]) : 0.0f;
-                if (!std::isfinite(xi)) continue;
-                if (xi <= lastX + eps) {
-                    X2.back() = lastX;
-                    Y2.back() = std::max(Y2.back(), yi);
-                    continue;
-                }
-                X2.push_back(xi);
-                Y2.push_back(yi);
-                lastX = xi;
-            }
-            if (X2.size() >= 2) {
-                c.lambda_nm = std::move(X2);
-                c.linear = std::move(Y2);
-            }
-            };
-        dedup_strict_curve(densB);
-        dedup_strict_curve(densG);
-        dedup_strict_curve(densR);
-        dedup_strict_curve(dirDensB);
-        dedup_strict_curve(dirDensG);
-        dedup_strict_curve(dirDensR);
-
-        JTRACE("BUILD", "precorrect: grid dedup applied to densR/G/B");
 
         dirRT.dMax[0] = densityMaxPostDir[0];
         dirRT.dMax[1] = densityMaxPostDir[1];
@@ -2046,12 +2003,31 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     {
-        auto finiteCurve = [](const Spectral::Curve& c)->bool {
-            for (float v : c.linear) if (!std::isfinite(v)) return false;
+        auto all_finite_curve = [](const Spectral::Curve& c)->bool {
+            for (float v : c.linear) {
+                if (!std::isfinite(v)) {
+                    return false;
+                }
+            }
             return true;
             };
-        const bool ok_dens = finiteCurve(densB) && finiteCurve(densG) && finiteCurve(densR);
-        const bool ok_sens = finiteCurve(sensB) && finiteCurve(sensG) && finiteCurve(sensR);
+        auto density_curve_ok = [](const Spectral::Curve& c)->bool {
+            // agx-emulsion parity: density curves may contain toe NaNs; allow NaNs but reject
+            // infinities and require at least one finite sample for calibration.
+            bool anyFinite = false;
+            for (float v : c.linear) {
+                if (std::isinf(v)) {
+                    return false;
+                }
+                if (std::isfinite(v)) {
+                    anyFinite = true;
+                }
+            }
+            return anyFinite;
+            };
+
+        const bool ok_dens = density_curve_ok(densB) && density_curve_ok(densG) && density_curve_ok(densR);
+        const bool ok_sens = all_finite_curve(sensB) && all_finite_curve(sensG) && all_finite_curve(sensR);
         const bool ok_base = !hasBaseline ||
             (static_cast<int>(baseMin.linear.size()) == Spectral::gShape.K &&
                 static_cast<int>(baseMid.linear.size()) == Spectral::gShape.K);

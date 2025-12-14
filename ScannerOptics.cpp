@@ -645,13 +645,15 @@ namespace ScannerOptics {
                             D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(medium.range.inv_max_cmy[1]);
                             D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(medium.range.inv_max_cmy[2]);
                         }
-                        if (!std::isfinite(D_norm[0]) || !std::isfinite(D_norm[1]) || !std::isfinite(D_norm[2])) {
-                            abortFlag.store(true, std::memory_order_relaxed);
-                            failure.store(true, std::memory_order_relaxed);
-                            break;
-                        }
                         double logXYZ[3];
-                        if (useLut && runtime.lut.valid) {
+                        if (!std::isfinite(D_norm[0]) || !std::isfinite(D_norm[1]) || !std::isfinite(D_norm[2])) {
+                            // agx-emulsion parity: density curves may intentionally return NaN (toe).
+                            // NaN density => 0 transmitted light, so map directly to "black" in logXYZ.
+                            logXYZ[0] = -10.0;
+                            logXYZ[1] = -10.0;
+                            logXYZ[2] = -10.0;
+                        }
+                        else if (useLut && runtime.lut.valid) {
                             sample_cubic(runtime.lut, D_norm, logXYZ);
                         }
                         else {

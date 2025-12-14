@@ -7,6 +7,7 @@
 #include <vector>
 #include <array>
 #include <mutex>
+#include <limits>
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
 
@@ -312,7 +313,7 @@ namespace Spectral {
     // =========================================================================
 
     // -------------------------------------------------------------------------
-    // Density curve sampling with robust fallbacks
+    // Density curve sampling (agx-emulsion fast_interp parity)
     // -------------------------------------------------------------------------
     inline float sample_density_at_logE(const Curve& c, float logE, float gammaFactor = 1.0f) {
         const size_t n = c.lambda_nm.size();
@@ -320,150 +321,66 @@ namespace Spectral {
             return 0.0f;
         }
 
-        size_t domain_begin = 0;
-        while (domain_begin < n && !std::isfinite(c.lambda_nm[domain_begin])) {
-            ++domain_begin;
+        // agx-emulsion parity: NaNs in density curves are authored toe samples. Preserve them
+        // through interpolation (fast_interp semantics) and let them become 0 transmitted light later.
+        if (!std::isfinite(logE)) {
+            return std::numeric_limits<float>::quiet_NaN();
         }
-        if (domain_begin == n) {
+
+        const float gammaSafe = (std::isfinite(gammaFactor) && gammaFactor > 0.0f)
+            ? gammaFactor
+            : 1.0f;
+
+        // agx scales the curve axis by dividing xa by gamma_factor; with fixed xa, scale query instead.
+        const float xq = logE * gammaSafe;
+
+        size_t domainBegin = 0;
+        while (domainBegin < n && !std::isfinite(c.lambda_nm[domainBegin])) {
+            ++domainBegin;
+        }
+        if (domainBegin == n) {
             return 0.0f;
         }
 
-        size_t domain_end = n - 1;
-        while (domain_end > domain_begin && !std::isfinite(c.lambda_nm[domain_end])) {
-            --domain_end;
-        }
-        const float xmin = c.lambda_nm[domain_begin];
-        const float xmax = c.lambda_nm[domain_end];
-        if (!std::isfinite(xmin) || !std::isfinite(xmax) || !(xmax > xmin)) {
-            for (size_t i = domain_begin; i <= domain_end; ++i) {
-                if (std::isfinite(c.linear[i])) {
-                    return c.linear[i];
-                }
-            }
-            return 0.0f;
+        size_t domainEnd = n - 1;
+        while (domainEnd > domainBegin && !std::isfinite(c.lambda_nm[domainEnd])) {
+            --domainEnd;
         }
 
-        float frontValue = 0.0f;
-        bool frontValid = false;
-        for (size_t i = domain_begin; i <= domain_end; ++i) {
-            if (std::isfinite(c.linear[i])) {
-                frontValue = c.linear[i];
-                frontValid = true;
-                break;
-            }
-        }
-        if (!frontValid) {
-            return 0.0f;
+        const float xmin = c.lambda_nm[domainBegin];
+        const float xmax = c.lambda_nm[domainEnd];
+        if (!std::isfinite(xmin) || !std::isfinite(xmax) || !(xmax >= xmin)) {
+            return c.linear[domainBegin];
         }
 
-        float backValue = frontValue;
-        for (size_t i = domain_end + 1; i-- > domain_begin;) {
-            if (std::isfinite(c.linear[i])) {
-                backValue = c.linear[i];
-                break;
-            }
-        }
-
-        auto fallback_from = [&](size_t idx) {
-            if (idx >= n) {
-                return frontValue;
-            }
-            if (std::isfinite(c.linear[idx])) {
-                return c.linear[idx];
-            }
-            for (size_t j = idx; j > domain_begin; --j) {
-                const size_t cand = j - 1;
-                if (std::isfinite(c.linear[cand])) {
-                    return c.linear[cand];
-                }
-            }
-            if (idx < domain_end) {
-                for (size_t cand = idx + 1; cand <= domain_end; ++cand) {
-                    if (std::isfinite(c.linear[cand])) {
-                        return c.linear[cand];
-                    }
-                }
-            }
-            return frontValue;
-            };
-
-        // Apply gamma factor correction (matches agx-emulsion interpolate_exposure_to_density)
-        // Python reference divides log_exposure grid by gamma_factor; equivalent to dividing query by gamma_factor
-        const float adjustedLogE = (std::abs(gammaFactor) > 1e-6f) ? (logE / gammaFactor) : logE;
-
-        // Fold duplicated knot positions before interpolation (matches agx behaviour).
-        float xq = adjustedLogE;
-        if (!std::isfinite(xq)) {
-            xq = xmin;
-        }
+        // fast_interp endpoints: literal y[0]/y[-1], even if NaN.
         if (xq <= xmin) {
-            return frontValue;
+            return c.linear[domainBegin];
         }
         if (xq >= xmax) {
-            return backValue;
+            return c.linear[domainEnd];
         }
 
-        size_t i1 = domain_begin;
-        while (i1 <= domain_end && (!std::isfinite(c.lambda_nm[i1]) || c.lambda_nm[i1] < xq)) {
+        size_t i1 = domainBegin + 1;
+        while (i1 <= domainEnd && c.lambda_nm[i1] < xq) {
             ++i1;
         }
-        if (i1 > domain_end || !std::isfinite(c.lambda_nm[i1])) {
-            return backValue;
+        if (i1 > domainEnd) {
+            return c.linear[domainEnd];
         }
 
-        if (c.lambda_nm[i1] == xq) {
-            size_t first = i1;
-            while (first > domain_begin && c.lambda_nm[first - 1] == xq) {
-                --first;
-            }
-            size_t last = i1;
-            while (last + 1 <= domain_end && c.lambda_nm[last + 1] == xq) {
-                ++last;
-            }
-            float sum = 0.0f;
-            int count = 0;
-            for (size_t i = first; i <= last; ++i) {
-                const float yi = c.linear[i];
-                if (std::isfinite(yi)) {
-                    sum += yi;
-                    ++count;
-                }
-            }
-            if (count > 0) {
-                return sum / static_cast<float>(count);
-            }
-            return fallback_from(first);
-        }
-
-        size_t i0 = i1;
-        while (i0 > domain_begin) {
-            --i0;
-            if (std::isfinite(c.lambda_nm[i0])) {
-                break;
-            }
-        }
-        if (!std::isfinite(c.lambda_nm[i0]) || i0 == i1) {
-            return fallback_from(i1);
-        }
-
+        const size_t i0 = i1 - 1;
         const float x0 = c.lambda_nm[i0];
         const float x1 = c.lambda_nm[i1];
-        if (!std::isfinite(x0) || !std::isfinite(x1)) {
-            return fallback_from(i0);
-        }
-
-        float y0 = fallback_from(i0);
-        float y1 = fallback_from(i1);
+        const float y0 = c.linear[i0];
+        const float y1 = c.linear[i1];
 
         const float denom = x1 - x0;
         if (!(denom > 0.0f) || !std::isfinite(denom)) {
             return y0;
         }
-        const float t = (xq - x0) / denom;
-        if (!std::isfinite(t)) {
-            return y0;
-        }
 
+        const float t = (xq - x0) / denom;
         return y0 + t * (y1 - y0);
     }
 

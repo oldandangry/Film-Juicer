@@ -382,7 +382,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
     {
         OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kScannerUseLut);
         p->setLabel("Scanner use LUT");
-        p->setDefault(false);
+        p->setDefault(true);
         if (grpScannerMath) p->setParent(*grpScannerMath);
         p->setHint("Enable precomputed scanner spectral LUTs.");
         p->setEvaluateOnChange(true);
