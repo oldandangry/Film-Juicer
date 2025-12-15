@@ -57,6 +57,18 @@
     <ClCompile Include="AkimaInterpolator.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="DevelopFilmStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="DevelopPrintStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ExposeFilmStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ExposePrintStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="OutputEncoding.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -67,6 +79,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Print.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PipelineRunner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ScanStage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ScannerOptics.cpp">
@@ -122,6 +140,12 @@
     <ClInclude Include="JuicerEffect.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="PipelineRunner.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PipelineTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="ParamNames.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -162,6 +186,21 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="AgxNanSemantics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DevelopFilmStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DevelopPrintStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ExposeFilmStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ExposePrintStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ScanStage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

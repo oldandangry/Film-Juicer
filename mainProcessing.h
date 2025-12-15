@@ -8,6 +8,7 @@
 #include "FilmProcessing.h"
 #include "ColorTransforms.h"
 #include "WorkingState.h"
+#include "PipelineTypes.h"
 #include "Print.h"
 #include "Scanner.h"
 #include "Couplers.h"
@@ -51,10 +52,7 @@ namespace JuicerProc {
         std::vector<float> tmp;
     };
 
-    struct PrintPipelineScratch {
-        std::vector<float> Tneg, Ee_expose, Ee_filtered, Tprint, Ee_viewed;
-        std::vector<float> Tpreflash, Ee_preflash;
-    };
+    using PrintPipelineScratch = Pipeline::PrintPipelineScratch;
 
     struct StageScratch {
         SpatialDIRWorkspace dirWorkspace;

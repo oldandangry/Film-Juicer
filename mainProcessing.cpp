@@ -30,6 +30,8 @@
 #include "ScannerOptics.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
+#include "ExposePrintStage.h"
+#include "DevelopPrintStage.h"
 
 namespace JuicerProc {
 
@@ -160,77 +162,6 @@ static inline bool curve_ok(const Spectral::Curve& c) {
 
 
 namespace {
-
-    enum class PrintBridgeStatus {
-        kOk = 0,
-        kInvalidTables
-    };
-
-    static PrintBridgeStatus negative_density_to_print_raw(
-        const WorkingState& ws,
-        const Print::Runtime& prt,
-        const Print::Params& prm,
-        const float D_cmy[3],
-        float kMid_spectral,
-        float rawOut[3],
-        JuicerProc::PrintPipelineScratch& scratch)
-    {
-        const int viewK = ws.tablesView.K;
-        const int printK = ws.tablesPrint.K;
-        const int shapeK = Spectral::gShape.K;
-        if (viewK <= 0 || printK <= 0 || shapeK <= 0 || viewK != printK || viewK != shapeK) {
-            return PrintBridgeStatus::kInvalidTables;
-        }
-
-        const int K = shapeK;
-        auto& density_spectral = scratch.Tneg;
-        auto& print_illuminant = scratch.Ee_expose;
-        auto& Ee_filtered = scratch.Ee_filtered;
-        auto& Tpreflash = scratch.Tpreflash;
-        auto& Ee_preflash = scratch.Ee_preflash;
-
-        // agx-emulsion parity: print path is density_to_light(density_spectral, print_illuminant)
-        // followed by sensitivity contraction, with no spectral-domain clamp.
-        Print::negative_density_to_filtered_light_agx(
-            ws,
-            prt,
-            prm.yFilter,
-            prm.mFilter,
-            /*cShiftSteps=*/0.0f,
-            D_cmy,
-            density_spectral,
-            print_illuminant,
-            Ee_filtered);
-
-        Print::raw_exposures_from_filtered_light(prt.profile, Ee_filtered, rawOut);
-
-        const float expPrint = std::isfinite(prm.exposure)
-            ? std::max(0.0f, prm.exposure)
-            : 1.0f;
-        const float rawScale = expPrint * kMid_spectral;
-        rawOut[0] *= rawScale;
-        rawOut[1] *= rawScale;
-        rawOut[2] *= rawScale;
-
-        if (std::isfinite(prm.preflashExposure) && prm.preflashExposure > 0.0f) {
-            float rawPre[3];
-            Print::compute_preflash_raw(prt, ws, Tpreflash, Ee_preflash, rawPre);
-            rawOut[0] += rawPre[0] * prm.preflashExposure;
-            rawOut[1] += rawPre[1] * prm.preflashExposure;
-            rawOut[2] += rawPre[2] * prm.preflashExposure;
-        }
-
-        return PrintBridgeStatus::kOk;
-    }
-
-    static PrintBridgeStatus print_raw_to_density(
-        const Print::Runtime& prt,
-        const float raw[3],
-        float D_print[3])
-    {
-        Print::print_densities_from_Eprint(prt.profile, raw, D_print);
-        return PrintBridgeStatus::kOk;
-    }
 
     template <typename FetchRGB, typename AbortCheck>
     void buildSpatialDIRCorrections(
@@ -482,7 +413,7 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
         const float exposureCompScale = _printParams.exposureCompensationEnabled
             ? _printParams.exposureCompensationScale
             : 1.0f;
-        ctx.kMidSpectral = Print::compute_exposure_factor_midgray(
+        ctx.kMidSpectral = Pipeline::ExposePrintStage::compute_midgray_factor(
             *_ws,
             *_prt,
             _printParams,
@@ -703,33 +634,38 @@ void JuicerProcessor::convertNegativeToPrint(const RenderContext& ctx, unsigned 
                         break;
                     }
                     const size_t idx = rowOffset + size_t(xOff);
-                    float raw[3];
-                    float D_print[3];
-                    float D_neg[3] = { _density.c[idx], _density.m[idx], _density.y[idx] }; // C,M,Y order
-                    const PrintBridgeStatus rawStatus = negative_density_to_print_raw(
-                        *_ws,
-                        *_prt,
-                        _printParams,
-                        D_neg,
-                        ctx.kMidSpectral,
-                        raw,
-                        scratch);
-                    if (rawStatus != PrintBridgeStatus::kOk) {
-                        JTRACE("PRINT", "FATAL: failed to convert negative densities to print raw exposure");
+
+                    Pipeline::ExposePrintInputs exposeIn{};
+                    exposeIn.printRuntime = _prt;
+                    exposeIn.printParams = &_printParams;
+                    exposeIn.midgrayFactor = ctx.kMidSpectral;
+                    exposeIn.negativeDensity.v[0] = _density.c[idx];
+                    exposeIn.negativeDensity.v[1] = _density.m[idx];
+                    exposeIn.negativeDensity.v[2] = _density.y[idx];
+
+                    Pipeline::ExposePrintOutputs exposeOut{};
+                    if (!Pipeline::ExposePrintStage::run(*_ws, exposeIn, exposeOut, scratch)) {
+                        JTRACE("PRINT", "FATAL: failed to convert negative densities to print log raw");
                         abortFlag.store(true, std::memory_order_relaxed);
                         failure.store(true, std::memory_order_relaxed);
                         break;
                     }
-                    const PrintBridgeStatus densStatus = print_raw_to_density(*_prt, raw, D_print);
-                    if (densStatus != PrintBridgeStatus::kOk) {
-                        JTRACE("PRINT", "FATAL: failed to convert print raw exposure to densities");
+
+                    Pipeline::DevelopPrintInputs devIn{};
+                    devIn.printRuntime = _prt;
+                    devIn.printLogRaw = exposeOut.printLogRaw;
+
+                    Pipeline::DevelopPrintOutputs devOut{};
+                    if (!Pipeline::DevelopPrintStage::run(devIn, devOut)) {
+                        JTRACE("PRINT", "FATAL: failed to convert print log raw to densities");
                         abortFlag.store(true, std::memory_order_relaxed);
                         failure.store(true, std::memory_order_relaxed);
                         break;
                     }
-                    _density.c[idx] = D_print[0]; // C,M,Y
-                    _density.m[idx] = D_print[1];
-                    _density.y[idx] = D_print[2];
+
+                    _density.c[idx] = devOut.printDensity.v[0];
+                    _density.m[idx] = devOut.printDensity.v[1];
+                    _density.y[idx] = devOut.printDensity.v[2];
                 }
             }
             });
