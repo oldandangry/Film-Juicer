@@ -200,7 +200,7 @@ namespace {
                 + dyes_cmy[1] * static_cast<double>(T.epsM[i])
                 + dyes_cmy[2] * static_cast<double>(T.epsY[i])
                 + baseSpectral;
-            if (!std::isfinite(Dlambda)) {
+            if (std::isnan(Dlambda)) {
                 continue;
             }
             const double Tlambda = std::exp(-kLn10d * Dlambda);
@@ -464,9 +464,10 @@ namespace ScannerOptics {
             double XYZ[3] = { 0.0, 0.0, 0.0 };
             dyes_to_XYZ_given_tables_double(*tables, D_denorm, XYZ, useBaseline, invNormalization);
             constexpr double kEps = 1e-10;
-            logXYZ[0] = std::log10(std::max(0.0, XYZ[0]) + kEps);
-            logXYZ[1] = std::log10(std::max(0.0, XYZ[1]) + kEps);
-            logXYZ[2] = std::log10(std::max(0.0, XYZ[2]) + kEps);
+            // agx-emulsion parity: do not clamp XYZ before log.
+            logXYZ[0] = std::log10(XYZ[0] + kEps);
+            logXYZ[1] = std::log10(XYZ[1] + kEps);
+            logXYZ[2] = std::log10(XYZ[2] + kEps);
         };
 
         // Prepare LUT if needed
@@ -636,14 +637,9 @@ namespace ScannerOptics {
                             D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(medium.range.inv_max_cmy[2]);
                         }
                         double logXYZ[3];
-                        if (!std::isfinite(D_norm[0]) || !std::isfinite(D_norm[1]) || !std::isfinite(D_norm[2])) {
-                            // agx-emulsion parity: density curves may intentionally return NaN (toe).
-                            // NaN density => 0 transmitted light, so map directly to "black" in logXYZ.
-                            logXYZ[0] = -10.0;
-                            logXYZ[1] = -10.0;
-                            logXYZ[2] = -10.0;
-                        }
-                        else if (useLut && runtime.lut.valid) {
+                        const bool D_norm_finite =
+                            std::isfinite(D_norm[0]) && std::isfinite(D_norm[1]) && std::isfinite(D_norm[2]);
+                        if (useLut && runtime.lut.valid && D_norm_finite) {
                             sample_cubic(runtime.lut, D_norm, logXYZ);
                         }
                         else {

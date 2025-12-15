@@ -163,9 +163,7 @@ namespace {
 
     enum class PrintBridgeStatus {
         kOk = 0,
-        kInvalidTables,
-        kNaNRaw,
-        kNaNDensity
+        kInvalidTables
     };
 
     static PrintBridgeStatus negative_density_to_print_raw(
@@ -185,42 +183,24 @@ namespace {
         }
 
         const int K = shapeK;
-        auto& Tneg = scratch.Tneg;
-        auto& Ee_expose = scratch.Ee_expose;
+        auto& density_spectral = scratch.Tneg;
+        auto& print_illuminant = scratch.Ee_expose;
         auto& Ee_filtered = scratch.Ee_filtered;
         auto& Tpreflash = scratch.Tpreflash;
         auto& Ee_preflash = scratch.Ee_preflash;
 
-        Print::negative_T_from_dyes(ws, D_cmy, Tneg);
-        if (int(Tneg.size()) < K) {
-            Tneg.resize(size_t(K), 0.0f);
-        }
-
-        Ee_expose.resize(size_t(K));
-        for (int i = 0; i < K; ++i) {
-            const float Ee = (prt.illumEnlarger.linear.size() > size_t(i))
-                ? prt.illumEnlarger.linear[i]
-                : 1.0f;
-            Ee_expose[i] = std::max(0.0f, Ee * Tneg[i]);
-        }
-
-        Ee_filtered.resize(size_t(K));
-        const float yAmount = Print::compose_dichroic_amount(prt.neutralY, prm.yFilter);
-        const float mAmount = Print::compose_dichroic_amount(prt.neutralM, prm.mFilter);
-        const float cAmount = Print::compose_dichroic_amount(prt.neutralC, 0.0f);
-        for (int i = 0; i < K; ++i) {
-            const float fY = Print::blend_dichroic_filter_linear(
-                (prt.filterY.linear.size() > size_t(i)) ? prt.filterY.linear[i] : 1.0f,
-                yAmount);
-            const float fM = Print::blend_dichroic_filter_linear(
-                (prt.filterM.linear.size() > size_t(i)) ? prt.filterM.linear[i] : 1.0f,
-                mAmount);
-            const float fC = Print::blend_dichroic_filter_linear(
-                (prt.filterC.linear.size() > size_t(i)) ? prt.filterC.linear[i] : 1.0f,
-                cAmount);
-            const float fTotal = fY * fM * fC;
-            Ee_filtered[i] = std::max(0.0f, Ee_expose[i] * fTotal);
-        }
+        // agx-emulsion parity: print path is density_to_light(density_spectral, print_illuminant)
+        // followed by sensitivity contraction, with no spectral-domain clamp.
+        Print::negative_density_to_filtered_light_agx(
+            ws,
+            prt,
+            prm.yFilter,
+            prm.mFilter,
+            /*cShiftSteps=*/0.0f,
+            D_cmy,
+            density_spectral,
+            print_illuminant,
+            Ee_filtered);
 
         Print::raw_exposures_from_filtered_light(prt.profile, Ee_filtered, rawOut);
 
@@ -240,10 +220,6 @@ namespace {
             rawOut[2] += rawPre[2] * prm.preflashExposure;
         }
 
-        if (!std::isfinite(rawOut[0]) || !std::isfinite(rawOut[1]) || !std::isfinite(rawOut[2])) {
-            return PrintBridgeStatus::kNaNRaw;
-        }
-
         return PrintBridgeStatus::kOk;
     }
 
@@ -253,9 +229,6 @@ namespace {
         float D_print[3])
     {
         Print::print_densities_from_Eprint(prt.profile, raw, D_print);
-        if (!std::isfinite(D_print[0]) || !std::isfinite(D_print[1]) || !std::isfinite(D_print[2])) {
-            return PrintBridgeStatus::kNaNDensity;
-        }
         return PrintBridgeStatus::kOk;
     }
 
@@ -365,9 +338,9 @@ namespace {
                     }
                 }
 
-                float leB = std::log10(std::max(0.0f, E[0]) + 1e-10f);
-                float leG = std::log10(std::max(0.0f, E[1]) + 1e-10f);
-                float leR = std::log10(std::max(0.0f, E[2]) + 1e-10f);
+                float leB = std::log10(fmax_agx(E[0], 0.0f) + 1e-10f);
+                float leG = std::log10(fmax_agx(E[1], 0.0f) + 1e-10f);
+                float leR = std::log10(fmax_agx(E[2], 0.0f) + 1e-10f);
 
                 if (!std::isfinite(leB) && !ws.densB.lambda_nm.empty()) {
                     leB = ws.densB.lambda_nm.front();
@@ -657,9 +630,9 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
                             _ws->sensB, _ws->sensG, _ws->sensR);
 
                         float logE[3] = {
-                            std::log10(std::max(0.0f, E[0]) + 1e-10f),
-                            std::log10(std::max(0.0f, E[1]) + 1e-10f),
-                            std::log10(std::max(0.0f, E[2]) + 1e-10f)
+                            std::log10(fmax_agx(E[0], 0.0f) + 1e-10f),
+                            std::log10(fmax_agx(E[1], 0.0f) + 1e-10f),
+                            std::log10(fmax_agx(E[2], 0.0f) + 1e-10f)
                         };
 
                         if (!std::isfinite(logE[0]) && !dirB.lambda_nm.empty()) {

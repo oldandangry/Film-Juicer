@@ -15,6 +15,7 @@
 #include "ProfileJSONLoader.h"
 #include "AkimaInterpolator.h"
 #include "Couplers.h"
+#include "AgxNanSemantics.h"
 #include <sstream>
 #include <algorithm>
 #include <limits>
@@ -62,9 +63,10 @@ namespace Print {
     void print_densities_from_Eprint(const Profile& p, const float Eprint[3], float D_print[3]);
 
     inline float blend_dichroic_filter_linear(float curveVal, float normalizedAmount) {
-        const float c = std::isfinite(curveVal) ? curveVal : 1.0f;
+        // agx-emulsion parity: do not treat non-finite curve samples as identity.
+        // NaNs must propagate even when amount is 0 (NumPy semantics: NaN * 0 = NaN).
         const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
-        return 1.0f - (1.0f - c) * a;
+        return 1.0f - (1.0f - curveVal) * a;
     }
 
     inline float clamp_logE_to_curve(const Spectral::Curve& curve, float logE) {
@@ -429,13 +431,90 @@ namespace Print {
                 + D_neg[2] * epsY_at(i) // Y
                 + baseSpectral;
 
-            if (!std::isfinite(Dlambda)) {
-                Tneg_out[i] = 0.0f;
-                continue;
-            }
-
             Tneg_out[i] = std::exp(-Spectral::kLn10 * Dlambda);
         }
+    }
+
+    inline void negative_density_spectral_from_dyes(
+        const WorkingState& ws,
+        const float D_neg[3],
+        std::vector<float>& density_out)
+    {
+        const int K = ws.tablesView.K;
+        density_out.assign((size_t)std::max(K, 0), 0.0f);
+        if (K <= 0) return;
+
+        const bool hasBL = ws.hasBaseline && (int)ws.baseMin.linear.size() == K;
+
+        auto epsY_at = [&](int i)->float {
+            return (i < (int)ws.tablesView.epsY.size()) ? ws.tablesView.epsY[i] : 0.0f;
+            };
+        auto epsM_at = [&](int i)->float {
+            return (i < (int)ws.tablesView.epsM.size()) ? ws.tablesView.epsM[i] : 0.0f;
+            };
+        auto epsC_at = [&](int i)->float {
+            return (i < (int)ws.tablesView.epsC.size()) ? ws.tablesView.epsC[i] : 0.0f;
+            };
+
+        for (int i = 0; i < K; ++i) {
+            const float baseSpectral = hasBL &&
+                static_cast<size_t>(i) < ws.tablesView.baseMin.size()
+                ? ws.tablesView.baseMin[static_cast<size_t>(i)]
+                : 0.0f;
+
+            density_out[i] = D_neg[0] * epsC_at(i) // C
+                + D_neg[1] * epsM_at(i) // M
+                + D_neg[2] * epsY_at(i) // Y
+                + baseSpectral;
+        }
+    }
+
+    inline void build_enlarger_illuminant_filtered(
+        const Runtime& rt,
+        float yShiftSteps,
+        float mShiftSteps,
+        float cShiftSteps,
+        std::vector<float>& illuminant_out)
+    {
+        const int K = Spectral::gShape.K;
+        illuminant_out.assign((size_t)std::max(K, 0), 0.0f);
+        if (K <= 0) return;
+
+        const float yAmount = compose_dichroic_amount(rt.neutralY, yShiftSteps);
+        const float mAmount = compose_dichroic_amount(rt.neutralM, mShiftSteps);
+        const float cAmount = compose_dichroic_amount(rt.neutralC, cShiftSteps);
+
+        for (int i = 0; i < K; ++i) {
+            const float Ee = (rt.illumEnlarger.linear.size() > size_t(i))
+                ? rt.illumEnlarger.linear[i]
+                : 1.0f;
+            const float fY = blend_dichroic_filter_linear(
+                (rt.filterY.linear.size() > size_t(i)) ? rt.filterY.linear[i] : 1.0f,
+                yAmount);
+            const float fM = blend_dichroic_filter_linear(
+                (rt.filterM.linear.size() > size_t(i)) ? rt.filterM.linear[i] : 1.0f,
+                mAmount);
+            const float fC = blend_dichroic_filter_linear(
+                (rt.filterC.linear.size() > size_t(i)) ? rt.filterC.linear[i] : 1.0f,
+                cAmount);
+            illuminant_out[i] = Ee * (fY * fM * fC);
+        }
+    }
+
+    inline void negative_density_to_filtered_light_agx(
+        const WorkingState& ws,
+        const Runtime& rt,
+        float yShiftSteps,
+        float mShiftSteps,
+        float cShiftSteps,
+        const float D_neg[3],
+        std::vector<float>& tmp_density_spectral,
+        std::vector<float>& tmp_illuminant_filtered,
+        std::vector<float>& out_light)
+    {
+        negative_density_spectral_from_dyes(ws, D_neg, tmp_density_spectral);
+        build_enlarger_illuminant_filtered(rt, yShiftSteps, mShiftSteps, cShiftSteps, tmp_illuminant_filtered);
+        density_to_light_agx(tmp_density_spectral, tmp_illuminant_filtered, out_light);
     }
 
 
@@ -450,7 +529,7 @@ namespace Print {
 
         for (int i = 0; i < K; ++i) {
             const float e = Ee_expose[i];
-            if (!std::isfinite(e)) {
+            if (std::isnan(e)) {
                 continue;
             }
 
@@ -459,20 +538,20 @@ namespace Print {
             const float ly = rt.profile.epsY.linear.empty() ? 0.0f : rt.profile.epsY.linear[i];
 
             const double e64 = static_cast<double>(e);
-            if (std::isfinite(lc)) {
+            if (!std::isnan(lc)) {
                 Ec += e64 * static_cast<double>(lc);
             }
-            if (std::isfinite(lm)) {
+            if (!std::isnan(lm)) {
                 Em += e64 * static_cast<double>(lm);
             }
-            if (std::isfinite(ly)) {
+            if (!std::isnan(ly)) {
                 Ey += e64 * static_cast<double>(ly);
             }
         }
 
-        Eprint[0] = std::max(0.0f, static_cast<float>(Ec)); // C
-        Eprint[1] = std::max(0.0f, static_cast<float>(Em)); // M
-        Eprint[2] = std::max(0.0f, static_cast<float>(Ey)); // Y
+        Eprint[0] = static_cast<float>(Ec); // C
+        Eprint[1] = static_cast<float>(Em); // M
+        Eprint[2] = static_cast<float>(Ey); // Y
     }
 
     // Compute per-channel raw exposures via spectral sensitivity contraction (C/M/Y order).
@@ -503,7 +582,7 @@ namespace Print {
 
         for (size_t i = 0; i < n; ++i) {
             const float e = Ee_filtered[i];
-            if (!std::isfinite(e)) {
+            if (std::isnan(e)) {
                 continue;
             }
 
@@ -512,20 +591,20 @@ namespace Print {
             const float sM = sensM[i];
             const float sC = sensC[i];
 
-            if (std::isfinite(sY)) {
+            if (!std::isnan(sY)) {
                 accumY += e64 * static_cast<double>(sY);
             }
-            if (std::isfinite(sM)) {
+            if (!std::isnan(sM)) {
                 accumM += e64 * static_cast<double>(sM);
             }
-            if (std::isfinite(sC)) {
+            if (!std::isnan(sC)) {
                 accumC += e64 * static_cast<double>(sC);
             }
         }
 
-        raw[0] = std::max(0.0f, static_cast<float>(accumC)); // C
-        raw[1] = std::max(0.0f, static_cast<float>(accumM)); // M
-        raw[2] = std::max(0.0f, static_cast<float>(accumY)); // Y
+        raw[0] = static_cast<float>(accumC); // C
+        raw[1] = static_cast<float>(accumM); // M
+        raw[2] = static_cast<float>(accumY); // Y
     }
 
     inline void compute_preflash_raw(
@@ -540,28 +619,20 @@ namespace Print {
         if (K <= 0) return;
         if (ws.tablesView.K <= 0) return;
 
+        // agx-emulsion parity: preflash is computed via density_to_light(density_base, preflash_illuminant),
+        // then contracted against print paper sensitivity (no clamp).
         const float Dbase[3] = { 0.0f, 0.0f, 0.0f };
-        negative_T_from_dyes(ws, Dbase, Tpre);
-        if ((int)Tpre.size() < K) {
-            Tpre.resize((size_t)K, 1.0f);
-        }
-
-        Ee_pre.resize((size_t)K);
-        const float yAmount = compose_dichroic_amount(rt.neutralY, 0.0f);
-        const float mAmount = compose_dichroic_amount(rt.neutralM, 0.0f);
-        const float cAmount = compose_dichroic_amount(rt.neutralC, 0.0f);
-
-        for (int i = 0; i < K; ++i) {
-            const float Ee = (rt.illumEnlarger.linear.size() > size_t(i))
-                ? rt.illumEnlarger.linear[i]
-                : 1.0f;
-            const float t = Tpre[i];
-            const float fY = blend_dichroic_filter_linear(rt.filterY.linear.empty() ? 1.0f : rt.filterY.linear[i], yAmount);
-            const float fM = blend_dichroic_filter_linear(rt.filterM.linear.empty() ? 1.0f : rt.filterM.linear[i], mAmount);
-            const float fC = blend_dichroic_filter_linear(rt.filterC.linear.empty() ? 1.0f : rt.filterC.linear[i], cAmount);
-            const float fTotal = fY * fM * fC;
-            Ee_pre[i] = std::max(0.0f, Ee * t * fTotal);
-        }
+        thread_local std::vector<float> density_base;
+        thread_local std::vector<float> illum_preflash;
+        negative_density_to_filtered_light_agx(
+            ws, rt,
+            /*yShiftSteps=*/0.0f,
+            /*mShiftSteps=*/0.0f,
+            /*cShiftSteps=*/0.0f,
+            Dbase,
+            density_base,
+            illum_preflash,
+            Ee_pre);
 
         raw_exposures_from_filtered_light(rt.profile, Ee_pre, rawOut);
     }
@@ -601,40 +672,30 @@ namespace Print {
 
         // 3) LogE sampling (offsets already baked into density curves), clamp to domain, sample negative densities
         const float logE[3] = {
-            std::log10(std::max(0.0f, E[0]) + 1e-10f),
-            std::log10(std::max(0.0f, E[1]) + 1e-10f),
-            std::log10(std::max(0.0f, E[2]) + 1e-10f)
+            std::log10(fmax_agx(E[0], 0.0f) + 1e-10f),
+            std::log10(fmax_agx(E[1], 0.0f) + 1e-10f),
+            std::log10(fmax_agx(E[2], 0.0f) + 1e-10f)
         };
         float D_neg[3];
         sample_negative_densities(ws, dirRT, logE, D_neg, DirSampleMode::BypassRuntime);
 
-        // 4) Negative transmittance (baseline applied per stock)       
-        thread_local std::vector<float> Tneg, Ee_expose, Ee_filtered;
-        negative_T_from_dyes(ws, D_neg, Tneg);
-
-        // 5) Enlarger illuminant exposure
-        Ee_expose.resize(Spectral::gShape.K);
-        for (int i = 0; i < Spectral::gShape.K; ++i) {
-            const float Ee = rt.illumEnlarger.linear.empty() ? 1.0f : rt.illumEnlarger.linear[i];
-            Ee_expose[i] = std::max(0.0f, Ee * Tneg[i]);
-        }
-
-        // 6) Apply Y/M/C dichroic filters using Durst wheel linear blending (agx parity)
-        Ee_filtered.resize(Spectral::gShape.K);
-        const float yAmount = compose_dichroic_amount(rt.neutralY, prm.yFilter);
-        const float mAmount = compose_dichroic_amount(rt.neutralM, prm.mFilter);
-        const float cAmount = compose_dichroic_amount(rt.neutralC, 0.0f);
-        for (int i = 0; i < Spectral::gShape.K; ++i) {
-            const float fY = blend_dichroic_filter_linear(rt.filterY.linear.empty() ? 1.0f : rt.filterY.linear[i], yAmount);
-            const float fM = blend_dichroic_filter_linear(rt.filterM.linear.empty() ? 1.0f : rt.filterM.linear[i], mAmount);
-            const float fC = blend_dichroic_filter_linear(rt.filterC.linear.empty() ? 1.0f : rt.filterC.linear[i], cAmount);
-            const float fTotal = fY * fM * fC;
-            Ee_filtered[i] = std::max(0.0f, Ee_expose[i] * fTotal);
-        }
+        // 4) Print illuminant + negative density -> transmitted light (agx parity: NaNs collapse to 0 here only).
+        thread_local std::vector<float> density_spectral;
+        thread_local std::vector<float> print_illuminant;
+        thread_local std::vector<float> light;
+        negative_density_to_filtered_light_agx(
+            ws, rt,
+            prm.yFilter,
+            prm.mFilter,
+            /*cShiftSteps=*/0.0f,
+            D_neg,
+            density_spectral,
+            print_illuminant,
+            light);
 
         // 7) RAW via print paper sensitivities (log domain → linear sensitivity)
         float raw[3];
-        raw_exposures_from_filtered_light(rt.profile, Ee_filtered, raw);
+        raw_exposures_from_filtered_light(rt.profile, light, raw);
 
         const float safeRawMid = std::max(1e-12f, raw[1]);
         const float baseFactor = std::isfinite(safeRawMid) && safeRawMid > 0.0f
@@ -667,23 +728,13 @@ namespace Print {
 
     // Build print densities from print exposures (C/M/Y order, parity with agx-emulsion)
     inline void print_densities_from_Eprint(const Profile& p, const float Eprint[3], float D_print[3]) {
-        auto safe_log10 = [](float v)->float { return std::log10(std::max(0.0f, v) + 1e-10f); };
-        float lEc = safe_log10(Eprint[0]);
-        float lEm = safe_log10(Eprint[1]);
-        float lEy = safe_log10(Eprint[2]);
+        const float lEc = std::log10(Eprint[0] + 1e-10f);
+        const float lEm = std::log10(Eprint[1] + 1e-10f);
+        const float lEy = std::log10(Eprint[2] + 1e-10f);
 
         D_print[0] = interpolate_density_gamma(p.dcC, lEc, p.gammaFactor[0]);
         D_print[1] = interpolate_density_gamma(p.dcM, lEm, p.gammaFactor[1]);
         D_print[2] = interpolate_density_gamma(p.dcY, lEy, p.gammaFactor[2]);
-
-        // Densities are optical densities (OD); clamp finite values to non-negative to prevent T>1.
-        // agx-emulsion parity: do not convert NaN -> 0 density (NaN should become 0 transmitted light later).
-        for (int i = 0; i < 3; ++i) {
-            if (std::isfinite(D_print[i]) && D_print[i] < 0.0f) {
-                D_print[i] = 0.0f;
-            }
-        }
-
     }
 
 
@@ -737,41 +788,28 @@ namespace Print {
 
 
         float logE[3] = {
-            std::log10(std::max(0.0f, E[0]) + 1e-10f),
-            std::log10(std::max(0.0f, E[1]) + 1e-10f),
-            std::log10(std::max(0.0f, E[2]) + 1e-10f)
+            std::log10(fmax_agx(E[0], 0.0f) + 1e-10f),
+            std::log10(fmax_agx(E[1], 0.0f) + 1e-10f),
+            std::log10(fmax_agx(E[2], 0.0f) + 1e-10f)
         };
 
         float D_neg[3];
         sample_negative_densities(ws, dirRT, logE, D_neg);
 
-        // 2) Negative transmittance with optional baseline blend    
-        thread_local std::vector<float> Tneg, Ee_expose, Tprint, Ee_viewed;
+        // 2) Negative density + print illuminant -> transmitted light (agx parity)
+        thread_local std::vector<float> density_spectral, print_illuminant, Ee_filtered;
+        thread_local std::vector<float> Tprint, Ee_viewed;
         thread_local std::vector<float> Tpreflash, Ee_preflash;
-        negative_T_from_dyes(ws, D_neg, Tneg);
 
-        // 3) Ee_expose = Ee_enlarger * T_neg * exposure
-        Ee_expose.resize(Spectral::gShape.K);
-        for (int i = 0; i < Spectral::gShape.K; ++i) {
-            const float Ee = rt.illumEnlarger.linear.empty() ? 1.0f : rt.illumEnlarger.linear[i];
-            Ee_expose[i] = std::max(0.0f, Ee * Tneg[i]);
-        }
-
-        // 4) Reduce to per-channel print exposures and apply neutral Y/M/C filters
-        // Apply spectral Y/M/C dichroic filters to enlarger light before per-channel reduction
-        thread_local std::vector<float> Ee_filtered;
-        Ee_filtered.resize(Spectral::gShape.K);
-        const float yAmount = compose_dichroic_amount(rt.neutralY, prm.yFilter);
-        const float mAmount = compose_dichroic_amount(rt.neutralM, prm.mFilter);
-        const float cAmount = compose_dichroic_amount(rt.neutralC, 0.0f);
-        // Blend each wheel between identity (1.0) and its full transmittance curve
-        for (int i = 0; i < Spectral::gShape.K; ++i) {
-            const float fY = blend_dichroic_filter_linear(rt.filterY.linear.empty() ? 1.0f : rt.filterY.linear[i], yAmount);
-            const float fM = blend_dichroic_filter_linear(rt.filterM.linear.empty() ? 1.0f : rt.filterM.linear[i], mAmount);
-            const float fC = blend_dichroic_filter_linear(rt.filterC.linear.empty() ? 1.0f : rt.filterC.linear[i], cAmount);
-            const float fTotal = fY * fM * fC;
-            Ee_filtered[i] = std::max(0.0f, Ee_expose[i] * fTotal);
-        }
+        negative_density_to_filtered_light_agx(
+            ws, rt,
+            prm.yFilter,
+            prm.mFilter,
+            /*cShiftSteps=*/0.0f,
+            D_neg,
+            density_spectral,
+            print_illuminant,
+            Ee_filtered);
 
         // Compute per-channel raw via sensitivity contraction (agx parity)
         float raw[3];
@@ -815,7 +853,7 @@ namespace Print {
         Ee_viewed.resize(Spectral::gShape.K);
         for (int i = 0; i < Spectral::gShape.K; ++i) {
             const float Ev = rt.illumView.linear.empty() ? 1.0f : rt.illumView.linear[i];
-            Ee_viewed[i] = std::max(0.0f, Ev * Tprint[i]);
+            Ee_viewed[i] = Ev * Tprint[i];
         }
 
         // Integrate to XYZ using per-instance viewing axis and normalization

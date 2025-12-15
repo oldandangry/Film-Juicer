@@ -1286,7 +1286,7 @@ namespace Spectral {
             const float Dlambda = dyes_cmy[0] * T.epsC[i]
                 + dyes_cmy[1] * T.epsM[i]
                 + dyes_cmy[2] * T.epsY[i];
-            if (!std::isfinite(Dlambda)) {
+            if (std::isnan(Dlambda)) {
                 continue;
             }
             const float Tlambda = std::exp(-kLn10 * Dlambda);
@@ -1314,7 +1314,7 @@ namespace Spectral {
                 + dyes_cmy[1] * T.epsM[i]
                 + dyes_cmy[2] * T.epsY[i]
                 + baseSpectral;
-            if (!std::isfinite(Dlambda)) {
+            if (std::isnan(Dlambda)) {
                 continue;
             }
             const float Tlambda = std::exp(-kLn10 * Dlambda);
