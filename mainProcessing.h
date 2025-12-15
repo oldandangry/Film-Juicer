@@ -102,8 +102,7 @@ private:
 
     RenderContext prepareRenderContext() const;
     bool ensureDensityCapacity(int width, int height);
-    void writeNegativeDensities(const RenderContext& ctx, unsigned int threadCount);
-    void convertNegativeToPrint(const RenderContext& ctx, unsigned int threadCount);
+    void writeMediumDensities(const RenderContext& ctx, unsigned int threadCount);
     void renderScannerFromDensity(const RenderContext& ctx, unsigned int threadCount);
 
     void processImpl();

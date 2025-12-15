@@ -30,10 +30,7 @@
 #include "ScannerOptics.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
-#include "ExposeFilmStage.h"
-#include "DevelopFilmStage.h"
-#include "ExposePrintStage.h"
-#include "DevelopPrintStage.h"
+#include "PipelineRunner.h"
 
 namespace JuicerProc {
 
@@ -219,6 +216,10 @@ namespace {
         const int center_xx = width / 2;
         const int center_yy = height / 2;
 
+        Pipeline::PipelineRunnerConfig runnerCfg{};
+        runnerCfg.enablePrint = false;
+        const Pipeline::PipelineRunner runner(runnerCfg);
+
 	        for (int yy = 0; yy < height; ++yy) {
 	            if (abortCheck()) break;
 	            for (int xx = 0; xx < width; ++xx) {
@@ -237,29 +238,31 @@ namespace {
                     JTRACE("SPECTRAL", oss.str());
                 }
 
-	                Pipeline::ExposeFilmInputs exposeIn{};
-	                exposeIn.rgb.v[0] = rgbIn[0];
-	                exposeIn.rgb.v[1] = rgbIn[1];
-	                exposeIn.rgb.v[2] = rgbIn[2];
-	                exposeIn.exposureScale = exposureScale;
+	                Pipeline::DensityPixelInputs pxIn{};
+	                pxIn.rgb.v[0] = rgbIn[0];
+	                pxIn.rgb.v[1] = rgbIn[1];
+	                pxIn.rgb.v[2] = rgbIn[2];
+	                pxIn.exposureScale = exposureScale;
+	                pxIn.dirRuntime = &dirRT;
+	                pxIn.applyDirRuntime = false; // Pass A wants pre-DIR densities for correction computation.
 
-	                Pipeline::ExposeFilmOutputs exposeOut{};
-	                if (!Pipeline::ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
+	                Pipeline::DensityPixelOutputs pxOut{};
+	                if (!runner.run_density_pixel(ws, pxIn, pxOut)) {
 	                    work.filmRaw_B[idx] = work.filmRaw_G[idx] = work.filmRaw_R[idx] = 0.0f;
 	                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
 	                    continue;
 	                }
 
-	                work.filmRaw_B[idx] = exposeOut.filmRaw.v[0];
-	                work.filmRaw_G[idx] = exposeOut.filmRaw.v[1];
-	                work.filmRaw_R[idx] = exposeOut.filmRaw.v[2];
+	                work.filmRaw_B[idx] = pxOut.filmRaw.v[0];
+	                work.filmRaw_G[idx] = pxOut.filmRaw.v[1];
+	                work.filmRaw_R[idx] = pxOut.filmRaw.v[2];
 
 	                // SPD DEBUG: Log film raw exposure (pre-log) for center pixel
 	                if (xx == center_xx && yy == center_yy) {
 	                    std::ostringstream oss;
-	                    oss << "FILM_RAW tile_pixel(" << xx << "," << yy << "): B=" << exposeOut.filmRaw.v[0]
-	                        << " G=" << exposeOut.filmRaw.v[1]
-	                        << " R=" << exposeOut.filmRaw.v[2];
+	                    oss << "FILM_RAW tile_pixel(" << xx << "," << yy << "): B=" << pxOut.filmRaw.v[0]
+	                        << " G=" << pxOut.filmRaw.v[1]
+	                        << " R=" << pxOut.filmRaw.v[2];
 	                    JTRACE("SPECTRAL", oss.str());
 
                     // Log sensitivity curve values at key wavelengths
@@ -280,24 +283,14 @@ namespace {
 	                    }
 	                }
 
-	                Pipeline::DevelopFilmInputs devIn{};
-	                devIn.filmRaw = exposeOut.filmRaw;
-	                devIn.dirRuntime = &dirRT;
-	                devIn.applyDirRuntime = false; // Pass A wants pre-DIR densities for correction computation.
-	                Pipeline::DevelopFilmOutputs devOut{};
-	                if (!Pipeline::DevelopFilmStage::run(ws, devIn, devOut)) {
-	                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
-	                    continue;
-	                }
-
-	                const float leB = devOut.filmLogRaw.v[0];
-	                const float leG = devOut.filmLogRaw.v[1];
-	                const float leR = devOut.filmLogRaw.v[2];
+	                const float leB = pxOut.filmLogRaw.v[0];
+	                const float leG = pxOut.filmLogRaw.v[1];
+	                const float leR = pxOut.filmLogRaw.v[2];
 
 	                // Convert CMY -> YMC to match Couplers::ApplyInputLogE contract.
-	                const float D_Y = devOut.negativeDensity.v[2];
-	                const float D_M = devOut.negativeDensity.v[1];
-	                const float D_C = devOut.negativeDensity.v[0];
+	                const float D_Y = pxOut.negativeDensity.v[2];
+	                const float D_M = pxOut.negativeDensity.v[1];
+	                const float D_C = pxOut.negativeDensity.v[0];
 
 	                float aCorr[3];
 	                Couplers::ApplyInputLogE io{ { leB, leG, leR }, { D_Y, D_M, D_C } };
@@ -421,7 +414,7 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
         const float exposureCompScale = _printParams.exposureCompensationEnabled
             ? _printParams.exposureCompensationScale
             : 1.0f;
-        ctx.kMidSpectral = Pipeline::ExposePrintStage::compute_midgray_factor(
+        ctx.kMidSpectral = Pipeline::PipelineRunner::compute_midgray_factor(
             *_ws,
             *_prt,
             _printParams,
@@ -455,12 +448,14 @@ bool JuicerProcessor::ensureDensityCapacity(int width, int height) {
     return true;
 }
 
-void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned int threadCount) {
+void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned int threadCount) {
     if (!_ws || !_wsReady || ctx.width <= 0 || ctx.height <= 0) {
         return;
     }
 
-    _density.medium = Scanner::ScannerMedium::Negative;
+    _density.medium = ctx.printActive
+        ? Scanner::ScannerMedium::Print
+        : Scanner::ScannerMedium::Negative;
 
 	    if (ctx.useSpatialDIR) {
         auto fetchRGB = [&](int xx, int yy, float rgb[3])->bool {
@@ -496,6 +491,14 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
     const int originY = ctx.window.y1;
 
     const unsigned int nThreads = std::max(1u, threadCount);
+    if (ctx.printActive) {
+        _scratch.printScratchPerWorker.resize(nThreads);
+    }
+
+    Pipeline::PipelineRunnerConfig runnerCfg{};
+    runnerCfg.enablePrint = ctx.printActive;
+    const Pipeline::PipelineRunner runner(runnerCfg);
+
     const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
     std::vector<std::thread> threads;
     threads.reserve(nThreads);
@@ -504,6 +507,10 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
         const int yStart = rowsPerThread * int(t);
         const int yEnd = std::min(height, rowsPerThread * int(t + 1));
         threads.emplace_back([&, yStart, yEnd, t]() {
+            JuicerProc::PrintPipelineScratch* printScratch = nullptr;
+            if (ctx.printActive) {
+                printScratch = &_scratch.printScratchPerWorker[t];
+            }
             for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
                 if (_effect.abort()) {
                     abortFlag.store(true, std::memory_order_relaxed);
@@ -515,68 +522,72 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
                     if (abortFlag.load(std::memory_order_relaxed)) {
                         break;
                     }
-	                    const int x = originX + xOff;
-	                    const size_t idx = rowOffset + size_t(xOff);
-	                    if (ctx.useSpatialDIR) {
-	                        Pipeline::DevelopFilmInputs devIn{};
-	                        devIn.filmRaw.v[0] = _scratch.dirWorkspace.filmRaw_B[idx];
-	                        devIn.filmRaw.v[1] = _scratch.dirWorkspace.filmRaw_G[idx];
-	                        devIn.filmRaw.v[2] = _scratch.dirWorkspace.filmRaw_R[idx];
-	                        devIn.dirRuntime = &_dirRT;
-	                        devIn.useSpatialDIR = true;
-	                        devIn.spatialLogECorrectionsYMC[0] = _scratch.dirWorkspace.corrYBlur[idx];
-	                        devIn.spatialLogECorrectionsYMC[1] = _scratch.dirWorkspace.corrMBlur[idx];
-	                        devIn.spatialLogECorrectionsYMC[2] = _scratch.dirWorkspace.corrCBlur[idx];
+                    const int x = originX + xOff;
+                    const size_t idx = rowOffset + size_t(xOff);
 
-	                        Pipeline::DevelopFilmOutputs devOut{};
-	                        if (!Pipeline::DevelopFilmStage::run(*_ws, devIn, devOut)) {
-	                            failure.store(true, std::memory_order_relaxed);
-	                            abortFlag.store(true, std::memory_order_relaxed);
-	                            break;
-	                        }
+                    Pipeline::DensityPixelInputs pxIn{};
+                    pxIn.exposureScale = ctx.exposureScaleSafe;
+                    pxIn.dirRuntime = &_dirRT;
+                    pxIn.applyDirRuntime = true;
 
-	                        _density.c[idx] = devOut.negativeDensity.v[0]; // C
-	                        _density.m[idx] = devOut.negativeDensity.v[1]; // M
-	                        _density.y[idx] = devOut.negativeDensity.v[2]; // Y
-	                    }
-	                    else {
-	                        const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-	                        if (!srcPix) {
-	                            _density.c[idx] = 0.0f;
+                    if (ctx.useSpatialDIR) {
+                        pxIn.useFilmRawOverride = true;
+                        pxIn.filmRawOverride.v[0] = _scratch.dirWorkspace.filmRaw_B[idx];
+                        pxIn.filmRawOverride.v[1] = _scratch.dirWorkspace.filmRaw_G[idx];
+                        pxIn.filmRawOverride.v[2] = _scratch.dirWorkspace.filmRaw_R[idx];
+                        pxIn.useSpatialDIR = true;
+                        pxIn.spatialLogECorrectionsYMC[0] = _scratch.dirWorkspace.corrYBlur[idx];
+                        pxIn.spatialLogECorrectionsYMC[1] = _scratch.dirWorkspace.corrMBlur[idx];
+                        pxIn.spatialLogECorrectionsYMC[2] = _scratch.dirWorkspace.corrCBlur[idx];
+                    }
+                    else {
+                        const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
+                        if (!srcPix) {
+                            _density.c[idx] = 0.0f;
                             _density.m[idx] = 0.0f;
                             _density.y[idx] = 0.0f;
                             continue;
                         }
-	                        Pipeline::ExposeFilmInputs exposeIn{};
-	                        exposeIn.rgb.v[0] = srcPix[0];
-	                        exposeIn.rgb.v[1] = srcPix[1];
-	                        exposeIn.rgb.v[2] = srcPix[2];
-	                        exposeIn.exposureScale = ctx.exposureScaleSafe;
+                        pxIn.rgb.v[0] = srcPix[0];
+                        pxIn.rgb.v[1] = srcPix[1];
+                        pxIn.rgb.v[2] = srcPix[2];
+                    }
 
-	                        Pipeline::ExposeFilmOutputs exposeOut{};
-	                        if (!Pipeline::ExposeFilmStage::run(*_ws, exposeIn, exposeOut)) {
-	                            _density.c[idx] = 0.0f;
-	                            _density.m[idx] = 0.0f;
-	                            _density.y[idx] = 0.0f;
-	                            continue;
-	                        }
+                    if (ctx.printActive) {
+                        pxIn.printRuntime = _prt;
+                        pxIn.printParams = &_printParams;
+                        pxIn.midgrayFactor = ctx.kMidSpectral;
+                        pxIn.printScratch = printScratch;
+                    }
 
-	                        Pipeline::DevelopFilmInputs devIn{};
-	                        devIn.filmRaw = exposeOut.filmRaw;
-	                        devIn.dirRuntime = &_dirRT;
-	                        devIn.applyDirRuntime = true;
+                    Pipeline::DensityPixelOutputs pxOut{};
+                    if (!runner.run_density_pixel(*_ws, pxIn, pxOut)) {
+                        if (ctx.printActive) {
+                            failure.store(true, std::memory_order_relaxed);
+                            abortFlag.store(true, std::memory_order_relaxed);
+                            break;
+                        }
+                        _density.c[idx] = 0.0f;
+                        _density.m[idx] = 0.0f;
+                        _density.y[idx] = 0.0f;
+                        continue;
+                    }
 
-	                        Pipeline::DevelopFilmOutputs devOut{};
-	                        if (!Pipeline::DevelopFilmStage::run(*_ws, devIn, devOut)) {
-	                            failure.store(true, std::memory_order_relaxed);
-	                            abortFlag.store(true, std::memory_order_relaxed);
-	                            break;
-	                        }
-
-	                        _density.c[idx] = devOut.negativeDensity.v[0]; // C
-	                        _density.m[idx] = devOut.negativeDensity.v[1]; // M
-	                        _density.y[idx] = devOut.negativeDensity.v[2]; // Y
-	                    }
+                    if (ctx.printActive) {
+                        if (pxOut.medium != Pipeline::DensityMedium::Print) {
+                            failure.store(true, std::memory_order_relaxed);
+                            abortFlag.store(true, std::memory_order_relaxed);
+                            break;
+                        }
+                        _density.c[idx] = pxOut.printDensity.v[0];
+                        _density.m[idx] = pxOut.printDensity.v[1];
+                        _density.y[idx] = pxOut.printDensity.v[2];
+                    }
+                    else {
+                        _density.c[idx] = pxOut.negativeDensity.v[0];
+                        _density.m[idx] = pxOut.negativeDensity.v[1];
+                        _density.y[idx] = pxOut.negativeDensity.v[2];
+                    }
 	                }
 	            }
 	            });
@@ -584,95 +595,6 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
 
     for (std::thread& th : threads) {
         if (th.joinable()) th.join();
-    }
-
-    if (failure.load(std::memory_order_relaxed)) {
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    if (abortFlag.load(std::memory_order_relaxed)) {
-        return;
-    }
-}
-
-void JuicerProcessor::convertNegativeToPrint(const RenderContext& ctx, unsigned int threadCount) {
-    if (!ctx.printActive || !_ws || !_prt) {
-        return;
-    }
-
-    const unsigned int nThreads = std::max(1u, threadCount);
-    _scratch.printScratchPerWorker.resize(nThreads);
-    std::atomic<bool> abortFlag{ false };
-    std::atomic<bool> failure{ false };
-
-    const int width = ctx.width;
-    const int height = ctx.height;
-    const int originX = ctx.window.x1;
-    const int originY = ctx.window.y1;
-    const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
-
-    std::vector<std::thread> threads;
-    threads.reserve(nThreads);
-
-    for (unsigned int t = 0; t < nThreads; ++t) {
-        const int yStart = rowsPerThread * int(t);
-        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
-        threads.emplace_back([&, yStart, yEnd, t]() {
-            JuicerProc::PrintPipelineScratch& scratch = _scratch.printScratchPerWorker[t];
-            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
-                if (_effect.abort()) {
-                    abortFlag.store(true, std::memory_order_relaxed);
-                    break;
-                }
-                const size_t rowOffset = size_t(yOff) * size_t(width);
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    if (abortFlag.load(std::memory_order_relaxed)) {
-                        break;
-                    }
-                    const size_t idx = rowOffset + size_t(xOff);
-
-                    Pipeline::ExposePrintInputs exposeIn{};
-                    exposeIn.printRuntime = _prt;
-                    exposeIn.printParams = &_printParams;
-                    exposeIn.midgrayFactor = ctx.kMidSpectral;
-                    exposeIn.negativeDensity.v[0] = _density.c[idx];
-                    exposeIn.negativeDensity.v[1] = _density.m[idx];
-                    exposeIn.negativeDensity.v[2] = _density.y[idx];
-
-                    Pipeline::ExposePrintOutputs exposeOut{};
-                    if (!Pipeline::ExposePrintStage::run(*_ws, exposeIn, exposeOut, scratch)) {
-                        JTRACE("PRINT", "FATAL: failed to convert negative densities to print log raw");
-                        abortFlag.store(true, std::memory_order_relaxed);
-                        failure.store(true, std::memory_order_relaxed);
-                        break;
-                    }
-
-                    Pipeline::DevelopPrintInputs devIn{};
-                    devIn.printRuntime = _prt;
-                    devIn.printLogRaw = exposeOut.printLogRaw;
-
-                    Pipeline::DevelopPrintOutputs devOut{};
-                    if (!Pipeline::DevelopPrintStage::run(devIn, devOut)) {
-                        JTRACE("PRINT", "FATAL: failed to convert print log raw to densities");
-                        abortFlag.store(true, std::memory_order_relaxed);
-                        failure.store(true, std::memory_order_relaxed);
-                        break;
-                    }
-
-                    _density.c[idx] = devOut.printDensity.v[0];
-                    _density.m[idx] = devOut.printDensity.v[1];
-                    _density.y[idx] = devOut.printDensity.v[2];
-                }
-            }
-            });
-    }
-
-    for (std::thread& th : threads) {
-        if (th.joinable()) th.join();
-    }
-
-    if (!failure.load(std::memory_order_relaxed) &&
-        !abortFlag.load(std::memory_order_relaxed)) {
-        _density.medium = Scanner::ScannerMedium::Print;
     }
 
     if (failure.load(std::memory_order_relaxed)) {
@@ -870,13 +792,7 @@ void JuicerProcessor::processImpl() {
 
     const unsigned int threadCount = compute_thread_count(ctx.width, ctx.height);
     ensureDensityCapacity(ctx.width, ctx.height);
-    writeNegativeDensities(ctx, threadCount);
-    if (_effect.abort()) {
-        return;
-    }
-    if (ctx.printActive) {
-        convertNegativeToPrint(ctx, threadCount);
-    }
+    writeMediumDensities(ctx, threadCount);
     if (_effect.abort()) {
         return;
     }
