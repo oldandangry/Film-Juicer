@@ -443,6 +443,17 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
+            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamEnlargerDichroicSet);
+            p->setLabel("Enlarger dichroics");
+            p->setHint("Select the dichroic filter set used by the enlarger Y/M/C wheels. This also selects the corresponding neutral Y/M/C baseline database.");
+            p->appendOption("Durst Digital Light");
+            p->appendOption("Thorlabs");
+            p->appendOption("Edmund Optics");
+            p->setDefault(0);
+            if (grpPrint) p->setParent(*grpPrint);
+            p->setEvaluateOnChange(true);
+        }
+        {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerY");
             p->setLabel("Enlarger Y");
             p->setDefault(0.0);

@@ -778,6 +778,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
     h = mix(h, static_cast<uint64_t>(p.refIll));
     h = mix(h, static_cast<uint64_t>(p.enlIll));
+    h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
     h = mix(h, static_cast<uint64_t>(p.couplersActive));
     h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));

@@ -33,6 +33,24 @@
 namespace {
     static std::once_flag gSpectralGlobalsOnce;
 
+    const char* dichroic_dir_name_for_choice(int choice) {
+        switch (choice) {
+        case 1: return "thorlabs";
+        case 2: return "edmund_optics";
+        case 0:
+        default: return "durst_digital_light";
+        }
+    }
+
+    const char* enlarger_neutral_filters_json_for_choice(int choice) {
+        switch (choice) {
+        case 1: return "enlarger_neutral_ymc_filters_thorlabs.json";
+        case 2: return "enlarger_neutral_ymc_filters_edmund.json";
+        case 0:
+        default: return "enlarger_neutral_ymc_filters.json";
+        }
+    }
+
     inline bool nearly_equal_double(double a, double b) {
         const double diff = std::fabs(a - b);
         const double scale = std::max({ 1.0, std::fabs(a), std::fabs(b) });
@@ -648,6 +666,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pPrintPaper = fetchChoiceParam(kParamPrintPaper);
         _pRefIll = fetchChoiceParam("ReferenceIlluminant");
         _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
+        _pEnlDichroicSet = fetchChoiceParam(kParamEnlargerDichroicSet);
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
         _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
@@ -914,6 +933,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     if (_pPrintPaper)     _pPrintPaper->getValue(P.printPaperIndex);
     if (_pRefIll)         _pRefIll->getValue(P.refIll);
     if (_pEnlIll)         _pEnlIll->getValue(P.enlIll);
+    if (_pEnlDichroicSet) _pEnlDichroicSet->getValue(P.enlDichroicSet);
     if (_pInputColorSpace) _pInputColorSpace->getValue(P.inputColorSpace);
     if (_pInputCctfDecoding) { bool v = false; _pInputCctfDecoding->getValue(v); P.inputCctfDecoding = v ? 1 : 0; }
 #ifdef JUICER_ENABLE_COUPLERS
@@ -973,18 +993,18 @@ void JuicerEffect::bootstrap_after_attach() {
     applyMetadataIlluminantDefaults(P);
     Print::build_illuminant_from_choice(P.enlIll, _state->printRT, _state->dataDir, /*forEnlarger*/true);
 
-    // Load dichroic filters (Durst Digital Light by default)
-    const std::string durstDir = ensure_trailing_separator(
-        data_dir_string("filters", "dichroics", "durst_digital_light"));
+    // Load dichroic filters (set selection controls which vendor curves are used).
+    const std::string dichroicDir = ensure_trailing_separator(
+        data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
     try {
-        Print::load_dichroic_filters_from_csvs(durstDir, _state->printRT);
+        Print::load_dichroic_filters_from_csvs(dichroicDir, _state->printRT);
     }
     catch (const std::exception& ex) {
         // Identity fallback is already handled in loader via 1.0 curves
-        JTRACE("PRINT", std::string("dichroic load failed at '") + durstDir + "' (" + ex.what() + "); using identity filters");
+        JTRACE("PRINT", std::string("dichroic load failed at '") + dichroicDir + "' (" + ex.what() + "); using identity filters");
     }
     catch (...) {
-        JTRACE("PRINT", std::string("dichroic load failed at '") + durstDir + "' (unknown error); using identity filters");
+        JTRACE("PRINT", std::string("dichroic load failed at '") + dichroicDir + "' (unknown error); using identity filters");
     }
 
     applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/true);
@@ -1043,13 +1063,16 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, bool resetFilterP
     float neutralC = Print::kDefaultNeutralC;
     bool loaded = false;
 
-    const std::string jsonPath = data_dir_string("profiles", "enlarger_neutral_ymc_filters.json");
+    const std::string jsonPathPrimary = data_dir_string("profiles", enlarger_neutral_filters_json_for_choice(P.enlDichroicSet));
+    const std::string jsonPathFallback = data_dir_string("profiles", "enlarger_neutral_ymc_filters.json");
     std::tuple<float, float, float> ymc{};
     for (const std::string& illumKey : illumKeys) {
         if (illumKey.empty()) {
             continue;
         }
-        if (load_enlarger_neutral_filters(jsonPath, paperKey, illumKey, negativeKey, ymc)) {
+        if (load_enlarger_neutral_filters(jsonPathPrimary, paperKey, illumKey, negativeKey, ymc) ||
+            (jsonPathPrimary != jsonPathFallback &&
+                load_enlarger_neutral_filters(jsonPathFallback, paperKey, illumKey, negativeKey, ymc))) {
             neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
@@ -1299,20 +1322,50 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
         _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
 
-        // Reload dichroic filters (keep vendor default; can be parameterized later)
-        const std::string durstDirReload = ensure_trailing_separator(
-            data_dir_string("filters", "dichroics", "durst_digital_light"));
+        // Reload dichroic filters (vendor selection controls which curves are used).
+        const std::string dichroicDirReload = ensure_trailing_separator(
+            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
         try {
-            Print::load_dichroic_filters_from_csvs(durstDirReload, _state->printRT);
+            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
         }
         catch (const std::exception& ex) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + durstDirReload + "' (" + ex.what() + "); identity filters remain active");
+            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (" + ex.what() + "); identity filters remain active");
         }
         catch (...) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + durstDirReload + "' (unknown error); identity filters remain active");
+            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (unknown error); identity filters remain active");
         }
 
         printReloaded = true;
+    }
+
+    bool dichroicReloaded = false;
+    if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerDichroicSet) == 0) {
+        const std::string dichroicDirReload = ensure_trailing_separator(
+            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
+        try {
+            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
+            dichroicReloaded = true;
+        }
+        catch (const std::exception& ex) {
+            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (" + ex.what() + "); identity filters remain active");
+        }
+        catch (...) {
+            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (unknown error); identity filters remain active");
+        }
+    }
+    else if (P.enlDichroicSet != _state->lastParams.enlDichroicSet) {
+        const std::string dichroicDirReload = ensure_trailing_separator(
+            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
+        try {
+            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
+            dichroicReloaded = true;
+        }
+        catch (const std::exception& ex) {
+            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (" + ex.what() + "); identity filters remain active");
+        }
+        catch (...) {
+            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (unknown error); identity filters remain active");
+        }
     }
 
     bool filmReloaded = false;
@@ -1331,7 +1384,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     bool neutralApplied = false;
-    if (printReloaded) {
+    if (printReloaded || dichroicReloaded) {
         applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
         neutralApplied = true;
     }
