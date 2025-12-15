@@ -13,6 +13,7 @@
 #include "Logging.h"
 #include "OutputEncoding.h"
 #include "GeneratedColorSpaces.h"
+#include "ScanStage.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "GaussianSciPy.h"
@@ -182,35 +183,6 @@ namespace {
         out[0] = sum[0] * inv;
         out[1] = sum[1] * inv;
         out[2] = sum[2] * inv;
-    }
-
-    inline void dyes_to_XYZ_given_tables_double(
-        const Spectral::SpectralTables& T,
-        const double dyes_cmy[3],
-        double XYZ[3],
-        bool useBaseline,
-        double invNormalization)
-    {
-        double X = 0.0, Y = 0.0, Z = 0.0;
-        const int K = T.K;
-        constexpr double kLn10d = 2.302585092994046;
-        for (int i = 0; i < K; ++i) {
-            const double baseSpectral = (useBaseline && T.hasBaseline) ? static_cast<double>(T.baseMin[i]) : 0.0;
-            const double Dlambda = dyes_cmy[0] * static_cast<double>(T.epsC[i])
-                + dyes_cmy[1] * static_cast<double>(T.epsM[i])
-                + dyes_cmy[2] * static_cast<double>(T.epsY[i])
-                + baseSpectral;
-            if (std::isnan(Dlambda)) {
-                continue;
-            }
-            const double Tlambda = std::exp(-kLn10d * Dlambda);
-            X += Tlambda * static_cast<double>(T.Ax[i]);
-            Y += Tlambda * static_cast<double>(T.Ay[i]);
-            Z += Tlambda * static_cast<double>(T.Az[i]);
-        }
-        XYZ[0] = X * invNormalization;
-        XYZ[1] = Y * invNormalization;
-        XYZ[2] = Z * invNormalization;
     }
 
     inline float hash_to_uniform(std::uint64_t h) {
@@ -433,7 +405,6 @@ namespace ScannerOptics {
                 }
             }
         }
-        const bool useBaseline = tables->hasBaseline; // per-medium baseline; do not gate on film state
         const int width = ctx.bounds.x2 - ctx.bounds.x1;
         const int height = ctx.bounds.y2 - ctx.bounds.y1;
         const int originX = ctx.bounds.x1;
@@ -450,24 +421,7 @@ namespace ScannerOptics {
         }
 
         auto spectral_to_logXYZ = [&](const double D_norm[3], double logXYZ[3]) {
-            double D_denorm[3];
-            if (medium.medium == Scanner::ScannerMedium::Negative) {
-                D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]) - static_cast<double>(medium.range.min_cmy[0]);
-                D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]) - static_cast<double>(medium.range.min_cmy[1]);
-                D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]) - static_cast<double>(medium.range.min_cmy[2]);
-            }
-            else {
-                D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]);
-                D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]);
-                D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]);
-            }
-            double XYZ[3] = { 0.0, 0.0, 0.0 };
-            dyes_to_XYZ_given_tables_double(*tables, D_denorm, XYZ, useBaseline, invNormalization);
-            constexpr double kEps = 1e-10;
-            // agx-emulsion parity: do not clamp XYZ before log.
-            logXYZ[0] = std::log10(XYZ[0] + kEps);
-            logXYZ[1] = std::log10(XYZ[1] + kEps);
-            logXYZ[2] = std::log10(XYZ[2] + kEps);
+            Pipeline::ScanStage::spectral_to_log_xyz(medium, D_norm, logXYZ);
         };
 
         // Prepare LUT if needed
@@ -626,16 +580,7 @@ namespace ScannerOptics {
                         const size_t idx = rowOffset + size_t(xOff);
                         float D_cmy[3] = { density.c[idx], density.m[idx], density.y[idx] };
                         double D_norm[3];
-                        if (medium.medium == Scanner::ScannerMedium::Negative) {
-                            D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(medium.range.min_cmy[0])) * static_cast<double>(medium.range.inv_max_cmy[0]);
-                            D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(medium.range.min_cmy[1])) * static_cast<double>(medium.range.inv_max_cmy[1]);
-                            D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(medium.range.min_cmy[2])) * static_cast<double>(medium.range.inv_max_cmy[2]);
-                        }
-                        else {
-                            D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(medium.range.inv_max_cmy[0]);
-                            D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(medium.range.inv_max_cmy[1]);
-                            D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(medium.range.inv_max_cmy[2]);
-                        }
+                        Pipeline::ScanStage::normalize_density(medium, D_cmy, D_norm);
                         double logXYZ[3];
                         const bool D_norm_finite =
                             std::isfinite(D_norm[0]) && std::isfinite(D_norm[1]) && std::isfinite(D_norm[2]);
