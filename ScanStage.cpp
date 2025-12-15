@@ -81,7 +81,6 @@ namespace Pipeline {
         const bool useBaseline = tables->hasBaseline;
 
         double X = 0.0, Y = 0.0, Z = 0.0;
-        constexpr double kLn10d = 2.302585092994046;
         for (int i = 0; i < K; ++i) {
             const double baseSpectral = (useBaseline) ? static_cast<double>(baseMin[i]) : 0.0;
             const double Dlambda = D_denorm[0] * static_cast<double>(epsC[i])
@@ -89,22 +88,12 @@ namespace Pipeline {
                 + D_denorm[2] * static_cast<double>(epsY[i])
                 + baseSpectral;
 
-            // agx-emulsion parity: NaN density samples represent "no defined film" at that wavelength.
-            // They become NaN transmitted light, which is then sunk to 0 energy.
-            if (std::isnan(Dlambda)) {
-                continue;
-            }
-
-            const double Tlambda = std::exp(-kLn10d * Dlambda);
-
-            // agx-emulsion parity: NaNs in the illuminant/CMF product are treated as 0 energy
-            // via the density_to_light nan_to_num sink.
             const double ax = static_cast<double>(Ax[i]);
             const double ay = static_cast<double>(Ay[i]);
             const double az = static_cast<double>(Az[i]);
-            if (std::isfinite(ax)) X += Tlambda * ax;
-            if (std::isfinite(ay)) Y += Tlambda * ay;
-            if (std::isfinite(az)) Z += Tlambda * az;
+            if (std::isfinite(ax)) X += density_to_light_sample_agx(Dlambda, ax);
+            if (std::isfinite(ay)) Y += density_to_light_sample_agx(Dlambda, ay);
+            if (std::isfinite(az)) Z += density_to_light_sample_agx(Dlambda, az);
         }
 
         const double invNormalization = static_cast<double>(tables->invYn);

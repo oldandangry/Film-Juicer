@@ -1274,60 +1274,6 @@ namespace Spectral {
         layerExposures_from_sceneSPD_with_curves(Ee_scene, sB, sG, sR, E, exposureScale, !useHanatos);
     }
 
-    inline void dyes_to_XYZ_given_tables(
-        const SpectralTables& T,
-        const float dyes_cmy[3],
-        float XYZ[3])
-    {
-        // dyes_cmy[0]=C, [1]=M, [2]=Y
-        double X = 0.0, Y = 0.0, Z = 0.0;
-        const int K = T.K;
-        for (int i = 0; i < K; ++i) {
-            const float Dlambda = dyes_cmy[0] * T.epsC[i]
-                + dyes_cmy[1] * T.epsM[i]
-                + dyes_cmy[2] * T.epsY[i];
-            if (std::isnan(Dlambda)) {
-                continue;
-            }
-            const float Tlambda = std::exp(-kLn10 * Dlambda);
-            X += Tlambda * T.Ax[i];
-            Y += Tlambda * T.Ay[i];
-            Z += Tlambda * T.Az[i];
-        }
-        const float s = T.invYn;
-        XYZ[0] = (float)(X * s);
-        XYZ[1] = (float)(Y * s);
-        XYZ[2] = (float)(Z * s);
-    }
-
-    inline void dyes_to_XYZ_with_baseline_given_tables(
-        const SpectralTables& T,
-        const float dyes_cmy[3],
-        float XYZ[3])
-    {
-        double X = 0.0, Y = 0.0, Z = 0.0;
-        const int K = T.K;
-        for (int i = 0; i < K; ++i) {
-            // Use baseMin only; baseMid is unused here.
-            const float baseSpectral = T.hasBaseline ? T.baseMin[i] : 0.0f;
-            const float Dlambda = dyes_cmy[0] * T.epsC[i]
-                + dyes_cmy[1] * T.epsM[i]
-                + dyes_cmy[2] * T.epsY[i]
-                + baseSpectral;
-            if (std::isnan(Dlambda)) {
-                continue;
-            }
-            const float Tlambda = std::exp(-kLn10 * Dlambda);
-            X += Tlambda * T.Ax[i];
-            Y += Tlambda * T.Ay[i];
-            Z += Tlambda * T.Az[i];
-        }
-        const float s = T.invYn;
-        XYZ[0] = (float)(X * s);
-        XYZ[1] = (float)(Y * s);
-        XYZ[2] = (float)(Z * s);
-    }
-
     // Integrate spectral irradiance under CMFs (stored as Spectral::Curve) to XYZ
     inline void Ee_to_XYZ_given_cmf(
         const std::vector<float>& Ee,

@@ -66,30 +66,6 @@ namespace Scanner {
         std::uint64_t digest = 0;
     };
 
-    inline void normalize_film_density(const ScannerDensityRange& range, const float D_cmy[3], float D_norm[3]) {
-        D_norm[0] = (D_cmy[0] + range.min_cmy[0]) * range.inv_max_cmy[0];
-        D_norm[1] = (D_cmy[1] + range.min_cmy[1]) * range.inv_max_cmy[1];
-        D_norm[2] = (D_cmy[2] + range.min_cmy[2]) * range.inv_max_cmy[2];
-    }
-
-    inline void denormalize_film_density(const ScannerDensityRange& range, const float D_norm[3], float D_cmy[3]) {
-        D_cmy[0] = D_norm[0] / range.inv_max_cmy[0] - range.min_cmy[0];
-        D_cmy[1] = D_norm[1] / range.inv_max_cmy[1] - range.min_cmy[1];
-        D_cmy[2] = D_norm[2] / range.inv_max_cmy[2] - range.min_cmy[2];
-    }
-
-    inline void normalize_print_density(const ScannerDensityRange& range, const float D_cmy[3], float D_norm[3]) {
-        D_norm[0] = D_cmy[0] * range.inv_max_cmy[0];
-        D_norm[1] = D_cmy[1] * range.inv_max_cmy[1];
-        D_norm[2] = D_cmy[2] * range.inv_max_cmy[2];
-    }
-
-    inline void denormalize_print_density(const ScannerDensityRange& range, const float D_norm[3], float D_cmy[3]) {
-        D_cmy[0] = D_norm[0] / range.inv_max_cmy[0];
-        D_cmy[1] = D_norm[1] / range.inv_max_cmy[1];
-        D_cmy[2] = D_norm[2] / range.inv_max_cmy[2];
-    }
-
     struct ScannerStaticKey {
         ScannerMedium medium = ScannerMedium::Negative;
         std::uint64_t tablesHash = 0;

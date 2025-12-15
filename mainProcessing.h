@@ -12,6 +12,7 @@
 #include "Print.h"
 #include "Scanner.h"
 #include "Couplers.h"
+#include "SpatialDIR.h"
 #include "OutputEncoding.h"
 #include <vector>
 #include <algorithm>
@@ -25,32 +26,8 @@ namespace JuicerProc {
     // Separable Gaussian kernel builder, with radius cap for safety. Kept inline so
     // tests can exercise it without linking the processing translation unit.
     inline void buildGaussianKernel(float sigma, std::vector<float>& kernel) {
-        kernel.clear();
-        if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
-            kernel.push_back(1.0f);
-            return;
-        }
-
-        const int radiusRaw = std::max(1, int(std::ceil(3.0f * sigma)));
-        const int radius = std::min(radiusRaw, 75); // cap at 75 taps each side
-
-        kernel.resize(size_t(2 * radius + 1));
-        const float s2 = sigma * sigma * 2.0f;
-        float wsum = 0.0f;
-        for (int i = -radius; i <= radius; ++i) {
-            const float w = std::exp(-(i * i) / s2);
-            kernel[size_t(i + radius)] = w;
-            wsum += w;
-        }
-        for (float& w : kernel) w /= wsum;
+        SpatialDIR::buildGaussianKernel(sigma, kernel);
     }
-
-    struct SpatialDIRWorkspace {
-        std::vector<float> filmRaw_B, filmRaw_G, filmRaw_R;
-        std::vector<float> corrY, corrM, corrC;
-        std::vector<float> corrYBlur, corrMBlur, corrCBlur;
-        std::vector<float> tmp;
-    };
 
     using PrintPipelineScratch = Pipeline::PrintPipelineScratch;
 

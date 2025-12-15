@@ -33,6 +33,19 @@ inline T fmax_agx(T a, T b)
     return std::fmax(a, b);
 }
 
+inline float density_to_light_sample_agx(float density, float illuminant)
+{
+    const double transmitted = std::pow(10.0, -static_cast<double>(density)) * static_cast<double>(illuminant);
+    const float out = static_cast<float>(transmitted);
+    return std::isnan(out) ? 0.0f : out;
+}
+
+inline double density_to_light_sample_agx(double density, double illuminant)
+{
+    const double out = std::pow(10.0, -density) * illuminant;
+    return std::isnan(out) ? 0.0 : out;
+}
+
 inline void density_to_light_agx(
     const std::vector<float>& density_spectral,
     const std::vector<float>& illuminant,
@@ -41,11 +54,7 @@ inline void density_to_light_agx(
     const size_t n = std::min(density_spectral.size(), illuminant.size());
     out_light.resize(n);
     for (size_t i = 0; i < n; ++i) {
-        const double density = static_cast<double>(density_spectral[i]);
-        const double illum = static_cast<double>(illuminant[i]);
-        const double transmitted = std::pow(10.0, -density) * illum;
-        const float out = static_cast<float>(transmitted);
-        out_light[i] = std::isnan(out) ? 0.0f : out;
+        out_light[i] = density_to_light_sample_agx(density_spectral[i], illuminant[i]);
     }
 }
 

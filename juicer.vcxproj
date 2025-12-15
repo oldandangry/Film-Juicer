@@ -190,6 +190,7 @@
     <ClCompile Include="GeneratedColorSpaces.cpp" />
     <ClCompile Include="ScanStage.cpp" />
     <ClCompile Include="ScannerOptics.cpp" />
+    <ClCompile Include="SpatialDIR.cpp" />
     <ClCompile Include="SpectralContext.cpp" />
     <ClCompile Include="SpectralMathAVX.cpp">
       <EnableEnhancedInstructionSet Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
@@ -217,6 +218,7 @@
     <ClInclude Include="PipelineRunner.h" />
     <ClInclude Include="PipelineTypes.h" />
     <ClInclude Include="Print.h" />
+    <ClInclude Include="SpatialDIR.h" />
     <ClInclude Include="DevelopFilmStage.h" />
     <ClInclude Include="DevelopPrintStage.h" />
     <ClInclude Include="ExposeFilmStage.h" />
