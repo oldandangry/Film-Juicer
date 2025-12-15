@@ -46,7 +46,7 @@ namespace JuicerProc {
     }
 
     struct SpatialDIRWorkspace {
-        std::vector<float> logE_B, logE_G, logE_R;
+        std::vector<float> filmRaw_B, filmRaw_G, filmRaw_R;
         std::vector<float> corrY, corrM, corrC;
         std::vector<float> corrYBlur, corrMBlur, corrCBlur;
         std::vector<float> tmp;

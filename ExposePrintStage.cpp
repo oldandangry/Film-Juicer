@@ -6,6 +6,8 @@
 #include <sstream>
 
 #include "Couplers.h"
+#include "DevelopFilmStage.h"
+#include "ExposeFilmStage.h"
 #include "Logging.h"
 #include "Print.h"
 #include "SpectralData.h"
@@ -286,36 +288,40 @@ namespace Pipeline {
         // 1) Midgray DWG rgb at canonical brightness (AgX parity: constant 18.4% reflectance)
         const float rgbMid[3] = { 0.184f, 0.184f, 0.184f };
 
-        // 2) DWG → per-layer exposures (negative leg); apply camera EV exactly once here.
-        //    NOTE: Do not pre-scale rgbMid by cameraExposureScale — avoids double-applying EV.
-        float E[3];
-        const Spectral::SpectralTables* tablesSPD =
-            (ws.spdReady && ws.tablesRef.K > 0) ? &ws.tablesRef : nullptr;
-        // Per agx-emulsion parity: mid-gray probe must use same sensitivities as actual render.
-        // Profiles contain pre-balanced sensitivities; no separate "before balance" state.
-        const float exposureScale = printParams.exposureCompensationEnabled ? exposureCompScale : 1.0f;
-        Spectral::rgb_input_to_film_raw(
-            rgbMid, E, exposureScale,
-            ws.filmRaw,
-            tablesSPD,
-            (ws.spdReady ? ws.spdSInv : nullptr),
-            ws.spdReady,
-            ws.sensB, ws.sensG, ws.sensR);
+	        // 2) DWG → per-layer exposures (negative leg); apply camera EV exactly once here.
+	        //    NOTE: Do not pre-scale rgbMid by cameraExposureScale — avoids double-applying EV.
+	        Pipeline::ExposeFilmInputs exposeIn{};
+	        exposeIn.rgb.v[0] = rgbMid[0];
+	        exposeIn.rgb.v[1] = rgbMid[1];
+	        exposeIn.rgb.v[2] = rgbMid[2];
+	        // Per agx-emulsion parity: mid-gray probe must use same exposure scaling semantics as render.
+	        exposeIn.exposureScale = printParams.exposureCompensationEnabled ? exposureCompScale : 1.0f;
 
-        // 3) LogE sampling (offsets already baked into density curves), sample negative densities
-        const float logE[3] = {
-            std::log10(fmax_agx(E[0], 0.0f) + 1e-10f),
-            std::log10(fmax_agx(E[1], 0.0f) + 1e-10f),
-            std::log10(fmax_agx(E[2], 0.0f) + 1e-10f)
-        };
+	        Pipeline::ExposeFilmOutputs exposeOut{};
+	        if (!Pipeline::ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
+	            return 1.0f;
+	        }
 
-        float D_neg[3];
-        sample_negative_densities(ws, dirRT, logE, D_neg, DirSampleMode::BypassRuntime);
+	        Pipeline::DevelopFilmInputs devIn{};
+	        devIn.filmRaw = exposeOut.filmRaw;
+	        devIn.dirRuntime = &dirRT;
+	        devIn.applyDirRuntime = false; // midgray factor uses pre-DIR densities (legacy behavior)
 
-        // 4) Print illuminant + negative density -> transmitted light (agx parity: NaNs collapse to 0 here only).
-        std::vector<float> density_spectral;
-        std::vector<float> print_illuminant;
-        std::vector<float> light;
+	        Pipeline::DevelopFilmOutputs devOut{};
+	        if (!Pipeline::DevelopFilmStage::run(ws, devIn, devOut)) {
+	            return 1.0f;
+	        }
+
+	        const float D_neg[3] = {
+	            devOut.negativeDensity.v[0],
+	            devOut.negativeDensity.v[1],
+	            devOut.negativeDensity.v[2]
+	        };
+
+	        // 4) Print illuminant + negative density -> transmitted light (agx parity: NaNs collapse to 0 here only).
+	        std::vector<float> density_spectral;
+	        std::vector<float> print_illuminant;
+	        std::vector<float> light;
         density_to_filtered_light_agx(
             ws, printRuntime,
             printParams.yFilter,

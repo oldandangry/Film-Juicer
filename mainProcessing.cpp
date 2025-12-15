@@ -30,6 +30,8 @@
 #include "ScannerOptics.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
+#include "ExposeFilmStage.h"
+#include "DevelopFilmStage.h"
 #include "ExposePrintStage.h"
 #include "DevelopPrintStage.h"
 
@@ -164,27 +166,31 @@ static inline bool curve_ok(const Spectral::Curve& c) {
 namespace {
 
     template <typename FetchRGB, typename AbortCheck>
-    void buildSpatialDIRCorrections(
-        int width, int height,
-        const WorkingState& ws,
-        const Couplers::Runtime& dirRT,
-        float exposureScale,
-        FetchRGB&& fetchRGB,
-        AbortCheck&& abortCheck,
-        JuicerProc::SpatialDIRWorkspace& work,
-        std::vector<float>& kernelCache)
-    {
-        const size_t total = size_t(width) * size_t(height);
-        work.logE_B.assign(total, 0.0f);
-        work.logE_G.assign(total, 0.0f);
-        work.logE_R.assign(total, 0.0f);
-        work.corrY.assign(total, 0.0f);
-        work.corrM.assign(total, 0.0f);
-        work.corrC.assign(total, 0.0f);
+	    void buildSpatialDIRCorrections(
+	        int width, int height,
+	        const WorkingState& ws,
+	        const Couplers::Runtime& dirRT,
+	        float exposureScale,
+	        FetchRGB&& fetchRGB,
+	        AbortCheck&& abortCheck,
+	        JuicerProc::SpatialDIRWorkspace& work,
+	        std::vector<float>& kernelCache)
+	    {
+	        const size_t total = size_t(width) * size_t(height);
+	        work.filmRaw_B.assign(total, 0.0f);
+	        work.filmRaw_G.assign(total, 0.0f);
+	        work.filmRaw_R.assign(total, 0.0f);
+	        work.corrY.assign(total, 0.0f);
+	        work.corrM.assign(total, 0.0f);
+	        work.corrC.assign(total, 0.0f);
+	        work.corrYBlur.assign(total, 0.0f);
+	        work.corrMBlur.assign(total, 0.0f);
+	        work.corrCBlur.assign(total, 0.0f);
+	        work.tmp.assign(total, 0.0f);
 
-        if (!dirRT.active) {
-            return;
-        }
+	        if (!dirRT.active) {
+	            return;
+	        }
 
 
         // Per agx-emulsion parity: use same sensitivities everywhere (no separate "before balance" state).
@@ -213,16 +219,16 @@ namespace {
         const int center_xx = width / 2;
         const int center_yy = height / 2;
 
-        for (int yy = 0; yy < height; ++yy) {
-            if (abortCheck()) break;
-            for (int xx = 0; xx < width; ++xx) {
-                const size_t idx = size_t(yy) * size_t(width) + size_t(xx);
-                float rgbIn[3] = { 0.0f, 0.0f, 0.0f };
-                if (!fetchRGB(xx, yy, rgbIn)) {
-                    work.logE_B[idx] = work.logE_G[idx] = work.logE_R[idx] = 0.0f;
-                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
-                    continue;
-                }
+	        for (int yy = 0; yy < height; ++yy) {
+	            if (abortCheck()) break;
+	            for (int xx = 0; xx < width; ++xx) {
+	                const size_t idx = size_t(yy) * size_t(width) + size_t(xx);
+	                float rgbIn[3] = { 0.0f, 0.0f, 0.0f };
+	                if (!fetchRGB(xx, yy, rgbIn)) {
+	                    work.filmRaw_B[idx] = work.filmRaw_G[idx] = work.filmRaw_R[idx] = 0.0f;
+	                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
+	                    continue;
+	                }
 
                 // SPD DEBUG: Log input RGB for center pixel
                 if (xx == center_xx && yy == center_yy) {
@@ -231,25 +237,30 @@ namespace {
                     JTRACE("SPECTRAL", oss.str());
                 }
 
-                float E[3];
-                const Spectral::SpectralTables* tablesSPD =
-                    (ws.spdReady && ws.tablesRef.K > 0) ? &ws.tablesRef : nullptr;
-                const float sExp = (std::isfinite(exposureScale) ? std::max(0.0f, exposureScale) : 1.0f);
-                Spectral::rgb_input_to_film_raw(
-                    rgbIn, E, sExp,
-                    ws.filmRaw,
-                    tablesSPD,
-                    (ws.spdReady ? ws.spdSInv : nullptr),
-                    ws.spdReady,
-                    sensB_forExposure,
-                    sensG_forExposure,
-                    sensR_forExposure);
+	                Pipeline::ExposeFilmInputs exposeIn{};
+	                exposeIn.rgb.v[0] = rgbIn[0];
+	                exposeIn.rgb.v[1] = rgbIn[1];
+	                exposeIn.rgb.v[2] = rgbIn[2];
+	                exposeIn.exposureScale = exposureScale;
 
-                // SPD DEBUG: Log film raw exposure (pre-log) for center pixel
-                if (xx == center_xx && yy == center_yy) {
-                    std::ostringstream oss;
-                    oss << "FILM_RAW tile_pixel(" << xx << "," << yy << "): B=" << E[0] << " G=" << E[1] << " R=" << E[2];
-                    JTRACE("SPECTRAL", oss.str());
+	                Pipeline::ExposeFilmOutputs exposeOut{};
+	                if (!Pipeline::ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
+	                    work.filmRaw_B[idx] = work.filmRaw_G[idx] = work.filmRaw_R[idx] = 0.0f;
+	                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
+	                    continue;
+	                }
+
+	                work.filmRaw_B[idx] = exposeOut.filmRaw.v[0];
+	                work.filmRaw_G[idx] = exposeOut.filmRaw.v[1];
+	                work.filmRaw_R[idx] = exposeOut.filmRaw.v[2];
+
+	                // SPD DEBUG: Log film raw exposure (pre-log) for center pixel
+	                if (xx == center_xx && yy == center_yy) {
+	                    std::ostringstream oss;
+	                    oss << "FILM_RAW tile_pixel(" << xx << "," << yy << "): B=" << exposeOut.filmRaw.v[0]
+	                        << " G=" << exposeOut.filmRaw.v[1]
+	                        << " R=" << exposeOut.filmRaw.v[2];
+	                    JTRACE("SPECTRAL", oss.str());
 
                     // Log sensitivity curve values at key wavelengths
                     const int idx_450 = 14;  // (450-380)/5 = 14
@@ -266,35 +277,32 @@ namespace {
                         JTRACE("SPECTRAL", oss1.str());
                         JTRACE("SPECTRAL", oss2.str());
                         JTRACE("SPECTRAL", oss3.str());
-                    }
-                }
+	                    }
+	                }
 
-                float leB = std::log10(fmax_agx(E[0], 0.0f) + 1e-10f);
-                float leG = std::log10(fmax_agx(E[1], 0.0f) + 1e-10f);
-                float leR = std::log10(fmax_agx(E[2], 0.0f) + 1e-10f);
+	                Pipeline::DevelopFilmInputs devIn{};
+	                devIn.filmRaw = exposeOut.filmRaw;
+	                devIn.dirRuntime = &dirRT;
+	                devIn.applyDirRuntime = false; // Pass A wants pre-DIR densities for correction computation.
+	                Pipeline::DevelopFilmOutputs devOut{};
+	                if (!Pipeline::DevelopFilmStage::run(ws, devIn, devOut)) {
+	                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
+	                    continue;
+	                }
 
-                if (!std::isfinite(leB) && !ws.densB.lambda_nm.empty()) {
-                    leB = ws.densB.lambda_nm.front();
-                }
-                if (!std::isfinite(leG) && !ws.densG.lambda_nm.empty()) {
-                    leG = ws.densG.lambda_nm.front();
-                }
-                if (!std::isfinite(leR) && !ws.densR.lambda_nm.empty()) {
-                    leR = ws.densR.lambda_nm.front();
-                }
+	                const float leB = devOut.filmLogRaw.v[0];
+	                const float leG = devOut.filmLogRaw.v[1];
+	                const float leR = devOut.filmLogRaw.v[2];
 
-                work.logE_B[idx] = leB;
-                work.logE_G[idx] = leG;
-                work.logE_R[idx] = leR;
+	                // Convert CMY -> YMC to match Couplers::ApplyInputLogE contract.
+	                const float D_Y = devOut.negativeDensity.v[2];
+	                const float D_M = devOut.negativeDensity.v[1];
+	                const float D_C = devOut.negativeDensity.v[0];
 
-                float D_Y = Spectral::sample_density_at_logE(ws.densB, leB, ws.gammaFactorB);
-                float D_M = Spectral::sample_density_at_logE(ws.densG, leG, ws.gammaFactorG);
-                float D_C = Spectral::sample_density_at_logE(ws.densR, leR, ws.gammaFactorR);
-
-                float aCorr[3];
-                Couplers::ApplyInputLogE io{ { leB, leG, leR }, { D_Y, D_M, D_C } };
-                Couplers::compute_logE_corrections(io, dirRT, aCorr);
-                for (float& v : aCorr) {
+	                float aCorr[3];
+	                Couplers::ApplyInputLogE io{ { leB, leG, leR }, { D_Y, D_M, D_C } };
+	                Couplers::compute_logE_corrections(io, dirRT, aCorr);
+	                for (float& v : aCorr) {
                     if (!std::isfinite(v)) v = 0.0f;
                 }
                 work.corrY[idx] = aCorr[0];
@@ -454,7 +462,7 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
 
     _density.medium = Scanner::ScannerMedium::Negative;
 
-    if (ctx.useSpatialDIR) {
+	    if (ctx.useSpatialDIR) {
         auto fetchRGB = [&](int xx, int yy, float rgb[3])->bool {
             const int x = ctx.window.x1 + xx;
             const int y = ctx.window.y1 + yy;
@@ -478,19 +486,10 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
             abortCheck,
             _scratch.dirWorkspace,
             _scratch.gaussianKernel);
-    }
+	    }
 
-    const Spectral::SpectralTables* tablesSPD =
-        (_ws->spdReady && _ws->tablesRef.K > 0) ? &_ws->tablesRef : nullptr;
-    const float* sInv = _ws->spdReady ? _ws->spdSInv : nullptr;
-    const bool spdReady = _ws->spdReady;
-
-    const Spectral::Curve& dirB = (_ws->dirPrecorrected ? _ws->dirDensB : _ws->densB);
-    const Spectral::Curve& dirG = (_ws->dirPrecorrected ? _ws->dirDensG : _ws->densG);
-    const Spectral::Curve& dirR = (_ws->dirPrecorrected ? _ws->dirDensR : _ws->densR);
-
-    std::atomic<bool> abortFlag{ false };
-    std::atomic<bool> failure{ false };
+	    std::atomic<bool> abortFlag{ false };
+	    std::atomic<bool> failure{ false };
     const int width = ctx.width;
     const int height = ctx.height;
     const int originX = ctx.window.x1;
@@ -516,76 +515,72 @@ void JuicerProcessor::writeNegativeDensities(const RenderContext& ctx, unsigned 
                     if (abortFlag.load(std::memory_order_relaxed)) {
                         break;
                     }
-                    const int x = originX + xOff;
-                    const size_t idx = rowOffset + size_t(xOff);
-                    float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+	                    const int x = originX + xOff;
+	                    const size_t idx = rowOffset + size_t(xOff);
+	                    if (ctx.useSpatialDIR) {
+	                        Pipeline::DevelopFilmInputs devIn{};
+	                        devIn.filmRaw.v[0] = _scratch.dirWorkspace.filmRaw_B[idx];
+	                        devIn.filmRaw.v[1] = _scratch.dirWorkspace.filmRaw_G[idx];
+	                        devIn.filmRaw.v[2] = _scratch.dirWorkspace.filmRaw_R[idx];
+	                        devIn.dirRuntime = &_dirRT;
+	                        devIn.useSpatialDIR = true;
+	                        devIn.spatialLogECorrectionsYMC[0] = _scratch.dirWorkspace.corrYBlur[idx];
+	                        devIn.spatialLogECorrectionsYMC[1] = _scratch.dirWorkspace.corrMBlur[idx];
+	                        devIn.spatialLogECorrectionsYMC[2] = _scratch.dirWorkspace.corrCBlur[idx];
 
-                    if (ctx.useSpatialDIR) {
-                        float leB2 = _scratch.dirWorkspace.logE_B[idx] - _scratch.dirWorkspace.corrYBlur[idx];
-                        float leG2 = _scratch.dirWorkspace.logE_G[idx] - _scratch.dirWorkspace.corrMBlur[idx];
-                        float leR2 = _scratch.dirWorkspace.logE_R[idx] - _scratch.dirWorkspace.corrCBlur[idx];
+	                        Pipeline::DevelopFilmOutputs devOut{};
+	                        if (!Pipeline::DevelopFilmStage::run(*_ws, devIn, devOut)) {
+	                            failure.store(true, std::memory_order_relaxed);
+	                            abortFlag.store(true, std::memory_order_relaxed);
+	                            break;
+	                        }
 
-                        if (!std::isfinite(leB2) && !dirB.lambda_nm.empty()) {
-                            leB2 = dirB.lambda_nm.front();
-                        }
-                        if (!std::isfinite(leG2) && !dirG.lambda_nm.empty()) {
-                            leG2 = dirG.lambda_nm.front();
-                        }
-                        if (!std::isfinite(leR2) && !dirR.lambda_nm.empty()) {
-                            leR2 = dirR.lambda_nm.front();
-                        }
-
-                        const float dY = Spectral::sample_density_at_logE(dirB, leB2, _ws->gammaFactorB);
-                        const float dM = Spectral::sample_density_at_logE(dirG, leG2, _ws->gammaFactorG);
-                        const float dC = Spectral::sample_density_at_logE(dirR, leR2, _ws->gammaFactorR);
-                        D_cmy[0] = dC; // C
-                        D_cmy[1] = dM; // M
-                        D_cmy[2] = dY; // Y
-                    }
-                    else {
-                        const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-                        if (!srcPix) {
-                            _density.c[idx] = 0.0f;
+	                        _density.c[idx] = devOut.negativeDensity.v[0]; // C
+	                        _density.m[idx] = devOut.negativeDensity.v[1]; // M
+	                        _density.y[idx] = devOut.negativeDensity.v[2]; // Y
+	                    }
+	                    else {
+	                        const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
+	                        if (!srcPix) {
+	                            _density.c[idx] = 0.0f;
                             _density.m[idx] = 0.0f;
                             _density.y[idx] = 0.0f;
                             continue;
                         }
-                        float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
-                        float E[3];
-                        Spectral::rgb_input_to_film_raw(
-                            rgbIn, E, ctx.exposureScaleSafe,
-                            _ws->filmRaw,
-                            tablesSPD,
-                            sInv,
-                            spdReady,
-                            _ws->sensB, _ws->sensG, _ws->sensR);
+	                        Pipeline::ExposeFilmInputs exposeIn{};
+	                        exposeIn.rgb.v[0] = srcPix[0];
+	                        exposeIn.rgb.v[1] = srcPix[1];
+	                        exposeIn.rgb.v[2] = srcPix[2];
+	                        exposeIn.exposureScale = ctx.exposureScaleSafe;
 
-                        float logE[3] = {
-                            std::log10(fmax_agx(E[0], 0.0f) + 1e-10f),
-                            std::log10(fmax_agx(E[1], 0.0f) + 1e-10f),
-                            std::log10(fmax_agx(E[2], 0.0f) + 1e-10f)
-                        };
+	                        Pipeline::ExposeFilmOutputs exposeOut{};
+	                        if (!Pipeline::ExposeFilmStage::run(*_ws, exposeIn, exposeOut)) {
+	                            _density.c[idx] = 0.0f;
+	                            _density.m[idx] = 0.0f;
+	                            _density.y[idx] = 0.0f;
+	                            continue;
+	                        }
 
-                        if (!std::isfinite(logE[0]) && !dirB.lambda_nm.empty()) {
-                            logE[0] = dirB.lambda_nm.front();
-                        }
-                        if (!std::isfinite(logE[1]) && !dirG.lambda_nm.empty()) {
-                            logE[1] = dirG.lambda_nm.front();
-                        }
-                        if (!std::isfinite(logE[2]) && !dirR.lambda_nm.empty()) {
-                            logE[2] = dirR.lambda_nm.front();
-                        }
+	                        Pipeline::DevelopFilmInputs devIn{};
+	                        devIn.filmRaw = exposeOut.filmRaw;
+	                        devIn.dirRuntime = &_dirRT;
+	                        devIn.applyDirRuntime = true;
 
-                        sample_negative_densities(*_ws, _dirRT, logE, D_cmy);
-                    }
+	                        Pipeline::DevelopFilmOutputs devOut{};
+	                        if (!Pipeline::DevelopFilmStage::run(*_ws, devIn, devOut)) {
+	                            failure.store(true, std::memory_order_relaxed);
+	                            abortFlag.store(true, std::memory_order_relaxed);
+	                            break;
+	                        }
 
-                    _density.c[idx] = D_cmy[0]; // C
-                    _density.m[idx] = D_cmy[1]; // M
-                    _density.y[idx] = D_cmy[2]; // Y
-                }
-            }
-            });
-    }
+	                        _density.c[idx] = devOut.negativeDensity.v[0]; // C
+	                        _density.m[idx] = devOut.negativeDensity.v[1]; // M
+	                        _density.y[idx] = devOut.negativeDensity.v[2]; // Y
+	                    }
+	                }
+	            }
+	            });
+	    }
 
     for (std::thread& th : threads) {
         if (th.joinable()) th.join();
