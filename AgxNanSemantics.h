@@ -85,7 +85,6 @@ namespace AgxNanInternal {
                 return a.originalIndex < b.originalIndex;
             });
 
-        constexpr float kLambdaDedupEps = 1e-5f;
         float currentLambda = temp[0].lambda;
         float currentValue = temp[0].value;
         size_t currentFirstIndex = temp[0].originalIndex;
@@ -100,7 +99,7 @@ namespace AgxNanInternal {
             const float value = temp[i].value;
             const size_t idx = temp[i].originalIndex;
 
-            if (std::abs(lambda - currentLambda) <= kLambdaDedupEps) {
+            if (lambda == currentLambda) {
                 if (idx < currentFirstIndex) {
                     currentFirstIndex = idx;
                     currentValue = value;

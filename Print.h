@@ -361,37 +361,17 @@ namespace Print {
                 if (pairs.size() < 2) {
                     return;
                 }
-                std::vector<float> x, y;
-                x.reserve(pairs.size());
-                y.reserve(pairs.size());
-                for (const auto& p : pairs) {
-                    if (!std::isfinite(p.first) || !std::isfinite(p.second)) continue;
-                    x.push_back(p.first);
-                    y.push_back(p.second);
-                }
-                if (x.size() < 2) {
+
+                // agx-emulsion loads Durst dichroics via SciPy Akima without extrapolation:
+                // out-of-domain wavelengths are NaN (not clamped to endpoints).
+                const std::vector<std::pair<float, float>> resampled =
+                    Spectral::resample_pairs_akima_to_reference_axis(pairs);
+                if (resampled.empty() || resampled.size() != static_cast<size_t>(Spectral::gShape.K)) {
                     return;
                 }
-                const auto [minIt, maxIt] = std::minmax_element(x.begin(), x.end());
-                const float xmin = *minIt;
-                const float xmax = *maxIt;
-                const size_t idxMin = static_cast<size_t>(std::distance(x.begin(), minIt));
-                const size_t idxMax = static_cast<size_t>(std::distance(x.begin(), maxIt));
-                const float ymin = y[idxMin];
-                const float ymax = y[idxMax];
-                Interpolation::AkimaInterpolator interp;
-                if (!interp.build(x, y)) {
-                    return;
-                }
-                for (int i = 0; i < Spectral::gShape.K; ++i) {
-                    const float wl = Spectral::gShape.wavelengths[i];
-                    float v = interp.evaluate(wl);
-                    if (!std::isfinite(v)) {
-                        // Clamp to the nearest measured endpoint to mirror SciPy Akima extrapolation.
-                        v = (wl < xmin) ? ymin : ymax;
-                    }
-                    const float normalized = std::isfinite(v) ? (v * 0.01f) : 0.0f;
-                    dst.linear[(size_t)i] = normalized;
+
+                for (size_t i = 0; i < resampled.size(); ++i) {
+                    dst.linear[i] = resampled[i].second * 0.01f;
                 }
             };
 

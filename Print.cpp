@@ -493,8 +493,8 @@ namespace Print {
                 pairs.emplace_back(Lmax, padMax);
             }
 
-            // Re-sort if we inserted endpoints.
-            std::sort(pairs.begin(), pairs.end(),
+            // Re-sort if we inserted endpoints (stable so first-occurrence duplicate semantics match agx).
+            std::stable_sort(pairs.begin(), pairs.end(),
                 [](const auto& a, const auto& b) { return a.first < b.first; });
 
             // Collapse duplicate wavelengths keeping the first finite sample.

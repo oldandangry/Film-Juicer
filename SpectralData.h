@@ -135,28 +135,26 @@ namespace Spectral {
     // ============================================================================
 
     // Linear sample arbitrary (lambda, value) pairs at 'lambda' with endpoint clamp.
+    // Mirrors NumPy np.interp semantics: values are not "repaired" if non-finite.
     inline float sample_linear_pairs(const std::vector<std::pair<float, float>>& pairs, float lambda) {
         const size_t n = pairs.size();
         if (n == 0) return 0.0f;
         if (n == 1) return pairs.front().second;
         if (lambda <= pairs.front().first) return pairs.front().second;
         if (lambda >= pairs.back().first)  return pairs.back().second;
+
         size_t i1 = 1;
         while (i1 < n && pairs[i1].first < lambda) ++i1;
-        const size_t i0 = i1 - 1;
+        const size_t i0 = i1 > 0 ? (i1 - 1) : 0;
+
         const float x0 = pairs[i0].first;
         const float x1 = pairs[i1].first;
-        if (!(std::isfinite(x0) && std::isfinite(x1)) || x1 <= x0) {
+        if (!(std::isfinite(x0) && std::isfinite(x1)) || !(x1 > x0)) {
             return pairs[i0].second;
         }
-        float y0 = pairs[i0].second;
-        float y1 = pairs[i1].second;
-        if (!std::isfinite(y0)) {
-            y0 = std::isfinite(y1) ? y1 : 0.0f;
-        }
-        if (!std::isfinite(y1)) {
-            y1 = y0;
-        }
+
+        const float y0 = pairs[i0].second;
+        const float y1 = pairs[i1].second;
         const float t = (lambda - x0) / (x1 - x0);
         return y0 + t * (y1 - y0);
     }
@@ -166,28 +164,48 @@ namespace Spectral {
         Akima
     };
 
-    inline void sanitize_pairs_for_resample(
+    inline void sanitize_pairs_for_resample_linear(
         const std::vector<std::pair<float, float>>& inPairs,
-        std::vector<std::pair<float, float>>& sanitized) {
+        std::vector<std::pair<float, float>>& sanitized)
+    {
+        // agx-emulsion sorts by wavelength and removes duplicates with "first occurrence wins"
+        // semantics (np.unique(..., return_index=True) after sorting).
         sanitized.clear();
         if (inPairs.empty()) return;
 
-        std::vector<std::pair<float, float>> sorted = inPairs;
-        std::sort(sorted.begin(), sorted.end(),
-            [](const auto& a, const auto& b) { return a.first < b.first; });
+        struct IndexedPair {
+            float lambda = 0.0f;
+            float value = 0.0f;
+            size_t originalIndex = 0;
+        };
 
-        constexpr float kLambdaDedupEps = 1e-5f;
-        sanitized.reserve(sorted.size());
-        for (const auto& sample : sorted) {
-            if (!std::isfinite(sample.first) || !std::isfinite(sample.second)) {
+        std::vector<IndexedPair> temp;
+        temp.reserve(inPairs.size());
+        for (size_t i = 0; i < inPairs.size(); ++i) {
+            const float lambda = inPairs[i].first;
+            if (!std::isfinite(lambda)) {
                 continue;
             }
-            if (!sanitized.empty() &&
-                std::abs(sample.first - sanitized.back().first) <= kLambdaDedupEps) {
-                sanitized.back().second = sample.second;
-                continue;
+            temp.push_back({ lambda, inPairs[i].second, i });
+        }
+        if (temp.empty()) return;
+
+        std::sort(temp.begin(), temp.end(),
+            [](const IndexedPair& a, const IndexedPair& b) {
+                if (a.lambda != b.lambda) return a.lambda < b.lambda;
+                return a.originalIndex < b.originalIndex;
+            });
+
+        sanitized.reserve(temp.size());
+        float lastLambda = temp.front().lambda;
+        sanitized.emplace_back(lastLambda, temp.front().value);
+        for (size_t i = 1; i < temp.size(); ++i) {
+            const float lambda = temp[i].lambda;
+            if (lambda == lastLambda) {
+                continue; // keep first occurrence
             }
-            sanitized.emplace_back(sample.first, sample.second);
+            lastLambda = lambda;
+            sanitized.emplace_back(lambda, temp[i].value);
         }
     }
 
@@ -204,67 +222,48 @@ namespace Spectral {
         return true;
     }
 
-    inline std::vector<std::pair<float, float>> resample_pairs_to_axis_impl(
-        const std::vector<std::pair<float, float>>& inPairs,
-        ReferenceResampleKernel kernel)
-    {
+    inline std::vector<std::pair<float, float>> resample_pairs_linear_to_reference_axis(
+        const std::vector<std::pair<float, float>>& inPairs) {
         std::vector<std::pair<float, float>> out;
         if (inPairs.empty()) {
             return out;
         }
-        const SpectralShape& axis = gShape;
+
+        if (samples_follow_reference_axis(inPairs)) {
+            return inPairs;
+        }
 
         std::vector<std::pair<float, float>> sanitized;
-        sanitize_pairs_for_resample(inPairs, sanitized);
+        sanitize_pairs_for_resample_linear(inPairs, sanitized);
         if (sanitized.empty()) {
             return out;
         }
 
-        if (samples_follow_reference_axis(sanitized)) {
-            return sanitized;
-        }
-
-        const bool useAkima = (kernel == ReferenceResampleKernel::Akima);
-        Interpolation::AkimaInterpolator akima;
-        bool akimaOk = false;
-        if (useAkima && sanitized.size() >= 2) {
-            std::vector<float> xs;
-            std::vector<float> ys;
-            xs.reserve(sanitized.size());
-            ys.reserve(sanitized.size());
-            for (const auto& sample : sanitized) {
-                xs.push_back(sample.first);
-                ys.push_back(sample.second);
-            }
-            akimaOk = akima.build(xs, ys);
-        }
-
+        const SpectralShape& axis = gShape;
         out.reserve(static_cast<size_t>(axis.K));
         for (int i = 0; i < axis.K; ++i) {
             const float lambda = axis.wavelengths[i];
-            float value = sample_linear_pairs(sanitized, lambda);
-            if (useAkima && akimaOk) {
-                const float akimaValue = akima.evaluate(lambda);
-                if (std::isfinite(akimaValue)) {
-                    value = akimaValue;
-                }
-            }
-            if (!std::isfinite(value)) {
-                return {};
-            }
+            const float value = sample_linear_pairs(sanitized, lambda);
             out.emplace_back(lambda, value);
         }
         return out;
     }
 
-    inline std::vector<std::pair<float, float>> resample_pairs_linear_to_reference_axis(
-        const std::vector<std::pair<float, float>>& inPairs) {
-        return resample_pairs_to_axis_impl(inPairs, ReferenceResampleKernel::Linear);
-    }
-
     inline std::vector<std::pair<float, float>> resample_pairs_akima_to_reference_axis(
         const std::vector<std::pair<float, float>>& inPairs) {
-        return resample_pairs_to_axis_impl(inPairs, ReferenceResampleKernel::Akima);
+        std::vector<std::pair<float, float>> out;
+        if (inPairs.empty()) {
+            return out;
+        }
+
+        if (samples_follow_reference_axis(inPairs)) {
+            return inPairs;
+        }
+
+        // Out-of-domain evaluation must yield NaN (no extrapolation, no endpoint clamp),
+        // matching SciPy Akima with extrapolate=False / extrapolate=None semantics.
+        const SpectralShape& axis = gShape;
+        return akima_resample_agx(inPairs, axis.wavelengths.data(), static_cast<size_t>(axis.K));
     }
 
     // Build a curve pinned to the reference axis from linear pairs.
@@ -290,13 +289,13 @@ namespace Spectral {
         for (const auto& sample : resampled) {
             const float lambda = sample.first;
             const float value = sample.second;
-            if (!std::isfinite(lambda) || !std::isfinite(value)) {
+            if (!std::isfinite(lambda)) {
                 curve.lambda_nm.clear();
                 curve.linear.clear();
                 return false;
             }
             curve.lambda_nm.push_back(lambda);
-            curve.linear.push_back(value < 0.0f ? 0.0f : value);
+            curve.linear.push_back(value);
         }
         return !curve.linear.empty();
     }
@@ -414,7 +413,7 @@ namespace Spectral {
             if (!std::isfinite(p.first) || !std::isfinite(p.second)) {
                 continue;
             }
-            filtered.emplace_back(p.first, p.second < 0.0f ? 0.0f : p.second);
+            filtered.emplace_back(p.first, p.second);
         }
 
         if (filtered.empty()) {
