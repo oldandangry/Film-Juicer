@@ -161,5 +161,8 @@
     <ClInclude Include="GaussianSciPy.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="AgxNanSemantics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

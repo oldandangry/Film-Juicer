@@ -513,7 +513,6 @@ namespace Print {
         {
             auto build_eps_curve = [](Spectral::Curve& dst, const FloatPairs& pairs) -> bool {
                 // JSON profiles are authored on the reference axis and may contain NaNs at spectral edges.
-                // Preserve missingness (NaNs) here; downstream SpectralTables will turn it into a validity mask.
                 if (Spectral::samples_follow_reference_axis(pairs)) {
                     return Spectral::build_curve_on_reference_axis_from_aligned_pairs(
                         dst, pairs, /*clampNegative*/false);

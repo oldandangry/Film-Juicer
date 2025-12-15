@@ -15,6 +15,7 @@
 #include <cstdint>
 #include "SpectralContext.h"
 #include "AkimaInterpolator.h"
+#include "AgxNanSemantics.h"
 #include "Logging.h"
 #include "Hash.h"
 
@@ -69,23 +70,15 @@ namespace Spectral {
 
         // Dye extinction tables
         std::vector<float> epsY, epsM, epsC;
-        // Dye extinction validity mask (1 = original samples finite for all C/M/Y, 0 = missing/non-finite).
-        // Per agx-emulsion parity: any wavelength with a NaN dye coefficient yields NaN density, which is
-        // turned into 0 transmitted light. We mirror this by skipping those wavelengths during integration.
-        std::vector<std::uint8_t> epsValid;
 
         // Baseline (optional) and flag
         std::vector<float> baseMin, baseMid;
-        // Baseline validity masks (1 = original sample finite, 0 = missing/non-finite).
-        // Per agx-emulsion parity: skip wavelengths where baseMin was non-finite, which matches
-        // density->light NaN handling (NaN transmitted light forced to 0 contribution).
-        std::vector<std::uint8_t> baseMinValid, baseMidValid;
         bool hasBaseline = false;
 
         // Reference density used to compute baseline interpolation mix (0 => use baseMin).
         float baselineMixReference = 0.0f;
 
-        // Hashes used for scanner caches (agx parity)
+        // Hashes used for scanner caches
         std::uint64_t illuminantHash = 0;
         std::uint64_t tablesHash = 0;
     };

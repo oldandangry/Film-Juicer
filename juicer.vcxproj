@@ -191,6 +191,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="AgxNanSemantics.h" />
     <ClInclude Include="AkimaInterpolator.h" />
     <ClInclude Include="ColorTransforms.h" />
     <ClInclude Include="Couplers.h" />

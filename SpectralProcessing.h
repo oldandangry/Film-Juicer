@@ -1040,7 +1040,6 @@ namespace Spectral {
         T.epsY.resize(K);
         T.epsM.resize(K);
         T.epsC.resize(K);
-        T.epsValid.assign(K, 0);
         T.Xbar.resize(K);
         T.Ybar.resize(K);
         T.Zbar.resize(K);
@@ -1062,21 +1061,9 @@ namespace Spectral {
             const float ey = hasEpsY ? epsY.linear[i] : eps_yellow(l);
             const float em = hasEpsM ? epsM.linear[i] : eps_magenta(l);
             const float ec = hasEpsC ? epsC.linear[i] : eps_cyan(l);
-            const bool epsFinite = std::isfinite(ey) && std::isfinite(em) && std::isfinite(ec);
-            if (epsFinite) {
-                // agx-emulsion uses dye coefficients as-authored; do not clamp negatives.
-                T.epsY[i] = ey;
-                T.epsM[i] = em;
-                T.epsC[i] = ec;
-                T.epsValid[i] = 1;
-            }
-            else {
-                // Hash-safe placeholder: values are 0 but missingness is preserved via epsValid.
-                T.epsY[i] = 0.0f;
-                T.epsM[i] = 0.0f;
-                T.epsC[i] = 0.0f;
-                T.epsValid[i] = 0;
-            }
+            T.epsY[i] = ey;
+            T.epsM[i] = em;
+            T.epsC[i] = ec;
 
             T.Xbar[i] = (!xbar.linear.empty() && (int)xbar.linear.size() == K) ? xbar.linear[i] : cie_xbar(l);
             T.Ybar[i] = (!ybar.linear.empty() && (int)ybar.linear.size() == K) ? ybar.linear[i] : cie_ybar(l);
@@ -1097,10 +1084,7 @@ namespace Spectral {
         T.whiteXYZ[1] = static_cast<float>(scale * sumAy);
         T.whiteXYZ[2] = static_cast<float>(scale * sumAz);
 
-        // Store illuminant white point for chromatic adaptation in SPD reconstruction.
-        // This is the XYZ tristimulus of the illuminant normalized to Y=1.
-        // Per agx-emulsion parity: chromatic adaptation uses CAT02 to adapt from
-        // DWG D65 white point to the reference illuminant white point.
+        // Illuminant white point used for chromatic adaptation (normalized to Y=1).
         T.refIllumWhiteXYZ[0] = T.whiteXYZ[0];
         T.refIllumWhiteXYZ[1] = T.whiteXYZ[1];
         T.refIllumWhiteXYZ[2] = T.whiteXYZ[2];
@@ -1109,26 +1093,15 @@ namespace Spectral {
             (int)baseMin.linear.size() == K;
         T.baseMin.assign(K, 0.0f);
         T.baseMid.assign(K, 0.0f);
-        T.baseMinValid.assign(K, 0);
-        T.baseMidValid.assign(K, 0);
         if (T.hasBaseline) {
             for (int i = 0; i < K; ++i) {
-                const float v = baseMin.linear[i];
-                if (std::isfinite(v)) {
-                    T.baseMin[i] = std::max(0.0f, v);
-                    T.baseMinValid[i] = 1;
-                }
+                T.baseMin[i] = baseMin.linear[i];
             }
             if ((int)baseMid.linear.size() == K) {
                 for (int i = 0; i < K; ++i) {
-                    const float v = baseMid.linear[i];
-                    if (std::isfinite(v)) {
-                        T.baseMid[i] = std::max(0.0f, v);
-                        T.baseMidValid[i] = 1;
-                    }
+                    T.baseMid[i] = baseMid.linear[i];
                 }
             }
-            // agx-emulsion parity: baseline mixing uses only baseMin; keep mix reference disabled.
             T.baselineMixReference = 0.0f;
         }
         else {
@@ -1138,22 +1111,34 @@ namespace Spectral {
         T.illuminantHash = illuminantHash;
         if (T.illuminantHash == 0 && hasIll &&
             static_cast<int>(illumView.linear.size()) == K) {
-            T.illuminantHash = Hash::hash_float_span(illumView.linear.data(), illumView.linear.size());
+            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(
+                illumView.linear.data(), illumView.linear.size());
+            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
+            T.illuminantHash = Hash::hash_bytes(fields, sizeof(fields));
         }
 
         auto hash_vec = [](const std::vector<float>& v) -> std::uint64_t {
-            return Hash::hash_float_span(v.data(), v.size());
+            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(v.data(), v.size());
+            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
+            return Hash::hash_bytes(fields, sizeof(fields));
             };
         auto hash_scalar = [](float v) -> std::uint64_t {
-            return Hash::hash_float_span(&v, 1);
+            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(&v, 1);
+            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
+            return Hash::hash_bytes(fields, sizeof(fields));
+            };
+        auto hash_array3 = [](const float v[3]) -> std::uint64_t {
+            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(v, 3);
+            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
+            return Hash::hash_bytes(fields, sizeof(fields));
             };
         const std::uint64_t tableFields[] = {
             T.illuminantHash,
             hash_vec(T.lambda),
             hash_scalar(T.deltaLambda),
             hash_scalar(T.invYn),
-            Hash::hash_float_span(T.whiteXYZ, 3),
-            Hash::hash_float_span(T.refIllumWhiteXYZ, 3),
+            hash_array3(T.whiteXYZ),
+            hash_array3(T.refIllumWhiteXYZ),
             hash_vec(T.Ax),
             hash_vec(T.Ay),
             hash_vec(T.Az),
@@ -1163,11 +1148,8 @@ namespace Spectral {
             hash_vec(T.epsC),
             hash_vec(T.epsM),
             hash_vec(T.epsY),
-            Hash::hash_bytes(T.epsValid.data(), T.epsValid.size()),
             hash_vec(T.baseMin),
             hash_vec(T.baseMid),
-            Hash::hash_bytes(T.baseMinValid.data(), T.baseMinValid.size()),
-            Hash::hash_bytes(T.baseMidValid.data(), T.baseMidValid.size()),
             hash_scalar(T.baselineMixReference),
             Hash::hash_bytes(&T.hasBaseline, sizeof(T.hasBaseline))
         };
@@ -1301,11 +1283,6 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         for (int i = 0; i < K; ++i) {
-            if (!T.epsValid.empty() &&
-                static_cast<size_t>(i) < T.epsValid.size() &&
-                T.epsValid[static_cast<size_t>(i)] == 0) {
-                continue;
-            }
             const float Dlambda = dyes_cmy[0] * T.epsC[i]
                 + dyes_cmy[1] * T.epsM[i]
                 + dyes_cmy[2] * T.epsY[i];
@@ -1331,17 +1308,7 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         for (int i = 0; i < K; ++i) {
-            if (!T.epsValid.empty() &&
-                static_cast<size_t>(i) < T.epsValid.size() &&
-                T.epsValid[static_cast<size_t>(i)] == 0) {
-                continue;
-            }
-            if (T.hasBaseline &&
-                static_cast<size_t>(i) < T.baseMinValid.size() &&
-                T.baseMinValid[static_cast<size_t>(i)] == 0) {
-                continue;
-            }
-            // agx-emulsion applies only the min baseline (dye_density[:,3] scaled); ignore mid column.
+            // Use baseMin only; baseMid is unused here.
             const float baseSpectral = T.hasBaseline ? T.baseMin[i] : 0.0f;
             const float Dlambda = dyes_cmy[0] * T.epsC[i]
                 + dyes_cmy[1] * T.epsM[i]

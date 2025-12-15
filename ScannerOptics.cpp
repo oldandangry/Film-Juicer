@@ -195,16 +195,6 @@ namespace {
         const int K = T.K;
         constexpr double kLn10d = 2.302585092994046;
         for (int i = 0; i < K; ++i) {
-            if (!T.epsValid.empty() &&
-                static_cast<size_t>(i) < T.epsValid.size() &&
-                T.epsValid[static_cast<size_t>(i)] == 0) {
-                continue;
-            }
-            if (useBaseline && T.hasBaseline &&
-                static_cast<size_t>(i) < T.baseMinValid.size() &&
-                T.baseMinValid[static_cast<size_t>(i)] == 0) {
-                continue;
-            }
             const double baseSpectral = (useBaseline && T.hasBaseline) ? static_cast<double>(T.baseMin[i]) : 0.0;
             const double Dlambda = dyes_cmy[0] * static_cast<double>(T.epsC[i])
                 + dyes_cmy[1] * static_cast<double>(T.epsM[i])
