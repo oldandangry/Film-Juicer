@@ -896,6 +896,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const Scanner::Options scannerOptions = gatherScannerOptions();
     const Scanner::Settings scannerSettings = gatherScannerSettings();
     Print::Params printParams = gatherPrintParams();
+    const Profiles::ProfileGlare glareUi = gatherGlareUi();
     OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
 
     const AutoExposureResult autoExposure = computeAutoExposure(
@@ -942,6 +943,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setScannerOptions(scannerOptions);
     proc.setScannerSettings(scannerSettings);
     proc.setPrintParams(printParams);
+    proc.setPrintGlareOverride(glareUi);
     proc.setDirRuntime(dirRT);
     proc.setWorkingState(ws, wsReady);
     proc.setPrintRuntime(prt, printReady);

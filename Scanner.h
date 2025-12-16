@@ -113,12 +113,32 @@ namespace Scanner {
         ScannerStaticKey staticKey;
     };
 
+    inline std::uint64_t hash_glare(const Profiles::ProfileGlare& glare) {
+        const float floats[] = {
+            glare.percent,
+            glare.roughness,
+            glare.blur,
+            glare.compensationRemovalFactor,
+            glare.compensationRemovalDensity,
+            glare.compensationRemovalTransition
+        };
+        for (float v : floats) {
+            if (!std::isfinite(v)) {
+                return 0;
+            }
+        }
+        const std::uint64_t activeHash = Hash::hash_bytes(&glare.active, sizeof(glare.active));
+        const std::uint64_t paramsHash = Hash::hash_float_span(
+            floats, sizeof(floats) / sizeof(floats[0]));
+        const std::uint64_t fields[] = { activeHash, paramsHash };
+        return Hash::hash_bytes(fields, sizeof(fields));
+    }
+
     inline void finalize_static_key(ScannerStaticKey& key) {
         const std::uint64_t fields[] = {
             static_cast<std::uint64_t>(key.medium),
             key.tablesHash,
             key.densityRangeHash,
-            key.glareHash,
             key.colorRuntimeHash,
             static_cast<std::uint64_t>(key.lutResolution)
         };

@@ -126,6 +126,8 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
     , _scannerOptions{}
     , _scannerSettings{}
     , _printParams{}
+    , _printGlareOverride{}
+    , _hasPrintGlareOverride(false)
     , _dirRT{}
     , _prt(nullptr)
     , _ws(nullptr)
@@ -150,6 +152,13 @@ void JuicerProcessor::setComponents(int n) { _nComponents = n; }
 void JuicerProcessor::setScannerOptions(const Scanner::Options& o) { _scannerOptions = o; }
 void JuicerProcessor::setScannerSettings(const Scanner::Settings& s) { _scannerSettings = s; }
 void JuicerProcessor::setPrintParams(const Print::Params& p) { _printParams = p; }
+void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare) {
+    _printGlareOverride = glare;
+    _printGlareOverride.compensationRemovalFactor = 0.0f;
+    _printGlareOverride.compensationRemovalDensity = 0.0f;
+    _printGlareOverride.compensationRemovalTransition = 0.0f;
+    _hasPrintGlareOverride = true;
+}
 void JuicerProcessor::setDirRuntime(const Couplers::Runtime& rt) { _dirRT = rt; }
 void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
     _ws = ws;
@@ -431,9 +440,29 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
     }
+    Scanner::ScannerMediumRuntime printMediumOverride{};
     const Scanner::ScannerMediumRuntime* mediumRuntime = ctx.printActive
         ? &_ws->printMediumRuntime
         : &_ws->negativeMediumRuntime;
+    if (ctx.printActive) {
+        printMediumOverride = _ws->printMediumRuntime;
+        if (_hasPrintGlareOverride) {
+            printMediumOverride.glare.active = _printGlareOverride.active;
+            printMediumOverride.glare.percent = _printGlareOverride.percent;
+            printMediumOverride.glare.roughness = _printGlareOverride.roughness;
+            printMediumOverride.glare.blur = _printGlareOverride.blur;
+            printMediumOverride.glare.compensationRemovalFactor = 0.0f;
+            printMediumOverride.glare.compensationRemovalDensity = 0.0f;
+            printMediumOverride.glare.compensationRemovalTransition = 0.0f;
+        }
+        const std::uint64_t glareHash = Scanner::hash_glare(printMediumOverride.glare);
+        if (glareHash == 0) {
+            JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        printMediumOverride.staticKey.glareHash = glareHash;
+        mediumRuntime = &printMediumOverride;
+    }
     if (!mediumRuntime) {
         JTRACE("SCAN", "FATAL: scanner medium runtime missing");
         throw OFX::Exception::Suite(kOfxStatErrFatal);

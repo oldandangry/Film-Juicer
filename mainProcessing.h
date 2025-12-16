@@ -51,6 +51,7 @@ public:
     void setScannerOptions(const Scanner::Options& o);
     void setScannerSettings(const Scanner::Settings& s);
     void setPrintParams(const Print::Params& p);
+    void setPrintGlareOverride(const Profiles::ProfileGlare& glare);
     void setDirRuntime(const Couplers::Runtime& rt);
     void setWorkingState(const WorkingState* ws, bool wsReady);
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
@@ -90,6 +91,8 @@ private:
     Scanner::Options _scannerOptions;
     Scanner::Settings _scannerSettings;
     Print::Params _printParams;
+    Profiles::ProfileGlare _printGlareOverride{};
+    bool _hasPrintGlareOverride = false;
     Couplers::Runtime _dirRT;
 
     const Print::Runtime* _prt;

@@ -656,27 +656,6 @@ namespace {
         return std::isfinite(outMax);
     }
 
-    static std::uint64_t hash_glare(const Profiles::ProfileGlare& glare) {
-        const float floats[] = {
-            glare.percent,
-            glare.roughness,
-            glare.blur,
-            glare.compensationRemovalFactor,
-            glare.compensationRemovalDensity,
-            glare.compensationRemovalTransition
-        };
-        for (float v : floats) {
-            if (!std::isfinite(v)) {
-                JTRACE("HASH", "FATAL: non-finite glare parameter encountered while hashing");
-                return 0;
-            }
-        }
-        const std::uint64_t activeHash = Hash::hash_bytes(&glare.active, sizeof(glare.active));
-        const std::uint64_t paramsHash = Hash::hash_float_span(floats, std::size(floats));
-        const std::uint64_t fields[] = { activeHash, paramsHash };
-        return Hash::hash_bytes(fields, sizeof(fields));
-    }
-
     static bool compute_negative_density_range(
         const Spectral::Curve& densB,
         const Spectral::Curve& densG,
@@ -2306,8 +2285,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     const std::uint32_t lutRes =
         static_cast<std::uint32_t>(std::clamp(P.scannerLutResolution, 17, 128));
-    const std::uint64_t negGlareHash = hash_glare(target->negativeGlare);
-    const std::uint64_t printGlareHash = printRuntimeOk ? hash_glare(target->printGlare) : 0;
+    const std::uint64_t negGlareHash = Scanner::hash_glare(target->negativeGlare);
+    const std::uint64_t printGlareHash = printRuntimeOk ? Scanner::hash_glare(target->printGlare) : 0;
     if (negGlareHash == 0) {
         JTRACE("HASH", "FATAL: failed to hash negative glare parameters");
         return;
