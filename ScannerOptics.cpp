@@ -62,7 +62,10 @@ namespace {
     template <typename Scalar>
     void blur_separable(const std::vector<Scalar>& src, std::vector<Scalar>& tmp, std::vector<Scalar>& dst,
         int width, int height, const std::vector<Scalar>& k) {
-        tmp.assign(size_t(width * height), static_cast<Scalar>(0.0));
+        const size_t n = size_t(width) * size_t(height);
+        if (tmp.size() != n) {
+            tmp.resize(n);
+        }
         const int radius = int(k.size() / 2);
         auto reflectIndex = [](int idx, int size) -> int {
             if (size <= 1) {
@@ -90,7 +93,9 @@ namespace {
                 trow[x] = acc;
             }
         }
-        dst.assign(size_t(width * height), static_cast<Scalar>(0.0));
+        if (dst.size() != n) {
+            dst.resize(n);
+        }
         for (int x = 0; x < width; ++x) {
             for (int y = 0; y < height; ++y) {
                 Scalar acc = static_cast<Scalar>(0.0);
@@ -429,7 +434,7 @@ namespace ScannerOptics {
         if (useLut && should_rebuild_lut(runtime, ctx.scannerKey.staticKey, staticKeyChanged)) {
             const std::uint32_t res = std::clamp(
                 ctx.scannerKey.staticKey.lutResolution, 17u, 128u);
-            runtime.lut.cpu.assign(size_t(res) * size_t(res) * size_t(res) * 3u, 0.0);
+            runtime.lut.cpu.resize(size_t(res) * size_t(res) * size_t(res) * 3u);
             runtime.lut.res = res;
             {
                 std::ostringstream oss;
@@ -493,8 +498,12 @@ namespace ScannerOptics {
             const bool glareParamsChanged = prevGlareHash != ctx.scannerKey.staticKey.glareHash;
             if (!runtime.glare.valid || dimsChanged || seedChanged || glareParamsChanged || frameBoundsChanged) {
                 const size_t channelSize = total;
-                runtime.glare.amount.assign(channelSize, 0.0f);
-                runtime.glare.tmp.assign(channelSize, 0.0f);
+                if (runtime.glare.amount.size() != channelSize) {
+                    runtime.glare.amount.resize(channelSize);
+                }
+                if (runtime.glare.tmp.size() != channelSize) {
+                    runtime.glare.tmp.resize(channelSize);
+                }
                 for (int y = 0; y < height; ++y) {
                     for (int x = 0; x < width; ++x) {
                         const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
@@ -526,8 +535,7 @@ namespace ScannerOptics {
                 if (medium.glare.blur > 0.0f) {
                     std::vector<float> glareKernel;
                     build_gaussian_kernel(static_cast<float>(medium.glare.blur), glareKernel);
-                    std::vector<float> glareBuf(runtime.glare.amount.begin(), runtime.glare.amount.end());
-                    blur_separable(glareBuf, runtime.glare.tmp, runtime.glare.amount, width, height, glareKernel);
+                    blur_separable(runtime.glare.amount, runtime.glare.tmp, runtime.glare.amount, width, height, glareKernel);
                 }
                 for (float& g : runtime.glare.amount) {
                     g = g / 100.0f;
@@ -553,9 +561,18 @@ namespace ScannerOptics {
             xyzToRgb[i] = static_cast<double>(ctx.color->xyzToRgb[i]);
         }
 
-        std::vector<double> rgbR(total, 0.0);
-        std::vector<double> rgbG(total, 0.0);
-        std::vector<double> rgbB(total, 0.0);
+        if (runtime.rgbR.size() != total) {
+            runtime.rgbR.resize(total);
+        }
+        if (runtime.rgbG.size() != total) {
+            runtime.rgbG.resize(total);
+        }
+        if (runtime.rgbB.size() != total) {
+            runtime.rgbB.resize(total);
+        }
+        std::vector<double>& rgbR = runtime.rgbR;
+        std::vector<double>& rgbG = runtime.rgbG;
+        std::vector<double>& rgbB = runtime.rgbB;
 
         std::atomic<bool> abortFlag{ false };
         std::atomic<bool> failure{ false };
@@ -633,31 +650,31 @@ namespace ScannerOptics {
 
         // Stage B: lens blur
         if (ctx.options.lensBlurSigmaPx > 0.0f && runtime.blurKernel.size() > 1) {
-            std::vector<double> tmp;
-            blur_separable(rgbR, tmp, rgbR, width, height, runtime.blurKernel);
-            blur_separable(rgbG, tmp, rgbG, width, height, runtime.blurKernel);
-            blur_separable(rgbB, tmp, rgbB, width, height, runtime.blurKernel);
+            blur_separable(rgbR, runtime.scratchTmp, rgbR, width, height, runtime.blurKernel);
+            blur_separable(rgbG, runtime.scratchTmp, rgbG, width, height, runtime.blurKernel);
+            blur_separable(rgbB, runtime.scratchTmp, rgbB, width, height, runtime.blurKernel);
         }
 
         // Stage C: unsharp mask
         if (ctx.options.unsharpSigmaPx > 0.0f && std::isfinite(ctx.options.unsharpAmount) && ctx.options.unsharpAmount != 0.0f &&
             runtime.unsharpKernel.size() > 1) {
-            std::vector<double> tmp;
-            std::vector<double> blurred(total, 0.0);
-            blur_separable(rgbR, tmp, blurred, width, height, runtime.unsharpKernel);
+            if (runtime.scratchBlurred.size() != total) {
+                runtime.scratchBlurred.resize(total);
+            }
+            blur_separable(rgbR, runtime.scratchTmp, runtime.scratchBlurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
-                double v = rgbR[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbR[i] - blurred[i]);
+                double v = rgbR[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbR[i] - runtime.scratchBlurred[i]);
                 // agx-emulsion parity: allow overshoot/undershoot; clip only after encoding.
                 rgbR[i] = std::isfinite(v) ? v : 0.0;
             }
-            blur_separable(rgbG, tmp, blurred, width, height, runtime.unsharpKernel);
+            blur_separable(rgbG, runtime.scratchTmp, runtime.scratchBlurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
-                double v = rgbG[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbG[i] - blurred[i]);
+                double v = rgbG[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbG[i] - runtime.scratchBlurred[i]);
                 rgbG[i] = std::isfinite(v) ? v : 0.0;
             }
-            blur_separable(rgbB, tmp, blurred, width, height, runtime.unsharpKernel);
+            blur_separable(rgbB, runtime.scratchTmp, runtime.scratchBlurred, width, height, runtime.unsharpKernel);
             for (size_t i = 0; i < total; ++i) {
-                double v = rgbB[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbB[i] - blurred[i]);
+                double v = rgbB[i] + static_cast<double>(ctx.options.unsharpAmount) * (rgbB[i] - runtime.scratchBlurred[i]);
                 rgbB[i] = std::isfinite(v) ? v : 0.0;
             }
         }

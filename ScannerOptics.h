@@ -42,6 +42,11 @@ namespace ScannerOptics {
         std::vector<double> blurKernel;
         std::vector<double> unsharpKernel;
         float unsharpAmount = 0.0f;
+        std::vector<double> rgbR;
+        std::vector<double> rgbG;
+        std::vector<double> rgbB;
+        std::vector<double> scratchTmp;
+        std::vector<double> scratchBlurred;
         GlareCache glare;
         Scanner::ScannerKey key{};
     };
