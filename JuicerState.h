@@ -82,6 +82,9 @@ struct ParamSnapshot {
     int refIll = 0;
     int enlIll = 3;
     int enlDichroicSet = 0;
+    double glareCompRemovalFactor = 0.0;
+    double glareCompRemovalDensity = 1.2;
+    double glareCompRemovalTransition = 0.3;
     int couplersActive = 1;
     double couplersAmount = 1.0;
     double ratioR = 0.7, ratioG = 0.7, ratioB = 0.5;

@@ -1016,6 +1016,24 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     if (_pRefIll)         _pRefIll->getValue(P.refIll);
     if (_pEnlIll)         _pEnlIll->getValue(P.enlIll);
     if (_pEnlDichroicSet) _pEnlDichroicSet->getValue(P.enlDichroicSet);
+    if (_pGlareCompRemovalFactor) {
+        double v = P.glareCompRemovalFactor;
+        _pGlareCompRemovalFactor->getValue(v);
+        if (!std::isfinite(v)) v = 0.0;
+        P.glareCompRemovalFactor = std::clamp(v, 0.0, 1.0);
+    }
+    if (_pGlareCompRemovalDensity) {
+        double v = P.glareCompRemovalDensity;
+        _pGlareCompRemovalDensity->getValue(v);
+        if (!std::isfinite(v)) v = 1.2;
+        P.glareCompRemovalDensity = std::clamp(v, 0.0, 3.0);
+    }
+    if (_pGlareCompRemovalTransition) {
+        double v = P.glareCompRemovalTransition;
+        _pGlareCompRemovalTransition->getValue(v);
+        if (!std::isfinite(v)) v = 0.3;
+        P.glareCompRemovalTransition = std::clamp(v, 0.0, 2.0);
+    }
     if (_pInputColorSpace) _pInputColorSpace->getValue(P.inputColorSpace);
     if (_pInputCctfDecoding) { bool v = false; _pInputCctfDecoding->getValue(v); P.inputCctfDecoding = v ? 1 : 0; }
 #ifdef JUICER_ENABLE_COUPLERS

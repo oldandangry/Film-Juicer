@@ -758,6 +758,9 @@ uint64_t hash_params(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.refIll));
     h = mix(h, static_cast<uint64_t>(p.enlIll));
     h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.couplersActive));
     h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));
@@ -1873,8 +1876,29 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         !printCurves.magenta.empty() &&
         !printCurves.yellow.empty();
     bool printRuntimeOk = false;
-    if (printDensityOk && printProfile.glare.compensationRemovalFactor > 0.0f) {
-        Print::remove_glare_compensation_from_curves(printProfile, printCurves);
+    if (printDensityOk) {
+        const float factor = static_cast<float>(
+            std::clamp(std::isfinite(P.glareCompRemovalFactor) ? P.glareCompRemovalFactor : 0.0, 0.0, 1.0));
+        const float density = static_cast<float>(
+            std::clamp(std::isfinite(P.glareCompRemovalDensity) ? P.glareCompRemovalDensity : 1.2, 0.0, 3.0));
+        const float transition = static_cast<float>(
+            std::clamp(std::isfinite(P.glareCompRemovalTransition) ? P.glareCompRemovalTransition : 0.3, 0.0, 2.0));
+
+        printProfile.glare.compensationRemovalFactor = factor;
+        printProfile.glare.compensationRemovalDensity = density;
+        printProfile.glare.compensationRemovalTransition = transition;
+        printProfile.glareCompensationFactor = factor;
+        printProfile.glareCompensationDensity = density;
+        printProfile.glareCompensationTransition = transition;
+        printProfile.hasGlareCompensation = (factor > 0.0f);
+
+        if (factor > 0.0f) {
+            const bool removed = Print::remove_glare_compensation_from_curves(printProfile, printCurves);
+            if (!removed) {
+                JTRACE("PRINT", "FATAL: failed to remove viewing glare compensation from print curves");
+                printDensityOk = false;
+            }
+        }
     }
     if (printDensityOk) {
         printDensityOk = Print::rebuild_density_curves(printProfile, printCurves);
