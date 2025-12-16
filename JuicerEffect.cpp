@@ -341,6 +341,78 @@ Print::Params JuicerEffect::gatherPrintParams() const {
     return params;
 }
 
+Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
+    Profiles::ProfileGlare glare{};
+
+    bool active = true;
+    if (_pGlareActive) {
+        _pGlareActive->getValue(active);
+    }
+    glare.active = active;
+
+    double percent = 0.10;
+    if (_pGlarePercent) {
+        _pGlarePercent->getValue(percent);
+    }
+    if (!std::isfinite(percent)) {
+        percent = 0.10;
+    }
+    percent = std::clamp(percent, 0.0, 1.0);
+    glare.percent = static_cast<float>(percent);
+
+    double roughness = 0.4;
+    if (_pGlareRoughness) {
+        _pGlareRoughness->getValue(roughness);
+    }
+    if (!std::isfinite(roughness)) {
+        roughness = 0.4;
+    }
+    roughness = std::clamp(roughness, 0.0, 1.0);
+    glare.roughness = static_cast<float>(roughness);
+
+    double blur = 0.5;
+    if (_pGlareBlurSigmaPx) {
+        _pGlareBlurSigmaPx->getValue(blur);
+    }
+    if (!std::isfinite(blur)) {
+        blur = 0.5;
+    }
+    blur = std::clamp(blur, 0.0, 10.0);
+    glare.blur = static_cast<float>(blur);
+
+    double factor = 0.0;
+    if (_pGlareCompRemovalFactor) {
+        _pGlareCompRemovalFactor->getValue(factor);
+    }
+    if (!std::isfinite(factor)) {
+        factor = 0.0;
+    }
+    factor = std::clamp(factor, 0.0, 1.0);
+    glare.compensationRemovalFactor = static_cast<float>(factor);
+
+    double density = 1.2;
+    if (_pGlareCompRemovalDensity) {
+        _pGlareCompRemovalDensity->getValue(density);
+    }
+    if (!std::isfinite(density)) {
+        density = 1.2;
+    }
+    density = std::clamp(density, 0.0, 3.0);
+    glare.compensationRemovalDensity = static_cast<float>(density);
+
+    double transition = 0.3;
+    if (_pGlareCompRemovalTransition) {
+        _pGlareCompRemovalTransition->getValue(transition);
+    }
+    if (!std::isfinite(transition)) {
+        transition = 0.3;
+    }
+    transition = std::clamp(transition, 0.0, 2.0);
+    glare.compensationRemovalTransition = static_cast<float>(transition);
+
+    return glare;
+}
+
 OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
     OutputEncoding::Params params{};
     int csIndex = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
@@ -696,6 +768,14 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
         _pEnlargerY = fetchDoubleParam("EnlargerY");
         _pEnlargerM = fetchDoubleParam("EnlargerM");
+
+        _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
+        _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
+        _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
+        _pGlareBlurSigmaPx = fetchDoubleParam(JuicerParams::kGlareBlurSigmaPx);
+        _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalFactor);
+        _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalDensity);
+        _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalTransition);
     }
     catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.

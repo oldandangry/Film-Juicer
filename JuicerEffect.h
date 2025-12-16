@@ -92,6 +92,7 @@ private:
     Scanner::Options gatherScannerOptions() const;
     Scanner::Settings gatherScannerSettings() const;
     Print::Params gatherPrintParams() const;
+    Profiles::ProfileGlare gatherGlareUi() const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
     AutoExposureResult computeAutoExposure(
         const OFX::RenderArguments& args,
@@ -158,6 +159,14 @@ private:
     OFX::BooleanParam* _pPrintExposureComp = nullptr;
     OFX::DoubleParam* _pEnlargerY = nullptr;
     OFX::DoubleParam* _pEnlargerM = nullptr;
+
+    OFX::BooleanParam* _pGlareActive = nullptr;
+    OFX::DoubleParam* _pGlarePercent = nullptr;
+    OFX::DoubleParam* _pGlareRoughness = nullptr;
+    OFX::DoubleParam* _pGlareBlurSigmaPx = nullptr;
+    OFX::DoubleParam* _pGlareCompRemovalFactor = nullptr;
+    OFX::DoubleParam* _pGlareCompRemovalDensity = nullptr;
+    OFX::DoubleParam* _pGlareCompRemovalTransition = nullptr;
 
     std::unique_ptr<InstanceState> _state;
 

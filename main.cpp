@@ -471,6 +471,83 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         }
     }
 
+    // Glare group
+    {
+        OFX::GroupParamDescriptor* grpGlare = desc.defineGroupParam("GlareGroup");
+        if (grpGlare) grpGlare->setLabel("Glare");
+
+        {
+            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kGlareActive);
+            p->setLabel("Add glare");
+            p->setDefault(true);
+            p->setHint("Add glare to the print (scanner-stage stray light).");
+            if (grpGlare) p->setParent(*grpGlare);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlarePercent);
+            p->setLabel("Glare percent");
+            p->setDefault(0.10);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 0.5);
+            p->setIncrement(0.05);
+            p->setHint("Percentage of glare light (typ. 0.10-0.25). Value is in percent, not fraction.");
+            if (grpGlare) p->setParent(*grpGlare);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareRoughness);
+            p->setLabel("Glare roughness");
+            p->setDefault(0.4);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 1.0);
+            p->setHint("Glare roughness (0-1). Stddev = roughness * percent.");
+            if (grpGlare) p->setParent(*grpGlare);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareBlurSigmaPx);
+            p->setLabel("Glare blur sigma (px)");
+            p->setDefault(0.5);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 3.0);
+            p->setHint("Gaussian blur sigma in pixels applied to the glare field.");
+            if (grpGlare) p->setParent(*grpGlare);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalFactor);
+            p->setLabel("Compensation removal factor");
+            p->setDefault(0.0);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 0.2);
+            p->setIncrement(0.05);
+            p->setHint("Remove viewing glare compensation from print curves. 0.2 = 20% underexposed shadows. Intended as alternative to stochastic glare (set GlarePercent=0).");
+            if (grpGlare) p->setParent(*grpGlare);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalDensity);
+            p->setLabel("Compensation removal density");
+            p->setDefault(1.2);
+            p->setRange(0.0, 3.0);
+            p->setDisplayRange(0.8, 2.0);
+            p->setHint("Density at which the compensation-removal transition is centered (typ. 1.0-1.5).");
+            if (grpGlare) p->setParent(*grpGlare);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalTransition);
+            p->setLabel("Compensation removal transition");
+            p->setDefault(0.3);
+            p->setRange(0.0, 2.0);
+            p->setDisplayRange(0.0, 0.8);
+            p->setHint("Transition density range for compensation removal (typ. 0.1-0.5).");
+            if (grpGlare) p->setParent(*grpGlare);
+            p->setEvaluateOnChange(true);
+        }
+    }
+
     // Illuminants
     {
         OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam("ReferenceIlluminant");
