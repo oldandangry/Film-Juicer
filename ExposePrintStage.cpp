@@ -102,6 +102,46 @@ namespace Pipeline {
             }
         }
 
+        void ensure_cached_enlarger_illuminant_filtered(
+            const Print::Runtime& rt,
+            float yShiftSteps,
+            float mShiftSteps,
+            float cShiftSteps,
+            PrintPipelineScratch& scratch)
+        {
+            const int shapeK = Spectral::gShape.K;
+            if (shapeK <= 0) {
+                scratch.enlargerIlluminantFilteredValid = false;
+                scratch.enlargerIlluminantRuntime = nullptr;
+                scratch.enlargerIlluminantShapeK = 0;
+                scratch.Ee_expose.clear();
+                return;
+            }
+
+            // Match compose_dichroic_amount behavior: treat non-finite delta steps as 0 so cache keys
+            // do not thrash on NaN inputs (NaN != NaN).
+            const float yKey = std::isfinite(yShiftSteps) ? yShiftSteps : 0.0f;
+            const float mKey = std::isfinite(mShiftSteps) ? mShiftSteps : 0.0f;
+            const float cKey = std::isfinite(cShiftSteps) ? cShiftSteps : 0.0f;
+
+            if (scratch.enlargerIlluminantFilteredValid &&
+                scratch.enlargerIlluminantRuntime == &rt &&
+                scratch.enlargerIlluminantYShiftSteps == yKey &&
+                scratch.enlargerIlluminantMShiftSteps == mKey &&
+                scratch.enlargerIlluminantCShiftSteps == cKey &&
+                scratch.enlargerIlluminantShapeK == shapeK) {
+                return;
+            }
+
+            build_enlarger_illuminant_filtered(rt, yKey, mKey, cKey, scratch.Ee_expose);
+            scratch.enlargerIlluminantFilteredValid = true;
+            scratch.enlargerIlluminantRuntime = &rt;
+            scratch.enlargerIlluminantYShiftSteps = yKey;
+            scratch.enlargerIlluminantMShiftSteps = mKey;
+            scratch.enlargerIlluminantCShiftSteps = cKey;
+            scratch.enlargerIlluminantShapeK = shapeK;
+        }
+
         void density_to_filtered_light_agx(
             const WorkingState& ws,
             const Print::Runtime& rt,
@@ -190,11 +230,40 @@ namespace Pipeline {
                 /*mShiftSteps=*/0.0f,
                 /*cShiftSteps=*/0.0f,
                 Dbase,
-                scratch.Tneg,
-                scratch.Ee_expose,
+                scratch.Tpreflash,
+                scratch.Ee_viewed,
                 scratch.Ee_preflash);
 
             raw_exposures_from_filtered_light(rt.profile, scratch.Ee_preflash, rawOut);
+        }
+
+        void ensure_cached_preflash_raw(
+            const WorkingState& ws,
+            const Print::Runtime& rt,
+            PrintPipelineScratch& scratch)
+        {
+            const int shapeK = Spectral::gShape.K;
+            if (shapeK <= 0 || ws.tablesView.K <= 0) {
+                scratch.preflashRawValid = false;
+                scratch.preflashRuntime = nullptr;
+                scratch.preflashWsBuildCounter = 0;
+                scratch.preflashShapeK = 0;
+                scratch.preflashRaw[0] = scratch.preflashRaw[1] = scratch.preflashRaw[2] = 0.0f;
+                return;
+            }
+
+            if (scratch.preflashRawValid &&
+                scratch.preflashRuntime == &rt &&
+                scratch.preflashWsBuildCounter == ws.buildCounter &&
+                scratch.preflashShapeK == shapeK) {
+                return;
+            }
+
+            compute_preflash_raw(ws, rt, scratch, scratch.preflashRaw);
+            scratch.preflashRawValid = true;
+            scratch.preflashRuntime = &rt;
+            scratch.preflashWsBuildCounter = ws.buildCounter;
+            scratch.preflashShapeK = shapeK;
         }
 
     } // namespace
@@ -228,16 +297,15 @@ namespace Pipeline {
             in.negativeDensity.v[2]
         };
 
-        density_to_filtered_light_agx(
-            ws,
+        ensure_cached_enlarger_illuminant_filtered(
             prt,
             prm.yFilter,
             prm.mFilter,
             /*cShiftSteps=*/0.0f,
-            D_cmy,
-            scratch.Tneg,
-            scratch.Ee_expose,
-            scratch.Ee_filtered);
+            scratch);
+
+        negative_density_spectral_from_dyes(ws, D_cmy, scratch.Tneg);
+        density_to_light_agx(scratch.Tneg, scratch.Ee_expose, scratch.Ee_filtered);
 
         float raw[3];
         raw_exposures_from_filtered_light(prt.profile, scratch.Ee_filtered, raw);
@@ -257,11 +325,10 @@ namespace Pipeline {
         raw[2] *= rawScale;
 
         if (std::isfinite(prm.preflashExposure) && prm.preflashExposure > 0.0f) {
-            float rawPre[3];
-            compute_preflash_raw(ws, prt, scratch, rawPre);
-            raw[0] += rawPre[0] * prm.preflashExposure;
-            raw[1] += rawPre[1] * prm.preflashExposure;
-            raw[2] += rawPre[2] * prm.preflashExposure;
+            ensure_cached_preflash_raw(ws, prt, scratch);
+            raw[0] += scratch.preflashRaw[0] * prm.preflashExposure;
+            raw[1] += scratch.preflashRaw[1] * prm.preflashExposure;
+            raw[2] += scratch.preflashRaw[2] * prm.preflashExposure;
         }
 
         out.printRaw.v[0] = raw[0];

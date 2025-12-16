@@ -2,10 +2,15 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "AgxNanSemantics.h"
 #include "SpectralTypes.h"
+
+namespace Print {
+    struct Runtime;
+}
 
 namespace Pipeline {
 
@@ -68,6 +73,20 @@ namespace Pipeline {
         std::vector<float> Ee_viewed;
         std::vector<float> Tpreflash;
         std::vector<float> Ee_preflash;
+
+        // Cached per-render spectral constants (avoid rebuilding 81-sample tables per pixel).
+        bool enlargerIlluminantFilteredValid = false;
+        const Print::Runtime* enlargerIlluminantRuntime = nullptr;
+        float enlargerIlluminantYShiftSteps = 0.0f;
+        float enlargerIlluminantMShiftSteps = 0.0f;
+        float enlargerIlluminantCShiftSteps = 0.0f;
+        int enlargerIlluminantShapeK = 0;
+
+        bool preflashRawValid = false;
+        const Print::Runtime* preflashRuntime = nullptr;
+        std::uint64_t preflashWsBuildCounter = 0;
+        int preflashShapeK = 0;
+        float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
     };
 
 } // namespace Pipeline
