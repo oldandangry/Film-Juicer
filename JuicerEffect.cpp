@@ -1,6 +1,7 @@
 #include "JuicerEffect.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -29,6 +30,10 @@
 #include "FilmProcessing.h"
 #include "Logging.h"
 #include "mainProcessing.h"
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/JuicerCudaAutoExposure.h"
+#endif
 
 namespace {
     static std::once_flag gSpectralGlobalsOnce;
@@ -501,6 +506,7 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     if (_state) {
         std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
         if (_state->autoExposureCacheValid &&
+            _state->autoExposureCacheIsCudaRender == args.isEnabledCudaRender &&
             _state->autoExposureCacheAutoEnabled == cameraAutoEnabled &&
             nearly_equal_double(_state->autoExposureCacheTime, args.time) &&
             _state->autoExposureCacheBuildCounter == wsBuildCounter &&
@@ -519,25 +525,85 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         bool measurementValid = !cameraAutoEnabled;
         double evComp = 0.0;
         if (cameraAutoEnabled) {
-            const double Yexp = measure_center_weighted_Y_DWG_cached(
-                srcImg,
-                meterBounds,
-                sigma,
-                _state.get(),
-                renderScaleX,
-                renderScaleY,
-                clipToken,
-                inputColorSpace,
-                inputRgbToXYZ,
-                applyInputCctfDecoding);
-            if (Yexp > 0.0 && kCameraMeterTargetY > 0.0) {
-                const double exposureRatio = Yexp / kCameraMeterTargetY;
-                evComp = -std::log(exposureRatio) / std::log(2.0);
-                measurementValid = std::isfinite(evComp);
+            double Yexp = 0.0;
+            bool haveY = false;
+            if (args.isEnabledCudaRender) {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+                const OfxRectI imgBounds = srcImg->getBounds();
+                const OFX::PixelComponentEnum comps = srcImg->getPixelComponents();
+                const int nComponents =
+                    (comps == OFX::ePixelComponentRGBA) ? 4 :
+                    (comps == OFX::ePixelComponentRGB) ? 3 :
+                    (comps == OFX::ePixelComponentAlpha) ? 1 : 0;
+                if (!(nComponents == 3 || nComponents == 4)) {
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+                }
+                const std::ptrdiff_t rowBytes = srcImg->getRowBytes();
+                if (rowBytes <= 0) {
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+                }
+                const void* srcDevice = srcImg->getPixelData();
+                if (!srcDevice) {
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+                }
+
+                const char* errMsg = nullptr;
+                const int rc = juicer_cuda_measure_center_weighted_Y(
+                    srcDevice,
+                    static_cast<std::size_t>(rowBytes),
+                    imgBounds.x1,
+                    imgBounds.y1,
+                    imgBounds.x2,
+                    imgBounds.y2,
+                    meterBounds.x1,
+                    meterBounds.y1,
+                    meterBounds.x2,
+                    meterBounds.y2,
+                    nComponents,
+                    inputColorSpaceIndex,
+                    applyInputCctfDecoding ? 1 : 0,
+                    inputRgbToXYZ.m,
+                    &Yexp,
+                    args.pCudaStream,
+                    &errMsg);
+                if (rc == 0) {
+                    haveY = true;
+                } else {
+                    JTRACE("CUDA", std::string("CUDA auto-exposure metering failed: ") + (errMsg ? errMsg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            } else {
+                Yexp = measure_center_weighted_Y_DWG_cached(
+                    srcImg,
+                    meterBounds,
+                    sigma,
+                    _state.get(),
+                    renderScaleX,
+                    renderScaleY,
+                    clipToken,
+                    inputColorSpace,
+                    inputRgbToXYZ,
+                    applyInputCctfDecoding);
+                haveY = true;
             }
-            if (!std::isfinite(evComp)) {
-                evComp = 0.0;
-                measurementValid = false;
+
+            if (haveY) {
+                if (Yexp > 0.0 && kCameraMeterTargetY > 0.0) {
+                    const double exposureRatio = Yexp / kCameraMeterTargetY;
+                    evComp = -std::log(exposureRatio) / std::log(2.0);
+                    measurementValid = std::isfinite(evComp);
+                }
+                if (!std::isfinite(evComp)) {
+                    evComp = 0.0;
+                    measurementValid = false;
+                }
             }
         }
         autoEV = evComp;
@@ -545,6 +611,7 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         if (_state) {
             std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
             _state->autoExposureCacheValid = measurementValid;
+            _state->autoExposureCacheIsCudaRender = args.isEnabledCudaRender;
             _state->autoExposureCacheTime = args.time;
             _state->autoExposureCacheAutoEnabled = cameraAutoEnabled;
             _state->autoExposureCacheBuildCounter = wsBuildCounter;
@@ -805,6 +872,15 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     std::unique_ptr<OFX::Image> dstImg(_dst ? _dst->fetchImage(args.time) : nullptr);
     if (!srcImg || !dstImg) return;
 
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+    // CUDA-only mode: reject CPU/OpenCL/Metal renders. During development this stays disabled so
+    // we can fall back to the CPU pipeline while CUDA parity is still in progress.
+    if (!args.isEnabledCudaRender) {
+        JTRACE("CUDA", "JUICER_CUDA_ONLY: rejecting non-CUDA render request");
+        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+    }
+#endif
+
     // Components and depth
     const OFX::PixelComponentEnum comps = srcImg->getPixelComponents();
     const OFX::BitDepthEnum depth = srcImg->getPixelDepth();
@@ -870,19 +946,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    if (args.isEnabledCudaRender) {
-        // Phase 1: CUDA path is passthrough only. All feature processing stays on CPU until parity lands.
-        JuicerProcessor proc(*this);
-        proc.setSrcDst(srcImg.get(), dstImg.get());
-        proc.setComponents(nComponents);
-        proc.setRenderWindowRect(roi);
-        proc.setGPURenderArgs(args);
-        proc.process();
-        return;
-    }
-#endif
 
     double filmFormatMm = 35.0;
     if (_pCameraFilmFormat) {

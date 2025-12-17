@@ -13,6 +13,10 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Cuda">
+      <UniqueIdentifier>{0C6E5F35-4F99-4560-8F9A-4B5A695C8A44}</UniqueIdentifier>
+      <Extensions>cu</Extensions>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -69,6 +73,9 @@
     <ClCompile Include="ExposePrintStage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Cuda\\JuicerCudaResources.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
     <ClCompile Include="OutputEncoding.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -99,6 +106,15 @@
     <ClCompile Include="SpectralContext.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <CudaCompile Include="Cuda\\JuicerCudaSelfCheck.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\JuicerCudaPrimitives.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\JuicerCudaAutoExposure.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Illuminants.h">
@@ -208,6 +224,15 @@
     </ClInclude>
     <ClInclude Include="ScanStage.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Cuda\\JuicerCudaSelfCheck.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="Cuda\\JuicerCudaResources.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="Cuda\\JuicerCudaAutoExposure.h">
+      <Filter>Cuda</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

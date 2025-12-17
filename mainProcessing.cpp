@@ -14,6 +14,14 @@
 #include <cuda_runtime.h>
 #endif
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
+#include "Cuda/JuicerCudaSelfCheck.h"
+#endif
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/JuicerCudaResources.h"
+#endif
+
 // Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
 #pragma warning(push)
 #pragma warning(disable: 5040)
@@ -683,6 +691,12 @@ void JuicerProcessor::processImpl() {
 }
 
 void JuicerProcessor::process() {
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+    // CUDA-only mode: refuse CPU/OpenCL/Metal entry points.
+    if (!_isEnabledCudaRender) {
+        OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+    }
+#endif
     if (_isEnabledOpenCLRender || _isEnabledCudaRender || _isEnabledMetalRender) {
         OFX::ImageProcessor::process();
         return;
@@ -749,6 +763,72 @@ void JuicerProcessor::processImagesCUDA() {
 
 #if defined(JUICER_TRACE_CUDA)
     JTRACE("CUDA", "processImagesCUDA passthrough");
+#endif
+
+    const bool wsReady = _wsReady && _ws;
+    if (!wsReady) {
+        JTRACE("CUDA", "FATAL: working state unavailable; cannot serve CUDA render");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (!_instanceState) {
+        JTRACE("CUDA", "FATAL: instance state missing; cannot serve CUDA render");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+        if (!_instanceState->cuda) {
+            _instanceState->cuda.reset(JuicerCuda::create());
+            if (!_instanceState->cuda) {
+                JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+        }
+    }
+
+    std::string uploadError;
+    {
+        std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+        if (!JuicerCuda::ensure_uploaded(*_instanceState->cuda, *_ws, _pCudaStream, uploadError)) {
+            JTRACE("CUDA", std::string("CUDA WorkingState upload failed: ") + uploadError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+    }
+
+#if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
+    {
+        std::string validateError;
+        std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+        if (!JuicerCuda::validate_density_primitives(*_instanceState->cuda, *_ws, _pCudaStream, validateError)) {
+            JTRACE("CUDA", std::string("FATAL: CUDA primitive validation failed: ") + validateError);
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+    }
+#endif
+
+#if defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
+    // Phase 2 scaffolding: runtime CUDA self-check.
+    // This is intentionally a host-runtime probe (not JUICER_TESTS), and is designed to be easy
+    // to remove later: disable JUICER_CUDA_SELF_CHECK or delete Cuda/JuicerCudaSelfCheck.*.
+    static std::once_flag sSelfCheckOnce;
+    static bool sSelfCheckOk = true;
+    static const char* sSelfCheckErr = nullptr;
+    std::call_once(sSelfCheckOnce, [&]() {
+        const bool ok = juicer_cuda_runtime_self_check(_pCudaStream, &sSelfCheckErr);
+        sSelfCheckOk = ok;
+        if (!ok) {
+            JTRACE("CUDA", std::string("CUDA self-check failed; forcing CPU fallback. Error: ") + (sSelfCheckErr ? sSelfCheckErr : "(unknown)"));
+        } else {
+            JTRACE("CUDA", "CUDA self-check passed");
+        }
+    });
+    if (!sSelfCheckOk) {
+        OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+    }
 #endif
 
     const cudaStream_t stream = reinterpret_cast<cudaStream_t>(_pCudaStream);

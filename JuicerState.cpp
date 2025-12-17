@@ -3,6 +3,12 @@
 #include "LogExposureOffsets.h"
 #include "RebuildWorkingStateInternals.h"
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) const noexcept {
+    JuicerCuda::destroy(resources);
+}
+#endif
+
 #include <algorithm>
 #include <array>
 #include <functional>

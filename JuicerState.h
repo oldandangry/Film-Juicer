@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -23,6 +24,17 @@
 #include "ScannerOptics.h"
 
 extern const std::string gDataDir;
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+namespace JuicerCuda {
+    struct Resources;
+    void destroy(Resources* resources) noexcept;
+}
+
+struct JuicerCudaResourcesDeleter {
+    void operator()(JuicerCuda::Resources* resources) const noexcept;
+};
+#endif
 
 inline std::filesystem::path data_dir_path() {
     std::filesystem::path path(gDataDir);
@@ -174,6 +186,7 @@ struct InstanceState {
     // Auto-exposure cache (per frame / build)
     std::mutex autoExposureMutex;
     bool autoExposureCacheValid = false;
+    bool autoExposureCacheIsCudaRender = false;
     double autoExposureCacheTime = std::numeric_limits<double>::quiet_NaN();
     bool autoExposureCacheAutoEnabled = false; // Tracks camera auto-exposure toggle state
     uint64_t autoExposureCacheBuildCounter = 0;
@@ -199,6 +212,14 @@ struct InstanceState {
 
     ScannerOptics::Runtime scannerRuntimeA;
     ScannerOptics::Runtime scannerRuntimeB;
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    // Phase 2 CUDA: per-instance GPU cache keyed by WorkingState.buildCounter.
+    // This is kept on InstanceState so the CPU and CUDA render paths share the same invalidation
+    // boundary (the atomic WorkingState swap).
+    std::mutex cudaMutex;
+    std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter> cuda;
+#endif
 
     WorkingState* inactive() {
         WorkingState* a = activeWS.load(std::memory_order_acquire);
