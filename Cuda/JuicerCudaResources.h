@@ -35,6 +35,11 @@ namespace JuicerCuda {
         DeviceCurve sensG;
         DeviceCurve sensR;
 
+        // Hanatos LUT (process-global on CPU, uploaded on demand).
+        // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
+        float* hanatosLut = nullptr;
+        int hanatosN = 0;
+
         Resources() = default;
         Resources(const Resources&) = delete;
         Resources& operator=(const Resources&) = delete;
