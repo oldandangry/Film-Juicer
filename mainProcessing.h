@@ -65,6 +65,7 @@ public:
 
     void process() override;
     void multiThreadProcessImages(OfxRectI procWindow) override;
+    void processImagesCUDA() override;
 
 private:
     struct RenderContext {
@@ -83,7 +84,7 @@ private:
     void writeMediumDensities(const RenderContext& ctx, unsigned int threadCount);
     void renderScannerFromDensity(const RenderContext& ctx, unsigned int threadCount);
 
-    void processImpl();
+	    void processImpl();
 
     OFX::Image* _srcImg;
     int _nComponents;

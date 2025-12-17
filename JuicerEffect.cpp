@@ -808,15 +808,29 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     // Components and depth
     const OFX::PixelComponentEnum comps = srcImg->getPixelComponents();
     const OFX::BitDepthEnum depth = srcImg->getPixelDepth();
-    if (depth != OFX::eBitDepthFloat) {
-        JuicerProc::copyNonFloatRect(srcImg.get(), dstImg.get());
-        return;
-    }
 
     const int nComponents =
         (comps == OFX::ePixelComponentRGBA) ? 4 :
         (comps == OFX::ePixelComponentRGB) ? 3 :
         (comps == OFX::ePixelComponentAlpha) ? 1 : 0;
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    if (args.isEnabledCudaRender) {
+        // CUDA renders use device pointers; avoid CPU pixel reads (auto-exposure, non-float copies, etc.).
+        if (depth != OFX::eBitDepthFloat || nComponents == 0) {
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+        }
+    }
+#else
+    if (args.isEnabledCudaRender) {
+        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+    }
+#endif
+
+    if (depth != OFX::eBitDepthFloat) {
+        JuicerProc::copyNonFloatRect(srcImg.get(), dstImg.get());
+        return;
+    }
 
     if (nComponents == 0) {
         JuicerProc::copyNonFloatRect(srcImg.get(), dstImg.get());
@@ -856,6 +870,19 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    if (args.isEnabledCudaRender) {
+        // Phase 1: CUDA path is passthrough only. All feature processing stays on CPU until parity lands.
+        JuicerProcessor proc(*this);
+        proc.setSrcDst(srcImg.get(), dstImg.get());
+        proc.setComponents(nComponents);
+        proc.setRenderWindowRect(roi);
+        proc.setGPURenderArgs(args);
+        proc.process();
+        return;
+    }
+#endif
 
     double filmFormatMm = 35.0;
     if (_pCameraFilmFormat) {

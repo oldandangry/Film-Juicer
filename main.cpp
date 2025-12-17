@@ -188,6 +188,11 @@ void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc)
     desc.setSupportsMultiResolution(true);
     desc.setSupportsTiles(false);
     desc.setRenderThreadSafety(OFX::eRenderFullySafe);
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    desc.setSupportsCudaRender(true);
+    desc.setSupportsCudaStream(true);
+#endif
 }
 
 void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context)

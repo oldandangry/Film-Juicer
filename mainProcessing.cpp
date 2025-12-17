@@ -10,6 +10,10 @@
 #include <sstream>
 #include <mutex>
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include <cuda_runtime.h>
+#endif
+
 // Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
 #pragma warning(push)
 #pragma warning(disable: 5040)
@@ -679,9 +683,88 @@ void JuicerProcessor::processImpl() {
 }
 
 void JuicerProcessor::process() {
+    if (_isEnabledOpenCLRender || _isEnabledCudaRender || _isEnabledMetalRender) {
+        OFX::ImageProcessor::process();
+        return;
+    }
     processImpl();
 }
 
 void JuicerProcessor::multiThreadProcessImages(OfxRectI) {
     processImpl();
+}
+
+void JuicerProcessor::processImagesCUDA() {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+    OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+#else
+    if (!_srcImg || !_dstImg) {
+        return;
+    }
+
+    if (!(_nComponents == 1 || _nComponents == 3 || _nComponents == 4)) {
+        OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+    }
+
+    const OfxRectI srcBounds = _srcImg->getBounds();
+    const OfxRectI dstBounds = _dstImg->getBounds();
+    const OfxRectI win = _renderWindow;
+    const int width = win.x2 - win.x1;
+    const int height = win.y2 - win.y1;
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    const int bytesPerPixel = _nComponents * static_cast<int>(sizeof(float));
+    const std::ptrdiff_t srcRowBytes = _srcImg->getRowBytes();
+    const std::ptrdiff_t dstRowBytes = _dstImg->getRowBytes();
+    if (srcRowBytes <= 0 || dstRowBytes <= 0) {
+        JTRACE("CUDA", "FATAL: invalid row bytes for CUDA copy");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    const std::ptrdiff_t xSrc = static_cast<std::ptrdiff_t>(win.x1 - srcBounds.x1);
+    const std::ptrdiff_t ySrc = static_cast<std::ptrdiff_t>(win.y1 - srcBounds.y1);
+    const std::ptrdiff_t xDst = static_cast<std::ptrdiff_t>(win.x1 - dstBounds.x1);
+    const std::ptrdiff_t yDst = static_cast<std::ptrdiff_t>(win.y1 - dstBounds.y1);
+
+    const std::ptrdiff_t widthBytes = static_cast<std::ptrdiff_t>(width) * static_cast<std::ptrdiff_t>(bytesPerPixel);
+    if (xSrc < 0 || ySrc < 0 || xDst < 0 || yDst < 0 || widthBytes <= 0) {
+        JTRACE("CUDA", "FATAL: CUDA render window out of bounds");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    const unsigned char* srcBase = static_cast<const unsigned char*>(_srcImg->getPixelData());
+    unsigned char* dstBase = static_cast<unsigned char*>(_dstImg->getPixelData());
+    if (!srcBase || !dstBase) {
+        JTRACE("CUDA", "FATAL: missing device pointers for CUDA render");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    const unsigned char* srcPtr = srcBase + ySrc * srcRowBytes + xSrc * bytesPerPixel;
+    unsigned char* dstPtr = dstBase + yDst * dstRowBytes + xDst * bytesPerPixel;
+    if (srcPtr == dstPtr && srcRowBytes == dstRowBytes) {
+        return;
+    }
+
+#if defined(JUICER_TRACE_CUDA)
+    JTRACE("CUDA", "processImagesCUDA passthrough");
+#endif
+
+    const cudaStream_t stream = reinterpret_cast<cudaStream_t>(_pCudaStream);
+    const cudaError_t err = cudaMemcpy2DAsync(
+        dstPtr,
+        static_cast<size_t>(dstRowBytes),
+        srcPtr,
+        static_cast<size_t>(srcRowBytes),
+        static_cast<size_t>(widthBytes),
+        static_cast<size_t>(height),
+        cudaMemcpyDeviceToDevice,
+        stream);
+    if (err != cudaSuccess) {
+        const char* msg = cudaGetErrorString(err);
+        JTRACE("CUDA", std::string("FATAL: cudaMemcpy2DAsync failed: ") + (msg ? msg : "(unknown)"));
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+#endif
 }
