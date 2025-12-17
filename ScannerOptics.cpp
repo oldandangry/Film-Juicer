@@ -7,7 +7,8 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
-#include <thread>
+
+#include "ofxsMultiThread.h"
 
 #include "Hash.h"
 #include "Logging.h"
@@ -552,7 +553,6 @@ namespace ScannerOptics {
         }
 
         const unsigned int nThreads = std::max(1u, ctx.threadCount);
-        const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
 
         double cat02[9];
         double xyzToRgb[9];
@@ -576,14 +576,63 @@ namespace ScannerOptics {
 
         std::atomic<bool> abortFlag{ false };
         std::atomic<bool> failure{ false };
-        std::vector<std::thread> threads;
-        threads.reserve(nThreads);
 
-        // Stage A: density -> linear RGB
-        for (unsigned int t = 0; t < nThreads; ++t) {
-            const int yStart = rowsPerThread * int(t);
-            const int yEnd = std::min(height, rowsPerThread * int(t + 1));
-            threads.emplace_back([&, yStart, yEnd]() {
+        struct StageAProcessor final : OFX::MultiThread::Processor {
+            const RenderContext& ctx;
+            const Scanner::ScannerMediumRuntime& medium;
+            const Scanner::ScannerDensityBuffer& density;
+            Runtime& runtime;
+            const bool useLut;
+            const int width;
+            const int height;
+            const double* cat02;
+            const double* xyzToRgb;
+            std::vector<double>& rgbR;
+            std::vector<double>& rgbG;
+            std::vector<double>& rgbB;
+            std::atomic<bool>& abortFlag;
+            std::atomic<bool>& failure;
+
+            StageAProcessor(
+                const RenderContext& ctx_,
+                const Scanner::ScannerMediumRuntime& medium_,
+                const Scanner::ScannerDensityBuffer& density_,
+                Runtime& runtime_,
+                bool useLut_,
+                int width_,
+                int height_,
+                const double cat02_[9],
+                const double xyzToRgb_[9],
+                std::vector<double>& rgbR_,
+                std::vector<double>& rgbG_,
+                std::vector<double>& rgbB_,
+                std::atomic<bool>& abortFlag_,
+                std::atomic<bool>& failure_)
+                : ctx(ctx_)
+                , medium(medium_)
+                , density(density_)
+                , runtime(runtime_)
+                , useLut(useLut_)
+                , width(width_)
+                , height(height_)
+                , cat02(cat02_)
+                , xyzToRgb(xyzToRgb_)
+                , rgbR(rgbR_)
+                , rgbG(rgbG_)
+                , rgbB(rgbB_)
+                , abortFlag(abortFlag_)
+                , failure(failure_)
+            {
+            }
+
+            void multiThreadFunction(unsigned int threadId, unsigned int nThreads) override {
+                const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
+                const int yStart = rowsPerThread * int(threadId);
+                if (yStart >= height) {
+                    return;
+                }
+                const int yEnd = std::min(height, rowsPerThread * int(threadId + 1));
+
                 for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
                     if (ctx.abort.abortRequested()) {
                         abortFlag.store(true, std::memory_order_relaxed);
@@ -605,7 +654,7 @@ namespace ScannerOptics {
                             sample_cubic(runtime.lut, D_norm, logXYZ);
                         }
                         else {
-                            spectral_to_logXYZ(D_norm, logXYZ);
+                            Pipeline::ScanStage::spectral_to_log_xyz(medium, D_norm, logXYZ);
                         }
                         double xyz[3] = {
                             std::pow(10.0, logXYZ[0]),
@@ -633,13 +682,26 @@ namespace ScannerOptics {
                         rgbB[idx] = rgbOut[2];
                     }
                 }
-                });
-        }
+            }
+        };
 
-        for (std::thread& th : threads) {
-            if (th.joinable()) th.join();
-        }
-        threads.clear();
+        // Stage A: density -> linear RGB
+        StageAProcessor stageA(
+            ctx,
+            medium,
+            density,
+            runtime,
+            useLut,
+            width,
+            height,
+            cat02,
+            xyzToRgb,
+            rgbR,
+            rgbG,
+            rgbB,
+            abortFlag,
+            failure);
+        stageA.multiThread(nThreads);
 
         if (failure.load(std::memory_order_relaxed)) {
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -681,10 +743,48 @@ namespace ScannerOptics {
 
         // Stage D: write to destination with output encoding
         abortFlag.store(false, std::memory_order_relaxed);
-        for (unsigned int t = 0; t < nThreads; ++t) {
-            const int yStart = rowsPerThread * int(t);
-            const int yEnd = std::min(height, rowsPerThread * int(t + 1));
-            threads.emplace_back([&, yStart, yEnd]() {
+
+        struct StageDProcessor final : OFX::MultiThread::Processor {
+            const RenderContext& ctx;
+            const int width;
+            const int height;
+            const int originX;
+            const int originY;
+            std::vector<double>& rgbR;
+            std::vector<double>& rgbG;
+            std::vector<double>& rgbB;
+            std::atomic<bool>& abortFlag;
+
+            StageDProcessor(
+                const RenderContext& ctx_,
+                int width_,
+                int height_,
+                int originX_,
+                int originY_,
+                std::vector<double>& rgbR_,
+                std::vector<double>& rgbG_,
+                std::vector<double>& rgbB_,
+                std::atomic<bool>& abortFlag_)
+                : ctx(ctx_)
+                , width(width_)
+                , height(height_)
+                , originX(originX_)
+                , originY(originY_)
+                , rgbR(rgbR_)
+                , rgbG(rgbG_)
+                , rgbB(rgbB_)
+                , abortFlag(abortFlag_)
+            {
+            }
+
+            void multiThreadFunction(unsigned int threadId, unsigned int nThreads) override {
+                const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
+                const int yStart = rowsPerThread * int(threadId);
+                if (yStart >= height) {
+                    return;
+                }
+                const int yEnd = std::min(height, rowsPerThread * int(threadId + 1));
+
                 for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
                     if (ctx.abort.abortRequested()) {
                         abortFlag.store(true, std::memory_order_relaxed);
@@ -719,12 +819,20 @@ namespace ScannerOptics {
                         }
                     }
                 }
-                });
-        }
+            }
+        };
 
-        for (std::thread& th : threads) {
-            if (th.joinable()) th.join();
-        }
+        StageDProcessor stageD(
+            ctx,
+            width,
+            height,
+            originX,
+            originY,
+            rgbR,
+            rgbG,
+            rgbB,
+            abortFlag);
+        stageD.multiThread(nThreads);
     }
 
 } // namespace ScannerOptics

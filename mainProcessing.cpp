@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <string>
 #include <atomic>
-#include <thread>
 #include <sstream>
 #include <mutex>
 
@@ -259,48 +258,48 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
         ? Scanner::ScannerMedium::Print
         : Scanner::ScannerMedium::Negative;
 
-		    if (ctx.useSpatialDIR) {
-	        struct SpatialDIRUser {
-	            OFX::ImageEffect* effect = nullptr;
-	            OFX::Image* srcImg = nullptr;
-	            OfxRectI window{};
-	        };
-	        SpatialDIRUser user{};
-	        user.effect = &_effect;
-	        user.srcImg = _srcImg;
-	        user.window = ctx.window;
+    if (ctx.useSpatialDIR) {
+        struct SpatialDIRUser {
+            OFX::ImageEffect* effect = nullptr;
+            OFX::Image* srcImg = nullptr;
+            OfxRectI window{};
+        };
+        SpatialDIRUser user{};
+        user.effect = &_effect;
+        user.srcImg = _srcImg;
+        user.window = ctx.window;
 
-	        SpatialDIR::Callbacks callbacks{};
-	        callbacks.user = &user;
-	        callbacks.fetchRGB = [](void* u, int xx, int yy, float rgb[3]) -> bool {
-	            auto* self = static_cast<SpatialDIRUser*>(u);
-	            const int x = self->window.x1 + xx;
-	            const int y = self->window.y1 + yy;
-	            const float* srcPix = reinterpret_cast<const float*>(self->srcImg->getPixelAddress(x, y));
-	            if (!srcPix) return false;
-	            rgb[0] = srcPix[0];
-	            rgb[1] = srcPix[1];
-	            rgb[2] = srcPix[2];
-	            return true;
-	            };
-	        callbacks.abortCheck = [](void* u) -> bool {
-	            auto* self = static_cast<SpatialDIRUser*>(u);
-	            return self->effect->abort();
-	            };
+        SpatialDIR::Callbacks callbacks{};
+        callbacks.user = &user;
+        callbacks.fetchRGB = [](void* u, int xx, int yy, float rgb[3]) -> bool {
+            auto* self = static_cast<SpatialDIRUser*>(u);
+            const int x = self->window.x1 + xx;
+            const int y = self->window.y1 + yy;
+            const float* srcPix = reinterpret_cast<const float*>(self->srcImg->getPixelAddress(x, y));
+            if (!srcPix) return false;
+            rgb[0] = srcPix[0];
+            rgb[1] = srcPix[1];
+            rgb[2] = srcPix[2];
+            return true;
+            };
+        callbacks.abortCheck = [](void* u) -> bool {
+            auto* self = static_cast<SpatialDIRUser*>(u);
+            return self->effect->abort();
+            };
 
-	        SpatialDIR::buildSpatialDIRCorrections(
-	            ctx.width,
-	            ctx.height,
-	            *_ws,
-	            _dirRT,
-	            ctx.exposureScaleSafe,
-	            callbacks,
-	            _scratch.dirWorkspace,
-	            _scratch.gaussianKernel);
-		    }
+        SpatialDIR::buildSpatialDIRCorrections(
+            ctx.width,
+            ctx.height,
+            *_ws,
+            _dirRT,
+            ctx.exposureScaleSafe,
+            callbacks,
+            _scratch.dirWorkspace,
+            _scratch.gaussianKernel);
+    }
 
-	    std::atomic<bool> abortFlag{ false };
-	    std::atomic<bool> failure{ false };
+    std::atomic<bool> abortFlag{ false };
+    std::atomic<bool> failure{ false };
     const int width = ctx.width;
     const int height = ctx.height;
     const int originX = ctx.window.x1;
@@ -315,20 +314,56 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
     runnerCfg.enablePrint = ctx.printActive;
     const Pipeline::PipelineRunner runner(runnerCfg);
 
-    const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
-    std::vector<std::thread> threads;
-    threads.reserve(nThreads);
+    struct DensityProcessor final : OFX::MultiThread::Processor {
+        JuicerProcessor& self;
+        const RenderContext& ctx;
+        const Pipeline::PipelineRunner& runner;
+        std::atomic<bool>& abortFlag;
+        std::atomic<bool>& failure;
+        const int width;
+        const int height;
+        const int originX;
+        const int originY;
 
-    for (unsigned int t = 0; t < nThreads; ++t) {
-        const int yStart = rowsPerThread * int(t);
-        const int yEnd = std::min(height, rowsPerThread * int(t + 1));
-        threads.emplace_back([&, yStart, yEnd, t]() {
+        DensityProcessor(
+            JuicerProcessor& self_,
+            const RenderContext& ctx_,
+            const Pipeline::PipelineRunner& runner_,
+            std::atomic<bool>& abortFlag_,
+            std::atomic<bool>& failure_,
+            int width_,
+            int height_,
+            int originX_,
+            int originY_)
+            : self(self_)
+            , ctx(ctx_)
+            , runner(runner_)
+            , abortFlag(abortFlag_)
+            , failure(failure_)
+            , width(width_)
+            , height(height_)
+            , originX(originX_)
+            , originY(originY_)
+        {
+        }
+
+        void multiThreadFunction(unsigned int threadId, unsigned int nThreads) override {
+            const int rowsPerThread = (height + int(nThreads) - 1) / int(nThreads);
+            const int yStart = rowsPerThread * int(threadId);
+            if (yStart >= height) {
+                return;
+            }
+            const int yEnd = std::min(height, rowsPerThread * int(threadId + 1));
+
             JuicerProc::PrintPipelineScratch* printScratch = nullptr;
             if (ctx.printActive) {
-                printScratch = &_scratch.printScratchPerWorker[t];
+                if (threadId < self._scratch.printScratchPerWorker.size()) {
+                    printScratch = &self._scratch.printScratchPerWorker[threadId];
+                }
             }
+
             for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
-                if (_effect.abort()) {
+                if (self._effect.abort()) {
                     abortFlag.store(true, std::memory_order_relaxed);
                     break;
                 }
@@ -343,25 +378,25 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
 
                     Pipeline::DensityPixelInputs pxIn{};
                     pxIn.exposureScale = ctx.exposureScaleSafe;
-                    pxIn.dirRuntime = &_dirRT;
+                    pxIn.dirRuntime = &self._dirRT;
                     pxIn.applyDirRuntime = true;
 
                     if (ctx.useSpatialDIR) {
                         pxIn.useFilmRawOverride = true;
-                        pxIn.filmRawOverride.v[0] = _scratch.dirWorkspace.filmRaw_B[idx];
-                        pxIn.filmRawOverride.v[1] = _scratch.dirWorkspace.filmRaw_G[idx];
-                        pxIn.filmRawOverride.v[2] = _scratch.dirWorkspace.filmRaw_R[idx];
+                        pxIn.filmRawOverride.v[0] = self._scratch.dirWorkspace.filmRaw_B[idx];
+                        pxIn.filmRawOverride.v[1] = self._scratch.dirWorkspace.filmRaw_G[idx];
+                        pxIn.filmRawOverride.v[2] = self._scratch.dirWorkspace.filmRaw_R[idx];
                         pxIn.useSpatialDIR = true;
-                        pxIn.spatialLogECorrectionsYMC[0] = _scratch.dirWorkspace.corrYBlur[idx];
-                        pxIn.spatialLogECorrectionsYMC[1] = _scratch.dirWorkspace.corrMBlur[idx];
-                        pxIn.spatialLogECorrectionsYMC[2] = _scratch.dirWorkspace.corrCBlur[idx];
+                        pxIn.spatialLogECorrectionsYMC[0] = self._scratch.dirWorkspace.corrYBlur[idx];
+                        pxIn.spatialLogECorrectionsYMC[1] = self._scratch.dirWorkspace.corrMBlur[idx];
+                        pxIn.spatialLogECorrectionsYMC[2] = self._scratch.dirWorkspace.corrCBlur[idx];
                     }
                     else {
-                        const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
+                        const float* srcPix = reinterpret_cast<const float*>(self._srcImg->getPixelAddress(x, y));
                         if (!srcPix) {
-                            _density.c[idx] = 0.0f;
-                            _density.m[idx] = 0.0f;
-                            _density.y[idx] = 0.0f;
+                            self._density.c[idx] = 0.0f;
+                            self._density.m[idx] = 0.0f;
+                            self._density.y[idx] = 0.0f;
                             continue;
                         }
                         pxIn.rgb.v[0] = srcPix[0];
@@ -370,22 +405,22 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                     }
 
                     if (ctx.printActive) {
-                        pxIn.printRuntime = _prt;
-                        pxIn.printParams = &_printParams;
+                        pxIn.printRuntime = self._prt;
+                        pxIn.printParams = &self._printParams;
                         pxIn.midgrayFactor = ctx.kMidSpectral;
                         pxIn.printScratch = printScratch;
                     }
 
                     Pipeline::DensityPixelOutputs pxOut{};
-                    if (!runner.run_density_pixel(*_ws, pxIn, pxOut)) {
+                    if (!runner.run_density_pixel(*self._ws, pxIn, pxOut)) {
                         if (ctx.printActive) {
                             failure.store(true, std::memory_order_relaxed);
                             abortFlag.store(true, std::memory_order_relaxed);
                             break;
                         }
-                        _density.c[idx] = 0.0f;
-                        _density.m[idx] = 0.0f;
-                        _density.y[idx] = 0.0f;
+                        self._density.c[idx] = 0.0f;
+                        self._density.m[idx] = 0.0f;
+                        self._density.y[idx] = 0.0f;
                         continue;
                     }
 
@@ -395,23 +430,31 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                             abortFlag.store(true, std::memory_order_relaxed);
                             break;
                         }
-                        _density.c[idx] = pxOut.printDensity.v[0];
-                        _density.m[idx] = pxOut.printDensity.v[1];
-                        _density.y[idx] = pxOut.printDensity.v[2];
+                        self._density.c[idx] = pxOut.printDensity.v[0];
+                        self._density.m[idx] = pxOut.printDensity.v[1];
+                        self._density.y[idx] = pxOut.printDensity.v[2];
                     }
                     else {
-                        _density.c[idx] = pxOut.negativeDensity.v[0];
-                        _density.m[idx] = pxOut.negativeDensity.v[1];
-                        _density.y[idx] = pxOut.negativeDensity.v[2];
+                        self._density.c[idx] = pxOut.negativeDensity.v[0];
+                        self._density.m[idx] = pxOut.negativeDensity.v[1];
+                        self._density.y[idx] = pxOut.negativeDensity.v[2];
                     }
-	                }
-	            }
-	            });
-	    }
+                }
+            }
+        }
+    };
 
-    for (std::thread& th : threads) {
-        if (th.joinable()) th.join();
-    }
+    DensityProcessor densityProcessor(
+        *this,
+        ctx,
+        runner,
+        abortFlag,
+        failure,
+        width,
+        height,
+        originX,
+        originY);
+    densityProcessor.multiThread(nThreads);
 
     if (failure.load(std::memory_order_relaxed)) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
