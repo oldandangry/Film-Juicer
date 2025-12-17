@@ -88,12 +88,22 @@ namespace Pipeline {
                 + D_denorm[2] * static_cast<double>(epsY[i])
                 + baseSpectral;
 
+            const double transmittance = std::pow(10.0, -Dlambda);
             const double ax = static_cast<double>(Ax[i]);
             const double ay = static_cast<double>(Ay[i]);
             const double az = static_cast<double>(Az[i]);
-            if (std::isfinite(ax)) X += density_to_light_sample_agx(Dlambda, ax);
-            if (std::isfinite(ay)) Y += density_to_light_sample_agx(Dlambda, ay);
-            if (std::isfinite(az)) Z += density_to_light_sample_agx(Dlambda, az);
+            if (std::isfinite(ax)) {
+                const double out = transmittance * ax;
+                if (!std::isnan(out)) X += out;
+            }
+            if (std::isfinite(ay)) {
+                const double out = transmittance * ay;
+                if (!std::isnan(out)) Y += out;
+            }
+            if (std::isfinite(az)) {
+                const double out = transmittance * az;
+                if (!std::isnan(out)) Z += out;
+            }
         }
 
         const double invNormalization = static_cast<double>(tables->invYn);
