@@ -43,6 +43,29 @@ namespace JuicerCuda {
         float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
         float refIllumWhiteXYZ[3] = { 0.950455f, 1.0f, 1.089058f };
 
+        struct DeviceSpectralTables {
+            float* epsC = nullptr;
+            float* epsM = nullptr;
+            float* epsY = nullptr;
+            float* Ax = nullptr;
+            float* Ay = nullptr;
+            float* Az = nullptr;
+            float* baseMin = nullptr;
+            int K = 0;
+            int hasBaseline = 0;
+            float invYn = 1.0f;
+        };
+
+        struct DeviceScanMedium {
+            DeviceSpectralTables tables;
+            int mediumIsNegative = 1;
+            float min_cmy[3] = { 0.0f, 0.0f, 0.0f };
+            float inv_max_cmy[3] = { 1.0f, 1.0f, 1.0f };
+        };
+
+        DeviceScanMedium scanNegative;
+        DeviceScanMedium scanPrint;
+
         // Hanatos LUT (process-global on CPU, uploaded on demand).
         // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
         float* hanatosLut = nullptr;

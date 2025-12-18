@@ -8,6 +8,7 @@
 #include "ColorTransforms.h"
 #include "SpectralProcessing.h"
 #include "WorkingState.h"
+#include "ScanStage.h"
 
 #include "Logging.h"
 #include "SpectralContext.h"
@@ -87,6 +88,24 @@ extern "C" cudaError_t juicer_cuda_probe_tables_layer_exposures(
     int applyDeltaLambda,
     float* outE3,
     void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_probe_scan_spectral_to_log_xyz(
+    const double D_norm3[3],
+    int mediumIsNegative,
+    const float min_cmy[3],
+    const float inv_max_cmy[3],
+    const float* dEpsC,
+    const float* dEpsM,
+    const float* dEpsY,
+    const float* dAx,
+    const float* dAy,
+    const float* dAz,
+    const float* dBaseMin,
+    int K,
+    int hasBaseline,
+    float invYn,
+    double outLogXYZ3[3],
+    void* cudaStreamOpaque);
 #endif
 
 namespace JuicerCuda {
@@ -131,6 +150,28 @@ namespace JuicerCuda {
         }
 #endif
         resources.tablesK = 0;
+    }
+
+    static void free_spectral_tables(Resources::DeviceSpectralTables& t) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (t.epsC) { cudaFree(t.epsC); t.epsC = nullptr; }
+        if (t.epsM) { cudaFree(t.epsM); t.epsM = nullptr; }
+        if (t.epsY) { cudaFree(t.epsY); t.epsY = nullptr; }
+        if (t.Ax) { cudaFree(t.Ax); t.Ax = nullptr; }
+        if (t.Ay) { cudaFree(t.Ay); t.Ay = nullptr; }
+        if (t.Az) { cudaFree(t.Az); t.Az = nullptr; }
+        if (t.baseMin) { cudaFree(t.baseMin); t.baseMin = nullptr; }
+#endif
+        t.K = 0;
+        t.hasBaseline = 0;
+        t.invYn = 1.0f;
+    }
+
+    static void free_scan_medium(Resources::DeviceScanMedium& m) noexcept {
+        free_spectral_tables(m.tables);
+        m.mediumIsNegative = 1;
+        m.min_cmy[0] = m.min_cmy[1] = m.min_cmy[2] = 0.0f;
+        m.inv_max_cmy[0] = m.inv_max_cmy[1] = m.inv_max_cmy[2] = 1.0f;
     }
 
     static bool alloc_and_upload_array(float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -225,6 +266,8 @@ namespace JuicerCuda {
         free_curve(sensG);
         free_curve(sensR);
         free_tables(*this);
+        free_scan_medium(scanNegative);
+        free_scan_medium(scanPrint);
         free_hanatos(*this);
     }
 
@@ -282,6 +325,8 @@ namespace JuicerCuda {
             free_curve(resources.sensG);
             free_curve(resources.sensR);
             free_tables(resources);
+            free_scan_medium(resources.scanNegative);
+            free_scan_medium(resources.scanPrint);
 
             resources.validatedBuildCounter = 0;
         }
@@ -316,6 +361,67 @@ namespace JuicerCuda {
 
             for (int i = 0; i < 9; ++i) resources.spdSInv[i] = ws.spdSInv[i];
             for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.filmRaw.refIllumWhiteXYZ[i];
+        }
+
+        auto upload_scan_medium = [&](Resources::DeviceScanMedium& dst, const Scanner::ScannerMediumRuntime& medium, std::string& outErrorLocal) -> bool {
+            const Spectral::SpectralTables* t = medium.tables;
+            if (!t || t->K != Spectral::gShape.K) {
+                free_scan_medium(dst);
+                return true;
+            }
+            const int K = t->K;
+            const bool arraysOk =
+                static_cast<int>(t->epsC.size()) == K &&
+                static_cast<int>(t->epsM.size()) == K &&
+                static_cast<int>(t->epsY.size()) == K &&
+                static_cast<int>(t->Ax.size()) == K &&
+                static_cast<int>(t->Ay.size()) == K &&
+                static_cast<int>(t->Az.size()) == K &&
+                (!t->hasBaseline || static_cast<int>(t->baseMin.size()) == K);
+            if (!arraysOk) {
+                outErrorLocal = "scan spectral tables missing required arrays";
+                return false;
+            }
+
+            // Rebuild if size mismatches or not allocated yet.
+            if (dst.tables.K != K || !dst.tables.epsC || !dst.tables.Ax) {
+                free_scan_medium(dst);
+                if (!alloc_and_upload_array(dst.tables.epsC, t->epsC.data(), K, cudaStreamOpaque, "scan.epsC", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!alloc_and_upload_array(dst.tables.epsM, t->epsM.data(), K, cudaStreamOpaque, "scan.epsM", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!alloc_and_upload_array(dst.tables.epsY, t->epsY.data(), K, cudaStreamOpaque, "scan.epsY", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!alloc_and_upload_array(dst.tables.Ax, t->Ax.data(), K, cudaStreamOpaque, "scan.Ax", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!alloc_and_upload_array(dst.tables.Ay, t->Ay.data(), K, cudaStreamOpaque, "scan.Ay", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!alloc_and_upload_array(dst.tables.Az, t->Az.data(), K, cudaStreamOpaque, "scan.Az", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (t->hasBaseline) {
+                    if (!alloc_and_upload_array(dst.tables.baseMin, t->baseMin.data(), K, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) { free_scan_medium(dst); return false; }
+                }
+
+                dst.tables.K = K;
+            }
+
+            dst.tables.hasBaseline = t->hasBaseline ? 1 : 0;
+            dst.tables.invYn = (std::isfinite(t->invYn) && t->invYn > 0.0f) ? t->invYn : 1.0f;
+
+            dst.mediumIsNegative = (medium.medium == Scanner::ScannerMedium::Negative) ? 1 : 0;
+            for (int i = 0; i < 3; ++i) {
+                dst.min_cmy[i] = medium.range.min_cmy[i];
+                dst.inv_max_cmy[i] = (std::isfinite(medium.range.inv_max_cmy[i]) && medium.range.inv_max_cmy[i] > 0.0f)
+                    ? medium.range.inv_max_cmy[i]
+                    : 1.0f;
+            }
+            return true;
+        };
+
+        {
+            std::string scanError;
+            if (!upload_scan_medium(resources.scanNegative, ws.negativeMediumRuntime, scanError)) {
+                outError = std::string("upload scan negative failed: ") + scanError;
+                return false;
+            }
+            if (!upload_scan_medium(resources.scanPrint, ws.printMediumRuntime, scanError)) {
+                outError = std::string("upload scan print failed: ") + scanError;
+                return false;
+            }
         }
 
         // Upload Hanatos LUT if available (uploaded once and reused across WorkingState rebuilds).
@@ -589,6 +695,60 @@ namespace JuicerCuda {
                 }
                 if (!(maxDiff <= 2e-5f)) {
                     outError = "convert_input_rgb_to_DWG mismatch: maxAbs=" + std::to_string(maxDiff);
+                    return false;
+                }
+            }
+        }
+
+        // Validate scan-stage spectral_to_log_xyz primitive (negative medium) against CPU.
+        if (resources.scanNegative.tables.K == Spectral::gShape.K &&
+            resources.scanNegative.tables.epsC &&
+            resources.scanNegative.tables.Ax)
+        {
+            const double samples[][3] = {
+                { 0.0, 0.0, 0.0 },
+                { 0.5, 0.5, 0.5 },
+                { 1.0, 1.0, 1.0 },
+                { 0.1, 0.7, 0.3 }
+            };
+
+            for (const auto& D_norm : samples) {
+                double gpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                const cudaError_t err = ::juicer_cuda_probe_scan_spectral_to_log_xyz(
+                    D_norm,
+                    resources.scanNegative.mediumIsNegative,
+                    resources.scanNegative.min_cmy,
+                    resources.scanNegative.inv_max_cmy,
+                    resources.scanNegative.tables.epsC,
+                    resources.scanNegative.tables.epsM,
+                    resources.scanNegative.tables.epsY,
+                    resources.scanNegative.tables.Ax,
+                    resources.scanNegative.tables.Ay,
+                    resources.scanNegative.tables.Az,
+                    resources.scanNegative.tables.baseMin,
+                    resources.scanNegative.tables.K,
+                    resources.scanNegative.tables.hasBaseline,
+                    resources.scanNegative.tables.invYn,
+                    gpuLogXYZ,
+                    cudaStreamOpaque);
+                if (err != cudaSuccess) {
+                    outError = std::string("scan logXYZ probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+
+                double cpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                Pipeline::ScanStage::spectral_to_log_xyz(ws.negativeMediumRuntime, D_norm, cpuLogXYZ);
+
+                double maxDiff = 0.0;
+                for (int c = 0; c < 3; ++c) {
+                    if (!std::isfinite(cpuLogXYZ[c]) || !std::isfinite(gpuLogXYZ[c])) {
+                        outError = "scan logXYZ produced non-finite values";
+                        return false;
+                    }
+                    maxDiff = std::max(maxDiff, std::fabs(cpuLogXYZ[c] - gpuLogXYZ[c]));
+                }
+                if (!(maxDiff <= 1e-4)) {
+                    outError = "scan logXYZ mismatch: maxAbs=" + std::to_string(maxDiff);
                     return false;
                 }
             }

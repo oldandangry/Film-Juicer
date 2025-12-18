@@ -911,6 +911,165 @@ extern "C" cudaError_t juicer_cuda_probe_film_log_raw(
     return err;
 }
 
+namespace {
+
+    __global__ void probe_scan_spectral_to_log_xyz_kernel(
+        double d0,
+        double d1,
+        double d2,
+        int mediumIsNegative,
+        float min0,
+        float min1,
+        float min2,
+        float invMax0,
+        float invMax1,
+        float invMax2,
+        const float* epsC,
+        const float* epsM,
+        const float* epsY,
+        const float* Ax,
+        const float* Ay,
+        const float* Az,
+        const float* baseMin,
+        int K,
+        int hasBaseline,
+        float invYn,
+        double* outLogXYZ3)
+    {
+        if (!outLogXYZ3 || !epsC || !epsM || !epsY || !Ax || !Ay || !Az || K <= 0) {
+            return;
+        }
+
+        double D_denorm0;
+        double D_denorm1;
+        double D_denorm2;
+        if (mediumIsNegative) {
+            D_denorm0 = d0 / static_cast<double>(invMax0) - static_cast<double>(min0);
+            D_denorm1 = d1 / static_cast<double>(invMax1) - static_cast<double>(min1);
+            D_denorm2 = d2 / static_cast<double>(invMax2) - static_cast<double>(min2);
+        } else {
+            D_denorm0 = d0 / static_cast<double>(invMax0);
+            D_denorm1 = d1 / static_cast<double>(invMax1);
+            D_denorm2 = d2 / static_cast<double>(invMax2);
+        }
+
+        double X = 0.0;
+        double Y = 0.0;
+        double Z = 0.0;
+        for (int i = 0; i < K; ++i) {
+            const double baseSpectral = (hasBaseline && baseMin) ? static_cast<double>(baseMin[i]) : 0.0;
+            const double Dlambda =
+                D_denorm0 * static_cast<double>(epsC[i]) +
+                D_denorm1 * static_cast<double>(epsM[i]) +
+                D_denorm2 * static_cast<double>(epsY[i]) +
+                baseSpectral;
+
+            const double transmittance = pow(10.0, -Dlambda);
+
+            const double ax = static_cast<double>(Ax[i]);
+            const double ay = static_cast<double>(Ay[i]);
+            const double az = static_cast<double>(Az[i]);
+
+            if (isfinite(ax)) {
+                const double out = transmittance * ax;
+                if (!isnan(out)) X += out;
+            }
+            if (isfinite(ay)) {
+                const double out = transmittance * ay;
+                if (!isnan(out)) Y += out;
+            }
+            if (isfinite(az)) {
+                const double out = transmittance * az;
+                if (!isnan(out)) Z += out;
+            }
+        }
+
+        const double invNormalization = static_cast<double>(invYn);
+        const double XYZ0 = X * invNormalization;
+        const double XYZ1 = Y * invNormalization;
+        const double XYZ2 = Z * invNormalization;
+
+        constexpr double kEps = 1e-10;
+        outLogXYZ3[0] = log10(XYZ0 + kEps);
+        outLogXYZ3[1] = log10(XYZ1 + kEps);
+        outLogXYZ3[2] = log10(XYZ2 + kEps);
+    }
+
+} // namespace
+
+extern "C" cudaError_t juicer_cuda_probe_scan_spectral_to_log_xyz(
+    const double D_norm3[3],
+    int mediumIsNegative,
+    const float min_cmy[3],
+    const float inv_max_cmy[3],
+    const float* dEpsC,
+    const float* dEpsM,
+    const float* dEpsY,
+    const float* dAx,
+    const float* dAy,
+    const float* dAz,
+    const float* dBaseMin,
+    int K,
+    int hasBaseline,
+    float invYn,
+    double outLogXYZ3[3],
+    void* cudaStreamOpaque)
+{
+    if (!D_norm3 || !min_cmy || !inv_max_cmy || !dEpsC || !dEpsM || !dEpsY || !dAx || !dAy || !dAz || !outLogXYZ3) {
+        return cudaErrorInvalidValue;
+    }
+    if (K != 81) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    double* dOut = nullptr;
+    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dOut), 3 * sizeof(double));
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    probe_scan_spectral_to_log_xyz_kernel<<<1, 1, 0, stream>>>(
+        D_norm3[0],
+        D_norm3[1],
+        D_norm3[2],
+        mediumIsNegative ? 1 : 0,
+        min_cmy[0],
+        min_cmy[1],
+        min_cmy[2],
+        inv_max_cmy[0],
+        inv_max_cmy[1],
+        inv_max_cmy[2],
+        dEpsC,
+        dEpsM,
+        dEpsY,
+        dAx,
+        dAy,
+        dAz,
+        dBaseMin,
+        K,
+        hasBaseline ? 1 : 0,
+        invYn,
+        dOut);
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        return err;
+    }
+
+    err = cudaMemcpyAsync(outLogXYZ3, dOut, 3 * sizeof(double), cudaMemcpyDeviceToHost, stream);
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        return err;
+    }
+
+    err = cudaStreamSynchronize(stream);
+    cudaFree(dOut);
+    return err;
+}
+
 extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
     const float rgbIn[3],
     int inputColorSpaceIndex,
