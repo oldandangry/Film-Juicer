@@ -16,6 +16,7 @@ namespace Spectral {
         const float rgbDWG[3], float E[3], float exposureScale,
         const SpectralTables* tables, const float* S_inv,
         const Curve& sB, const Curve& sG, const Curve& sR,
+        SpectralUpsamplingMode spectralUpsamplingMode,
         const float refIllumWhiteXYZ[3]);
     inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]);
 
@@ -319,6 +320,7 @@ namespace Spectral {
         Mat3 inputRGBToXYZ = make_identity_mat3();
         Mat3 inputXYZAdapt = make_identity_mat3();
         bool applyInputChromaticAdapt = false;
+        SpectralUpsamplingMode spectralUpsamplingMode = SpectralUpsamplingMode::PreferHanatos;
         float midgrayScale = 1.0f;
         float midgrayDWG[3] = { 0.184f, 0.184f, 0.184f };
         float rawMidgray[3] = { 1.0f, 1.0f, 1.0f };
@@ -453,6 +455,7 @@ namespace Spectral {
             tablesSPD,
             S_inv,
             sB, sG, sR,
+            cfg.spectralUpsamplingMode,
             cfg.refIllumWhiteXYZ);
 
         cfg.rawMidgray[0] = E[0];
@@ -494,6 +497,7 @@ namespace Spectral {
                 tablesSPD,
                 S_inv,
                 sB, sG, sR,
+                cfg.spectralUpsamplingMode,
                 cfg.refIllumWhiteXYZ);
 
             normScale = cfg.midgrayScale;

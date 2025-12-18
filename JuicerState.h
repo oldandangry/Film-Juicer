@@ -91,6 +91,7 @@ struct BaseState {
 struct ParamSnapshot {
     int filmStockIndex = 0;
     int printPaperIndex = 0;
+    int spectralUpsamplingMode = 0;
     int refIll = 0;
     int enlIll = 3;
     int enlDichroicSet = 0;

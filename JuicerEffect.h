@@ -125,6 +125,7 @@ private:
     OFX::BooleanParam* _pCameraAutoExposure = nullptr;
     OFX::DoubleParam* _pCameraFilmFormat = nullptr;
     OFX::ChoiceParam* _pFilmStock = nullptr;
+    OFX::ChoiceParam* _pSpectralMode = nullptr;
     OFX::ChoiceParam* _pPrintPaper = nullptr;
     OFX::ChoiceParam* _pRefIll = nullptr;
     OFX::ChoiceParam* _pEnlIll = nullptr;

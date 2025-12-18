@@ -257,7 +257,12 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamSpectralMode);
         p->setLabel("Spectral upsampling");
         p->appendOption("Hanatos");
+        p->appendOption("Mallett");
+        p->setHint("Choose the spectral reconstruction method used for film exposure. "
+            "Hanatos uses the Hanatos 2025 LUT when available; "
+            "Mallett uses the Mallett 2019 basis reconstruction (tables + S-inverse).");
         p->setDefault(0);
+        p->setEvaluateOnChange(true);
 
     }
     // Input colour space and encoding

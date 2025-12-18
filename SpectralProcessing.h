@@ -1250,6 +1250,7 @@ namespace Spectral {
         const float rgbDWG[3], float E[3], float exposureScale,
         const SpectralTables* T, const float* S_inv /* size 9 */,
         const Curve& sB, const Curve& sG, const Curve& sR,
+        SpectralUpsamplingMode spectralUpsamplingMode = SpectralUpsamplingMode::PreferHanatos,
         const float refIllumWhiteXYZ[3] /* optional override */ = nullptr)
     {
         if (!T || !S_inv || T->K <= 0) {
@@ -1260,7 +1261,8 @@ namespace Spectral {
         thread_local std::vector<float> Ee_scene;
         Ee_scene.resize(T->K);
 
-        const bool useHanatos = hanatos_available() && hanatos_matches_reference_shape();
+        const bool allowHanatos = (spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
+        const bool useHanatos = allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
         const float* adaptWhite = refIllumWhiteXYZ ? refIllumWhiteXYZ : T->refIllumWhiteXYZ;
         if (useHanatos) {
             // Pass reference illuminant white point for chromatic adaptation

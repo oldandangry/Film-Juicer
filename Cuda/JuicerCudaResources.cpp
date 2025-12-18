@@ -41,6 +41,11 @@ extern "C" cudaError_t juicer_cuda_probe_density_curve_sanitize_inf(
     float* hOut,
     void* cudaStreamOpaque);
 
+extern "C" cudaError_t juicer_cuda_probe_film_log_raw(
+    const float filmRaw3[3],
+    float outLogRaw3[3],
+    void* cudaStreamOpaque);
+
 // Implemented in Cuda/JuicerCudaPrimitives.cu
 extern "C" cudaError_t juicer_cuda_probe_hanatos_layer_exposures(
     const float rgbDWG[3],
@@ -65,6 +70,22 @@ extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
     const float inputRGBToXYZ9[9],
     const float inputXYZAdapt9[9],
     float outRgbDWG[3],
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_probe_tables_layer_exposures(
+    const float rgbDWG[3],
+    const float S_inv9[9],
+    const float refIllumWhiteXYZ[3],
+    const float* dAx,
+    const float* dAy,
+    const float* dAz,
+    int K,
+    const float* dSensB,
+    const float* dSensG,
+    const float* dSensR,
+    float exposureScale,
+    int applyDeltaLambda,
+    float* outE3,
     void* cudaStreamOpaque);
 #endif
 
@@ -92,6 +113,56 @@ namespace JuicerCuda {
         }
 #endif
         resources.hanatosN = 0;
+    }
+
+    static void free_tables(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.tablesAx) {
+            cudaFree(resources.tablesAx);
+            resources.tablesAx = nullptr;
+        }
+        if (resources.tablesAy) {
+            cudaFree(resources.tablesAy);
+            resources.tablesAy = nullptr;
+        }
+        if (resources.tablesAz) {
+            cudaFree(resources.tablesAz);
+            resources.tablesAz = nullptr;
+        }
+#endif
+        resources.tablesK = 0;
+    }
+
+    static bool alloc_and_upload_array(float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)dst;
+        (void)src;
+        (void)n;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!src || n <= 0) {
+            outError = std::string(label) + " array is empty";
+            return false;
+        }
+        const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dst), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(") + label + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            return false;
+        }
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        err = cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(") + label + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            cudaFree(dst);
+            dst = nullptr;
+            return false;
+        }
+        return true;
+#endif
     }
 
     static bool alloc_and_upload_curve(DeviceCurve& dst, const Spectral::Curve& src, void* cudaStreamOpaque, std::string& outError) {
@@ -153,6 +224,7 @@ namespace JuicerCuda {
         free_curve(sensB);
         free_curve(sensG);
         free_curve(sensR);
+        free_tables(*this);
         free_hanatos(*this);
     }
 
@@ -209,6 +281,7 @@ namespace JuicerCuda {
             free_curve(resources.sensB);
             free_curve(resources.sensG);
             free_curve(resources.sensR);
+            free_tables(resources);
 
             resources.validatedBuildCounter = 0;
         }
@@ -220,6 +293,30 @@ namespace JuicerCuda {
         if (!alloc_and_upload_curve(resources.sensB, ws.sensB, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.sensG, ws.sensG, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.sensR, ws.sensR, cudaStreamOpaque, outError)) return false;
+
+        // Upload per-instance Mallett basis tables (Ax/Ay/Az) and keep a host-side copy of S_inv + ref white.
+        {
+            const int K = ws.tablesRef.K;
+            const bool want =
+                ws.spdReady &&
+                K == Spectral::gShape.K &&
+                static_cast<int>(ws.tablesRef.Ax.size()) == K &&
+                static_cast<int>(ws.tablesRef.Ay.size()) == K &&
+                static_cast<int>(ws.tablesRef.Az.size()) == K;
+
+            if (!want) {
+                free_tables(resources);
+            } else if (resources.tablesK != K || !resources.tablesAx || !resources.tablesAy || !resources.tablesAz) {
+                free_tables(resources);
+                if (!alloc_and_upload_array(resources.tablesAx, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, "tablesAx", outError)) { free_tables(resources); return false; }
+                if (!alloc_and_upload_array(resources.tablesAy, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, "tablesAy", outError)) { free_tables(resources); return false; }
+                if (!alloc_and_upload_array(resources.tablesAz, ws.tablesRef.Az.data(), K, cudaStreamOpaque, "tablesAz", outError)) { free_tables(resources); return false; }
+                resources.tablesK = K;
+            }
+
+            for (int i = 0; i < 9; ++i) resources.spdSInv[i] = ws.spdSInv[i];
+            for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.filmRaw.refIllumWhiteXYZ[i];
+        }
 
         // Upload Hanatos LUT if available (uploaded once and reused across WorkingState rebuilds).
         {
@@ -411,6 +508,50 @@ namespace JuicerCuda {
             }
         }
 
+        // Validate film log-raw computation parity (DevelopFilmStage::compute_log_raw).
+        {
+            const float samples[][3] = {
+                { 0.184f, 0.184f, 0.184f },
+                { -0.5f, 0.0f, 2.0f },
+                { std::numeric_limits<float>::quiet_NaN(), 1.0f, std::numeric_limits<float>::infinity() }
+            };
+
+            for (const auto& filmRaw : samples) {
+                float gpuLogRaw[3] = { 0.0f, 0.0f, 0.0f };
+                const cudaError_t err = ::juicer_cuda_probe_film_log_raw(filmRaw, gpuLogRaw, cudaStreamOpaque);
+                if (err != cudaSuccess) {
+                    outError = std::string("film log-raw probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+
+                constexpr float kEps = 1e-10f;
+                float cpuLogRaw[3] = {
+                    std::log10(std::fmax(filmRaw[0], 0.0f) + kEps),
+                    std::log10(std::fmax(filmRaw[1], 0.0f) + kEps),
+                    std::log10(std::fmax(filmRaw[2], 0.0f) + kEps)
+                };
+
+                float maxDiff = 0.0f;
+                for (int c = 0; c < 3; ++c) {
+                    if (std::isfinite(cpuLogRaw[c]) && std::isfinite(gpuLogRaw[c])) {
+                        maxDiff = std::max(maxDiff, std::fabs(cpuLogRaw[c] - gpuLogRaw[c]));
+                    }
+                    else if (std::isnan(cpuLogRaw[c]) != std::isnan(gpuLogRaw[c])) {
+                        outError = "film log-raw NaN mismatch";
+                        return false;
+                    }
+                    else if (std::isinf(cpuLogRaw[c]) != std::isinf(gpuLogRaw[c])) {
+                        outError = "film log-raw inf mismatch";
+                        return false;
+                    }
+                }
+                if (!(maxDiff <= 1e-6f)) {
+                    outError = "film log-raw mismatch: maxAbs=" + std::to_string(maxDiff);
+                    return false;
+                }
+            }
+        }
+
         // Validate input RGB -> DWG conversion against the CPU implementation.
         {
             const int inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(ws.filmRaw.inputColorSpace);
@@ -448,6 +589,52 @@ namespace JuicerCuda {
                 }
                 if (!(maxDiff <= 2e-5f)) {
                     outError = "convert_input_rgb_to_DWG mismatch: maxAbs=" + std::to_string(maxDiff);
+                    return false;
+                }
+            }
+        }
+
+        // Validate Mallett (tables + S_inv) exposure primitive against CPU (forced non-Hanatos path).
+        if (ws.spdReady && resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesK == Spectral::gShape.K) {
+            const float samples[][3] = {
+                { 0.184f, 0.184f, 0.184f }, // mid-gray
+                { 0.9f, 0.1f, 0.1f },       // red-ish
+                { 0.05f, 0.2f, 0.9f }       // blue-ish
+            };
+
+            for (const auto& rgbDWG : samples) {
+                float gpuE[3] = { 0.0f, 0.0f, 0.0f };
+                const cudaError_t err = ::juicer_cuda_probe_tables_layer_exposures(
+                    rgbDWG,
+                    resources.spdSInv,
+                    resources.refIllumWhiteXYZ,
+                    resources.tablesAx,
+                    resources.tablesAy,
+                    resources.tablesAz,
+                    resources.tablesK,
+                    resources.sensB.y,
+                    resources.sensG.y,
+                    resources.sensR.y,
+                    1.0f,
+                    1,
+                    gpuE,
+                    cudaStreamOpaque);
+                if (err != cudaSuccess) {
+                    outError = std::string("tables exposure probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+
+                std::vector<float> Ee;
+                Spectral::reconstruct_Ee_from_DWG_RGB_with_tables(rgbDWG, ws.tablesRef, ws.spdSInv, Ee);
+                float cpuE[3] = { 0.0f, 0.0f, 0.0f };
+                Spectral::layerExposures_from_sceneSPD_with_curves(Ee, ws.sensB, ws.sensG, ws.sensR, cpuE, 1.0f, true);
+
+                float maxDiff = 0.0f;
+                for (int c = 0; c < 3; ++c) {
+                    maxDiff = std::max(maxDiff, std::fabs(gpuE[c] - cpuE[c]));
+                }
+                if (!(maxDiff <= 2e-4f)) {
+                    outError = "tables exposure mismatch: maxAbs=" + std::to_string(maxDiff);
                     return false;
                 }
             }

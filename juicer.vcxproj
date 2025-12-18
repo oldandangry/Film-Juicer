@@ -148,7 +148,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_TRACE_CUDA=1;JUICER_CUDA_SELF_CHECK=1</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_TRACE_CUDA=1;JUICER_CUDA_SELF_CHECK=1;JUICER_CUDA_VALIDATE_PRIMITIVES=1</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>

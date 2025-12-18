@@ -49,6 +49,19 @@ namespace Spectral {
         0.950455f, 1.0f, 1.089058f
     };
 
+    // Spectral upsampling / SPD reconstruction selection.
+    // Note: "Mallett" refers to the tables + S-inverse basis reconstruction used when Hanatos LUT is not selected/available.
+    enum class SpectralUpsamplingMode : int {
+        PreferHanatos = 0,
+        ForceMallett = 1
+    };
+
+    inline SpectralUpsamplingMode spectral_upsampling_mode_from_index(int index) {
+        return (index == static_cast<int>(SpectralUpsamplingMode::ForceMallett))
+            ? SpectralUpsamplingMode::ForceMallett
+            : SpectralUpsamplingMode::PreferHanatos;
+    }
+
     // ============================================================================
     // SpectralTables: Per-instance spectral tables (consolidated from SpectralTables.h)
     // ============================================================================

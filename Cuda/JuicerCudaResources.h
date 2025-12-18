@@ -35,6 +35,14 @@ namespace JuicerCuda {
         DeviceCurve sensG;
         DeviceCurve sensR;
 
+        // SPD reconstruction (Mallett 2019 basis via per-instance tables + S_inv).
+        float* tablesAx = nullptr;
+        float* tablesAy = nullptr;
+        float* tablesAz = nullptr;
+        int tablesK = 0;
+        float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
+        float refIllumWhiteXYZ[3] = { 0.950455f, 1.0f, 1.089058f };
+
         // Hanatos LUT (process-global on CPU, uploaded on demand).
         // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
         float* hanatosLut = nullptr;

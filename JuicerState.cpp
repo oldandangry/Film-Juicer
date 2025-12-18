@@ -761,6 +761,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     uint64_t h = 0;
     h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
     h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
+    h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
     h = mix(h, static_cast<uint64_t>(p.refIll));
     h = mix(h, static_cast<uint64_t>(p.enlIll));
     h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
@@ -2248,6 +2249,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->filmRaw = Spectral::FilmRawConfig{};
     target->filmRaw.inputColorSpace = Spectral::inputColorSpaceFromIndex(P.inputColorSpace);
     target->filmRaw.applyCctfDecoding = (P.inputCctfDecoding != 0);
+    target->filmRaw.spectralUpsamplingMode = Spectral::spectral_upsampling_mode_from_index(P.spectralUpsamplingMode);
     Spectral::prepare_film_raw_config(target->filmRaw);
 
     if (target->spdReady && target->tablesRef.K > 0) {

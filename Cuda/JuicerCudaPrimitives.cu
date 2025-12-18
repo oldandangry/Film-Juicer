@@ -643,6 +643,274 @@ extern "C" cudaError_t juicer_cuda_probe_hanatos_layer_exposures(
     return err;
 }
 
+namespace {
+
+    struct TablesProbeParams {
+        float S_inv[9];
+        float refIllumWhiteXYZ[3];
+    };
+
+    __device__ __forceinline__ float sanitize_component_device(float v) {
+        if (!isfinite(v)) {
+            return 0.0f;
+        }
+        return fmaxf(0.0f, v);
+    }
+
+    __global__ void probe_tables_layer_exposures_kernel(
+        TablesProbeParams params,
+        const float* Ax,
+        const float* Ay,
+        const float* Az,
+        int K,
+        const float* sensB,
+        const float* sensG,
+        const float* sensR,
+        float exposureScale,
+        int applyDeltaLambda,
+        float rgbDWG0,
+        float rgbDWG1,
+        float rgbDWG2,
+        float* outE3)
+    {
+        if (!Ax || !Ay || !Az || !sensB || !sensG || !sensR || !outE3 || K <= 0) {
+            return;
+        }
+
+        // Convert DWG RGB to XYZ (D65).
+        const float DWG_RGB_to_XYZ[9] = {
+            0.70062239f,  0.14877482f,  0.10105872f,
+            0.27411851f,  0.87363190f, -0.14775041f,
+           -0.09896291f, -0.13789533f,  1.32591599f
+        };
+
+        float XYZ[3] = {
+            DWG_RGB_to_XYZ[0] * rgbDWG0 + DWG_RGB_to_XYZ[1] * rgbDWG1 + DWG_RGB_to_XYZ[2] * rgbDWG2,
+            DWG_RGB_to_XYZ[3] * rgbDWG0 + DWG_RGB_to_XYZ[4] * rgbDWG1 + DWG_RGB_to_XYZ[5] * rgbDWG2,
+            DWG_RGB_to_XYZ[6] * rgbDWG0 + DWG_RGB_to_XYZ[7] * rgbDWG1 + DWG_RGB_to_XYZ[8] * rgbDWG2
+        };
+
+        float sanitizedXYZ[3] = {
+            sanitize_component_device(XYZ[0]),
+            sanitize_component_device(XYZ[1]),
+            sanitize_component_device(XYZ[2])
+        };
+
+        const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
+
+        float refWhite[3] = {
+            sanitize_component_device(params.refIllumWhiteXYZ[0]),
+            sanitize_component_device(params.refIllumWhiteXYZ[1]),
+            sanitize_component_device(params.refIllumWhiteXYZ[2])
+        };
+        if (!(refWhite[1] > 0.0f)) {
+            refWhite[0] = D65[0];
+            refWhite[1] = D65[1];
+            refWhite[2] = D65[2];
+        }
+
+        float adaptedXYZ[3];
+        chromatic_adapt_XYZ_CAT02_device(sanitizedXYZ, D65, refWhite, adaptedXYZ);
+        adaptedXYZ[0] = fmaxf(0.0f, adaptedXYZ[0]);
+        adaptedXYZ[1] = fmaxf(0.0f, adaptedXYZ[1]);
+        adaptedXYZ[2] = fmaxf(0.0f, adaptedXYZ[2]);
+
+        const float targetScale = (adaptedXYZ[1] > 0.0f) ? adaptedXYZ[1] : sanitizedXYZ[1];
+
+        float cx =
+            params.S_inv[0] * adaptedXYZ[0] +
+            params.S_inv[1] * adaptedXYZ[1] +
+            params.S_inv[2] * adaptedXYZ[2];
+        float cy =
+            params.S_inv[3] * adaptedXYZ[0] +
+            params.S_inv[4] * adaptedXYZ[1] +
+            params.S_inv[5] * adaptedXYZ[2];
+        float cz =
+            params.S_inv[6] * adaptedXYZ[0] +
+            params.S_inv[7] * adaptedXYZ[1] +
+            params.S_inv[8] * adaptedXYZ[2];
+        cx = fmaxf(0.0f, cx);
+        cy = fmaxf(0.0f, cy);
+        cz = fmaxf(0.0f, cz);
+
+        double Y_recon = 0.0;
+        double Eb = 0.0;
+        double Eg = 0.0;
+        double Er = 0.0;
+
+        for (int i = 0; i < K; ++i) {
+            const float bx = fmaxf(0.0f, sanitize_component_device(Ax[i]));
+            const float by = fmaxf(0.0f, sanitize_component_device(Ay[i]));
+            const float bz = fmaxf(0.0f, sanitize_component_device(Az[i]));
+            const float Ei = fmaxf(1e-6f, cx * bx + cy * by + cz * bz);
+
+            Y_recon += static_cast<double>(Ei) * static_cast<double>(by);
+
+            const float sb = sensB[i];
+            const float sg = sensG[i];
+            const float sr = sensR[i];
+            const double e64 = static_cast<double>(Ei);
+            if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
+            if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
+            if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
+        }
+
+        if (Y_recon > 1e-20 && targetScale > 0.0f) {
+            const double s = static_cast<double>(targetScale) / Y_recon;
+            Eb *= s;
+            Eg *= s;
+            Er *= s;
+        } else if (!(targetScale > 0.0f)) {
+            Eb = Eg = Er = 0.0;
+        }
+
+        const float safeScale = fmaxf(0.0f, exposureScale);
+        const double delta = applyDeltaLambda ? 5.0 : 1.0;
+        const double dl = delta * static_cast<double>(safeScale);
+
+        outE3[0] = fmaxf(0.0f, static_cast<float>(Eb * dl));
+        outE3[1] = fmaxf(0.0f, static_cast<float>(Eg * dl));
+        outE3[2] = fmaxf(0.0f, static_cast<float>(Er * dl));
+    }
+
+} // namespace
+
+extern "C" cudaError_t juicer_cuda_probe_tables_layer_exposures(
+    const float rgbDWG[3],
+    const float S_inv9[9],
+    const float refIllumWhiteXYZ[3],
+    const float* dAx,
+    const float* dAy,
+    const float* dAz,
+    int K,
+    const float* dSensB,
+    const float* dSensG,
+    const float* dSensR,
+    float exposureScale,
+    int applyDeltaLambda,
+    float* outE3,
+    void* cudaStreamOpaque)
+{
+    if (!rgbDWG || !S_inv9 || !refIllumWhiteXYZ || !dAx || !dAy || !dAz || !dSensB || !dSensG || !dSensR || !outE3 || K <= 0) {
+        return cudaErrorInvalidValue;
+    }
+    if (K != 81) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    TablesProbeParams params{};
+    for (int i = 0; i < 9; ++i) params.S_inv[i] = S_inv9[i];
+    for (int i = 0; i < 3; ++i) params.refIllumWhiteXYZ[i] = refIllumWhiteXYZ[i];
+
+    float* dOut = nullptr;
+    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dOut), 3 * sizeof(float));
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    probe_tables_layer_exposures_kernel<<<1, 1, 0, stream>>>(
+        params,
+        dAx,
+        dAy,
+        dAz,
+        K,
+        dSensB,
+        dSensG,
+        dSensR,
+        exposureScale,
+        applyDeltaLambda,
+        rgbDWG[0],
+        rgbDWG[1],
+        rgbDWG[2],
+        dOut);
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        return err;
+    }
+
+    err = cudaMemcpyAsync(outE3, dOut, 3 * sizeof(float), cudaMemcpyDeviceToHost, stream);
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        return err;
+    }
+
+    err = cudaStreamSynchronize(stream);
+    cudaFree(dOut);
+    return err;
+}
+
+namespace {
+
+    __global__ void probe_film_log_raw_kernel(const float* filmRaw3, float* outLogRaw3) {
+        if (!filmRaw3 || !outLogRaw3) {
+            return;
+        }
+        constexpr float kEps = 1e-10f;
+        const float a = filmRaw3[0];
+        const float b = filmRaw3[1];
+        const float c = filmRaw3[2];
+        outLogRaw3[0] = log10f(fmaxf(a, 0.0f) + kEps);
+        outLogRaw3[1] = log10f(fmaxf(b, 0.0f) + kEps);
+        outLogRaw3[2] = log10f(fmaxf(c, 0.0f) + kEps);
+    }
+
+} // namespace
+
+extern "C" cudaError_t juicer_cuda_probe_film_log_raw(
+    const float filmRaw3[3],
+    float outLogRaw3[3],
+    void* cudaStreamOpaque)
+{
+    if (!filmRaw3 || !outLogRaw3) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    float* dIn = nullptr;
+    float* dOut = nullptr;
+    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dIn), 3 * sizeof(float));
+    if (err != cudaSuccess) {
+        return err;
+    }
+    err = cudaMalloc(reinterpret_cast<void**>(&dOut), 3 * sizeof(float));
+    if (err != cudaSuccess) {
+        cudaFree(dIn);
+        return err;
+    }
+
+    err = cudaMemcpyAsync(dIn, filmRaw3, 3 * sizeof(float), cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dIn);
+        return err;
+    }
+
+    probe_film_log_raw_kernel<<<1, 1, 0, stream>>>(dIn, dOut);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dIn);
+        return err;
+    }
+
+    err = cudaMemcpyAsync(outLogRaw3, dOut, 3 * sizeof(float), cudaMemcpyDeviceToHost, stream);
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dIn);
+        return err;
+    }
+
+    err = cudaStreamSynchronize(stream);
+    cudaFree(dOut);
+    cudaFree(dIn);
+    return err;
+}
+
 extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
     const float rgbIn[3],
     int inputColorSpaceIndex,

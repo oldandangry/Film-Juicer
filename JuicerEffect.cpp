@@ -802,6 +802,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
         _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
         _pFilmStock = fetchChoiceParam(kParamFilmStock);
+        _pSpectralMode = fetchChoiceParam(kParamSpectralMode);
         _pPrintPaper = fetchChoiceParam(kParamPrintPaper);
         _pRefIll = fetchChoiceParam("ReferenceIlluminant");
         _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
@@ -1103,6 +1104,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     ParamSnapshot P;
     if (_pFilmStock)      _pFilmStock->getValue(P.filmStockIndex);
     if (_pPrintPaper)     _pPrintPaper->getValue(P.printPaperIndex);
+    if (_pSpectralMode)   _pSpectralMode->getValue(P.spectralUpsamplingMode);
     if (_pRefIll)         _pRefIll->getValue(P.refIll);
     if (_pEnlIll)         _pEnlIll->getValue(P.enlIll);
     if (_pEnlDichroicSet) _pEnlDichroicSet->getValue(P.enlDichroicSet);
