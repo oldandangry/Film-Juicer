@@ -1070,6 +1070,74 @@ extern "C" cudaError_t juicer_cuda_probe_scan_spectral_to_log_xyz(
     return err;
 }
 
+namespace {
+
+    __global__ void probe_clamp_logE_to_curve_domain_kernel(
+        const float* x,
+        int n,
+        float logE,
+        float* outLogE)
+    {
+        if (!x || n <= 0 || !outLogE) {
+            return;
+        }
+
+        // Match Couplers::apply_runtime_logE_with_curves clamp_to:
+        // - xmin/xmax are taken as curve.lambda_nm.front/back (no finite-domain scan)
+        // - non-finite logE => xmin
+        const float xmin = x[0];
+        const float xmax = x[n - 1];
+
+        if (!isfinite(logE)) {
+            outLogE[0] = xmin;
+            return;
+        }
+
+        float v = logE;
+        v = fmaxf(v, xmin);
+        v = fminf(v, xmax);
+        outLogE[0] = v;
+    }
+
+} // namespace
+
+extern "C" cudaError_t juicer_cuda_probe_clamp_logE_to_curve_domain(
+    const float* dX,
+    int n,
+    float logE,
+    float* outLogE,
+    void* cudaStreamOpaque)
+{
+    if (!dX || n <= 0 || !outLogE) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    float* dOut = nullptr;
+    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dOut), sizeof(float));
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    probe_clamp_logE_to_curve_domain_kernel<<<1, 1, 0, stream>>>(dX, n, logE, dOut);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        return err;
+    }
+
+    err = cudaMemcpyAsync(outLogE, dOut, sizeof(float), cudaMemcpyDeviceToHost, stream);
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        return err;
+    }
+
+    err = cudaStreamSynchronize(stream);
+    cudaFree(dOut);
+    return err;
+}
+
 extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
     const float rgbIn[3],
     int inputColorSpaceIndex,

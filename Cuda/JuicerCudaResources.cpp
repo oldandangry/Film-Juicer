@@ -106,6 +106,13 @@ extern "C" cudaError_t juicer_cuda_probe_scan_spectral_to_log_xyz(
     float invYn,
     double outLogXYZ3[3],
     void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_probe_clamp_logE_to_curve_domain(
+    const float* dX,
+    int n,
+    float logE,
+    float* outLogE,
+    void* cudaStreamOpaque);
 #endif
 
 namespace JuicerCuda {
@@ -397,6 +404,21 @@ namespace JuicerCuda {
                 }
 
                 dst.tables.K = K;
+            }
+
+            // Baseline can toggle without changing K; keep device pointer in sync.
+            if (t->hasBaseline) {
+                if (!dst.tables.baseMin) {
+                    if (!alloc_and_upload_array(dst.tables.baseMin, t->baseMin.data(), K, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) { free_scan_medium(dst); return false; }
+                }
+            }
+            else {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+                if (dst.tables.baseMin) {
+                    cudaFree(dst.tables.baseMin);
+                    dst.tables.baseMin = nullptr;
+                }
+#endif
             }
 
             dst.tables.hasBaseline = t->hasBaseline ? 1 : 0;
@@ -700,6 +722,50 @@ namespace JuicerCuda {
             }
         }
 
+        // Validate DIR "clamp corrected logE to curve domain" behavior (Couplers::apply_runtime_logE_with_curves clamp_to).
+        {
+            auto cpu_clamp_to = [](float le, const Spectral::Curve& c) -> float {
+                if (c.lambda_nm.empty()) return le;
+                const float xmin = c.lambda_nm.front();
+                const float xmax = c.lambda_nm.back();
+                if (!std::isfinite(le)) return xmin;
+                return std::min(std::max(le, xmin), xmax);
+            };
+
+            const float samples[] = {
+                -1000.0f,
+                1000.0f,
+                -std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::quiet_NaN(),
+                0.0f
+            };
+
+            for (float le : samples) {
+                float outB = 0.0f, outG = 0.0f, outR = 0.0f;
+                cudaError_t err = ::juicer_cuda_probe_clamp_logE_to_curve_domain(resources.densB.x, resources.densB.n, le, &outB, cudaStreamOpaque);
+                if (err != cudaSuccess) { outError = std::string("clamp_to densB probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)"); return false; }
+                err = ::juicer_cuda_probe_clamp_logE_to_curve_domain(resources.densG.x, resources.densG.n, le, &outG, cudaStreamOpaque);
+                if (err != cudaSuccess) { outError = std::string("clamp_to densG probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)"); return false; }
+                err = ::juicer_cuda_probe_clamp_logE_to_curve_domain(resources.densR.x, resources.densR.n, le, &outR, cudaStreamOpaque);
+                if (err != cudaSuccess) { outError = std::string("clamp_to densR probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)"); return false; }
+
+                const float cpuB = cpu_clamp_to(le, ws.densB);
+                const float cpuG = cpu_clamp_to(le, ws.densG);
+                const float cpuR = cpu_clamp_to(le, ws.densR);
+
+                auto eq = [](float a, float b) -> bool {
+                    if (std::isnan(a) && std::isnan(b)) return true;
+                    return a == b;
+                };
+
+                if (!eq(outB, cpuB) || !eq(outG, cpuG) || !eq(outR, cpuR)) {
+                    outError = "DIR clamp_to mismatch";
+                    return false;
+                }
+            }
+        }
+
         // Validate scan-stage spectral_to_log_xyz primitive (negative medium) against CPU.
         if (resources.scanNegative.tables.K == Spectral::gShape.K &&
             resources.scanNegative.tables.epsC &&
@@ -749,6 +815,61 @@ namespace JuicerCuda {
                 }
                 if (!(maxDiff <= 1e-4)) {
                     outError = "scan logXYZ mismatch: maxAbs=" + std::to_string(maxDiff);
+                    return false;
+                }
+            }
+        }
+
+        // Validate scan-stage spectral_to_log_xyz primitive (print medium) against CPU when available.
+        if (ws.printMediumRuntime.tables &&
+            resources.scanPrint.tables.K == Spectral::gShape.K &&
+            resources.scanPrint.tables.epsC &&
+            resources.scanPrint.tables.Ax)
+        {
+            const double samples[][3] = {
+                { 0.0, 0.0, 0.0 },
+                { 0.5, 0.5, 0.5 },
+                { 1.0, 1.0, 1.0 },
+                { 0.1, 0.7, 0.3 }
+            };
+
+            for (const auto& D_norm : samples) {
+                double gpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                const cudaError_t err = ::juicer_cuda_probe_scan_spectral_to_log_xyz(
+                    D_norm,
+                    resources.scanPrint.mediumIsNegative,
+                    resources.scanPrint.min_cmy,
+                    resources.scanPrint.inv_max_cmy,
+                    resources.scanPrint.tables.epsC,
+                    resources.scanPrint.tables.epsM,
+                    resources.scanPrint.tables.epsY,
+                    resources.scanPrint.tables.Ax,
+                    resources.scanPrint.tables.Ay,
+                    resources.scanPrint.tables.Az,
+                    resources.scanPrint.tables.baseMin,
+                    resources.scanPrint.tables.K,
+                    resources.scanPrint.tables.hasBaseline,
+                    resources.scanPrint.tables.invYn,
+                    gpuLogXYZ,
+                    cudaStreamOpaque);
+                if (err != cudaSuccess) {
+                    outError = std::string("scan logXYZ (print) probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+
+                double cpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                Pipeline::ScanStage::spectral_to_log_xyz(ws.printMediumRuntime, D_norm, cpuLogXYZ);
+
+                double maxDiff = 0.0;
+                for (int c = 0; c < 3; ++c) {
+                    if (!std::isfinite(cpuLogXYZ[c]) || !std::isfinite(gpuLogXYZ[c])) {
+                        outError = "scan logXYZ (print) produced non-finite values";
+                        return false;
+                    }
+                    maxDiff = std::max(maxDiff, std::fabs(cpuLogXYZ[c] - gpuLogXYZ[c]));
+                }
+                if (!(maxDiff <= 1e-4)) {
+                    outError = "scan logXYZ (print) mismatch: maxAbs=" + std::to_string(maxDiff);
                     return false;
                 }
             }
