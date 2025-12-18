@@ -12,6 +12,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_map>
 
 #include "Logging.h"
 #include "Couplers.h"
@@ -219,7 +220,7 @@ struct InstanceState {
     // This is kept on InstanceState so the CPU and CUDA render paths share the same invalidation
     // boundary (the atomic WorkingState swap).
     std::mutex cudaMutex;
-    std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter> cuda;
+    std::unordered_map<int, std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter>> cudaByDevice;
 #endif
 
     WorkingState* inactive() {

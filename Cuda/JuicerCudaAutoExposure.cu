@@ -173,7 +173,7 @@ extern "C" int juicer_cuda_measure_center_weighted_Y(
     void* cudaStreamOpaque,
     const char** outErrorMsg)
 {
-    static std::string sError;
+    thread_local std::string sError;
     if (outErrorMsg) {
         *outErrorMsg = nullptr;
     }

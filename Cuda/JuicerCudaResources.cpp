@@ -276,11 +276,25 @@ namespace JuicerCuda {
         free_scan_medium(scanNegative);
         free_scan_medium(scanPrint);
         free_hanatos(*this);
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (lastUseEventOpaque) {
+            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
+            cudaEventDestroy(ev);
+            lastUseEventOpaque = nullptr;
+        }
+#endif
     }
 
     Resources* create() noexcept {
         try {
-            return new Resources();
+            Resources* r = new Resources();
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+            int dev = -1;
+            if (cudaGetDevice(&dev) == cudaSuccess) {
+                r->deviceId = dev;
+            }
+#endif
+            return r;
         }
         catch (...) {
             return nullptr;
@@ -300,6 +314,22 @@ namespace JuicerCuda {
         return false;
 #else
         std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
         if (resources.uploadedBuildCounter == ws.buildCounter && ws.buildCounter != 0) {
             return true;
         }
@@ -311,17 +341,26 @@ namespace JuicerCuda {
 
         // Important: OFX CUDA renders are async (we enqueue work on the host stream). When rebuilding
         // GPU resources, ensure no in-flight work can still reference the previous device pointers.
-        // For now we take the simple/robust approach and synchronize on the host-provided stream.
-        // This is expected to be rare (only on WorkingState rebuilds), and can later be replaced by
-        // cudaFreeAsync or stream callbacks when we begin heavy per-frame kernel work.
+        // We do NOT assume the current render stream matches the stream used by the previous render.
         if (resources.uploadedBuildCounter != ws.buildCounter) {
             if (resources.uploadedBuildCounter != 0) {
-                const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-                const cudaError_t syncErr = cudaStreamSynchronize(stream);
-                if (syncErr != cudaSuccess) {
-                    outError = std::string("cudaStreamSynchronize before rebuild failed: ") + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-                    return false;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+                if (resources.lastUseEventOpaque) {
+                    cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+                    const cudaError_t evErr = cudaEventSynchronize(ev);
+                    if (evErr != cudaSuccess) {
+                        outError = std::string("cudaEventSynchronize before rebuild failed: ") + (cudaGetErrorString(evErr) ? cudaGetErrorString(evErr) : "(unknown)");
+                        return false;
+                    }
+                } else {
+                    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+                    const cudaError_t syncErr = cudaStreamSynchronize(stream);
+                    if (syncErr != cudaSuccess) {
+                        outError = std::string("cudaStreamSynchronize before rebuild failed: ") + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+                        return false;
+                    }
                 }
+#endif
             }
 
             // Clear any previously uploaded (or partially uploaded) curves before re-uploading.
@@ -975,6 +1014,26 @@ namespace JuicerCuda {
 
         resources.validatedBuildCounter = ws.buildCounter;
         return true;
+#endif
+    }
+
+    void record_use(Resources& resources, void* cudaStreamOpaque) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!resources.lastUseEventOpaque) {
+            cudaEvent_t ev = nullptr;
+            const cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+            if (err != cudaSuccess || !ev) {
+                return;
+            }
+            resources.lastUseEventOpaque = reinterpret_cast<void*>(ev);
+        }
+        cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+        (void)cudaEventRecord(ev, stream);
+#else
+        (void)resources;
+        (void)cudaStreamOpaque;
 #endif
     }
 

@@ -234,5 +234,11 @@
     <ClInclude Include="Cuda\\JuicerCudaAutoExposure.h">
       <Filter>Cuda</Filter>
     </ClInclude>
+    <ClInclude Include="Cuda\\JuicerCudaPayloads.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="Cuda\\JuicerCudaPhase3Gate.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

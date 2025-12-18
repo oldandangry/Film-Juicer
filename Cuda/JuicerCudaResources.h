@@ -24,8 +24,13 @@ namespace JuicerCuda {
 
     struct Resources {
         std::mutex m;
+        int deviceId = -1;
         std::uint64_t uploadedBuildCounter = 0;
         std::uint64_t validatedBuildCounter = 0;
+
+        // Opaque CUDA event (cudaEvent_t) recorded on the stream after enqueuing work that
+        // uses this resource set. Used to safely retire/rebuild buffers across streams.
+        void* lastUseEventOpaque = nullptr;
 
         DeviceCurve densB;
         DeviceCurve densG;
@@ -86,5 +91,8 @@ namespace JuicerCuda {
 
     // Optional debug validation of primitives (kept here to avoid a separate JUICER_TESTS harness).
     bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
+
+    // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
+    void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;
 
 } // namespace JuicerCuda

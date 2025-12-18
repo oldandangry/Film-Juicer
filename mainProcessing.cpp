@@ -755,6 +755,45 @@ void JuicerProcessor::processImagesCUDA() {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
+    int deviceId = -1;
+    {
+        cudaPointerAttributes srcAttr{};
+        cudaError_t attrErr = cudaPointerGetAttributes(&srcAttr, srcBase);
+#if CUDART_VERSION >= 10000
+        if (attrErr == cudaSuccess) {
+            deviceId = srcAttr.device;
+        }
+#else
+        if (attrErr == cudaSuccess) {
+            deviceId = srcAttr.device;
+        }
+#endif
+
+        cudaPointerAttributes dstAttr{};
+        cudaError_t dstAttrErr = cudaPointerGetAttributes(&dstAttr, dstBase);
+        if (dstAttrErr == cudaSuccess && deviceId >= 0 && dstAttr.device != deviceId) {
+            JTRACE("CUDA", "FATAL: source/destination device mismatch");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+
+        if (deviceId < 0) {
+            int cur = -1;
+            cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                JTRACE("CUDA", "FATAL: failed to determine CUDA device for OFX pointers");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+            deviceId = cur;
+        }
+
+        cudaError_t setErr = cudaSetDevice(deviceId);
+        if (setErr != cudaSuccess) {
+            const char* msg = cudaGetErrorString(setErr);
+            JTRACE("CUDA", std::string("FATAL: cudaSetDevice failed: ") + (msg ? msg : "(unknown)"));
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+    }
+
     const unsigned char* srcPtr = srcBase + ySrc * srcRowBytes + xSrc * bytesPerPixel;
     unsigned char* dstPtr = dstBase + yDst * dstRowBytes + xDst * bytesPerPixel;
     if (srcPtr == dstPtr && srcRowBytes == dstRowBytes) {
@@ -775,21 +814,28 @@ void JuicerProcessor::processImagesCUDA() {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
+    JuicerCuda::Resources* cudaResources = nullptr;
     {
         std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
-        if (!_instanceState->cuda) {
-            _instanceState->cuda.reset(JuicerCuda::create());
-            if (!_instanceState->cuda) {
+        auto& slot = _instanceState->cudaByDevice[deviceId];
+        if (!slot) {
+            slot.reset(JuicerCuda::create());
+            if (!slot) {
                 JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
         }
+        cudaResources = slot.get();
     }
 
     std::string uploadError;
     {
         std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
-        if (!JuicerCuda::ensure_uploaded(*_instanceState->cuda, *_ws, _pCudaStream, uploadError)) {
+        if (!cudaResources) {
+            JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (!JuicerCuda::ensure_uploaded(*cudaResources, *_ws, _pCudaStream, uploadError)) {
             JTRACE("CUDA", std::string("CUDA WorkingState upload failed: ") + uploadError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -803,10 +849,15 @@ void JuicerProcessor::processImagesCUDA() {
     {
         std::string validateError;
         std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
-        if (!JuicerCuda::validate_density_primitives(*_instanceState->cuda, *_ws, _pCudaStream, validateError)) {
+        if (!cudaResources) {
+            JTRACE("CUDA", "FATAL: CUDA resources missing for validation");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (!JuicerCuda::validate_density_primitives(*cudaResources, *_ws, _pCudaStream, validateError)) {
             JTRACE("CUDA", std::string("FATAL: CUDA primitive validation failed: ") + validateError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+        JuicerCuda::record_use(*cudaResources, _pCudaStream);
     }
 #endif
 
