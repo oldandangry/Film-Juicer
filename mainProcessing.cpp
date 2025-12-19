@@ -20,6 +20,15 @@
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaPayloads.h"
+#include "Cuda/JuicerCudaPhase3Gate.h"
+#include "GeneratedColorSpaces.h"
+#endif
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+extern "C" cudaError_t juicer_cuda_phase3_negative_only(
+    const JuicerCuda::Phase3RunParams* hParams,
+    void* cudaStreamOpaque);
 #endif
 
 // Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
@@ -796,12 +805,9 @@ void JuicerProcessor::processImagesCUDA() {
 
     const unsigned char* srcPtr = srcBase + ySrc * srcRowBytes + xSrc * bytesPerPixel;
     unsigned char* dstPtr = dstBase + yDst * dstRowBytes + xDst * bytesPerPixel;
-    if (srcPtr == dstPtr && srcRowBytes == dstRowBytes) {
-        return;
-    }
 
 #if defined(JUICER_TRACE_CUDA)
-    JTRACE("CUDA", "processImagesCUDA passthrough");
+    JTRACE("CUDA", "processImagesCUDA");
 #endif
 
     const bool wsReady = _wsReady && _ws;
@@ -882,20 +888,192 @@ void JuicerProcessor::processImagesCUDA() {
     }
 #endif
 
-    const cudaStream_t stream = reinterpret_cast<cudaStream_t>(_pCudaStream);
-    const cudaError_t err = cudaMemcpy2DAsync(
-        dstPtr,
-        static_cast<size_t>(dstRowBytes),
-        srcPtr,
-        static_cast<size_t>(srcRowBytes),
-        static_cast<size_t>(widthBytes),
-        static_cast<size_t>(height),
-        cudaMemcpyDeviceToDevice,
-        stream);
-    if (err != cudaSuccess) {
-        const char* msg = cudaGetErrorString(err);
-        JTRACE("CUDA", std::string("FATAL: cudaMemcpy2DAsync failed: ") + (msg ? msg : "(unknown)"));
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    if (_nComponents == 1) {
+        if (srcPtr == dstPtr && srcRowBytes == dstRowBytes) {
+            return;
+        }
+        const cudaStream_t stream = reinterpret_cast<cudaStream_t>(_pCudaStream);
+        const cudaError_t err = cudaMemcpy2DAsync(
+            dstPtr,
+            static_cast<size_t>(dstRowBytes),
+            srcPtr,
+            static_cast<size_t>(srcRowBytes),
+            static_cast<size_t>(widthBytes),
+            static_cast<size_t>(height),
+            cudaMemcpyDeviceToDevice,
+            stream);
+        if (err != cudaSuccess) {
+            const char* msg = cudaGetErrorString(err);
+            JTRACE("CUDA", std::string("FATAL: cudaMemcpy2DAsync failed: ") + (msg ? msg : "(unknown)"));
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        JuicerCuda::record_use(*cudaResources, _pCudaStream);
+        return;
+    }
+
+    // Phase 3: negative-only end-to-end CUDA pipeline (PrintBypass=true).
+    {
+        JuicerCuda::Phase3GateInput gate{};
+        gate.printBypass = _printParams.bypass;
+        gate.scannerUseLut = _scannerSettings.useLut;
+        gate.lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
+        gate.unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
+        gate.unsharpAmount = _scannerOptions.unsharpAmount;
+        gate.glareActive = _ws && _ws->negativeMediumRuntime.glare.active && (_ws->negativeMediumRuntime.glare.percent > 0.0f);
+
+        const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
+        std::string reason;
+        if (!JuicerCuda::phase3_negative_only_supported(gate, reason) || useSpatialDIR) {
+            if (useSpatialDIR) {
+                reason = "spatial DIR diffusion is not supported yet";
+            }
+#if defined(JUICER_TRACE_CUDA)
+            JTRACE("CUDA", std::string("CUDA Phase 3 unsupported: ") + reason);
+#endif
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+
+        if (!_ws->negativeScannerValid) {
+            JTRACE("CUDA", "FATAL: negative scanner runtime invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (_ws->negativeColorRuntime.hash == 0) {
+            JTRACE("CUDA", "FATAL: negative scanner color runtime invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (!_ws->negativeMediumRuntime.tables || _ws->negativeMediumRuntime.tables->K <= 0) {
+            JTRACE("CUDA", "FATAL: negative scanner spectral tables unavailable");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+
+        JuicerCuda::Phase3RunParams run{};
+        run.src = srcPtr;
+        run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
+        run.dst = dstPtr;
+        run.dstRowBytes = static_cast<std::size_t>(dstRowBytes);
+        run.width = width;
+        run.height = height;
+        run.nComponents = _nComponents;
+
+        // Film raw conversion payload
+        run.filmRaw.inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(_ws->filmRaw.inputColorSpace);
+        run.filmRaw.applyCctfDecoding = _ws->filmRaw.applyCctfDecoding ? 1 : 0;
+        run.filmRaw.applyInputChromaticAdapt = _ws->filmRaw.applyInputChromaticAdapt ? 1 : 0;
+        run.filmRaw.spectralUpsamplingMode = static_cast<int>(_ws->filmRaw.spectralUpsamplingMode);
+        for (int i = 0; i < 9; ++i) {
+            run.filmRaw.inputRGBToXYZ[i] = _ws->filmRaw.inputRGBToXYZ.m[i];
+            run.filmRaw.inputXYZAdapt[i] = _ws->filmRaw.inputXYZAdapt.m[i];
+        }
+        run.filmRaw.midgrayScale = _ws->filmRaw.midgrayScale;
+        for (int i = 0; i < 3; ++i) {
+            run.filmRaw.refIllumWhiteXYZ[i] = _ws->filmRaw.refIllumWhiteXYZ[i];
+        }
+
+        run.exposureScale = _exposureScale;
+        run.gammaFactorB = _ws->gammaFactorB;
+        run.gammaFactorG = _ws->gammaFactorG;
+        run.gammaFactorR = _ws->gammaFactorR;
+        run.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
+
+        // DIR runtime payload (non-spatial only; spatial diffusion is gated out above).
+        run.dir.active = _dirRT.active ? 1 : 0;
+        run.dir.highShift = _dirRT.highShift;
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                run.dir.M[r * 3 + c] = _dirRT.M[r][c];
+            }
+        }
+        for (int i = 0; i < 3; ++i) {
+            run.dir.dMax[i] = _dirRT.dMax[i];
+        }
+
+        // Scan color payload + output encoding
+        {
+            const Scanner::ColorRuntime& color = _ws->negativeColorRuntime;
+            for (int i = 0; i < 9; ++i) {
+                run.scanColor.cat02[i] = color.cat02[i];
+                run.scanColor.xyzToRgb[i] = color.xyzToRgb[i];
+            }
+            for (int i = 0; i < 3; ++i) {
+                run.scanColor.illuminantXYZ[i] = color.illuminantXYZ[i];
+            }
+
+            run.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
+            run.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
+            run.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
+            run.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
+
+            const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
+            run.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
+            run.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
+            run.scanColor.encoding.cctf.a = outSpace.cctf.a;
+            run.scanColor.encoding.cctf.b = outSpace.cctf.b;
+            run.scanColor.encoding.cctf.c = outSpace.cctf.c;
+            run.scanColor.encoding.cctf.d = outSpace.cctf.d;
+            run.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
+        }
+
+        // Device pointers from the per-instance cache + kernel launch + record_use must be
+        // serialized to avoid rebuild races before lastUseEvent is recorded.
+        {
+            std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+            if (!cudaResources) {
+                JTRACE("CUDA", "FATAL: CUDA resources missing for Phase 3");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            run.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n };
+            run.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n };
+            run.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n };
+            run.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n };
+            run.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n };
+            run.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n };
+            run.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n };
+            run.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n };
+            run.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n };
+
+            run.tablesAx = cudaResources->tablesAx;
+            run.tablesAy = cudaResources->tablesAy;
+            run.tablesAz = cudaResources->tablesAz;
+            run.tablesK = cudaResources->tablesK;
+            for (int i = 0; i < 9; ++i) {
+                run.spdSInv[i] = cudaResources->spdSInv[i];
+            }
+
+            run.hanatosLut = cudaResources->hanatosLut;
+            run.hanatosN = cudaResources->hanatosN;
+
+            // Negative scan tables payload
+            run.scan.epsC = cudaResources->scanNegative.tables.epsC;
+            run.scan.epsM = cudaResources->scanNegative.tables.epsM;
+            run.scan.epsY = cudaResources->scanNegative.tables.epsY;
+            run.scan.Ax = cudaResources->scanNegative.tables.Ax;
+            run.scan.Ay = cudaResources->scanNegative.tables.Ay;
+            run.scan.Az = cudaResources->scanNegative.tables.Az;
+            run.scan.baseMin = cudaResources->scanNegative.tables.baseMin;
+            run.scan.K = cudaResources->scanNegative.tables.K;
+            run.scan.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
+            run.scan.invYn = cudaResources->scanNegative.tables.invYn;
+            run.scan.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
+            for (int i = 0; i < 3; ++i) {
+                run.scan.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
+                run.scan.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
+            }
+
+            const cudaError_t err = juicer_cuda_phase3_negative_only(&run, _pCudaStream);
+            if (err != cudaSuccess) {
+                const char* msg = cudaGetErrorString(err);
+                JTRACE("CUDA", std::string("FATAL: Phase 3 kernel launch failed: ") + (msg ? msg : "(unknown)"));
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            JuicerCuda::record_use(*cudaResources, _pCudaStream);
+        }
+        return;
     }
 #endif
 }

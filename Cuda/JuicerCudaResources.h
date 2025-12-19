@@ -36,6 +36,10 @@ namespace JuicerCuda {
         DeviceCurve densG;
         DeviceCurve densR;
 
+        DeviceCurve dirDensB;
+        DeviceCurve dirDensG;
+        DeviceCurve dirDensR;
+
         DeviceCurve sensB;
         DeviceCurve sensG;
         DeviceCurve sensR;

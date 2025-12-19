@@ -5,9 +5,16 @@
 // Intentionally avoids CUDA headers so it can be included from both host and NVCC code.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace JuicerCuda {
+
+    struct DeviceCurveView {
+        const float* x = nullptr;
+        const float* y = nullptr;
+        int n = 0;
+    };
 
     // Mirrors the subset of Spectral::FilmRawConfig needed by CUDA kernels.
     struct FilmRawPayload {
@@ -31,11 +38,36 @@ namespace JuicerCuda {
         float refIllumWhiteXYZ[3] = { 0.950455f, 1.0f, 1.089058f };
     };
 
-    // Minimal output encoding payload (Phase 3 will flesh this out as kernels land).
+    struct CctfPayload {
+        // Matches GeneratedColorSpaces::CctfKind numeric values.
+        // 0=Linear, 1=Gamma, 2=SRGB, 3=BT2020, 4=ProPhoto, 5=DaVinciIntermediate.
+        int kind = 0;
+        float gamma = 1.0f;
+        float a = 0.0f;
+        float b = 0.0f;
+        float c = 0.0f;
+        float d = 0.0f;
+        float linearCutoff = 0.0f;
+    };
+
+    // Output encoding payload for device kernels (scanner path uses inputIsOutputSpace=1).
     struct OutputEncodingPayload {
         int outputColorSpaceIndex = 0;
         int applyCctfEncoding = 1;
         int preserveLinearRange = 0;
+        int inputIsOutputSpace = 1;
+        CctfPayload cctf{};
+    };
+
+    struct DirPayload {
+        int active = 0;
+        float M[9] = {
+            0,0,0,
+            0,0,0,
+            0,0,0
+        };
+        float highShift = 0.0f;
+        float dMax[3] = { 1.0f, 1.0f, 1.0f };
     };
 
     // Scanner color runtime (CAT + XYZ->RGB) plus output encoding selection.
@@ -46,5 +78,64 @@ namespace JuicerCuda {
         OutputEncodingPayload encoding{};
     };
 
-} // namespace JuicerCuda
+    struct ScanTablesPayload {
+        const float* epsC = nullptr;
+        const float* epsM = nullptr;
+        const float* epsY = nullptr;
+        const float* Ax = nullptr;
+        const float* Ay = nullptr;
+        const float* Az = nullptr;
+        const float* baseMin = nullptr;
+        int K = 0;
+        int hasBaseline = 0;
+        float invYn = 1.0f;
+        int mediumIsNegative = 1;
+        float min_cmy[3] = { 0.0f, 0.0f, 0.0f };
+        float inv_max_cmy[3] = { 1.0f, 1.0f, 1.0f };
+    };
 
+    struct Phase3RunParams {
+        const void* src = nullptr;
+        std::size_t srcRowBytes = 0;
+        void* dst = nullptr;
+        std::size_t dstRowBytes = 0;
+        int width = 0;
+        int height = 0;
+        int nComponents = 0;
+
+        FilmRawPayload filmRaw{};
+        float exposureScale = 1.0f;
+
+        float gammaFactorB = 1.0f;
+        float gammaFactorG = 1.0f;
+        float gammaFactorR = 1.0f;
+
+        int dirPrecorrected = 0;
+        DirPayload dir{};
+
+        DeviceCurveView densB{};
+        DeviceCurveView densG{};
+        DeviceCurveView densR{};
+
+        DeviceCurveView dirDensB{};
+        DeviceCurveView dirDensG{};
+        DeviceCurveView dirDensR{};
+
+        DeviceCurveView sensB{};
+        DeviceCurveView sensG{};
+        DeviceCurveView sensR{};
+
+        const float* tablesAx = nullptr;
+        const float* tablesAy = nullptr;
+        const float* tablesAz = nullptr;
+        int tablesK = 0;
+        float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
+
+        const float* hanatosLut = nullptr;
+        int hanatosN = 0;
+
+        ScanTablesPayload scan{};
+        ScanColorPayload scanColor{};
+    };
+
+} // namespace JuicerCuda

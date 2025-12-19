@@ -269,6 +269,9 @@ namespace JuicerCuda {
         free_curve(densB);
         free_curve(densG);
         free_curve(densR);
+        free_curve(dirDensB);
+        free_curve(dirDensG);
+        free_curve(dirDensR);
         free_curve(sensB);
         free_curve(sensG);
         free_curve(sensR);
@@ -367,6 +370,9 @@ namespace JuicerCuda {
             free_curve(resources.densB);
             free_curve(resources.densG);
             free_curve(resources.densR);
+            free_curve(resources.dirDensB);
+            free_curve(resources.dirDensG);
+            free_curve(resources.dirDensR);
             free_curve(resources.sensB);
             free_curve(resources.sensG);
             free_curve(resources.sensR);
@@ -380,6 +386,10 @@ namespace JuicerCuda {
         if (!alloc_and_upload_curve(resources.densB, ws.densB, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.densG, ws.densG, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.densR, ws.densR, cudaStreamOpaque, outError)) return false;
+
+        if (!alloc_and_upload_curve(resources.dirDensB, ws.dirDensB, cudaStreamOpaque, outError)) return false;
+        if (!alloc_and_upload_curve(resources.dirDensG, ws.dirDensG, cudaStreamOpaque, outError)) return false;
+        if (!alloc_and_upload_curve(resources.dirDensR, ws.dirDensR, cudaStreamOpaque, outError)) return false;
 
         if (!alloc_and_upload_curve(resources.sensB, ws.sensB, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.sensG, ws.sensG, cudaStreamOpaque, outError)) return false;
