@@ -14,7 +14,7 @@ namespace JuicerCuda {
         bool printBypass = true;
         bool scannerUseLut = true;
 
-        // Optics features not planned for Phase 3 (Phase 4).
+        // Scanner optics features (implemented in Phase 3 passes).
         bool glareActive = false;
         float lensBlurSigmaPx = 0.0f;
         float unsharpSigmaPx = 0.0f;
@@ -24,18 +24,6 @@ namespace JuicerCuda {
     inline bool phase3_negative_only_supported(const Phase3GateInput& in, std::string& outReason) {
         if (!in.printBypass) {
             outReason = "print pipeline (PrintBypass=false) is not supported yet";
-            return false;
-        }
-        if (in.glareActive) {
-            outReason = "glare optics are not supported yet";
-            return false;
-        }
-        if (in.lensBlurSigmaPx > 0.0f) {
-            outReason = "scanner lens blur is not supported yet";
-            return false;
-        }
-        if (in.unsharpSigmaPx > 0.0f || in.unsharpAmount > 0.0f) {
-            outReason = "scanner unsharp mask is not supported yet";
             return false;
         }
         outReason.clear();

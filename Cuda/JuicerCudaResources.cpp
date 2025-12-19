@@ -10,6 +10,8 @@
 #include "WorkingState.h"
 #include "ScanStage.h"
 
+#include "GaussianSciPy.h"
+
 #include "Logging.h"
 #include "SpectralContext.h"
 
@@ -193,6 +195,29 @@ namespace JuicerCuda {
         lut.hash = 0;
     }
 
+    static void free_gaussian_kernel(Resources::DeviceGaussianKernel& k) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (k.weights) {
+            cudaFree(k.weights);
+            k.weights = nullptr;
+        }
+#endif
+        k.radius = 0;
+        k.sigma = 0.0f;
+    }
+
+    static void free_optics_scratch(Resources::DeviceOpticsScratch& s) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (s.rgbR) { cudaFree(s.rgbR); s.rgbR = nullptr; }
+        if (s.rgbG) { cudaFree(s.rgbG); s.rgbG = nullptr; }
+        if (s.rgbB) { cudaFree(s.rgbB); s.rgbB = nullptr; }
+        if (s.tmp) { cudaFree(s.tmp); s.tmp = nullptr; }
+        if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
+#endif
+        s.width = 0;
+        s.height = 0;
+    }
+
     static bool alloc_and_upload_array(float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)dst;
@@ -292,6 +317,10 @@ namespace JuicerCuda {
         free_scan_medium(scanPrint);
         free_scan_lut(scanNegativeLut);
         free_scan_lut(scanPrintLut);
+        free_gaussian_kernel(scannerLensBlurKernel);
+        free_gaussian_kernel(scannerUnsharpKernel);
+        free_gaussian_kernel(scannerGlareKernel);
+        free_optics_scratch(scannerScratch);
         free_hanatos(*this);
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (lastUseEventOpaque) {
@@ -563,6 +592,34 @@ namespace JuicerCuda {
 #endif
     }
 
+    static bool sync_before_rebuild(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (resources.lastUseEventOpaque) {
+            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+            const cudaError_t evErr = cudaEventSynchronize(ev);
+            if (evErr != cudaSuccess) {
+                outError = std::string("cudaEventSynchronize before ") + label + " rebuild failed: " + (cudaGetErrorString(evErr) ? cudaGetErrorString(evErr) : "(unknown)");
+                return false;
+            }
+        }
+        else {
+            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+            const cudaError_t syncErr = cudaStreamSynchronize(stream);
+            if (syncErr != cudaSuccess) {
+                outError = std::string("cudaStreamSynchronize before ") + label + " rebuild failed: " + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+                return false;
+            }
+        }
+        return true;
+#endif
+    }
+
     bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
@@ -643,20 +700,8 @@ namespace JuicerCuda {
 
         if (dst.logXYZ) {
             // Ensure no in-flight work can still reference the previous device LUT.
-            if (resources.lastUseEventOpaque) {
-                cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-                const cudaError_t evErr = cudaEventSynchronize(ev);
-                if (evErr != cudaSuccess) {
-                    outError = std::string("cudaEventSynchronize before LUT rebuild failed: ") + (cudaGetErrorString(evErr) ? cudaGetErrorString(evErr) : "(unknown)");
-                    return false;
-                }
-            }
-            else {
-                const cudaError_t syncErr = cudaStreamSynchronize(stream);
-                if (syncErr != cudaSuccess) {
-                    outError = std::string("cudaStreamSynchronize before LUT rebuild failed: ") + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-                    return false;
-                }
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "scan LUT", outError)) {
+                return false;
             }
             free_scan_lut(dst);
         }
@@ -680,6 +725,204 @@ namespace JuicerCuda {
         dst.logXYZ = dLut;
         dst.res = res;
         dst.hash = expectedHash;
+        return true;
+#endif
+    }
+
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needUnsharpScratch, void* cudaStreamOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)width;
+        (void)height;
+        (void)needUnsharpScratch;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (width <= 0 || height <= 0) {
+            outError = "optics scratch dimensions invalid";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        const bool dimsMatch = (resources.scannerScratch.width == width && resources.scannerScratch.height == height);
+        const bool haveBase = resources.scannerScratch.rgbR && resources.scannerScratch.rgbG && resources.scannerScratch.rgbB && resources.scannerScratch.tmp;
+
+        if (!dimsMatch || !haveBase) {
+            if (resources.scannerScratch.rgbR || resources.scannerScratch.tmp || resources.scannerScratch.blurred) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
+                    return false;
+                }
+            }
+            free_optics_scratch(resources.scannerScratch);
+
+            const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
+            const size_t bytes = n * sizeof(float);
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.rgbR), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(scannerScratch.rgbR) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_optics_scratch(resources.scannerScratch);
+                return false;
+            }
+            err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.rgbG), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(scannerScratch.rgbG) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_optics_scratch(resources.scannerScratch);
+                return false;
+            }
+            err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.rgbB), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(scannerScratch.rgbB) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_optics_scratch(resources.scannerScratch);
+                return false;
+            }
+            err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.tmp), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(scannerScratch.tmp) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_optics_scratch(resources.scannerScratch);
+                return false;
+            }
+
+            resources.scannerScratch.width = width;
+            resources.scannerScratch.height = height;
+        }
+
+        if (needUnsharpScratch) {
+            if (!resources.scannerScratch.blurred) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "unsharp scratch", outError)) {
+                    return false;
+                }
+                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
+                const size_t bytes = n * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.blurred), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(scannerScratch.blurred) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+            }
+        }
+        else {
+            if (resources.scannerScratch.blurred) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "unsharp scratch free", outError)) {
+                    return false;
+                }
+                cudaFree(resources.scannerScratch.blurred);
+                resources.scannerScratch.blurred = nullptr;
+            }
+        }
+
+        return true;
+#endif
+    }
+
+    bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)kernel;
+        (void)sigma;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
+            if (kernel.weights) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "gaussian kernel free", outError)) {
+                    return false;
+                }
+            }
+            free_gaussian_kernel(kernel);
+            return true;
+        }
+
+        const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f);
+        const int radius = std::min(radiusRaw, 75);
+        if (radius <= 0) {
+            if (kernel.weights) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "gaussian kernel free", outError)) {
+                    return false;
+                }
+            }
+            free_gaussian_kernel(kernel);
+            return true;
+        }
+
+        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+        if (same) {
+            return true;
+        }
+
+        std::vector<float> cpu;
+        cpu.resize(static_cast<size_t>(2 * radius + 1));
+        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
+        double wsum = 0.0;
+        for (int i = -radius; i <= radius; ++i) {
+            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
+            cpu[static_cast<size_t>(i + radius)] = static_cast<float>(w);
+            wsum += w;
+        }
+        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
+        for (float& w : cpu) {
+            w = static_cast<float>(static_cast<double>(w) * invW);
+        }
+
+        if (kernel.weights) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "gaussian kernel", outError)) {
+                return false;
+            }
+            free_gaussian_kernel(kernel);
+        }
+
+        const size_t bytes = cpu.size() * sizeof(float);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_gaussian_kernel(kernel);
+            return false;
+        }
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            cudaFree(kernel.weights);
+            free_gaussian_kernel(kernel);
+            return false;
+        }
+
+        kernel.radius = radius;
+        kernel.sigma = sigma;
         return true;
 #endif
     }

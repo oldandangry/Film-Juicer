@@ -29,6 +29,27 @@
 extern "C" cudaError_t juicer_cuda_phase3_negative_only(
     const JuicerCuda::Phase3RunParams* hParams,
     void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque);
 #endif
 
 // Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
@@ -1085,7 +1106,101 @@ void JuicerProcessor::processImagesCUDA() {
                 run.scan.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
             }
 
-            const cudaError_t err = juicer_cuda_phase3_negative_only(&run, _pCudaStream);
+            const bool wantGlare = gate.glareActive;
+            float glarePercent = 0.0f;
+            float glareRoughness = 0.0f;
+            float glareBlurSigmaPx = 0.0f;
+            std::uint64_t glareSeed = 0;
+            if (wantGlare && _ws) {
+                glarePercent = _ws->negativeMediumRuntime.glare.percent;
+                glareRoughness = _ws->negativeMediumRuntime.glare.roughness;
+                glareBlurSigmaPx = _ws->negativeMediumRuntime.glare.blur;
+
+                const std::uint64_t buildCounter = _ws->buildCounter;
+                const std::uint64_t seedBaseFields[3] = {
+                    static_cast<std::uint64_t>(_clipToken),
+                    _frameTimeHash,
+                    buildCounter
+                };
+                std::uint64_t seedBase = Hash::hash_bytes(seedBaseFields, sizeof(seedBaseFields));
+                if (seedBase == 0) {
+                    seedBase = 1;
+                }
+
+                const std::uint64_t glareFields[4] = {
+                    seedBase,
+                    static_cast<std::uint64_t>(_frameBoundsVersion),
+                    _ws->negativeMediumRuntime.staticKey.glareHash,
+                    static_cast<std::uint64_t>(Scanner::ScannerMedium::Negative)
+                };
+                glareSeed = Hash::hash_bytes(glareFields, sizeof(glareFields));
+            }
+
+            const bool wantLensBlur = std::isfinite(gate.lensBlurSigmaPx) && gate.lensBlurSigmaPx > 0.0f;
+            const bool wantUnsharp = std::isfinite(gate.unsharpSigmaPx) && gate.unsharpSigmaPx > 0.0f &&
+                std::isfinite(gate.unsharpAmount) && gate.unsharpAmount != 0.0f;
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare;
+
+            cudaError_t err = cudaSuccess;
+            if (!wantOptics) {
+                err = juicer_cuda_phase3_negative_only(&run, _pCudaStream);
+            }
+            else {
+                std::string opticsError;
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, wantUnsharp, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, gate.lensBlurSigmaPx, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA lens blur kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerUnsharpKernel, gate.unsharpSigmaPx, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA unsharp kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerGlareKernel, wantGlare ? glareBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA glare kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+
+                err = juicer_cuda_phase3_negative_only_optics(
+                    &run,
+                    cudaResources->scannerScratch.rgbR,
+                    cudaResources->scannerScratch.rgbG,
+                    cudaResources->scannerScratch.rgbB,
+                    cudaResources->scannerScratch.tmp,
+                    cudaResources->scannerScratch.blurred,
+                    cudaResources->scannerLensBlurKernel.weights,
+                    cudaResources->scannerLensBlurKernel.radius,
+                    cudaResources->scannerUnsharpKernel.weights,
+                    cudaResources->scannerUnsharpKernel.radius,
+                    gate.unsharpAmount,
+                    win.x1,
+                    win.y1,
+                    glareSeed,
+                    glarePercent,
+                    glareRoughness,
+                    cudaResources->scannerGlareKernel.weights,
+                    cudaResources->scannerGlareKernel.radius,
+                    _pCudaStream);
+            }
             if (err != cudaSuccess) {
                 const char* msg = cudaGetErrorString(err);
                 JTRACE("CUDA", std::string("FATAL: Phase 3 kernel launch failed: ") + (msg ? msg : "(unknown)"));

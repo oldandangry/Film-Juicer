@@ -84,6 +84,27 @@ namespace JuicerCuda {
         DeviceSpectralLut scanNegativeLut;
         DeviceSpectralLut scanPrintLut;
 
+        struct DeviceGaussianKernel {
+            float* weights = nullptr;
+            int radius = 0;
+            float sigma = 0.0f;
+        };
+
+        struct DeviceOpticsScratch {
+            float* rgbR = nullptr;
+            float* rgbG = nullptr;
+            float* rgbB = nullptr;
+            float* tmp = nullptr;
+            float* blurred = nullptr;
+            int width = 0;
+            int height = 0;
+        };
+
+        DeviceGaussianKernel scannerLensBlurKernel;
+        DeviceGaussianKernel scannerUnsharpKernel;
+        DeviceGaussianKernel scannerGlareKernel;
+        DeviceOpticsScratch scannerScratch;
+
         // Hanatos LUT (process-global on CPU, uploaded on demand).
         // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
         float* hanatosLut = nullptr;
@@ -104,6 +125,12 @@ namespace JuicerCuda {
 
     // Builds + uploads scan-stage logXYZ LUT on demand (Mitchell cubic sampler parity with CPU).
     bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
+
+    // Allocates scratch buffers used by scanner optics (blur/unsharp/glare) when active.
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needUnsharpScratch, void* cudaStreamOpaque, std::string& outError);
+
+    // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=4.0, radius clamp=75) for optics.
+    bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
 
     // Optional debug validation of primitives (kept here to avoid a separate JUICER_TESTS harness).
     bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);

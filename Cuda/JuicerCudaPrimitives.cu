@@ -1323,6 +1323,21 @@ namespace {
         return lut[base];
     }
 
+    __device__ __forceinline__ int reflect_index_repeat_device(int idx, int size) {
+        if (size <= 1) {
+            return 0;
+        }
+        while (idx < 0 || idx >= size) {
+            if (idx < 0) {
+                idx = -idx;
+            }
+            else {
+                idx = 2 * size - idx - 2;
+            }
+        }
+        return idx;
+    }
+
     __device__ __forceinline__ void sample_cubic_scan_lut_device(const double* lut, int resRaw, const double D_norm[3], double out[3]) {
         if (!out) {
             return;
@@ -1963,6 +1978,398 @@ namespace {
         }
     }
 
+    // --- Scanner glare parity (matches ScannerOptics.cpp) ---
+
+    __device__ __forceinline__ std::uint64_t fnv1a_update_u64_device(std::uint64_t h, std::uint64_t v) {
+        constexpr std::uint64_t kFnvPrime = 0x100000001b3ULL;
+        for (int i = 0; i < 8; ++i) {
+            h ^= static_cast<std::uint64_t>((v >> (8 * i)) & 0xffULL);
+            h *= kFnvPrime;
+        }
+        return h;
+    }
+
+    __device__ __forceinline__ std::uint64_t fnv1a_hash_u64_5_device(
+        std::uint64_t a,
+        std::uint64_t b,
+        std::uint64_t c,
+        std::uint64_t d,
+        std::uint64_t e)
+    {
+        std::uint64_t h = 0xcbf29ce484222325ULL;
+        h = fnv1a_update_u64_device(h, a);
+        h = fnv1a_update_u64_device(h, b);
+        h = fnv1a_update_u64_device(h, c);
+        h = fnv1a_update_u64_device(h, d);
+        h = fnv1a_update_u64_device(h, e);
+        return h;
+    }
+
+    __device__ __forceinline__ float hash_to_uniform_device(std::uint64_t h) {
+        constexpr double kInvU64Max = 1.0 / 18446744073709551615.0;
+        return static_cast<float>((static_cast<double>(h) + 0.5) * kInvU64Max);
+    }
+
+    __device__ __forceinline__ float box_muller_device(std::uint64_t h1, std::uint64_t h2) {
+        float u1 = hash_to_uniform_device(h1);
+        u1 = fminf(fmaxf(u1, 1e-7f), 1.0f);
+        const float u2 = hash_to_uniform_device(h2);
+        const float r = sqrtf(-2.0f * logf(u1));
+        constexpr float kTwoPi = 6.28318530717958647692f;
+        const float theta = kTwoPi * u2;
+        return r * cosf(theta);
+    }
+
+    __device__ __forceinline__ float lognormal_from_mean_std_device(float mean, float stddev, float normalSample) {
+        const float m2 = mean * mean;
+        const float s2 = stddev * stddev;
+        const float sigmaSq = logf(1.0f + (s2 / m2));
+        const float sigma = sqrtf(fmaxf(0.0f, sigmaSq));
+        const float mu = logf(fmaxf(1e-12f, mean)) - 0.5f * sigmaSq;
+        return expf(mu + sigma * normalSample);
+    }
+
+    __global__ void optics_glare_generate_kernel(
+        float* out,
+        int width,
+        int height,
+        std::uint64_t glareSeed,
+        std::uint64_t mediumId,
+        int originX,
+        int originY,
+        float percent,
+        float roughness)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= width || y >= height) {
+            return;
+        }
+        if (!out) {
+            return;
+        }
+        if (!device_isfinite(percent) || !(percent > 0.0f) || !device_isfinite(roughness)) {
+            out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] = 0.0f;
+            return;
+        }
+
+        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+        const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
+        const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
+
+        const std::uint64_t h1 = fnv1a_hash_u64_5_device(glareSeed, mediumId, absX, absY, 0ULL);
+        const std::uint64_t h2 = fnv1a_hash_u64_5_device(glareSeed, mediumId, absX, absY, 1ULL);
+        const float n = box_muller_device(h1, h2);
+
+        const float mean = fmaxf(0.0f, percent);
+        const float stddev = fmaxf(0.0f, roughness * percent);
+        const float glare = lognormal_from_mean_std_device(mean, stddev, n);
+
+        out[idx] = (device_isfinite(glare) && !isnan(glare)) ? glare : 0.0f;
+    }
+
+    __global__ void phase3_stageA_linear_rgb_kernel(
+        JuicerCuda::Phase3RunParams params,
+        float* rgbR,
+        float* rgbG,
+        float* rgbB,
+        const float* glarePercent)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= params.width || y >= params.height) {
+            return;
+        }
+
+        if (!params.src || params.srcRowBytes == 0) {
+            return;
+        }
+        if (!rgbR || !rgbG || !rgbB) {
+            return;
+        }
+
+        const int nC = params.nComponents;
+        if (!(nC == 3 || nC == 4)) {
+            return;
+        }
+
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+        const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+        if (!srcPix) {
+            return;
+        }
+
+        const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
+
+        float rgbDWG[3];
+        convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG);
+
+        float E_raw[3] = { 0.0f, 0.0f, 0.0f };
+        const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
+        const bool spdReady = params.tablesAx && params.tablesAy && params.tablesAz && params.tablesK == 81;
+        const bool useHanatos = allowHanatos &&
+            spdReady &&
+            params.hanatosLut &&
+            (params.hanatosN > 0) &&
+            (params.sensB.n >= 81) &&
+            (params.sensG.n >= 81) &&
+            (params.sensR.n >= 81);
+        const bool canTables =
+            spdReady &&
+            params.sensB.y && params.sensG.y && params.sensR.y &&
+            (params.sensB.n >= 81) &&
+            (params.sensG.n >= 81) &&
+            (params.sensR.n >= 81);
+
+        if (useHanatos) {
+            hanatos_layer_exposures_device(
+                rgbDWG,
+                params.hanatosLut,
+                params.hanatosN,
+                params.filmRaw.refIllumWhiteXYZ,
+                params.sensB.y,
+                params.sensG.y,
+                params.sensR.y,
+                E_raw);
+        }
+        else if (canTables) {
+            tables_layer_exposures_device(
+                rgbDWG,
+                params.spdSInv,
+                params.filmRaw.refIllumWhiteXYZ,
+                params.tablesAx,
+                params.tablesAy,
+                params.tablesAz,
+                params.sensB.y,
+                params.sensG.y,
+                params.sensR.y,
+                E_raw);
+        }
+
+        float midgrayScale = params.filmRaw.midgrayScale;
+        if (!isfinite(midgrayScale) || !(midgrayScale > 0.0f)) {
+            midgrayScale = 1.0f;
+        }
+
+        float exposureScale = params.exposureScale;
+        if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
+            exposureScale = 1.0f;
+        }
+
+        float filmRaw[3];
+        for (int i = 0; i < 3; ++i) {
+            float v = E_raw[i];
+            if (!isfinite(v) || v < 0.0f) v = 0.0f;
+            v = fmaxf(0.0f, v * midgrayScale);
+            v = fmaxf(0.0f, v * exposureScale);
+            filmRaw[i] = v;
+        }
+
+        constexpr float kLogEps = 1e-10f;
+        float logE[3] = {
+            log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps),
+            log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps),
+            log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps)
+        };
+
+        // Prevent +/-inf logE from collapsing to NaN in density curve sampling (CPU parity).
+        logE[0] = sanitize_inf_logE_for_curve_device(logE[0], params.densB.x, params.densB.n);
+        logE[1] = sanitize_inf_logE_for_curve_device(logE[1], params.densG.x, params.densG.n);
+        logE[2] = sanitize_inf_logE_for_curve_device(logE[2], params.densR.x, params.densR.n);
+
+        float layerPre[3];
+        layerPre[0] = sample_density_at_logE_device(params.densB.x, params.densB.y, params.densB.n, logE[0], params.gammaFactorB);
+        layerPre[1] = sample_density_at_logE_device(params.densG.x, params.densG.y, params.densG.n, logE[1], params.gammaFactorG);
+        layerPre[2] = sample_density_at_logE_device(params.densR.x, params.densR.y, params.densR.n, logE[2], params.gammaFactorR);
+
+        float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+        if (params.dir.active) {
+            float logE_corr[3] = { logE[0], logE[1], logE[2] };
+            apply_dir_runtime_logE_device(logE_corr, layerPre, params.dir, params.densB, params.densG, params.densR);
+
+            const JuicerCuda::DeviceCurveView cB = params.dirPrecorrected ? params.dirDensB : params.densB;
+            const JuicerCuda::DeviceCurveView cG = params.dirPrecorrected ? params.dirDensG : params.densG;
+            const JuicerCuda::DeviceCurveView cR = params.dirPrecorrected ? params.dirDensR : params.densR;
+
+            const float DY = sample_density_at_logE_device(cB.x, cB.y, cB.n, logE_corr[0], params.gammaFactorB);
+            const float DM = sample_density_at_logE_device(cG.x, cG.y, cG.n, logE_corr[1], params.gammaFactorG);
+            const float DC = sample_density_at_logE_device(cR.x, cR.y, cR.n, logE_corr[2], params.gammaFactorR);
+
+            D_cmy[0] = DC;
+            D_cmy[1] = DM;
+            D_cmy[2] = DY;
+        }
+        else {
+            // Map B/G/R layer densities to C/M/Y dyes
+            D_cmy[0] = layerPre[2];
+            D_cmy[1] = layerPre[1];
+            D_cmy[2] = layerPre[0];
+        }
+
+        // Scan: normalize density -> logXYZ
+        double D_norm[3];
+        if (params.scan.mediumIsNegative) {
+            D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(params.scan.min_cmy[0])) * static_cast<double>(params.scan.inv_max_cmy[0]);
+            D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(params.scan.min_cmy[1])) * static_cast<double>(params.scan.inv_max_cmy[1]);
+            D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(params.scan.min_cmy[2])) * static_cast<double>(params.scan.inv_max_cmy[2]);
+        }
+        else {
+            D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(params.scan.inv_max_cmy[0]);
+            D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(params.scan.inv_max_cmy[1]);
+            D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(params.scan.inv_max_cmy[2]);
+        }
+
+        double logXYZ[3] = { 0.0, 0.0, 0.0 };
+        if (params.scannerUseLut && params.scanLutLogXYZ && params.scanLutRes > 0) {
+            sample_cubic_scan_lut_device(params.scanLutLogXYZ, params.scanLutRes, D_norm, logXYZ);
+        }
+        else {
+            scan_spectral_to_log_xyz_device(params.scan, D_norm, logXYZ);
+        }
+
+        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+
+        double xyz[3] = {
+            pow(10.0, logXYZ[0]),
+            pow(10.0, logXYZ[1]),
+            pow(10.0, logXYZ[2])
+        };
+
+        if (glarePercent) {
+            const double glare = static_cast<double>(glarePercent[idx]) * 0.01;
+            xyz[0] += glare * static_cast<double>(params.scanColor.illuminantXYZ[0]);
+            xyz[1] += glare * static_cast<double>(params.scanColor.illuminantXYZ[1]);
+            xyz[2] += glare * static_cast<double>(params.scanColor.illuminantXYZ[2]);
+        }
+
+        double adapted[3];
+        mat3_mul_vec_double_device(params.scanColor.cat02, xyz, adapted);
+        double rgbOut[3];
+        mat3_mul_vec_double_device(params.scanColor.xyzToRgb, adapted, rgbOut);
+
+        rgbR[idx] = (isfinite(rgbOut[0]) && !isnan(rgbOut[0])) ? static_cast<float>(rgbOut[0]) : 0.0f;
+        rgbG[idx] = (isfinite(rgbOut[1]) && !isnan(rgbOut[1])) ? static_cast<float>(rgbOut[1]) : 0.0f;
+        rgbB[idx] = (isfinite(rgbOut[2]) && !isnan(rgbOut[2])) ? static_cast<float>(rgbOut[2]) : 0.0f;
+    }
+
+    __global__ void optics_blur_horizontal_kernel(
+        const float* in,
+        float* out,
+        int width,
+        int height,
+        const float* k,
+        int radius)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= width || y >= height) {
+            return;
+        }
+        if (!in || !out || !k || radius <= 0) {
+            return;
+        }
+
+        double acc = 0.0;
+        for (int j = -radius; j <= radius; ++j) {
+            const int xx = reflect_index_repeat_device(x + j, width);
+            const float v = in[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(xx)];
+            const float w = k[j + radius];
+            acc += static_cast<double>(v) * static_cast<double>(w);
+        }
+        out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
+            (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
+    }
+
+    __global__ void optics_blur_vertical_kernel(
+        const float* in,
+        float* out,
+        int width,
+        int height,
+        const float* k,
+        int radius)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= width || y >= height) {
+            return;
+        }
+        if (!in || !out || !k || radius <= 0) {
+            return;
+        }
+
+        double acc = 0.0;
+        for (int j = -radius; j <= radius; ++j) {
+            const int yy = reflect_index_repeat_device(y + j, height);
+            const float v = in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(x)];
+            const float w = k[j + radius];
+            acc += static_cast<double>(v) * static_cast<double>(w);
+        }
+        out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
+            (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
+    }
+
+    __global__ void optics_unsharp_combine_kernel(float* inOut, const float* blurred, int n, float amount) {
+        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= n) {
+            return;
+        }
+        if (!inOut || !blurred) {
+            return;
+        }
+        const double v0 = static_cast<double>(inOut[idx]);
+        const double vb = static_cast<double>(blurred[idx]);
+        const double a = static_cast<double>(amount);
+        const double v = v0 + a * (v0 - vb);
+        inOut[idx] = (isfinite(v) && !isnan(v)) ? static_cast<float>(v) : 0.0f;
+    }
+
+    __global__ void phase3_stageD_encode_write_kernel(
+        JuicerCuda::Phase3RunParams params,
+        const float* rgbR,
+        const float* rgbG,
+        const float* rgbB)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= params.width || y >= params.height) {
+            return;
+        }
+
+        if (!params.src || !params.dst || params.srcRowBytes == 0 || params.dstRowBytes == 0) {
+            return;
+        }
+        if (!rgbR || !rgbG || !rgbB) {
+            return;
+        }
+
+        const int nC = params.nComponents;
+        if (!(nC == 3 || nC == 4)) {
+            return;
+        }
+
+        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+        double rgbOut[3] = {
+            static_cast<double>(rgbR[idx]),
+            static_cast<double>(rgbG[idx]),
+            static_cast<double>(rgbB[idx])
+        };
+        apply_output_encoding_device(params.scanColor.encoding, rgbOut);
+
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+        char* dstRow = reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
+        float* dstPix = reinterpret_cast<float*>(dstRow + static_cast<std::size_t>(x) * pixelBytes);
+        dstPix[0] = static_cast<float>(rgbOut[0]);
+        dstPix[1] = static_cast<float>(rgbOut[1]);
+        dstPix[2] = static_cast<float>(rgbOut[2]);
+
+        if (nC == 4) {
+            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+            const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+            dstPix[3] = srcPix ? srcPix[3] : 1.0f;
+        }
+    }
+
 } // namespace
 
 extern "C" cudaError_t juicer_cuda_phase3_negative_only(
@@ -1994,5 +2401,146 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only(
         static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
         static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
     phase3_negative_only_kernel<<<blocks, threads, 0, stream>>>(params);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque)
+{
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+
+    const JuicerCuda::Phase3RunParams params = *hParams;
+    if (!params.src || !params.dst) {
+        return cudaErrorInvalidValue;
+    }
+    if (params.width <= 0 || params.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(params.nComponents == 3 || params.nComponents == 4)) {
+        return cudaErrorInvalidValue;
+    }
+    if (params.srcRowBytes == 0 || params.dstRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+    if (!dRgbR || !dRgbG || !dRgbB || !dTmp) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    dim3 threads2D(16, 16);
+    dim3 blocks2D(
+        static_cast<unsigned int>((params.width + threads2D.x - 1) / threads2D.x),
+        static_cast<unsigned int>((params.height + threads2D.y - 1) / threads2D.y));
+
+    auto blur_plane_in_place = [&](float* plane, float* tmpBuf, const float* k, int radius) -> cudaError_t {
+        if (!plane || !tmpBuf || !k || radius <= 0) {
+            return cudaSuccess;
+        }
+        optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, tmpBuf, params.width, params.height, k, radius);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(tmpBuf, plane, params.width, params.height, k, radius);
+        return cudaGetLastError();
+    };
+
+    const bool doGlare =
+        std::isfinite(static_cast<double>(glarePercent)) && (glarePercent > 0.0f) &&
+        std::isfinite(static_cast<double>(glareRoughness));
+    if (doGlare) {
+        const std::uint64_t mediumId = params.scan.mediumIsNegative ? 0ULL : 1ULL;
+        optics_glare_generate_kernel<<<blocks2D, threads2D, 0, stream>>>(
+            dTmp,
+            params.width,
+            params.height,
+            glareSeed,
+            mediumId,
+            glareOriginX,
+            glareOriginY,
+            glarePercent,
+            glareRoughness);
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            return err;
+        }
+        if (glareRadius > 0 && dGlareKernel) {
+            err = blur_plane_in_place(dTmp, dRgbR, dGlareKernel, glareRadius);
+            if (err != cudaSuccess) return err;
+        }
+    }
+
+    phase3_stageA_linear_rgb_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB, doGlare ? dTmp : nullptr);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    if (lensBlurRadius > 0 && dLensBlurKernel) {
+        err = blur_plane_in_place(dRgbR, dTmp, dLensBlurKernel, lensBlurRadius);
+        if (err != cudaSuccess) return err;
+        err = blur_plane_in_place(dRgbG, dTmp, dLensBlurKernel, lensBlurRadius);
+        if (err != cudaSuccess) return err;
+        err = blur_plane_in_place(dRgbB, dTmp, dLensBlurKernel, lensBlurRadius);
+        if (err != cudaSuccess) return err;
+    }
+
+    const bool doUnsharp =
+        (unsharpRadius > 0) && dUnsharpKernel &&
+        std::isfinite(static_cast<double>(unsharpAmount)) && (unsharpAmount != 0.0f);
+    if (doUnsharp) {
+        if (!dScratchBlurred) {
+            return cudaErrorInvalidValue;
+        }
+
+        const int total = params.width * params.height;
+        const int threads1D = 256;
+        const int blocks1D = (total + threads1D - 1) / threads1D;
+
+        auto unsharp_plane_in_place = [&](float* plane) -> cudaError_t {
+            optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, dTmp, params.width, params.height, dUnsharpKernel, unsharpRadius);
+            cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(dTmp, dScratchBlurred, params.width, params.height, dUnsharpKernel, unsharpRadius);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            optics_unsharp_combine_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dScratchBlurred, total, unsharpAmount);
+            return cudaGetLastError();
+        };
+
+        err = unsharp_plane_in_place(dRgbR);
+        if (err != cudaSuccess) return err;
+        err = unsharp_plane_in_place(dRgbG);
+        if (err != cudaSuccess) return err;
+        err = unsharp_plane_in_place(dRgbB);
+        if (err != cudaSuccess) return err;
+    }
+
+    phase3_stageD_encode_write_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
     return cudaGetLastError();
 }
