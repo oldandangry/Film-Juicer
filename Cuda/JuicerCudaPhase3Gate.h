@@ -13,6 +13,7 @@ namespace JuicerCuda {
     struct Phase3GateInput {
         bool printBypass = true;
         bool scannerUseLut = true;
+        bool spatialDirActive = false;
 
         // Scanner optics features (implemented in Phase 3 passes).
         bool glareActive = false;
@@ -24,6 +25,10 @@ namespace JuicerCuda {
     inline bool phase3_negative_only_supported(const Phase3GateInput& in, std::string& outReason) {
         if (!in.printBypass) {
             outReason = "print pipeline (PrintBypass=false) is not supported yet";
+            return false;
+        }
+        if (in.spatialDirActive) {
+            outReason = "spatial DIR diffusion is not supported yet";
             return false;
         }
         outReason.clear();

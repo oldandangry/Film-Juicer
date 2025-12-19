@@ -941,13 +941,10 @@ void JuicerProcessor::processImagesCUDA() {
         gate.unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
         gate.unsharpAmount = _scannerOptions.unsharpAmount;
         gate.glareActive = _ws && _ws->negativeMediumRuntime.glare.active && (_ws->negativeMediumRuntime.glare.percent > 0.0f);
+        gate.spatialDirActive = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
 
-        const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
         std::string reason;
-        if (!JuicerCuda::phase3_negative_only_supported(gate, reason) || useSpatialDIR) {
-            if (useSpatialDIR) {
-                reason = "spatial DIR diffusion is not supported yet";
-            }
+        if (!JuicerCuda::phase3_negative_only_supported(gate, reason)) {
 #if defined(JUICER_TRACE_CUDA)
             JTRACE("CUDA", std::string("CUDA Phase 3 unsupported: ") + reason);
 #endif
