@@ -26,10 +26,6 @@ namespace JuicerCuda {
             outReason = "print pipeline (PrintBypass=false) is not supported yet";
             return false;
         }
-        if (in.scannerUseLut) {
-            outReason = "scanner LUT path (ScannerUseLut=true) is not supported yet";
-            return false;
-        }
         if (in.glareActive) {
             outReason = "glare optics are not supported yet";
             return false;
@@ -47,4 +43,3 @@ namespace JuicerCuda {
     }
 
 } // namespace JuicerCuda
-

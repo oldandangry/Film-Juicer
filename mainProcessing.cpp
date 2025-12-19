@@ -1047,6 +1047,27 @@ void JuicerProcessor::processImagesCUDA() {
             run.hanatosLut = cudaResources->hanatosLut;
             run.hanatosN = cudaResources->hanatosN;
 
+            run.scannerUseLut = gate.scannerUseLut ? 1 : 0;
+            run.scanLutLogXYZ = nullptr;
+            run.scanLutRes = 0;
+            if (run.scannerUseLut) {
+                std::string lutError;
+                if (!JuicerCuda::ensure_scan_lut(*cudaResources, *_ws, true, _pCudaStream, lutError)) {
+                    JTRACE("CUDA", std::string("CUDA scan LUT upload failed: ") + lutError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                run.scanLutLogXYZ = cudaResources->scanNegativeLut.logXYZ;
+                run.scanLutRes = static_cast<int>(cudaResources->scanNegativeLut.res);
+                if (!run.scanLutLogXYZ || run.scanLutRes <= 0) {
+                    JTRACE("CUDA", "FATAL: scan LUT missing after successful upload");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+
             // Negative scan tables payload
             run.scan.epsC = cudaResources->scanNegative.tables.epsC;
             run.scan.epsM = cudaResources->scanNegative.tables.epsM;

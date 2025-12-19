@@ -75,6 +75,15 @@ namespace JuicerCuda {
         DeviceScanMedium scanNegative;
         DeviceScanMedium scanPrint;
 
+        struct DeviceSpectralLut {
+            double* logXYZ = nullptr; // layout: ((z*res + y)*res + x) * 3 + c
+            std::uint32_t res = 0;
+            std::uint64_t hash = 0;
+        };
+
+        DeviceSpectralLut scanNegativeLut;
+        DeviceSpectralLut scanPrintLut;
+
         // Hanatos LUT (process-global on CPU, uploaded on demand).
         // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
         float* hanatosLut = nullptr;
@@ -92,6 +101,9 @@ namespace JuicerCuda {
 
     // Uploads WorkingState curves when buildCounter changes; returns false on failure with outError filled.
     bool ensure_uploaded(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
+
+    // Builds + uploads scan-stage logXYZ LUT on demand (Mitchell cubic sampler parity with CPU).
+    bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
 
     // Optional debug validation of primitives (kept here to avoid a separate JUICER_TESTS harness).
     bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);

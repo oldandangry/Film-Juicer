@@ -1288,6 +1288,103 @@ namespace {
             static_cast<double>(m9[8]) * v3[2];
     }
 
+    __device__ __forceinline__ double mitchell_weight_device(double t) {
+        const double B = 1.0 / 3.0;
+        const double C = 1.0 / 3.0;
+        const double x = fabs(t);
+        if (x < 1.0) {
+            return (1.0 / 6.0) * ((12.0 - 9.0 * B - 6.0 * C) * x * x * x
+                + (-18.0 + 12.0 * B + 6.0 * C) * x * x
+                + (6.0 - 2.0 * B));
+        }
+        else if (x < 2.0) {
+            return (1.0 / 6.0) * ((-B - 6.0 * C) * x * x * x
+                + (6.0 * B + 30.0 * C) * x * x
+                + (-12.0 * B - 48.0 * C) * x
+                + (8.0 * B + 24.0 * C));
+        }
+        return 0.0;
+    }
+
+    __device__ __forceinline__ int reflect_index_device(int idx, int size) {
+        if (size <= 1) return 0;
+        if (idx < 0) return -idx;
+        if (idx >= size) return 2 * (size - 1) - idx;
+        return idx;
+    }
+
+    __device__ __forceinline__ double scan_lut_fetch_device(const double* lut, int res, size_t limit, int xi, int yi, int zi, int c) {
+        const size_t sRes = static_cast<size_t>(res);
+        const size_t idx = (static_cast<size_t>(zi) * sRes + static_cast<size_t>(yi)) * sRes + static_cast<size_t>(xi);
+        const size_t base = idx * 3u + static_cast<size_t>(c);
+        if (base >= limit) {
+            return 0.0;
+        }
+        return lut[base];
+    }
+
+    __device__ __forceinline__ void sample_cubic_scan_lut_device(const double* lut, int resRaw, const double D_norm[3], double out[3]) {
+        if (!out) {
+            return;
+        }
+        if (!lut || !D_norm) {
+            out[0] = out[1] = out[2] = 0.0;
+            return;
+        }
+
+        const int res = (resRaw > 1) ? resRaw : 1;
+        const double scale = (res > 1) ? static_cast<double>(res - 1) : 1.0;
+        const double fx = D_norm[0] * scale;
+        const double fy = D_norm[1] * scale;
+        const double fz = D_norm[2] * scale;
+
+        const int xBase = static_cast<int>(floor(fx));
+        const int yBase = static_cast<int>(floor(fy));
+        const int zBase = static_cast<int>(floor(fz));
+        const double tx = fx - static_cast<double>(xBase);
+        const double ty = fy - static_cast<double>(yBase);
+        const double tz = fz - static_cast<double>(zBase);
+
+        double wx[4], wy[4], wz[4];
+        wx[0] = mitchell_weight_device(tx + 1.0);
+        wx[1] = mitchell_weight_device(tx);
+        wx[2] = mitchell_weight_device(tx - 1.0);
+        wx[3] = mitchell_weight_device(tx - 2.0);
+        wy[0] = mitchell_weight_device(ty + 1.0);
+        wy[1] = mitchell_weight_device(ty);
+        wy[2] = mitchell_weight_device(ty - 1.0);
+        wy[3] = mitchell_weight_device(ty - 2.0);
+        wz[0] = mitchell_weight_device(tz + 1.0);
+        wz[1] = mitchell_weight_device(tz);
+        wz[2] = mitchell_weight_device(tz - 1.0);
+        wz[3] = mitchell_weight_device(tz - 2.0);
+
+        const size_t sRes = static_cast<size_t>(res);
+        const size_t limit = sRes * sRes * sRes * 3u;
+
+        double sum[3] = { 0.0, 0.0, 0.0 };
+        double wsum = 0.0;
+        for (int i = 0; i < 4; ++i) {
+            const int xi = reflect_index_device(xBase - 1 + i, res);
+            for (int j = 0; j < 4; ++j) {
+                const int yj = reflect_index_device(yBase - 1 + j, res);
+                for (int k = 0; k < 4; ++k) {
+                    const int zk = reflect_index_device(zBase - 1 + k, res);
+                    const double w = wx[i] * wy[j] * wz[k];
+                    wsum += w;
+                    sum[0] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 0);
+                    sum[1] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 1);
+                    sum[2] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 2);
+                }
+            }
+        }
+
+        const double inv = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
+        out[0] = sum[0] * inv;
+        out[1] = sum[1] * inv;
+        out[2] = sum[2] * inv;
+    }
+
     __device__ __forceinline__ void scan_spectral_to_log_xyz_device(
         const JuicerCuda::ScanTablesPayload& medium,
         const double D_norm[3],
@@ -1836,7 +1933,12 @@ namespace {
         }
 
         double logXYZ[3] = { 0.0, 0.0, 0.0 };
-        scan_spectral_to_log_xyz_device(params.scan, D_norm, logXYZ);
+        if (params.scannerUseLut && params.scanLutLogXYZ && params.scanLutRes > 0) {
+            sample_cubic_scan_lut_device(params.scanLutLogXYZ, params.scanLutRes, D_norm, logXYZ);
+        }
+        else {
+            scan_spectral_to_log_xyz_device(params.scan, D_norm, logXYZ);
+        }
         const double xyz[3] = {
             pow(10.0, logXYZ[0]),
             pow(10.0, logXYZ[1]),

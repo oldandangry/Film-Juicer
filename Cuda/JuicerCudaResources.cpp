@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 // Implemented in Cuda/JuicerCudaPrimitives.cu
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -181,6 +182,17 @@ namespace JuicerCuda {
         m.inv_max_cmy[0] = m.inv_max_cmy[1] = m.inv_max_cmy[2] = 1.0f;
     }
 
+    static void free_scan_lut(Resources::DeviceSpectralLut& lut) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (lut.logXYZ) {
+            cudaFree(lut.logXYZ);
+            lut.logXYZ = nullptr;
+        }
+#endif
+        lut.res = 0;
+        lut.hash = 0;
+    }
+
     static bool alloc_and_upload_array(float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)dst;
@@ -278,6 +290,8 @@ namespace JuicerCuda {
         free_tables(*this);
         free_scan_medium(scanNegative);
         free_scan_medium(scanPrint);
+        free_scan_lut(scanNegativeLut);
+        free_scan_lut(scanPrintLut);
         free_hanatos(*this);
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (lastUseEventOpaque) {
@@ -545,6 +559,127 @@ namespace JuicerCuda {
         }
 
         resources.uploadedBuildCounter = ws.buildCounter;
+        return true;
+#endif
+    }
+
+    bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ws;
+        (void)negativeMedium;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        const Scanner::ScannerMediumRuntime& medium = negativeMedium ? ws.negativeMediumRuntime : ws.printMediumRuntime;
+        const Scanner::ScannerStaticKey& staticKey = negativeMedium ? ws.negativeStaticKey : ws.printStaticKey;
+
+        if (!medium.tables || medium.tables->K <= 0) {
+            outError = "scan LUT build requested but medium tables are unavailable";
+            return false;
+        }
+
+        Resources::DeviceSpectralLut& dst = negativeMedium ? resources.scanNegativeLut : resources.scanPrintLut;
+        const std::uint32_t res = std::clamp(staticKey.lutResolution, 17u, 128u);
+        const std::uint64_t expectedHash = Hash::hash_bytes(&staticKey.hash, sizeof(staticKey.hash));
+        if (expectedHash == 0) {
+            outError = "scan LUT staticKey hash invalid";
+            return false;
+        }
+
+        if (dst.logXYZ && dst.res == res && dst.hash == expectedHash) {
+            return true;
+        }
+
+        // Build CPU LUT first (can overlap with any in-flight GPU work) before we synchronize to
+        // safely retire the previous device buffer.
+        const size_t sRes = static_cast<size_t>(res);
+        const size_t voxels = sRes * sRes * sRes;
+        const size_t count = voxels * 3u;
+        std::vector<double> cpu;
+        cpu.resize(count);
+
+        for (std::uint32_t z = 0; z < res; ++z) {
+            const double nz = (res > 1u) ? static_cast<double>(z) / static_cast<double>(res - 1u) : 0.0;
+            for (std::uint32_t y = 0; y < res; ++y) {
+                const double ny = (res > 1u) ? static_cast<double>(y) / static_cast<double>(res - 1u) : 0.0;
+                for (std::uint32_t x = 0; x < res; ++x) {
+                    const double nx = (res > 1u) ? static_cast<double>(x) / static_cast<double>(res - 1u) : 0.0;
+                    const size_t idx = (static_cast<size_t>(z) * sRes + static_cast<size_t>(y)) * sRes + static_cast<size_t>(x);
+                    const size_t base = idx * 3u;
+                    const double D_norm[3] = { nx, ny, nz };
+                    double logXYZ[3] = { 0.0, 0.0, 0.0 };
+                    Pipeline::ScanStage::spectral_to_log_xyz(medium, D_norm, logXYZ);
+                    if (!std::isfinite(logXYZ[0]) || !std::isfinite(logXYZ[1]) || !std::isfinite(logXYZ[2])) {
+                        outError = "scan LUT build produced non-finite logXYZ";
+                        return false;
+                    }
+                    cpu[base + 0] = logXYZ[0];
+                    cpu[base + 1] = logXYZ[1];
+                    cpu[base + 2] = logXYZ[2];
+                }
+            }
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+        if (dst.logXYZ) {
+            // Ensure no in-flight work can still reference the previous device LUT.
+            if (resources.lastUseEventOpaque) {
+                cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+                const cudaError_t evErr = cudaEventSynchronize(ev);
+                if (evErr != cudaSuccess) {
+                    outError = std::string("cudaEventSynchronize before LUT rebuild failed: ") + (cudaGetErrorString(evErr) ? cudaGetErrorString(evErr) : "(unknown)");
+                    return false;
+                }
+            }
+            else {
+                const cudaError_t syncErr = cudaStreamSynchronize(stream);
+                if (syncErr != cudaSuccess) {
+                    outError = std::string("cudaStreamSynchronize before LUT rebuild failed: ") + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+                    return false;
+                }
+            }
+            free_scan_lut(dst);
+        }
+
+        double* dLut = nullptr;
+        const size_t bytes = count * sizeof(double);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dLut), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_scan_lut(dst);
+            return false;
+        }
+        err = cudaMemcpyAsync(dLut, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            cudaFree(dLut);
+            free_scan_lut(dst);
+            return false;
+        }
+
+        dst.logXYZ = dLut;
+        dst.res = res;
+        dst.hash = expectedHash;
         return true;
 #endif
     }

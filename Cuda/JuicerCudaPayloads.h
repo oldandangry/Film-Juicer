@@ -134,6 +134,10 @@ namespace JuicerCuda {
         const float* hanatosLut = nullptr;
         int hanatosN = 0;
 
+        int scannerUseLut = 0;
+        const double* scanLutLogXYZ = nullptr;
+        int scanLutRes = 0;
+
         ScanTablesPayload scan{};
         ScanColorPayload scanColor{};
     };
