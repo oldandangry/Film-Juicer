@@ -1257,20 +1257,55 @@ namespace {
             return;
         }
 
+        double linear[3];
+        if (enc.inputIsOutputSpace) {
+            linear[0] = rgb[0];
+            linear[1] = rgb[1];
+            linear[2] = rgb[2];
+        }
+        else {
+            linear[0] =
+                static_cast<double>(enc.dwgToOutput[0]) * rgb[0] +
+                static_cast<double>(enc.dwgToOutput[1]) * rgb[1] +
+                static_cast<double>(enc.dwgToOutput[2]) * rgb[2];
+            linear[1] =
+                static_cast<double>(enc.dwgToOutput[3]) * rgb[0] +
+                static_cast<double>(enc.dwgToOutput[4]) * rgb[1] +
+                static_cast<double>(enc.dwgToOutput[5]) * rgb[2];
+            linear[2] =
+                static_cast<double>(enc.dwgToOutput[6]) * rgb[0] +
+                static_cast<double>(enc.dwgToOutput[7]) * rgb[1] +
+                static_cast<double>(enc.dwgToOutput[8]) * rgb[2];
+        }
+
         if (enc.preserveLinearRange) {
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
             return; // no encoding, no clamp
         }
 
         if (enc.applyCctfEncoding) {
-            rgb[0] = encode_channel_double_device(enc.cctf, rgb[0]);
-            rgb[1] = encode_channel_double_device(enc.cctf, rgb[1]);
-            rgb[2] = encode_channel_double_device(enc.cctf, rgb[2]);
+            rgb[0] = encode_channel_double_device(enc.cctf, linear[0]);
+            rgb[1] = encode_channel_double_device(enc.cctf, linear[1]);
+            rgb[2] = encode_channel_double_device(enc.cctf, linear[2]);
+        }
+        else {
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
         }
 
         // agx parity: encode first, then clip
         rgb[0] = clamp01d_device(rgb[0]);
         rgb[1] = clamp01d_device(rgb[1]);
         rgb[2] = clamp01d_device(rgb[2]);
+    }
+
+    __device__ __forceinline__ void signal_scan_error_device(int* flag) {
+        if (flag) {
+            atomicExch(flag, 1);
+        }
     }
 
     __device__ __forceinline__ void mat3_mul_vec_double_device(const float m9[9], const double v3[3], double out3[3]) {
@@ -2074,7 +2109,8 @@ namespace {
         }
 
         double logXYZ[3] = { 0.0, 0.0, 0.0 };
-        if (params.scannerUseLut && params.scanLutLogXYZ && params.scanLutRes > 0) {
+        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
+        if (params.scannerUseLut && params.scanLutLogXYZ && params.scanLutRes > 0 && D_norm_finite) {
             sample_cubic_scan_lut_device(params.scanLutLogXYZ, params.scanLutRes, D_norm, logXYZ);
         }
         else {
@@ -2090,6 +2126,24 @@ namespace {
         mat3_mul_vec_double_device(params.scanColor.cat02, xyz, adapted);
         double rgbOut[3];
         mat3_mul_vec_double_device(params.scanColor.xyzToRgb, adapted, rgbOut);
+
+        if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
+            signal_scan_error_device(params.scanErrorFlag);
+            const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+            char* dstRow = reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
+            float* dstPix = reinterpret_cast<float*>(dstRow + static_cast<std::size_t>(x) * pixelBytes);
+            if (dstPix) {
+                dstPix[0] = 0.0f;
+                dstPix[1] = 0.0f;
+                dstPix[2] = 0.0f;
+                if (nC == 4) {
+                    const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+                    const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+                    dstPix[3] = srcPix ? srcPix[3] : 1.0f;
+                }
+            }
+            return;
+        }
 
         // Output encoding + clamp
         apply_output_encoding_device(params.scanColor.encoding, rgbOut);
@@ -2349,7 +2403,8 @@ namespace {
         }
 
         double logXYZ[3] = { 0.0, 0.0, 0.0 };
-        if (params.scannerUseLut && params.scanLutLogXYZ && params.scanLutRes > 0) {
+        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
+        if (params.scannerUseLut && params.scanLutLogXYZ && params.scanLutRes > 0 && D_norm_finite) {
             sample_cubic_scan_lut_device(params.scanLutLogXYZ, params.scanLutRes, D_norm, logXYZ);
         }
         else {
@@ -2376,9 +2431,17 @@ namespace {
         double rgbOut[3];
         mat3_mul_vec_double_device(params.scanColor.xyzToRgb, adapted, rgbOut);
 
-        rgbR[idx] = (isfinite(rgbOut[0]) && !isnan(rgbOut[0])) ? static_cast<float>(rgbOut[0]) : 0.0f;
-        rgbG[idx] = (isfinite(rgbOut[1]) && !isnan(rgbOut[1])) ? static_cast<float>(rgbOut[1]) : 0.0f;
-        rgbB[idx] = (isfinite(rgbOut[2]) && !isnan(rgbOut[2])) ? static_cast<float>(rgbOut[2]) : 0.0f;
+        if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
+            signal_scan_error_device(params.scanErrorFlag);
+            rgbR[idx] = 0.0f;
+            rgbG[idx] = 0.0f;
+            rgbB[idx] = 0.0f;
+            return;
+        }
+
+        rgbR[idx] = static_cast<float>(rgbOut[0]);
+        rgbG[idx] = static_cast<float>(rgbOut[1]);
+        rgbB[idx] = static_cast<float>(rgbOut[2]);
     }
 
     __global__ void optics_blur_horizontal_kernel(

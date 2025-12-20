@@ -50,6 +50,31 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
     const float* dGlareKernel,
     int glareRadius,
     void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_phase5_print_pipeline(
+    const JuicerCuda::Phase3RunParams* hParams,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_phase5_print_pipeline_optics(
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque);
 #endif
 
 // Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
@@ -68,6 +93,7 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
 #include "Print.h"
 #include "JuicerState.h"
 #include "Scanner.h"
+#include "OutputEncoding.h"
 #include "ScannerOptics.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
@@ -884,6 +910,29 @@ void JuicerProcessor::processImagesCUDA() {
             JTRACE("CUDA", std::string("FATAL: CUDA primitive validation failed: ") + validateError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+
+        if (_ws && _printReady && _prt && !_printParams.bypass) {
+            float kMidSpectral = 1.0f;
+            {
+                const float exposureCompScale = _printParams.exposureCompensationEnabled
+                    ? _printParams.exposureCompensationScale
+                    : 1.0f;
+                kMidSpectral = Pipeline::PipelineRunner::compute_midgray_factor(
+                    *_ws,
+                    *_prt,
+                    _printParams,
+                    _dirRT,
+                    exposureCompScale);
+                if (!std::isfinite(kMidSpectral) || !(kMidSpectral > 0.0f)) {
+                    kMidSpectral = 1.0f;
+                }
+            }
+            if (!JuicerCuda::validate_print_primitives(*cudaResources, *_ws, *_prt, _printParams, kMidSpectral, _pCudaStream, validateError)) {
+                JTRACE("CUDA", std::string("FATAL: CUDA print validation failed: ") + validateError);
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+        }
+
         JuicerCuda::record_use(*cudaResources, _pCudaStream);
     }
 #endif
@@ -933,7 +982,7 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
     // Phase 3: negative-only end-to-end CUDA pipeline (PrintBypass=true).
-    {
+    if (_printParams.bypass) {
         JuicerCuda::Phase3GateInput gate{};
         gate.printBypass = _printParams.bypass;
         gate.scannerUseLut = _scannerSettings.useLut;
@@ -1033,7 +1082,14 @@ void JuicerProcessor::processImagesCUDA() {
             run.scanColor.encoding.cctf.c = outSpace.cctf.c;
             run.scanColor.encoding.cctf.d = outSpace.cctf.d;
             run.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
+
+            const OutputEncoding::Matrix3x3 dwgToOutput = OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
+            for (int i = 0; i < 9; ++i) {
+                run.scanColor.encoding.dwgToOutput[i] = dwgToOutput.m[i];
+            }
         }
+
+        const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
 
         // Device pointers from the per-instance cache + kernel launch + record_use must be
         // serialized to avoid rebuild races before lastUseEvent is recorded.
@@ -1101,6 +1157,52 @@ void JuicerProcessor::processImagesCUDA() {
             for (int i = 0; i < 3; ++i) {
                 run.scan.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
                 run.scan.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
+            }
+
+            std::string scanFlagError;
+            if (!JuicerCuda::ensure_scan_error_flag(*cudaResources, _pCudaStream, scanFlagError)) {
+                JTRACE("CUDA", std::string("CUDA scan error flag allocation failed: ") + scanFlagError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+            run.scanErrorFlag = cudaResources->scanErrorFlag;
+            if (!run.scanErrorFlag) {
+                JTRACE("CUDA", "FATAL: scan error flag missing after allocation");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            cudaEvent_t scanEvent = cudaResources->scanErrorEventOpaque
+                ? reinterpret_cast<cudaEvent_t>(cudaResources->scanErrorEventOpaque)
+                : nullptr;
+            if (cudaResources->scanErrorPending && scanEvent && cudaResources->scanErrorHost) {
+                cudaError_t pollErr = cudaEventQuery(scanEvent);
+                if (pollErr == cudaErrorNotReady) {
+                    pollErr = cudaEventSynchronize(scanEvent);
+                }
+                if (pollErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(pollErr);
+                    JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+                cudaResources->scanErrorPending = 0;
+                if (*cudaResources->scanErrorHost != 0) {
+                    JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+
+            cudaError_t flagErr = cudaMemsetAsync(run.scanErrorFlag, 0, sizeof(int), stream);
+            if (flagErr != cudaSuccess) {
+                const char* msg = cudaGetErrorString(flagErr);
+                JTRACE("CUDA", std::string("CUDA scan error flag memset failed: ") + (msg ? msg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
             }
 
             const bool wantGlare = gate.glareActive;
@@ -1202,6 +1304,542 @@ void JuicerProcessor::processImagesCUDA() {
                 const char* msg = cudaGetErrorString(err);
                 JTRACE("CUDA", std::string("FATAL: Phase 3 kernel launch failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            if (cudaResources->scanErrorHost && scanEvent) {
+                flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                if (flagErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(flagErr);
+                    JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                cudaError_t evErr = cudaEventRecord(scanEvent, stream);
+                if (evErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(evErr);
+                    JTRACE("CUDA", std::string("CUDA scan error event record failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+                cudaResources->scanErrorPending = 1;
+                cudaError_t pollErr = cudaEventQuery(scanEvent);
+                if (pollErr == cudaSuccess) {
+                    cudaResources->scanErrorPending = 0;
+                    if (*cudaResources->scanErrorHost != 0) {
+                        JTRACE("CUDA", "FATAL: Phase 3 scan produced non-finite RGB");
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
+                } else if (pollErr != cudaErrorNotReady) {
+                    const char* msg = cudaGetErrorString(pollErr);
+                    JTRACE("CUDA", std::string("CUDA scan error event query failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+            else {
+                int scanError = 0;
+                flagErr = cudaMemcpyAsync(&scanError, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                if (flagErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(flagErr);
+                    JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                flagErr = cudaStreamSynchronize(stream);
+                if (flagErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(flagErr);
+                    JTRACE("CUDA", std::string("CUDA stream sync failed after Phase 3: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+                if (scanError != 0) {
+                    JTRACE("CUDA", "FATAL: Phase 3 scan produced non-finite RGB");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+
+            JuicerCuda::record_use(*cudaResources, _pCudaStream);
+        }
+        return;
+    }
+
+    // Phase 5: print pipeline on CUDA (PrintBypass=false).
+    {
+        if (!_printReady || !_prt) {
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+
+        const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
+        if (useSpatialDIR) {
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+
+        if (!_ws->printScannerValid) {
+            JTRACE("CUDA", "FATAL: print scanner runtime invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (_ws->printColorRuntime.hash == 0) {
+            JTRACE("CUDA", "FATAL: print scanner color runtime invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (!_ws->printMediumRuntime.tables || _ws->printMediumRuntime.tables->K <= 0) {
+            JTRACE("CUDA", "FATAL: print scanner spectral tables unavailable");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+
+        // Print exposure compensation factor is computed on CPU (no image reads; safe for CUDA renders).
+        float kMidSpectral = 1.0f;
+        {
+            const float exposureCompScale = _printParams.exposureCompensationEnabled
+                ? _printParams.exposureCompensationScale
+                : 1.0f;
+            kMidSpectral = Pipeline::PipelineRunner::compute_midgray_factor(
+                *_ws,
+                *_prt,
+                _printParams,
+                _dirRT,
+                exposureCompScale);
+            if (!std::isfinite(kMidSpectral) || !(kMidSpectral > 0.0f)) {
+                kMidSpectral = 1.0f;
+            }
+        }
+
+        JuicerCuda::Phase3RunParams run{};
+        run.src = srcPtr;
+        run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
+        run.dst = dstPtr;
+        run.dstRowBytes = static_cast<std::size_t>(dstRowBytes);
+        run.width = width;
+        run.height = height;
+        run.nComponents = _nComponents;
+
+        // Film raw conversion payload
+        run.filmRaw.inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(_ws->filmRaw.inputColorSpace);
+        run.filmRaw.applyCctfDecoding = _ws->filmRaw.applyCctfDecoding ? 1 : 0;
+        run.filmRaw.applyInputChromaticAdapt = _ws->filmRaw.applyInputChromaticAdapt ? 1 : 0;
+        run.filmRaw.spectralUpsamplingMode = static_cast<int>(_ws->filmRaw.spectralUpsamplingMode);
+        for (int i = 0; i < 9; ++i) {
+            run.filmRaw.inputRGBToXYZ[i] = _ws->filmRaw.inputRGBToXYZ.m[i];
+            run.filmRaw.inputXYZAdapt[i] = _ws->filmRaw.inputXYZAdapt.m[i];
+        }
+        run.filmRaw.midgrayScale = _ws->filmRaw.midgrayScale;
+        for (int i = 0; i < 3; ++i) {
+            run.filmRaw.refIllumWhiteXYZ[i] = _ws->filmRaw.refIllumWhiteXYZ[i];
+        }
+
+        run.exposureScale = _exposureScale;
+        run.gammaFactorB = _ws->gammaFactorB;
+        run.gammaFactorG = _ws->gammaFactorG;
+        run.gammaFactorR = _ws->gammaFactorR;
+        run.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
+
+        // DIR runtime payload (non-spatial only; spatial diffusion is gated out above).
+        run.dir.active = _dirRT.active ? 1 : 0;
+        run.dir.highShift = _dirRT.highShift;
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                run.dir.M[r * 3 + c] = _dirRT.M[r][c];
+            }
+        }
+        for (int i = 0; i < 3; ++i) {
+            run.dir.dMax[i] = _dirRT.dMax[i];
+        }
+
+        // Print scan color payload + output encoding (print medium).
+        {
+            const Scanner::ColorRuntime& color = _ws->printColorRuntime;
+            for (int i = 0; i < 9; ++i) {
+                run.scanColor.cat02[i] = color.cat02[i];
+                run.scanColor.xyzToRgb[i] = color.xyzToRgb[i];
+            }
+            for (int i = 0; i < 3; ++i) {
+                run.scanColor.illuminantXYZ[i] = color.illuminantXYZ[i];
+            }
+
+            run.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
+            run.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
+            run.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
+            run.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
+
+            const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
+            run.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
+            run.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
+            run.scanColor.encoding.cctf.a = outSpace.cctf.a;
+            run.scanColor.encoding.cctf.b = outSpace.cctf.b;
+            run.scanColor.encoding.cctf.c = outSpace.cctf.c;
+            run.scanColor.encoding.cctf.d = outSpace.cctf.d;
+            run.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
+
+            const OutputEncoding::Matrix3x3 dwgToOutput = OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
+            for (int i = 0; i < 9; ++i) {
+                run.scanColor.encoding.dwgToOutput[i] = dwgToOutput.m[i];
+            }
+        }
+
+        const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
+
+        // Device pointers from the per-instance cache + kernel launch + record_use must be
+        // serialized to avoid rebuild races before lastUseEvent is recorded.
+        {
+            std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+            if (!cudaResources) {
+                JTRACE("CUDA", "FATAL: CUDA resources missing for Phase 5");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            // Ensure the print illuminant filtered is available for current print params.
+            std::string illumError;
+            if (!JuicerCuda::ensure_print_illuminant_filtered(*cudaResources, *_ws, *_prt, _printParams, _pCudaStream, illumError)) {
+                JTRACE("CUDA", std::string("CUDA print illuminant upload failed: ") + illumError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+
+            // Film density curves + sensitivities + SPD reconstruction tables.
+            run.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n };
+            run.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n };
+            run.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n };
+            run.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n };
+            run.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n };
+            run.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n };
+            run.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n };
+            run.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n };
+            run.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n };
+
+            run.tablesAx = cudaResources->tablesAx;
+            run.tablesAy = cudaResources->tablesAy;
+            run.tablesAz = cudaResources->tablesAz;
+            run.tablesK = cudaResources->tablesK;
+            for (int i = 0; i < 9; ++i) {
+                run.spdSInv[i] = cudaResources->spdSInv[i];
+            }
+
+            run.hanatosLut = cudaResources->hanatosLut;
+            run.hanatosN = cudaResources->hanatosN;
+
+            // Scan LUT selection (print medium).
+            run.scannerUseLut = _scannerSettings.useLut ? 1 : 0;
+            run.scanLutLogXYZ = nullptr;
+            run.scanLutRes = 0;
+            if (run.scannerUseLut) {
+                std::string lutError;
+                if (!JuicerCuda::ensure_scan_lut(*cudaResources, *_ws, false, _pCudaStream, lutError)) {
+                    JTRACE("CUDA", std::string("CUDA print scan LUT upload failed: ") + lutError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                run.scanLutLogXYZ = cudaResources->scanPrintLut.logXYZ;
+                run.scanLutRes = static_cast<int>(cudaResources->scanPrintLut.res);
+                if (!run.scanLutLogXYZ || run.scanLutRes <= 0) {
+                    JTRACE("CUDA", "FATAL: print scan LUT missing after successful upload");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+
+            // Print scan tables payload (for the scan stage).
+            run.scan.epsC = cudaResources->scanPrint.tables.epsC;
+            run.scan.epsM = cudaResources->scanPrint.tables.epsM;
+            run.scan.epsY = cudaResources->scanPrint.tables.epsY;
+            run.scan.Ax = cudaResources->scanPrint.tables.Ax;
+            run.scan.Ay = cudaResources->scanPrint.tables.Ay;
+            run.scan.Az = cudaResources->scanPrint.tables.Az;
+            run.scan.baseMin = cudaResources->scanPrint.tables.baseMin;
+            run.scan.K = cudaResources->scanPrint.tables.K;
+            run.scan.hasBaseline = cudaResources->scanPrint.tables.hasBaseline;
+            run.scan.invYn = cudaResources->scanPrint.tables.invYn;
+            run.scan.mediumIsNegative = cudaResources->scanPrint.mediumIsNegative;
+            for (int i = 0; i < 3; ++i) {
+                run.scan.min_cmy[i] = cudaResources->scanPrint.min_cmy[i];
+                run.scan.inv_max_cmy[i] = cudaResources->scanPrint.inv_max_cmy[i];
+            }
+
+            std::string scanFlagError;
+            if (!JuicerCuda::ensure_scan_error_flag(*cudaResources, _pCudaStream, scanFlagError)) {
+                JTRACE("CUDA", std::string("CUDA scan error flag allocation failed: ") + scanFlagError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+            run.scanErrorFlag = cudaResources->scanErrorFlag;
+            if (!run.scanErrorFlag) {
+                JTRACE("CUDA", "FATAL: scan error flag missing after allocation");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            cudaEvent_t scanEvent = cudaResources->scanErrorEventOpaque
+                ? reinterpret_cast<cudaEvent_t>(cudaResources->scanErrorEventOpaque)
+                : nullptr;
+            if (cudaResources->scanErrorPending && scanEvent && cudaResources->scanErrorHost) {
+                cudaError_t pollErr = cudaEventQuery(scanEvent);
+                if (pollErr == cudaErrorNotReady) {
+                    pollErr = cudaEventSynchronize(scanEvent);
+                }
+                if (pollErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(pollErr);
+                    JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+                cudaResources->scanErrorPending = 0;
+                if (*cudaResources->scanErrorHost != 0) {
+                    JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+
+            cudaError_t flagErr = cudaMemsetAsync(run.scanErrorFlag, 0, sizeof(int), stream);
+            if (flagErr != cudaSuccess) {
+                const char* msg = cudaGetErrorString(flagErr);
+                JTRACE("CUDA", std::string("CUDA scan error flag memset failed: ") + (msg ? msg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+
+            // Phase 5 print payloads.
+            run.printActive = 1;
+            run.negTables.epsC = cudaResources->scanNegative.tables.epsC;
+            run.negTables.epsM = cudaResources->scanNegative.tables.epsM;
+            run.negTables.epsY = cudaResources->scanNegative.tables.epsY;
+            run.negTables.Ax = cudaResources->scanNegative.tables.Ax;
+            run.negTables.Ay = cudaResources->scanNegative.tables.Ay;
+            run.negTables.Az = cudaResources->scanNegative.tables.Az;
+            run.negTables.baseMin = cudaResources->scanNegative.tables.baseMin;
+            run.negTables.K = cudaResources->scanNegative.tables.K;
+            run.negTables.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
+            run.negTables.invYn = cudaResources->scanNegative.tables.invYn;
+            run.negTables.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
+            for (int i = 0; i < 3; ++i) {
+                run.negTables.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
+                run.negTables.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
+            }
+
+            run.printIllumFiltered = cudaResources->printIllumFiltered;
+            run.printIllumK = cudaResources->printIllumK;
+            run.printSensC = { cudaResources->printSensC.x, cudaResources->printSensC.y, cudaResources->printSensC.n };
+            run.printSensM = { cudaResources->printSensM.x, cudaResources->printSensM.y, cudaResources->printSensM.n };
+            run.printSensY = { cudaResources->printSensY.x, cudaResources->printSensY.y, cudaResources->printSensY.n };
+            run.printDcC = { cudaResources->printDcC.x, cudaResources->printDcC.y, cudaResources->printDcC.n };
+            run.printDcM = { cudaResources->printDcM.x, cudaResources->printDcM.y, cudaResources->printDcM.n };
+            run.printDcY = { cudaResources->printDcY.x, cudaResources->printDcY.y, cudaResources->printDcY.n };
+            run.printGammaC = cudaResources->printGammaC;
+            run.printGammaM = cudaResources->printGammaM;
+            run.printGammaY = cudaResources->printGammaY;
+            run.printExposure = _printParams.exposure;
+            run.printPreflashExposure = _printParams.preflashExposure;
+            run.printMidgrayFactor = kMidSpectral;
+            for (int i = 0; i < 3; ++i) {
+                run.printPreflashRaw[i] = cudaResources->printPreflashRaw[i];
+            }
+
+            if (!run.printIllumFiltered || run.printIllumK <= 0 ||
+                !run.printSensC.y || !run.printSensM.y || !run.printSensY.y ||
+                !run.printDcC.y || !run.printDcM.y || !run.printDcY.y) {
+                JTRACE("CUDA", "CUDA print payloads missing; cannot render print pipeline");
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+
+            // Scanner optics/glare for the print medium.
+            Scanner::ScannerMediumRuntime printMedium = _ws->printMediumRuntime;
+            if (_hasPrintGlareOverride) {
+                printMedium.glare.active = _printGlareOverride.active;
+                printMedium.glare.percent = _printGlareOverride.percent;
+                printMedium.glare.roughness = _printGlareOverride.roughness;
+                printMedium.glare.blur = _printGlareOverride.blur;
+                printMedium.glare.compensationRemovalFactor = 0.0f;
+                printMedium.glare.compensationRemovalDensity = 0.0f;
+                printMedium.glare.compensationRemovalTransition = 0.0f;
+                const std::uint64_t glareHash = Scanner::hash_glare(printMedium.glare);
+                if (glareHash == 0) {
+                    JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+                printMedium.staticKey.glareHash = glareHash;
+            }
+
+            const bool wantGlare = printMedium.glare.active && (printMedium.glare.percent > 0.0f);
+            float glarePercent = 0.0f;
+            float glareRoughness = 0.0f;
+            float glareBlurSigmaPx = 0.0f;
+            std::uint64_t glareSeed = 0;
+            if (wantGlare) {
+                glarePercent = printMedium.glare.percent;
+                glareRoughness = printMedium.glare.roughness;
+                glareBlurSigmaPx = printMedium.glare.blur;
+
+                const std::uint64_t buildCounter = _ws->buildCounter;
+                const std::uint64_t seedBaseFields[3] = {
+                    static_cast<std::uint64_t>(_clipToken),
+                    _frameTimeHash,
+                    buildCounter
+                };
+                std::uint64_t seedBase = Hash::hash_bytes(seedBaseFields, sizeof(seedBaseFields));
+                if (seedBase == 0) {
+                    seedBase = 1;
+                }
+
+                const std::uint64_t glareFields[4] = {
+                    seedBase,
+                    static_cast<std::uint64_t>(_frameBoundsVersion),
+                    printMedium.staticKey.glareHash,
+                    static_cast<std::uint64_t>(Scanner::ScannerMedium::Print)
+                };
+                glareSeed = Hash::hash_bytes(glareFields, sizeof(glareFields));
+            }
+
+            const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
+            const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
+            const float unsharpAmount = _scannerOptions.unsharpAmount;
+
+            const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
+            const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
+                std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare;
+
+            cudaError_t err = cudaSuccess;
+            if (!wantOptics) {
+                err = juicer_cuda_phase5_print_pipeline(&run, _pCudaStream);
+            }
+            else {
+                std::string opticsError;
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, wantUnsharp, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA lens blur kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerUnsharpKernel, unsharpSigmaPx, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA unsharp kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerGlareKernel, wantGlare ? glareBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                    JTRACE("CUDA", std::string("CUDA glare kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+
+                err = juicer_cuda_phase5_print_pipeline_optics(
+                    &run,
+                    cudaResources->scannerScratch.rgbR,
+                    cudaResources->scannerScratch.rgbG,
+                    cudaResources->scannerScratch.rgbB,
+                    cudaResources->scannerScratch.tmp,
+                    cudaResources->scannerScratch.blurred,
+                    cudaResources->scannerLensBlurKernel.weights,
+                    cudaResources->scannerLensBlurKernel.radius,
+                    cudaResources->scannerUnsharpKernel.weights,
+                    cudaResources->scannerUnsharpKernel.radius,
+                    unsharpAmount,
+                    win.x1,
+                    win.y1,
+                    glareSeed,
+                    glarePercent,
+                    glareRoughness,
+                    cudaResources->scannerGlareKernel.weights,
+                    cudaResources->scannerGlareKernel.radius,
+                    _pCudaStream);
+            }
+            if (err != cudaSuccess) {
+                const char* msg = cudaGetErrorString(err);
+                JTRACE("CUDA", std::string("FATAL: Phase 5 kernel launch failed: ") + (msg ? msg : "(unknown)"));
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            if (cudaResources->scanErrorHost && scanEvent) {
+                cudaError_t flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                if (flagErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(flagErr);
+                    JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                cudaError_t evErr = cudaEventRecord(scanEvent, stream);
+                if (evErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(evErr);
+                    JTRACE("CUDA", std::string("CUDA scan error event record failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+                cudaResources->scanErrorPending = 1;
+                cudaError_t pollErr = cudaEventQuery(scanEvent);
+                if (pollErr == cudaSuccess) {
+                    cudaResources->scanErrorPending = 0;
+                    if (*cudaResources->scanErrorHost != 0) {
+                        JTRACE("CUDA", "FATAL: Phase 5 scan produced non-finite RGB");
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
+                }
+                else if (pollErr != cudaErrorNotReady) {
+                    const char* msg = cudaGetErrorString(pollErr);
+                    JTRACE("CUDA", std::string("CUDA scan error event query failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+            else {
+                int scanError = 0;
+                cudaError_t flagErr = cudaMemcpyAsync(&scanError, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                if (flagErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(flagErr);
+                    JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                flagErr = cudaStreamSynchronize(stream);
+                if (flagErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(flagErr);
+                    JTRACE("CUDA", std::string("CUDA stream sync failed after Phase 5: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+                if (scanError != 0) {
+                    JTRACE("CUDA", "FATAL: Phase 5 scan produced non-finite RGB");
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
             }
 
             JuicerCuda::record_use(*cudaResources, _pCudaStream);

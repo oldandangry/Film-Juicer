@@ -17,6 +17,27 @@ namespace {
         float m[9];
     };
 
+    struct DeviceAccumBuffers {
+        double* sumY = nullptr;
+        double* sumW = nullptr;
+        int deviceId = -1;
+
+        ~DeviceAccumBuffers() {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+            if (sumY) {
+                cudaFree(sumY);
+                sumY = nullptr;
+            }
+            if (sumW) {
+                cudaFree(sumW);
+                sumW = nullptr;
+            }
+#endif
+        }
+    };
+
+    thread_local DeviceAccumBuffers gAccum;
+
     __device__ __forceinline__ float sanitize_channel(float v) {
         return isfinite(v) ? v : 0.0f;
     }
@@ -209,31 +230,50 @@ extern "C" int juicer_cuda_measure_center_weighted_Y(
 
     const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 
-    double* dSumY = nullptr;
-    double* dSumW = nullptr;
-    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dSumY), sizeof(double));
-    if (err != cudaSuccess) {
-        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMalloc(sumY) failed: ", err);
-        return 4;
+    int curDevice = -1;
+    cudaError_t err = cudaGetDevice(&curDevice);
+    if (err != cudaSuccess || curDevice < 0) {
+        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaGetDevice failed: ", err);
+        return 12;
     }
-    err = cudaMalloc(reinterpret_cast<void**>(&dSumW), sizeof(double));
-    if (err != cudaSuccess) {
-        cudaFree(dSumY);
-        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMalloc(sumW) failed: ", err);
-        return 5;
+
+    if (gAccum.deviceId != curDevice) {
+        if (gAccum.sumY) {
+            cudaFree(gAccum.sumY);
+            gAccum.sumY = nullptr;
+        }
+        if (gAccum.sumW) {
+            cudaFree(gAccum.sumW);
+            gAccum.sumW = nullptr;
+        }
+        gAccum.deviceId = curDevice;
     }
+
+    if (!gAccum.sumY) {
+        err = cudaMalloc(reinterpret_cast<void**>(&gAccum.sumY), sizeof(double));
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMalloc(sumY) failed: ", err);
+            return 4;
+        }
+    }
+    if (!gAccum.sumW) {
+        err = cudaMalloc(reinterpret_cast<void**>(&gAccum.sumW), sizeof(double));
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMalloc(sumW) failed: ", err);
+            return 5;
+        }
+    }
+
+    double* dSumY = gAccum.sumY;
+    double* dSumW = gAccum.sumW;
 
     err = cudaMemsetAsync(dSumY, 0, sizeof(double), stream);
     if (err != cudaSuccess) {
-        cudaFree(dSumW);
-        cudaFree(dSumY);
         if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMemsetAsync(sumY) failed: ", err);
         return 6;
     }
     err = cudaMemsetAsync(dSumW, 0, sizeof(double), stream);
     if (err != cudaSuccess) {
-        cudaFree(dSumW);
-        cudaFree(dSumY);
         if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMemsetAsync(sumW) failed: ", err);
         return 7;
     }
@@ -259,8 +299,6 @@ extern "C" int juicer_cuda_measure_center_weighted_Y(
         dSumW);
     err = cudaGetLastError();
     if (err != cudaSuccess) {
-        cudaFree(dSumW);
-        cudaFree(dSumY);
         if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "meter kernel launch failed: ", err);
         return 8;
     }
@@ -269,21 +307,15 @@ extern "C" int juicer_cuda_measure_center_weighted_Y(
     double hSumW = 0.0;
     err = cudaMemcpyAsync(&hSumY, dSumY, sizeof(double), cudaMemcpyDeviceToHost, stream);
     if (err != cudaSuccess) {
-        cudaFree(dSumW);
-        cudaFree(dSumY);
         if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMemcpyAsync(sumY) failed: ", err);
         return 9;
     }
     err = cudaMemcpyAsync(&hSumW, dSumW, sizeof(double), cudaMemcpyDeviceToHost, stream);
     if (err != cudaSuccess) {
-        cudaFree(dSumW);
-        cudaFree(dSumY);
         if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMemcpyAsync(sumW) failed: ", err);
         return 10;
     }
     err = cudaStreamSynchronize(stream);
-    cudaFree(dSumW);
-    cudaFree(dSumY);
     if (err != cudaSuccess) {
         if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaStreamSynchronize failed: ", err);
         return 11;

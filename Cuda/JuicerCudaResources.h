@@ -141,6 +141,12 @@ namespace JuicerCuda {
         float* hanatosLut = nullptr;
         int hanatosN = 0;
 
+        // Device-side flag for scan-stage non-finite detection (set by kernels).
+        int* scanErrorFlag = nullptr;
+        int* scanErrorHost = nullptr;
+        void* scanErrorEventOpaque = nullptr;
+        int scanErrorPending = 0;
+
         Resources() = default;
         Resources(const Resources&) = delete;
         Resources& operator=(const Resources&) = delete;
@@ -156,6 +162,9 @@ namespace JuicerCuda {
 
     // Builds + uploads scan-stage logXYZ LUT on demand (Mitchell cubic sampler parity with CPU).
     bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
+
+    // Ensures the scan error flag device buffer is allocated.
+    bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
 
     // Allocates scratch buffers used by scanner optics (blur/unsharp/glare) when active.
     bool ensure_optics_scratch(Resources& resources, int width, int height, bool needUnsharpScratch, void* cudaStreamOpaque, std::string& outError);

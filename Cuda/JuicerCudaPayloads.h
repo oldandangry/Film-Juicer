@@ -56,6 +56,11 @@ namespace JuicerCuda {
         int applyCctfEncoding = 1;
         int preserveLinearRange = 0;
         int inputIsOutputSpace = 1;
+        float dwgToOutput[9] = {
+            1,0,0,
+            0,1,0,
+            0,0,1
+        };
         CctfPayload cctf{};
     };
 
@@ -140,6 +145,7 @@ namespace JuicerCuda {
 
         ScanTablesPayload scan{};
         ScanColorPayload scanColor{};
+        int* scanErrorFlag = nullptr;
 
         // Phase 5 (PrintBypass=false): optional print pipeline payloads.
         // When printActive=1, kernels:
