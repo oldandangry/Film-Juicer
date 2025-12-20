@@ -156,6 +156,17 @@ namespace JuicerCuda {
         resources.hanatosN = 0;
     }
 
+    static void free_hanatos_integrated(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.hanatosLutIntegrated) {
+            cudaFree(resources.hanatosLutIntegrated);
+            resources.hanatosLutIntegrated = nullptr;
+        }
+#endif
+        resources.hanatosNIntegrated = 0;
+        resources.hanatosIntegratedBuildCounter = 0;
+    }
+
     static void free_scan_error_flag(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.scanErrorFlag) {
@@ -437,6 +448,7 @@ namespace JuicerCuda {
         free_spatial_dir_scratch(spatialDirScratch);
         free_print_payloads(*this);
         free_hanatos(*this);
+        free_hanatos_integrated(*this);
         free_scan_error_flag(*this);
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (lastUseEventOpaque) {
@@ -819,6 +831,12 @@ namespace JuicerCuda {
                     }
                     free_hanatos(resources);
                 }
+                if (resources.hanatosLutIntegrated) {
+                    if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
+                        return false;
+                    }
+                    free_hanatos_integrated(resources);
+                }
             } else {
                 if (!resources.hanatosLut || resources.hanatosN != N) {
                     const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
@@ -844,6 +862,94 @@ namespace JuicerCuda {
                         return false;
                     }
                     resources.hanatosN = N;
+                }
+            }
+
+            // Build + upload the Hanatos LUT preintegrated with per-instance sensitivities.
+            const bool sensOk =
+                static_cast<int>(ws.sensB.linear.size()) == K &&
+                static_cast<int>(ws.sensG.linear.size()) == K &&
+                static_cast<int>(ws.sensR.linear.size()) == K;
+            const bool wantIntegrated = want && sensOk;
+            if (!wantIntegrated) {
+                if (resources.hanatosLutIntegrated) {
+                    if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
+                        return false;
+                    }
+                    free_hanatos_integrated(resources);
+                }
+            }
+            else {
+                const bool needAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
+                const bool needUpload = needAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
+                if (needUpload) {
+                    std::vector<float> cpu;
+                    cpu.resize(static_cast<size_t>(N) * static_cast<size_t>(N) * 4u, 0.0f);
+
+                    const float* lut = ctx.hanSpectra.data.data();
+                    const float* sB = ws.sensB.linear.data();
+                    const float* sG = ws.sensG.linear.data();
+                    const float* sR = ws.sensR.linear.data();
+                    const size_t stride = static_cast<size_t>(K);
+                    for (int x = 0; x < N; ++x) {
+                        for (int y = 0; y < N; ++y) {
+                            double accB = 0.0;
+                            double accG = 0.0;
+                            double accR = 0.0;
+                            const size_t base = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * stride;
+                            for (int k = 0; k < K; ++k) {
+                                const float raw = lut[base + static_cast<size_t>(k)];
+                                if (!std::isfinite(raw)) {
+                                    continue;
+                                }
+                                const float e = (raw > 0.0f) ? raw : 0.0f;
+                                if (!std::isfinite(e)) {
+                                    continue;
+                                }
+                                const double e64 = static_cast<double>(e);
+                                const float sb = sB[k];
+                                const float sg = sG[k];
+                                const float sr = sR[k];
+                                if (std::isfinite(sb)) accB += e64 * static_cast<double>(sb);
+                                if (std::isfinite(sg)) accG += e64 * static_cast<double>(sg);
+                                if (std::isfinite(sr)) accR += e64 * static_cast<double>(sr);
+                            }
+
+                            const size_t outBase = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * 4u;
+                            cpu[outBase + 0] = static_cast<float>(accR);
+                            cpu[outBase + 1] = static_cast<float>(accG);
+                            cpu[outBase + 2] = static_cast<float>(accB);
+                            cpu[outBase + 3] = 0.0f;
+                        }
+                    }
+
+                    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+                    if (needAlloc) {
+                        if (resources.hanatosLutIntegrated) {
+                            if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
+                                return false;
+                            }
+                            free_hanatos_integrated(resources);
+                        }
+                        const size_t bytes = cpu.size() * sizeof(float);
+                        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.hanatosLutIntegrated), bytes);
+                        if (err != cudaSuccess) {
+                            outError = std::string("cudaMalloc(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                            free_hanatos_integrated(resources);
+                            return false;
+                        }
+                    }
+
+                    const size_t bytes = cpu.size() * sizeof(float);
+                    cudaError_t err = cudaMemcpyAsync(resources.hanatosLutIntegrated, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+                    if (err != cudaSuccess) {
+                        outError = std::string("cudaMemcpyAsync(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                        free_hanatos_integrated(resources);
+                        return false;
+                    }
+
+                    resources.hanatosNIntegrated = N;
+                    resources.hanatosIntegratedBuildCounter = ws.buildCounter;
                 }
             }
         }

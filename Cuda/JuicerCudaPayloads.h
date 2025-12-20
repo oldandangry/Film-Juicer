@@ -152,6 +152,8 @@ namespace JuicerCuda {
 
         const float* JUICER_RESTRICT hanatosLut = nullptr;
         int hanatosN = 0;
+        const float* JUICER_RESTRICT hanatosLutIntegrated = nullptr;
+        int hanatosNIntegrated = 0;
 
         int scannerUseLut = 0;
         const double* JUICER_RESTRICT scanLutLogXYZ = nullptr;

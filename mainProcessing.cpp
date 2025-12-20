@@ -1143,6 +1143,8 @@ void JuicerProcessor::processImagesCUDA() {
 
             run.hanatosLut = cudaResources->hanatosLut;
             run.hanatosN = cudaResources->hanatosN;
+            run.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
+            run.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
 
             run.scannerUseLut = gate.scannerUseLut ? 1 : 0;
             run.scanLutLogXYZ = nullptr;
@@ -1613,6 +1615,8 @@ void JuicerProcessor::processImagesCUDA() {
 
             run.hanatosLut = cudaResources->hanatosLut;
             run.hanatosN = cudaResources->hanatosN;
+            run.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
+            run.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
 
             // Scan LUT selection (print medium).
             run.scannerUseLut = _scannerSettings.useLut ? 1 : 0;

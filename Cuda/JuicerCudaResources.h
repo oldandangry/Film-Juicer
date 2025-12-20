@@ -156,6 +156,12 @@ namespace JuicerCuda {
         float* hanatosLut = nullptr;
         int hanatosN = 0;
 
+        // Hanatos LUT preintegrated with per-instance sensitivities.
+        // Layout: ((x*N + y) * 4 + c), c=0..2 (RGB), c=3 unused/padding.
+        float* hanatosLutIntegrated = nullptr;
+        int hanatosNIntegrated = 0;
+        std::uint64_t hanatosIntegratedBuildCounter = 0;
+
         // Device-side flag for scan-stage non-finite detection (set by kernels).
         int* scanErrorFlag = nullptr;
         int* scanErrorHost = nullptr;
