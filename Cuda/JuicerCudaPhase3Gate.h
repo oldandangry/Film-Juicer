@@ -27,10 +27,6 @@ namespace JuicerCuda {
             outReason = "print pipeline (PrintBypass=false) is not supported yet";
             return false;
         }
-        if (in.spatialDirActive) {
-            outReason = "spatial DIR diffusion is not supported yet";
-            return false;
-        }
         outReason.clear();
         return true;
     }

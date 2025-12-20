@@ -117,6 +117,10 @@ namespace JuicerCuda {
 
         int dirPrecorrected = 0;
         DirPayload dir{};
+        int spatialDirActive = 0;
+        const float* spatialDirCorrY = nullptr;
+        const float* spatialDirCorrM = nullptr;
+        const float* spatialDirCorrC = nullptr;
 
         DeviceCurveView densB{};
         DeviceCurveView densG{};

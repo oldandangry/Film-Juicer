@@ -106,10 +106,21 @@ namespace JuicerCuda {
             int height = 0;
         };
 
+        struct DeviceSpatialDirScratch {
+            float* corrY = nullptr;
+            float* corrM = nullptr;
+            float* corrC = nullptr;
+            float* tmp = nullptr;
+            int width = 0;
+            int height = 0;
+        };
+
         DeviceGaussianKernel scannerLensBlurKernel;
         DeviceGaussianKernel scannerUnsharpKernel;
         DeviceGaussianKernel scannerGlareKernel;
         DeviceOpticsScratch scannerScratch;
+        DeviceGaussianKernel spatialDirKernel;
+        DeviceSpatialDirScratch spatialDirScratch;
 
         // Phase 5: print pipeline (PrintBypass=false) payloads.
         DeviceCurve printDcC;
@@ -168,6 +179,12 @@ namespace JuicerCuda {
 
     // Allocates scratch buffers used by scanner optics (blur/unsharp/glare) when active.
     bool ensure_optics_scratch(Resources& resources, int width, int height, bool needUnsharpScratch, void* cudaStreamOpaque, std::string& outError);
+
+    // Allocates scratch buffers used by spatial DIR diffusion (corr planes + temp).
+    bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);
+
+    // Builds and uploads spatial DIR Gaussian kernel (truncate=3.0, radius cap=75).
+    bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
 
     // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=4.0, radius clamp=75) for optics.
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);

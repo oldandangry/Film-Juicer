@@ -1842,6 +1842,148 @@ namespace {
         logE_BGR[2] = clamp_to_curve_domain_device(logE_BGR[2], densR);
     }
 
+    __device__ __forceinline__ void compute_dir_corrections_device(
+        const JuicerCuda::DirPayload& dir,
+        const float dYMC[3],
+        float outYMC[3])
+    {
+        if (!outYMC) {
+            return;
+        }
+        if (!dir.active) {
+            outYMC[0] = 0.0f;
+            outYMC[1] = 0.0f;
+            outYMC[2] = 0.0f;
+            return;
+        }
+
+        auto safe_norm = [](float D, float dmax) -> float {
+            float Din = (!isfinite(D) || D < 0.0f) ? 0.0f : D;
+            float m = (isfinite(dmax) && dmax > 1e-4f) ? dmax : 1.0f;
+            float n = Din / m;
+            if (!isfinite(n) || n < 0.0f) n = 0.0f;
+            return n;
+        };
+
+        float nB = safe_norm(dYMC[0], dir.dMax[0]);
+        float nG = safe_norm(dYMC[1], dir.dMax[1]);
+        float nR = safe_norm(dYMC[2], dir.dMax[2]);
+
+        auto high_boost = [&](float n) -> float {
+            const float nb = n + dir.highShift * n * n;
+            if (!isfinite(nb)) {
+                return (n >= 0.0f && isfinite(n)) ? n : 0.0f;
+            }
+            return fmaxf(0.0f, nb);
+        };
+        nB = high_boost(nB);
+        nG = high_boost(nG);
+        nR = high_boost(nR);
+
+        float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
+        float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
+        float aC = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
+
+        if (!isfinite(aY)) aY = 0.0f;
+        if (!isfinite(aM)) aM = 0.0f;
+        if (!isfinite(aC)) aC = 0.0f;
+
+        auto clamp_corr = [](float v) -> float {
+            if (!isfinite(v)) return 0.0f;
+            if (v < -10.0f) return -10.0f;
+            if (v > 10.0f) return 10.0f;
+            return v;
+        };
+        outYMC[0] = clamp_corr(aY);
+        outYMC[1] = clamp_corr(aM);
+        outYMC[2] = clamp_corr(aC);
+    }
+
+    __device__ __forceinline__ void compute_logE_and_layer_pre_device(
+        const JuicerCuda::Phase3RunParams& params,
+        const float rgbIn[3],
+        float logE_raw[3],
+        float logE_sanitized[3],
+        float layerPre[3])
+    {
+        float rgbDWG[3];
+        convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG);
+
+        float E_raw[3] = { 0.0f, 0.0f, 0.0f };
+        const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
+        const bool spdReady = params.tablesAx && params.tablesAy && params.tablesAz && params.tablesK == 81;
+        const bool useHanatos = allowHanatos &&
+            spdReady &&
+            params.hanatosLut &&
+            (params.hanatosN > 0) &&
+            (params.sensB.n >= 81) &&
+            (params.sensG.n >= 81) &&
+            (params.sensR.n >= 81);
+        const bool canTables =
+            spdReady &&
+            params.sensB.y && params.sensG.y && params.sensR.y &&
+            (params.sensB.n >= 81) &&
+            (params.sensG.n >= 81) &&
+            (params.sensR.n >= 81);
+
+        if (useHanatos) {
+            hanatos_layer_exposures_device(
+                rgbDWG,
+                params.hanatosLut,
+                params.hanatosN,
+                params.filmRaw.refIllumWhiteXYZ,
+                params.sensB.y,
+                params.sensG.y,
+                params.sensR.y,
+                E_raw);
+        }
+        else if (canTables) {
+            tables_layer_exposures_device(
+                rgbDWG,
+                params.spdSInv,
+                params.filmRaw.refIllumWhiteXYZ,
+                params.tablesAx,
+                params.tablesAy,
+                params.tablesAz,
+                params.sensB.y,
+                params.sensG.y,
+                params.sensR.y,
+                E_raw);
+        }
+
+        float midgrayScale = params.filmRaw.midgrayScale;
+        if (!isfinite(midgrayScale) || !(midgrayScale > 0.0f)) {
+            midgrayScale = 1.0f;
+        }
+
+        float exposureScale = params.exposureScale;
+        if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
+            exposureScale = 1.0f;
+        }
+
+        float filmRaw[3];
+        for (int i = 0; i < 3; ++i) {
+            float v = E_raw[i];
+            if (!isfinite(v) || v < 0.0f) v = 0.0f;
+            v = fmaxf(0.0f, v * midgrayScale);
+            v = fmaxf(0.0f, v * exposureScale);
+            filmRaw[i] = v;
+        }
+
+        constexpr float kLogEps = 1e-10f;
+        logE_raw[0] = log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps);
+        logE_raw[1] = log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps);
+        logE_raw[2] = log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps);
+
+        logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], params.densB.x, params.densB.n);
+        logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], params.densG.x, params.densG.n);
+        logE_sanitized[2] = sanitize_inf_logE_for_curve_device(logE_raw[2], params.densR.x, params.densR.n);
+
+        layerPre[0] = sample_density_at_logE_device(params.densB.x, params.densB.y, params.densB.n, logE_sanitized[0], params.gammaFactorB);
+        layerPre[1] = sample_density_at_logE_device(params.densG.x, params.densG.y, params.densG.n, logE_sanitized[1], params.gammaFactorG);
+        layerPre[2] = sample_density_at_logE_device(params.densR.x, params.densR.y, params.densR.n, logE_sanitized[2], params.gammaFactorR);
+    }
+
     __device__ __forceinline__ float density_to_light_sample_agx_device(float density, float illuminant) {
         const double transmitted = pow(10.0, -static_cast<double>(density)) * static_cast<double>(illuminant);
         const float out = static_cast<float>(transmitted);
@@ -1966,6 +2108,78 @@ namespace {
         outPrintCmy[idx * 3 + 2] = D_cmy[2];
     }
 
+    __global__ void spatial_dir_corrections_kernel(
+        JuicerCuda::Phase3RunParams params,
+        float* corrY,
+        float* corrM,
+        float* corrC)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= params.width || y >= params.height) {
+            return;
+        }
+        if (!params.src || params.srcRowBytes == 0) {
+            return;
+        }
+        if (!corrY || !corrM || !corrC) {
+            return;
+        }
+
+        const int nC = params.nComponents;
+        if (!(nC == 3 || nC == 4)) {
+            return;
+        }
+
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+        const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+        if (!srcPix) {
+            return;
+        }
+
+        const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
+        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
+        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
+        compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+
+        const float D_cmy[3] = { layerPre[2], layerPre[1], layerPre[0] };
+        const float dYMC[3] = { D_cmy[2], D_cmy[1], D_cmy[0] };
+
+        float outCorr[3] = { 0.0f, 0.0f, 0.0f };
+        compute_dir_corrections_device(params.dir, dYMC, outCorr);
+
+        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+        corrY[idx] = outCorr[0];
+        corrM[idx] = outCorr[1];
+        corrC[idx] = outCorr[2];
+    }
+
+    __global__ void spatial_dir_clamp_kernel(float* corrY, float* corrM, float* corrC, int n) {
+        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= n) {
+            return;
+        }
+        auto scrub = [](float v) -> float {
+            if (!isfinite(v) || isnan(v)) {
+                return 0.0f;
+            }
+            if (v < -10.0f) return -10.0f;
+            if (v > 10.0f) return 10.0f;
+            return v;
+        };
+        if (corrY) {
+            corrY[idx] = scrub(corrY[idx]);
+        }
+        if (corrM) {
+            corrM[idx] = scrub(corrM[idx]);
+        }
+        if (corrC) {
+            corrC[idx] = scrub(corrC[idx]);
+        }
+    }
+
     __global__ void phase3_negative_only_kernel(JuicerCuda::Phase3RunParams params) {
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
         const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -1988,90 +2202,45 @@ namespace {
 
         const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
 
-        float rgbDWG[3];
-        convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG);
-
-        float E_raw[3] = { 0.0f, 0.0f, 0.0f };
-        const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
-        const bool spdReady = params.tablesAx && params.tablesAy && params.tablesAz && params.tablesK == 81;
-        const bool useHanatos = allowHanatos &&
-            spdReady &&
-            params.hanatosLut &&
-            (params.hanatosN > 0) &&
-            (params.sensB.n >= 81) &&
-            (params.sensG.n >= 81) &&
-            (params.sensR.n >= 81);
-        const bool canTables =
-            spdReady &&
-            params.sensB.y && params.sensG.y && params.sensR.y &&
-            (params.sensB.n >= 81) &&
-            (params.sensG.n >= 81) &&
-            (params.sensR.n >= 81);
-
-        if (useHanatos) {
-            hanatos_layer_exposures_device(
-                rgbDWG,
-                params.hanatosLut,
-                params.hanatosN,
-                params.filmRaw.refIllumWhiteXYZ,
-                params.sensB.y,
-                params.sensG.y,
-                params.sensR.y,
-                E_raw);
-        }
-        else if (canTables) {
-            tables_layer_exposures_device(
-                rgbDWG,
-                params.spdSInv,
-                params.filmRaw.refIllumWhiteXYZ,
-                params.tablesAx,
-                params.tablesAy,
-                params.tablesAz,
-                params.sensB.y,
-                params.sensG.y,
-                params.sensR.y,
-                E_raw);
-        }
-
-        float midgrayScale = params.filmRaw.midgrayScale;
-        if (!isfinite(midgrayScale) || !(midgrayScale > 0.0f)) {
-            midgrayScale = 1.0f;
-        }
-
-        float exposureScale = params.exposureScale;
-        if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
-            exposureScale = 1.0f;
-        }
-
-        float filmRaw[3];
-        for (int i = 0; i < 3; ++i) {
-            float v = E_raw[i];
-            if (!isfinite(v) || v < 0.0f) v = 0.0f;
-            v = fmaxf(0.0f, v * midgrayScale);
-            v = fmaxf(0.0f, v * exposureScale);
-            filmRaw[i] = v;
-        }
-
-        constexpr float kLogEps = 1e-10f;
-        float logE[3] = {
-            log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps),
-            log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps),
-            log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps)
-        };
-
-        // Prevent +/-inf logE from collapsing to NaN in density curve sampling (CPU parity).
-        logE[0] = sanitize_inf_logE_for_curve_device(logE[0], params.densB.x, params.densB.n);
-        logE[1] = sanitize_inf_logE_for_curve_device(logE[1], params.densG.x, params.densG.n);
-        logE[2] = sanitize_inf_logE_for_curve_device(logE[2], params.densR.x, params.densR.n);
-
-        float layerPre[3];
-        layerPre[0] = sample_density_at_logE_device(params.densB.x, params.densB.y, params.densB.n, logE[0], params.gammaFactorB);
-        layerPre[1] = sample_density_at_logE_device(params.densG.x, params.densG.y, params.densG.n, logE[1], params.gammaFactorG);
-        layerPre[2] = sample_density_at_logE_device(params.densR.x, params.densR.y, params.densR.n, logE[2], params.gammaFactorR);
+        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
+        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
+        compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
 
         float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
-        if (params.dir.active) {
-            float logE_corr[3] = { logE[0], logE[1], logE[2] };
+        const bool useSpatialDir =
+            params.spatialDirActive &&
+            params.spatialDirCorrY && params.spatialDirCorrM && params.spatialDirCorrC;
+        if (useSpatialDir) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            const float corrY = params.spatialDirCorrY[idx];
+            const float corrM = params.spatialDirCorrM[idx];
+            const float corrC = params.spatialDirCorrC[idx];
+
+            float logE_corr[3] = {
+                logE_raw[0] - corrY,
+                logE_raw[1] - corrM,
+                logE_raw[2] - corrC
+            };
+
+            const JuicerCuda::DeviceCurveView cB = params.dirPrecorrected ? params.dirDensB : params.densB;
+            const JuicerCuda::DeviceCurveView cG = params.dirPrecorrected ? params.dirDensG : params.densG;
+            const JuicerCuda::DeviceCurveView cR = params.dirPrecorrected ? params.dirDensR : params.densR;
+
+            logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB.x, cB.n);
+            logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG.x, cG.n);
+            logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR.x, cR.n);
+
+            const float DY = sample_density_at_logE_device(cB.x, cB.y, cB.n, logE_corr[0], params.gammaFactorB);
+            const float DM = sample_density_at_logE_device(cG.x, cG.y, cG.n, logE_corr[1], params.gammaFactorG);
+            const float DC = sample_density_at_logE_device(cR.x, cR.y, cR.n, logE_corr[2], params.gammaFactorR);
+
+            D_cmy[0] = DC;
+            D_cmy[1] = DM;
+            D_cmy[2] = DY;
+        }
+        else if (params.dir.active) {
+            float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
             apply_dir_runtime_logE_device(logE_corr, layerPre, params.dir, params.densB, params.densG, params.densR);
 
             const JuicerCuda::DeviceCurveView cB = params.dirPrecorrected ? params.dirDensB : params.densB;
@@ -2282,90 +2451,45 @@ namespace {
 
         const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
 
-        float rgbDWG[3];
-        convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG);
-
-        float E_raw[3] = { 0.0f, 0.0f, 0.0f };
-        const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
-        const bool spdReady = params.tablesAx && params.tablesAy && params.tablesAz && params.tablesK == 81;
-        const bool useHanatos = allowHanatos &&
-            spdReady &&
-            params.hanatosLut &&
-            (params.hanatosN > 0) &&
-            (params.sensB.n >= 81) &&
-            (params.sensG.n >= 81) &&
-            (params.sensR.n >= 81);
-        const bool canTables =
-            spdReady &&
-            params.sensB.y && params.sensG.y && params.sensR.y &&
-            (params.sensB.n >= 81) &&
-            (params.sensG.n >= 81) &&
-            (params.sensR.n >= 81);
-
-        if (useHanatos) {
-            hanatos_layer_exposures_device(
-                rgbDWG,
-                params.hanatosLut,
-                params.hanatosN,
-                params.filmRaw.refIllumWhiteXYZ,
-                params.sensB.y,
-                params.sensG.y,
-                params.sensR.y,
-                E_raw);
-        }
-        else if (canTables) {
-            tables_layer_exposures_device(
-                rgbDWG,
-                params.spdSInv,
-                params.filmRaw.refIllumWhiteXYZ,
-                params.tablesAx,
-                params.tablesAy,
-                params.tablesAz,
-                params.sensB.y,
-                params.sensG.y,
-                params.sensR.y,
-                E_raw);
-        }
-
-        float midgrayScale = params.filmRaw.midgrayScale;
-        if (!isfinite(midgrayScale) || !(midgrayScale > 0.0f)) {
-            midgrayScale = 1.0f;
-        }
-
-        float exposureScale = params.exposureScale;
-        if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
-            exposureScale = 1.0f;
-        }
-
-        float filmRaw[3];
-        for (int i = 0; i < 3; ++i) {
-            float v = E_raw[i];
-            if (!isfinite(v) || v < 0.0f) v = 0.0f;
-            v = fmaxf(0.0f, v * midgrayScale);
-            v = fmaxf(0.0f, v * exposureScale);
-            filmRaw[i] = v;
-        }
-
-        constexpr float kLogEps = 1e-10f;
-        float logE[3] = {
-            log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps),
-            log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps),
-            log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps)
-        };
-
-        // Prevent +/-inf logE from collapsing to NaN in density curve sampling (CPU parity).
-        logE[0] = sanitize_inf_logE_for_curve_device(logE[0], params.densB.x, params.densB.n);
-        logE[1] = sanitize_inf_logE_for_curve_device(logE[1], params.densG.x, params.densG.n);
-        logE[2] = sanitize_inf_logE_for_curve_device(logE[2], params.densR.x, params.densR.n);
-
-        float layerPre[3];
-        layerPre[0] = sample_density_at_logE_device(params.densB.x, params.densB.y, params.densB.n, logE[0], params.gammaFactorB);
-        layerPre[1] = sample_density_at_logE_device(params.densG.x, params.densG.y, params.densG.n, logE[1], params.gammaFactorG);
-        layerPre[2] = sample_density_at_logE_device(params.densR.x, params.densR.y, params.densR.n, logE[2], params.gammaFactorR);
+        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
+        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
+        compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
 
         float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
-        if (params.dir.active) {
-            float logE_corr[3] = { logE[0], logE[1], logE[2] };
+        const bool useSpatialDir =
+            params.spatialDirActive &&
+            params.spatialDirCorrY && params.spatialDirCorrM && params.spatialDirCorrC;
+        if (useSpatialDir) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            const float corrY = params.spatialDirCorrY[idx];
+            const float corrM = params.spatialDirCorrM[idx];
+            const float corrC = params.spatialDirCorrC[idx];
+
+            float logE_corr[3] = {
+                logE_raw[0] - corrY,
+                logE_raw[1] - corrM,
+                logE_raw[2] - corrC
+            };
+
+            const JuicerCuda::DeviceCurveView cB = params.dirPrecorrected ? params.dirDensB : params.densB;
+            const JuicerCuda::DeviceCurveView cG = params.dirPrecorrected ? params.dirDensG : params.densG;
+            const JuicerCuda::DeviceCurveView cR = params.dirPrecorrected ? params.dirDensR : params.densR;
+
+            logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB.x, cB.n);
+            logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG.x, cG.n);
+            logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR.x, cR.n);
+
+            const float DY = sample_density_at_logE_device(cB.x, cB.y, cB.n, logE_corr[0], params.gammaFactorB);
+            const float DM = sample_density_at_logE_device(cG.x, cG.y, cG.n, logE_corr[1], params.gammaFactorG);
+            const float DC = sample_density_at_logE_device(cR.x, cR.y, cR.n, logE_corr[2], params.gammaFactorR);
+
+            D_cmy[0] = DC;
+            D_cmy[1] = DM;
+            D_cmy[2] = DY;
+        }
+        else if (params.dir.active) {
+            float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
             apply_dir_runtime_logE_device(logE_corr, layerPre, params.dir, params.densB, params.densG, params.densR);
 
             const JuicerCuda::DeviceCurveView cB = params.dirPrecorrected ? params.dirDensB : params.densB;
@@ -2653,6 +2777,76 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only(
         static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
         static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
     phase3_negative_only_kernel<<<blocks, threads, 0, stream>>>(params);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t juicer_cuda_build_spatial_dir(
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* dCorrY,
+    float* dCorrM,
+    float* dCorrC,
+    float* dTmp,
+    const float* dKernel,
+    int radius,
+    void* cudaStreamOpaque)
+{
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+
+    const JuicerCuda::Phase3RunParams params = *hParams;
+    if (!params.src || params.srcRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+    if (params.width <= 0 || params.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(params.nComponents == 3 || params.nComponents == 4)) {
+        return cudaErrorInvalidValue;
+    }
+    if (!dCorrY || !dCorrM || !dCorrC || !dTmp) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    dim3 threads2D(16, 16);
+    dim3 blocks2D(
+        static_cast<unsigned int>((params.width + threads2D.x - 1) / threads2D.x),
+        static_cast<unsigned int>((params.height + threads2D.y - 1) / threads2D.y));
+
+    spatial_dir_corrections_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dCorrY, dCorrM, dCorrC);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    auto blur_plane_in_place = [&](float* plane, float* tmpBuf, const float* k, int r) -> cudaError_t {
+        if (!plane || !tmpBuf || !k || r <= 0) {
+            return cudaSuccess;
+        }
+        optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, tmpBuf, params.width, params.height, k, r);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(tmpBuf, plane, params.width, params.height, k, r);
+        return cudaGetLastError();
+    };
+
+    if (radius > 0 && dKernel) {
+        err = blur_plane_in_place(dCorrY, dTmp, dKernel, radius);
+        if (err != cudaSuccess) return err;
+        err = blur_plane_in_place(dCorrM, dTmp, dKernel, radius);
+        if (err != cudaSuccess) return err;
+        err = blur_plane_in_place(dCorrC, dTmp, dKernel, radius);
+        if (err != cudaSuccess) return err;
+    }
+
+    const int total = params.width * params.height;
+    const int threads1D = 256;
+    const int blocks1D = (total + threads1D - 1) / threads1D;
+    spatial_dir_clamp_kernel<<<blocks1D, threads1D, 0, stream>>>(dCorrY, dCorrM, dCorrC, total);
     return cudaGetLastError();
 }
 

@@ -249,6 +249,17 @@ namespace JuicerCuda {
         s.height = 0;
     }
 
+    static void free_spatial_dir_scratch(Resources::DeviceSpatialDirScratch& s) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (s.corrY) { cudaFree(s.corrY); s.corrY = nullptr; }
+        if (s.corrM) { cudaFree(s.corrM); s.corrM = nullptr; }
+        if (s.corrC) { cudaFree(s.corrC); s.corrC = nullptr; }
+        if (s.tmp) { cudaFree(s.tmp); s.tmp = nullptr; }
+#endif
+        s.width = 0;
+        s.height = 0;
+    }
+
     static void free_print_payloads(Resources& resources) noexcept {
         free_curve(resources.printDcC);
         free_curve(resources.printDcM);
@@ -418,6 +429,8 @@ namespace JuicerCuda {
         free_gaussian_kernel(scannerUnsharpKernel);
         free_gaussian_kernel(scannerGlareKernel);
         free_optics_scratch(scannerScratch);
+        free_gaussian_kernel(spatialDirKernel);
+        free_spatial_dir_scratch(spatialDirScratch);
         free_print_payloads(*this);
         free_hanatos(*this);
         free_scan_error_flag(*this);
@@ -1128,6 +1141,178 @@ namespace JuicerCuda {
             }
         }
 
+        return true;
+#endif
+    }
+
+    bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)width;
+        (void)height;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (width <= 0 || height <= 0) {
+            outError = "spatial DIR scratch dimensions invalid";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
+        if (scratch.width == width && scratch.height == height && scratch.corrY && scratch.corrM && scratch.corrC && scratch.tmp) {
+            return true;
+        }
+
+        if (scratch.corrY || scratch.corrM || scratch.corrC || scratch.tmp) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR scratch", outError)) {
+                return false;
+            }
+            free_spatial_dir_scratch(scratch);
+        }
+
+        const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
+        const size_t bytes = total * sizeof(float);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&scratch.corrY), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(spatial DIR corrY) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_spatial_dir_scratch(scratch);
+            return false;
+        }
+        err = cudaMalloc(reinterpret_cast<void**>(&scratch.corrM), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(spatial DIR corrM) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_spatial_dir_scratch(scratch);
+            return false;
+        }
+        err = cudaMalloc(reinterpret_cast<void**>(&scratch.corrC), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(spatial DIR corrC) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_spatial_dir_scratch(scratch);
+            return false;
+        }
+        err = cudaMalloc(reinterpret_cast<void**>(&scratch.tmp), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(spatial DIR tmp) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_spatial_dir_scratch(scratch);
+            return false;
+        }
+
+        scratch.width = width;
+        scratch.height = height;
+        return true;
+#endif
+    }
+
+    bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)kernel;
+        (void)sigma;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
+            if (kernel.weights) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR kernel free", outError)) {
+                    return false;
+                }
+            }
+            free_gaussian_kernel(kernel);
+            return true;
+        }
+
+        const int radiusRaw = std::max(1, static_cast<int>(std::ceil(3.0f * sigma)));
+        const int radius = std::min(radiusRaw, 75);
+        if (radius <= 0) {
+            if (kernel.weights) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR kernel free", outError)) {
+                    return false;
+                }
+            }
+            free_gaussian_kernel(kernel);
+            return true;
+        }
+
+        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+        if (same) {
+            return true;
+        }
+
+        std::vector<float> cpu;
+        cpu.resize(static_cast<size_t>(2 * radius + 1));
+        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
+        double wsum = 0.0;
+        for (int i = -radius; i <= radius; ++i) {
+            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
+            cpu[static_cast<size_t>(i + radius)] = static_cast<float>(w);
+            wsum += w;
+        }
+        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
+        for (float& w : cpu) {
+            w = static_cast<float>(static_cast<double>(w) * invW);
+        }
+
+        if (kernel.weights) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR kernel", outError)) {
+                return false;
+            }
+            free_gaussian_kernel(kernel);
+        }
+
+        const size_t bytes = cpu.size() * sizeof(float);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(spatial DIR kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_gaussian_kernel(kernel);
+            return false;
+        }
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(spatial DIR kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            cudaFree(kernel.weights);
+            free_gaussian_kernel(kernel);
+            return false;
+        }
+
+        kernel.radius = radius;
+        kernel.sigma = sigma;
         return true;
 #endif
     }

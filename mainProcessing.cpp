@@ -30,6 +30,16 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only(
     const JuicerCuda::Phase3RunParams* hParams,
     void* cudaStreamOpaque);
 
+extern "C" cudaError_t juicer_cuda_build_spatial_dir(
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* dCorrY,
+    float* dCorrM,
+    float* dCorrC,
+    float* dTmp,
+    const float* dKernel,
+    int kernelRadius,
+    void* cudaStreamOpaque);
+
 extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
     const JuicerCuda::Phase3RunParams* hParams,
     float* dRgbR,
@@ -1004,6 +1014,8 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
         }
 
+        const bool useSpatialDIR = gate.spatialDirActive;
+
         if (!_ws->negativeScannerValid) {
             JTRACE("CUDA", "FATAL: negative scanner runtime invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1046,7 +1058,7 @@ void JuicerProcessor::processImagesCUDA() {
         run.gammaFactorR = _ws->gammaFactorR;
         run.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
 
-        // DIR runtime payload (non-spatial only; spatial diffusion is gated out above).
+        // DIR runtime payload.
         run.dir.active = _dirRT.active ? 1 : 0;
         run.dir.highShift = _dirRT.highShift;
         for (int r = 0; r < 3; ++r) {
@@ -1203,6 +1215,49 @@ void JuicerProcessor::processImagesCUDA() {
 #else
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+            }
+
+            run.spatialDirActive = useSpatialDIR ? 1 : 0;
+            run.spatialDirCorrY = nullptr;
+            run.spatialDirCorrM = nullptr;
+            run.spatialDirCorrC = nullptr;
+            if (useSpatialDIR) {
+                std::string dirError;
+                if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
+                    JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_spatial_dir_kernel(*cudaResources, cudaResources->spatialDirKernel, _dirRT.spatialSigmaPixels, _pCudaStream, dirError)) {
+                    JTRACE("CUDA", std::string("CUDA spatial DIR kernel upload failed: ") + dirError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+
+                run.spatialDirCorrY = cudaResources->spatialDirScratch.corrY;
+                run.spatialDirCorrM = cudaResources->spatialDirScratch.corrM;
+                run.spatialDirCorrC = cudaResources->spatialDirScratch.corrC;
+
+                cudaError_t dirErr = juicer_cuda_build_spatial_dir(
+                    &run,
+                    cudaResources->spatialDirScratch.corrY,
+                    cudaResources->spatialDirScratch.corrM,
+                    cudaResources->spatialDirScratch.corrC,
+                    cudaResources->spatialDirScratch.tmp,
+                    cudaResources->spatialDirKernel.weights,
+                    cudaResources->spatialDirKernel.radius,
+                    _pCudaStream);
+                if (dirErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(dirErr);
+                    JTRACE("CUDA", std::string("FATAL: spatial DIR build failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
             }
 
             const bool wantGlare = gate.glareActive;
@@ -1377,13 +1432,6 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
-        if (useSpatialDIR) {
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-        }
 
         if (!_ws->printScannerValid) {
             JTRACE("CUDA", "FATAL: print scanner runtime invalid");
@@ -1444,7 +1492,7 @@ void JuicerProcessor::processImagesCUDA() {
         run.gammaFactorR = _ws->gammaFactorR;
         run.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
 
-        // DIR runtime payload (non-spatial only; spatial diffusion is gated out above).
+        // DIR runtime payload.
         run.dir.active = _dirRT.active ? 1 : 0;
         run.dir.highShift = _dirRT.highShift;
         for (int r = 0; r < 3; ++r) {
@@ -1614,6 +1662,49 @@ void JuicerProcessor::processImagesCUDA() {
 #else
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+            }
+
+            run.spatialDirActive = useSpatialDIR ? 1 : 0;
+            run.spatialDirCorrY = nullptr;
+            run.spatialDirCorrM = nullptr;
+            run.spatialDirCorrC = nullptr;
+            if (useSpatialDIR) {
+                std::string dirError;
+                if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
+                    JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+                if (!JuicerCuda::ensure_spatial_dir_kernel(*cudaResources, cudaResources->spatialDirKernel, _dirRT.spatialSigmaPixels, _pCudaStream, dirError)) {
+                    JTRACE("CUDA", std::string("CUDA spatial DIR kernel upload failed: ") + dirError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                }
+
+                run.spatialDirCorrY = cudaResources->spatialDirScratch.corrY;
+                run.spatialDirCorrM = cudaResources->spatialDirScratch.corrM;
+                run.spatialDirCorrC = cudaResources->spatialDirScratch.corrC;
+
+                cudaError_t dirErr = juicer_cuda_build_spatial_dir(
+                    &run,
+                    cudaResources->spatialDirScratch.corrY,
+                    cudaResources->spatialDirScratch.corrM,
+                    cudaResources->spatialDirScratch.corrC,
+                    cudaResources->spatialDirScratch.tmp,
+                    cudaResources->spatialDirKernel.weights,
+                    cudaResources->spatialDirKernel.radius,
+                    _pCudaStream);
+                if (dirErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(dirErr);
+                    JTRACE("CUDA", std::string("FATAL: spatial DIR build failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
             }
 
             // Phase 5 print payloads.
@@ -1787,7 +1878,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             if (cudaResources->scanErrorHost && scanEvent) {
-                cudaError_t flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
                     JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
@@ -1820,7 +1911,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 int scanError = 0;
-                cudaError_t flagErr = cudaMemcpyAsync(&scanError, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                flagErr = cudaMemcpyAsync(&scanError, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
                     JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
