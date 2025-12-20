@@ -2410,6 +2410,24 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     ++target->buildCounter;
+#if JUICER_TRACE_PRINT_SWAP
+    {
+        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
+        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+        const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
+        const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
+        const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
+        const float neutralC = target->printRT ? target->printRT->neutralC : 0.0f;
+        std::string msg = std::string("working state commit build=") + std::to_string(target->buildCounter)
+            + " paper=" + std::string(paperKey ? paperKey : "<null>")
+            + " film=" + std::string(filmKey ? filmKey : "<null>")
+            + " printRT=" + std::to_string(prtPtr)
+            + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
+            + " printRef=" + (target->printRT ? target->printRT->referenceIlluminant : std::string("<null>"))
+            + " printView=" + (target->printRT ? target->printRT->viewingIlluminant : std::string("<null>"));
+        JTRACE("PRINTDBG", msg);
+    }
+#endif
 
     {
         std::ostringstream oss;

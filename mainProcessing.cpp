@@ -906,6 +906,17 @@ void JuicerProcessor::processImagesCUDA() {
             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
         }
+#if JUICER_TRACE_PRINT_SWAP
+        {
+            std::lock_guard<std::mutex> resLock(cudaResources->m);
+            const std::uint64_t build = _ws ? _ws->buildCounter : 0;
+            std::string msg = std::string("cuda upload build=") + std::to_string(build)
+                + " uploaded=" + std::to_string(cudaResources->uploadedBuildCounter)
+                + " printIllumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
+                + " printPreflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
+            JTRACE("PRINTDBG", msg);
+        }
+#endif
     }
 
 #if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
@@ -1556,6 +1567,30 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             }
+#if JUICER_TRACE_PRINT_SWAP
+            {
+                std::lock_guard<std::mutex> resLock(cudaResources->m);
+                const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(_prt);
+                const std::uintptr_t illumPtr = reinterpret_cast<std::uintptr_t>(cudaResources->printIllumRuntimePtr);
+                const std::uintptr_t preflashPtr = reinterpret_cast<std::uintptr_t>(cudaResources->printPreflashRuntimePtr);
+                std::string msg = std::string("cuda print payload build=") + std::to_string(_ws ? _ws->buildCounter : 0)
+                    + " printRT=" + std::to_string(prtPtr)
+                    + " neutralY/M/C=" + std::to_string(_prt ? _prt->neutralY : 0.0f)
+                    + "/" + std::to_string(_prt ? _prt->neutralM : 0.0f)
+                    + "/" + std::to_string(_prt ? _prt->neutralC : 0.0f)
+                    + " yFilter=" + std::to_string(_printParams.yFilter)
+                    + " mFilter=" + std::to_string(_printParams.mFilter)
+                    + " illumPtr=" + std::to_string(illumPtr)
+                    + " illumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
+                    + " illumY/M/Csteps=" + std::to_string(cudaResources->printIllumYShiftSteps)
+                    + "/" + std::to_string(cudaResources->printIllumMShiftSteps)
+                    + "/" + std::to_string(cudaResources->printIllumCShiftSteps)
+                    + " preflashValid=" + std::to_string(cudaResources->printPreflashValid ? 1 : 0)
+                    + " preflashPtr=" + std::to_string(preflashPtr)
+                    + " preflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
+                JTRACE("PRINTDBG", msg);
+            }
+#endif
 
             // Film density curves + sensitivities + SPD reconstruction tables.
             run.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n };

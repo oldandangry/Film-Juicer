@@ -121,3 +121,8 @@ namespace JuicerLogging {
 
 #define JTRACE(tag, msg) ::JuicerLogging::write((tag), (msg))
 #define JTRACE_SCOPE(tag, name) ::JuicerLogging::Scope _juicer_scope_guard_((tag), (name))
+
+// TEMP DEBUG: set to 0 or remove when print swap diagnostics are no longer needed.
+#ifndef JUICER_TRACE_PRINT_SWAP
+#define JUICER_TRACE_PRINT_SWAP 1
+#endif

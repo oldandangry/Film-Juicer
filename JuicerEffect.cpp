@@ -1008,6 +1008,27 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const Print::Runtime* prt = wsInfo.printRuntime;
     const bool wsReady = wsInfo.workingStateReady;
     const bool printReady = wsInfo.printRuntimeReady;
+#if JUICER_TRACE_PRINT_SWAP
+    {
+        ParamSnapshot Pdbg = snapshotParams();
+        const char* paperKey = print_paper_json_key_for_index(Pdbg.printPaperIndex);
+        const char* filmKey = negative_json_key_for_stock_index(Pdbg.filmStockIndex);
+        const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(prt);
+        const std::uint64_t buildCounter = ws ? ws->buildCounter : 0;
+        const float neutralY = prt ? prt->neutralY : 0.0f;
+        const float neutralM = prt ? prt->neutralM : 0.0f;
+        const float neutralC = prt ? prt->neutralC : 0.0f;
+        std::string msg = std::string("render print state build=") + std::to_string(buildCounter)
+            + " paper=" + std::string(paperKey ? paperKey : "<null>")
+            + " film=" + std::string(filmKey ? filmKey : "<null>")
+            + " printRT=" + std::to_string(prtPtr)
+            + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
+            + " yFilter=" + std::to_string(printParams.yFilter)
+            + " mFilter=" + std::to_string(printParams.mFilter)
+            + " bypass=" + std::to_string(printParams.bypass ? 1 : 0);
+        JTRACE("PRINTDBG", msg);
+    }
+#endif
     if (!wsReady) {
         JTRACE("BUILD", "FATAL: working state not ready; aborting render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1462,6 +1483,20 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     ParamSnapshot P = snapshotParams();
+#if JUICER_TRACE_PRINT_SWAP
+    {
+        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
+        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+        std::string msg = std::string("params change name=") + (changedNameOrNull ? changedNameOrNull : "<null>")
+            + " printIndex=" + std::to_string(P.printPaperIndex)
+            + " printKey=" + std::string(paperKey ? paperKey : "<null>")
+            + " filmIndex=" + std::to_string(P.filmStockIndex)
+            + " filmKey=" + std::string(filmKey ? filmKey : "<null>")
+            + " lastPrintIndex=" + std::to_string(_state->lastParams.printPaperIndex)
+            + " lastFilmIndex=" + std::to_string(_state->lastParams.filmStockIndex);
+        JTRACE("PRINTDBG", msg);
+    }
+#endif
 #ifdef JUICER_ENABLE_COUPLERS
     if (changedNameOrNull) {
         if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersActive) == 0) {
@@ -1513,6 +1548,16 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         _state->printRT.midNeutralDensity = std::move(_state->printRT.profile.midNeutralDensity);
         _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
         _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
+#if JUICER_TRACE_PRINT_SWAP
+        {
+            std::string msg = std::string("print reload key=") + std::string(paperKey ? paperKey : "<null>")
+                + " dir=" + printDir
+                + " json=" + printProfileJson
+                + " ref=" + _state->printRT.referenceIlluminant
+                + " view=" + _state->printRT.viewingIlluminant;
+            JTRACE("PRINTDBG", msg);
+        }
+#endif
 
         // Reload dichroic filters (vendor selection controls which curves are used).
         const std::string dichroicDirReload = ensure_trailing_separator(
@@ -1579,10 +1624,34 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     if (printReloaded || dichroicReloaded) {
         applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
         neutralApplied = true;
+#if JUICER_TRACE_PRINT_SWAP
+        {
+            const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
+            const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+            std::string msg = std::string("neutral filters applied (print/dichroic) paper=") + std::string(paperKey ? paperKey : "<null>")
+                + " film=" + std::string(filmKey ? filmKey : "<null>")
+                + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
+                + "/" + std::to_string(_state->printRT.neutralM)
+                + "/" + std::to_string(_state->printRT.neutralC);
+            JTRACE("PRINTDBG", msg);
+        }
+#endif
     }
     if (filmReloaded && !neutralApplied) {
         applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
         neutralApplied = true;
+#if JUICER_TRACE_PRINT_SWAP
+        {
+            const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
+            const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+            std::string msg = std::string("neutral filters applied (film) paper=") + std::string(paperKey ? paperKey : "<null>")
+                + " film=" + std::string(filmKey ? filmKey : "<null>")
+                + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
+                + "/" + std::to_string(_state->printRT.neutralM)
+                + "/" + std::to_string(_state->printRT.neutralC);
+            JTRACE("PRINTDBG", msg);
+        }
+#endif
     }
 
     if (printReloaded && _state->baseLoaded) {
