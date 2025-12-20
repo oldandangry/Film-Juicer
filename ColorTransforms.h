@@ -36,13 +36,15 @@ namespace Spectral {
         DaVinciWideGamut = 0,
         ITU_R_BT2020,
         ACES2065_1,
+        SRGB_Rec709,
         Count
     };
 
     inline constexpr const char* kInputColorSpaceLabels[] = {
         "DaVinci Wide Gamut",
         "ITU-R BT.2020",
-        "ACES2065-1"
+        "ACES2065-1",
+        "sRGB / Rec.709"
     };
 
     inline constexpr std::size_t kInputColorSpaceCount = static_cast<std::size_t>(InputColorSpace::Count);
@@ -136,6 +138,12 @@ namespace Spectral {
         0.00000000f,  0.00000000f,  1.00882518f
     } };
 
+    inline constexpr Mat3 kRGB_to_XYZ_sRGB_Rec709 = { {
+        0.4124564f, 0.3575761f, 0.1804375f,
+        0.2126729f, 0.7151522f, 0.0721750f,
+        0.0193339f, 0.1191920f, 0.9503041f
+    } };
+
     // Global DWG�XYZ matrices
     inline Mat3 gDWG_RGB_to_XYZ = { {
         0.70062239f,  0.14877482f,  0.10105872f,
@@ -160,6 +168,8 @@ namespace Spectral {
             return kRGB_to_XYZ_BT2020;
         case InputColorSpace::ACES2065_1:
             return kRGB_to_XYZ_ACES2065;
+        case InputColorSpace::SRGB_Rec709:
+            return kRGB_to_XYZ_sRGB_Rec709;
         default:
             return kRGB_to_XYZ_DWG;
         }
@@ -169,6 +179,7 @@ namespace Spectral {
         switch (cs) {
         case InputColorSpace::DaVinciWideGamut:
         case InputColorSpace::ITU_R_BT2020:
+        case InputColorSpace::SRGB_Rec709:
             whiteXYZ[0] = gDWG_WhitePoint_XYZ[0];
             whiteXYZ[1] = gDWG_WhitePoint_XYZ[1];
             whiteXYZ[2] = gDWG_WhitePoint_XYZ[2];
@@ -201,6 +212,15 @@ namespace Spectral {
         return static_cast<float>(std::pow((x + (a - 1.0f)) / a, 1.0f / 0.45f));
     }
 
+    inline float decode_sRGB_channel(float v) {
+        const float x = std::max(0.0f, sanitize_channel(v));
+        constexpr float threshold = 0.04045f;
+        if (x <= threshold) {
+            return x / 12.92f;
+        }
+        return static_cast<float>(std::pow((x + 0.055f) / 1.055f, 2.4f));
+    }
+
     inline void apply_input_cctf_decoding(InputColorSpace cs, bool decode, const float in[3], float out[3]) {
         if (!decode) {
             out[0] = sanitize_channel(in[0]);
@@ -214,6 +234,11 @@ namespace Spectral {
             out[0] = decode_BT2020_channel(in[0]);
             out[1] = decode_BT2020_channel(in[1]);
             out[2] = decode_BT2020_channel(in[2]);
+            break;
+        case InputColorSpace::SRGB_Rec709:
+            out[0] = decode_sRGB_channel(in[0]);
+            out[1] = decode_sRGB_channel(in[1]);
+            out[2] = decode_sRGB_channel(in[2]);
             break;
         case InputColorSpace::DaVinciWideGamut:
         case InputColorSpace::ACES2065_1:

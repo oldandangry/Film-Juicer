@@ -234,6 +234,15 @@ namespace {
         return powf((x + (a - 1.0f)) / a, 1.0f / 0.45f);
     }
 
+    __device__ __forceinline__ float decode_srgb_channel_device(float v) {
+        const float x = fmaxf(0.0f, device_sanitize_channel(v));
+        constexpr float threshold = 0.04045f;
+        if (x <= threshold) {
+            return x / 12.92f;
+        }
+        return powf((x + 0.055f) / 1.055f, 2.4f);
+    }
+
     __device__ __forceinline__ void apply_input_cctf_decoding_device(
         int inputColorSpaceIndex,
         int applyCctfDecoding,
@@ -247,11 +256,18 @@ namespace {
             return;
         }
 
-        // InputColorSpace enum: 0=DWG, 1=BT2020, 2=ACES2065-1.
+        // InputColorSpace enum: 0=DWG, 1=BT2020, 2=ACES2065-1, 3=sRGB/Rec.709.
         if (inputColorSpaceIndex == 1) {
             outRgb[0] = decode_bt2020_channel_device(inRgb[0]);
             outRgb[1] = decode_bt2020_channel_device(inRgb[1]);
             outRgb[2] = decode_bt2020_channel_device(inRgb[2]);
+            return;
+        }
+        // 3=sRGB/Rec.709
+        if (inputColorSpaceIndex == 3) {
+            outRgb[0] = decode_srgb_channel_device(inRgb[0]);
+            outRgb[1] = decode_srgb_channel_device(inRgb[1]);
+            outRgb[2] = decode_srgb_channel_device(inRgb[2]);
             return;
         }
 
