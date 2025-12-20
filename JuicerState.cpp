@@ -2409,7 +2409,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         reset_optics_runtime(S.scannerRuntimeB);
     }
 
-    ++target->buildCounter;
+    target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
 #if JUICER_TRACE_PRINT_SWAP
     {
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);

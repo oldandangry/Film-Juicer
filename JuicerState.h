@@ -155,6 +155,7 @@ struct InstanceState {
     std::atomic<WorkingState*> renderWS{ nullptr };
     std::condition_variable renderCv;
     uint64_t activeBuildCounter = 0;
+    std::atomic<std::uint64_t> buildCounterNext{ 0 };
     std::atomic<std::uint32_t> frameBoundsVersion{ 0 };
     OfxRectI cachedFrameBounds{ 0, 0, 0, 0 };
 
