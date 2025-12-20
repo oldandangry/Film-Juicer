@@ -140,6 +140,38 @@ namespace JuicerCuda {
 
         ScanTablesPayload scan{};
         ScanColorPayload scanColor{};
+
+        // Phase 5 (PrintBypass=false): optional print pipeline payloads.
+        // When printActive=1, kernels:
+        //   negative density -> print raw exposure -> print density -> scan (print medium).
+        // ScanTablesPayload 'scan' must be set to the selected scan medium (print), while
+        // negTables must reference the negative dye extinction tables used to compute
+        // negative transmitted light for the print exposure stage.
+        int printActive = 0;
+        ScanTablesPayload negTables{};
+
+        // Precomputed enlarger illuminant filtered by dichroic Y/M/C at the current print params.
+        const float* printIllumFiltered = nullptr;
+        int printIllumK = 0;
+
+        // Print paper sensitivities (linear domain; pinned to the reference axis).
+        DeviceCurveView printSensC{};
+        DeviceCurveView printSensM{};
+        DeviceCurveView printSensY{};
+
+        // Print paper density curves (logE -> D) and per-channel gamma.
+        DeviceCurveView printDcC{};
+        DeviceCurveView printDcM{};
+        DeviceCurveView printDcY{};
+        float printGammaC = 1.0f;
+        float printGammaM = 1.0f;
+        float printGammaY = 1.0f;
+
+        // Print exposure controls.
+        float printExposure = 1.0f;
+        float printPreflashExposure = 0.0f;
+        float printMidgrayFactor = 1.0f;
+        float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
     };
 
 } // namespace JuicerCuda

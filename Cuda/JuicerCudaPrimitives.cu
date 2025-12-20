@@ -1807,6 +1807,130 @@ namespace {
         logE_BGR[2] = clamp_to_curve_domain_device(logE_BGR[2], densR);
     }
 
+    __device__ __forceinline__ float density_to_light_sample_agx_device(float density, float illuminant) {
+        const double transmitted = pow(10.0, -static_cast<double>(density)) * static_cast<double>(illuminant);
+        const float out = static_cast<float>(transmitted);
+        return isnan(out) ? 0.0f : out;
+    }
+
+    __device__ void apply_print_pipeline_device(const JuicerCuda::Phase3RunParams& params, float D_cmy[3]) {
+        if (!params.printActive || !D_cmy) {
+            return;
+        }
+
+        const int K = params.printIllumK;
+        if (K <= 0 || !params.printIllumFiltered) {
+            D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+            return;
+        }
+
+        const int negK = params.negTables.K;
+        if (negK != K || !params.negTables.epsC || !params.negTables.epsM || !params.negTables.epsY) {
+            D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+            return;
+        }
+
+        const bool haveBaseline = (params.negTables.hasBaseline != 0) && params.negTables.baseMin;
+
+        if (!params.printSensC.y || !params.printSensM.y || !params.printSensY.y) {
+            D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+            return;
+        }
+        if (params.printSensC.n < K || params.printSensM.n < K || params.printSensY.n < K) {
+            D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+            return;
+        }
+
+        // Negative density -> filtered enlarger light -> raw print exposures (C/M/Y).
+        double accumC = 0.0;
+        double accumM = 0.0;
+        double accumY = 0.0;
+        for (int i = 0; i < K; ++i) {
+            const float baseD = haveBaseline ? params.negTables.baseMin[i] : 0.0f;
+            const float densitySpectral =
+                D_cmy[0] * params.negTables.epsC[i] +
+                D_cmy[1] * params.negTables.epsM[i] +
+                D_cmy[2] * params.negTables.epsY[i] +
+                baseD;
+
+            const float e = density_to_light_sample_agx_device(densitySpectral, params.printIllumFiltered[i]);
+            if (isnan(e)) {
+                continue;
+            }
+            const double e64 = static_cast<double>(e);
+
+            const float sC = params.printSensC.y[i];
+            const float sM = params.printSensM.y[i];
+            const float sY = params.printSensY.y[i];
+            if (!isnan(sC)) accumC += e64 * static_cast<double>(sC);
+            if (!isnan(sM)) accumM += e64 * static_cast<double>(sM);
+            if (!isnan(sY)) accumY += e64 * static_cast<double>(sY);
+        }
+
+        float rawC = static_cast<float>(accumC);
+        float rawM = static_cast<float>(accumM);
+        float rawY = static_cast<float>(accumY);
+
+        float expPrint = params.printExposure;
+        if (!isfinite(expPrint)) {
+            expPrint = 1.0f;
+        }
+        if (expPrint < 0.0f) {
+            expPrint = 0.0f;
+        }
+
+        float kMid = params.printMidgrayFactor;
+        if (!isfinite(kMid) || !(kMid > 0.0f)) {
+            kMid = 1.0f;
+        }
+
+        const float rawScale = expPrint * kMid;
+        rawC *= rawScale;
+        rawM *= rawScale;
+        rawY *= rawScale;
+
+        const float preflash = params.printPreflashExposure;
+        if (isfinite(preflash) && preflash > 0.0f) {
+            rawC += params.printPreflashRaw[0] * preflash;
+            rawM += params.printPreflashRaw[1] * preflash;
+            rawY += params.printPreflashRaw[2] * preflash;
+        }
+
+        // RAW -> log10(raw + eps) -> print density curves.
+        constexpr float kLogEps = 1e-10f;
+        const float logC = log10f(rawC + kLogEps);
+        const float logM = log10f(rawM + kLogEps);
+        const float logY = log10f(rawY + kLogEps);
+
+        D_cmy[0] = sample_density_at_logE_device(params.printDcC.x, params.printDcC.y, params.printDcC.n, logC, params.printGammaC);
+        D_cmy[1] = sample_density_at_logE_device(params.printDcM.x, params.printDcM.y, params.printDcM.n, logM, params.printGammaM);
+        D_cmy[2] = sample_density_at_logE_device(params.printDcY.x, params.printDcY.y, params.printDcY.n, logY, params.printGammaY);
+    }
+
+    __global__ void probe_print_pipeline_kernel(
+        JuicerCuda::Phase3RunParams params,
+        const float* inNegCmy,
+        float* outPrintCmy,
+        int count)
+    {
+        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= count) {
+            return;
+        }
+        if (!inNegCmy || !outPrintCmy) {
+            return;
+        }
+        float D_cmy[3] = {
+            inNegCmy[idx * 3 + 0],
+            inNegCmy[idx * 3 + 1],
+            inNegCmy[idx * 3 + 2]
+        };
+        apply_print_pipeline_device(params, D_cmy);
+        outPrintCmy[idx * 3 + 0] = D_cmy[0];
+        outPrintCmy[idx * 3 + 1] = D_cmy[1];
+        outPrintCmy[idx * 3 + 2] = D_cmy[2];
+    }
+
     __global__ void phase3_negative_only_kernel(JuicerCuda::Phase3RunParams params) {
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
         const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -1933,6 +2057,8 @@ namespace {
             D_cmy[1] = layerPre[1];
             D_cmy[2] = layerPre[0];
         }
+
+        apply_print_pipeline_device(params, D_cmy);
 
         // Scan: normalize density -> logXYZ
         double D_norm[3];
@@ -2207,6 +2333,8 @@ namespace {
             D_cmy[2] = layerPre[0];
         }
 
+        apply_print_pipeline_device(params, D_cmy);
+
         // Scan: normalize density -> logXYZ
         double D_norm[3];
         if (params.scan.mediumIsNegative) {
@@ -2371,6 +2499,67 @@ namespace {
     }
 
 } // namespace
+
+extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
+    const float* hNegCmy,
+    int count,
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* hOutPrintCmy,
+    void* cudaStreamOpaque)
+{
+    if (!hNegCmy || count <= 0 || !hParams || !hOutPrintCmy) {
+        return cudaErrorInvalidValue;
+    }
+    if (!hParams->printActive) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    float* dIn = nullptr;
+    float* dOut = nullptr;
+    const size_t bytes = static_cast<size_t>(count) * 3u * sizeof(float);
+
+    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dIn), bytes);
+    if (err != cudaSuccess) {
+        return err;
+    }
+    err = cudaMalloc(reinterpret_cast<void**>(&dOut), bytes);
+    if (err != cudaSuccess) {
+        cudaFree(dIn);
+        return err;
+    }
+
+    err = cudaMemcpyAsync(dIn, hNegCmy, bytes, cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dIn);
+        return err;
+    }
+
+    const JuicerCuda::Phase3RunParams params = *hParams;
+    const int threads = 128;
+    const int blocks = (count + threads - 1) / threads;
+    probe_print_pipeline_kernel<<<blocks, threads, 0, stream>>>(params, dIn, dOut, count);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dIn);
+        return err;
+    }
+
+    err = cudaMemcpyAsync(hOutPrintCmy, dOut, bytes, cudaMemcpyDeviceToHost, stream);
+    if (err != cudaSuccess) {
+        cudaFree(dOut);
+        cudaFree(dIn);
+        return err;
+    }
+
+    err = cudaStreamSynchronize(stream);
+    cudaFree(dOut);
+    cudaFree(dIn);
+    return err;
+}
 
 extern "C" cudaError_t juicer_cuda_phase3_negative_only(
     const JuicerCuda::Phase3RunParams* hParams,
@@ -2543,4 +2732,66 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
 
     phase3_stageD_encode_write_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
     return cudaGetLastError();
+}
+
+extern "C" cudaError_t juicer_cuda_phase5_print_pipeline(
+    const JuicerCuda::Phase3RunParams* hParams,
+    void* cudaStreamOpaque)
+{
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+    if (!hParams->printActive) {
+        return cudaErrorInvalidValue;
+    }
+    return juicer_cuda_phase3_negative_only(hParams, cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_phase5_print_pipeline_optics(
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque)
+{
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+    if (!hParams->printActive) {
+        return cudaErrorInvalidValue;
+    }
+    return juicer_cuda_phase3_negative_only_optics(
+        hParams,
+        dRgbR,
+        dRgbG,
+        dRgbB,
+        dTmp,
+        dScratchBlurred,
+        dLensBlurKernel,
+        lensBlurRadius,
+        dUnsharpKernel,
+        unsharpRadius,
+        unsharpAmount,
+        glareOriginX,
+        glareOriginY,
+        glareSeed,
+        glarePercent,
+        glareRoughness,
+        dGlareKernel,
+        glareRadius,
+        cudaStreamOpaque);
 }

@@ -13,6 +13,10 @@
 #include <string>
 
 struct WorkingState;
+namespace Print {
+    struct Runtime;
+    struct Params;
+}
 
 namespace JuicerCuda {
 
@@ -27,6 +31,8 @@ namespace JuicerCuda {
         int deviceId = -1;
         std::uint64_t uploadedBuildCounter = 0;
         std::uint64_t validatedBuildCounter = 0;
+        std::uint64_t validatedPrintBuildCounter = 0;
+        std::uint64_t validatedPrintParamsHash = 0;
 
         // Opaque CUDA event (cudaEvent_t) recorded on the stream after enqueuing work that
         // uses this resource set. Used to safely retire/rebuild buffers across streams.
@@ -105,6 +111,31 @@ namespace JuicerCuda {
         DeviceGaussianKernel scannerGlareKernel;
         DeviceOpticsScratch scannerScratch;
 
+        // Phase 5: print pipeline (PrintBypass=false) payloads.
+        DeviceCurve printDcC;
+        DeviceCurve printDcM;
+        DeviceCurve printDcY;
+
+        DeviceCurve printSensC;
+        DeviceCurve printSensM;
+        DeviceCurve printSensY;
+
+        float printGammaC = 1.0f;
+        float printGammaM = 1.0f;
+        float printGammaY = 1.0f;
+
+        float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
+        bool printPreflashValid = false;
+        std::uint64_t printPreflashBuildCounter = 0;
+
+        // Cached enlarger illuminant filtered by dichroic Y/M/C for the current print params.
+        float* printIllumFiltered = nullptr;
+        int printIllumK = 0;
+        float printIllumYShiftSteps = 0.0f;
+        float printIllumMShiftSteps = 0.0f;
+        std::uint64_t printIllumBuildCounter = 0;
+        const void* printIllumRuntimePtr = nullptr;
+
         // Hanatos LUT (process-global on CPU, uploaded on demand).
         // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
         float* hanatosLut = nullptr;
@@ -132,8 +163,25 @@ namespace JuicerCuda {
     // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=4.0, radius clamp=75) for optics.
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
 
+    // Phase 5: builds + uploads the enlarger illuminant filtered by the current print params (Y/M filters).
+    bool ensure_print_illuminant_filtered(
+        Resources& resources,
+        const WorkingState& ws,
+        const Print::Runtime& prt,
+        const Print::Params& prm,
+        void* cudaStreamOpaque,
+        std::string& outError);
+
     // Optional debug validation of primitives (kept here to avoid a separate JUICER_TESTS harness).
     bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
+    bool validate_print_primitives(
+        Resources& resources,
+        const WorkingState& ws,
+        const Print::Runtime& prt,
+        const Print::Params& prm,
+        float midgrayFactor,
+        void* cudaStreamOpaque,
+        std::string& outError);
 
     // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
     void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;

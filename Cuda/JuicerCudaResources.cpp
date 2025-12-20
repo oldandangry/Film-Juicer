@@ -3,16 +3,21 @@
 // Phase 2: WorkingState uploads + primitive validation hooks.
 //
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaPayloads.h"
 
 #include "FilmProcessing.h"
 #include "ColorTransforms.h"
 #include "SpectralProcessing.h"
 #include "WorkingState.h"
 #include "ScanStage.h"
+#include "Print.h"
+#include "ExposePrintStage.h"
+#include "DevelopPrintStage.h"
 
 #include "GaussianSciPy.h"
 
 #include "Logging.h"
+#include "Hash.h"
 #include "SpectralContext.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -116,6 +121,13 @@ extern "C" cudaError_t juicer_cuda_probe_clamp_logE_to_curve_domain(
     float logE,
     float* outLogE,
     void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
+    const float* hNegCmy,
+    int count,
+    const JuicerCuda::Phase3RunParams* hParams,
+    float* hOutPrintCmy,
+    void* cudaStreamOpaque);
 #endif
 
 namespace JuicerCuda {
@@ -218,6 +230,35 @@ namespace JuicerCuda {
         s.height = 0;
     }
 
+    static void free_print_payloads(Resources& resources) noexcept {
+        free_curve(resources.printDcC);
+        free_curve(resources.printDcM);
+        free_curve(resources.printDcY);
+        free_curve(resources.printSensC);
+        free_curve(resources.printSensM);
+        free_curve(resources.printSensY);
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.printIllumFiltered) {
+            cudaFree(resources.printIllumFiltered);
+            resources.printIllumFiltered = nullptr;
+        }
+#endif
+        resources.printIllumK = 0;
+        resources.printIllumYShiftSteps = 0.0f;
+        resources.printIllumMShiftSteps = 0.0f;
+        resources.printIllumBuildCounter = 0;
+        resources.printIllumRuntimePtr = nullptr;
+
+        resources.printGammaC = 1.0f;
+        resources.printGammaM = 1.0f;
+        resources.printGammaY = 1.0f;
+
+        resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
+        resources.printPreflashValid = false;
+        resources.printPreflashBuildCounter = 0;
+    }
+
     static bool alloc_and_upload_array(float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)dst;
@@ -302,6 +343,43 @@ namespace JuicerCuda {
 #endif
     }
 
+    static bool alloc_and_upload_spectral_samples(DeviceCurve& dst, const std::vector<float>& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)dst;
+        (void)src;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (src.empty()) {
+            outError = std::string(label) + " array is empty";
+            return false;
+        }
+        const int n = static_cast<int>(src.size());
+        if (n <= 0) {
+            outError = std::string(label) + " sample count invalid";
+            return false;
+        }
+        const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dst.y), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(") + label + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_curve(dst);
+            return false;
+        }
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        err = cudaMemcpyAsync(dst.y, src.data(), bytes, cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(") + label + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_curve(dst);
+            return false;
+        }
+        dst.n = n;
+        return true;
+#endif
+    }
+
     Resources::~Resources() {
         free_curve(densB);
         free_curve(densG);
@@ -321,6 +399,7 @@ namespace JuicerCuda {
         free_gaussian_kernel(scannerUnsharpKernel);
         free_gaussian_kernel(scannerGlareKernel);
         free_optics_scratch(scannerScratch);
+        free_print_payloads(*this);
         free_hanatos(*this);
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (lastUseEventOpaque) {
@@ -422,6 +501,7 @@ namespace JuicerCuda {
             free_tables(resources);
             free_scan_medium(resources.scanNegative);
             free_scan_medium(resources.scanPrint);
+            free_print_payloads(resources);
 
             resources.validatedBuildCounter = 0;
         }
@@ -535,6 +615,145 @@ namespace JuicerCuda {
             if (!upload_scan_medium(resources.scanPrint, ws.printMediumRuntime, scanError)) {
                 outError = std::string("upload scan print failed: ") + scanError;
                 return false;
+            }
+        }
+
+        // Phase 5: upload print pipeline payloads when a valid print runtime is present.
+        {
+            const Print::Runtime* prt = ws.printRT.get();
+            if (!prt || !Print::profile_is_valid(prt->profile)) {
+                free_print_payloads(resources);
+            }
+            else {
+                const Print::Profile& p = prt->profile;
+
+                // Upload print density curves (logE->D) for C/M/Y.
+                auto ensure_print_curve = [&](DeviceCurve& dst, const Spectral::Curve& src, const char* label, std::string& err) -> bool {
+                    const int n = static_cast<int>(src.lambda_nm.size());
+                    const bool want = n > 1 && src.linear.size() == src.lambda_nm.size();
+                    if (!want) {
+                        free_curve(dst);
+                        return true;
+                    }
+                    if (dst.n != n || !dst.x || !dst.y) {
+                        free_curve(dst);
+                        if (!alloc_and_upload_curve(dst, src, cudaStreamOpaque, err)) {
+                            err = std::string(label) + ": " + err;
+                            return false;
+                        }
+                    }
+                    return true;
+                };
+
+                std::string printErr;
+                if (!ensure_print_curve(resources.printDcC, p.dcC, "print dcC", printErr)) { outError = printErr; return false; }
+                if (!ensure_print_curve(resources.printDcM, p.dcM, "print dcM", printErr)) { outError = printErr; return false; }
+                if (!ensure_print_curve(resources.printDcY, p.dcY, "print dcY", printErr)) { outError = printErr; return false; }
+
+                // Upload print paper sensitivities (linear domain, pinned to shape).
+                const int K = Spectral::gShape.K;
+                const bool sensOk =
+                    K > 0 &&
+                    static_cast<int>(p.sensC_log.linear.size()) == K &&
+                    static_cast<int>(p.sensM_log.linear.size()) == K &&
+                    static_cast<int>(p.sensY_log.linear.size()) == K;
+                if (!sensOk) {
+                    free_curve(resources.printSensC);
+                    free_curve(resources.printSensM);
+                    free_curve(resources.printSensY);
+                }
+                else {
+                    if (!resources.printSensC.y || resources.printSensC.n != K) {
+                        free_curve(resources.printSensC);
+                        if (!alloc_and_upload_spectral_samples(resources.printSensC, p.sensC_log.linear, cudaStreamOpaque, "print sensC", outError)) { return false; }
+                    }
+                    if (!resources.printSensM.y || resources.printSensM.n != K) {
+                        free_curve(resources.printSensM);
+                        if (!alloc_and_upload_spectral_samples(resources.printSensM, p.sensM_log.linear, cudaStreamOpaque, "print sensM", outError)) { return false; }
+                    }
+                    if (!resources.printSensY.y || resources.printSensY.n != K) {
+                        free_curve(resources.printSensY);
+                        if (!alloc_and_upload_spectral_samples(resources.printSensY, p.sensY_log.linear, cudaStreamOpaque, "print sensY", outError)) { return false; }
+                    }
+                }
+
+                auto gamma_safe = [](float v) -> float {
+                    return (std::isfinite(v) && v > 0.0f) ? v : 1.0f;
+                };
+                resources.printGammaC = gamma_safe(p.gammaFactor[0]);
+                resources.printGammaM = gamma_safe(p.gammaFactor[1]);
+                resources.printGammaY = gamma_safe(p.gammaFactor[2]);
+
+                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState buildCounter.
+                if (!resources.printPreflashValid || resources.printPreflashBuildCounter != ws.buildCounter) {
+                    const int shapeK = Spectral::gShape.K;
+                    const bool haveShape = shapeK > 0;
+                    if (!haveShape) {
+                        resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
+                        resources.printPreflashValid = false;
+                        resources.printPreflashBuildCounter = ws.buildCounter;
+                    }
+                    else {
+                        auto blend = [](float curveVal, float normalizedAmount) -> float {
+                            const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
+                            return 1.0f - (1.0f - curveVal) * a;
+                        };
+                        auto compose_amount = [](float neutralAmount, float deltaSteps) -> float {
+                            const float neutral = std::isfinite(neutralAmount)
+                                ? std::clamp(neutralAmount, 0.0f, 1.0f)
+                                : 0.0f;
+                            float ds = std::isfinite(deltaSteps) ? deltaSteps : 0.0f;
+                            ds = std::clamp(ds, -Print::kEnlargerSteps, Print::kEnlargerSteps);
+                            const float totalSteps = neutral * Print::kEnlargerSteps + ds;
+                            return totalSteps / Print::kEnlargerSteps;
+                        };
+
+                        const float yAmount = compose_amount(prt->neutralY, 0.0f);
+                        const float mAmount = compose_amount(prt->neutralM, 0.0f);
+                        const float cAmount = compose_amount(prt->neutralC, 0.0f);
+
+                        const bool hasBL = ws.hasBaseline &&
+                            static_cast<int>(ws.baseMin.linear.size()) == shapeK &&
+                            static_cast<int>(ws.tablesView.baseMin.size()) == shapeK;
+
+                        double accumC = 0.0;
+                        double accumM = 0.0;
+                        double accumY = 0.0;
+                        for (int i = 0; i < shapeK; ++i) {
+                            const float Ee = (prt->illumEnlarger.linear.size() > static_cast<size_t>(i))
+                                ? prt->illumEnlarger.linear[static_cast<size_t>(i)]
+                                : 1.0f;
+                            const float fY = blend(
+                                (prt->filterY.linear.size() > static_cast<size_t>(i)) ? prt->filterY.linear[static_cast<size_t>(i)] : 1.0f,
+                                yAmount);
+                            const float fM = blend(
+                                (prt->filterM.linear.size() > static_cast<size_t>(i)) ? prt->filterM.linear[static_cast<size_t>(i)] : 1.0f,
+                                mAmount);
+                            const float fC = blend(
+                                (prt->filterC.linear.size() > static_cast<size_t>(i)) ? prt->filterC.linear[static_cast<size_t>(i)] : 1.0f,
+                                cAmount);
+                            const float illumFiltered = Ee * (fY * fM * fC);
+
+                            const float baseDensity = hasBL ? ws.tablesView.baseMin[static_cast<size_t>(i)] : 0.0f;
+                            const double transmitted = std::pow(10.0, -static_cast<double>(baseDensity)) * static_cast<double>(illumFiltered);
+                            const float out = static_cast<float>(transmitted);
+                            const float light = std::isnan(out) ? 0.0f : out;
+                            const float sC = p.sensC_log.linear[static_cast<size_t>(i)];
+                            const float sM = p.sensM_log.linear[static_cast<size_t>(i)];
+                            const float sY = p.sensY_log.linear[static_cast<size_t>(i)];
+                            const double e64 = static_cast<double>(light);
+                            if (!std::isnan(sC)) accumC += e64 * static_cast<double>(sC);
+                            if (!std::isnan(sM)) accumM += e64 * static_cast<double>(sM);
+                            if (!std::isnan(sY)) accumY += e64 * static_cast<double>(sY);
+                        }
+
+                        resources.printPreflashRaw[0] = static_cast<float>(accumC);
+                        resources.printPreflashRaw[1] = static_cast<float>(accumM);
+                        resources.printPreflashRaw[2] = static_cast<float>(accumY);
+                        resources.printPreflashValid = true;
+                        resources.printPreflashBuildCounter = ws.buildCounter;
+                    }
+                }
             }
         }
 
@@ -923,6 +1142,132 @@ namespace JuicerCuda {
 
         kernel.radius = radius;
         kernel.sigma = sigma;
+        return true;
+#endif
+    }
+
+    bool ensure_print_illuminant_filtered(
+        Resources& resources,
+        const WorkingState& ws,
+        const Print::Runtime& prt,
+        const Print::Params& prm,
+        void* cudaStreamOpaque,
+        std::string& outError)
+    {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ws;
+        (void)prt;
+        (void)prm;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        const int K = Spectral::gShape.K;
+        if (K <= 0) {
+            outError = "spectral shape invalid";
+            return false;
+        }
+
+        // Normalize filter step keys for cache parity with ExposePrintStage.
+        const float yKey = std::isfinite(prm.yFilter) ? prm.yFilter : 0.0f;
+        const float mKey = std::isfinite(prm.mFilter) ? prm.mFilter : 0.0f;
+
+        const bool cached =
+            resources.printIllumFiltered &&
+            resources.printIllumK == K &&
+            resources.printIllumBuildCounter == ws.buildCounter &&
+            resources.printIllumRuntimePtr == &prt &&
+            resources.printIllumYShiftSteps == yKey &&
+            resources.printIllumMShiftSteps == mKey;
+        if (cached) {
+            return true;
+        }
+
+        auto blend = [](float curveVal, float normalizedAmount) -> float {
+            const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
+            return 1.0f - (1.0f - curveVal) * a;
+        };
+        auto compose_amount = [](float neutralAmount, float deltaSteps) -> float {
+            const float neutral = std::isfinite(neutralAmount)
+                ? std::clamp(neutralAmount, 0.0f, 1.0f)
+                : 0.0f;
+            float ds = std::isfinite(deltaSteps) ? deltaSteps : 0.0f;
+            ds = std::clamp(ds, -Print::kEnlargerSteps, Print::kEnlargerSteps);
+            const float totalSteps = neutral * Print::kEnlargerSteps + ds;
+            return totalSteps / Print::kEnlargerSteps;
+        };
+
+        const float yAmount = compose_amount(prt.neutralY, yKey);
+        const float mAmount = compose_amount(prt.neutralM, mKey);
+        const float cAmount = compose_amount(prt.neutralC, 0.0f);
+
+        std::vector<float> cpu;
+        cpu.resize(static_cast<size_t>(K));
+        for (int i = 0; i < K; ++i) {
+            const float Ee = (prt.illumEnlarger.linear.size() > static_cast<size_t>(i))
+                ? prt.illumEnlarger.linear[static_cast<size_t>(i)]
+                : 1.0f;
+            const float fY = blend(
+                (prt.filterY.linear.size() > static_cast<size_t>(i)) ? prt.filterY.linear[static_cast<size_t>(i)] : 1.0f,
+                yAmount);
+            const float fM = blend(
+                (prt.filterM.linear.size() > static_cast<size_t>(i)) ? prt.filterM.linear[static_cast<size_t>(i)] : 1.0f,
+                mAmount);
+            const float fC = blend(
+                (prt.filterC.linear.size() > static_cast<size_t>(i)) ? prt.filterC.linear[static_cast<size_t>(i)] : 1.0f,
+                cAmount);
+            cpu[static_cast<size_t>(i)] = Ee * (fY * fM * fC);
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+        if (resources.printIllumFiltered) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "print illuminant filtered", outError)) {
+                return false;
+            }
+            cudaFree(resources.printIllumFiltered);
+            resources.printIllumFiltered = nullptr;
+            resources.printIllumK = 0;
+        }
+
+        float* dIllum = nullptr;
+        const size_t bytes = static_cast<size_t>(K) * sizeof(float);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dIllum), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            return false;
+        }
+        err = cudaMemcpyAsync(dIllum, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            cudaFree(dIllum);
+            return false;
+        }
+
+        resources.printIllumFiltered = dIllum;
+        resources.printIllumK = K;
+        resources.printIllumYShiftSteps = yKey;
+        resources.printIllumMShiftSteps = mKey;
+        resources.printIllumBuildCounter = ws.buildCounter;
+        resources.printIllumRuntimePtr = &prt;
         return true;
 #endif
     }
@@ -1401,6 +1746,197 @@ namespace JuicerCuda {
         }
 
         resources.validatedBuildCounter = ws.buildCounter;
+        return true;
+#endif
+    }
+
+    bool validate_print_primitives(
+        Resources& resources,
+        const WorkingState& ws,
+        const Print::Runtime& prt,
+        const Print::Params& prm,
+        float midgrayFactor,
+        void* cudaStreamOpaque,
+        std::string& outError)
+    {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ws;
+        (void)prt;
+        (void)prm;
+        (void)midgrayFactor;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        // Cache: avoid re-running the (expensive) CPU-vs-GPU probe every frame. This is for debug-only
+        // validation; correctness is still enforced when the key changes.
+        std::uint64_t paramsHash = Hash::kFnvOffset;
+        auto hash_u32 = [&](std::uint32_t v) {
+            Hash::hash_bytes_update(paramsHash, &v, sizeof(v));
+        };
+        auto hash_u64 = [&](std::uint64_t v) {
+            Hash::hash_bytes_update(paramsHash, &v, sizeof(v));
+        };
+        auto hash_f32 = [&](float v) {
+            float vv = v;
+            if (vv == 0.0f) {
+                vv = 0.0f; // canonicalize -0.0f to +0.0f
+            }
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, &vv, sizeof(bits));
+            hash_u32(bits);
+        };
+        auto hash_bool = [&](bool v) {
+            const std::uint32_t b = v ? 1U : 0U;
+            hash_u32(b);
+        };
+
+        hash_u64(ws.buildCounter);
+        hash_f32(prm.exposure);
+        hash_f32(prm.preflashExposure);
+        hash_f32(prm.yFilter);
+        hash_f32(prm.mFilter);
+        hash_bool(prm.exposureCompensationEnabled);
+        hash_f32(prm.exposureCompensationScale);
+        hash_f32(midgrayFactor);
+
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            if (resources.validatedPrintBuildCounter == ws.buildCounter &&
+                resources.validatedPrintParamsHash == paramsHash) {
+                outError.clear();
+                return true;
+            }
+        }
+
+        // Ensure current print illuminant (filtered by print params) is available on device.
+        {
+            std::string illumError;
+            if (!ensure_print_illuminant_filtered(resources, ws, prt, prm, cudaStreamOpaque, illumError)) {
+                outError = std::string("ensure_print_illuminant_filtered failed: ") + illumError;
+                return false;
+            }
+        }
+
+        static constexpr float kNegCmySamples[][3] = {
+            { 0.0f, 0.0f, 0.0f },
+            { 0.2f, 0.3f, 0.4f },
+            { 0.5f, 0.5f, 0.5f },
+            { 1.0f, 0.8f, 0.6f },
+            { 2.0f, 1.5f, 1.0f },
+            { 3.0f, 3.0f, 3.0f }
+        };
+        constexpr int kCount = static_cast<int>(sizeof(kNegCmySamples) / sizeof(kNegCmySamples[0]));
+
+        const float kMid = (std::isfinite(midgrayFactor) && midgrayFactor > 0.0f) ? midgrayFactor : 1.0f;
+
+        float cpuOut[kCount * 3] = {};
+        Pipeline::PrintPipelineScratch scratch{};
+        for (int i = 0; i < kCount; ++i) {
+            Pipeline::ExposePrintInputs in{};
+            in.printRuntime = &prt;
+            in.printParams = &prm;
+            in.negativeDensity.v[0] = kNegCmySamples[i][0];
+            in.negativeDensity.v[1] = kNegCmySamples[i][1];
+            in.negativeDensity.v[2] = kNegCmySamples[i][2];
+            in.midgrayFactor = kMid;
+
+            Pipeline::ExposePrintOutputs ex{};
+            if (!Pipeline::ExposePrintStage::run(ws, in, ex, scratch)) {
+                outError = "CPU ExposePrintStage::run failed";
+                return false;
+            }
+
+            Pipeline::DevelopPrintInputs din{};
+            din.printRuntime = &prt;
+            din.printLogRaw = ex.printLogRaw;
+            Pipeline::DevelopPrintOutputs dout{};
+            if (!Pipeline::DevelopPrintStage::run(din, dout)) {
+                outError = "CPU DevelopPrintStage::run failed";
+                return false;
+            }
+
+            cpuOut[i * 3 + 0] = dout.printDensity.v[0];
+            cpuOut[i * 3 + 1] = dout.printDensity.v[1];
+            cpuOut[i * 3 + 2] = dout.printDensity.v[2];
+        }
+
+        JuicerCuda::Phase3RunParams run{};
+        run.printActive = 1;
+        run.printExposure = prm.exposure;
+        run.printPreflashExposure = prm.preflashExposure;
+        run.printMidgrayFactor = kMid;
+
+        float inNeg[kCount * 3] = {};
+        for (int i = 0; i < kCount; ++i) {
+            inNeg[i * 3 + 0] = kNegCmySamples[i][0];
+            inNeg[i * 3 + 1] = kNegCmySamples[i][1];
+            inNeg[i * 3 + 2] = kNegCmySamples[i][2];
+        }
+        float gpuOut[kCount * 3] = {};
+
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            run.negTables.epsC = resources.scanNegative.tables.epsC;
+            run.negTables.epsM = resources.scanNegative.tables.epsM;
+            run.negTables.epsY = resources.scanNegative.tables.epsY;
+            run.negTables.baseMin = resources.scanNegative.tables.baseMin;
+            run.negTables.K = resources.scanNegative.tables.K;
+            run.negTables.hasBaseline = resources.scanNegative.tables.hasBaseline;
+            run.negTables.invYn = resources.scanNegative.tables.invYn;
+            run.negTables.mediumIsNegative = resources.scanNegative.mediumIsNegative;
+            for (int j = 0; j < 3; ++j) {
+                run.negTables.min_cmy[j] = resources.scanNegative.min_cmy[j];
+                run.negTables.inv_max_cmy[j] = resources.scanNegative.inv_max_cmy[j];
+            }
+
+            run.printIllumFiltered = resources.printIllumFiltered;
+            run.printIllumK = resources.printIllumK;
+            run.printSensC = { resources.printSensC.x, resources.printSensC.y, resources.printSensC.n };
+            run.printSensM = { resources.printSensM.x, resources.printSensM.y, resources.printSensM.n };
+            run.printSensY = { resources.printSensY.x, resources.printSensY.y, resources.printSensY.n };
+            run.printDcC = { resources.printDcC.x, resources.printDcC.y, resources.printDcC.n };
+            run.printDcM = { resources.printDcM.x, resources.printDcM.y, resources.printDcM.n };
+            run.printDcY = { resources.printDcY.x, resources.printDcY.y, resources.printDcY.n };
+            run.printGammaC = resources.printGammaC;
+            run.printGammaM = resources.printGammaM;
+            run.printGammaY = resources.printGammaY;
+            for (int j = 0; j < 3; ++j) {
+                run.printPreflashRaw[j] = resources.printPreflashRaw[j];
+            }
+        }
+
+        const cudaError_t probeErr = ::juicer_cuda_probe_print_pipeline(inNeg, kCount, &run, gpuOut, cudaStreamOpaque);
+        if (probeErr != cudaSuccess) {
+            outError = std::string("GPU print pipeline probe failed: ") + (cudaGetErrorString(probeErr) ? cudaGetErrorString(probeErr) : "(unknown)");
+            return false;
+        }
+
+        float maxAbs = 0.0f;
+        for (int i = 0; i < kCount; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                const float a = cpuOut[i * 3 + c];
+                const float b = gpuOut[i * 3 + c];
+                if (!std::isfinite(a) || !std::isfinite(b)) {
+                    outError = "print pipeline probe produced non-finite values";
+                    return false;
+                }
+                maxAbs = std::max(maxAbs, std::fabs(a - b));
+            }
+        }
+
+        if (!(maxAbs <= 1e-3f)) {
+            outError = "print pipeline mismatch: maxAbs=" + std::to_string(maxAbs);
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            resources.validatedPrintBuildCounter = ws.buildCounter;
+            resources.validatedPrintParamsHash = paramsHash;
+        }
+
         return true;
 #endif
     }
