@@ -277,6 +277,8 @@ namespace JuicerCuda {
         resources.printIllumK = 0;
         resources.printIllumYShiftSteps = 0.0f;
         resources.printIllumMShiftSteps = 0.0f;
+        resources.printIllumCShiftSteps = 0.0f;
+        resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
         resources.printIllumRuntimePtr = nullptr;
 
@@ -287,6 +289,8 @@ namespace JuicerCuda {
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
         resources.printPreflashBuildCounter = 0;
+        resources.printPreflashRuntimePtr = nullptr;
+        resources.printPreflashShapeK = 0;
     }
 
     static bool alloc_and_upload_array(float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -720,14 +724,19 @@ namespace JuicerCuda {
                 resources.printGammaM = gamma_safe(p.gammaFactor[1]);
                 resources.printGammaY = gamma_safe(p.gammaFactor[2]);
 
-                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState buildCounter.
-                if (!resources.printPreflashValid || resources.printPreflashBuildCounter != ws.buildCounter) {
+                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState/runtime.
+                if (!resources.printPreflashValid ||
+                    resources.printPreflashBuildCounter != ws.buildCounter ||
+                    resources.printPreflashRuntimePtr != prt ||
+                    resources.printPreflashShapeK != Spectral::gShape.K) {
                     const int shapeK = Spectral::gShape.K;
                     const bool haveShape = shapeK > 0;
                     if (!haveShape) {
                         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
                         resources.printPreflashValid = false;
                         resources.printPreflashBuildCounter = ws.buildCounter;
+                        resources.printPreflashRuntimePtr = nullptr;
+                        resources.printPreflashShapeK = 0;
                     }
                     else {
                         auto blend = [](float curveVal, float normalizedAmount) -> float {
@@ -788,6 +797,8 @@ namespace JuicerCuda {
                         resources.printPreflashRaw[2] = static_cast<float>(accumY);
                         resources.printPreflashValid = true;
                         resources.printPreflashBuildCounter = ws.buildCounter;
+                        resources.printPreflashRuntimePtr = prt;
+                        resources.printPreflashShapeK = shapeK;
                     }
                 }
             }
@@ -1456,14 +1467,17 @@ namespace JuicerCuda {
         // Normalize filter step keys for cache parity with ExposePrintStage.
         const float yKey = std::isfinite(prm.yFilter) ? prm.yFilter : 0.0f;
         const float mKey = std::isfinite(prm.mFilter) ? prm.mFilter : 0.0f;
+        const float cKey = 0.0f;
 
         const bool cached =
             resources.printIllumFiltered &&
             resources.printIllumK == K &&
+            resources.printIllumShapeK == K &&
             resources.printIllumBuildCounter == ws.buildCounter &&
             resources.printIllumRuntimePtr == &prt &&
             resources.printIllumYShiftSteps == yKey &&
-            resources.printIllumMShiftSteps == mKey;
+            resources.printIllumMShiftSteps == mKey &&
+            resources.printIllumCShiftSteps == cKey;
         if (cached) {
             return true;
         }
@@ -1484,7 +1498,7 @@ namespace JuicerCuda {
 
         const float yAmount = compose_amount(prt.neutralY, yKey);
         const float mAmount = compose_amount(prt.neutralM, mKey);
-        const float cAmount = compose_amount(prt.neutralC, 0.0f);
+        const float cAmount = compose_amount(prt.neutralC, cKey);
 
         std::vector<float> cpu;
         cpu.resize(static_cast<size_t>(K));
@@ -1533,6 +1547,8 @@ namespace JuicerCuda {
         resources.printIllumK = K;
         resources.printIllumYShiftSteps = yKey;
         resources.printIllumMShiftSteps = mKey;
+        resources.printIllumCShiftSteps = cKey;
+        resources.printIllumShapeK = K;
         resources.printIllumBuildCounter = ws.buildCounter;
         resources.printIllumRuntimePtr = &prt;
         return true;

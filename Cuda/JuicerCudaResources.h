@@ -138,12 +138,16 @@ namespace JuicerCuda {
         float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
         bool printPreflashValid = false;
         std::uint64_t printPreflashBuildCounter = 0;
+        const void* printPreflashRuntimePtr = nullptr;
+        int printPreflashShapeK = 0;
 
         // Cached enlarger illuminant filtered by dichroic Y/M/C for the current print params.
         float* printIllumFiltered = nullptr;
         int printIllumK = 0;
         float printIllumYShiftSteps = 0.0f;
         float printIllumMShiftSteps = 0.0f;
+        float printIllumCShiftSteps = 0.0f;
+        int printIllumShapeK = 0;
         std::uint64_t printIllumBuildCounter = 0;
         const void* printIllumRuntimePtr = nullptr;
 
@@ -189,7 +193,7 @@ namespace JuicerCuda {
     // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=4.0, radius clamp=75) for optics.
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
 
-    // Phase 5: builds + uploads the enlarger illuminant filtered by the current print params (Y/M filters).
+    // Phase 5: builds + uploads the enlarger illuminant filtered by the current print params (Y/M/C filters).
     bool ensure_print_illuminant_filtered(
         Resources& resources,
         const WorkingState& ws,
