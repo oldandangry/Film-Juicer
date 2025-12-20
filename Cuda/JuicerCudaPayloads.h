@@ -10,9 +10,19 @@
 
 namespace JuicerCuda {
 
+#if !defined(JUICER_RESTRICT)
+#if defined(_MSC_VER)
+#define JUICER_RESTRICT __restrict
+#elif defined(__GNUC__) || defined(__clang__)
+#define JUICER_RESTRICT __restrict__
+#else
+#define JUICER_RESTRICT
+#endif
+#endif
+
     struct DeviceCurveView {
-        const float* x = nullptr;
-        const float* y = nullptr;
+        const float* JUICER_RESTRICT x = nullptr;
+        const float* JUICER_RESTRICT y = nullptr;
         int n = 0;
     };
 
@@ -84,13 +94,13 @@ namespace JuicerCuda {
     };
 
     struct ScanTablesPayload {
-        const float* epsC = nullptr;
-        const float* epsM = nullptr;
-        const float* epsY = nullptr;
-        const float* Ax = nullptr;
-        const float* Ay = nullptr;
-        const float* Az = nullptr;
-        const float* baseMin = nullptr;
+        const float* JUICER_RESTRICT epsC = nullptr;
+        const float* JUICER_RESTRICT epsM = nullptr;
+        const float* JUICER_RESTRICT epsY = nullptr;
+        const float* JUICER_RESTRICT Ax = nullptr;
+        const float* JUICER_RESTRICT Ay = nullptr;
+        const float* JUICER_RESTRICT Az = nullptr;
+        const float* JUICER_RESTRICT baseMin = nullptr;
         int K = 0;
         int hasBaseline = 0;
         float invYn = 1.0f;
@@ -118,9 +128,9 @@ namespace JuicerCuda {
         int dirPrecorrected = 0;
         DirPayload dir{};
         int spatialDirActive = 0;
-        const float* spatialDirCorrY = nullptr;
-        const float* spatialDirCorrM = nullptr;
-        const float* spatialDirCorrC = nullptr;
+        const float* JUICER_RESTRICT spatialDirCorrY = nullptr;
+        const float* JUICER_RESTRICT spatialDirCorrM = nullptr;
+        const float* JUICER_RESTRICT spatialDirCorrC = nullptr;
 
         DeviceCurveView densB{};
         DeviceCurveView densG{};
@@ -134,17 +144,17 @@ namespace JuicerCuda {
         DeviceCurveView sensG{};
         DeviceCurveView sensR{};
 
-        const float* tablesAx = nullptr;
-        const float* tablesAy = nullptr;
-        const float* tablesAz = nullptr;
+        const float* JUICER_RESTRICT tablesAx = nullptr;
+        const float* JUICER_RESTRICT tablesAy = nullptr;
+        const float* JUICER_RESTRICT tablesAz = nullptr;
         int tablesK = 0;
         float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
 
-        const float* hanatosLut = nullptr;
+        const float* JUICER_RESTRICT hanatosLut = nullptr;
         int hanatosN = 0;
 
         int scannerUseLut = 0;
-        const double* scanLutLogXYZ = nullptr;
+        const double* JUICER_RESTRICT scanLutLogXYZ = nullptr;
         int scanLutRes = 0;
 
         ScanTablesPayload scan{};
@@ -161,7 +171,7 @@ namespace JuicerCuda {
         ScanTablesPayload negTables{};
 
         // Precomputed enlarger illuminant filtered by dichroic Y/M/C at the current print params.
-        const float* printIllumFiltered = nullptr;
+        const float* JUICER_RESTRICT printIllumFiltered = nullptr;
         int printIllumK = 0;
 
         // Print paper sensitivities (linear domain; pinned to the reference axis).

@@ -24,7 +24,23 @@ namespace {
         return device_isfinite(v) ? fmaxf(0.0f, v) : 0.0f;
     }
 
-    __device__ float sample_density_at_logE_device(const float* x, const float* y, int n, float logE, float gammaFactor) {
+    __device__ __forceinline__ float ldg_f(const float* p) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 350)
+        return __ldg(p);
+#else
+        return *p;
+#endif
+    }
+
+    __device__ __forceinline__ double ldg_d(const double* p) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 350)
+        return __ldg(p);
+#else
+        return *p;
+#endif
+    }
+
+    __device__ float sample_density_at_logE_device(const float* JUICER_RESTRICT x, const float* JUICER_RESTRICT y, int n, float logE, float gammaFactor) {
         if (!x || !y || n <= 0) {
             return 0.0f;
         }
@@ -38,43 +54,43 @@ namespace {
         const float xq = logE * gammaSafe;
 
         int domainBegin = 0;
-        while (domainBegin < n && !device_isfinite(x[domainBegin])) {
+        while (domainBegin < n && !device_isfinite(ldg_f(x + domainBegin))) {
             ++domainBegin;
         }
         if (domainBegin >= n) {
             return 0.0f;
         }
         int domainEnd = n - 1;
-        while (domainEnd > domainBegin && !device_isfinite(x[domainEnd])) {
+        while (domainEnd > domainBegin && !device_isfinite(ldg_f(x + domainEnd))) {
             --domainEnd;
         }
 
-        const float xmin = x[domainBegin];
-        const float xmax = x[domainEnd];
+        const float xmin = ldg_f(x + domainBegin);
+        const float xmax = ldg_f(x + domainEnd);
         if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
-            return y[domainBegin];
+            return ldg_f(y + domainBegin);
         }
 
         if (xq <= xmin) {
-            return y[domainBegin];
+            return ldg_f(y + domainBegin);
         }
         if (xq >= xmax) {
-            return y[domainEnd];
+            return ldg_f(y + domainEnd);
         }
 
         int i1 = domainBegin + 1;
-        while (i1 <= domainEnd && x[i1] < xq) {
+        while (i1 <= domainEnd && ldg_f(x + i1) < xq) {
             ++i1;
         }
         if (i1 > domainEnd) {
-            return y[domainEnd];
+            return ldg_f(y + domainEnd);
         }
 
         const int i0 = i1 - 1;
-        const float x0 = x[i0];
-        const float x1 = x[i1];
-        const float y0 = y[i0];
-        const float y1 = y[i1];
+        const float x0 = ldg_f(x + i0);
+        const float x1 = ldg_f(x + i1);
+        const float y0 = ldg_f(y + i0);
+        const float y1 = ldg_f(y + i1);
 
         const float denom = x1 - x0;
         if (!(denom > 0.0f) || !device_isfinite(denom)) {
@@ -85,7 +101,7 @@ namespace {
         return y0 + t * (y1 - y0);
     }
 
-    __device__ float sanitize_inf_logE_for_curve_device(float logE, const float* x, int n) {
+    __device__ float sanitize_inf_logE_for_curve_device(float logE, const float* JUICER_RESTRICT x, int n) {
         if (device_isfinite(logE) || isnan(logE)) {
             return logE;
         }
@@ -94,18 +110,18 @@ namespace {
         }
 
         int begin = 0;
-        while (begin < n && !device_isfinite(x[begin])) {
+        while (begin < n && !device_isfinite(ldg_f(x + begin))) {
             ++begin;
         }
         if (begin >= n) {
             return logE;
         }
         int end = n - 1;
-        while (end > begin && !device_isfinite(x[end])) {
+        while (end > begin && !device_isfinite(ldg_f(x + end))) {
             --end;
         }
-        const float xmin = x[begin];
-        const float xmax = x[end];
+        const float xmin = ldg_f(x + begin);
+        const float xmax = ldg_f(x + end);
         if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
             return logE;
         }
@@ -113,11 +129,11 @@ namespace {
     }
 
     __global__ void probe_density_curve_kernel(
-        const float* x,
-        const float* y,
+        const float* JUICER_RESTRICT x,
+        const float* JUICER_RESTRICT y,
         int n,
         float gammaFactor,
-        const float* logE,
+        const float* JUICER_RESTRICT logE,
         int m,
         float* out)
     {
@@ -128,11 +144,11 @@ namespace {
     }
 
     __global__ void probe_density_curve_sanitize_inf_kernel(
-        const float* x,
-        const float* y,
+        const float* JUICER_RESTRICT x,
+        const float* JUICER_RESTRICT y,
         int n,
         float gammaFactor,
-        const float* logE,
+        const float* JUICER_RESTRICT logE,
         int m,
         float* out)
     {
@@ -311,7 +327,7 @@ namespace {
     }
 
     __device__ __forceinline__ float hanatos_bilinear_at(
-        const float* lut,
+        const float* JUICER_RESTRICT lut,
         int N,
         int K,
         int x,
@@ -319,12 +335,12 @@ namespace {
         int k)
     {
         const std::size_t idx = (static_cast<std::size_t>(x) * static_cast<std::size_t>(N) + static_cast<std::size_t>(y)) * static_cast<std::size_t>(K) + static_cast<std::size_t>(k);
-        return lut[idx];
+        return ldg_f(lut + idx);
     }
 
     __device__ void hanatos_linear_spectrum_scaled_device(
         const float rgbDWG[3],
-        const float* hanatosLut,
+        const float* JUICER_RESTRICT hanatosLut,
         int N,
         int K,
         const float refIllumWhiteXYZ[3],
@@ -412,7 +428,7 @@ namespace {
     }
 
     __global__ void probe_hanatos_layer_exposures_kernel(
-        const float* hanatosLut,
+        const float* JUICER_RESTRICT hanatosLut,
         int N,
         int K,
         float exposureScale,
@@ -423,9 +439,9 @@ namespace {
         float refWhite0,
         float refWhite1,
         float refWhite2,
-        const float* sensB,
-        const float* sensG,
-        const float* sensR,
+        const float* JUICER_RESTRICT sensB,
+        const float* JUICER_RESTRICT sensG,
+        const float* JUICER_RESTRICT sensR,
         float* outE3)
     {
         if (threadIdx.x != 0 || blockIdx.x != 0) {
@@ -447,9 +463,9 @@ namespace {
             if (!device_isfinite(e)) {
                 continue;
             }
-            const float sb = sensB ? sensB[i] : 0.0f;
-            const float sg = sensG ? sensG[i] : 0.0f;
-            const float sr = sensR ? sensR[i] : 0.0f;
+            const float sb = sensB ? ldg_f(sensB + i) : 0.0f;
+            const float sg = sensG ? ldg_f(sensG + i) : 0.0f;
+            const float sr = sensR ? ldg_f(sensR + i) : 0.0f;
             const double e64 = static_cast<double>(e);
             if (device_isfinite(sb)) Eb += e64 * static_cast<double>(sb);
             if (device_isfinite(sg)) Eg += e64 * static_cast<double>(sg);
@@ -1348,14 +1364,14 @@ namespace {
         return idx;
     }
 
-    __device__ __forceinline__ double scan_lut_fetch_device(const double* lut, int res, size_t limit, int xi, int yi, int zi, int c) {
+    __device__ __forceinline__ double scan_lut_fetch_device(const double* JUICER_RESTRICT lut, int res, size_t limit, int xi, int yi, int zi, int c) {
         const size_t sRes = static_cast<size_t>(res);
         const size_t idx = (static_cast<size_t>(zi) * sRes + static_cast<size_t>(yi)) * sRes + static_cast<size_t>(xi);
         const size_t base = idx * 3u + static_cast<size_t>(c);
         if (base >= limit) {
             return 0.0;
         }
-        return lut[base];
+        return ldg_d(lut + base);
     }
 
     __device__ __forceinline__ int reflect_index_repeat_device(int idx, int size) {
@@ -1373,7 +1389,7 @@ namespace {
         return idx;
     }
 
-    __device__ __forceinline__ void sample_cubic_scan_lut_device(const double* lut, int resRaw, const double D_norm[3], double out[3]) {
+    __device__ __forceinline__ void sample_cubic_scan_lut_device(const double* JUICER_RESTRICT lut, int resRaw, const double D_norm[3], double out[3]) {
         if (!out) {
             return;
         }
@@ -1466,18 +1482,20 @@ namespace {
         double Y = 0.0;
         double Z = 0.0;
         for (int i = 0; i < medium.K; ++i) {
-            const double baseSpectral = (medium.hasBaseline && medium.baseMin) ? static_cast<double>(medium.baseMin[i]) : 0.0;
+            const double baseSpectral = (medium.hasBaseline && medium.baseMin)
+                ? static_cast<double>(ldg_f(medium.baseMin + i))
+                : 0.0;
             const double Dlambda =
-                D_denorm0 * static_cast<double>(medium.epsC[i]) +
-                D_denorm1 * static_cast<double>(medium.epsM[i]) +
-                D_denorm2 * static_cast<double>(medium.epsY[i]) +
+                D_denorm0 * static_cast<double>(ldg_f(medium.epsC + i)) +
+                D_denorm1 * static_cast<double>(ldg_f(medium.epsM + i)) +
+                D_denorm2 * static_cast<double>(ldg_f(medium.epsY + i)) +
                 baseSpectral;
 
             const double transmittance = pow(10.0, -Dlambda);
 
-            const double ax = static_cast<double>(medium.Ax[i]);
-            const double ay = static_cast<double>(medium.Ay[i]);
-            const double az = static_cast<double>(medium.Az[i]);
+            const double ax = static_cast<double>(ldg_f(medium.Ax + i));
+            const double ay = static_cast<double>(ldg_f(medium.Ay + i));
+            const double az = static_cast<double>(ldg_f(medium.Az + i));
 
             if (isfinite(ax)) {
                 const double out = transmittance * ax;
@@ -1531,12 +1549,12 @@ namespace {
 
     __device__ void hanatos_layer_exposures_device(
         const float rgbDWG[3],
-        const float* hanatosLut,
+        const float* JUICER_RESTRICT hanatosLut,
         int hanatosN,
         const float refIllumWhiteXYZ[3],
-        const float* sensB,
-        const float* sensG,
-        const float* sensR,
+        const float* JUICER_RESTRICT sensB,
+        const float* JUICER_RESTRICT sensG,
+        const float* JUICER_RESTRICT sensR,
         float E_out[3])
     {
         if (!E_out) {
@@ -1634,9 +1652,9 @@ namespace {
             }
             const double e64 = static_cast<double>(e);
 
-            const float sb = sensB[k];
-            const float sg = sensG[k];
-            const float sr = sensR[k];
+            const float sb = ldg_f(sensB + k);
+            const float sg = ldg_f(sensG + k);
+            const float sr = ldg_f(sensR + k);
             if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
             if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
             if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
@@ -1651,12 +1669,12 @@ namespace {
         const float rgbDWG[3],
         const float S_inv[9],
         const float refIllumWhiteXYZ[3],
-        const float* Ax,
-        const float* Ay,
-        const float* Az,
-        const float* sensB,
-        const float* sensG,
-        const float* sensR,
+        const float* JUICER_RESTRICT Ax,
+        const float* JUICER_RESTRICT Ay,
+        const float* JUICER_RESTRICT Az,
+        const float* JUICER_RESTRICT sensB,
+        const float* JUICER_RESTRICT sensG,
+        const float* JUICER_RESTRICT sensR,
         float E_out[3])
     {
         if (!E_out) {
@@ -1729,16 +1747,16 @@ namespace {
 
         const int K = 81;
         for (int i = 0; i < K; ++i) {
-            const float bx = fmaxf(0.0f, device_sanitize_nonneg(Ax[i]));
-            const float by = fmaxf(0.0f, device_sanitize_nonneg(Ay[i]));
-            const float bz = fmaxf(0.0f, device_sanitize_nonneg(Az[i]));
+            const float bx = fmaxf(0.0f, device_sanitize_nonneg(ldg_f(Ax + i)));
+            const float by = fmaxf(0.0f, device_sanitize_nonneg(ldg_f(Ay + i)));
+            const float bz = fmaxf(0.0f, device_sanitize_nonneg(ldg_f(Az + i)));
             const float Ei = fmaxf(1e-6f, cx * bx + cy * by + cz * bz);
 
             Y_recon += static_cast<double>(Ei) * static_cast<double>(by);
 
-            const float sb = sensB[i];
-            const float sg = sensG[i];
-            const float sr = sensR[i];
+            const float sb = ldg_f(sensB + i);
+            const float sg = ldg_f(sensG + i);
+            const float sr = ldg_f(sensR + i);
             const double e64 = static_cast<double>(Ei);
             if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
             if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
@@ -1766,8 +1784,8 @@ namespace {
         if (!c.x || c.n <= 0) {
             return logE;
         }
-        const float xmin = c.x[0];
-        const float xmax = c.x[c.n - 1];
+        const float xmin = ldg_f(c.x);
+        const float xmax = ldg_f(c.x + (c.n - 1));
         if (!isfinite(logE)) {
             return xmin;
         }
@@ -2023,22 +2041,22 @@ namespace {
         double accumM = 0.0;
         double accumY = 0.0;
         for (int i = 0; i < K; ++i) {
-            const float baseD = haveBaseline ? params.negTables.baseMin[i] : 0.0f;
+            const float baseD = haveBaseline ? ldg_f(params.negTables.baseMin + i) : 0.0f;
             const float densitySpectral =
-                D_cmy[0] * params.negTables.epsC[i] +
-                D_cmy[1] * params.negTables.epsM[i] +
-                D_cmy[2] * params.negTables.epsY[i] +
+                D_cmy[0] * ldg_f(params.negTables.epsC + i) +
+                D_cmy[1] * ldg_f(params.negTables.epsM + i) +
+                D_cmy[2] * ldg_f(params.negTables.epsY + i) +
                 baseD;
 
-            const float e = density_to_light_sample_agx_device(densitySpectral, params.printIllumFiltered[i]);
+            const float e = density_to_light_sample_agx_device(densitySpectral, ldg_f(params.printIllumFiltered + i));
             if (isnan(e)) {
                 continue;
             }
             const double e64 = static_cast<double>(e);
 
-            const float sC = params.printSensC.y[i];
-            const float sM = params.printSensM.y[i];
-            const float sY = params.printSensY.y[i];
+            const float sC = ldg_f(params.printSensC.y + i);
+            const float sM = ldg_f(params.printSensM.y + i);
+            const float sY = ldg_f(params.printSensY.y + i);
             if (!isnan(sC)) accumC += e64 * static_cast<double>(sC);
             if (!isnan(sM)) accumM += e64 * static_cast<double>(sM);
             if (!isnan(sY)) accumY += e64 * static_cast<double>(sY);
@@ -2569,11 +2587,11 @@ namespace {
     }
 
     __global__ void optics_blur_horizontal_kernel(
-        const float* in,
+        const float* JUICER_RESTRICT in,
         float* out,
         int width,
         int height,
-        const float* k,
+        const float* JUICER_RESTRICT k,
         int radius)
     {
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2597,11 +2615,11 @@ namespace {
     }
 
     __global__ void optics_blur_vertical_kernel(
-        const float* in,
+        const float* JUICER_RESTRICT in,
         float* out,
         int width,
         int height,
-        const float* k,
+        const float* JUICER_RESTRICT k,
         int radius)
     {
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2624,7 +2642,7 @@ namespace {
             (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
     }
 
-    __global__ void optics_unsharp_combine_kernel(float* inOut, const float* blurred, int n, float amount) {
+    __global__ void optics_unsharp_combine_kernel(float* inOut, const float* JUICER_RESTRICT blurred, int n, float amount) {
         const int idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (idx >= n) {
             return;
@@ -2772,7 +2790,7 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only(
 
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 
-    dim3 threads(16, 16);
+    dim3 threads(32, 8);
     dim3 blocks(
         static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
         static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
@@ -2810,7 +2828,7 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
 
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 
-    dim3 threads2D(16, 16);
+    dim3 threads2D(32, 8);
     dim3 blocks2D(
         static_cast<unsigned int>((params.width + threads2D.x - 1) / threads2D.x),
         static_cast<unsigned int>((params.height + threads2D.y - 1) / threads2D.y));
@@ -2894,7 +2912,7 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
 
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 
-    dim3 threads2D(16, 16);
+    dim3 threads2D(32, 8);
     dim3 blocks2D(
         static_cast<unsigned int>((params.width + threads2D.x - 1) / threads2D.x),
         static_cast<unsigned int>((params.height + threads2D.y - 1) / threads2D.y));
