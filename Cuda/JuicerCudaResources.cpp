@@ -2157,10 +2157,10 @@ namespace JuicerCuda {
         }
 
         JuicerCuda::PipelineRunParams run{};
-        run.printActive = 1;
-        run.printExposure = prm.exposure;
-        run.printPreflashExposure = prm.preflashExposure;
-        run.printMidgrayFactor = kMid;
+        run.printExpose.active = 1;
+        run.printExpose.printExposure = prm.exposure;
+        run.printExpose.printPreflashExposure = prm.preflashExposure;
+        run.printExpose.printMidgrayFactor = kMid;
 
         float inNeg[kCount * 3] = {};
         for (int i = 0; i < kCount; ++i) {
@@ -2172,36 +2172,37 @@ namespace JuicerCuda {
 
         {
             std::lock_guard<std::mutex> lock(resources.m);
-            run.negTables.epsC = resources.scanNegative.tables.epsC;
-            run.negTables.epsM = resources.scanNegative.tables.epsM;
-            run.negTables.epsY = resources.scanNegative.tables.epsY;
-            run.negTables.baseMin = resources.scanNegative.tables.baseMin;
-            run.negTables.K = resources.scanNegative.tables.K;
-            run.negTables.hasBaseline = resources.scanNegative.tables.hasBaseline;
-            run.negTables.invYn = resources.scanNegative.tables.invYn;
-            run.negTables.mediumIsNegative = resources.scanNegative.mediumIsNegative;
+            run.printExpose.negTables.epsC = resources.scanNegative.tables.epsC;
+            run.printExpose.negTables.epsM = resources.scanNegative.tables.epsM;
+            run.printExpose.negTables.epsY = resources.scanNegative.tables.epsY;
+            run.printExpose.negTables.Ax = resources.scanNegative.tables.Ax;
+            run.printExpose.negTables.Ay = resources.scanNegative.tables.Ay;
+            run.printExpose.negTables.Az = resources.scanNegative.tables.Az;
+            run.printExpose.negTables.baseMin = resources.scanNegative.tables.baseMin;
+            run.printExpose.negTables.K = resources.scanNegative.tables.K;
+            run.printExpose.negTables.hasBaseline = resources.scanNegative.tables.hasBaseline;
+            run.printExpose.negTables.invYn = resources.scanNegative.tables.invYn;
+            run.printExpose.negTables.mediumIsNegative = resources.scanNegative.mediumIsNegative;
             for (int j = 0; j < 3; ++j) {
-                run.negTables.min_cmy[j] = resources.scanNegative.min_cmy[j];
-                run.negTables.inv_max_cmy[j] = resources.scanNegative.inv_max_cmy[j];
+                run.printExpose.negTables.min_cmy[j] = resources.scanNegative.min_cmy[j];
+                run.printExpose.negTables.inv_max_cmy[j] = resources.scanNegative.inv_max_cmy[j];
             }
 
-            run.printIllumFiltered = resources.printIllumFiltered;
-            run.printIllumK = resources.printIllumK;
-            run.printSensC = { resources.printSensC.x, resources.printSensC.y, resources.printSensC.n };
-            run.printSensM = { resources.printSensM.x, resources.printSensM.y, resources.printSensM.n };
-            run.printSensY = { resources.printSensY.x, resources.printSensY.y, resources.printSensY.n };
-            run.printDcC = { resources.printDcC.x, resources.printDcC.y, resources.printDcC.n };
-            run.printDcM = { resources.printDcM.x, resources.printDcM.y, resources.printDcM.n };
-            run.printDcY = { resources.printDcY.x, resources.printDcY.y, resources.printDcY.n };
-            run.printGammaC = resources.printGammaC;
-            run.printGammaM = resources.printGammaM;
-            run.printGammaY = resources.printGammaY;
+            run.printExpose.printIllumFiltered = resources.printIllumFiltered;
+            run.printExpose.printIllumK = resources.printIllumK;
+            run.printExpose.printSensC = { resources.printSensC.x, resources.printSensC.y, resources.printSensC.n };
+            run.printExpose.printSensM = { resources.printSensM.x, resources.printSensM.y, resources.printSensM.n };
+            run.printExpose.printSensY = { resources.printSensY.x, resources.printSensY.y, resources.printSensY.n };
+            run.printDevelop.printDcC = { resources.printDcC.x, resources.printDcC.y, resources.printDcC.n };
+            run.printDevelop.printDcM = { resources.printDcM.x, resources.printDcM.y, resources.printDcM.n };
+            run.printDevelop.printDcY = { resources.printDcY.x, resources.printDcY.y, resources.printDcY.n };
+            run.printDevelop.printGammaC = resources.printGammaC;
+            run.printDevelop.printGammaM = resources.printGammaM;
+            run.printDevelop.printGammaY = resources.printGammaY;
             for (int j = 0; j < 3; ++j) {
-                run.printPreflashRaw[j] = resources.printPreflashRaw[j];
+                run.printExpose.printPreflashRaw[j] = resources.printPreflashRaw[j];
             }
         }
-
-        JuicerCuda::init_stage_payloads(run);
 
         const cudaError_t probeErr = ::juicer_cuda_probe_print_pipeline(inNeg, kCount, &run, gpuOut, cudaStreamOpaque);
         if (probeErr != cudaSuccess) {

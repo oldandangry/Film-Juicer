@@ -76,7 +76,7 @@ static __device__ __forceinline__ void scan_spectral_to_log_xyz_device(
 }
 
 static __device__ __forceinline__ void scan_log_xyz_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const JuicerCuda::ScanStagePayload& scanStage,
     const double D_norm[3],
     double logXYZ[3])
 {
@@ -85,10 +85,10 @@ static __device__ __forceinline__ void scan_log_xyz_device(
     }
 
     const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
-    if (params.scannerUseLut && params.scanLutLogXYZ && params.scanLutRes > 0 && D_norm_finite) {
-        sample_cubic_scan_lut_device(params.scanLutLogXYZ, params.scanLutRes, D_norm, logXYZ);
+    if (scanStage.scannerUseLut && scanStage.scanLutLogXYZ && scanStage.scanLutRes > 0 && D_norm_finite) {
+        sample_cubic_scan_lut_device(scanStage.scanLutLogXYZ, scanStage.scanLutRes, D_norm, logXYZ);
     }
     else {
-        scan_spectral_to_log_xyz_device(params.scan, D_norm, logXYZ);
+        scan_spectral_to_log_xyz_device(scanStage.scanTables, D_norm, logXYZ);
     }
 }

@@ -124,7 +124,7 @@ namespace {
         const float dYMC[3] = { D_cmy[2], D_cmy[1], D_cmy[0] };
 
         float outCorr[3] = { 0.0f, 0.0f, 0.0f };
-        compute_dir_corrections_device(params.dir, dYMC, outCorr);
+        compute_dir_corrections_device(params.filmDevelop.dir, dYMC, outCorr);
 
         const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
         corrY[idx] = outCorr[0];

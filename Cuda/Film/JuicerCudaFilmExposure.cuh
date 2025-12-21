@@ -391,61 +391,64 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
     float logE_sanitized[3],
     float layerPre[3])
 {
+    const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
+    const JuicerCuda::FilmDevelopPayload& develop = params.filmDevelop;
+
     float rgbDWG[3];
     convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG);
 
     float E_raw[3] = { 0.0f, 0.0f, 0.0f };
     const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
-    const bool spdReady = params.tablesAx && params.tablesAy && params.tablesAz && params.tablesK == 81;
+    const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
     const bool useHanatos = allowHanatos &&
         spdReady &&
-        params.hanatosLut &&
-        (params.hanatosN > 0) &&
-        (params.sensB.n >= 81) &&
-        (params.sensG.n >= 81) &&
-        (params.sensR.n >= 81);
+        expose.hanatosLut &&
+        (expose.hanatosN > 0) &&
+        (expose.sensB.n >= 81) &&
+        (expose.sensG.n >= 81) &&
+        (expose.sensR.n >= 81);
     const bool useHanatosIntegrated =
         useHanatos &&
-        params.hanatosLutIntegrated &&
-        (params.hanatosNIntegrated > 0) &&
-        (params.hanatosNIntegrated == params.hanatosN);
+        expose.hanatosLutIntegrated &&
+        (expose.hanatosNIntegrated > 0) &&
+        (expose.hanatosNIntegrated == expose.hanatosN);
     const bool canTables =
         spdReady &&
-        params.sensB.y && params.sensG.y && params.sensR.y &&
-        (params.sensB.n >= 81) &&
-        (params.sensG.n >= 81) &&
-        (params.sensR.n >= 81);
+        expose.sensB.y && expose.sensG.y && expose.sensR.y &&
+        (expose.sensB.n >= 81) &&
+        (expose.sensG.n >= 81) &&
+        (expose.sensR.n >= 81);
 
     if (useHanatosIntegrated) {
         hanatos_integrated_exposures_device(
             rgbDWG,
-            params.hanatosLutIntegrated,
-            params.hanatosNIntegrated,
+            expose.hanatosLutIntegrated,
+            expose.hanatosNIntegrated,
             params.filmRaw.refIllumWhiteXYZ,
             E_raw);
     }
     else if (useHanatos) {
         hanatos_layer_exposures_device(
             rgbDWG,
-            params.hanatosLut,
-            params.hanatosN,
+            expose.hanatosLut,
+            expose.hanatosN,
             params.filmRaw.refIllumWhiteXYZ,
-            params.sensB.y,
-            params.sensG.y,
-            params.sensR.y,
+            expose.sensB.y,
+            expose.sensG.y,
+            expose.sensR.y,
             E_raw);
     }
     else if (canTables) {
         tables_layer_exposures_device(
             rgbDWG,
-            params.spdSInv,
+            expose.spdSInv,
             params.filmRaw.refIllumWhiteXYZ,
-            params.tablesAx,
-            params.tablesAy,
-            params.tablesAz,
-            params.sensB.y,
-            params.sensG.y,
-            params.sensR.y,
+            expose.tablesAx,
+            expose.tablesAy,
+            expose.tablesAz,
+            expose.sensB.y,
+            expose.sensG.y,
+            expose.sensR.y,
             E_raw);
     }
 
@@ -454,7 +457,7 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
         midgrayScale = 1.0f;
     }
 
-    float exposureScale = params.exposureScale;
+    float exposureScale = expose.exposureScale;
     if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
         exposureScale = 1.0f;
     }
@@ -473,11 +476,11 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
     logE_raw[1] = log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps);
     logE_raw[2] = log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps);
 
-    logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], params.densB.x, params.densB.n);
-    logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], params.densG.x, params.densG.n);
-    logE_sanitized[2] = sanitize_inf_logE_for_curve_device(logE_raw[2], params.densR.x, params.densR.n);
+    logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], develop.densB.x, develop.densB.n);
+    logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], develop.densG.x, develop.densG.n);
+    logE_sanitized[2] = sanitize_inf_logE_for_curve_device(logE_raw[2], develop.densR.x, develop.densR.n);
 
-    layerPre[0] = sample_density_at_logE_device(params.densB.x, params.densB.y, params.densB.n, logE_sanitized[0], params.gammaFactorB);
-    layerPre[1] = sample_density_at_logE_device(params.densG.x, params.densG.y, params.densG.n, logE_sanitized[1], params.gammaFactorG);
-    layerPre[2] = sample_density_at_logE_device(params.densR.x, params.densR.y, params.densR.n, logE_sanitized[2], params.gammaFactorR);
+    layerPre[0] = sample_density_at_logE_device(develop.densB.x, develop.densB.y, develop.densB.n, logE_sanitized[0], develop.gammaFactorB);
+    layerPre[1] = sample_density_at_logE_device(develop.densG.x, develop.densG.y, develop.densG.n, logE_sanitized[1], develop.gammaFactorG);
+    layerPre[2] = sample_density_at_logE_device(develop.densR.x, develop.densR.y, develop.densR.n, logE_sanitized[2], develop.gammaFactorR);
 }

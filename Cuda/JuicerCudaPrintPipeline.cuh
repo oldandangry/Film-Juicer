@@ -10,30 +10,33 @@ static __device__ __forceinline__ float density_to_light_sample_agx_device(float
     return isnan(out) ? 0.0f : out;
 }
 
-static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerCuda::PipelineRunParams& params, float D_cmy[3]) {
-    if (!params.printActive || !D_cmy) {
+static __device__ __forceinline__ void apply_print_pipeline_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const JuicerCuda::PrintDevelopPayload& develop,
+    float D_cmy[3]) {
+    if (!expose.active || !D_cmy) {
         return;
     }
 
-    const int K = params.printIllumK;
-    if (K <= 0 || !params.printIllumFiltered) {
+    const int K = expose.printIllumK;
+    if (K <= 0 || !expose.printIllumFiltered) {
         D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
         return;
     }
 
-    const int negK = params.negTables.K;
-    if (negK != K || !params.negTables.epsC || !params.negTables.epsM || !params.negTables.epsY) {
+    const int negK = expose.negTables.K;
+    if (negK != K || !expose.negTables.epsC || !expose.negTables.epsM || !expose.negTables.epsY) {
         D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
         return;
     }
 
-    const bool haveBaseline = (params.negTables.hasBaseline != 0) && params.negTables.baseMin;
+    const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseMin;
 
-    if (!params.printSensC.y || !params.printSensM.y || !params.printSensY.y) {
+    if (!expose.printSensC.y || !expose.printSensM.y || !expose.printSensY.y) {
         D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
         return;
     }
-    if (params.printSensC.n < K || params.printSensM.n < K || params.printSensY.n < K) {
+    if (expose.printSensC.n < K || expose.printSensM.n < K || expose.printSensY.n < K) {
         D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
         return;
     }
@@ -43,22 +46,22 @@ static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerC
     double accumM = 0.0;
     double accumY = 0.0;
     for (int i = 0; i < K; ++i) {
-        const float baseD = haveBaseline ? ldg_f(params.negTables.baseMin + i) : 0.0f;
+        const float baseD = haveBaseline ? ldg_f(expose.negTables.baseMin + i) : 0.0f;
         const float densitySpectral =
-            D_cmy[0] * ldg_f(params.negTables.epsC + i) +
-            D_cmy[1] * ldg_f(params.negTables.epsM + i) +
-            D_cmy[2] * ldg_f(params.negTables.epsY + i) +
+            D_cmy[0] * ldg_f(expose.negTables.epsC + i) +
+            D_cmy[1] * ldg_f(expose.negTables.epsM + i) +
+            D_cmy[2] * ldg_f(expose.negTables.epsY + i) +
             baseD;
 
-        const float e = density_to_light_sample_agx_device(densitySpectral, ldg_f(params.printIllumFiltered + i));
+        const float e = density_to_light_sample_agx_device(densitySpectral, ldg_f(expose.printIllumFiltered + i));
         if (isnan(e)) {
             continue;
         }
         const double e64 = static_cast<double>(e);
 
-        const float sC = ldg_f(params.printSensC.y + i);
-        const float sM = ldg_f(params.printSensM.y + i);
-        const float sY = ldg_f(params.printSensY.y + i);
+        const float sC = ldg_f(expose.printSensC.y + i);
+        const float sM = ldg_f(expose.printSensM.y + i);
+        const float sY = ldg_f(expose.printSensY.y + i);
         if (!isnan(sC)) accumC += e64 * static_cast<double>(sC);
         if (!isnan(sM)) accumM += e64 * static_cast<double>(sM);
         if (!isnan(sY)) accumY += e64 * static_cast<double>(sY);
@@ -68,7 +71,7 @@ static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerC
     float rawM = static_cast<float>(accumM);
     float rawY = static_cast<float>(accumY);
 
-    float expPrint = params.printExposure;
+    float expPrint = expose.printExposure;
     if (!isfinite(expPrint)) {
         expPrint = 1.0f;
     }
@@ -76,7 +79,7 @@ static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerC
         expPrint = 0.0f;
     }
 
-    float kMid = params.printMidgrayFactor;
+    float kMid = expose.printMidgrayFactor;
     if (!isfinite(kMid) || !(kMid > 0.0f)) {
         kMid = 1.0f;
     }
@@ -86,11 +89,11 @@ static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerC
     rawM *= rawScale;
     rawY *= rawScale;
 
-    const float preflash = params.printPreflashExposure;
+    const float preflash = expose.printPreflashExposure;
     if (isfinite(preflash) && preflash > 0.0f) {
-        rawC += params.printPreflashRaw[0] * preflash;
-        rawM += params.printPreflashRaw[1] * preflash;
-        rawY += params.printPreflashRaw[2] * preflash;
+        rawC += expose.printPreflashRaw[0] * preflash;
+        rawM += expose.printPreflashRaw[1] * preflash;
+        rawY += expose.printPreflashRaw[2] * preflash;
     }
 
     // RAW -> log10(raw + eps) -> print density curves.
@@ -99,7 +102,7 @@ static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerC
     const float logM = log10f(rawM + kLogEps);
     const float logY = log10f(rawY + kLogEps);
 
-    D_cmy[0] = sample_density_at_logE_device(params.printDcC.x, params.printDcC.y, params.printDcC.n, logC, params.printGammaC);
-    D_cmy[1] = sample_density_at_logE_device(params.printDcM.x, params.printDcM.y, params.printDcM.n, logM, params.printGammaM);
-    D_cmy[2] = sample_density_at_logE_device(params.printDcY.x, params.printDcY.y, params.printDcY.n, logY, params.printGammaY);
+    D_cmy[0] = sample_density_at_logE_device(develop.printDcC.x, develop.printDcC.y, develop.printDcC.n, logC, develop.printGammaC);
+    D_cmy[1] = sample_density_at_logE_device(develop.printDcM.x, develop.printDcM.y, develop.printDcM.n, logM, develop.printGammaM);
+    D_cmy[2] = sample_density_at_logE_device(develop.printDcY.x, develop.printDcY.y, develop.printDcY.n, logY, develop.printGammaY);
 }

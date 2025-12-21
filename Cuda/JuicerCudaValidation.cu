@@ -487,7 +487,7 @@ namespace {
             inNegCmy[idx * 3 + 1],
             inNegCmy[idx * 3 + 2]
         };
-        apply_print_pipeline_device(params, D_cmy);
+        apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
         outPrintCmy[idx * 3 + 0] = D_cmy[0];
         outPrintCmy[idx * 3 + 1] = D_cmy[1];
         outPrintCmy[idx * 3 + 2] = D_cmy[2];
@@ -964,7 +964,7 @@ extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
     if (!hNegCmy || count <= 0 || !hParams || !hOutPrintCmy) {
         return cudaErrorInvalidValue;
     }
-    if (!hParams->printActive) {
+    if (!hParams->printExpose.active) {
         return cudaErrorInvalidValue;
     }
 

@@ -1053,52 +1053,52 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmRaw.refIllumWhiteXYZ[i] = _ws->filmRaw.refIllumWhiteXYZ[i];
         }
 
-        run.exposureScale = _exposureScale;
-        run.gammaFactorB = _ws->gammaFactorB;
-        run.gammaFactorG = _ws->gammaFactorG;
-        run.gammaFactorR = _ws->gammaFactorR;
-        run.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
+        run.filmExpose.exposureScale = _exposureScale;
+        run.filmDevelop.gammaFactorB = _ws->gammaFactorB;
+        run.filmDevelop.gammaFactorG = _ws->gammaFactorG;
+        run.filmDevelop.gammaFactorR = _ws->gammaFactorR;
+        run.filmDevelop.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
 
         // DIR runtime payload.
-        run.dir.active = _dirRT.active ? 1 : 0;
-        run.dir.highShift = _dirRT.highShift;
+        run.filmDevelop.dir.active = _dirRT.active ? 1 : 0;
+        run.filmDevelop.dir.highShift = _dirRT.highShift;
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
-                run.dir.M[r * 3 + c] = _dirRT.M[r][c];
+                run.filmDevelop.dir.M[r * 3 + c] = _dirRT.M[r][c];
             }
         }
         for (int i = 0; i < 3; ++i) {
-            run.dir.dMax[i] = _dirRT.dMax[i];
+            run.filmDevelop.dir.dMax[i] = _dirRT.dMax[i];
         }
 
         // Scan color payload + output encoding
         {
             const Scanner::ColorRuntime& color = _ws->negativeColorRuntime;
             for (int i = 0; i < 9; ++i) {
-                run.scanColor.cat02[i] = color.cat02[i];
-                run.scanColor.xyzToRgb[i] = color.xyzToRgb[i];
+                run.scanStage.scanColor.cat02[i] = color.cat02[i];
+                run.scanStage.scanColor.xyzToRgb[i] = color.xyzToRgb[i];
             }
             for (int i = 0; i < 3; ++i) {
-                run.scanColor.illuminantXYZ[i] = color.illuminantXYZ[i];
+                run.scanStage.scanColor.illuminantXYZ[i] = color.illuminantXYZ[i];
             }
 
-            run.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
-            run.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
-            run.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
-            run.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
+            run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
+            run.scanStage.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
+            run.scanStage.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
+            run.scanStage.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
 
             const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
-            run.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
-            run.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
-            run.scanColor.encoding.cctf.a = outSpace.cctf.a;
-            run.scanColor.encoding.cctf.b = outSpace.cctf.b;
-            run.scanColor.encoding.cctf.c = outSpace.cctf.c;
-            run.scanColor.encoding.cctf.d = outSpace.cctf.d;
-            run.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
+            run.scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
+            run.scanStage.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
+            run.scanStage.scanColor.encoding.cctf.a = outSpace.cctf.a;
+            run.scanStage.scanColor.encoding.cctf.b = outSpace.cctf.b;
+            run.scanStage.scanColor.encoding.cctf.c = outSpace.cctf.c;
+            run.scanStage.scanColor.encoding.cctf.d = outSpace.cctf.d;
+            run.scanStage.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
 
             const OutputEncoding::Matrix3x3 dwgToOutput = OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
             for (int i = 0; i < 9; ++i) {
-                run.scanColor.encoding.dwgToOutput[i] = dwgToOutput.m[i];
+                run.scanStage.scanColor.encoding.dwgToOutput[i] = dwgToOutput.m[i];
             }
         }
 
@@ -1113,33 +1113,33 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
-            run.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n };
-            run.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n };
-            run.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n };
-            run.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n };
-            run.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n };
-            run.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n };
-            run.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n };
-            run.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n };
-            run.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n };
+            run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n };
+            run.filmDevelop.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n };
+            run.filmDevelop.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n };
+            run.filmDevelop.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n };
+            run.filmDevelop.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n };
+            run.filmDevelop.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n };
+            run.filmExpose.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n };
+            run.filmExpose.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n };
+            run.filmExpose.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n };
 
-            run.tablesAx = cudaResources->tablesAx;
-            run.tablesAy = cudaResources->tablesAy;
-            run.tablesAz = cudaResources->tablesAz;
-            run.tablesK = cudaResources->tablesK;
+            run.filmExpose.tablesAx = cudaResources->tablesAx;
+            run.filmExpose.tablesAy = cudaResources->tablesAy;
+            run.filmExpose.tablesAz = cudaResources->tablesAz;
+            run.filmExpose.tablesK = cudaResources->tablesK;
             for (int i = 0; i < 9; ++i) {
-                run.spdSInv[i] = cudaResources->spdSInv[i];
+                run.filmExpose.spdSInv[i] = cudaResources->spdSInv[i];
             }
 
-            run.hanatosLut = cudaResources->hanatosLut;
-            run.hanatosN = cudaResources->hanatosN;
-            run.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
-            run.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
+            run.filmExpose.hanatosLut = cudaResources->hanatosLut;
+            run.filmExpose.hanatosN = cudaResources->hanatosN;
+            run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
+            run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
 
-            run.scannerUseLut = scannerUseLut ? 1 : 0;
-            run.scanLutLogXYZ = nullptr;
-            run.scanLutRes = 0;
-            if (run.scannerUseLut) {
+            run.scanStage.scannerUseLut = scannerUseLut ? 1 : 0;
+            run.scanStage.scanLutLogXYZ = nullptr;
+            run.scanStage.scanLutRes = 0;
+            if (run.scanStage.scannerUseLut) {
                 std::string lutError;
                 if (!JuicerCuda::ensure_scan_lut(*cudaResources, *_ws, true, _pCudaStream, lutError)) {
                     JTRACE("CUDA", std::string("CUDA scan LUT upload failed: ") + lutError);
@@ -1149,29 +1149,29 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                run.scanLutLogXYZ = cudaResources->scanNegativeLut.logXYZ;
-                run.scanLutRes = static_cast<int>(cudaResources->scanNegativeLut.res);
-                if (!run.scanLutLogXYZ || run.scanLutRes <= 0) {
+                run.scanStage.scanLutLogXYZ = cudaResources->scanNegativeLut.logXYZ;
+                run.scanStage.scanLutRes = static_cast<int>(cudaResources->scanNegativeLut.res);
+                if (!run.scanStage.scanLutLogXYZ || run.scanStage.scanLutRes <= 0) {
                     JTRACE("CUDA", "FATAL: scan LUT missing after successful upload");
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }
 
             // Negative scan tables payload
-            run.scan.epsC = cudaResources->scanNegative.tables.epsC;
-            run.scan.epsM = cudaResources->scanNegative.tables.epsM;
-            run.scan.epsY = cudaResources->scanNegative.tables.epsY;
-            run.scan.Ax = cudaResources->scanNegative.tables.Ax;
-            run.scan.Ay = cudaResources->scanNegative.tables.Ay;
-            run.scan.Az = cudaResources->scanNegative.tables.Az;
-            run.scan.baseMin = cudaResources->scanNegative.tables.baseMin;
-            run.scan.K = cudaResources->scanNegative.tables.K;
-            run.scan.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
-            run.scan.invYn = cudaResources->scanNegative.tables.invYn;
-            run.scan.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
+            run.scanStage.scanTables.epsC = cudaResources->scanNegative.tables.epsC;
+            run.scanStage.scanTables.epsM = cudaResources->scanNegative.tables.epsM;
+            run.scanStage.scanTables.epsY = cudaResources->scanNegative.tables.epsY;
+            run.scanStage.scanTables.Ax = cudaResources->scanNegative.tables.Ax;
+            run.scanStage.scanTables.Ay = cudaResources->scanNegative.tables.Ay;
+            run.scanStage.scanTables.Az = cudaResources->scanNegative.tables.Az;
+            run.scanStage.scanTables.baseMin = cudaResources->scanNegative.tables.baseMin;
+            run.scanStage.scanTables.K = cudaResources->scanNegative.tables.K;
+            run.scanStage.scanTables.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
+            run.scanStage.scanTables.invYn = cudaResources->scanNegative.tables.invYn;
+            run.scanStage.scanTables.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
             for (int i = 0; i < 3; ++i) {
-                run.scan.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
-                run.scan.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
+                run.scanStage.scanTables.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
+                run.scanStage.scanTables.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
             }
 
             std::string scanFlagError;
@@ -1183,8 +1183,8 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             }
-            run.scanErrorFlag = cudaResources->scanErrorFlag;
-            if (!run.scanErrorFlag) {
+            run.scanStage.scanErrorFlag = cudaResources->scanErrorFlag;
+            if (!run.scanStage.scanErrorFlag) {
                 JTRACE("CUDA", "FATAL: scan error flag missing after allocation");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
@@ -1209,7 +1209,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
 
-            cudaError_t flagErr = cudaMemsetAsync(run.scanErrorFlag, 0, sizeof(int), stream);
+            cudaError_t flagErr = cudaMemsetAsync(run.scanStage.scanErrorFlag, 0, sizeof(int), stream);
             if (flagErr != cudaSuccess) {
                 const char* msg = cudaGetErrorString(flagErr);
                 JTRACE("CUDA", std::string("CUDA scan error flag memset failed: ") + (msg ? msg : "(unknown)"));
@@ -1220,10 +1220,10 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
             }
 
-            run.spatialDirActive = useSpatialDIR ? 1 : 0;
-            run.spatialDirCorrY = nullptr;
-            run.spatialDirCorrM = nullptr;
-            run.spatialDirCorrC = nullptr;
+            run.filmDevelop.spatialDir.active = useSpatialDIR ? 1 : 0;
+            run.filmDevelop.spatialDir.corrY = nullptr;
+            run.filmDevelop.spatialDir.corrM = nullptr;
+            run.filmDevelop.spatialDir.corrC = nullptr;
             if (useSpatialDIR) {
                 std::string dirError;
                 if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
@@ -1243,9 +1243,9 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
                 }
 
-                run.spatialDirCorrY = cudaResources->spatialDirScratch.corrY;
-                run.spatialDirCorrM = cudaResources->spatialDirScratch.corrM;
-                run.spatialDirCorrC = cudaResources->spatialDirScratch.corrC;
+                run.filmDevelop.spatialDir.corrY = cudaResources->spatialDirScratch.corrY;
+                run.filmDevelop.spatialDir.corrM = cudaResources->spatialDirScratch.corrM;
+                run.filmDevelop.spatialDir.corrC = cudaResources->spatialDirScratch.corrC;
 
                 cudaError_t dirErr = juicer_cuda_build_spatial_dir(
                     &run,
@@ -1262,8 +1262,6 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }
-
-            JuicerCuda::init_stage_payloads(run);
 
             const bool wantGlare = glareActive;
             float glarePercent = 0.0f;
@@ -1367,7 +1365,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             if (cudaResources->scanErrorHost && scanEvent) {
-                flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
                     JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
@@ -1399,7 +1397,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 int scanError = 0;
-                flagErr = cudaMemcpyAsync(&scanError, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
                     JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
@@ -1491,52 +1489,52 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmRaw.refIllumWhiteXYZ[i] = _ws->filmRaw.refIllumWhiteXYZ[i];
         }
 
-        run.exposureScale = _exposureScale;
-        run.gammaFactorB = _ws->gammaFactorB;
-        run.gammaFactorG = _ws->gammaFactorG;
-        run.gammaFactorR = _ws->gammaFactorR;
-        run.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
+        run.filmExpose.exposureScale = _exposureScale;
+        run.filmDevelop.gammaFactorB = _ws->gammaFactorB;
+        run.filmDevelop.gammaFactorG = _ws->gammaFactorG;
+        run.filmDevelop.gammaFactorR = _ws->gammaFactorR;
+        run.filmDevelop.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
 
         // DIR runtime payload.
-        run.dir.active = _dirRT.active ? 1 : 0;
-        run.dir.highShift = _dirRT.highShift;
+        run.filmDevelop.dir.active = _dirRT.active ? 1 : 0;
+        run.filmDevelop.dir.highShift = _dirRT.highShift;
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
-                run.dir.M[r * 3 + c] = _dirRT.M[r][c];
+                run.filmDevelop.dir.M[r * 3 + c] = _dirRT.M[r][c];
             }
         }
         for (int i = 0; i < 3; ++i) {
-            run.dir.dMax[i] = _dirRT.dMax[i];
+            run.filmDevelop.dir.dMax[i] = _dirRT.dMax[i];
         }
 
         // Print scan color payload + output encoding (print medium).
         {
             const Scanner::ColorRuntime& color = _ws->printColorRuntime;
             for (int i = 0; i < 9; ++i) {
-                run.scanColor.cat02[i] = color.cat02[i];
-                run.scanColor.xyzToRgb[i] = color.xyzToRgb[i];
+                run.scanStage.scanColor.cat02[i] = color.cat02[i];
+                run.scanStage.scanColor.xyzToRgb[i] = color.xyzToRgb[i];
             }
             for (int i = 0; i < 3; ++i) {
-                run.scanColor.illuminantXYZ[i] = color.illuminantXYZ[i];
+                run.scanStage.scanColor.illuminantXYZ[i] = color.illuminantXYZ[i];
             }
 
-            run.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
-            run.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
-            run.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
-            run.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
+            run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
+            run.scanStage.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
+            run.scanStage.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
+            run.scanStage.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
 
             const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
-            run.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
-            run.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
-            run.scanColor.encoding.cctf.a = outSpace.cctf.a;
-            run.scanColor.encoding.cctf.b = outSpace.cctf.b;
-            run.scanColor.encoding.cctf.c = outSpace.cctf.c;
-            run.scanColor.encoding.cctf.d = outSpace.cctf.d;
-            run.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
+            run.scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
+            run.scanStage.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
+            run.scanStage.scanColor.encoding.cctf.a = outSpace.cctf.a;
+            run.scanStage.scanColor.encoding.cctf.b = outSpace.cctf.b;
+            run.scanStage.scanColor.encoding.cctf.c = outSpace.cctf.c;
+            run.scanStage.scanColor.encoding.cctf.d = outSpace.cctf.d;
+            run.scanStage.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
 
             const OutputEncoding::Matrix3x3 dwgToOutput = OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
             for (int i = 0; i < 9; ++i) {
-                run.scanColor.encoding.dwgToOutput[i] = dwgToOutput.m[i];
+                run.scanStage.scanColor.encoding.dwgToOutput[i] = dwgToOutput.m[i];
             }
         }
 
@@ -1587,34 +1585,34 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
 
             // Film density curves + sensitivities + SPD reconstruction tables.
-            run.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n };
-            run.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n };
-            run.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n };
-            run.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n };
-            run.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n };
-            run.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n };
-            run.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n };
-            run.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n };
-            run.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n };
+            run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n };
+            run.filmDevelop.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n };
+            run.filmDevelop.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n };
+            run.filmDevelop.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n };
+            run.filmDevelop.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n };
+            run.filmDevelop.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n };
+            run.filmExpose.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n };
+            run.filmExpose.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n };
+            run.filmExpose.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n };
 
-            run.tablesAx = cudaResources->tablesAx;
-            run.tablesAy = cudaResources->tablesAy;
-            run.tablesAz = cudaResources->tablesAz;
-            run.tablesK = cudaResources->tablesK;
+            run.filmExpose.tablesAx = cudaResources->tablesAx;
+            run.filmExpose.tablesAy = cudaResources->tablesAy;
+            run.filmExpose.tablesAz = cudaResources->tablesAz;
+            run.filmExpose.tablesK = cudaResources->tablesK;
             for (int i = 0; i < 9; ++i) {
-                run.spdSInv[i] = cudaResources->spdSInv[i];
+                run.filmExpose.spdSInv[i] = cudaResources->spdSInv[i];
             }
 
-            run.hanatosLut = cudaResources->hanatosLut;
-            run.hanatosN = cudaResources->hanatosN;
-            run.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
-            run.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
+            run.filmExpose.hanatosLut = cudaResources->hanatosLut;
+            run.filmExpose.hanatosN = cudaResources->hanatosN;
+            run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
+            run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
 
             // Scan LUT selection (print medium).
-            run.scannerUseLut = _scannerSettings.useLut ? 1 : 0;
-            run.scanLutLogXYZ = nullptr;
-            run.scanLutRes = 0;
-            if (run.scannerUseLut) {
+            run.scanStage.scannerUseLut = _scannerSettings.useLut ? 1 : 0;
+            run.scanStage.scanLutLogXYZ = nullptr;
+            run.scanStage.scanLutRes = 0;
+            if (run.scanStage.scannerUseLut) {
                 std::string lutError;
                 if (!JuicerCuda::ensure_scan_lut(*cudaResources, *_ws, false, _pCudaStream, lutError)) {
                     JTRACE("CUDA", std::string("CUDA print scan LUT upload failed: ") + lutError);
@@ -1624,29 +1622,29 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                run.scanLutLogXYZ = cudaResources->scanPrintLut.logXYZ;
-                run.scanLutRes = static_cast<int>(cudaResources->scanPrintLut.res);
-                if (!run.scanLutLogXYZ || run.scanLutRes <= 0) {
+                run.scanStage.scanLutLogXYZ = cudaResources->scanPrintLut.logXYZ;
+                run.scanStage.scanLutRes = static_cast<int>(cudaResources->scanPrintLut.res);
+                if (!run.scanStage.scanLutLogXYZ || run.scanStage.scanLutRes <= 0) {
                     JTRACE("CUDA", "FATAL: print scan LUT missing after successful upload");
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }
 
             // Print scan tables payload (for the scan stage).
-            run.scan.epsC = cudaResources->scanPrint.tables.epsC;
-            run.scan.epsM = cudaResources->scanPrint.tables.epsM;
-            run.scan.epsY = cudaResources->scanPrint.tables.epsY;
-            run.scan.Ax = cudaResources->scanPrint.tables.Ax;
-            run.scan.Ay = cudaResources->scanPrint.tables.Ay;
-            run.scan.Az = cudaResources->scanPrint.tables.Az;
-            run.scan.baseMin = cudaResources->scanPrint.tables.baseMin;
-            run.scan.K = cudaResources->scanPrint.tables.K;
-            run.scan.hasBaseline = cudaResources->scanPrint.tables.hasBaseline;
-            run.scan.invYn = cudaResources->scanPrint.tables.invYn;
-            run.scan.mediumIsNegative = cudaResources->scanPrint.mediumIsNegative;
+            run.scanStage.scanTables.epsC = cudaResources->scanPrint.tables.epsC;
+            run.scanStage.scanTables.epsM = cudaResources->scanPrint.tables.epsM;
+            run.scanStage.scanTables.epsY = cudaResources->scanPrint.tables.epsY;
+            run.scanStage.scanTables.Ax = cudaResources->scanPrint.tables.Ax;
+            run.scanStage.scanTables.Ay = cudaResources->scanPrint.tables.Ay;
+            run.scanStage.scanTables.Az = cudaResources->scanPrint.tables.Az;
+            run.scanStage.scanTables.baseMin = cudaResources->scanPrint.tables.baseMin;
+            run.scanStage.scanTables.K = cudaResources->scanPrint.tables.K;
+            run.scanStage.scanTables.hasBaseline = cudaResources->scanPrint.tables.hasBaseline;
+            run.scanStage.scanTables.invYn = cudaResources->scanPrint.tables.invYn;
+            run.scanStage.scanTables.mediumIsNegative = cudaResources->scanPrint.mediumIsNegative;
             for (int i = 0; i < 3; ++i) {
-                run.scan.min_cmy[i] = cudaResources->scanPrint.min_cmy[i];
-                run.scan.inv_max_cmy[i] = cudaResources->scanPrint.inv_max_cmy[i];
+                run.scanStage.scanTables.min_cmy[i] = cudaResources->scanPrint.min_cmy[i];
+                run.scanStage.scanTables.inv_max_cmy[i] = cudaResources->scanPrint.inv_max_cmy[i];
             }
 
             std::string scanFlagError;
@@ -1658,8 +1656,8 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             }
-            run.scanErrorFlag = cudaResources->scanErrorFlag;
-            if (!run.scanErrorFlag) {
+            run.scanStage.scanErrorFlag = cudaResources->scanErrorFlag;
+            if (!run.scanStage.scanErrorFlag) {
                 JTRACE("CUDA", "FATAL: scan error flag missing after allocation");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
@@ -1684,7 +1682,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
 
-            cudaError_t flagErr = cudaMemsetAsync(run.scanErrorFlag, 0, sizeof(int), stream);
+            cudaError_t flagErr = cudaMemsetAsync(run.scanStage.scanErrorFlag, 0, sizeof(int), stream);
             if (flagErr != cudaSuccess) {
                 const char* msg = cudaGetErrorString(flagErr);
                 JTRACE("CUDA", std::string("CUDA scan error flag memset failed: ") + (msg ? msg : "(unknown)"));
@@ -1695,10 +1693,10 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
             }
 
-            run.spatialDirActive = useSpatialDIR ? 1 : 0;
-            run.spatialDirCorrY = nullptr;
-            run.spatialDirCorrM = nullptr;
-            run.spatialDirCorrC = nullptr;
+            run.filmDevelop.spatialDir.active = useSpatialDIR ? 1 : 0;
+            run.filmDevelop.spatialDir.corrY = nullptr;
+            run.filmDevelop.spatialDir.corrM = nullptr;
+            run.filmDevelop.spatialDir.corrC = nullptr;
             if (useSpatialDIR) {
                 std::string dirError;
                 if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
@@ -1718,9 +1716,9 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
                 }
 
-                run.spatialDirCorrY = cudaResources->spatialDirScratch.corrY;
-                run.spatialDirCorrM = cudaResources->spatialDirScratch.corrM;
-                run.spatialDirCorrC = cudaResources->spatialDirScratch.corrC;
+                run.filmDevelop.spatialDir.corrY = cudaResources->spatialDirScratch.corrY;
+                run.filmDevelop.spatialDir.corrM = cudaResources->spatialDirScratch.corrM;
+                run.filmDevelop.spatialDir.corrC = cudaResources->spatialDirScratch.corrC;
 
                 cudaError_t dirErr = juicer_cuda_build_spatial_dir(
                     &run,
@@ -1739,44 +1737,44 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             // Print pipeline payloads.
-            run.printActive = 1;
-            run.negTables.epsC = cudaResources->scanNegative.tables.epsC;
-            run.negTables.epsM = cudaResources->scanNegative.tables.epsM;
-            run.negTables.epsY = cudaResources->scanNegative.tables.epsY;
-            run.negTables.Ax = cudaResources->scanNegative.tables.Ax;
-            run.negTables.Ay = cudaResources->scanNegative.tables.Ay;
-            run.negTables.Az = cudaResources->scanNegative.tables.Az;
-            run.negTables.baseMin = cudaResources->scanNegative.tables.baseMin;
-            run.negTables.K = cudaResources->scanNegative.tables.K;
-            run.negTables.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
-            run.negTables.invYn = cudaResources->scanNegative.tables.invYn;
-            run.negTables.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
+            run.printExpose.active = 1;
+            run.printExpose.negTables.epsC = cudaResources->scanNegative.tables.epsC;
+            run.printExpose.negTables.epsM = cudaResources->scanNegative.tables.epsM;
+            run.printExpose.negTables.epsY = cudaResources->scanNegative.tables.epsY;
+            run.printExpose.negTables.Ax = cudaResources->scanNegative.tables.Ax;
+            run.printExpose.negTables.Ay = cudaResources->scanNegative.tables.Ay;
+            run.printExpose.negTables.Az = cudaResources->scanNegative.tables.Az;
+            run.printExpose.negTables.baseMin = cudaResources->scanNegative.tables.baseMin;
+            run.printExpose.negTables.K = cudaResources->scanNegative.tables.K;
+            run.printExpose.negTables.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
+            run.printExpose.negTables.invYn = cudaResources->scanNegative.tables.invYn;
+            run.printExpose.negTables.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
             for (int i = 0; i < 3; ++i) {
-                run.negTables.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
-                run.negTables.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
+                run.printExpose.negTables.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
+                run.printExpose.negTables.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
             }
 
-            run.printIllumFiltered = cudaResources->printIllumFiltered;
-            run.printIllumK = cudaResources->printIllumK;
-            run.printSensC = { cudaResources->printSensC.x, cudaResources->printSensC.y, cudaResources->printSensC.n };
-            run.printSensM = { cudaResources->printSensM.x, cudaResources->printSensM.y, cudaResources->printSensM.n };
-            run.printSensY = { cudaResources->printSensY.x, cudaResources->printSensY.y, cudaResources->printSensY.n };
-            run.printDcC = { cudaResources->printDcC.x, cudaResources->printDcC.y, cudaResources->printDcC.n };
-            run.printDcM = { cudaResources->printDcM.x, cudaResources->printDcM.y, cudaResources->printDcM.n };
-            run.printDcY = { cudaResources->printDcY.x, cudaResources->printDcY.y, cudaResources->printDcY.n };
-            run.printGammaC = cudaResources->printGammaC;
-            run.printGammaM = cudaResources->printGammaM;
-            run.printGammaY = cudaResources->printGammaY;
-            run.printExposure = _printParams.exposure;
-            run.printPreflashExposure = _printParams.preflashExposure;
-            run.printMidgrayFactor = kMidSpectral;
+            run.printExpose.printIllumFiltered = cudaResources->printIllumFiltered;
+            run.printExpose.printIllumK = cudaResources->printIllumK;
+            run.printExpose.printSensC = { cudaResources->printSensC.x, cudaResources->printSensC.y, cudaResources->printSensC.n };
+            run.printExpose.printSensM = { cudaResources->printSensM.x, cudaResources->printSensM.y, cudaResources->printSensM.n };
+            run.printExpose.printSensY = { cudaResources->printSensY.x, cudaResources->printSensY.y, cudaResources->printSensY.n };
+            run.printDevelop.printDcC = { cudaResources->printDcC.x, cudaResources->printDcC.y, cudaResources->printDcC.n };
+            run.printDevelop.printDcM = { cudaResources->printDcM.x, cudaResources->printDcM.y, cudaResources->printDcM.n };
+            run.printDevelop.printDcY = { cudaResources->printDcY.x, cudaResources->printDcY.y, cudaResources->printDcY.n };
+            run.printDevelop.printGammaC = cudaResources->printGammaC;
+            run.printDevelop.printGammaM = cudaResources->printGammaM;
+            run.printDevelop.printGammaY = cudaResources->printGammaY;
+            run.printExpose.printExposure = _printParams.exposure;
+            run.printExpose.printPreflashExposure = _printParams.preflashExposure;
+            run.printExpose.printMidgrayFactor = kMidSpectral;
             for (int i = 0; i < 3; ++i) {
-                run.printPreflashRaw[i] = cudaResources->printPreflashRaw[i];
+                run.printExpose.printPreflashRaw[i] = cudaResources->printPreflashRaw[i];
             }
 
-            if (!run.printIllumFiltered || run.printIllumK <= 0 ||
-                !run.printSensC.y || !run.printSensM.y || !run.printSensY.y ||
-                !run.printDcC.y || !run.printDcM.y || !run.printDcY.y) {
+            if (!run.printExpose.printIllumFiltered || run.printExpose.printIllumK <= 0 ||
+                !run.printExpose.printSensC.y || !run.printExpose.printSensM.y || !run.printExpose.printSensY.y ||
+                !run.printDevelop.printDcC.y || !run.printDevelop.printDcM.y || !run.printDevelop.printDcY.y) {
                 JTRACE("CUDA", "CUDA print payloads missing; cannot render print pipeline");
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1784,8 +1782,6 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             }
-
-            JuicerCuda::init_stage_payloads(run);
 
             // Scanner optics/glare for the print medium.
             Scanner::ScannerMediumRuntime printMedium = _ws->printMediumRuntime;
@@ -1911,7 +1907,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             if (cudaResources->scanErrorHost && scanEvent) {
-                flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
                     JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
@@ -1944,7 +1940,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 int scanError = 0;
-                flagErr = cudaMemcpyAsync(&scanError, run.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
                     JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));

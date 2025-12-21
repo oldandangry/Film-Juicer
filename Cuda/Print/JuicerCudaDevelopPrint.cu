@@ -13,7 +13,7 @@ __global__ void develop_print_density_kernel(
     float* ioM,
     float* ioY)
 {
-    if (!params.printActive) {
+    if (!params.printExpose.active) {
         return;
     }
 
@@ -29,7 +29,7 @@ __global__ void develop_print_density_kernel(
 
     const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
     float D_cmy[3] = { ioC[idx], ioM[idx], ioY[idx] };
-    apply_print_pipeline_device(params, D_cmy);
+    apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
     ioC[idx] = D_cmy[0];
     ioM[idx] = D_cmy[1];
     ioY[idx] = D_cmy[2];
