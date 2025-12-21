@@ -258,6 +258,9 @@
     <ClInclude Include="Cuda\\JuicerCudaPrintPipeline.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
+    <ClInclude Include="Cuda\\Scan\\JuicerCudaScanStage.cuh">
+      <Filter>Cuda</Filter>
+    </ClInclude>
     <ClInclude Include="Cuda\\JuicerCudaResources.h">
       <Filter>Cuda</Filter>
     </ClInclude>
