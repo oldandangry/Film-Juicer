@@ -118,6 +118,27 @@
     <CudaCompile Include="Cuda\\JuicerCudaAutoExposure.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
+    <CudaCompile Include="Cuda\\Film\\JuicerCudaExposeFilm.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\Film\\JuicerCudaDevelopFilm.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\Print\\JuicerCudaExposePrint.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\Print\\JuicerCudaDevelopPrint.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScanStage.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScannerOptics.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="Cuda\\Dir\\JuicerCudaSpatialDIR.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Illuminants.h">

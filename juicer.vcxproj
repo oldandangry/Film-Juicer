@@ -220,6 +220,13 @@
     <CudaCompile Include="Cuda\\JuicerCudaPrimitives.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
     <CudaCompile Include="Cuda\\JuicerCudaValidation.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
     <CudaCompile Include="Cuda\\JuicerCudaAutoExposure.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Film\\JuicerCudaExposeFilm.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Film\\JuicerCudaDevelopFilm.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Print\\JuicerCudaExposePrint.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Print\\JuicerCudaDevelopPrint.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScanStage.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScannerOptics.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Dir\\JuicerCudaSpatialDIR.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AgxNanSemantics.h" />
