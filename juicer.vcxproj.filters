@@ -112,6 +112,9 @@
     <CudaCompile Include="Cuda\\JuicerCudaPrimitives.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
+    <CudaCompile Include="Cuda\\JuicerCudaValidation.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
     <CudaCompile Include="Cuda\\JuicerCudaAutoExposure.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
@@ -228,6 +231,12 @@
     <ClInclude Include="Cuda\\JuicerCudaSelfCheck.h">
       <Filter>Cuda</Filter>
     </ClInclude>
+    <ClInclude Include="Cuda\\JuicerCudaKernelsUtil.cuh">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="Cuda\\JuicerCudaPrintPipeline.cuh">
+      <Filter>Cuda</Filter>
+    </ClInclude>
     <ClInclude Include="Cuda\\JuicerCudaResources.h">
       <Filter>Cuda</Filter>
     </ClInclude>
@@ -235,9 +244,6 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="Cuda\\JuicerCudaPayloads.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="Cuda\\JuicerCudaPhase3Gate.h">
       <Filter>Cuda</Filter>
     </ClInclude>
   </ItemGroup>

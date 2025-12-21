@@ -29,8 +29,8 @@
 #include <limits>
 #include <vector>
 
-// Implemented in Cuda/JuicerCudaPrimitives.cu
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+// Implemented in Cuda/JuicerCudaValidation.cu
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
 extern "C" cudaError_t juicer_cuda_probe_density_curve(
     const float* dX,
     const float* dY,
@@ -55,7 +55,7 @@ extern "C" cudaError_t juicer_cuda_probe_film_log_raw(
     float outLogRaw3[3],
     void* cudaStreamOpaque);
 
-// Implemented in Cuda/JuicerCudaPrimitives.cu
+// Implemented in Cuda/JuicerCudaValidation.cu
 extern "C" cudaError_t juicer_cuda_probe_hanatos_layer_exposures(
     const float rgbDWG[3],
     const float* dHanatosLut,
@@ -70,7 +70,7 @@ extern "C" cudaError_t juicer_cuda_probe_hanatos_layer_exposures(
     float* outE3,
     void* cudaStreamOpaque);
 
-// Implemented in Cuda/JuicerCudaPrimitives.cu
+// Implemented in Cuda/JuicerCudaValidation.cu
 extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
     const float rgbIn[3],
     int inputColorSpaceIndex,
@@ -1669,6 +1669,7 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
+#if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
         std::lock_guard<std::mutex> lock(resources.m);
         if (resources.validatedBuildCounter == ws.buildCounter && ws.buildCounter != 0) {
             return true;
@@ -2136,6 +2137,13 @@ namespace JuicerCuda {
 
         resources.validatedBuildCounter = ws.buildCounter;
         return true;
+#else
+        (void)resources;
+        (void)ws;
+        (void)cudaStreamOpaque;
+        (void)outError;
+        return true;
+#endif
 #endif
     }
 
@@ -2158,6 +2166,7 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
+#if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
         // Cache: avoid re-running the (expensive) CPU-vs-GPU probe every frame. This is for debug-only
         // validation; correctness is still enforced when the key changes.
         std::uint64_t paramsHash = Hash::kFnvOffset;
@@ -2327,6 +2336,16 @@ namespace JuicerCuda {
         }
 
         return true;
+#else
+        (void)resources;
+        (void)ws;
+        (void)prt;
+        (void)prm;
+        (void)midgrayFactor;
+        (void)cudaStreamOpaque;
+        (void)outError;
+        return true;
+#endif
 #endif
     }
 

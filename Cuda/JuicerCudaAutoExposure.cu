@@ -11,11 +11,9 @@
 #include <cmath>
 #include <string>
 
-namespace {
+#include "Cuda/JuicerCudaKernelsUtil.cuh"
 
-    struct Mat3 {
-        float m[9];
-    };
+namespace {
 
     struct DeviceAccumBuffers {
         double* sumY = nullptr;
@@ -37,59 +35,6 @@ namespace {
     };
 
     thread_local DeviceAccumBuffers gAccum;
-
-    __device__ __forceinline__ float sanitize_channel(float v) {
-        return isfinite(v) ? v : 0.0f;
-    }
-
-    __device__ __forceinline__ float decode_bt2020_channel(float v) {
-        const float x = fmaxf(0.0f, sanitize_channel(v));
-        constexpr float a = 1.09929681f;
-        // Threshold is precomputed from: a * pow(b, 0.45) - (a - 1.0), with b = 0.01805397.
-        constexpr float threshold = 0.0812428791f;
-        if (x < threshold) {
-            return x / 4.5f;
-        }
-        return powf((x + (a - 1.0f)) / a, 1.0f / 0.45f);
-    }
-
-    __device__ __forceinline__ float decode_srgb_channel(float v) {
-        const float x = fmaxf(0.0f, sanitize_channel(v));
-        constexpr float threshold = 0.04045f;
-        if (x <= threshold) {
-            return x / 12.92f;
-        }
-        return powf((x + 0.055f) / 1.055f, 2.4f);
-    }
-
-    __device__ __forceinline__ void apply_input_cctf_decoding(int inputColorSpaceIndex, int applyCctfDecoding, const float inRgb[3], float outRgb[3]) {
-        if (!applyCctfDecoding) {
-            outRgb[0] = sanitize_channel(inRgb[0]);
-            outRgb[1] = sanitize_channel(inRgb[1]);
-            outRgb[2] = sanitize_channel(inRgb[2]);
-            return;
-        }
-
-        // Mirrors Spectral::apply_input_cctf_decoding:
-        // only BT.2020 has non-linear decoding; DWG and ACES are treated as linear.
-        // InputColorSpace enum: 0=DWG, 1=BT2020, 2=ACES2065-1, 3=sRGB/Rec.709.
-        if (inputColorSpaceIndex == 1) {
-            outRgb[0] = decode_bt2020_channel(inRgb[0]);
-            outRgb[1] = decode_bt2020_channel(inRgb[1]);
-            outRgb[2] = decode_bt2020_channel(inRgb[2]);
-            return;
-        }
-        if (inputColorSpaceIndex == 3) {
-            outRgb[0] = decode_srgb_channel(inRgb[0]);
-            outRgb[1] = decode_srgb_channel(inRgb[1]);
-            outRgb[2] = decode_srgb_channel(inRgb[2]);
-            return;
-        }
-
-        outRgb[0] = sanitize_channel(inRgb[0]);
-        outRgb[1] = sanitize_channel(inRgb[1]);
-        outRgb[2] = sanitize_channel(inRgb[2]);
-    }
 
     __device__ __forceinline__ float mulY(const Mat3& m, const float rgb[3]) {
         return m.m[3] * rgb[0] + m.m[4] * rgb[1] + m.m[5] * rgb[2];
@@ -129,7 +74,7 @@ namespace {
 
                 float inRgb[3] = { pix[0], pix[1], pix[2] };
                 float lin[3];
-                apply_input_cctf_decoding(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
+                apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
 
                 const float Y = mulY(rgbToXYZ, lin);
                 if (isfinite(Y)) {
