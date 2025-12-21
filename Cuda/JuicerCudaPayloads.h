@@ -109,6 +109,91 @@ namespace JuicerCuda {
         float inv_max_cmy[3] = { 1.0f, 1.0f, 1.0f };
     };
 
+    struct SpatialDirPayload {
+        int active = 0;
+        const float* JUICER_RESTRICT corrY = nullptr;
+        const float* JUICER_RESTRICT corrM = nullptr;
+        const float* JUICER_RESTRICT corrC = nullptr;
+    };
+
+    struct FilmExposurePayload {
+        float exposureScale = 1.0f;
+        DeviceCurveView sensB{};
+        DeviceCurveView sensG{};
+        DeviceCurveView sensR{};
+        const float* JUICER_RESTRICT tablesAx = nullptr;
+        const float* JUICER_RESTRICT tablesAy = nullptr;
+        const float* JUICER_RESTRICT tablesAz = nullptr;
+        int tablesK = 0;
+        float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
+        const float* JUICER_RESTRICT hanatosLut = nullptr;
+        int hanatosN = 0;
+        const float* JUICER_RESTRICT hanatosLutIntegrated = nullptr;
+        int hanatosNIntegrated = 0;
+    };
+
+    struct FilmDevelopPayload {
+        float gammaFactorB = 1.0f;
+        float gammaFactorG = 1.0f;
+        float gammaFactorR = 1.0f;
+        int dirPrecorrected = 0;
+        DirPayload dir{};
+        SpatialDirPayload spatialDir{};
+        DeviceCurveView densB{};
+        DeviceCurveView densG{};
+        DeviceCurveView densR{};
+        DeviceCurveView dirDensB{};
+        DeviceCurveView dirDensG{};
+        DeviceCurveView dirDensR{};
+    };
+
+    struct PrintExposePayload {
+        int active = 0;
+        ScanTablesPayload negTables{};
+        const float* JUICER_RESTRICT printIllumFiltered = nullptr;
+        int printIllumK = 0;
+        DeviceCurveView printSensC{};
+        DeviceCurveView printSensM{};
+        DeviceCurveView printSensY{};
+        float printExposure = 1.0f;
+        float printPreflashExposure = 0.0f;
+        float printMidgrayFactor = 1.0f;
+        float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
+    };
+
+    struct PrintDevelopPayload {
+        DeviceCurveView printDcC{};
+        DeviceCurveView printDcM{};
+        DeviceCurveView printDcY{};
+        float printGammaC = 1.0f;
+        float printGammaM = 1.0f;
+        float printGammaY = 1.0f;
+    };
+
+    struct ScanStagePayload {
+        int scannerUseLut = 0;
+        const double* JUICER_RESTRICT scanLutLogXYZ = nullptr;
+        int scanLutRes = 0;
+        ScanTablesPayload scanTables{};
+        ScanColorPayload scanColor{};
+        int* scanErrorFlag = nullptr;
+    };
+
+    struct ScannerOpticsPayload {
+        const float* JUICER_RESTRICT lensBlurKernel = nullptr;
+        int lensBlurRadius = 0;
+        const float* JUICER_RESTRICT unsharpKernel = nullptr;
+        int unsharpRadius = 0;
+        float unsharpAmount = 0.0f;
+        int glareOriginX = 0;
+        int glareOriginY = 0;
+        std::uint64_t glareSeed = 0;
+        float glarePercent = 0.0f;
+        float glareRoughness = 0.0f;
+        const float* JUICER_RESTRICT glareKernel = nullptr;
+        int glareRadius = 0;
+    };
+
     struct PipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;
@@ -117,6 +202,14 @@ namespace JuicerCuda {
         int width = 0;
         int height = 0;
         int nComponents = 0;
+
+        // Stage-scoped payloads (pass 1 mapping; kernels still use legacy fields).
+        FilmExposurePayload filmExpose{};
+        FilmDevelopPayload filmDevelop{};
+        PrintExposePayload printExpose{};
+        PrintDevelopPayload printDevelop{};
+        ScanStagePayload scanStage{};
+        ScannerOpticsPayload scannerOptics{};
 
         FilmRawPayload filmRaw{};
         float exposureScale = 1.0f;
@@ -195,5 +288,67 @@ namespace JuicerCuda {
         float printMidgrayFactor = 1.0f;
         float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
     };
+
+    inline void init_stage_payloads(PipelineRunParams& p) {
+        p.filmExpose.exposureScale = p.exposureScale;
+        p.filmExpose.sensB = p.sensB;
+        p.filmExpose.sensG = p.sensG;
+        p.filmExpose.sensR = p.sensR;
+        p.filmExpose.tablesAx = p.tablesAx;
+        p.filmExpose.tablesAy = p.tablesAy;
+        p.filmExpose.tablesAz = p.tablesAz;
+        p.filmExpose.tablesK = p.tablesK;
+        for (int i = 0; i < 9; ++i) {
+            p.filmExpose.spdSInv[i] = p.spdSInv[i];
+        }
+        p.filmExpose.hanatosLut = p.hanatosLut;
+        p.filmExpose.hanatosN = p.hanatosN;
+        p.filmExpose.hanatosLutIntegrated = p.hanatosLutIntegrated;
+        p.filmExpose.hanatosNIntegrated = p.hanatosNIntegrated;
+
+        p.filmDevelop.gammaFactorB = p.gammaFactorB;
+        p.filmDevelop.gammaFactorG = p.gammaFactorG;
+        p.filmDevelop.gammaFactorR = p.gammaFactorR;
+        p.filmDevelop.dirPrecorrected = p.dirPrecorrected;
+        p.filmDevelop.dir = p.dir;
+        p.filmDevelop.spatialDir.active = p.spatialDirActive;
+        p.filmDevelop.spatialDir.corrY = p.spatialDirCorrY;
+        p.filmDevelop.spatialDir.corrM = p.spatialDirCorrM;
+        p.filmDevelop.spatialDir.corrC = p.spatialDirCorrC;
+        p.filmDevelop.densB = p.densB;
+        p.filmDevelop.densG = p.densG;
+        p.filmDevelop.densR = p.densR;
+        p.filmDevelop.dirDensB = p.dirDensB;
+        p.filmDevelop.dirDensG = p.dirDensG;
+        p.filmDevelop.dirDensR = p.dirDensR;
+
+        p.printExpose.active = p.printActive;
+        p.printExpose.negTables = p.negTables;
+        p.printExpose.printIllumFiltered = p.printIllumFiltered;
+        p.printExpose.printIllumK = p.printIllumK;
+        p.printExpose.printSensC = p.printSensC;
+        p.printExpose.printSensM = p.printSensM;
+        p.printExpose.printSensY = p.printSensY;
+        p.printExpose.printExposure = p.printExposure;
+        p.printExpose.printPreflashExposure = p.printPreflashExposure;
+        p.printExpose.printMidgrayFactor = p.printMidgrayFactor;
+        for (int i = 0; i < 3; ++i) {
+            p.printExpose.printPreflashRaw[i] = p.printPreflashRaw[i];
+        }
+
+        p.printDevelop.printDcC = p.printDcC;
+        p.printDevelop.printDcM = p.printDcM;
+        p.printDevelop.printDcY = p.printDcY;
+        p.printDevelop.printGammaC = p.printGammaC;
+        p.printDevelop.printGammaM = p.printGammaM;
+        p.printDevelop.printGammaY = p.printGammaY;
+
+        p.scanStage.scannerUseLut = p.scannerUseLut;
+        p.scanStage.scanLutLogXYZ = p.scanLutLogXYZ;
+        p.scanStage.scanLutRes = p.scanLutRes;
+        p.scanStage.scanTables = p.scan;
+        p.scanStage.scanColor = p.scanColor;
+        p.scanStage.scanErrorFlag = p.scanErrorFlag;
+    }
 
 } // namespace JuicerCuda

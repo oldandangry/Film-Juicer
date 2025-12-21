@@ -2201,6 +2201,8 @@ namespace JuicerCuda {
             }
         }
 
+        JuicerCuda::init_stage_payloads(run);
+
         const cudaError_t probeErr = ::juicer_cuda_probe_print_pipeline(inNeg, kCount, &run, gpuOut, cudaStreamOpaque);
         if (probeErr != cudaSuccess) {
             outError = std::string("GPU print pipeline probe failed: ") + (cudaGetErrorString(probeErr) ? cudaGetErrorString(probeErr) : "(unknown)");

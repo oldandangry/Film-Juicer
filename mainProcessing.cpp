@@ -1263,6 +1263,8 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
 
+            JuicerCuda::init_stage_payloads(run);
+
             const bool wantGlare = glareActive;
             float glarePercent = 0.0f;
             float glareRoughness = 0.0f;
@@ -1782,6 +1784,8 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             }
+
+            JuicerCuda::init_stage_payloads(run);
 
             // Scanner optics/glare for the print medium.
             Scanner::ScannerMediumRuntime printMedium = _ws->printMediumRuntime;
