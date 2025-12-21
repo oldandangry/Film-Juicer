@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaResources.h
 //
-// Phase 2: per-instance CUDA resource cache keyed by WorkingState.buildCounter.
+// Per-instance CUDA resource cache keyed by WorkingState.buildCounter.
 //
 // This module intentionally owns only GPU-side mirrors of CPU WorkingState data (curves/tables/etc).
 // The render path remains responsible for gating unsupported features (e.g. auto-exposure) until
@@ -122,7 +122,7 @@ namespace JuicerCuda {
         DeviceGaussianKernel spatialDirKernel;
         DeviceSpatialDirScratch spatialDirScratch;
 
-        // Phase 5: print pipeline (PrintBypass=false) payloads.
+        // Print pipeline (PrintBypass=false) payloads.
         DeviceCurve printDcC;
         DeviceCurve printDcM;
         DeviceCurve printDcY;
@@ -199,7 +199,7 @@ namespace JuicerCuda {
     // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=4.0, radius clamp=75) for optics.
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
 
-    // Phase 5: builds + uploads the enlarger illuminant filtered by the current print params (Y/M/C filters).
+    // Print pipeline: builds + uploads the enlarger illuminant filtered by the current print params (Y/M/C filters).
     bool ensure_print_illuminant_filtered(
         Resources& resources,
         const WorkingState& ws,

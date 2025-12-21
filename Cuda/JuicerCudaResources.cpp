@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaResources.cpp
 //
-// Phase 2: WorkingState uploads + primitive validation hooks.
+// WorkingState uploads + primitive validation hooks.
 //
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
@@ -125,7 +125,7 @@ extern "C" cudaError_t juicer_cuda_probe_clamp_logE_to_curve_domain(
 extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
     const float* hNegCmy,
     int count,
-    const JuicerCuda::Phase3RunParams* hParams,
+    const JuicerCuda::PipelineRunParams* hParams,
     float* hOutPrintCmy,
     void* cudaStreamOpaque);
 #endif
@@ -670,7 +670,7 @@ namespace JuicerCuda {
             }
         }
 
-        // Phase 5: upload print pipeline payloads when a valid print runtime is present.
+        // Print pipeline: upload payloads when a valid print runtime is present.
         {
             const Print::Runtime* prt = ws.printRT.get();
             if (!prt || !Print::profile_is_valid(prt->profile)) {
@@ -2260,7 +2260,7 @@ namespace JuicerCuda {
             cpuOut[i * 3 + 2] = dout.printDensity.v[2];
         }
 
-        JuicerCuda::Phase3RunParams run{};
+        JuicerCuda::PipelineRunParams run{};
         run.printActive = 1;
         run.printExposure = prm.exposure;
         run.printPreflashExposure = prm.preflashExposure;

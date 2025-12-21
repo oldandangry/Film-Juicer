@@ -76,7 +76,7 @@ static __device__ __forceinline__ void scan_spectral_to_log_xyz_device(
 }
 
 static __device__ __forceinline__ void scan_log_xyz_device(
-    const JuicerCuda::Phase3RunParams& params,
+    const JuicerCuda::PipelineRunParams& params,
     const double D_norm[3],
     double logXYZ[3])
 {

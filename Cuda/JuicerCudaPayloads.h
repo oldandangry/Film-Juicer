@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaPayloads.h
 //
-// Phase 3 scaffolding: compact POD payloads for device kernels.
+// Pipeline scaffolding: compact POD payloads for device kernels.
 //
 // Intentionally avoids CUDA headers so it can be included from both host and NVCC code.
 #pragma once
@@ -109,7 +109,7 @@ namespace JuicerCuda {
         float inv_max_cmy[3] = { 1.0f, 1.0f, 1.0f };
     };
 
-    struct Phase3RunParams {
+    struct PipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;
         void* dst = nullptr;
@@ -163,7 +163,7 @@ namespace JuicerCuda {
         ScanColorPayload scanColor{};
         int* scanErrorFlag = nullptr;
 
-        // Phase 5 (PrintBypass=false): optional print pipeline payloads.
+        // Print pipeline payloads (PrintBypass=false).
         // When printActive=1, kernels:
         //   negative density -> print raw exposure -> print density -> scan (print medium).
         // ScanTablesPayload 'scan' must be set to the selected scan medium (print), while

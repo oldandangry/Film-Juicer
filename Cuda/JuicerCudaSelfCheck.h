@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaSelfCheck.h
 //
-// Phase 2 scaffolding: runtime CUDA self-check.
+// Runtime CUDA self-check.
 //
 // Intent:
 // - Provide a fast "is CUDA actually usable?" probe in the real host environment (Resolve / OFX),
@@ -17,4 +17,3 @@
 
 // Returns false and sets *outError on failure (message pointer stays valid for process lifetime).
 bool juicer_cuda_runtime_self_check(void* cudaStreamOpaque, const char** outError);
-

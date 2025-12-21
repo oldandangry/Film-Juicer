@@ -85,7 +85,7 @@ namespace {
     }
 
     __global__ void spatial_dir_corrections_kernel(
-        JuicerCuda::Phase3RunParams params,
+        JuicerCuda::PipelineRunParams params,
         float* corrY,
         float* corrM,
         float* corrC)
@@ -159,7 +159,7 @@ namespace {
 } // namespace
 
 extern "C" cudaError_t juicer_cuda_build_spatial_dir(
-    const JuicerCuda::Phase3RunParams* hParams,
+    const JuicerCuda::PipelineRunParams* hParams,
     float* dCorrY,
     float* dCorrM,
     float* dCorrC,
@@ -172,7 +172,7 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
         return cudaErrorInvalidValue;
     }
 
-    const JuicerCuda::Phase3RunParams params = *hParams;
+    const JuicerCuda::PipelineRunParams params = *hParams;
     if (!params.src || params.srcRowBytes == 0) {
         return cudaErrorInvalidValue;
     }

@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaAutoExposure.cu
 //
-// Phase 2: camera auto-exposure metering on CUDA (center-weighted Gaussian mask).
+// CUDA camera auto-exposure metering (center-weighted Gaussian mask).
 //
 // This is a parity-oriented port of the CPU meter in JuicerEffect.cpp, adapted for device pointers.
 //

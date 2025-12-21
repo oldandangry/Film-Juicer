@@ -8,7 +8,7 @@
 #include "Cuda/JuicerCudaPrintPipeline.cuh"
 
 __global__ void develop_print_density_kernel(
-    JuicerCuda::Phase3RunParams params,
+    JuicerCuda::PipelineRunParams params,
     float* ioC,
     float* ioM,
     float* ioY)

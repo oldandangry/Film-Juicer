@@ -25,12 +25,12 @@
 #endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-extern "C" cudaError_t juicer_cuda_phase3_negative_only(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_negative_pipeline(
+    const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_build_spatial_dir(
-    const JuicerCuda::Phase3RunParams* hParams,
+    const JuicerCuda::PipelineRunParams* hParams,
     float* dCorrY,
     float* dCorrM,
     float* dCorrC,
@@ -39,8 +39,8 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     int kernelRadius,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
+    const JuicerCuda::PipelineRunParams* hParams,
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
@@ -60,12 +60,12 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
     int glareRadius,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_phase5_print_pipeline(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_print_pipeline(
+    const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque);
 
-extern "C" cudaError_t juicer_cuda_phase5_print_pipeline_optics(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
+    const JuicerCuda::PipelineRunParams* hParams,
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
@@ -963,7 +963,7 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
 
 #if defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
-    // Phase 2 scaffolding: runtime CUDA self-check.
+    // Runtime CUDA self-check.
     // This is intentionally a host-runtime probe (not JUICER_TESTS), and is designed to be easy
     // to remove later: disable JUICER_CUDA_SELF_CHECK or delete Cuda/JuicerCudaSelfCheck.*.
     static std::once_flag sSelfCheckOnce;
@@ -1030,7 +1030,7 @@ void JuicerProcessor::processImagesCUDA() {
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
 
-        JuicerCuda::Phase3RunParams run{};
+        JuicerCuda::PipelineRunParams run{};
         run.src = srcPtr;
         run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
         run.dst = dstPtr;
@@ -1109,7 +1109,7 @@ void JuicerProcessor::processImagesCUDA() {
         {
             std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
             if (!cudaResources) {
-                JTRACE("CUDA", "FATAL: CUDA resources missing for Phase 3");
+                JTRACE("CUDA", "FATAL: CUDA resources missing for negative pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
@@ -1300,7 +1300,7 @@ void JuicerProcessor::processImagesCUDA() {
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
-                err = juicer_cuda_phase3_negative_only(&run, _pCudaStream);
+                err = juicer_cuda_negative_pipeline(&run, _pCudaStream);
             }
             else {
                 std::string opticsError;
@@ -1337,7 +1337,7 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
                 }
 
-                err = juicer_cuda_phase3_negative_only_optics(
+                err = juicer_cuda_negative_pipeline_optics(
                     &run,
                     cudaResources->scannerScratch.rgbR,
                     cudaResources->scannerScratch.rgbG,
@@ -1360,7 +1360,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             if (err != cudaSuccess) {
                 const char* msg = cudaGetErrorString(err);
-                JTRACE("CUDA", std::string("FATAL: Phase 3 kernel launch failed: ") + (msg ? msg : "(unknown)"));
+                JTRACE("CUDA", std::string("FATAL: negative pipeline kernel launch failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
@@ -1386,7 +1386,7 @@ void JuicerProcessor::processImagesCUDA() {
                 if (pollErr == cudaSuccess) {
                     cudaResources->scanErrorPending = 0;
                     if (*cudaResources->scanErrorHost != 0) {
-                        JTRACE("CUDA", "FATAL: Phase 3 scan produced non-finite RGB");
+                        JTRACE("CUDA", "FATAL: negative pipeline scan produced non-finite RGB");
                         throw OFX::Exception::Suite(kOfxStatErrFatal);
                     }
                 } else if (pollErr != cudaErrorNotReady) {
@@ -1410,11 +1410,11 @@ void JuicerProcessor::processImagesCUDA() {
                 flagErr = cudaStreamSynchronize(stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
-                    JTRACE("CUDA", std::string("CUDA stream sync failed after Phase 3: ") + (msg ? msg : "(unknown)"));
+                    JTRACE("CUDA", std::string("CUDA stream sync failed after negative pipeline: ") + (msg ? msg : "(unknown)"));
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
                 if (scanError != 0) {
-                    JTRACE("CUDA", "FATAL: Phase 3 scan produced non-finite RGB");
+                    JTRACE("CUDA", "FATAL: negative pipeline scan produced non-finite RGB");
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }
@@ -1466,7 +1466,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
         }
 
-        JuicerCuda::Phase3RunParams run{};
+        JuicerCuda::PipelineRunParams run{};
         run.src = srcPtr;
         run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
         run.dst = dstPtr;
@@ -1545,7 +1545,7 @@ void JuicerProcessor::processImagesCUDA() {
         {
             std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
             if (!cudaResources) {
-                JTRACE("CUDA", "FATAL: CUDA resources missing for Phase 5");
+                JTRACE("CUDA", "FATAL: CUDA resources missing for print pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
@@ -1736,7 +1736,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
 
-            // Phase 5 print payloads.
+            // Print pipeline payloads.
             run.printActive = 1;
             run.negTables.epsC = cudaResources->scanNegative.tables.epsC;
             run.negTables.epsM = cudaResources->scanNegative.tables.epsM;
@@ -1842,7 +1842,7 @@ void JuicerProcessor::processImagesCUDA() {
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
-                err = juicer_cuda_phase5_print_pipeline(&run, _pCudaStream);
+                err = juicer_cuda_print_pipeline(&run, _pCudaStream);
             }
             else {
                 std::string opticsError;
@@ -1879,7 +1879,7 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
                 }
 
-                err = juicer_cuda_phase5_print_pipeline_optics(
+                err = juicer_cuda_print_pipeline_optics(
                     &run,
                     cudaResources->scannerScratch.rgbR,
                     cudaResources->scannerScratch.rgbG,
@@ -1902,7 +1902,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             if (err != cudaSuccess) {
                 const char* msg = cudaGetErrorString(err);
-                JTRACE("CUDA", std::string("FATAL: Phase 5 kernel launch failed: ") + (msg ? msg : "(unknown)"));
+                JTRACE("CUDA", std::string("FATAL: print pipeline kernel launch failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
@@ -1928,7 +1928,7 @@ void JuicerProcessor::processImagesCUDA() {
                 if (pollErr == cudaSuccess) {
                     cudaResources->scanErrorPending = 0;
                     if (*cudaResources->scanErrorHost != 0) {
-                        JTRACE("CUDA", "FATAL: Phase 5 scan produced non-finite RGB");
+                        JTRACE("CUDA", "FATAL: print pipeline scan produced non-finite RGB");
                         throw OFX::Exception::Suite(kOfxStatErrFatal);
                     }
                 }
@@ -1953,11 +1953,11 @@ void JuicerProcessor::processImagesCUDA() {
                 flagErr = cudaStreamSynchronize(stream);
                 if (flagErr != cudaSuccess) {
                     const char* msg = cudaGetErrorString(flagErr);
-                    JTRACE("CUDA", std::string("CUDA stream sync failed after Phase 5: ") + (msg ? msg : "(unknown)"));
+                    JTRACE("CUDA", std::string("CUDA stream sync failed after print pipeline: ") + (msg ? msg : "(unknown)"));
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
                 if (scanError != 0) {
-                    JTRACE("CUDA", "FATAL: Phase 5 scan produced non-finite RGB");
+                    JTRACE("CUDA", "FATAL: print pipeline scan produced non-finite RGB");
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }

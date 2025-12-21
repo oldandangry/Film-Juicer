@@ -10,7 +10,7 @@ static __device__ __forceinline__ float density_to_light_sample_agx_device(float
     return isnan(out) ? 0.0f : out;
 }
 
-static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerCuda::Phase3RunParams& params, float D_cmy[3]) {
+static __device__ __forceinline__ void apply_print_pipeline_device(const JuicerCuda::PipelineRunParams& params, float D_cmy[3]) {
     if (!params.printActive || !D_cmy) {
         return;
     }

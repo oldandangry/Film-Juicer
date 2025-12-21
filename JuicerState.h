@@ -217,7 +217,7 @@ struct InstanceState {
     ScannerOptics::Runtime scannerRuntimeB;
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    // Phase 2 CUDA: per-instance GPU cache keyed by WorkingState.buildCounter.
+    // CUDA: per-instance GPU cache keyed by WorkingState.buildCounter.
     // This is kept on InstanceState so the CPU and CUDA render paths share the same invalidation
     // boundary (the atomic WorkingState swap).
     std::mutex cudaMutex;

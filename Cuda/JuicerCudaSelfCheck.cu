@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaSelfCheck.cu
 //
-// Phase 2 scaffolding: runtime CUDA self-check (see header for intent + removal notes).
+// Runtime CUDA self-check (see header for intent + removal notes).
 //
 // This validates a minimal end-to-end CUDA path:
 // - stream usage

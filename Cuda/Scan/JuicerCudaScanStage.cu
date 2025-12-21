@@ -47,19 +47,19 @@ __global__ void optics_unsharp_combine_kernel(
 
 // Film/print stage kernels are defined in their respective TUs.
 __global__ void develop_film_density_kernel(
-    JuicerCuda::Phase3RunParams params,
+    JuicerCuda::PipelineRunParams params,
     float* outC,
     float* outM,
     float* outY);
 __global__ void develop_print_density_kernel(
-    JuicerCuda::Phase3RunParams params,
+    JuicerCuda::PipelineRunParams params,
     float* ioC,
     float* ioM,
     float* ioY);
 
 namespace {
 
-    __global__ void phase3_negative_only_kernel(JuicerCuda::Phase3RunParams params) {
+    __global__ void pipeline_direct_kernel(JuicerCuda::PipelineRunParams params) {
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
         const int y = blockIdx.y * blockDim.y + threadIdx.y;
         if (x >= params.width || y >= params.height) {
@@ -201,7 +201,7 @@ namespace {
     }
 
     __global__ void scan_linear_rgb_kernel(
-        JuicerCuda::Phase3RunParams params,
+        JuicerCuda::PipelineRunParams params,
         const float* inC,
         const float* inM,
         const float* inY,
@@ -271,8 +271,8 @@ namespace {
         outB[idx] = static_cast<float>(rgbOut[2]);
     }
 
-    __global__ void phase3_stageD_encode_write_kernel(
-        JuicerCuda::Phase3RunParams params,
+    __global__ void scan_output_encode_kernel(
+        JuicerCuda::PipelineRunParams params,
         const float* rgbR,
         const float* rgbG,
         const float* rgbB)
@@ -319,15 +319,15 @@ namespace {
 
 } // namespace
 
-extern "C" cudaError_t juicer_cuda_phase3_negative_only(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_negative_pipeline(
+    const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque)
 {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
 
-    const JuicerCuda::Phase3RunParams params = *hParams;
+    const JuicerCuda::PipelineRunParams params = *hParams;
     if (!params.src || !params.dst) {
         return cudaErrorInvalidValue;
     }
@@ -347,12 +347,12 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only(
     dim3 blocks(
         static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
         static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
-    phase3_negative_only_kernel<<<blocks, threads, 0, stream>>>(params);
+    pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
+    const JuicerCuda::PipelineRunParams* hParams,
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
@@ -376,7 +376,7 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
         return cudaErrorInvalidValue;
     }
 
-    const JuicerCuda::Phase3RunParams params = *hParams;
+    const JuicerCuda::PipelineRunParams params = *hParams;
     if (!params.src || !params.dst) {
         return cudaErrorInvalidValue;
     }
@@ -502,12 +502,12 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
         if (err != cudaSuccess) return err;
     }
 
-    phase3_stageD_encode_write_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+    scan_output_encode_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t juicer_cuda_phase5_print_pipeline(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_print_pipeline(
+    const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque)
 {
     if (!hParams) {
@@ -516,11 +516,11 @@ extern "C" cudaError_t juicer_cuda_phase5_print_pipeline(
     if (!hParams->printActive) {
         return cudaErrorInvalidValue;
     }
-    return juicer_cuda_phase3_negative_only(hParams, cudaStreamOpaque);
+    return juicer_cuda_negative_pipeline(hParams, cudaStreamOpaque);
 }
 
-extern "C" cudaError_t juicer_cuda_phase5_print_pipeline_optics(
-    const JuicerCuda::Phase3RunParams* hParams,
+extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
+    const JuicerCuda::PipelineRunParams* hParams,
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
@@ -546,7 +546,7 @@ extern "C" cudaError_t juicer_cuda_phase5_print_pipeline_optics(
     if (!hParams->printActive) {
         return cudaErrorInvalidValue;
     }
-    return juicer_cuda_phase3_negative_only_optics(
+    return juicer_cuda_negative_pipeline_optics(
         hParams,
         dRgbR,
         dRgbG,

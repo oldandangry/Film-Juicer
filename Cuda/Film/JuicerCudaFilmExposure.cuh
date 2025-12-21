@@ -385,7 +385,7 @@ static __device__ void tables_layer_exposures_device(
 }
 
 static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
-    const JuicerCuda::Phase3RunParams& params,
+    const JuicerCuda::PipelineRunParams& params,
     const float rgbIn[3],
     float logE_raw[3],
     float logE_sanitized[3],

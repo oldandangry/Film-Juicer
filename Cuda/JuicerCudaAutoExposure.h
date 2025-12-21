@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaAutoExposure.h
 //
-// Phase 2: camera auto-exposure metering on CUDA.
+// CUDA camera auto-exposure metering.
 //
 // This header intentionally avoids CUDA types so it can be included from non-NVCC translation units.
 //

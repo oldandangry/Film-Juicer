@@ -1,5 +1,5 @@
 // Cuda/JuicerCudaValidation.cu
-// Phase 2: CUDA validation probes (guarded).
+// CUDA validation probes (guarded).
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -470,7 +470,7 @@ namespace {
     }
 
     __global__ void probe_print_pipeline_kernel(
-        JuicerCuda::Phase3RunParams params,
+        JuicerCuda::PipelineRunParams params,
         const float* inNegCmy,
         float* outPrintCmy,
         int count)
@@ -957,7 +957,7 @@ extern "C" cudaError_t juicer_cuda_probe_convert_input_to_DWG(
 extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
     const float* hNegCmy,
     int count,
-    const JuicerCuda::Phase3RunParams* hParams,
+    const JuicerCuda::PipelineRunParams* hParams,
     float* hOutPrintCmy,
     void* cudaStreamOpaque)
 {

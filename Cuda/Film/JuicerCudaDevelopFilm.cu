@@ -10,7 +10,7 @@
 #include "Cuda/Film/JuicerCudaFilmDevelop.cuh"
 
 __global__ void develop_film_density_kernel(
-    JuicerCuda::Phase3RunParams params,
+    JuicerCuda::PipelineRunParams params,
     float* outC,
     float* outM,
     float* outY)
