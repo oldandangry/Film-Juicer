@@ -258,7 +258,16 @@
     <ClInclude Include="Cuda\\JuicerCudaPrintPipeline.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
+    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmExposure.cuh">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmDevelop.cuh">
+      <Filter>Cuda</Filter>
+    </ClInclude>
     <ClInclude Include="Cuda\\Scan\\JuicerCudaScanStage.cuh">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="Cuda\\Scan\\JuicerCudaScanOutput.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="Cuda\\JuicerCudaResources.h">

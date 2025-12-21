@@ -251,7 +251,10 @@
     <ClInclude Include="Print.h" />
     <ClInclude Include="Cuda\\JuicerCudaKernelsUtil.cuh" />
     <ClInclude Include="Cuda\\JuicerCudaPrintPipeline.cuh" />
+    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmExposure.cuh" />
+    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmDevelop.cuh" />
     <ClInclude Include="Cuda\\Scan\\JuicerCudaScanStage.cuh" />
+    <ClInclude Include="Cuda\\Scan\\JuicerCudaScanOutput.cuh" />
     <ClInclude Include="Cuda\\JuicerCudaResources.h" />
     <ClInclude Include="SpatialDIR.h" />
     <ClInclude Include="DevelopFilmStage.h" />
