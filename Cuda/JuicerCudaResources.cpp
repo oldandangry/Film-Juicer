@@ -29,6 +29,14 @@
 #include <limits>
 #include <vector>
 
+namespace JuicerCuda {
+namespace Precompute {
+    bool build_scan_lut_cpu(const Scanner::ScannerMediumRuntime& medium, std::uint32_t res, std::vector<double>& out, std::string& outError);
+    void build_hanatos_integrated_lut_cpu(const Spectral::SpectralContext& ctx, const WorkingState& ws, std::vector<float>& out);
+    bool build_print_preflash_raw(const WorkingState& ws, const Print::Runtime& prt, float outRaw[3], int& outShapeK);
+}
+}
+
 // Implemented in Cuda/JuicerCudaValidation.cu
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
 extern "C" cudaError_t juicer_cuda_probe_density_curve(
@@ -741,9 +749,10 @@ namespace JuicerCuda {
                     resources.printPreflashBuildCounter != ws.buildCounter ||
                     resources.printPreflashRuntimePtr != prt ||
                     resources.printPreflashShapeK != Spectral::gShape.K) {
-                    const int shapeK = Spectral::gShape.K;
-                    const bool haveShape = shapeK > 0;
-                    if (!haveShape) {
+                    float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
+                    int shapeK = 0;
+                    const bool ok = Precompute::build_print_preflash_raw(ws, *prt, preflashRaw, shapeK);
+                    if (!ok) {
                         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
                         resources.printPreflashValid = false;
                         resources.printPreflashBuildCounter = ws.buildCounter;
@@ -751,62 +760,9 @@ namespace JuicerCuda {
                         resources.printPreflashShapeK = 0;
                     }
                     else {
-                        auto blend = [](float curveVal, float normalizedAmount) -> float {
-                            const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
-                            return 1.0f - (1.0f - curveVal) * a;
-                        };
-                        auto compose_amount = [](float neutralAmount, float deltaSteps) -> float {
-                            const float neutral = std::isfinite(neutralAmount)
-                                ? std::clamp(neutralAmount, 0.0f, 1.0f)
-                                : 0.0f;
-                            float ds = std::isfinite(deltaSteps) ? deltaSteps : 0.0f;
-                            ds = std::clamp(ds, -Print::kEnlargerSteps, Print::kEnlargerSteps);
-                            const float totalSteps = neutral * Print::kEnlargerSteps + ds;
-                            return totalSteps / Print::kEnlargerSteps;
-                        };
-
-                        const float yAmount = compose_amount(prt->neutralY, 0.0f);
-                        const float mAmount = compose_amount(prt->neutralM, 0.0f);
-                        const float cAmount = compose_amount(prt->neutralC, 0.0f);
-
-                        const bool hasBL = ws.hasBaseline &&
-                            static_cast<int>(ws.baseMin.linear.size()) == shapeK &&
-                            static_cast<int>(ws.tablesView.baseMin.size()) == shapeK;
-
-                        double accumC = 0.0;
-                        double accumM = 0.0;
-                        double accumY = 0.0;
-                        for (int i = 0; i < shapeK; ++i) {
-                            const float Ee = (prt->illumEnlarger.linear.size() > static_cast<size_t>(i))
-                                ? prt->illumEnlarger.linear[static_cast<size_t>(i)]
-                                : 1.0f;
-                            const float fY = blend(
-                                (prt->filterY.linear.size() > static_cast<size_t>(i)) ? prt->filterY.linear[static_cast<size_t>(i)] : 1.0f,
-                                yAmount);
-                            const float fM = blend(
-                                (prt->filterM.linear.size() > static_cast<size_t>(i)) ? prt->filterM.linear[static_cast<size_t>(i)] : 1.0f,
-                                mAmount);
-                            const float fC = blend(
-                                (prt->filterC.linear.size() > static_cast<size_t>(i)) ? prt->filterC.linear[static_cast<size_t>(i)] : 1.0f,
-                                cAmount);
-                            const float illumFiltered = Ee * (fY * fM * fC);
-
-                            const float baseDensity = hasBL ? ws.tablesView.baseMin[static_cast<size_t>(i)] : 0.0f;
-                            const double transmitted = std::pow(10.0, -static_cast<double>(baseDensity)) * static_cast<double>(illumFiltered);
-                            const float out = static_cast<float>(transmitted);
-                            const float light = std::isnan(out) ? 0.0f : out;
-                            const float sC = p.sensC_log.linear[static_cast<size_t>(i)];
-                            const float sM = p.sensM_log.linear[static_cast<size_t>(i)];
-                            const float sY = p.sensY_log.linear[static_cast<size_t>(i)];
-                            const double e64 = static_cast<double>(light);
-                            if (!std::isnan(sC)) accumC += e64 * static_cast<double>(sC);
-                            if (!std::isnan(sM)) accumM += e64 * static_cast<double>(sM);
-                            if (!std::isnan(sY)) accumY += e64 * static_cast<double>(sY);
-                        }
-
-                        resources.printPreflashRaw[0] = static_cast<float>(accumC);
-                        resources.printPreflashRaw[1] = static_cast<float>(accumM);
-                        resources.printPreflashRaw[2] = static_cast<float>(accumY);
+                        resources.printPreflashRaw[0] = preflashRaw[0];
+                        resources.printPreflashRaw[1] = preflashRaw[1];
+                        resources.printPreflashRaw[2] = preflashRaw[2];
                         resources.printPreflashValid = true;
                         resources.printPreflashBuildCounter = ws.buildCounter;
                         resources.printPreflashRuntimePtr = prt;
@@ -884,44 +840,7 @@ namespace JuicerCuda {
                 const bool needUpload = needAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
                 if (needUpload) {
                     std::vector<float> cpu;
-                    cpu.resize(static_cast<size_t>(N) * static_cast<size_t>(N) * 4u, 0.0f);
-
-                    const float* lut = ctx.hanSpectra.data.data();
-                    const float* sB = ws.sensB.linear.data();
-                    const float* sG = ws.sensG.linear.data();
-                    const float* sR = ws.sensR.linear.data();
-                    const size_t stride = static_cast<size_t>(K);
-                    for (int x = 0; x < N; ++x) {
-                        for (int y = 0; y < N; ++y) {
-                            double accB = 0.0;
-                            double accG = 0.0;
-                            double accR = 0.0;
-                            const size_t base = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * stride;
-                            for (int k = 0; k < K; ++k) {
-                                const float raw = lut[base + static_cast<size_t>(k)];
-                                if (!std::isfinite(raw)) {
-                                    continue;
-                                }
-                                const float e = (raw > 0.0f) ? raw : 0.0f;
-                                if (!std::isfinite(e)) {
-                                    continue;
-                                }
-                                const double e64 = static_cast<double>(e);
-                                const float sb = sB[k];
-                                const float sg = sG[k];
-                                const float sr = sR[k];
-                                if (std::isfinite(sb)) accB += e64 * static_cast<double>(sb);
-                                if (std::isfinite(sg)) accG += e64 * static_cast<double>(sg);
-                                if (std::isfinite(sr)) accR += e64 * static_cast<double>(sr);
-                            }
-
-                            const size_t outBase = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * 4u;
-                            cpu[outBase + 0] = static_cast<float>(accR);
-                            cpu[outBase + 1] = static_cast<float>(accG);
-                            cpu[outBase + 2] = static_cast<float>(accB);
-                            cpu[outBase + 3] = 0.0f;
-                        }
-                    }
+                    Precompute::build_hanatos_integrated_lut_cpu(ctx, ws, cpu);
 
                     const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
                     if (needAlloc) {
@@ -1034,32 +953,9 @@ namespace JuicerCuda {
 
         // Build CPU LUT first (can overlap with any in-flight GPU work) before we synchronize to
         // safely retire the previous device buffer.
-        const size_t sRes = static_cast<size_t>(res);
-        const size_t voxels = sRes * sRes * sRes;
-        const size_t count = voxels * 3u;
         std::vector<double> cpu;
-        cpu.resize(count);
-
-        for (std::uint32_t z = 0; z < res; ++z) {
-            const double nz = (res > 1u) ? static_cast<double>(z) / static_cast<double>(res - 1u) : 0.0;
-            for (std::uint32_t y = 0; y < res; ++y) {
-                const double ny = (res > 1u) ? static_cast<double>(y) / static_cast<double>(res - 1u) : 0.0;
-                for (std::uint32_t x = 0; x < res; ++x) {
-                    const double nx = (res > 1u) ? static_cast<double>(x) / static_cast<double>(res - 1u) : 0.0;
-                    const size_t idx = (static_cast<size_t>(z) * sRes + static_cast<size_t>(y)) * sRes + static_cast<size_t>(x);
-                    const size_t base = idx * 3u;
-                    const double D_norm[3] = { nx, ny, nz };
-                    double logXYZ[3] = { 0.0, 0.0, 0.0 };
-                    Pipeline::ScanStage::spectral_to_log_xyz(medium, D_norm, logXYZ);
-                    if (!std::isfinite(logXYZ[0]) || !std::isfinite(logXYZ[1]) || !std::isfinite(logXYZ[2])) {
-                        outError = "scan LUT build produced non-finite logXYZ";
-                        return false;
-                    }
-                    cpu[base + 0] = logXYZ[0];
-                    cpu[base + 1] = logXYZ[1];
-                    cpu[base + 2] = logXYZ[2];
-                }
-            }
+        if (!Precompute::build_scan_lut_cpu(medium, res, cpu, outError)) {
+            return false;
         }
 
         const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
@@ -1088,7 +984,7 @@ namespace JuicerCuda {
             }
 
             double* dLut = nullptr;
-            const size_t bytes = count * sizeof(double);
+            const size_t bytes = cpu.size() * sizeof(double);
             cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dLut), bytes);
             if (err != cudaSuccess) {
                 outError = std::string("cudaMalloc(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");

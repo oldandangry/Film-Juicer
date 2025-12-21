@@ -73,6 +73,9 @@
     <ClCompile Include="ExposePrintStage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Cuda\\JuicerCudaPrecompute.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
     <ClCompile Include="Cuda\\JuicerCudaResources.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
@@ -107,9 +110,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <CudaCompile Include="Cuda\\JuicerCudaSelfCheck.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\JuicerCudaPrimitives.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
     <CudaCompile Include="Cuda\\JuicerCudaValidation.cu">

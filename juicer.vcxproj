@@ -195,6 +195,7 @@
     <ClCompile Include="DevelopPrintStage.cpp" />
     <ClCompile Include="ExposeFilmStage.cpp" />
     <ClCompile Include="ExposePrintStage.cpp" />
+    <ClCompile Include="Cuda\\JuicerCudaPrecompute.cpp" />
     <ClCompile Include="Cuda\\JuicerCudaResources.cpp" />
     <ClCompile Include="JuicerEffect.cpp" />
     <ClCompile Include="JuicerState.cpp" />
@@ -217,7 +218,6 @@
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="Cuda\\JuicerCudaSelfCheck.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
-    <CudaCompile Include="Cuda\\JuicerCudaPrimitives.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
     <CudaCompile Include="Cuda\\JuicerCudaValidation.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
     <CudaCompile Include="Cuda\\JuicerCudaAutoExposure.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
     <CudaCompile Include="Cuda\\Film\\JuicerCudaExposeFilm.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
