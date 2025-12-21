@@ -21,7 +21,6 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
-#include "Cuda/JuicerCudaPhase3Gate.h"
 #include "GeneratedColorSpaces.h"
 #endif
 
@@ -778,6 +777,11 @@ void JuicerProcessor::processImagesCUDA() {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
     OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
 #else
+    enum class RenderMode {
+        NegativeOnly,
+        Print
+    };
+
     if (!_srcImg || !_dstImg) {
         return;
     }
@@ -1002,30 +1006,16 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    // Phase 3: negative-only end-to-end CUDA pipeline (PrintBypass=true).
-    if (_printParams.bypass) {
-        JuicerCuda::Phase3GateInput gate{};
-        gate.printBypass = _printParams.bypass;
-        gate.scannerUseLut = _scannerSettings.useLut;
-        gate.lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
-        gate.unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
-        gate.unsharpAmount = _scannerOptions.unsharpAmount;
-        gate.glareActive = _ws && _ws->negativeMediumRuntime.glare.active && (_ws->negativeMediumRuntime.glare.percent > 0.0f);
-        gate.spatialDirActive = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
+    const RenderMode renderMode = _printParams.bypass ? RenderMode::NegativeOnly : RenderMode::Print;
 
-        std::string reason;
-        if (!JuicerCuda::phase3_negative_only_supported(gate, reason)) {
-#if defined(JUICER_TRACE_CUDA)
-            JTRACE("CUDA", std::string("CUDA Phase 3 unsupported: ") + reason);
-#endif
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-        }
-
-        const bool useSpatialDIR = gate.spatialDirActive;
+    // RenderMode::NegativeOnly (PrintBypass=true).
+    if (renderMode == RenderMode::NegativeOnly) {
+        const bool scannerUseLut = _scannerSettings.useLut;
+        const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
+        const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
+        const float unsharpAmount = _scannerOptions.unsharpAmount;
+        const bool glareActive = _ws && _ws->negativeMediumRuntime.glare.active && (_ws->negativeMediumRuntime.glare.percent > 0.0f);
+        const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
 
         if (!_ws->negativeScannerValid) {
             JTRACE("CUDA", "FATAL: negative scanner runtime invalid");
@@ -1146,7 +1136,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
             run.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
 
-            run.scannerUseLut = gate.scannerUseLut ? 1 : 0;
+            run.scannerUseLut = scannerUseLut ? 1 : 0;
             run.scanLutLogXYZ = nullptr;
             run.scanLutRes = 0;
             if (run.scannerUseLut) {
@@ -1273,7 +1263,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
 
-            const bool wantGlare = gate.glareActive;
+            const bool wantGlare = glareActive;
             float glarePercent = 0.0f;
             float glareRoughness = 0.0f;
             float glareBlurSigmaPx = 0.0f;
@@ -1303,9 +1293,9 @@ void JuicerProcessor::processImagesCUDA() {
                 glareSeed = Hash::hash_bytes(glareFields, sizeof(glareFields));
             }
 
-            const bool wantLensBlur = std::isfinite(gate.lensBlurSigmaPx) && gate.lensBlurSigmaPx > 0.0f;
-            const bool wantUnsharp = std::isfinite(gate.unsharpSigmaPx) && gate.unsharpSigmaPx > 0.0f &&
-                std::isfinite(gate.unsharpAmount) && gate.unsharpAmount != 0.0f;
+            const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
+            const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
+                std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
             const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare;
 
             cudaError_t err = cudaSuccess;
@@ -1322,7 +1312,7 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, gate.lensBlurSigmaPx, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA lens blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1330,7 +1320,7 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerUnsharpKernel, gate.unsharpSigmaPx, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerUnsharpKernel, unsharpSigmaPx, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA unsharp kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1358,7 +1348,7 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerLensBlurKernel.radius,
                     cudaResources->scannerUnsharpKernel.weights,
                     cudaResources->scannerUnsharpKernel.radius,
-                    gate.unsharpAmount,
+                    unsharpAmount,
                     win.x1,
                     win.y1,
                     glareSeed,
@@ -1434,7 +1424,7 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    // Phase 5: print pipeline on CUDA (PrintBypass=false).
+    // RenderMode::Print (PrintBypass=false).
     {
         if (!_printReady || !_prt) {
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
