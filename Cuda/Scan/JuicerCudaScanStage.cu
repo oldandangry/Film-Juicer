@@ -45,6 +45,18 @@ __global__ void optics_unsharp_combine_kernel(
     int n,
     float amount);
 
+// Film/print stage kernels are defined in their respective TUs.
+__global__ void develop_film_density_kernel(
+    JuicerCuda::Phase3RunParams params,
+    float* outC,
+    float* outM,
+    float* outY);
+__global__ void develop_print_density_kernel(
+    JuicerCuda::Phase3RunParams params,
+    float* ioC,
+    float* ioM,
+    float* ioY);
+
 namespace {
 
     __global__ void phase3_negative_only_kernel(JuicerCuda::Phase3RunParams params) {
@@ -188,12 +200,15 @@ namespace {
         }
     }
 
-    __global__ void phase3_stageA_linear_rgb_kernel(
+    __global__ void scan_linear_rgb_kernel(
         JuicerCuda::Phase3RunParams params,
-        float* rgbR,
-        float* rgbG,
-        float* rgbB,
-        const float* glarePercent)
+        const float* inC,
+        const float* inM,
+        const float* inY,
+        const float* glarePercent,
+        float* outR,
+        float* outG,
+        float* outB)
     {
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
         const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -201,88 +216,13 @@ namespace {
             return;
         }
 
-        if (!params.src || params.srcRowBytes == 0) {
-            return;
-        }
-        if (!rgbR || !rgbG || !rgbB) {
+        if (!inC || !inM || !inY || !outR || !outG || !outB) {
             return;
         }
 
-        const int nC = params.nComponents;
-        if (!(nC == 3 || nC == 4)) {
-            return;
-        }
+        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
 
-        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-        const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-        if (!srcPix) {
-            return;
-        }
-
-        const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
-
-        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
-        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
-        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
-        compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
-
-        float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
-        const bool useSpatialDir =
-            params.spatialDirActive &&
-            params.spatialDirCorrY && params.spatialDirCorrM && params.spatialDirCorrC;
-        if (useSpatialDir) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-            const float corrY = params.spatialDirCorrY[idx];
-            const float corrM = params.spatialDirCorrM[idx];
-            const float corrC = params.spatialDirCorrC[idx];
-
-            float logE_corr[3] = {
-                logE_raw[0] - corrY,
-                logE_raw[1] - corrM,
-                logE_raw[2] - corrC
-            };
-
-            const JuicerCuda::DeviceCurveView cB = params.dirPrecorrected ? params.dirDensB : params.densB;
-            const JuicerCuda::DeviceCurveView cG = params.dirPrecorrected ? params.dirDensG : params.densG;
-            const JuicerCuda::DeviceCurveView cR = params.dirPrecorrected ? params.dirDensR : params.densR;
-
-            logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB.x, cB.n);
-            logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG.x, cG.n);
-            logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR.x, cR.n);
-
-            const float DY = sample_density_at_logE_device(cB.x, cB.y, cB.n, logE_corr[0], params.gammaFactorB);
-            const float DM = sample_density_at_logE_device(cG.x, cG.y, cG.n, logE_corr[1], params.gammaFactorG);
-            const float DC = sample_density_at_logE_device(cR.x, cR.y, cR.n, logE_corr[2], params.gammaFactorR);
-
-            D_cmy[0] = DC;
-            D_cmy[1] = DM;
-            D_cmy[2] = DY;
-        }
-        else if (params.dir.active) {
-            float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
-            apply_dir_runtime_logE_device(logE_corr, layerPre, params.dir, params.densB, params.densG, params.densR);
-
-            const JuicerCuda::DeviceCurveView cB = params.dirPrecorrected ? params.dirDensB : params.densB;
-            const JuicerCuda::DeviceCurveView cG = params.dirPrecorrected ? params.dirDensG : params.densG;
-            const JuicerCuda::DeviceCurveView cR = params.dirPrecorrected ? params.dirDensR : params.densR;
-
-            const float DY = sample_density_at_logE_device(cB.x, cB.y, cB.n, logE_corr[0], params.gammaFactorB);
-            const float DM = sample_density_at_logE_device(cG.x, cG.y, cG.n, logE_corr[1], params.gammaFactorG);
-            const float DC = sample_density_at_logE_device(cR.x, cR.y, cR.n, logE_corr[2], params.gammaFactorR);
-
-            D_cmy[0] = DC;
-            D_cmy[1] = DM;
-            D_cmy[2] = DY;
-        }
-        else {
-            // Map B/G/R layer densities to C/M/Y dyes
-            D_cmy[0] = layerPre[2];
-            D_cmy[1] = layerPre[1];
-            D_cmy[2] = layerPre[0];
-        }
-
-        apply_print_pipeline_device(params, D_cmy);
+        const float D_cmy[3] = { inC[idx], inM[idx], inY[idx] };
 
         // Scan: normalize density -> logXYZ
         double D_norm[3];
@@ -299,8 +239,6 @@ namespace {
 
         double logXYZ[3] = { 0.0, 0.0, 0.0 };
         scan_log_xyz_device(params, D_norm, logXYZ);
-
-        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
 
         double xyz[3] = {
             pow(10.0, logXYZ[0]),
@@ -322,15 +260,15 @@ namespace {
 
         if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
             signal_scan_error_device(params.scanErrorFlag);
-            rgbR[idx] = 0.0f;
-            rgbG[idx] = 0.0f;
-            rgbB[idx] = 0.0f;
+            outR[idx] = 0.0f;
+            outG[idx] = 0.0f;
+            outB[idx] = 0.0f;
             return;
         }
 
-        rgbR[idx] = static_cast<float>(rgbOut[0]);
-        rgbG[idx] = static_cast<float>(rgbOut[1]);
-        rgbB[idx] = static_cast<float>(rgbOut[2]);
+        outR[idx] = static_cast<float>(rgbOut[0]);
+        outG[idx] = static_cast<float>(rgbOut[1]);
+        outB[idx] = static_cast<float>(rgbOut[2]);
     }
 
     __global__ void phase3_stageD_encode_write_kernel(
@@ -500,8 +438,22 @@ extern "C" cudaError_t juicer_cuda_phase3_negative_only_optics(
         }
     }
 
-    phase3_stageA_linear_rgb_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB, doGlare ? dTmp : nullptr);
+    develop_film_density_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
     cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    if (params.printActive) {
+        develop_print_density_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            return err;
+        }
+    }
+
+    scan_linear_rgb_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB, doGlare ? dTmp : nullptr, dRgbR, dRgbG, dRgbB);
+    err = cudaGetLastError();
     if (err != cudaSuccess) {
         return err;
     }
