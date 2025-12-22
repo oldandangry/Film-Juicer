@@ -97,6 +97,7 @@ private:
     Profiles::GrainMetadata gatherGrainUi() const;
     Profiles::ProfileGlare gatherGlareUi() const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
+    void applyHalationProfileDefaults();
     AutoExposureResult computeAutoExposure(
         const OFX::RenderArguments& args,
         OFX::Image* srcImg,
@@ -165,6 +166,11 @@ private:
     OFX::DoubleParam* _pEnlargerM = nullptr;
 
     OFX::BooleanParam* _pHalationActive = nullptr;
+    OFX::DoubleParam* _pHalationStrengthMaster = nullptr;
+    OFX::DoubleParam* _pHalationSizeUmMaster = nullptr;
+    OFX::DoubleParam* _pHalationScatteringStrengthMaster = nullptr;
+    OFX::DoubleParam* _pHalationScatteringSizeUmMaster = nullptr;
+    OFX::PushButtonParam* _pHalationRevertToStock = nullptr;
     OFX::Double3DParam* _pHalationStrength = nullptr;
     OFX::Double3DParam* _pHalationSizeUm = nullptr;
     OFX::Double3DParam* _pHalationScatteringStrength = nullptr;
@@ -173,6 +179,10 @@ private:
     OFX::BooleanParam* _pGrainActive = nullptr;
     OFX::BooleanParam* _pGrainSublayersActive = nullptr;
     OFX::DoubleParam* _pGrainParticleAreaUm2 = nullptr;
+    OFX::DoubleParam* _pGrainParticleScaleMaster = nullptr;
+    OFX::DoubleParam* _pGrainParticleScaleLayersMaster = nullptr;
+    OFX::DoubleParam* _pGrainDensityMinMaster = nullptr;
+    OFX::DoubleParam* _pGrainUniformityMaster = nullptr;
     OFX::Double3DParam* _pGrainParticleScale = nullptr;
     OFX::Double3DParam* _pGrainParticleScaleLayers = nullptr;
     OFX::Double3DParam* _pGrainDensityMin = nullptr;
@@ -190,5 +200,14 @@ private:
     OFX::DoubleParam* _pGlareCompRemovalTransition = nullptr;
 
     std::unique_ptr<InstanceState> _state;
+
+    double _halationStrengthMasterLast = 0.0;
+    double _halationSizeUmMasterLast = 0.0;
+    double _halationScatteringStrengthMasterLast = 0.0;
+    double _halationScatteringSizeUmMasterLast = 0.0;
+    double _grainParticleScaleMasterLast = 0.0;
+    double _grainParticleScaleLayersMasterLast = 0.0;
+    double _grainDensityMinMasterLast = 0.0;
+    double _grainUniformityMasterLast = 0.0;
 
 };

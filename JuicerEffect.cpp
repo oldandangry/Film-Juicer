@@ -385,6 +385,95 @@ Profiles::HalationMetadata JuicerEffect::gatherHalationUi() const {
     return halation;
 }
 
+void JuicerEffect::applyHalationProfileDefaults() {
+    if (!_state) {
+        return;
+    }
+    if (!_state->baseLoaded) {
+        return;
+    }
+
+    const Profiles::HalationMetadata& halationCfg = _state->base.halation;
+
+    auto sanitize_range = [](double value, double fallback, double lo, double hi) -> double {
+        if (!std::isfinite(value)) {
+            value = fallback;
+        }
+        return std::clamp(value, lo, hi);
+    };
+
+    double strengthR = 0.0, strengthG = 0.0, strengthB = 0.0;
+    double sizeR = 0.0, sizeG = 0.0, sizeB = 0.0;
+    double scatterStrengthR = 0.0, scatterStrengthG = 0.0, scatterStrengthB = 0.0;
+    double scatterSizeR = 0.0, scatterSizeG = 0.0, scatterSizeB = 0.0;
+
+    if (_pHalationStrength) {
+        _pHalationStrength->getValue(strengthR, strengthG, strengthB);
+    }
+    if (_pHalationSizeUm) {
+        _pHalationSizeUm->getValue(sizeR, sizeG, sizeB);
+    }
+    if (_pHalationScatteringStrength) {
+        _pHalationScatteringStrength->getValue(scatterStrengthR, scatterStrengthG, scatterStrengthB);
+    }
+    if (_pHalationScatteringSizeUm) {
+        _pHalationScatteringSizeUm->getValue(scatterSizeR, scatterSizeG, scatterSizeB);
+    }
+
+    const double strengthPctR = sanitize_range(static_cast<double>(halationCfg.strength[0]) * 100.0, strengthR, 0.0, 100.0);
+    const double strengthPctG = sanitize_range(static_cast<double>(halationCfg.strength[1]) * 100.0, strengthG, 0.0, 100.0);
+    const double strengthPctB = sanitize_range(static_cast<double>(halationCfg.strength[2]) * 100.0, strengthB, 0.0, 100.0);
+    const double sizeUmR = sanitize_range(static_cast<double>(halationCfg.sizeUm[0]), sizeR, 0.0, 1000.0);
+    const double sizeUmG = sanitize_range(static_cast<double>(halationCfg.sizeUm[1]), sizeG, 0.0, 1000.0);
+    const double sizeUmB = sanitize_range(static_cast<double>(halationCfg.sizeUm[2]), sizeB, 0.0, 1000.0);
+    const double scatterStrengthPctR = sanitize_range(static_cast<double>(halationCfg.scatteringStrength[0]) * 100.0, scatterStrengthR, 0.0, 100.0);
+    const double scatterStrengthPctG = sanitize_range(static_cast<double>(halationCfg.scatteringStrength[1]) * 100.0, scatterStrengthG, 0.0, 100.0);
+    const double scatterStrengthPctB = sanitize_range(static_cast<double>(halationCfg.scatteringStrength[2]) * 100.0, scatterStrengthB, 0.0, 100.0);
+    const double scatterSizeUmR = sanitize_range(static_cast<double>(halationCfg.scatteringSizeUm[0]), scatterSizeR, 0.0, 1000.0);
+    const double scatterSizeUmG = sanitize_range(static_cast<double>(halationCfg.scatteringSizeUm[1]), scatterSizeG, 0.0, 1000.0);
+    const double scatterSizeUmB = sanitize_range(static_cast<double>(halationCfg.scatteringSizeUm[2]), scatterSizeB, 0.0, 1000.0);
+
+    const double strengthMaster = (strengthPctR + strengthPctG + strengthPctB) / 3.0;
+    const double sizeMaster = (sizeUmR + sizeUmG + sizeUmB) / 3.0;
+    const double scatterStrengthMaster = (scatterStrengthPctR + scatterStrengthPctG + scatterStrengthPctB) / 3.0;
+    const double scatterSizeMaster = (scatterSizeUmR + scatterSizeUmG + scatterSizeUmB) / 3.0;
+
+    const bool wasSuppressed = _state->suppressParamEvents;
+    _state->suppressParamEvents = true;
+
+    if (_pHalationStrength) {
+        _pHalationStrength->setValue(strengthPctR, strengthPctG, strengthPctB);
+    }
+    if (_pHalationSizeUm) {
+        _pHalationSizeUm->setValue(sizeUmR, sizeUmG, sizeUmB);
+    }
+    if (_pHalationScatteringStrength) {
+        _pHalationScatteringStrength->setValue(scatterStrengthPctR, scatterStrengthPctG, scatterStrengthPctB);
+    }
+    if (_pHalationScatteringSizeUm) {
+        _pHalationScatteringSizeUm->setValue(scatterSizeUmR, scatterSizeUmG, scatterSizeUmB);
+    }
+    if (_pHalationStrengthMaster) {
+        _pHalationStrengthMaster->setValue(strengthMaster);
+    }
+    if (_pHalationSizeUmMaster) {
+        _pHalationSizeUmMaster->setValue(sizeMaster);
+    }
+    if (_pHalationScatteringStrengthMaster) {
+        _pHalationScatteringStrengthMaster->setValue(scatterStrengthMaster);
+    }
+    if (_pHalationScatteringSizeUmMaster) {
+        _pHalationScatteringSizeUmMaster->setValue(scatterSizeMaster);
+    }
+
+    _state->suppressParamEvents = wasSuppressed;
+
+    _halationStrengthMasterLast = strengthMaster;
+    _halationSizeUmMasterLast = sizeMaster;
+    _halationScatteringStrengthMasterLast = scatterStrengthMaster;
+    _halationScatteringSizeUmMasterLast = scatterSizeMaster;
+}
+
 Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     Profiles::GrainMetadata grain{};
 
@@ -958,6 +1047,11 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pEnlargerM = fetchDoubleParam("EnlargerM");
 
         _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
+        _pHalationStrengthMaster = fetchDoubleParam(JuicerParams::kHalationStrengthMaster);
+        _pHalationSizeUmMaster = fetchDoubleParam(JuicerParams::kHalationSizeUmMaster);
+        _pHalationScatteringStrengthMaster = fetchDoubleParam(JuicerParams::kHalationScatteringStrengthMaster);
+        _pHalationScatteringSizeUmMaster = fetchDoubleParam(JuicerParams::kHalationScatteringSizeUmMaster);
+        _pHalationRevertToStock = fetchPushButtonParam(JuicerParams::kHalationRevertToStock);
         _pHalationStrength = fetchDouble3DParam(JuicerParams::kHalationStrength);
         _pHalationSizeUm = fetchDouble3DParam(JuicerParams::kHalationSizeUm);
         _pHalationScatteringStrength = fetchDouble3DParam(JuicerParams::kHalationScatteringStrength);
@@ -966,6 +1060,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
         _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
         _pGrainParticleAreaUm2 = fetchDoubleParam(JuicerParams::kGrainParticleAreaUm2);
+        _pGrainParticleScaleMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleMaster);
+        _pGrainParticleScaleLayersMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
+        _pGrainDensityMinMaster = fetchDoubleParam(JuicerParams::kGrainDensityMinMaster);
+        _pGrainUniformityMaster = fetchDoubleParam(JuicerParams::kGrainUniformityMaster);
         _pGrainParticleScale = fetchDouble3DParam(JuicerParams::kGrainParticleScale);
         _pGrainParticleScaleLayers = fetchDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
         _pGrainDensityMin = fetchDouble3DParam(JuicerParams::kGrainDensityMin);
@@ -985,6 +1083,24 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
     }
+
+    auto initMasterCache = [](OFX::DoubleParam* param, double& outValue) {
+        if (!param) {
+            outValue = std::numeric_limits<double>::quiet_NaN();
+            return;
+        }
+        double v = 0.0;
+        param->getValue(v);
+        outValue = v;
+    };
+    initMasterCache(_pHalationStrengthMaster, _halationStrengthMasterLast);
+    initMasterCache(_pHalationSizeUmMaster, _halationSizeUmMasterLast);
+    initMasterCache(_pHalationScatteringStrengthMaster, _halationScatteringStrengthMasterLast);
+    initMasterCache(_pHalationScatteringSizeUmMaster, _halationScatteringSizeUmMasterLast);
+    initMasterCache(_pGrainParticleScaleMaster, _grainParticleScaleMasterLast);
+    initMasterCache(_pGrainParticleScaleLayersMaster, _grainParticleScaleLayersMasterLast);
+    initMasterCache(_pGrainDensityMinMaster, _grainDensityMinMasterLast);
+    initMasterCache(_pGrainUniformityMaster, _grainUniformityMasterLast);
 
     // Own per-instance state
     _state = std::make_unique<InstanceState>();
@@ -1259,6 +1375,96 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs&, const std::stri
         std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
         _state->autoExposureCacheValid = false;
     }
+    if (paramName == JuicerParams::kHalationRevertToStock) {
+        applyHalationProfileDefaults();
+        onParamsPossiblyChanged(paramName.c_str());
+        return;
+    }
+
+    auto sanitize_scalar = [](double value, double fallback, double lo, double hi) -> double {
+        if (!std::isfinite(value)) value = fallback;
+        return std::clamp(value, lo, hi);
+    };
+
+    auto apply_master_delta = [&](OFX::DoubleParam* masterParam,
+        OFX::Double3DParam* advParam,
+        double& masterCache,
+        double lo,
+        double hi) {
+        if (!masterParam || !advParam || !_state) {
+            return;
+        }
+        double master = 0.0;
+        masterParam->getValue(master);
+        if (!std::isfinite(master)) {
+            return;
+        }
+        master = std::clamp(master, lo, hi);
+        double prev = masterCache;
+        if (!std::isfinite(prev)) {
+            prev = master;
+        }
+        const double delta = master - prev;
+        double r = 0.0, g = 0.0, b = 0.0;
+        advParam->getValue(r, g, b);
+        r = sanitize_scalar(r, master, lo, hi);
+        g = sanitize_scalar(g, master, lo, hi);
+        b = sanitize_scalar(b, master, lo, hi);
+        if (delta != 0.0) {
+            r = std::clamp(r + delta, lo, hi);
+            g = std::clamp(g + delta, lo, hi);
+            b = std::clamp(b + delta, lo, hi);
+            const bool wasSuppressed = _state->suppressParamEvents;
+            _state->suppressParamEvents = true;
+            advParam->setValue(r, g, b);
+            _state->suppressParamEvents = wasSuppressed;
+        }
+        masterCache = master;
+    };
+
+    auto reset_offsets = [&](OFX::DoubleParam* masterParam,
+        OFX::Double3DParam* advParam,
+        double lo,
+        double hi) {
+        if (!masterParam || !advParam || !_state) {
+            return;
+        }
+        double master = 0.0;
+        masterParam->getValue(master);
+        if (!std::isfinite(master)) {
+            return;
+        }
+        master = std::clamp(master, lo, hi);
+        const bool wasSuppressed = _state->suppressParamEvents;
+        _state->suppressParamEvents = true;
+        advParam->setValue(master, master, master);
+        _state->suppressParamEvents = wasSuppressed;
+    };
+
+    if (paramName == JuicerParams::kHalationStrengthMaster) {
+        apply_master_delta(_pHalationStrengthMaster, _pHalationStrength, _halationStrengthMasterLast, 0.0, 100.0);
+    }
+    else if (paramName == JuicerParams::kHalationSizeUmMaster) {
+        apply_master_delta(_pHalationSizeUmMaster, _pHalationSizeUm, _halationSizeUmMasterLast, 0.0, 1000.0);
+    }
+    else if (paramName == JuicerParams::kHalationScatteringStrengthMaster) {
+        apply_master_delta(_pHalationScatteringStrengthMaster, _pHalationScatteringStrength, _halationScatteringStrengthMasterLast, 0.0, 100.0);
+    }
+    else if (paramName == JuicerParams::kHalationScatteringSizeUmMaster) {
+        apply_master_delta(_pHalationScatteringSizeUmMaster, _pHalationScatteringSizeUm, _halationScatteringSizeUmMasterLast, 0.0, 1000.0);
+    }
+    else if (paramName == JuicerParams::kGrainParticleScaleMaster) {
+        apply_master_delta(_pGrainParticleScaleMaster, _pGrainParticleScale, _grainParticleScaleMasterLast, 0.0, 10.0);
+    }
+    else if (paramName == JuicerParams::kGrainParticleScaleLayersMaster) {
+        apply_master_delta(_pGrainParticleScaleLayersMaster, _pGrainParticleScaleLayers, _grainParticleScaleLayersMasterLast, 0.0, 10.0);
+    }
+    else if (paramName == JuicerParams::kGrainDensityMinMaster) {
+        apply_master_delta(_pGrainDensityMinMaster, _pGrainDensityMin, _grainDensityMinMasterLast, 0.0, 1.0);
+    }
+    else if (paramName == JuicerParams::kGrainUniformityMaster) {
+        apply_master_delta(_pGrainUniformityMaster, _pGrainUniformity, _grainUniformityMasterLast, 0.0, 1.0);
+    }
     onParamsPossiblyChanged(paramName.c_str());
 }
 
@@ -1342,6 +1548,9 @@ void JuicerEffect::bootstrap_after_attach() {
 
     // Load film stock before applying metadata-driven illuminant defaults
     _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);
+    if (_state->baseLoaded) {
+        applyHalationProfileDefaults();
+    }
 
     // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
     applyMetadataIlluminantDefaults(P);
@@ -1754,6 +1963,9 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     else if (P.filmStockIndex != _state->lastParams.filmStockIndex) {
         _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);
         filmReloaded = _state->baseLoaded;
+    }
+    if (filmReloaded) {
+        applyHalationProfileDefaults();
     }
 
     if (printReloaded || filmReloaded) {

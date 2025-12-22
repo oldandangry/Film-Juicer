@@ -5,6 +5,11 @@ namespace JuicerParams {
     inline constexpr const char kInputColorSpace[] = "InputColorSpace";
     inline constexpr const char kInputCctfDecoding[] = "InputCctfDecoding";
     inline constexpr const char kHalationActive[] = "HalationActive";
+    inline constexpr const char kHalationStrengthMaster[] = "HalationStrengthMaster";
+    inline constexpr const char kHalationSizeUmMaster[] = "HalationSizeUmMaster";
+    inline constexpr const char kHalationScatteringStrengthMaster[] = "HalationScatteringStrengthMaster";
+    inline constexpr const char kHalationScatteringSizeUmMaster[] = "HalationScatteringSizeUmMaster";
+    inline constexpr const char kHalationRevertToStock[] = "HalationRevertToStock";
     inline constexpr const char kHalationStrength[] = "HalationStrength";
     inline constexpr const char kHalationSizeUm[] = "HalationSizeUm";
     inline constexpr const char kHalationScatteringStrength[] = "HalationScatteringStrength";
@@ -12,6 +17,10 @@ namespace JuicerParams {
     inline constexpr const char kGrainActive[] = "GrainActive";
     inline constexpr const char kGrainSublayersActive[] = "GrainSublayersActive";
     inline constexpr const char kGrainParticleAreaUm2[] = "GrainParticleAreaUm2";
+    inline constexpr const char kGrainParticleScaleMaster[] = "GrainParticleScaleMaster";
+    inline constexpr const char kGrainParticleScaleLayersMaster[] = "GrainParticleScaleLayersMaster";
+    inline constexpr const char kGrainDensityMinMaster[] = "GrainDensityMinMaster";
+    inline constexpr const char kGrainUniformityMaster[] = "GrainUniformityMaster";
     inline constexpr const char kGrainParticleScale[] = "GrainParticleScale";
     inline constexpr const char kGrainParticleScaleLayers[] = "GrainParticleScaleLayers";
     inline constexpr const char kGrainDensityMin[] = "GrainDensityMin";

@@ -497,6 +497,58 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationScatteringStrengthMaster);
+            p->setLabel("Scattering strength (M)");
+            p->setHint("Master control for scattering strength; adjusts RGB values together.");
+            p->setDefault((1.0 + 2.0 + 4.0) / 3.0);
+            p->setRange(0.0, 100.0);
+            p->setDisplayRange(0.0, 25.0);
+            if (grpHalation) p->setParent(*grpHalation);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationScatteringSizeUmMaster);
+            p->setLabel("Scattering size (M)");
+            p->setHint("Master control for scattering size; adjusts RGB values together.");
+            p->setDefault((30.0 + 20.0 + 15.0) / 3.0);
+            p->setRange(0.0, 1000.0);
+            p->setDisplayRange(0.0, 500.0);
+            if (grpHalation) p->setParent(*grpHalation);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationStrengthMaster);
+            p->setLabel("Halation strength (M)");
+            p->setHint("Master control for halation strength; adjusts RGB values together.");
+            p->setDefault((3.0 + 0.30 + 0.10) / 3.0);
+            p->setRange(0.0, 100.0);
+            p->setDisplayRange(0.0, 25.0);
+            if (grpHalation) p->setParent(*grpHalation);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSizeUmMaster);
+            p->setLabel("Halation size (M)");
+            p->setHint("Master control for halation size; adjusts RGB values together.");
+            p->setDefault(200.0);
+            p->setRange(0.0, 1000.0);
+            p->setDisplayRange(0.0, 1000.0);
+            if (grpHalation) p->setParent(*grpHalation);
+            p->setEvaluateOnChange(true);
+        }
+        OFX::GroupParamDescriptor* grpHalationAdvanced = desc.defineGroupParam("HalationAdvancedGroup");
+        if (grpHalationAdvanced) {
+            grpHalationAdvanced->setLabel("Advanced");
+            grpHalationAdvanced->setOpen(false);
+            if (grpHalation) grpHalationAdvanced->setParent(*grpHalation);
+        }
+        {
+            OFX::PushButtonParamDescriptor* p = desc.definePushButtonParam(JuicerParams::kHalationRevertToStock);
+            p->setLabel("Revert to stock defaults");
+            p->setHint("Reset halation parameters to the current film stock defaults.");
+            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+        }
+        {
             OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationScatteringStrength);
             p->setLabel("Scattering strength (%)");
             p->setHint("Fraction of scattered light (0-100, percentage) per channel.");
@@ -504,7 +556,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -515,7 +567,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 300.0, 300.0, 300.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -526,7 +578,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -537,7 +589,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 400.0, 400.0, 400.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
     }
@@ -577,46 +629,42 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScale);
-            p->setLabel("Particle scale");
-            p->setHint("Scale of particle area for the RGB layers (multiplies particle area).");
-            p->setDefault(0.8, 1.0, 2.0);
-            p->setRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
-            p->setDisplayRange(0.0, 0.0, 0.0, 3.0, 3.0, 3.0);
-            p->setDimensionLabels("R", "G", "B");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleScaleMaster);
+            p->setLabel("Particle scale (M)");
+            p->setHint("Master control for particle scale; adjusts RGB values together.");
+            p->setDefault((0.8 + 1.0 + 2.0) / 3.0);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 3.0);
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
-            p->setLabel("Particle scale layers");
-            p->setHint("Scale of particle area for sublayers in each color layer.");
-            p->setDefault(2.5, 1.0, 0.5);
-            p->setRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
-            p->setDisplayRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
-            p->setDimensionLabels("R", "G", "B");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
+            p->setLabel("Particle scale layers (M)");
+            p->setHint("Master control for sublayer particle scale; adjusts RGB values together.");
+            p->setDefault((2.5 + 1.0 + 0.5) / 3.0);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 4.0);
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainDensityMin);
-            p->setLabel("Density min");
-            p->setHint("Minimum grain density per layer (typ. 0.03-0.06).");
-            p->setDefault(0.07, 0.08, 0.12);
-            p->setRange(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-            p->setDisplayRange(0.0, 0.0, 0.0, 0.2, 0.2, 0.2);
-            p->setDimensionLabels("C", "M", "Y");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainDensityMinMaster);
+            p->setLabel("Density min (M)");
+            p->setHint("Master control for minimum grain density; adjusts RGB values together.");
+            p->setDefault((0.07 + 0.08 + 0.12) / 3.0);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 0.2);
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainUniformity);
-            p->setLabel("Uniformity");
-            p->setHint("Uniformity of grain (typ. 0.94-0.98).");
-            p->setDefault(0.97, 0.97, 0.99);
-            p->setRange(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-            p->setDisplayRange(0.9, 0.9, 0.9, 1.0, 1.0, 1.0);
-            p->setDimensionLabels("C", "M", "Y");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainUniformityMaster);
+            p->setLabel("Uniformity (M)");
+            p->setHint("Master control for grain uniformity; adjusts RGB values together.");
+            p->setDefault((0.97 + 0.97 + 0.99) / 3.0);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.9, 1.0);
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
@@ -640,6 +688,56 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
+        OFX::GroupParamDescriptor* grpGrainAdvanced = desc.defineGroupParam("GrainAdvancedGroup");
+        if (grpGrainAdvanced) {
+            grpGrainAdvanced->setLabel("Advanced");
+            grpGrainAdvanced->setOpen(false);
+            if (grpGrain) grpGrainAdvanced->setParent(*grpGrain);
+        }
+        {
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScale);
+            p->setLabel("Particle scale");
+            p->setHint("Scale of particle area for the RGB layers (multiplies particle area).");
+            p->setDefault(0.8, 1.0, 2.0);
+            p->setRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
+            p->setDisplayRange(0.0, 0.0, 0.0, 3.0, 3.0, 3.0);
+            p->setDimensionLabels("R", "G", "B");
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
+            p->setLabel("Particle scale layers");
+            p->setHint("Scale of particle area for sublayers in each color layer.");
+            p->setDefault(2.5, 1.0, 0.5);
+            p->setRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
+            p->setDisplayRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
+            p->setDimensionLabels("R", "G", "B");
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainDensityMin);
+            p->setLabel("Density min");
+            p->setHint("Minimum grain density per layer (typ. 0.03-0.06).");
+            p->setDefault(0.07, 0.08, 0.12);
+            p->setRange(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
+            p->setDisplayRange(0.0, 0.0, 0.0, 0.2, 0.2, 0.2);
+            p->setDimensionLabels("C", "M", "Y");
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainUniformity);
+            p->setLabel("Uniformity");
+            p->setHint("Uniformity of grain (typ. 0.94-0.98).");
+            p->setDefault(0.97, 0.97, 0.99);
+            p->setRange(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
+            p->setDisplayRange(0.9, 0.9, 0.9, 1.0, 1.0, 1.0);
+            p->setDimensionLabels("C", "M", "Y");
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
+        }
         {
             OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kGrainMicroStructure);
             p->setLabel("Micro-structure");
@@ -648,7 +746,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 10.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 1.0, 200.0);
             p->setDimensionLabels("Blur (um)", "Clump (nm)");
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
     }
