@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <vector>
 
 namespace JuicerCuda {
@@ -599,7 +600,11 @@ namespace JuicerCuda {
             }
 
             for (int i = 0; i < 9; ++i) resources.spdSInv[i] = ws.spdSInv[i];
-            for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.filmRaw.refIllumWhiteXYZ[i];
+            if (ws.spdReady && ws.tablesRef.K > 0) {
+                for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.tablesRef.refIllumWhiteXYZ[i];
+            } else {
+                for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.filmRaw.refIllumWhiteXYZ[i];
+            }
         }
 
         auto upload_scan_medium = [&](Resources::DeviceScanMedium& dst, const Scanner::ScannerMediumRuntime& medium, std::string& outErrorLocal) -> bool {
@@ -2212,14 +2217,39 @@ namespace JuicerCuda {
 
         float maxAbs = 0.0f;
         for (int i = 0; i < kCount; ++i) {
+            const float* cpu = cpuOut + i * 3;
+            const float* gpu = gpuOut + i * 3;
+            bool mismatch = false;
             for (int c = 0; c < 3; ++c) {
-                const float a = cpuOut[i * 3 + c];
-                const float b = gpuOut[i * 3 + c];
-                if (!std::isfinite(a) || !std::isfinite(b)) {
-                    outError = "print pipeline probe produced non-finite values";
-                    return false;
+                const float a = cpu[c];
+                const float b = gpu[c];
+                if (std::isfinite(a) && std::isfinite(b)) {
+                    maxAbs = std::max(maxAbs, std::fabs(a - b));
+                } else if (!(std::isnan(a) && std::isnan(b))) {
+                    mismatch = true;
                 }
-                maxAbs = std::max(maxAbs, std::fabs(a - b));
+            }
+            if (mismatch) {
+                std::ostringstream oss;
+                oss << "CUDA print validation non-finite mismatch"
+                    << " sample=" << i
+                    << " neg=[" << kNegCmySamples[i][0] << "," << kNegCmySamples[i][1] << "," << kNegCmySamples[i][2] << "]"
+                    << " cpu=[" << cpu[0] << "," << cpu[1] << "," << cpu[2] << "]"
+                    << " gpu=[" << gpu[0] << "," << gpu[1] << "," << gpu[2] << "]"
+                    << " printExposure=" << run.printExpose.printExposure
+                    << " preflash=" << run.printExpose.printPreflashExposure
+                    << " midgray=" << run.printExpose.printMidgrayFactor
+                    << " illumK=" << run.printExpose.printIllumK
+                    << " illumPtr=" << (run.printExpose.printIllumFiltered ? 1 : 0)
+                    << " sensC.n=" << run.printExpose.printSensC.n
+                    << " sensM.n=" << run.printExpose.printSensM.n
+                    << " sensY.n=" << run.printExpose.printSensY.n
+                    << " dcC.n=" << run.printDevelop.printDcC.n
+                    << " dcM.n=" << run.printDevelop.printDcM.n
+                    << " dcY.n=" << run.printDevelop.printDcY.n;
+                JTRACE("CUDA", oss.str());
+                outError = "print pipeline probe produced non-finite mismatch";
+                return false;
             }
         }
 
