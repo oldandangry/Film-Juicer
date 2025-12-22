@@ -31,6 +31,7 @@ namespace OFX {
     class Clip;
     class Image;
     class DoubleParam;
+    class Double3DParam;
     class ChoiceParam;
     class Double2DParam;
     class IntParam;
@@ -92,6 +93,8 @@ private:
     Scanner::Options gatherScannerOptions() const;
     Scanner::Settings gatherScannerSettings() const;
     Print::Params gatherPrintParams() const;
+    Profiles::HalationMetadata gatherHalationUi() const;
+    Profiles::GrainMetadata gatherGrainUi() const;
     Profiles::ProfileGlare gatherGlareUi() const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
     AutoExposureResult computeAutoExposure(
@@ -160,6 +163,23 @@ private:
     OFX::BooleanParam* _pPrintExposureComp = nullptr;
     OFX::DoubleParam* _pEnlargerY = nullptr;
     OFX::DoubleParam* _pEnlargerM = nullptr;
+
+    OFX::BooleanParam* _pHalationActive = nullptr;
+    OFX::Double3DParam* _pHalationStrength = nullptr;
+    OFX::Double3DParam* _pHalationSizeUm = nullptr;
+    OFX::Double3DParam* _pHalationScatteringStrength = nullptr;
+    OFX::Double3DParam* _pHalationScatteringSizeUm = nullptr;
+
+    OFX::BooleanParam* _pGrainActive = nullptr;
+    OFX::BooleanParam* _pGrainSublayersActive = nullptr;
+    OFX::DoubleParam* _pGrainParticleAreaUm2 = nullptr;
+    OFX::Double3DParam* _pGrainParticleScale = nullptr;
+    OFX::Double3DParam* _pGrainParticleScaleLayers = nullptr;
+    OFX::Double3DParam* _pGrainDensityMin = nullptr;
+    OFX::Double3DParam* _pGrainUniformity = nullptr;
+    OFX::DoubleParam* _pGrainBlur = nullptr;
+    OFX::DoubleParam* _pGrainBlurDyeCloudsUm = nullptr;
+    OFX::Double2DParam* _pGrainMicroStructure = nullptr;
 
     OFX::BooleanParam* _pGlareActive = nullptr;
     OFX::DoubleParam* _pGlarePercent = nullptr;

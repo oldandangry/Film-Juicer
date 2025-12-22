@@ -346,6 +346,126 @@ Print::Params JuicerEffect::gatherPrintParams() const {
     return params;
 }
 
+Profiles::HalationMetadata JuicerEffect::gatherHalationUi() const {
+    Profiles::HalationMetadata halation{};
+
+    bool active = false;
+    if (_pHalationActive) {
+        _pHalationActive->getValue(active);
+    }
+    halation.active = active;
+
+    auto sanitize = [](double value, double fallback, double minValue, double maxValue) -> double {
+        if (!std::isfinite(value)) return fallback;
+        return std::clamp(value, minValue, maxValue);
+    };
+    auto read3 = [&](OFX::Double3DParam* param, const std::array<double, 3>& defaults, double minValue, double maxValue) {
+        std::array<double, 3> values = defaults;
+        if (param) {
+            param->getValue(values[0], values[1], values[2]);
+        }
+        for (int i = 0; i < 3; ++i) {
+            values[i] = sanitize(values[i], defaults[i], minValue, maxValue);
+        }
+        return values;
+    };
+
+    const std::array<double, 3> strengthPercent = read3(_pHalationStrength, { {3.0, 0.30, 0.10} }, 0.0, 100.0);
+    const std::array<double, 3> sizeUm = read3(_pHalationSizeUm, { {200.0, 200.0, 200.0} }, 0.0, 1000.0);
+    const std::array<double, 3> scatterStrengthPercent = read3(_pHalationScatteringStrength, { {1.0, 2.0, 4.0} }, 0.0, 100.0);
+    const std::array<double, 3> scatterSizeUm = read3(_pHalationScatteringSizeUm, { {30.0, 20.0, 15.0} }, 0.0, 1000.0);
+
+    for (int i = 0; i < 3; ++i) {
+        halation.strength[i] = static_cast<float>(strengthPercent[i] * 0.01);
+        halation.sizeUm[i] = static_cast<float>(sizeUm[i]);
+        halation.scatteringStrength[i] = static_cast<float>(scatterStrengthPercent[i] * 0.01);
+        halation.scatteringSizeUm[i] = static_cast<float>(scatterSizeUm[i]);
+    }
+
+    return halation;
+}
+
+Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
+    Profiles::GrainMetadata grain{};
+
+    bool active = false;
+    if (_pGrainActive) {
+        _pGrainActive->getValue(active);
+    }
+    grain.active = active;
+
+    bool sublayers = true;
+    if (_pGrainSublayersActive) {
+        _pGrainSublayersActive->getValue(sublayers);
+    }
+    grain.sublayersActive = sublayers;
+
+    auto sanitize = [](double value, double fallback, double minValue, double maxValue) -> double {
+        if (!std::isfinite(value)) return fallback;
+        return std::clamp(value, minValue, maxValue);
+    };
+    auto read3 = [&](OFX::Double3DParam* param, const std::array<double, 3>& defaults, double minValue, double maxValue) {
+        std::array<double, 3> values = defaults;
+        if (param) {
+            param->getValue(values[0], values[1], values[2]);
+        }
+        for (int i = 0; i < 3; ++i) {
+            values[i] = sanitize(values[i], defaults[i], minValue, maxValue);
+        }
+        return values;
+    };
+    auto read2 = [&](OFX::Double2DParam* param, const std::array<double, 2>& defaults, double minValue, double maxValue) {
+        std::array<double, 2> values = defaults;
+        if (param) {
+            param->getValue(values[0], values[1]);
+        }
+        for (int i = 0; i < 2; ++i) {
+            values[i] = sanitize(values[i], defaults[i], minValue, maxValue);
+        }
+        return values;
+    };
+
+    double particleArea = 0.2;
+    if (_pGrainParticleAreaUm2) {
+        _pGrainParticleAreaUm2->getValue(particleArea);
+    }
+    particleArea = sanitize(particleArea, 0.2, 0.0, 10.0);
+    grain.agxParticleAreaUm2 = static_cast<float>(particleArea);
+
+    const std::array<double, 3> particleScale = read3(_pGrainParticleScale, { {0.8, 1.0, 2.0} }, 0.0, 10.0);
+    const std::array<double, 3> particleScaleLayers = read3(_pGrainParticleScaleLayers, { {2.5, 1.0, 0.5} }, 0.0, 10.0);
+    const std::array<double, 3> densityMin = read3(_pGrainDensityMin, { {0.07, 0.08, 0.12} }, 0.0, 1.0);
+    const std::array<double, 3> uniformity = read3(_pGrainUniformity, { {0.97, 0.97, 0.99} }, 0.0, 1.0);
+
+    for (int i = 0; i < 3; ++i) {
+        grain.agxParticleScale[i] = static_cast<float>(particleScale[i]);
+        grain.agxParticleScaleLayers[i] = static_cast<float>(particleScaleLayers[i]);
+        grain.densityMin[i] = static_cast<float>(densityMin[i]);
+        grain.uniformity[i] = static_cast<float>(uniformity[i]);
+    }
+
+    double blur = 0.65;
+    if (_pGrainBlur) {
+        _pGrainBlur->getValue(blur);
+    }
+    blur = sanitize(blur, 0.65, 0.0, 5.0);
+    grain.blur = static_cast<float>(blur);
+
+    double blurDyeClouds = 1.0;
+    if (_pGrainBlurDyeCloudsUm) {
+        _pGrainBlurDyeCloudsUm->getValue(blurDyeClouds);
+    }
+    blurDyeClouds = sanitize(blurDyeClouds, 1.0, 0.0, 10.0);
+    grain.blurDyeCloudsUm = static_cast<float>(blurDyeClouds);
+
+    const std::array<double, 2> microStructure = read2(_pGrainMicroStructure, { {0.1, 30.0} }, 0.0, 1000.0);
+    grain.microStructure[0] = static_cast<float>(microStructure[0]);
+    grain.microStructure[1] = static_cast<float>(microStructure[1]);
+
+    grain.nSubLayers = 1;
+    return grain;
+}
+
 Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
     Profiles::ProfileGlare glare{};
 
@@ -837,6 +957,23 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pEnlargerY = fetchDoubleParam("EnlargerY");
         _pEnlargerM = fetchDoubleParam("EnlargerM");
 
+        _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
+        _pHalationStrength = fetchDouble3DParam(JuicerParams::kHalationStrength);
+        _pHalationSizeUm = fetchDouble3DParam(JuicerParams::kHalationSizeUm);
+        _pHalationScatteringStrength = fetchDouble3DParam(JuicerParams::kHalationScatteringStrength);
+        _pHalationScatteringSizeUm = fetchDouble3DParam(JuicerParams::kHalationScatteringSizeUm);
+
+        _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
+        _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
+        _pGrainParticleAreaUm2 = fetchDoubleParam(JuicerParams::kGrainParticleAreaUm2);
+        _pGrainParticleScale = fetchDouble3DParam(JuicerParams::kGrainParticleScale);
+        _pGrainParticleScaleLayers = fetchDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
+        _pGrainDensityMin = fetchDouble3DParam(JuicerParams::kGrainDensityMin);
+        _pGrainUniformity = fetchDouble3DParam(JuicerParams::kGrainUniformity);
+        _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
+        _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
+        _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
+
         _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
         _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
         _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
@@ -987,6 +1124,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const Scanner::Options scannerOptions = gatherScannerOptions();
     const Scanner::Settings scannerSettings = gatherScannerSettings();
     Print::Params printParams = gatherPrintParams();
+    const Profiles::HalationMetadata halationUi = gatherHalationUi();
+    const Profiles::GrainMetadata grainUi = gatherGrainUi();
     const Profiles::ProfileGlare glareUi = gatherGlareUi();
     OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
 
@@ -1055,6 +1194,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setScannerOptions(scannerOptions);
     proc.setScannerSettings(scannerSettings);
     proc.setPrintParams(printParams);
+    proc.setHalationOverride(halationUi);
+    proc.setGrainOverride(grainUi);
     proc.setPrintGlareOverride(glareUi);
     proc.setDirRuntime(dirRT);
     proc.setWorkingState(ws, wsReady);

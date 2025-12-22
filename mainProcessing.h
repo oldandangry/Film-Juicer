@@ -51,6 +51,8 @@ public:
     void setScannerOptions(const Scanner::Options& o);
     void setScannerSettings(const Scanner::Settings& s);
     void setPrintParams(const Print::Params& p);
+    void setHalationOverride(const Profiles::HalationMetadata& halation);
+    void setGrainOverride(const Profiles::GrainMetadata& grain);
     void setPrintGlareOverride(const Profiles::ProfileGlare& glare);
     void setDirRuntime(const Couplers::Runtime& rt);
     void setWorkingState(const WorkingState* ws, bool wsReady);
@@ -92,6 +94,10 @@ private:
     Scanner::Options _scannerOptions;
     Scanner::Settings _scannerSettings;
     Print::Params _printParams;
+    Profiles::HalationMetadata _halationOverride{};
+    bool _hasHalationOverride = false;
+    Profiles::GrainMetadata _grainOverride{};
+    bool _hasGrainOverride = false;
     Profiles::ProfileGlare _printGlareOverride{};
     bool _hasPrintGlareOverride = false;
     Couplers::Runtime _dirRT;

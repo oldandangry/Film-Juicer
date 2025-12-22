@@ -202,6 +202,10 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
     , _scannerOptions{}
     , _scannerSettings{}
     , _printParams{}
+    , _halationOverride{}
+    , _hasHalationOverride(false)
+    , _grainOverride{}
+    , _hasGrainOverride(false)
     , _printGlareOverride{}
     , _hasPrintGlareOverride(false)
     , _dirRT{}
@@ -228,6 +232,14 @@ void JuicerProcessor::setComponents(int n) { _nComponents = n; }
 void JuicerProcessor::setScannerOptions(const Scanner::Options& o) { _scannerOptions = o; }
 void JuicerProcessor::setScannerSettings(const Scanner::Settings& s) { _scannerSettings = s; }
 void JuicerProcessor::setPrintParams(const Print::Params& p) { _printParams = p; }
+void JuicerProcessor::setHalationOverride(const Profiles::HalationMetadata& halation) {
+    _halationOverride = halation;
+    _hasHalationOverride = true;
+}
+void JuicerProcessor::setGrainOverride(const Profiles::GrainMetadata& grain) {
+    _grainOverride = grain;
+    _hasGrainOverride = true;
+}
 void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare) {
     _printGlareOverride = glare;
     _printGlareOverride.compensationRemovalFactor = 0.0f;
