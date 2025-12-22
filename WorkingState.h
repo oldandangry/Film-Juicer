@@ -23,6 +23,7 @@ struct WorkingState {
     Spectral::Curve densG;
     Spectral::Curve densR;
     Profiles::GrainMetadata grain;
+    Profiles::HalationMetadata halation;
     Profiles::ProfileGlare negativeGlare;
     Profiles::ProfileGlare printGlare;
 

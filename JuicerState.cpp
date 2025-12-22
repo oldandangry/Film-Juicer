@@ -879,6 +879,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.cameraFilterIR = { {1.0f, 675.0f, 15.0f} };
     S.base.cameraFilterDefined = false;
     S.base.grain = Profiles::GrainMetadata{};
+    S.base.halation = Profiles::HalationMetadata{};
     S.base.glare = Profiles::ProfileGlare{};
     S.base.hasDensityCurvesLayers = false;
     for (auto& layer : S.base.densityCurvesLayers) {
@@ -934,6 +935,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     }
     S.base.maskingCouplers = profile.maskingCouplers;
     S.base.grain = profile.grain;
+    S.base.halation = profile.halation;
     S.base.glare = profile.glare;
     if (profile.hasDensityCurvesLayers) {
         S.base.hasDensityCurvesLayers = true;
@@ -1819,6 +1821,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     target->negParams = negParams;
     target->grain = S.base.grain;
+    target->halation = S.base.halation;
     target->negativeGlare = S.base.glare;
 
     auto average_positive = [](const auto& values) -> float {

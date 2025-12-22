@@ -86,6 +86,7 @@ struct BaseState {
     std::array<float, 3> cameraFilterIR{ {1.0f, 675.0f, 15.0f} };
     bool cameraFilterDefined = false;
     Profiles::GrainMetadata grain;
+    Profiles::HalationMetadata halation;
     Profiles::ProfileGlare glare;
 };
 

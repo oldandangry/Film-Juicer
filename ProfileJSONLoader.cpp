@@ -928,36 +928,147 @@ namespace Profiles {
                 oss << "FATAL: missing or invalid grain field '" << field << "' in profile '" << jsonPath << "'";
                 JTRACE("PROFILE", oss.str());
             };
+            auto log_halation_failure = [&](const std::string& field) {
+                std::ostringstream oss;
+                oss << "FATAL: missing or invalid halation field '" << field << "' in profile '" << jsonPath << "'";
+                JTRACE("PROFILE", oss.str());
+            };
+
             if (!root.contains("grain") || !root["grain"].is_object()) {
                 log_grain_failure("grain");
                 return false;
             }
             const Json& grainNode = root["grain"];
             GrainMetadata grain{};
-            auto activeIt = grainNode.find("active");
-            if (activeIt == grainNode.end() || !activeIt->is_boolean()) {
-                log_grain_failure("active");
+
+            auto require_bool = [&](const char* key, bool& dst)->bool {
+                auto it = grainNode.find(key);
+                if (it != grainNode.end() && it->is_boolean()) {
+                    dst = it->get<bool>();
+                    return true;
+                }
+                log_grain_failure(key);
                 return false;
-            }
-            grain.active = activeIt->get<bool>();
-            if (!grainNode.contains("density_min") || !grainNode["density_min"].is_array() ||
-                grainNode["density_min"].size() < 3) {
-                log_grain_failure("density_min");
+            };
+            auto require_float = [&](const char* key, float& dst)->bool {
+                auto val = parse_optional_float(grainNode.value(key, Json{}));
+                if (val && std::isfinite(*val)) {
+                    dst = *val;
+                    return true;
+                }
+                log_grain_failure(key);
                 return false;
-            }
-            for (size_t i = 0; i < 3; ++i) {
-                auto val = parse_optional_float(grainNode["density_min"][i]);
-                if (!val || !std::isfinite(*val)) {
-                    log_grain_failure("density_min");
+            };
+            auto require_float_array3 = [&](const char* key, std::array<float, 3>& dst)->bool {
+                if (!grainNode.contains(key) || !grainNode[key].is_array() || grainNode[key].size() < 3) {
+                    log_grain_failure(key);
                     return false;
                 }
-                grain.densityMin[i] = *val;
-            }
+                for (size_t i = 0; i < 3; ++i) {
+                    auto val = parse_optional_float(grainNode[key][i]);
+                    if (!val || !std::isfinite(*val)) {
+                        log_grain_failure(key);
+                        return false;
+                    }
+                    dst[i] = *val;
+                }
+                return true;
+            };
+            auto require_float_array2 = [&](const char* key, std::array<float, 2>& dst)->bool {
+                if (!grainNode.contains(key) || !grainNode[key].is_array() || grainNode[key].size() < 2) {
+                    log_grain_failure(key);
+                    return false;
+                }
+                for (size_t i = 0; i < 2; ++i) {
+                    auto val = parse_optional_float(grainNode[key][i]);
+                    if (!val || !std::isfinite(*val)) {
+                        log_grain_failure(key);
+                        return false;
+                    }
+                    dst[i] = *val;
+                }
+                return true;
+            };
+            auto require_int = [&](const char* key, int& dst)->bool {
+                if (!grainNode.contains(key)) {
+                    log_grain_failure(key);
+                    return false;
+                }
+                const Json& node = grainNode[key];
+                if (node.is_number_integer()) {
+                    dst = node.get<int>();
+                    return true;
+                }
+                if (node.is_number()) {
+                    auto val = parse_optional_float(node);
+                    if (val && std::isfinite(*val)) {
+                        dst = static_cast<int>(std::lround(*val));
+                        return true;
+                    }
+                }
+                log_grain_failure(key);
+                return false;
+            };
+
+            if (!require_bool("active", grain.active)) return false;
+            if (!require_bool("sublayers_active", grain.sublayersActive)) return false;
+            if (!require_float("agx_particle_area_um2", grain.agxParticleAreaUm2)) return false;
+            if (!require_float_array3("agx_particle_scale", grain.agxParticleScale)) return false;
+            if (!require_float_array3("agx_particle_scale_layers", grain.agxParticleScaleLayers)) return false;
+            if (!require_float_array3("density_min", grain.densityMin)) return false;
+            if (!require_float_array3("uniformity", grain.uniformity)) return false;
+            if (!require_float("blur", grain.blur)) return false;
+            if (!require_float("blur_dye_clouds_um", grain.blurDyeCloudsUm)) return false;
+            if (!require_float_array2("micro_structure", grain.microStructure)) return false;
+            if (!require_int("n_sub_layers", grain.nSubLayers)) return false;
+
             outProfile.grain = grain;
             outProfile.hasGrain = true;
+
+            if (!root.contains("halation") || !root["halation"].is_object()) {
+                log_halation_failure("halation");
+                return false;
+            }
+            const Json& halationNode = root["halation"];
+            HalationMetadata halation{};
+
+            auto require_hal_bool = [&](const char* key, bool& dst)->bool {
+                auto it = halationNode.find(key);
+                if (it != halationNode.end() && it->is_boolean()) {
+                    dst = it->get<bool>();
+                    return true;
+                }
+                log_halation_failure(key);
+                return false;
+            };
+            auto require_hal_array3 = [&](const char* key, std::array<float, 3>& dst)->bool {
+                if (!halationNode.contains(key) || !halationNode[key].is_array() || halationNode[key].size() < 3) {
+                    log_halation_failure(key);
+                    return false;
+                }
+                for (size_t i = 0; i < 3; ++i) {
+                    auto val = parse_optional_float(halationNode[key][i]);
+                    if (!val || !std::isfinite(*val)) {
+                        log_halation_failure(key);
+                        return false;
+                    }
+                    dst[i] = *val;
+                }
+                return true;
+            };
+
+            if (!require_hal_bool("active", halation.active)) return false;
+            if (!require_hal_array3("strength", halation.strength)) return false;
+            if (!require_hal_array3("size_um", halation.sizeUm)) return false;
+            if (!require_hal_array3("scattering_strength", halation.scatteringStrength)) return false;
+            if (!require_hal_array3("scattering_size_um", halation.scatteringSizeUm)) return false;
+
+            outProfile.halation = halation;
+            outProfile.hasHalation = true;
         }
         else {
             outProfile.hasGrain = false;
+            outProfile.hasHalation = false;
         }
 
         return true;

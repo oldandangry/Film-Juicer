@@ -25,7 +25,24 @@ namespace Profiles {
 
     struct GrainMetadata {
         bool active = false;
+        bool sublayersActive = false;
+        float agxParticleAreaUm2 = 0.0f;
+        std::array<float, 3> agxParticleScale{ {0.0f, 0.0f, 0.0f} };
+        std::array<float, 3> agxParticleScaleLayers{ {0.0f, 0.0f, 0.0f} };
         std::array<float, 3> densityMin{ {0.0f, 0.0f, 0.0f} };
+        std::array<float, 3> uniformity{ {0.0f, 0.0f, 0.0f} };
+        float blur = 0.0f;
+        float blurDyeCloudsUm = 0.0f;
+        std::array<float, 2> microStructure{ {0.0f, 0.0f} };
+        int nSubLayers = 1;
+    };
+
+    struct HalationMetadata {
+        bool active = false;
+        std::array<float, 3> strength{ {0.0f, 0.0f, 0.0f} };
+        std::array<float, 3> sizeUm{ {0.0f, 0.0f, 0.0f} };
+        std::array<float, 3> scatteringStrength{ {0.0f, 0.0f, 0.0f} };
+        std::array<float, 3> scatteringSizeUm{ {0.0f, 0.0f, 0.0f} };
     };
 
     struct DirCouplersProfile {
@@ -87,8 +104,10 @@ namespace Profiles {
         std::string type;
         ProfileGlare glare;
         GrainMetadata grain;
+        HalationMetadata halation;
         bool hasGlare = false;
         bool hasGrain = false;
+        bool hasHalation = false;
     };
 
     bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile);
