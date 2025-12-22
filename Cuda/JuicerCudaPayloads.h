@@ -147,6 +147,19 @@ namespace JuicerCuda {
         DeviceCurveView dirDensR{};
     };
 
+    struct HalationPayload {
+        int active = 0;
+        float strength[3] = { 0.0f, 0.0f, 0.0f };
+        float scatteringStrength[3] = { 0.0f, 0.0f, 0.0f };
+    };
+
+    struct HalationKernelPayload {
+        const float* JUICER_RESTRICT halationKernel[3] = { nullptr, nullptr, nullptr };
+        int halationRadius[3] = { 0, 0, 0 };
+        const float* JUICER_RESTRICT scatteringKernel[3] = { nullptr, nullptr, nullptr };
+        int scatteringRadius[3] = { 0, 0, 0 };
+    };
+
     struct PrintExposePayload {
         int active = 0;
         ScanTablesPayload negTables{};
@@ -206,6 +219,8 @@ namespace JuicerCuda {
         // Stage-scoped payloads.
         FilmExposurePayload filmExpose{};
         FilmDevelopPayload filmDevelop{};
+        HalationPayload halation{};
+        HalationKernelPayload halationKernels{};
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};

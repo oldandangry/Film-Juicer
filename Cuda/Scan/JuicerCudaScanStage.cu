@@ -46,8 +46,21 @@ __global__ void optics_unsharp_combine_kernel(
     float amount);
 
 // Film/print stage kernels are defined in their respective TUs.
+__global__ void expose_film_raw_kernel(
+    JuicerCuda::PipelineRunParams params,
+    float* outB,
+    float* outG,
+    float* outR);
 __global__ void develop_film_density_kernel(
     JuicerCuda::PipelineRunParams params,
+    float* outC,
+    float* outM,
+    float* outY);
+__global__ void develop_film_density_from_raw_kernel(
+    JuicerCuda::PipelineRunParams params,
+    const float* inB,
+    const float* inG,
+    const float* inR,
     float* outC,
     float* outM,
     float* outY);
@@ -56,6 +69,11 @@ __global__ void develop_print_density_kernel(
     float* ioC,
     float* ioM,
     float* ioY);
+__global__ void halation_apply_kernel(
+    float* inOut,
+    const float* blurred,
+    int n,
+    float strength);
 
 namespace {
 
@@ -419,10 +437,79 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         return cudaGetLastError();
     };
 
+    expose_film_raw_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    const JuicerCuda::HalationPayload& halation = params.halation;
+    const JuicerCuda::HalationKernelPayload& halKernels = params.halationKernels;
+    const bool doHalation = (halation.active != 0) &&
+        (halation.strength[0] > 0.0f || halation.strength[1] > 0.0f || halation.strength[2] > 0.0f ||
+         halation.scatteringStrength[0] > 0.0f || halation.scatteringStrength[1] > 0.0f || halation.scatteringStrength[2] > 0.0f);
+    if (doHalation) {
+        if (!dScratchBlurred) {
+            return cudaErrorInvalidValue;
+        }
+        const int total = params.width * params.height;
+        const int threads1D = 256;
+        const int blocks1D = (total + threads1D - 1) / threads1D;
+
+        auto apply_halation_pass = [&](float* plane, const float* k, int radius, float strength) -> cudaError_t {
+            if (!plane || !k || radius <= 0 || !(strength > 0.0f)) {
+                return cudaSuccess;
+            }
+            optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, dTmp, params.width, params.height, k, radius);
+            cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(dTmp, dScratchBlurred, params.width, params.height, k, radius);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            halation_apply_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dScratchBlurred, total, strength);
+            return cudaGetLastError();
+        };
+
+        err = apply_halation_pass(dRgbR, halKernels.halationKernel[0], halKernels.halationRadius[0], halation.strength[0]);
+        if (err != cudaSuccess) return err;
+        err = apply_halation_pass(dRgbG, halKernels.halationKernel[1], halKernels.halationRadius[1], halation.strength[1]);
+        if (err != cudaSuccess) return err;
+        err = apply_halation_pass(dRgbB, halKernels.halationKernel[2], halKernels.halationRadius[2], halation.strength[2]);
+        if (err != cudaSuccess) return err;
+
+        err = apply_halation_pass(dRgbR, halKernels.scatteringKernel[0], halKernels.scatteringRadius[0], halation.scatteringStrength[0]);
+        if (err != cudaSuccess) return err;
+        err = apply_halation_pass(dRgbG, halKernels.scatteringKernel[1], halKernels.scatteringRadius[1], halation.scatteringStrength[1]);
+        if (err != cudaSuccess) return err;
+        err = apply_halation_pass(dRgbB, halKernels.scatteringKernel[2], halKernels.scatteringRadius[2], halation.scatteringStrength[2]);
+        if (err != cudaSuccess) return err;
+    }
+
+    develop_film_density_from_raw_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB, dRgbR, dRgbG, dRgbB);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        return err;
+    }
+
+    if (params.printExpose.active) {
+        develop_print_density_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            return err;
+        }
+    }
+
     const bool doGlare =
         std::isfinite(static_cast<double>(glarePercent)) && (glarePercent > 0.0f) &&
         std::isfinite(static_cast<double>(glareRoughness));
     if (doGlare) {
+        if (glareRadius > 0 && dGlareKernel && !dScratchBlurred) {
+            return cudaErrorInvalidValue;
+        }
         const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
         optics_glare_generate_kernel<<<blocks2D, threads2D, 0, stream>>>(
             dTmp,
@@ -434,27 +521,13 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             glareOriginY,
             glarePercent,
             glareRoughness);
-        cudaError_t err = cudaGetLastError();
+        err = cudaGetLastError();
         if (err != cudaSuccess) {
             return err;
         }
         if (glareRadius > 0 && dGlareKernel) {
-            err = blur_plane_in_place(dTmp, dRgbR, dGlareKernel, glareRadius);
+            err = blur_plane_in_place(dTmp, dScratchBlurred, dGlareKernel, glareRadius);
             if (err != cudaSuccess) return err;
-        }
-    }
-
-    develop_film_density_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        return err;
-    }
-
-    if (params.printExpose.active) {
-        develop_print_density_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
-        err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            return err;
         }
     }
 

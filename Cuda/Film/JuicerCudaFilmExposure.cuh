@@ -384,15 +384,12 @@ static __device__ void tables_layer_exposures_device(
     E_out[2] = fmaxf(0.0f, static_cast<float>(Er * dl));
 }
 
-static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
+static __device__ __forceinline__ void compute_film_raw_device(
     const JuicerCuda::PipelineRunParams& params,
     const float rgbIn[3],
-    float logE_raw[3],
-    float logE_sanitized[3],
-    float layerPre[3])
+    float filmRaw[3])
 {
     const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
-    const JuicerCuda::FilmDevelopPayload& develop = params.filmDevelop;
 
     float rgbDWG[3];
     convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG);
@@ -462,7 +459,6 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
         exposureScale = 1.0f;
     }
 
-    float filmRaw[3];
     for (int i = 0; i < 3; ++i) {
         float v = E_raw[i];
         if (!isfinite(v) || v < 0.0f) v = 0.0f;
@@ -470,6 +466,16 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
         v = fmaxf(0.0f, v * exposureScale);
         filmRaw[i] = v;
     }
+}
+
+static __device__ __forceinline__ void compute_logE_from_film_raw_device(
+    const JuicerCuda::PipelineRunParams& params,
+    const float filmRaw[3],
+    float logE_raw[3],
+    float logE_sanitized[3],
+    float layerPre[3])
+{
+    const JuicerCuda::FilmDevelopPayload& develop = params.filmDevelop;
 
     constexpr float kLogEps = 1e-10f;
     logE_raw[0] = log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps);
@@ -483,4 +489,16 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
     layerPre[0] = sample_density_at_logE_device(develop.densB.x, develop.densB.y, develop.densB.n, logE_sanitized[0], develop.gammaFactorB);
     layerPre[1] = sample_density_at_logE_device(develop.densG.x, develop.densG.y, develop.densG.n, logE_sanitized[1], develop.gammaFactorG);
     layerPre[2] = sample_density_at_logE_device(develop.densR.x, develop.densR.y, develop.densR.n, logE_sanitized[2], develop.gammaFactorR);
+}
+
+static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
+    const JuicerCuda::PipelineRunParams& params,
+    const float rgbIn[3],
+    float logE_raw[3],
+    float logE_sanitized[3],
+    float layerPre[3])
+{
+    float filmRaw[3] = { 0.0f, 0.0f, 0.0f };
+    compute_film_raw_device(params, rgbIn, filmRaw);
+    compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
 }

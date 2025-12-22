@@ -118,6 +118,8 @@ namespace JuicerCuda {
         DeviceGaussianKernel scannerLensBlurKernel;
         DeviceGaussianKernel scannerUnsharpKernel;
         DeviceGaussianKernel scannerGlareKernel;
+        DeviceGaussianKernel halationKernel[3];
+        DeviceGaussianKernel halationScatterKernel[3];
         DeviceOpticsScratch scannerScratch;
         DeviceGaussianKernel spatialDirKernel;
         DeviceSpatialDirScratch spatialDirScratch;
@@ -198,6 +200,9 @@ namespace JuicerCuda {
 
     // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=4.0, radius clamp=75) for optics.
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
+
+    // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=7.0, radius clamp=75) for halation.
+    bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
 
     // Print pipeline: builds + uploads the enlarger illuminant filtered by the current print params (Y/M/C filters).
     bool ensure_print_illuminant_filtered(

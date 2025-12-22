@@ -1305,10 +1305,59 @@ void JuicerProcessor::processImagesCUDA() {
                 glareSeed = Hash::hash_bytes(glareFields, sizeof(glareFields));
             }
 
+            const Profiles::HalationMetadata halationUi = _hasHalationOverride ? _halationOverride : Profiles::HalationMetadata{};
+            float halationStrengthBGR[3] = {
+                halationUi.strength[2],
+                halationUi.strength[1],
+                halationUi.strength[0]
+            };
+            float halationScatterStrengthBGR[3] = {
+                halationUi.scatteringStrength[2],
+                halationUi.scatteringStrength[1],
+                halationUi.scatteringStrength[0]
+            };
+            float halationSizeBGR[3] = {
+                halationUi.sizeUm[2],
+                halationUi.sizeUm[1],
+                halationUi.sizeUm[0]
+            };
+            float halationScatterSizeBGR[3] = {
+                halationUi.scatteringSizeUm[2],
+                halationUi.scatteringSizeUm[1],
+                halationUi.scatteringSizeUm[0]
+            };
+            for (int i = 0; i < 3; ++i) {
+                if (!std::isfinite(halationStrengthBGR[i]) || halationStrengthBGR[i] <= 0.0f) {
+                    halationStrengthBGR[i] = 0.0f;
+                }
+                if (!std::isfinite(halationScatterStrengthBGR[i]) || halationScatterStrengthBGR[i] <= 0.0f) {
+                    halationScatterStrengthBGR[i] = 0.0f;
+                }
+                if (!std::isfinite(halationSizeBGR[i]) || halationSizeBGR[i] <= 0.0f) {
+                    halationSizeBGR[i] = 0.0f;
+                }
+                if (!std::isfinite(halationScatterSizeBGR[i]) || halationScatterSizeBGR[i] <= 0.0f) {
+                    halationScatterSizeBGR[i] = 0.0f;
+                }
+            }
+            float halationSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
+            float halationScatterSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
+            if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
+                for (int i = 0; i < 3; ++i) {
+                    halationSigmaPx[i] = halationSizeBGR[i] / _pixelSizeUm;
+                    halationScatterSigmaPx[i] = halationScatterSizeBGR[i] / _pixelSizeUm;
+                }
+            }
+            const bool wantHalation = halationUi.active &&
+                (halationStrengthBGR[0] > 0.0f || halationStrengthBGR[1] > 0.0f || halationStrengthBGR[2] > 0.0f ||
+                 halationScatterStrengthBGR[0] > 0.0f || halationScatterStrengthBGR[1] > 0.0f || halationScatterStrengthBGR[2] > 0.0f) &&
+                (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
+
             const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare;
+            const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
@@ -1316,7 +1365,8 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, wantUnsharp, _pCudaStream, opticsError)) {
+                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur;
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1347,6 +1397,44 @@ void JuicerProcessor::processImagesCUDA() {
 #else
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+                }
+
+                run.halation.active = wantHalation ? 1 : 0;
+                for (int i = 0; i < 3; ++i) {
+                    run.halation.strength[i] = wantHalation ? halationStrengthBGR[i] : 0.0f;
+                    run.halation.scatteringStrength[i] = wantHalation ? halationScatterStrengthBGR[i] : 0.0f;
+                    run.halationKernels.halationKernel[i] = nullptr;
+                    run.halationKernels.halationRadius[i] = 0;
+                    run.halationKernels.scatteringKernel[i] = nullptr;
+                    run.halationKernels.scatteringRadius[i] = 0;
+                }
+                if (wantHalation) {
+                    for (int i = 0; i < 3; ++i) {
+                        if (halationStrengthBGR[i] > 0.0f && halationSigmaPx[i] > 0.0f) {
+                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationKernel[i], halationSigmaPx[i], _pCudaStream, opticsError)) {
+                                JTRACE("CUDA", std::string("CUDA halation kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                            }
+                            run.halationKernels.halationKernel[i] = cudaResources->halationKernel[i].weights;
+                            run.halationKernels.halationRadius[i] = cudaResources->halationKernel[i].radius;
+                        }
+                        if (halationScatterStrengthBGR[i] > 0.0f && halationScatterSigmaPx[i] > 0.0f) {
+                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationScatterKernel[i], halationScatterSigmaPx[i], _pCudaStream, opticsError)) {
+                                JTRACE("CUDA", std::string("CUDA halation scatter kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                            }
+                            run.halationKernels.scatteringKernel[i] = cudaResources->halationScatterKernel[i].weights;
+                            run.halationKernels.scatteringRadius[i] = cudaResources->halationScatterKernel[i].radius;
+                        }
+                    }
                 }
 
                 err = juicer_cuda_negative_pipeline_optics(
@@ -1843,6 +1931,54 @@ void JuicerProcessor::processImagesCUDA() {
                 glareSeed = Hash::hash_bytes(glareFields, sizeof(glareFields));
             }
 
+            const Profiles::HalationMetadata halationUi = _hasHalationOverride ? _halationOverride : Profiles::HalationMetadata{};
+            float halationStrengthBGR[3] = {
+                halationUi.strength[2],
+                halationUi.strength[1],
+                halationUi.strength[0]
+            };
+            float halationScatterStrengthBGR[3] = {
+                halationUi.scatteringStrength[2],
+                halationUi.scatteringStrength[1],
+                halationUi.scatteringStrength[0]
+            };
+            float halationSizeBGR[3] = {
+                halationUi.sizeUm[2],
+                halationUi.sizeUm[1],
+                halationUi.sizeUm[0]
+            };
+            float halationScatterSizeBGR[3] = {
+                halationUi.scatteringSizeUm[2],
+                halationUi.scatteringSizeUm[1],
+                halationUi.scatteringSizeUm[0]
+            };
+            for (int i = 0; i < 3; ++i) {
+                if (!std::isfinite(halationStrengthBGR[i]) || halationStrengthBGR[i] <= 0.0f) {
+                    halationStrengthBGR[i] = 0.0f;
+                }
+                if (!std::isfinite(halationScatterStrengthBGR[i]) || halationScatterStrengthBGR[i] <= 0.0f) {
+                    halationScatterStrengthBGR[i] = 0.0f;
+                }
+                if (!std::isfinite(halationSizeBGR[i]) || halationSizeBGR[i] <= 0.0f) {
+                    halationSizeBGR[i] = 0.0f;
+                }
+                if (!std::isfinite(halationScatterSizeBGR[i]) || halationScatterSizeBGR[i] <= 0.0f) {
+                    halationScatterSizeBGR[i] = 0.0f;
+                }
+            }
+            float halationSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
+            float halationScatterSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
+            if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
+                for (int i = 0; i < 3; ++i) {
+                    halationSigmaPx[i] = halationSizeBGR[i] / _pixelSizeUm;
+                    halationScatterSigmaPx[i] = halationScatterSizeBGR[i] / _pixelSizeUm;
+                }
+            }
+            const bool wantHalation = halationUi.active &&
+                (halationStrengthBGR[0] > 0.0f || halationStrengthBGR[1] > 0.0f || halationStrengthBGR[2] > 0.0f ||
+                 halationScatterStrengthBGR[0] > 0.0f || halationScatterStrengthBGR[1] > 0.0f || halationScatterStrengthBGR[2] > 0.0f) &&
+                (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
+
             const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
             const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
             const float unsharpAmount = _scannerOptions.unsharpAmount;
@@ -1850,7 +1986,8 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare;
+            const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
@@ -1858,7 +1995,8 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, wantUnsharp, _pCudaStream, opticsError)) {
+                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur;
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1889,6 +2027,44 @@ void JuicerProcessor::processImagesCUDA() {
 #else
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+                }
+
+                run.halation.active = wantHalation ? 1 : 0;
+                for (int i = 0; i < 3; ++i) {
+                    run.halation.strength[i] = wantHalation ? halationStrengthBGR[i] : 0.0f;
+                    run.halation.scatteringStrength[i] = wantHalation ? halationScatterStrengthBGR[i] : 0.0f;
+                    run.halationKernels.halationKernel[i] = nullptr;
+                    run.halationKernels.halationRadius[i] = 0;
+                    run.halationKernels.scatteringKernel[i] = nullptr;
+                    run.halationKernels.scatteringRadius[i] = 0;
+                }
+                if (wantHalation) {
+                    for (int i = 0; i < 3; ++i) {
+                        if (halationStrengthBGR[i] > 0.0f && halationSigmaPx[i] > 0.0f) {
+                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationKernel[i], halationSigmaPx[i], _pCudaStream, opticsError)) {
+                                JTRACE("CUDA", std::string("CUDA halation kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                            }
+                            run.halationKernels.halationKernel[i] = cudaResources->halationKernel[i].weights;
+                            run.halationKernels.halationRadius[i] = cudaResources->halationKernel[i].radius;
+                        }
+                        if (halationScatterStrengthBGR[i] > 0.0f && halationScatterSigmaPx[i] > 0.0f) {
+                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationScatterKernel[i], halationScatterSigmaPx[i], _pCudaStream, opticsError)) {
+                                JTRACE("CUDA", std::string("CUDA halation scatter kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                            }
+                            run.halationKernels.scatteringKernel[i] = cudaResources->halationScatterKernel[i].weights;
+                            run.halationKernels.scatteringRadius[i] = cudaResources->halationScatterKernel[i].radius;
+                        }
+                    }
                 }
 
                 err = juicer_cuda_print_pipeline_optics(

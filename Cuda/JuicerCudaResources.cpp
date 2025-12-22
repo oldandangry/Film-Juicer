@@ -452,6 +452,10 @@ namespace JuicerCuda {
         free_gaussian_kernel(scannerLensBlurKernel);
         free_gaussian_kernel(scannerUnsharpKernel);
         free_gaussian_kernel(scannerGlareKernel);
+        for (int i = 0; i < 3; ++i) {
+            free_gaussian_kernel(halationKernel[i]);
+            free_gaussian_kernel(halationScatterKernel[i]);
+        }
         free_optics_scratch(scannerScratch);
         free_gaussian_kernel(spatialDirKernel);
         free_spatial_dir_scratch(spatialDirScratch);
@@ -1420,6 +1424,102 @@ namespace JuicerCuda {
         err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
         if (err != cudaSuccess) {
             outError = std::string("cudaMemcpyAsync(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            cudaFree(kernel.weights);
+            free_gaussian_kernel(kernel);
+            return false;
+        }
+
+        kernel.radius = radius;
+        kernel.sigma = sigma;
+        return true;
+#endif
+    }
+
+    bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)kernel;
+        (void)sigma;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
+            if (kernel.weights) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "halation kernel free", outError)) {
+                    return false;
+                }
+            }
+            free_gaussian_kernel(kernel);
+            return true;
+        }
+
+        const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f);
+        const int radius = std::min(radiusRaw, 75);
+        if (radius <= 0) {
+            if (kernel.weights) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "halation kernel free", outError)) {
+                    return false;
+                }
+            }
+            free_gaussian_kernel(kernel);
+            return true;
+        }
+
+        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+        if (same) {
+            return true;
+        }
+
+        std::vector<float> cpu;
+        cpu.resize(static_cast<size_t>(2 * radius + 1));
+        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
+        double wsum = 0.0;
+        for (int i = -radius; i <= radius; ++i) {
+            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
+            cpu[static_cast<size_t>(i + radius)] = static_cast<float>(w);
+            wsum += w;
+        }
+        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
+        for (float& w : cpu) {
+            w = static_cast<float>(static_cast<double>(w) * invW);
+        }
+
+        if (kernel.weights) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "halation kernel", outError)) {
+                return false;
+            }
+            free_gaussian_kernel(kernel);
+        }
+
+        const size_t bytes = cpu.size() * sizeof(float);
+        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(halation kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            free_gaussian_kernel(kernel);
+            return false;
+        }
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(halation kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             cudaFree(kernel.weights);
             free_gaussian_kernel(kernel);
             return false;
