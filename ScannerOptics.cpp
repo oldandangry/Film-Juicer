@@ -191,19 +191,90 @@ namespace {
         out[2] = sum[2] * inv;
     }
 
-    inline float hash_to_uniform(std::uint64_t h) {
-        const double scale = 1.0 / static_cast<double>(std::numeric_limits<std::uint64_t>::max());
-        return static_cast<float>((static_cast<double>(h) + 0.5) * scale);
-    }
+    struct PhiloxRngCpu {
+        static constexpr std::uint32_t kW0 = 0x9E3779B9u;
+        static constexpr std::uint32_t kW1 = 0xBB67AE85u;
+        static constexpr std::uint32_t kM0 = 0xD2511F53u;
+        static constexpr std::uint32_t kM1 = 0xCD9E8D57u;
 
-    inline float box_muller(std::uint64_t h1, std::uint64_t h2) {
-        float u1 = std::clamp(hash_to_uniform(h1), 1e-7f, 1.0f);
-        const float u2 = hash_to_uniform(h2);
-        const float r = std::sqrt(-2.0f * std::log(u1));
-        constexpr float kTwoPi = 6.28318530717958647692f;
-        const float theta = kTwoPi * u2;
-        return r * std::cos(theta);
-    }
+        std::uint32_t seedHi;
+        std::uint32_t seedLo;
+        std::uint32_t ctr0;
+        std::uint32_t ctr1;
+        std::uint32_t ctr2;
+        std::uint32_t ctr3;
+
+        PhiloxRngCpu(std::uint64_t seed, std::uint32_t counter0, std::uint32_t globalSeed, std::uint32_t counter1)
+            : seedHi(static_cast<std::uint32_t>(seed >> 32)),
+              seedLo(static_cast<std::uint32_t>(seed & 0xFFFFFFFFu)),
+              ctr0(counter0),
+              ctr1(counter1),
+              ctr2(globalSeed),
+              ctr3(0u)
+        {}
+
+        static inline std::uint32_t mulhilo(std::uint32_t a, std::uint32_t b, std::uint32_t& hi) {
+            const std::uint64_t product = static_cast<std::uint64_t>(a) * static_cast<std::uint64_t>(b);
+            hi = static_cast<std::uint32_t>(product >> 32);
+            return static_cast<std::uint32_t>(product);
+        }
+
+        static inline void round(std::uint32_t key0, std::uint32_t key1, std::uint32_t& c0, std::uint32_t& c1, std::uint32_t& c2, std::uint32_t& c3) {
+            std::uint32_t hi0 = 0;
+            std::uint32_t hi1 = 0;
+            const std::uint32_t lo0 = mulhilo(kM0, c0, hi0);
+            const std::uint32_t lo1 = mulhilo(kM1, c2, hi1);
+            const std::uint32_t n0 = hi1 ^ c1 ^ key0;
+            const std::uint32_t n1 = lo1;
+            const std::uint32_t n2 = hi0 ^ c3 ^ key1;
+            const std::uint32_t n3 = lo0;
+            c0 = n0;
+            c1 = n1;
+            c2 = n2;
+            c3 = n3;
+        }
+
+        std::uint32_t next_u32() {
+            std::uint32_t key0 = seedHi;
+            std::uint32_t key1 = seedLo;
+            std::uint32_t c0 = ctr0;
+            std::uint32_t c1 = ctr1;
+            std::uint32_t c2 = ctr2;
+            std::uint32_t c3 = ctr3;
+            for (int r = 0; r < 10; ++r) {
+                if (r > 0) {
+                    key0 += kW0;
+                    key1 += kW1;
+                }
+                round(key0, key1, c0, c1, c2, c3);
+            }
+            ctr3++;
+            return c0;
+        }
+
+        float uniform() {
+            const std::uint32_t v = next_u32();
+            constexpr float factor = 1.0f / (static_cast<float>(std::numeric_limits<std::uint32_t>::max()) + 1.0f);
+            constexpr float halffactor = 0.5f * factor;
+            return static_cast<float>(v) * factor + halffactor;
+        }
+    };
+
+    struct GlareRngCpu {
+        PhiloxRngCpu rng;
+
+        GlareRngCpu(std::uint64_t seed, std::uint32_t ctr0, std::uint32_t ctr1, std::uint32_t globalSeed)
+            : rng(seed, ctr0, globalSeed, ctr1) {}
+
+        float normal() {
+            float u1 = rng.uniform();
+            u1 = std::clamp(u1, 1e-7f, 1.0f);
+            const float u2 = rng.uniform();
+            const float r = std::sqrt(-2.0f * std::log(u1));
+            constexpr float kTwoPi = 6.28318530717958647692f;
+            return r * std::cos(kTwoPi * u2);
+        }
+    };
 
     inline float lognormal_from_mean_std(float mean, float stddev, float normalSample) {
         const float m2 = mean * mean;
@@ -510,23 +581,12 @@ namespace ScannerOptics {
                         const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
                         const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
                         const size_t idx = size_t(y) * size_t(width) + size_t(x);
-                        const std::uint64_t mix1[5] = {
+                        GlareRngCpu rng(
                             glareSeed,
-                            static_cast<std::uint64_t>(medium.medium),
-                            absX,
-                            absY,
-                            0ull
-                        };
-                        const std::uint64_t mix2[5] = {
-                            glareSeed,
-                            static_cast<std::uint64_t>(medium.medium),
-                            absX,
-                            absY,
-                            1ull
-                        };
-                        const float n = box_muller(
-                            Hash::hash_bytes(mix1, sizeof(mix1)),
-                            Hash::hash_bytes(mix2, sizeof(mix2)));
+                            static_cast<std::uint32_t>(absX),
+                            static_cast<std::uint32_t>(absY),
+                            static_cast<std::uint32_t>(medium.medium));
+                        const float n = rng.normal();
                         const float mean = static_cast<float>(medium.glare.percent);
                         const float stddev = static_cast<float>(medium.glare.roughness * medium.glare.percent);
                         float glare = lognormal_from_mean_std(std::max(0.0f, mean), std::max(0.0f, stddev), n);

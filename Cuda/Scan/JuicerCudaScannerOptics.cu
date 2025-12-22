@@ -7,50 +7,30 @@
 #include <cstdint>
 
 #include "Cuda/JuicerCudaKernelsUtil.cuh"
+#include "openrand/philox.h"
 
 namespace {
 
     // --- Scanner glare parity (matches ScannerOptics.cpp) ---
+    struct GlareRngDevice {
+        openrand::Philox rng;
 
-    __device__ __forceinline__ std::uint64_t fnv1a_update_u64_device(std::uint64_t h, std::uint64_t v) {
-        constexpr std::uint64_t kFnvPrime = 0x100000001b3ULL;
-        for (int i = 0; i < 8; ++i) {
-            h ^= static_cast<std::uint64_t>((v >> (8 * i)) & 0xffULL);
-            h *= kFnvPrime;
+        __device__ GlareRngDevice(std::uint64_t seed, std::uint32_t ctr0, std::uint32_t ctr1, std::uint32_t globalSeed)
+            : rng(seed, ctr0, globalSeed, ctr1) {}
+
+        __device__ __forceinline__ float uniform() {
+            return rng.rand<float>();
         }
-        return h;
-    }
 
-    __device__ __forceinline__ std::uint64_t fnv1a_hash_u64_5_device(
-        std::uint64_t a,
-        std::uint64_t b,
-        std::uint64_t c,
-        std::uint64_t d,
-        std::uint64_t e)
-    {
-        std::uint64_t h = 0xcbf29ce484222325ULL;
-        h = fnv1a_update_u64_device(h, a);
-        h = fnv1a_update_u64_device(h, b);
-        h = fnv1a_update_u64_device(h, c);
-        h = fnv1a_update_u64_device(h, d);
-        h = fnv1a_update_u64_device(h, e);
-        return h;
-    }
-
-    __device__ __forceinline__ float hash_to_uniform_device(std::uint64_t h) {
-        constexpr double kInvU64Max = 1.0 / 18446744073709551615.0;
-        return static_cast<float>((static_cast<double>(h) + 0.5) * kInvU64Max);
-    }
-
-    __device__ __forceinline__ float box_muller_device(std::uint64_t h1, std::uint64_t h2) {
-        float u1 = hash_to_uniform_device(h1);
-        u1 = fminf(fmaxf(u1, 1e-7f), 1.0f);
-        const float u2 = hash_to_uniform_device(h2);
-        const float r = sqrtf(-2.0f * logf(u1));
-        constexpr float kTwoPi = 6.28318530717958647692f;
-        const float theta = kTwoPi * u2;
-        return r * cosf(theta);
-    }
+        __device__ __forceinline__ float normal() {
+            float u1 = rng.rand<float>();
+            u1 = fminf(fmaxf(u1, 1e-7f), 1.0f);
+            const float u2 = rng.rand<float>();
+            const float r = sqrtf(-2.0f * logf(u1));
+            constexpr float kTwoPi = 6.28318530717958647692f;
+            return r * cosf(kTwoPi * u2);
+        }
+    };
 
     __device__ __forceinline__ float lognormal_from_mean_std_device(float mean, float stddev, float normalSample) {
         const float m2 = mean * mean;
@@ -91,9 +71,11 @@ __global__ void optics_glare_generate_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
 
-    const std::uint64_t h1 = fnv1a_hash_u64_5_device(glareSeed, mediumId, absX, absY, 0ULL);
-    const std::uint64_t h2 = fnv1a_hash_u64_5_device(glareSeed, mediumId, absX, absY, 1ULL);
-    const float n = box_muller_device(h1, h2);
+    GlareRngDevice rng(glareSeed,
+        static_cast<std::uint32_t>(absX),
+        static_cast<std::uint32_t>(absY),
+        static_cast<std::uint32_t>(mediumId));
+    const float n = rng.normal();
 
     const float mean = fmaxf(0.0f, percent);
     const float stddev = fmaxf(0.0f, roughness * percent);
