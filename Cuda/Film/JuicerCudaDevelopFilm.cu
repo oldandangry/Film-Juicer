@@ -10,48 +10,9 @@
 #include "Cuda/JuicerCudaKernelsUtil.cuh"
 #include "Cuda/Film/JuicerCudaFilmExposure.cuh"
 #include "Cuda/Film/JuicerCudaFilmDevelop.cuh"
+#include "openrand/philox.h"
 
 namespace {
-
-    __device__ __forceinline__ std::uint64_t fnv1a_update_u64_device(std::uint64_t h, std::uint64_t v) {
-        constexpr std::uint64_t kFnvPrime = 0x100000001b3ULL;
-        for (int i = 0; i < 8; ++i) {
-            h ^= static_cast<std::uint64_t>((v >> (8 * i)) & 0xffULL);
-            h *= kFnvPrime;
-        }
-        return h;
-    }
-
-    __device__ __forceinline__ std::uint64_t fnv1a_hash_u64_5_device(
-        std::uint64_t a,
-        std::uint64_t b,
-        std::uint64_t c,
-        std::uint64_t d,
-        std::uint64_t e)
-    {
-        std::uint64_t h = 0xcbf29ce484222325ULL;
-        h = fnv1a_update_u64_device(h, a);
-        h = fnv1a_update_u64_device(h, b);
-        h = fnv1a_update_u64_device(h, c);
-        h = fnv1a_update_u64_device(h, d);
-        h = fnv1a_update_u64_device(h, e);
-        return h;
-    }
-
-    __device__ __forceinline__ float hash_to_uniform_device(std::uint64_t h) {
-        constexpr double kInvU64Max = 1.0 / 18446744073709551615.0;
-        return static_cast<float>((static_cast<double>(h) + 0.5) * kInvU64Max);
-    }
-
-    __device__ __forceinline__ float box_muller_device(std::uint64_t h1, std::uint64_t h2) {
-        float u1 = hash_to_uniform_device(h1);
-        u1 = fminf(fmaxf(u1, 1e-7f), 1.0f);
-        const float u2 = hash_to_uniform_device(h2);
-        const float r = sqrtf(-2.0f * logf(u1));
-        constexpr float kTwoPi = 6.28318530717958647692f;
-        const float theta = kTwoPi * u2;
-        return r * cosf(theta);
-    }
 
     __device__ __forceinline__ float lognormal_from_mean_std_device(float mean, float stddev, float normalSample) {
         const float m2 = mean * mean;
@@ -62,35 +23,29 @@ namespace {
         return expf(mu + sigma * normalSample);
     }
 
-    __device__ __forceinline__ float next_uniform_device(
-        std::uint64_t seed,
-        std::uint64_t x,
-        std::uint64_t y,
-        int counter)
-    {
-        const std::uint64_t h = fnv1a_hash_u64_5_device(seed, x, y, static_cast<std::uint64_t>(counter), 0ULL);
-        return hash_to_uniform_device(h);
-    }
+    struct GrainRngDevice {
+        openrand::Philox rng;
 
-    __device__ __forceinline__ float next_normal_device(
-        std::uint64_t seed,
-        std::uint64_t x,
-        std::uint64_t y,
-        int& counter)
-    {
-        const std::uint64_t h1 = fnv1a_hash_u64_5_device(seed, x, y, static_cast<std::uint64_t>(counter), 0ULL);
-        ++counter;
-        const std::uint64_t h2 = fnv1a_hash_u64_5_device(seed, x, y, static_cast<std::uint64_t>(counter), 1ULL);
-        ++counter;
-        return box_muller_device(h1, h2);
-    }
+        __device__ GrainRngDevice(std::uint64_t seed, std::uint32_t ctr0, std::uint32_t ctr1)
+            : rng(seed, ctr0, openrand::DEFAULT_GLOBAL_SEED, ctr1) {}
+
+        __device__ __forceinline__ float uniform() {
+            return rng.rand<float>();
+        }
+
+        __device__ __forceinline__ float normal() {
+            float u1 = rng.rand<float>();
+            u1 = fminf(fmaxf(u1, 1e-7f), 1.0f);
+            const float u2 = rng.rand<float>();
+            const float r = sqrtf(-2.0f * logf(u1));
+            constexpr float kTwoPi = 6.28318530717958647692f;
+            return r * cosf(kTwoPi * u2);
+        }
+    };
 
     __device__ __forceinline__ int fast_poisson_device(
         float lambda,
-        std::uint64_t seed,
-        std::uint64_t x,
-        std::uint64_t y,
-        int& counter)
+        GrainRngDevice& rng)
     {
         if (!device_isfinite(lambda) || !(lambda > 0.0f)) {
             return 0;
@@ -101,13 +56,13 @@ namespace {
             int k = 0;
             while (p > L && k < 1024) {
                 ++k;
-                const float u = next_uniform_device(seed, x, y, counter++);
+                const float u = rng.uniform();
                 p *= fminf(fmaxf(u, 1e-7f), 1.0f);
             }
             return k - 1;
         }
 
-        const float z = next_normal_device(seed, x, y, counter);
+        const float z = rng.normal();
         float sample = lambda + sqrtf(lambda) * z;
         if (!device_isfinite(sample)) {
             sample = 0.0f;
@@ -120,10 +75,7 @@ namespace {
     __device__ __forceinline__ int fast_binomial_device(
         int n,
         float p,
-        std::uint64_t seed,
-        std::uint64_t x,
-        std::uint64_t y,
-        int& counter)
+        GrainRngDevice& rng)
     {
         if (n <= 0) {
             return 0;
@@ -142,7 +94,7 @@ namespace {
         if (n < kThreshold) {
             int count = 0;
             for (int k = 0; k < n; ++k) {
-                const float u = next_uniform_device(seed, x, y, counter++);
+                const float u = rng.uniform();
                 if (u < p) {
                     ++count;
                 }
@@ -153,7 +105,7 @@ namespace {
         const float mean = static_cast<float>(n) * p;
         const float var = static_cast<float>(n) * p * (1.0f - p);
         if (var > 10.0f) {
-            const float z = next_normal_device(seed, x, y, counter);
+            const float z = rng.normal();
             float sample = mean + sqrtf(var) * z;
             if (!device_isfinite(sample)) {
                 sample = 0.0f;
@@ -164,11 +116,11 @@ namespace {
             return approx;
         }
 
-        float u = next_uniform_device(seed, x, y, counter++);
+        float u = rng.uniform();
         float cdf = 0.0f;
         float prob = powf(1.0f - p, static_cast<float>(n));
         if (!device_isfinite(prob) || prob <= 0.0f) {
-            const float z = next_normal_device(seed, x, y, counter);
+            const float z = rng.normal();
             float sample = mean + sqrtf(fmaxf(0.0f, var)) * z;
             if (!device_isfinite(sample)) {
                 sample = 0.0f;
@@ -194,6 +146,16 @@ namespace {
         return k - 1;
     }
 
+    __device__ __forceinline__ int poisson_sample_device(float lambda, GrainRngDevice& rng, bool useFastStats) {
+        (void)useFastStats;
+        return fast_poisson_device(lambda, rng);
+    }
+
+    __device__ __forceinline__ int binomial_sample_device(int n, float p, GrainRngDevice& rng, bool useFastStats) {
+        (void)useFastStats;
+        return fast_binomial_device(n, p, rng);
+    }
+
     __device__ __forceinline__ float layer_particle_model_device(
         float density,
         float densityMax,
@@ -202,7 +164,8 @@ namespace {
         float uniformity,
         std::uint64_t seed,
         std::uint64_t absX,
-        std::uint64_t absY)
+        std::uint64_t absY,
+        bool useFastStats)
     {
         if (!device_isfinite(density) || density < 0.0f) {
             density = 0.0f;
@@ -226,10 +189,10 @@ namespace {
             saturation = 1e-6f;
         }
 
-        int counter = 0;
+        GrainRngDevice rng(seed, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY));
         const float lambda = nParticles / saturation;
-        const int seeds = fast_poisson_device(lambda, seed, absX, absY, counter);
-        const int grainCount = fast_binomial_device(seeds, probability, seed, absX, absY, counter);
+        const int seeds = poisson_sample_device(lambda, rng, useFastStats);
+        const int grainCount = binomial_sample_device(seeds, probability, rng, useFastStats);
         float grain = static_cast<float>(grainCount) * odParticle * saturation;
         if (!device_isfinite(grain)) {
             grain = 0.0f;
@@ -505,7 +468,7 @@ __global__ void grain_apply_simple_kernel(
     float acc = 0.0f;
     for (int sl = 0; sl < nSubLayers; ++sl) {
         const std::uint64_t seed = static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL;
-        acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY);
+        acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, false);
     }
     acc /= static_cast<float>(nSubLayers);
     acc -= densityMin;
@@ -563,7 +526,8 @@ __global__ void grain_layer_kernel(
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
     const std::uint64_t seed = static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL;
 
-    float grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY);
+    const bool useFastStats = (grain.useFastStats != 0);
+    float grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, useFastStats);
     outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }
 
@@ -588,9 +552,8 @@ __global__ void grain_build_clumping_kernel(
 
     const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
-
-    int counter = 0;
-    const float n = next_normal_device(seedBase, absX, absY, counter);
+    GrainRngDevice rng(seedBase, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY));
+    const float n = rng.normal();
     float v = lognormal_from_mean_std_device(mean, stddev, n);
     if (!device_isfinite(v)) {
         v = 1.0f;

@@ -98,6 +98,9 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
     </Link>
+    <CudaCompile>
+      <AdditionalOptions>--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -123,6 +126,9 @@
       </ModuleDefinitionFile>
       <OutputFile>$(OutDir)juicer.ofx</OutputFile>
     </Link>
+    <CudaCompile>
+      <AdditionalOptions>--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -141,6 +147,7 @@
     </ClCompile>
     <CudaCompile Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">
       <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">--std=c++17 %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -171,6 +178,7 @@
     <CudaCompile Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">
       <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
       <Include Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Dev\Juicer\third_party\openrand;%(Include)</Include>
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">--std=c++17 %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
