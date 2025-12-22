@@ -1823,6 +1823,17 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->grain = S.base.grain;
     target->halation = S.base.halation;
     target->negativeGlare = S.base.glare;
+    target->hasDensityCurvesLayers = S.base.hasDensityCurvesLayers;
+    for (size_t layer = 0; layer < target->densityCurvesLayers.size(); ++layer) {
+        for (size_t ch = 0; ch < target->densityCurvesLayers[layer].size(); ++ch) {
+            if (target->hasDensityCurvesLayers) {
+                target->densityCurvesLayers[layer][ch] = S.base.densityCurvesLayers[layer][ch];
+            }
+            else {
+                target->densityCurvesLayers[layer][ch].clear();
+            }
+        }
+    }
 
     auto average_positive = [](const auto& values) -> float {
         float sum = 0.0f;

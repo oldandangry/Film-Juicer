@@ -160,6 +160,55 @@ namespace JuicerCuda {
         int scatteringRadius[3] = { 0, 0, 0 };
     };
 
+    struct GrainPayload {
+        int active = 0;
+        int sublayersActive = 0;
+        int useFastStats = 1;
+        int nSubLayers = 1;
+        int originX = 0;
+        int originY = 0;
+        float pixelSizeUm = 0.0f;
+        float blurSigmaPx = 0.0f;
+        float blurDyeCloudsUm = 0.0f;
+        float microStructure[2] = { 0.0f, 0.0f };
+        float densityMin[3] = { 0.0f, 0.0f, 0.0f };
+        float uniformity[3] = { 0.0f, 0.0f, 0.0f };
+        float densityMax[3] = { 0.0f, 0.0f, 0.0f };
+        float nParticles[3] = { 0.0f, 0.0f, 0.0f };
+        float odParticle[3] = { 0.0f, 0.0f, 0.0f };
+
+        float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f} };
+        float densityMinLayers[3][3] = { {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f} };
+        float nParticlesLayers[3][3] = { {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f} };
+        float odParticleLayers[3][3] = { {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f},
+                                         {0.0f, 0.0f, 0.0f} };
+        const float* JUICER_RESTRICT densityCurvesLayers[3][3] = {
+            { nullptr, nullptr, nullptr },
+            { nullptr, nullptr, nullptr },
+            { nullptr, nullptr, nullptr }
+        };
+    };
+
+    struct GrainKernelPayload {
+        const float* JUICER_RESTRICT blurKernel = nullptr;
+        int blurRadius = 0;
+        const float* JUICER_RESTRICT microKernel = nullptr;
+        int microRadius = 0;
+        const float* JUICER_RESTRICT dyeKernel[3][3] = {
+            { nullptr, nullptr, nullptr },
+            { nullptr, nullptr, nullptr },
+            { nullptr, nullptr, nullptr }
+        };
+        int dyeRadius[3][3] = { {0, 0, 0}, {0, 0, 0}, {0, 0, 0} };
+    };
+
     struct PrintExposePayload {
         int active = 0;
         ScanTablesPayload negTables{};
@@ -221,6 +270,8 @@ namespace JuicerCuda {
         FilmDevelopPayload filmDevelop{};
         HalationPayload halation{};
         HalationKernelPayload halationKernels{};
+        GrainPayload grain{};
+        GrainKernelPayload grainKernels{};
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};

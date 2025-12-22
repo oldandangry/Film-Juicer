@@ -41,6 +41,11 @@ namespace JuicerCuda {
         DeviceCurve densB;
         DeviceCurve densG;
         DeviceCurve densR;
+        float* densityCurvesLayers[3][3] = { {nullptr, nullptr, nullptr},
+                                             {nullptr, nullptr, nullptr},
+                                             {nullptr, nullptr, nullptr} };
+        int densityCurvesLayersN = 0;
+        int hasDensityCurvesLayers = 0;
 
         DeviceCurve dirDensB;
         DeviceCurve dirDensG;
@@ -96,15 +101,16 @@ namespace JuicerCuda {
             float sigma = 0.0f;
         };
 
-        struct DeviceOpticsScratch {
-            float* rgbR = nullptr;
-            float* rgbG = nullptr;
-            float* rgbB = nullptr;
-            float* tmp = nullptr;
-            float* blurred = nullptr;
-            int width = 0;
-            int height = 0;
-        };
+    struct DeviceOpticsScratch {
+        float* rgbR = nullptr;
+        float* rgbG = nullptr;
+        float* rgbB = nullptr;
+        float* tmp = nullptr;
+        float* blurred = nullptr;
+        float* aux = nullptr;
+        int width = 0;
+        int height = 0;
+    };
 
         struct DeviceSpatialDirScratch {
             float* corrY = nullptr;
@@ -118,6 +124,9 @@ namespace JuicerCuda {
         DeviceGaussianKernel scannerLensBlurKernel;
         DeviceGaussianKernel scannerUnsharpKernel;
         DeviceGaussianKernel scannerGlareKernel;
+        DeviceGaussianKernel grainBlurKernel;
+        DeviceGaussianKernel grainMicroKernel;
+        DeviceGaussianKernel grainDyeKernel[3][3];
         DeviceGaussianKernel halationKernel[3];
         DeviceGaussianKernel halationScatterKernel[3];
         DeviceOpticsScratch scannerScratch;
@@ -189,8 +198,8 @@ namespace JuicerCuda {
     // Ensures the scan error flag device buffer is allocated.
     bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
 
-    // Allocates scratch buffers used by scanner optics (blur/unsharp/glare) when active.
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needUnsharpScratch, void* cudaStreamOpaque, std::string& outError);
+    // Allocates scratch buffers used by scanner optics (blur/unsharp/glare/grain) when active.
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, void* cudaStreamOpaque, std::string& outError);
 
     // Allocates scratch buffers used by spatial DIR diffusion (corr planes + temp).
     bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);

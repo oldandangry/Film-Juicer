@@ -64,6 +64,29 @@ __global__ void develop_film_density_from_raw_kernel(
     float* outC,
     float* outM,
     float* outY);
+__global__ void grain_clear_kernel(float* out, int n);
+__global__ void grain_accumulate_kernel(float* dst, const float* src, int n);
+__global__ void grain_add_bias_kernel(float* inOut, int n, float bias);
+__global__ void grain_multiply_kernel(float* inOut, const float* mult, int n);
+__global__ void grain_apply_simple_kernel(
+    JuicerCuda::PipelineRunParams params,
+    float* inOut,
+    int channelIndex);
+__global__ void grain_layer_kernel(
+    JuicerCuda::PipelineRunParams params,
+    const float* inDensity,
+    float* outGrain,
+    int channelIndex,
+    int sublayerIndex);
+__global__ void grain_build_clumping_kernel(
+    float* out,
+    int width,
+    int height,
+    int originX,
+    int originY,
+    std::uint64_t seedBase,
+    float mean,
+    float stddev);
 __global__ void develop_print_density_kernel(
     JuicerCuda::PipelineRunParams params,
     float* ioC,
@@ -382,6 +405,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     float* dRgbB,
     float* dTmp,
     float* dScratchBlurred,
+    float* dAux,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -495,6 +519,149 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         return err;
     }
 
+    const JuicerCuda::GrainPayload& grain = params.grain;
+    const JuicerCuda::GrainKernelPayload& grainKernels = params.grainKernels;
+    const bool doGrain = (grain.active != 0);
+    if (doGrain) {
+        const int total = params.width * params.height;
+        const int threads1D = 256;
+        const int blocks1D = (total + threads1D - 1) / threads1D;
+        const bool useSublayers = (grain.sublayersActive != 0);
+        const bool doFinalBlur = (grainKernels.blurKernel && grainKernels.blurRadius > 0);
+        float microBlurPx = 0.0f;
+        float microSigma = 0.0f;
+        if (std::isfinite(grain.pixelSizeUm) && grain.pixelSizeUm > 0.0f) {
+            microBlurPx = grain.microStructure[0] / grain.pixelSizeUm;
+            microSigma = grain.microStructure[1] * 0.001f / grain.pixelSizeUm;
+        }
+        const bool doMicro = (std::isfinite(microSigma) && microSigma > 0.05f);
+        const bool doMicroBlur = doMicro && std::isfinite(microBlurPx) && (microBlurPx > 0.4f);
+        const bool needBlurScratch = doFinalBlur || doMicroBlur;
+        if (needBlurScratch && !dScratchBlurred) {
+            return cudaErrorInvalidValue;
+        }
+
+        auto process_channel_simple = [&](float* plane, int channel) -> cudaError_t {
+            grain_apply_simple_kernel<<<blocks2D, threads2D, 0, stream>>>(params, plane, channel);
+            cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            if (doFinalBlur) {
+                e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+            }
+            return cudaSuccess;
+        };
+
+        auto process_channel_sublayers = [&](float* plane, int channel) -> cudaError_t {
+            if (!dAux) {
+                return cudaErrorInvalidValue;
+            }
+            const size_t bytes = static_cast<size_t>(total) * sizeof(float);
+            cudaError_t e = cudaMemcpyAsync(dAux, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+
+            grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+
+            for (int sl = 0; sl < 3; ++sl) {
+                grain_layer_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dAux, dTmp, channel, sl);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+                const float* dyeKernel = grainKernels.dyeKernel[sl][channel];
+                const int dyeRadius = grainKernels.dyeRadius[sl][channel];
+                if (dyeKernel && dyeRadius > 0) {
+                    if (!dScratchBlurred) {
+                        return cudaErrorInvalidValue;
+                    }
+                    e = blur_plane_in_place(dTmp, dScratchBlurred, dyeKernel, dyeRadius);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+                grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dTmp, total);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+            }
+
+            if (doMicro) {
+                const std::uint64_t seedBase = static_cast<std::uint64_t>(channel) + 100ULL;
+                grain_build_clumping_kernel<<<blocks2D, threads2D, 0, stream>>>(
+                    dTmp,
+                    params.width,
+                    params.height,
+                    grain.originX,
+                    grain.originY,
+                    seedBase,
+                    1.0f,
+                    microSigma);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+                if (doMicroBlur) {
+                    if (!grainKernels.microKernel || grainKernels.microRadius <= 0) {
+                        return cudaErrorInvalidValue;
+                    }
+                    e = blur_plane_in_place(dTmp, dScratchBlurred, grainKernels.microKernel, grainKernels.microRadius);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+                grain_multiply_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dTmp, total);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+            }
+
+            const float bias = -grain.densityMin[channel];
+            if (std::isfinite(bias) && bias != 0.0f) {
+                grain_add_bias_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total, bias);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+            }
+            if (doFinalBlur) {
+                e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+            }
+            return cudaSuccess;
+        };
+
+        if (useSublayers) {
+            err = process_channel_sublayers(dRgbR, 0);
+            if (err != cudaSuccess) return err;
+            err = process_channel_sublayers(dRgbG, 1);
+            if (err != cudaSuccess) return err;
+            err = process_channel_sublayers(dRgbB, 2);
+            if (err != cudaSuccess) return err;
+        }
+        else {
+            err = process_channel_simple(dRgbR, 0);
+            if (err != cudaSuccess) return err;
+            err = process_channel_simple(dRgbG, 1);
+            if (err != cudaSuccess) return err;
+            err = process_channel_simple(dRgbB, 2);
+            if (err != cudaSuccess) return err;
+        }
+    }
+
     if (params.printExpose.active) {
         develop_print_density_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
         err = cudaGetLastError();
@@ -605,6 +772,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
     float* dRgbB,
     float* dTmp,
     float* dScratchBlurred,
+    float* dAux,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -632,6 +800,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
         dRgbB,
         dTmp,
         dScratchBlurred,
+        dAux,
         dLensBlurKernel,
         lensBlurRadius,
         dUnsharpKernel,

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <sstream>
 #include <mutex>
+#include <limits>
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
@@ -46,6 +47,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     float* dRgbB,
     float* dTmp,
     float* dScratchBlurred,
+    float* dAux,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -71,6 +73,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
     float* dRgbB,
     float* dTmp,
     float* dScratchBlurred,
+    float* dAux,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -1353,11 +1356,192 @@ void JuicerProcessor::processImagesCUDA() {
                  halationScatterStrengthBGR[0] > 0.0f || halationScatterStrengthBGR[1] > 0.0f || halationScatterStrengthBGR[2] > 0.0f) &&
                 (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
 
+            const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
+            auto nanmax_vector = [](const std::vector<float>& values, float& outMax) -> bool {
+                double m = -std::numeric_limits<double>::infinity();
+                bool found = false;
+                for (float v : values) {
+                    if (std::isfinite(v)) {
+                        m = std::max(m, static_cast<double>(v));
+                        found = true;
+                    }
+                }
+                if (!found || !std::isfinite(m)) {
+                    return false;
+                }
+                outMax = static_cast<float>(m);
+                return std::isfinite(outMax);
+            };
+            auto nanmax_curve = [&](const Spectral::Curve& curve, float& outMax) -> bool {
+                return nanmax_vector(curve.linear, outMax);
+            };
+
+            bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
+            bool wantGrainSublayers = false;
+            bool wantGrainBlur = false;
+            bool wantGrainMicro = false;
+            bool wantGrainMicroBlur = false;
+            float grainBlurSigmaPx = 0.0f;
+            float grainMicroBlurPx = 0.0f;
+            float grainMicroSigma = 0.0f;
+            float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+
+            run.grain = JuicerCuda::GrainPayload{};
+            run.grainKernels = JuicerCuda::GrainKernelPayload{};
+            run.grain.useFastStats = 1;
+            if (wantGrain) {
+                float densityMin[3] = {
+                    grainUi.densityMin[0],
+                    grainUi.densityMin[1],
+                    grainUi.densityMin[2]
+                };
+                float uniformity[3] = {
+                    grainUi.uniformity[0],
+                    grainUi.uniformity[1],
+                    grainUi.uniformity[2]
+                };
+                for (int i = 0; i < 3; ++i) {
+                    if (!std::isfinite(densityMin[i]) || densityMin[i] < 0.0f) {
+                        densityMin[i] = 0.0f;
+                    }
+                    if (!std::isfinite(uniformity[i])) {
+                        uniformity[i] = 0.0f;
+                    }
+                    uniformity[i] = std::clamp(uniformity[i], 0.0f, 1.0f);
+                }
+
+                float maxC = 0.0f;
+                float maxM = 0.0f;
+                float maxY = 0.0f;
+                const bool maxOk =
+                    nanmax_curve(_ws->densR, maxC) &&
+                    nanmax_curve(_ws->densG, maxM) &&
+                    nanmax_curve(_ws->densB, maxY);
+                if (!maxOk) {
+                    wantGrain = false;
+                }
+
+                const float pixelAreaUm2 = _pixelSizeUm * _pixelSizeUm;
+                if (!std::isfinite(pixelAreaUm2) || !(pixelAreaUm2 > 0.0f)) {
+                    wantGrain = false;
+                }
+
+                const int nSubLayers = (grainUi.nSubLayers > 0) ? grainUi.nSubLayers : 1;
+                run.grain.nSubLayers = nSubLayers;
+                run.grain.originX = win.x1;
+                run.grain.originY = win.y1;
+                run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
+                run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
+                run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
+                run.grain.microStructure[0] = grainUi.microStructure[0];
+                run.grain.microStructure[1] = grainUi.microStructure[1];
+                for (int i = 0; i < 3; ++i) {
+                    run.grain.densityMin[i] = densityMin[i];
+                    run.grain.uniformity[i] = uniformity[i];
+                }
+
+                bool paramsOk = wantGrain;
+                if (paramsOk) {
+                    const float densityMaxCurves[3] = { maxC, maxM, maxY };
+                    for (int i = 0; i < 3; ++i) {
+                        const float densityMax = densityMaxCurves[i] + densityMin[i];
+                        const float particleArea = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[i];
+                        if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
+                            paramsOk = false;
+                            break;
+                        }
+                        float nParticles = pixelAreaUm2 / particleArea;
+                        if (nSubLayers > 1) {
+                            nParticles /= static_cast<float>(nSubLayers);
+                        }
+                        if (!std::isfinite(nParticles) || !(nParticles > 0.0f)) {
+                            paramsOk = false;
+                            break;
+                        }
+                        const float odParticle = densityMax / nParticles;
+                        run.grain.densityMax[i] = densityMax;
+                        run.grain.nParticles[i] = nParticles;
+                        run.grain.odParticle[i] = std::isfinite(odParticle) ? odParticle : 0.0f;
+                    }
+                }
+                if (!paramsOk) {
+                    wantGrain = false;
+                }
+
+                if (wantGrain) {
+                    grainBlurSigmaPx = run.grain.blurSigmaPx;
+                    wantGrainBlur = false;
+
+                    if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
+                        grainMicroBlurPx = grainUi.microStructure[0] / static_cast<float>(_pixelSizeUm);
+                        grainMicroSigma = grainUi.microStructure[1] * 0.001f / static_cast<float>(_pixelSizeUm);
+                    }
+                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > 0.05f);
+                    wantGrainMicroBlur = wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > 0.4f);
+
+                    if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
+                        float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
+                                                         {0.0f, 0.0f, 0.0f},
+                                                         {0.0f, 0.0f, 0.0f} };
+                        bool layersOk = true;
+                        for (int layer = 0; layer < 3; ++layer) {
+                            for (int ch = 0; ch < 3; ++ch) {
+                                if (!nanmax_vector(_ws->densityCurvesLayers[layer][ch], densityMaxLayers[layer][ch])) {
+                                    layersOk = false;
+                                }
+                            }
+                        }
+
+                        if (layersOk) {
+                            for (int ch = 0; ch < 3; ++ch) {
+                                float total = 0.0f;
+                                for (int layer = 0; layer < 3; ++layer) {
+                                    total += densityMaxLayers[layer][ch];
+                                }
+                                if (!(std::isfinite(total) && total > 0.0f)) {
+                                    layersOk = false;
+                                    break;
+                                }
+
+                                for (int layer = 0; layer < 3; ++layer) {
+                                    const float fraction = densityMaxLayers[layer][ch] / total;
+                                    const float minLayer = fraction * densityMin[ch];
+                                    const float maxLayer = densityMaxLayers[layer][ch] + minLayer;
+                                    const float particleAreaLayer = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[ch] * grainUi.agxParticleScaleLayers[layer];
+                                    if (!std::isfinite(particleAreaLayer) || !(particleAreaLayer > 0.0f)) {
+                                        layersOk = false;
+                                        break;
+                                    }
+                                    const float nParticlesLayer = pixelAreaUm2 * fraction / particleAreaLayer;
+                                    const float odParticle = (nParticlesLayer > 0.0f) ? (maxLayer / nParticlesLayer) : 0.0f;
+                                    run.grain.densityMinLayers[layer][ch] = minLayer;
+                                    run.grain.densityMaxLayers[layer][ch] = maxLayer;
+                                    run.grain.nParticlesLayers[layer][ch] = std::isfinite(nParticlesLayer) ? nParticlesLayer : 0.0f;
+                                    run.grain.odParticleLayers[layer][ch] = std::isfinite(odParticle) ? odParticle : 0.0f;
+                                    run.grain.densityCurvesLayers[layer][ch] = cudaResources->densityCurvesLayers[layer][ch];
+                                    const float dyeSigma = run.grain.blurDyeCloudsUm * std::sqrt(std::max(0.0f, run.grain.odParticleLayers[layer][ch]));
+                                    grainDyeSigmaPx[layer][ch] = std::isfinite(dyeSigma) ? dyeSigma : 0.0f;
+                                }
+                                if (!layersOk) {
+                                    break;
+                                }
+                            }
+                        }
+                        wantGrainSublayers = layersOk;
+                    }
+                }
+                if (std::isfinite(grainBlurSigmaPx)) {
+                    wantGrainBlur = wantGrainSublayers ? (grainBlurSigmaPx > 0.0f) : (grainBlurSigmaPx > 0.4f);
+                }
+            }
+            run.grain.active = wantGrain ? 1 : 0;
+            run.grain.sublayersActive = wantGrainSublayers ? 1 : 0;
+
             const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
             const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation;
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
@@ -1365,8 +1549,9 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, _pCudaStream, opticsError)) {
+                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainMicroBlur || wantGrainSublayers;
+                const bool needAuxScratch = wantGrainSublayers;
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1397,6 +1582,64 @@ void JuicerProcessor::processImagesCUDA() {
 #else
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+                }
+
+                run.grainKernels.blurKernel = nullptr;
+                run.grainKernels.blurRadius = 0;
+                run.grainKernels.microKernel = nullptr;
+                run.grainKernels.microRadius = 0;
+                for (int layer = 0; layer < 3; ++layer) {
+                    for (int ch = 0; ch < 3; ++ch) {
+                        run.grainKernels.dyeKernel[layer][ch] = nullptr;
+                        run.grainKernels.dyeRadius[layer][ch] = 0;
+                    }
+                }
+                if (wantGrain) {
+                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernel, wantGrainBlur ? grainBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                        JTRACE("CUDA", std::string("CUDA grain blur kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                    }
+                    if (wantGrainBlur) {
+                        run.grainKernels.blurKernel = cudaResources->grainBlurKernel.weights;
+                        run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
+                    }
+
+                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, wantGrainMicroBlur ? grainMicroBlurPx : 0.0f, _pCudaStream, opticsError)) {
+                        JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                    }
+                    if (wantGrainMicroBlur) {
+                        run.grainKernels.microKernel = cudaResources->grainMicroKernel.weights;
+                        run.grainKernels.microRadius = cudaResources->grainMicroKernel.radius;
+                    }
+
+                    if (wantGrainSublayers) {
+                        for (int layer = 0; layer < 3; ++layer) {
+                            for (int ch = 0; ch < 3; ++ch) {
+                                const float sigma = grainDyeSigmaPx[layer][ch];
+                                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainDyeKernel[layer][ch], sigma, _pCudaStream, opticsError)) {
+                                    JTRACE("CUDA", std::string("CUDA grain dye-cloud kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                                }
+                                if (sigma > 0.0f) {
+                                    run.grainKernels.dyeKernel[layer][ch] = cudaResources->grainDyeKernel[layer][ch].weights;
+                                    run.grainKernels.dyeRadius[layer][ch] = cudaResources->grainDyeKernel[layer][ch].radius;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 run.halation.active = wantHalation ? 1 : 0;
@@ -1444,6 +1687,7 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerScratch.rgbB,
                     cudaResources->scannerScratch.tmp,
                     cudaResources->scannerScratch.blurred,
+                    cudaResources->scannerScratch.aux,
                     cudaResources->scannerLensBlurKernel.weights,
                     cudaResources->scannerLensBlurKernel.radius,
                     cudaResources->scannerUnsharpKernel.weights,
@@ -1979,6 +2223,187 @@ void JuicerProcessor::processImagesCUDA() {
                  halationScatterStrengthBGR[0] > 0.0f || halationScatterStrengthBGR[1] > 0.0f || halationScatterStrengthBGR[2] > 0.0f) &&
                 (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
 
+            const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
+            auto nanmax_vector = [](const std::vector<float>& values, float& outMax) -> bool {
+                double m = -std::numeric_limits<double>::infinity();
+                bool found = false;
+                for (float v : values) {
+                    if (std::isfinite(v)) {
+                        m = std::max(m, static_cast<double>(v));
+                        found = true;
+                    }
+                }
+                if (!found || !std::isfinite(m)) {
+                    return false;
+                }
+                outMax = static_cast<float>(m);
+                return std::isfinite(outMax);
+            };
+            auto nanmax_curve = [&](const Spectral::Curve& curve, float& outMax) -> bool {
+                return nanmax_vector(curve.linear, outMax);
+            };
+
+            bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
+            bool wantGrainSublayers = false;
+            bool wantGrainBlur = false;
+            bool wantGrainMicro = false;
+            bool wantGrainMicroBlur = false;
+            float grainBlurSigmaPx = 0.0f;
+            float grainMicroBlurPx = 0.0f;
+            float grainMicroSigma = 0.0f;
+            float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+
+            run.grain = JuicerCuda::GrainPayload{};
+            run.grainKernels = JuicerCuda::GrainKernelPayload{};
+            run.grain.useFastStats = 1;
+            if (wantGrain) {
+                float densityMin[3] = {
+                    grainUi.densityMin[0],
+                    grainUi.densityMin[1],
+                    grainUi.densityMin[2]
+                };
+                float uniformity[3] = {
+                    grainUi.uniformity[0],
+                    grainUi.uniformity[1],
+                    grainUi.uniformity[2]
+                };
+                for (int i = 0; i < 3; ++i) {
+                    if (!std::isfinite(densityMin[i]) || densityMin[i] < 0.0f) {
+                        densityMin[i] = 0.0f;
+                    }
+                    if (!std::isfinite(uniformity[i])) {
+                        uniformity[i] = 0.0f;
+                    }
+                    uniformity[i] = std::clamp(uniformity[i], 0.0f, 1.0f);
+                }
+
+                float maxC = 0.0f;
+                float maxM = 0.0f;
+                float maxY = 0.0f;
+                const bool maxOk =
+                    nanmax_curve(_ws->densR, maxC) &&
+                    nanmax_curve(_ws->densG, maxM) &&
+                    nanmax_curve(_ws->densB, maxY);
+                if (!maxOk) {
+                    wantGrain = false;
+                }
+
+                const float pixelAreaUm2 = _pixelSizeUm * _pixelSizeUm;
+                if (!std::isfinite(pixelAreaUm2) || !(pixelAreaUm2 > 0.0f)) {
+                    wantGrain = false;
+                }
+
+                const int nSubLayers = (grainUi.nSubLayers > 0) ? grainUi.nSubLayers : 1;
+                run.grain.nSubLayers = nSubLayers;
+                run.grain.originX = win.x1;
+                run.grain.originY = win.y1;
+                run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
+                run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
+                run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
+                run.grain.microStructure[0] = grainUi.microStructure[0];
+                run.grain.microStructure[1] = grainUi.microStructure[1];
+                for (int i = 0; i < 3; ++i) {
+                    run.grain.densityMin[i] = densityMin[i];
+                    run.grain.uniformity[i] = uniformity[i];
+                }
+
+                bool paramsOk = wantGrain;
+                if (paramsOk) {
+                    const float densityMaxCurves[3] = { maxC, maxM, maxY };
+                    for (int i = 0; i < 3; ++i) {
+                        const float densityMax = densityMaxCurves[i] + densityMin[i];
+                        const float particleArea = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[i];
+                        if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
+                            paramsOk = false;
+                            break;
+                        }
+                        float nParticles = pixelAreaUm2 / particleArea;
+                        if (nSubLayers > 1) {
+                            nParticles /= static_cast<float>(nSubLayers);
+                        }
+                        if (!std::isfinite(nParticles) || !(nParticles > 0.0f)) {
+                            paramsOk = false;
+                            break;
+                        }
+                        const float odParticle = densityMax / nParticles;
+                        run.grain.densityMax[i] = densityMax;
+                        run.grain.nParticles[i] = nParticles;
+                        run.grain.odParticle[i] = std::isfinite(odParticle) ? odParticle : 0.0f;
+                    }
+                }
+                if (!paramsOk) {
+                    wantGrain = false;
+                }
+
+                if (wantGrain) {
+                    grainBlurSigmaPx = run.grain.blurSigmaPx;
+                    wantGrainBlur = false;
+
+                    if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
+                        grainMicroBlurPx = grainUi.microStructure[0] / static_cast<float>(_pixelSizeUm);
+                        grainMicroSigma = grainUi.microStructure[1] * 0.001f / static_cast<float>(_pixelSizeUm);
+                    }
+                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > 0.05f);
+                    wantGrainMicroBlur = wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > 0.4f);
+
+                    if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
+                        float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
+                                                         {0.0f, 0.0f, 0.0f},
+                                                         {0.0f, 0.0f, 0.0f} };
+                        bool layersOk = true;
+                        for (int layer = 0; layer < 3; ++layer) {
+                            for (int ch = 0; ch < 3; ++ch) {
+                                if (!nanmax_vector(_ws->densityCurvesLayers[layer][ch], densityMaxLayers[layer][ch])) {
+                                    layersOk = false;
+                                }
+                            }
+                        }
+
+                        if (layersOk) {
+                            for (int ch = 0; ch < 3; ++ch) {
+                                float total = 0.0f;
+                                for (int layer = 0; layer < 3; ++layer) {
+                                    total += densityMaxLayers[layer][ch];
+                                }
+                                if (!(std::isfinite(total) && total > 0.0f)) {
+                                    layersOk = false;
+                                    break;
+                                }
+
+                                for (int layer = 0; layer < 3; ++layer) {
+                                    const float fraction = densityMaxLayers[layer][ch] / total;
+                                    const float minLayer = fraction * densityMin[ch];
+                                    const float maxLayer = densityMaxLayers[layer][ch] + minLayer;
+                                    const float particleAreaLayer = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[ch] * grainUi.agxParticleScaleLayers[layer];
+                                    if (!std::isfinite(particleAreaLayer) || !(particleAreaLayer > 0.0f)) {
+                                        layersOk = false;
+                                        break;
+                                    }
+                                    const float nParticlesLayer = pixelAreaUm2 * fraction / particleAreaLayer;
+                                    const float odParticle = (nParticlesLayer > 0.0f) ? (maxLayer / nParticlesLayer) : 0.0f;
+                                    run.grain.densityMinLayers[layer][ch] = minLayer;
+                                    run.grain.densityMaxLayers[layer][ch] = maxLayer;
+                                    run.grain.nParticlesLayers[layer][ch] = std::isfinite(nParticlesLayer) ? nParticlesLayer : 0.0f;
+                                    run.grain.odParticleLayers[layer][ch] = std::isfinite(odParticle) ? odParticle : 0.0f;
+                                    run.grain.densityCurvesLayers[layer][ch] = cudaResources->densityCurvesLayers[layer][ch];
+                                    const float dyeSigma = run.grain.blurDyeCloudsUm * std::sqrt(std::max(0.0f, run.grain.odParticleLayers[layer][ch]));
+                                    grainDyeSigmaPx[layer][ch] = std::isfinite(dyeSigma) ? dyeSigma : 0.0f;
+                                }
+                                if (!layersOk) {
+                                    break;
+                                }
+                            }
+                        }
+                        wantGrainSublayers = layersOk;
+                    }
+                }
+                if (std::isfinite(grainBlurSigmaPx)) {
+                    wantGrainBlur = wantGrainSublayers ? (grainBlurSigmaPx > 0.0f) : (grainBlurSigmaPx > 0.4f);
+                }
+            }
+            run.grain.active = wantGrain ? 1 : 0;
+            run.grain.sublayersActive = wantGrainSublayers ? 1 : 0;
+
             const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
             const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
             const float unsharpAmount = _scannerOptions.unsharpAmount;
@@ -1987,7 +2412,7 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
             const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation;
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
@@ -1995,8 +2420,9 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, _pCudaStream, opticsError)) {
+                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainMicroBlur || wantGrainSublayers;
+                const bool needAuxScratch = wantGrainSublayers;
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2027,6 +2453,64 @@ void JuicerProcessor::processImagesCUDA() {
 #else
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+                }
+
+                run.grainKernels.blurKernel = nullptr;
+                run.grainKernels.blurRadius = 0;
+                run.grainKernels.microKernel = nullptr;
+                run.grainKernels.microRadius = 0;
+                for (int layer = 0; layer < 3; ++layer) {
+                    for (int ch = 0; ch < 3; ++ch) {
+                        run.grainKernels.dyeKernel[layer][ch] = nullptr;
+                        run.grainKernels.dyeRadius[layer][ch] = 0;
+                    }
+                }
+                if (wantGrain) {
+                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernel, wantGrainBlur ? grainBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                        JTRACE("CUDA", std::string("CUDA grain blur kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                    }
+                    if (wantGrainBlur) {
+                        run.grainKernels.blurKernel = cudaResources->grainBlurKernel.weights;
+                        run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
+                    }
+
+                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, wantGrainMicroBlur ? grainMicroBlurPx : 0.0f, _pCudaStream, opticsError)) {
+                        JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                    }
+                    if (wantGrainMicroBlur) {
+                        run.grainKernels.microKernel = cudaResources->grainMicroKernel.weights;
+                        run.grainKernels.microRadius = cudaResources->grainMicroKernel.radius;
+                    }
+
+                    if (wantGrainSublayers) {
+                        for (int layer = 0; layer < 3; ++layer) {
+                            for (int ch = 0; ch < 3; ++ch) {
+                                const float sigma = grainDyeSigmaPx[layer][ch];
+                                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainDyeKernel[layer][ch], sigma, _pCudaStream, opticsError)) {
+                                    JTRACE("CUDA", std::string("CUDA grain dye-cloud kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                                }
+                                if (sigma > 0.0f) {
+                                    run.grainKernels.dyeKernel[layer][ch] = cudaResources->grainDyeKernel[layer][ch].weights;
+                                    run.grainKernels.dyeRadius[layer][ch] = cudaResources->grainDyeKernel[layer][ch].radius;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 run.halation.active = wantHalation ? 1 : 0;
@@ -2074,6 +2558,7 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerScratch.rgbB,
                     cudaResources->scannerScratch.tmp,
                     cudaResources->scannerScratch.blurred,
+                    cudaResources->scannerScratch.aux,
                     cudaResources->scannerLensBlurKernel.weights,
                     cudaResources->scannerLensBlurKernel.radius,
                     cudaResources->scannerUnsharpKernel.weights,

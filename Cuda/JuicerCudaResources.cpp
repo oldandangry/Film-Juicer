@@ -155,6 +155,21 @@ namespace JuicerCuda {
         c.n = 0;
     }
 
+    static void free_density_layers(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                if (resources.densityCurvesLayers[layer][ch]) {
+                    cudaFree(resources.densityCurvesLayers[layer][ch]);
+                    resources.densityCurvesLayers[layer][ch] = nullptr;
+                }
+            }
+        }
+#endif
+        resources.densityCurvesLayersN = 0;
+        resources.hasDensityCurvesLayers = 0;
+    }
+
     static void free_hanatos(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.hanatosLut) {
@@ -264,6 +279,7 @@ namespace JuicerCuda {
         if (s.rgbB) { cudaFree(s.rgbB); s.rgbB = nullptr; }
         if (s.tmp) { cudaFree(s.tmp); s.tmp = nullptr; }
         if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
+        if (s.aux) { cudaFree(s.aux); s.aux = nullptr; }
 #endif
         s.width = 0;
         s.height = 0;
@@ -438,6 +454,7 @@ namespace JuicerCuda {
         free_curve(densB);
         free_curve(densG);
         free_curve(densR);
+        free_density_layers(*this);
         free_curve(dirDensB);
         free_curve(dirDensG);
         free_curve(dirDensR);
@@ -452,6 +469,13 @@ namespace JuicerCuda {
         free_gaussian_kernel(scannerLensBlurKernel);
         free_gaussian_kernel(scannerUnsharpKernel);
         free_gaussian_kernel(scannerGlareKernel);
+        free_gaussian_kernel(grainBlurKernel);
+        free_gaussian_kernel(grainMicroKernel);
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                free_gaussian_kernel(grainDyeKernel[layer][ch]);
+            }
+        }
         for (int i = 0; i < 3; ++i) {
             free_gaussian_kernel(halationKernel[i]);
             free_gaussian_kernel(halationScatterKernel[i]);
@@ -557,6 +581,7 @@ namespace JuicerCuda {
             free_curve(resources.densB);
             free_curve(resources.densG);
             free_curve(resources.densR);
+            free_density_layers(resources);
             free_curve(resources.dirDensB);
             free_curve(resources.dirDensG);
             free_curve(resources.dirDensR);
@@ -574,6 +599,50 @@ namespace JuicerCuda {
         if (!alloc_and_upload_curve(resources.densB, ws.densB, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.densG, ws.densG, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.densR, ws.densR, cudaStreamOpaque, outError)) return false;
+
+        {
+            const int nR = static_cast<int>(ws.densR.linear.size());
+            const int nG = static_cast<int>(ws.densG.linear.size());
+            const int nB = static_cast<int>(ws.densB.linear.size());
+            bool wantLayers = ws.hasDensityCurvesLayers;
+            bool sizesOk = wantLayers && (nR > 0 && nG > 0 && nB > 0);
+            if (sizesOk) {
+                for (int layer = 0; layer < 3; ++layer) {
+                    sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][0].size()) == nR);
+                    sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][1].size()) == nG);
+                    sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][2].size()) == nB);
+                }
+            }
+            const bool sameN = (nR == nG && nR == nB);
+
+            if (!sizesOk) {
+                free_density_layers(resources);
+            }
+            else if (!resources.hasDensityCurvesLayers ||
+                resources.densityCurvesLayersN != nR ||
+                !resources.densityCurvesLayers[0][0]) {
+                free_density_layers(resources);
+                std::string layersError;
+                for (int layer = 0; layer < 3; ++layer) {
+                    for (int ch = 0; ch < 3; ++ch) {
+                        const int n = (ch == 0) ? nR : (ch == 1 ? nG : nB);
+                        if (!alloc_and_upload_array(resources.densityCurvesLayers[layer][ch],
+                            ws.densityCurvesLayers[layer][ch].data(),
+                            n,
+                            cudaStreamOpaque,
+                            "grain density layer",
+                            layersError))
+                        {
+                            outError = std::string("upload grain density layers failed: ") + layersError;
+                            free_density_layers(resources);
+                            return false;
+                        }
+                    }
+                }
+                resources.densityCurvesLayersN = sameN ? nR : 0;
+                resources.hasDensityCurvesLayers = 1;
+            }
+        }
 
         if (!alloc_and_upload_curve(resources.dirDensB, ws.dirDensB, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.dirDensG, ws.dirDensG, cudaStreamOpaque, outError)) return false;
@@ -1065,12 +1134,13 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needUnsharpScratch, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)width;
         (void)height;
-        (void)needUnsharpScratch;
+        (void)needBlurredScratch;
+        (void)needAuxScratch;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
         return false;
@@ -1101,7 +1171,7 @@ namespace JuicerCuda {
         const bool haveBase = resources.scannerScratch.rgbR && resources.scannerScratch.rgbG && resources.scannerScratch.rgbB && resources.scannerScratch.tmp;
 
         if (!dimsMatch || !haveBase) {
-            if (resources.scannerScratch.rgbR || resources.scannerScratch.tmp || resources.scannerScratch.blurred) {
+            if (resources.scannerScratch.rgbR || resources.scannerScratch.tmp || resources.scannerScratch.blurred || resources.scannerScratch.aux) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -1139,7 +1209,7 @@ namespace JuicerCuda {
             resources.scannerScratch.height = height;
         }
 
-        if (needUnsharpScratch) {
+        if (needBlurredScratch) {
             if (!resources.scannerScratch.blurred) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "unsharp scratch", outError)) {
                     return false;
@@ -1160,6 +1230,30 @@ namespace JuicerCuda {
                 }
                 cudaFree(resources.scannerScratch.blurred);
                 resources.scannerScratch.blurred = nullptr;
+            }
+        }
+
+        if (needAuxScratch) {
+            if (!resources.scannerScratch.aux) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain scratch", outError)) {
+                    return false;
+                }
+                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
+                const size_t bytes = n * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.aux), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(scannerScratch.aux) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+            }
+        }
+        else {
+            if (resources.scannerScratch.aux) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain scratch free", outError)) {
+                    return false;
+                }
+                cudaFree(resources.scannerScratch.aux);
+                resources.scannerScratch.aux = nullptr;
             }
         }
 

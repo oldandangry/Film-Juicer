@@ -22,6 +22,8 @@ struct WorkingState {
     Spectral::Curve densB;
     Spectral::Curve densG;
     Spectral::Curve densR;
+    std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{}; // [layer][channel] values on density axis
+    bool hasDensityCurvesLayers = false;
     Profiles::GrainMetadata grain;
     Profiles::HalationMetadata halation;
     Profiles::ProfileGlare negativeGlare;
