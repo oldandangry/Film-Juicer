@@ -162,7 +162,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">$(CudaToolkitDir)include;$(ProjectDir);C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">C:\Dev\Juicer\third_party\openrand;$(CudaToolkitDir)include;$(ProjectDir);C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalIncludeDirectories Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">$(ProjectDir);C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
@@ -170,6 +170,7 @@
     </ClCompile>
     <CudaCompile Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">
       <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
+      <Include Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Dev\Juicer\third_party\openrand;%(Include)</Include>
     </CudaCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
