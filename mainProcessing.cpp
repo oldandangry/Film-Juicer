@@ -11,6 +11,8 @@
 #include <mutex>
 #include <limits>
 
+#include "GaussianSciPy.h"
+
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #endif
@@ -1536,8 +1538,13 @@ void JuicerProcessor::processImagesCUDA() {
                         grainMicroBlurPx = grainUi.microStructure[0] / static_cast<float>(_pixelSizeUm);
                         grainMicroSigma = grainUi.microStructure[1] * 0.001f / static_cast<float>(_pixelSizeUm);
                     }
-                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > 0.05f);
-                    wantGrainMicroBlur = wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > 0.4f);
+                    constexpr float kMicroEpsilon = 1e-4f;
+                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > kMicroEpsilon);
+                    int microBlurRadius = 0;
+                    if (wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > kMicroEpsilon)) {
+                        microBlurRadius = JuicerGaussian::scipy_gaussian_radius(grainMicroBlurPx, 4.0f);
+                    }
+                    wantGrainMicroBlur = wantGrainMicro && (microBlurRadius > 0);
 
                     if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
                         float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
@@ -2409,8 +2416,13 @@ void JuicerProcessor::processImagesCUDA() {
                         grainMicroBlurPx = grainUi.microStructure[0] / static_cast<float>(_pixelSizeUm);
                         grainMicroSigma = grainUi.microStructure[1] * 0.001f / static_cast<float>(_pixelSizeUm);
                     }
-                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > 0.05f);
-                    wantGrainMicroBlur = wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > 0.4f);
+                    constexpr float kMicroEpsilon = 1e-4f;
+                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > kMicroEpsilon);
+                    int microBlurRadius = 0;
+                    if (wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > kMicroEpsilon)) {
+                        microBlurRadius = JuicerGaussian::scipy_gaussian_radius(grainMicroBlurPx, 4.0f);
+                    }
+                    wantGrainMicroBlur = wantGrainMicro && (microBlurRadius > 0);
 
                     if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
                         float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},

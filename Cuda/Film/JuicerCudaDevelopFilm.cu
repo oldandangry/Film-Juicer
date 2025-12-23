@@ -23,17 +23,27 @@ namespace {
         return expf(mu + sigma * normalSample);
     }
 
+    __device__ __forceinline__ std::uint64_t splitmix64_device(std::uint64_t v) {
+        v += 0x9E3779B97F4A7C15ULL;
+        v = (v ^ (v >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        v = (v ^ (v >> 27)) * 0x94D049BB133111EBULL;
+        return v ^ (v >> 31);
+    }
+
     __device__ __forceinline__ float stbn_sample_device(
         const JuicerCuda::GrainPayload& grain,
         std::uint64_t absX,
-        std::uint64_t absY)
+        std::uint64_t absY,
+        int offsetX,
+        int offsetY,
+        int offsetT)
     {
         if (!grain.stbn || grain.stbnWidth <= 0 || grain.stbnHeight <= 0 || grain.stbnFrames <= 0) {
             return 0.0f;
         }
 
-        int x = static_cast<int>(absX);
-        int y = static_cast<int>(absY);
+        int x = static_cast<int>(absX) + offsetX;
+        int y = static_cast<int>(absY) + offsetY;
         if (grain.stbnWidth > 0) {
             x = (x + grain.stbnOffsetX) % grain.stbnWidth;
             if (x < 0) x += grain.stbnWidth;
@@ -43,7 +53,7 @@ namespace {
             if (y < 0) y += grain.stbnHeight;
         }
 
-        int t = grain.stbnFrame;
+        int t = grain.stbnFrame + offsetT;
         if (grain.stbnFrames > 0) {
             t = t % grain.stbnFrames;
             if (t < 0) t += grain.stbnFrames;
@@ -55,22 +65,48 @@ namespace {
         return (static_cast<float>(v) + 0.5f) * (1.0f / 256.0f);
     }
 
+    __device__ __forceinline__ float stbn_sample_device(
+        const JuicerCuda::GrainPayload& grain,
+        std::uint64_t absX,
+        std::uint64_t absY)
+    {
+        return stbn_sample_device(grain, absX, absY, 0, 0, 0);
+    }
+
     struct GrainRngDevice {
         openrand::Philox rng;
-        float stbn = 0.0f;
+        const JuicerCuda::GrainPayload* grain = nullptr;
+        std::uint64_t absX = 0;
+        std::uint64_t absY = 0;
+        std::uint64_t seed = 0;
+        std::uint32_t drawIndex = 0;
         int useStbn = 0;
 
-        __device__ GrainRngDevice(std::uint64_t seed, std::uint32_t ctr0, std::uint32_t ctr1, float stbnValue, int useStbn_)
-            : rng(seed, ctr0, openrand::DEFAULT_GLOBAL_SEED, ctr1), stbn(stbnValue), useStbn(useStbn_) {}
+        __device__ GrainRngDevice(
+            std::uint64_t seed_,
+            std::uint32_t ctr0,
+            std::uint32_t ctr1,
+            const JuicerCuda::GrainPayload* grain_,
+            std::uint64_t absX_,
+            std::uint64_t absY_,
+            int useStbn_)
+            : rng(seed_, ctr0, openrand::DEFAULT_GLOBAL_SEED, ctr1),
+              grain(grain_),
+              absX(absX_),
+              absY(absY_),
+              seed(seed_),
+              useStbn(useStbn_)
+        {}
 
         __device__ __forceinline__ float uniform() {
-            float u = rng.rand<float>();
-            if (useStbn) {
-                float r = u + stbn;
-                r = r - floorf(r);
-                return r;
+            if (useStbn && grain) {
+                const std::uint32_t draw = drawIndex++;
+                const std::uint64_t h = splitmix64_device(seed + static_cast<std::uint64_t>(draw) * 0x9E3779B97F4A7C15ULL);
+                const int offsetX = static_cast<int>(h & 0xFFFFu);
+                const int offsetY = static_cast<int>((h >> 16) & 0xFFFFu);
+                return stbn_sample_device(*grain, absX, absY, offsetX, offsetY, 0);
             }
-            return u;
+            return rng.rand<float>();
         }
 
         __device__ __forceinline__ float normal() {
@@ -205,8 +241,8 @@ namespace {
         std::uint64_t seed,
         std::uint64_t absX,
         std::uint64_t absY,
+        const JuicerCuda::GrainPayload& grain,
         bool useFastStats,
-        float stbn,
         int useStbn)
     {
         if (!device_isfinite(density) || density < 0.0f) {
@@ -231,15 +267,15 @@ namespace {
             saturation = 1e-6f;
         }
 
-        GrainRngDevice rng(seed, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), stbn, useStbn);
+        GrainRngDevice rng(seed, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn);
         const float lambda = nParticles / saturation;
         const int seeds = poisson_sample_device(lambda, rng, useFastStats);
         const int grainCount = binomial_sample_device(seeds, probability, rng, useFastStats);
-        float grain = static_cast<float>(grainCount) * odParticle * saturation;
-        if (!device_isfinite(grain)) {
-            grain = 0.0f;
+        float grainValue = static_cast<float>(grainCount) * odParticle * saturation;
+        if (!device_isfinite(grainValue)) {
+            grainValue = 0.0f;
         }
-        return grain;
+        return grainValue;
     }
 
     __device__ __forceinline__ float interp_density_layer_device(
@@ -507,15 +543,13 @@ __global__ void grain_apply_simple_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
-    const float stbn = useStbn ? stbn_sample_device(grain, absX, absY) : 0.0f;
 
     float acc = 0.0f;
     for (int sl = 0; sl < nSubLayers; ++sl) {
         const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
-        acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, false, stbn, useStbn);
+        acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, false, useStbn);
     }
     acc /= static_cast<float>(nSubLayers);
-    acc -= densityMin;
     inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
 }
 
@@ -570,10 +604,9 @@ __global__ void grain_layer_kernel(
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
     const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
-    const float stbn = useStbn ? stbn_sample_device(grain, absX, absY) : 0.0f;
 
     const bool useFastStats = (grain.useFastStats != 0);
-    float grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, useFastStats, stbn, useStbn);
+    float grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
     outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }
 
@@ -598,8 +631,7 @@ __global__ void grain_build_clumping_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
-    const float stbn = useStbn ? stbn_sample_device(grain, absX, absY) : 0.0f;
-    GrainRngDevice rng(seedBase, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), stbn, useStbn);
+    GrainRngDevice rng(seedBase, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn);
     const float n = rng.normal();
     float v = lognormal_from_mean_std_device(mean, stddev, n);
     if (!device_isfinite(v)) {

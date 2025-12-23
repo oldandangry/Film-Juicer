@@ -99,6 +99,8 @@ __global__ void halation_apply_kernel(
 
 namespace {
 
+    constexpr std::uint64_t kSeedPassClump = 3ULL;
+
     __global__ void pipeline_direct_kernel(JuicerCuda::PipelineRunParams params) {
         const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
         const JuicerCuda::PrintExposePayload& printExpose = params.printExpose;
@@ -533,8 +535,11 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             microBlurPx = grain.microStructure[0] / grain.pixelSizeUm;
             microSigma = grain.microStructure[1] * 0.001f / grain.pixelSizeUm;
         }
-        const bool doMicro = (std::isfinite(microSigma) && microSigma > 0.05f);
-        const bool doMicroBlur = doMicro && std::isfinite(microBlurPx) && (microBlurPx > 0.4f);
+        constexpr float kMicroEpsilon = 1e-4f;
+        const bool doMicro = (std::isfinite(microSigma) && microSigma > kMicroEpsilon);
+        const bool doMicroBlur = doMicro &&
+            std::isfinite(microBlurPx) && (microBlurPx > kMicroEpsilon) &&
+            (grainKernels.microKernel != nullptr) && (grainKernels.microRadius > 0);
         const bool needBlurScratch = doFinalBlur || doMicroBlur;
         if (needBlurScratch && !dScratchBlurred) {
             return cudaErrorInvalidValue;
@@ -545,12 +550,6 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
-            }
-            if (doFinalBlur) {
-                e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
-                if (e != cudaSuccess) {
-                    return e;
-                }
             }
             return cudaSuccess;
         };
@@ -595,50 +594,6 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                 }
             }
 
-            if (doMicro) {
-                const std::uint64_t seedBase = grain.seedBase ^ (static_cast<std::uint64_t>(channel) + 100ULL);
-                grain_build_clumping_kernel<<<blocks2D, threads2D, 0, stream>>>(
-                    dTmp,
-                    params.width,
-                    params.height,
-                    grain,
-                    seedBase,
-                    1.0f,
-                    microSigma);
-                e = cudaGetLastError();
-                if (e != cudaSuccess) {
-                    return e;
-                }
-                if (doMicroBlur) {
-                    if (!grainKernels.microKernel || grainKernels.microRadius <= 0) {
-                        return cudaErrorInvalidValue;
-                    }
-                    e = blur_plane_in_place(dTmp, dScratchBlurred, grainKernels.microKernel, grainKernels.microRadius);
-                    if (e != cudaSuccess) {
-                        return e;
-                    }
-                }
-                grain_multiply_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dTmp, total);
-                e = cudaGetLastError();
-                if (e != cudaSuccess) {
-                    return e;
-                }
-            }
-
-            const float bias = -grain.densityMin[channel];
-            if (std::isfinite(bias) && bias != 0.0f) {
-                grain_add_bias_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total, bias);
-                e = cudaGetLastError();
-                if (e != cudaSuccess) {
-                    return e;
-                }
-            }
-            if (doFinalBlur) {
-                e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
-                if (e != cudaSuccess) {
-                    return e;
-                }
-            }
             return cudaSuccess;
         };
 
@@ -656,6 +611,68 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             err = process_channel_simple(dRgbG, 1);
             if (err != cudaSuccess) return err;
             err = process_channel_simple(dRgbB, 2);
+            if (err != cudaSuccess) return err;
+        }
+
+        if (doMicro) {
+            const std::uint64_t seedBaseClump = grain.seedBase ^ kSeedPassClump;
+            grain_build_clumping_kernel<<<blocks2D, threads2D, 0, stream>>>(
+                dTmp,
+                params.width,
+                params.height,
+                grain,
+                seedBaseClump,
+                1.0f,
+                microSigma);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                return err;
+            }
+            if (doMicroBlur) {
+                err = blur_plane_in_place(dTmp, dScratchBlurred, grainKernels.microKernel, grainKernels.microRadius);
+                if (err != cudaSuccess) {
+                    return err;
+                }
+            }
+            grain_multiply_kernel<<<blocks1D, threads1D, 0, stream>>>(dRgbR, dTmp, total);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                return err;
+            }
+            grain_multiply_kernel<<<blocks1D, threads1D, 0, stream>>>(dRgbG, dTmp, total);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                return err;
+            }
+            grain_multiply_kernel<<<blocks1D, threads1D, 0, stream>>>(dRgbB, dTmp, total);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                return err;
+            }
+        }
+
+        auto apply_bias = [&](float* plane, int channel) -> cudaError_t {
+            const float bias = -grain.densityMin[channel];
+            if (std::isfinite(bias) && bias != 0.0f) {
+                grain_add_bias_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total, bias);
+                return cudaGetLastError();
+            }
+            return cudaSuccess;
+        };
+
+        err = apply_bias(dRgbR, 0);
+        if (err != cudaSuccess) return err;
+        err = apply_bias(dRgbG, 1);
+        if (err != cudaSuccess) return err;
+        err = apply_bias(dRgbB, 2);
+        if (err != cudaSuccess) return err;
+
+        if (doFinalBlur) {
+            err = blur_plane_in_place(dRgbR, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
+            if (err != cudaSuccess) return err;
+            err = blur_plane_in_place(dRgbG, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
+            if (err != cudaSuccess) return err;
+            err = blur_plane_in_place(dRgbB, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
             if (err != cudaSuccess) return err;
         }
     }
