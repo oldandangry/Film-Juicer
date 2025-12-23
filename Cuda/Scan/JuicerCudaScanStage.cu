@@ -82,8 +82,7 @@ __global__ void grain_build_clumping_kernel(
     float* out,
     int width,
     int height,
-    int originX,
-    int originY,
+    JuicerCuda::GrainPayload grain,
     std::uint64_t seedBase,
     float mean,
     float stddev);
@@ -597,13 +596,12 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             }
 
             if (doMicro) {
-                const std::uint64_t seedBase = static_cast<std::uint64_t>(channel) + 100ULL;
+                const std::uint64_t seedBase = grain.seedBase ^ (static_cast<std::uint64_t>(channel) + 100ULL);
                 grain_build_clumping_kernel<<<blocks2D, threads2D, 0, stream>>>(
                     dTmp,
                     params.width,
                     params.height,
-                    grain.originX,
-                    grain.originY,
+                    grain,
                     seedBase,
                     1.0f,
                     microSigma);

@@ -133,6 +133,11 @@ namespace JuicerCuda {
         DeviceGaussianKernel spatialDirKernel;
         DeviceSpatialDirScratch spatialDirScratch;
 
+        std::uint8_t* stbnData = nullptr;
+        int stbnWidth = 0;
+        int stbnHeight = 0;
+        int stbnFrames = 0;
+
         // Print pipeline (PrintBypass=false) payloads.
         DeviceCurve printDcC;
         DeviceCurve printDcM;

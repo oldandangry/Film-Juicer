@@ -20,13 +20,18 @@
 #include "Hash.h"
 #include "SpectralContext.h"
 
+extern const std::string gDataDir;
+
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #endif
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <atomic>
 #include <sstream>
 #include <vector>
 
@@ -189,6 +194,81 @@ namespace JuicerCuda {
 #endif
         resources.hanatosNIntegrated = 0;
         resources.hanatosIntegratedBuildCounter = 0;
+    }
+
+    struct StbnCpuCache {
+        std::vector<std::uint8_t> data;
+        int width = 128;
+        int height = 128;
+        int frames = 256;
+        bool loaded = false;
+        bool valid = false;
+    };
+
+    static StbnCpuCache& stbn_cache() {
+        static StbnCpuCache cache;
+        return cache;
+    }
+
+    static std::atomic<bool> gStbnWarned{ false };
+
+    static bool load_stbn_cpu(StbnCpuCache& cache, std::string& outError) {
+        if (cache.loaded) {
+            return cache.valid;
+        }
+        cache.loaded = true;
+        cache.valid = false;
+
+        if (gDataDir.empty()) {
+            outError = "STBN load failed: data directory missing";
+            return false;
+        }
+
+        std::filesystem::path path = std::filesystem::path(gDataDir) / "Noise" / "stbn_scalar_128x128x256_u8.bin";
+        path.make_preferred();
+
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) {
+            outError = std::string("STBN load failed: cannot open ") + path.string();
+            return false;
+        }
+
+        const std::streamsize size = file.tellg();
+        if (size <= 0) {
+            outError = std::string("STBN load failed: empty file ") + path.string();
+            return false;
+        }
+
+        const std::size_t expected = static_cast<std::size_t>(cache.width) *
+            static_cast<std::size_t>(cache.height) *
+            static_cast<std::size_t>(cache.frames);
+        if (static_cast<std::size_t>(size) != expected) {
+            outError = std::string("STBN load failed: unexpected size for ") + path.string();
+            return false;
+        }
+
+        cache.data.resize(expected);
+        file.seekg(0, std::ios::beg);
+        if (!file.read(reinterpret_cast<char*>(cache.data.data()), size)) {
+            outError = std::string("STBN load failed: read error for ") + path.string();
+            cache.data.clear();
+            return false;
+        }
+
+        cache.valid = true;
+        return true;
+    }
+
+    static void free_stbn(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.stbnData) {
+            cudaFree(resources.stbnData);
+            resources.stbnData = nullptr;
+        }
+#endif
+        resources.stbnWidth = 0;
+        resources.stbnHeight = 0;
+        resources.stbnFrames = 0;
     }
 
     static void free_scan_error_flag(Resources& resources) noexcept {
@@ -483,6 +563,7 @@ namespace JuicerCuda {
         free_optics_scratch(scannerScratch);
         free_gaussian_kernel(spatialDirKernel);
         free_spatial_dir_scratch(spatialDirScratch);
+        free_stbn(*this);
         free_print_payloads(*this);
         free_hanatos(*this);
         free_hanatos_integrated(*this);
@@ -541,6 +622,35 @@ namespace JuicerCuda {
             if (resources.deviceId != cur) {
                 outError = "CUDA device mismatch for cached resources";
                 return false;
+            }
+        }
+
+        if (!resources.stbnData) {
+            std::string stbnError;
+            StbnCpuCache& cache = stbn_cache();
+            if (load_stbn_cpu(cache, stbnError)) {
+                const std::size_t bytes = cache.data.size();
+                if (bytes > 0) {
+                    const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&resources.stbnData), bytes);
+                    if (allocErr == cudaSuccess) {
+                        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+                        const cudaError_t copyErr = cudaMemcpyAsync(resources.stbnData, cache.data.data(), bytes, cudaMemcpyHostToDevice, stream);
+                        if (copyErr != cudaSuccess) {
+                            stbnError = std::string("cudaMemcpyAsync(STBN) failed: ") + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
+                            free_stbn(resources);
+                        } else {
+                            resources.stbnWidth = cache.width;
+                            resources.stbnHeight = cache.height;
+                            resources.stbnFrames = cache.frames;
+                        }
+                    } else {
+                        stbnError = std::string("cudaMalloc(STBN) failed: ") + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+                        free_stbn(resources);
+                    }
+                }
+            }
+            if (!stbnError.empty() && !gStbnWarned.exchange(true)) {
+                JTRACE("CUDA", stbnError);
             }
         }
 

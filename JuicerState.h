@@ -170,6 +170,7 @@ struct InstanceState {
 
     std::string dataDir;
     bool baseLoaded = false;
+    std::uint64_t sessionSeed = 0;
 
     CouplerDirtyFlags couplerDirty;
     IlluminantOverrideFlags illuminantOverride;
@@ -193,6 +194,7 @@ struct InstanceState {
     bool autoExposureCacheIsCudaRender = false;
     double autoExposureCacheTime = std::numeric_limits<double>::quiet_NaN();
     bool autoExposureCacheAutoEnabled = false; // Tracks camera auto-exposure toggle state
+    int autoExposureCacheMeteringMethod = 0;
     uint64_t autoExposureCacheBuildCounter = 0;
     OfxRectI autoExposureCacheBounds{ 0, 0, 0, 0 };
     double autoExposureCacheEV = 0.0;

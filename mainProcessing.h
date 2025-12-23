@@ -112,6 +112,7 @@ private:
     OutputEncoding::Params _outputEncoding;
     std::uintptr_t _clipToken = 0;
     std::uint64_t _frameTimeHash = 0;
+    std::int64_t _frameIndex = 0;
 
     JuicerProc::StageScratch _scratch;
     JuicerProc::DensityBuffer _density;

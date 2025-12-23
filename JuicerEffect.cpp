@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <memory>
@@ -29,6 +30,7 @@
 #include "SpectralData.h"
 #include "FilmProcessing.h"
 #include "Logging.h"
+#include "Hash.h"
 #include "mainProcessing.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -37,6 +39,11 @@
 
 namespace {
     static std::once_flag gSpectralGlobalsOnce;
+
+    enum class MeteringMethod : int {
+        CenterWeighted = 0,
+        Median = 1
+    };
 
     const char* dichroic_dir_name_for_choice(int choice) {
         switch (choice) {
@@ -179,6 +186,67 @@ namespace {
         return measuredY;
     }
 
+    static double measure_median_Y_DWG(
+        OFX::Image* img,
+        const OfxRectI& bounds,
+        Spectral::InputColorSpace inputColorSpace,
+        const Spectral::Mat3& rgbToXYZ,
+        bool applyCctfDecoding) {
+
+        if (!img) {
+            return 0.0;
+        }
+
+        const int width = bounds.x2 - bounds.x1;
+        const int height = bounds.y2 - bounds.y1;
+        if (width <= 0 || height <= 0) {
+            return 0.0;
+        }
+
+        const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
+        std::vector<float> values;
+        values.reserve(total);
+
+        for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
+            for (int xx = bounds.x1; xx < bounds.x2; ++xx) {
+                const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
+                if (!pix) {
+                    continue;
+                }
+                float linear[3];
+                Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+                float XYZ[3];
+                rgbToXYZ.mul(linear, XYZ);
+                float Y = XYZ[1];
+                if (!std::isfinite(Y)) {
+                    continue;
+                }
+                if (Y < 0.0f) {
+                    Y = 0.0f;
+                }
+                values.push_back(Y);
+            }
+        }
+
+        if (values.empty()) {
+            return 0.0;
+        }
+
+        const size_t n = values.size();
+        const size_t mid = n / 2;
+        auto midIt = values.begin() + static_cast<std::ptrdiff_t>(mid);
+        std::nth_element(values.begin(), midIt, values.end());
+        const float high = *midIt;
+        if ((n & 1U) != 0U) {
+            return static_cast<double>(high);
+        }
+
+        auto lowIt = values.begin() + static_cast<std::ptrdiff_t>(mid - 1);
+        std::nth_element(values.begin(), lowIt, values.end());
+        const float low = *lowIt;
+        return static_cast<double>((low + high) * 0.5f);
+    }
+
     void init_spectral_globals_once() {
         try {
             Spectral::lock_shape_to_reference_axis();
@@ -270,6 +338,11 @@ JuicerEffect::ExposureParams JuicerEffect::gatherExposureParams() const {
         _pCameraAutoExposure->getValue(cameraAuto);
     }
     params.cameraAutoEnabled = cameraAuto;
+    int meteringMethod = 0;
+    if (_pCameraMeteringMethod) {
+        _pCameraMeteringMethod->getValue(meteringMethod);
+    }
+    params.meteringMethod = meteringMethod;
     return params;
 }
 
@@ -712,11 +785,13 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     double autoEV = 0.0;
     bool haveCachedAutoEV = false;
     const bool cameraAutoEnabled = exposureParams.cameraAutoEnabled;
+    const int meteringMethod = exposureParams.meteringMethod;
     if (_state) {
         std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
         if (_state->autoExposureCacheValid &&
             _state->autoExposureCacheIsCudaRender == args.isEnabledCudaRender &&
             _state->autoExposureCacheAutoEnabled == cameraAutoEnabled &&
+            _state->autoExposureCacheMeteringMethod == meteringMethod &&
             nearly_equal_double(_state->autoExposureCacheTime, args.time) &&
             _state->autoExposureCacheBuildCounter == wsBuildCounter &&
             rect_equal(_state->autoExposureCacheBounds, meterBounds) &&
@@ -757,24 +832,43 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
                 }
 
                 const char* errMsg = nullptr;
-                const int rc = juicer_cuda_measure_center_weighted_Y(
-                    srcDevice,
-                    static_cast<std::size_t>(rowBytes),
-                    imgBounds.x1,
-                    imgBounds.y1,
-                    imgBounds.x2,
-                    imgBounds.y2,
-                    meterBounds.x1,
-                    meterBounds.y1,
-                    meterBounds.x2,
-                    meterBounds.y2,
-                    nComponents,
-                    inputColorSpaceIndex,
-                    applyInputCctfDecoding ? 1 : 0,
-                    inputRgbToXYZ.m,
-                    &Yexp,
-                    args.pCudaStream,
-                    &errMsg);
+                const int rc = (meteringMethod == static_cast<int>(MeteringMethod::Median))
+                    ? juicer_cuda_measure_median_Y(
+                        srcDevice,
+                        static_cast<std::size_t>(rowBytes),
+                        imgBounds.x1,
+                        imgBounds.y1,
+                        imgBounds.x2,
+                        imgBounds.y2,
+                        meterBounds.x1,
+                        meterBounds.y1,
+                        meterBounds.x2,
+                        meterBounds.y2,
+                        nComponents,
+                        inputColorSpaceIndex,
+                        applyInputCctfDecoding ? 1 : 0,
+                        inputRgbToXYZ.m,
+                        &Yexp,
+                        args.pCudaStream,
+                        &errMsg)
+                    : juicer_cuda_measure_center_weighted_Y(
+                        srcDevice,
+                        static_cast<std::size_t>(rowBytes),
+                        imgBounds.x1,
+                        imgBounds.y1,
+                        imgBounds.x2,
+                        imgBounds.y2,
+                        meterBounds.x1,
+                        meterBounds.y1,
+                        meterBounds.x2,
+                        meterBounds.y2,
+                        nComponents,
+                        inputColorSpaceIndex,
+                        applyInputCctfDecoding ? 1 : 0,
+                        inputRgbToXYZ.m,
+                        &Yexp,
+                        args.pCudaStream,
+                        &errMsg);
                 if (rc == 0) {
                     haveY = true;
                 } else {
@@ -789,17 +883,26 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             } else {
-                Yexp = measure_center_weighted_Y_DWG_cached(
-                    srcImg,
-                    meterBounds,
-                    sigma,
-                    _state.get(),
-                    renderScaleX,
-                    renderScaleY,
-                    clipToken,
-                    inputColorSpace,
-                    inputRgbToXYZ,
-                    applyInputCctfDecoding);
+                if (meteringMethod == static_cast<int>(MeteringMethod::Median)) {
+                    Yexp = measure_median_Y_DWG(
+                        srcImg,
+                        meterBounds,
+                        inputColorSpace,
+                        inputRgbToXYZ,
+                        applyInputCctfDecoding);
+                } else {
+                    Yexp = measure_center_weighted_Y_DWG_cached(
+                        srcImg,
+                        meterBounds,
+                        sigma,
+                        _state.get(),
+                        renderScaleX,
+                        renderScaleY,
+                        clipToken,
+                        inputColorSpace,
+                        inputRgbToXYZ,
+                        applyInputCctfDecoding);
+                }
                 haveY = true;
             }
 
@@ -823,6 +926,7 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
             _state->autoExposureCacheIsCudaRender = args.isEnabledCudaRender;
             _state->autoExposureCacheTime = args.time;
             _state->autoExposureCacheAutoEnabled = cameraAutoEnabled;
+            _state->autoExposureCacheMeteringMethod = meteringMethod;
             _state->autoExposureCacheBuildCounter = wsBuildCounter;
             _state->autoExposureCacheBounds = meterBounds;
             _state->autoExposureCacheEV = autoEV;
@@ -1010,6 +1114,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pExposure = fetchDoubleParam(kParamExposure);
         _pCameraAutoExposure = fetchBooleanParam(kParamCameraAutoExposure);
         _pCameraFilmFormat = fetchDoubleParam(JuicerParams::kCameraFilmFormatMm);
+        _pCameraMeteringMethod = fetchChoiceParam(JuicerParams::kCameraMeteringMethod);
         _pFilmStock = fetchChoiceParam(kParamFilmStock);
         _pSpectralMode = fetchChoiceParam(kParamSpectralMode);
         _pPrintPaper = fetchChoiceParam(kParamPrintPaper);
@@ -1107,6 +1212,18 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     _state->dataDir = ensure_trailing_separator(data_dir_string());
     _state->activeWS.store(&_state->workA, std::memory_order_release);
     _state->activeBuildCounter = 0;
+    {
+        const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        const std::uint64_t seedFields[2] = {
+            static_cast<std::uint64_t>(now),
+            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(this))
+        };
+        std::uint64_t seed = Hash::hash_bytes(seedFields, sizeof(seedFields));
+        if (seed == 0) {
+            seed = 1;
+        }
+        _state->sessionSeed = seed;
+    }
 
     // Optional compatibility registry
     JuicerRegistry::set(handle, _state.get());
@@ -1371,7 +1488,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs&, const std::stri
         JTRACE("BUILD", std::string("changedParam ignored during bootstrap for '") + paramName + "'");
         return;
     }
-    if (_state && paramName == kParamCameraAutoExposure) {
+    if (_state && (paramName == kParamCameraAutoExposure || paramName == JuicerParams::kCameraMeteringMethod)) {
         std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
         _state->autoExposureCacheValid = false;
     }

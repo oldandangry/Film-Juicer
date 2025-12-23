@@ -167,6 +167,14 @@ namespace JuicerCuda {
         int nSubLayers = 1;
         int originX = 0;
         int originY = 0;
+        std::uint64_t seedBase = 0;
+        const std::uint8_t* JUICER_RESTRICT stbn = nullptr;
+        int stbnWidth = 0;
+        int stbnHeight = 0;
+        int stbnFrames = 0;
+        int stbnOffsetX = 0;
+        int stbnOffsetY = 0;
+        int stbnFrame = 0;
         float pixelSizeUm = 0.0f;
         float blurSigmaPx = 0.0f;
         float blurDyeCloudsUm = 0.0f;

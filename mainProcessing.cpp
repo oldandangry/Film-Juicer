@@ -111,6 +111,64 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 #include "mainProcessing.h"
 #include "PipelineRunner.h"
 
+namespace {
+    constexpr std::uint64_t kSeedPassGrain = 1;
+    constexpr std::uint64_t kSeedPassGlare = 2;
+
+    std::int64_t frame_index_from_time(double time) {
+        if (!std::isfinite(time)) {
+            return 0;
+        }
+        return static_cast<std::int64_t>(std::llround(time));
+    }
+
+    std::uint64_t safe_session_seed(const InstanceState* state) {
+        if (state && state->sessionSeed != 0) {
+            return state->sessionSeed;
+        }
+        return 1;
+    }
+
+    std::uint64_t make_seed_base(std::uintptr_t clipToken,
+                                 std::int64_t frameIndex,
+                                 std::uint64_t sessionSeed,
+                                 std::uint64_t passId) {
+        const std::uint64_t fields[4] = {
+            static_cast<std::uint64_t>(clipToken),
+            static_cast<std::uint64_t>(frameIndex),
+            sessionSeed,
+            passId
+        };
+        std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
+        if (h == 0) {
+            h = 1;
+        }
+        return h;
+    }
+
+    int stbn_frame_index(std::int64_t frameIndex, int frames, std::uint64_t sessionSeed) {
+        if (frames <= 0) {
+            return 0;
+        }
+        const std::int64_t phase = static_cast<std::int64_t>(sessionSeed % static_cast<std::uint64_t>(frames));
+        std::int64_t t = frameIndex + phase;
+        int f = static_cast<int>(t % frames);
+        if (f < 0) {
+            f += frames;
+        }
+        return f;
+    }
+
+    int stbn_offset(std::uint64_t sessionSeed, int dim, std::uint64_t salt) {
+        if (dim <= 0) {
+            return 0;
+        }
+        const std::uint64_t fields[2] = { sessionSeed, salt };
+        const std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
+        return static_cast<int>(h % static_cast<std::uint64_t>(dim));
+    }
+}
+
 namespace JuicerProc {
 
     // Copied from main.cpp helper, unchanged behavior.
@@ -279,7 +337,11 @@ void JuicerProcessor::setClipToken(std::uintptr_t token) {
 }
 
 void JuicerProcessor::setFrameTime(double time) {
-    _frameTimeHash = Hash::hash_bytes(&time, sizeof(time));
+    _frameIndex = frame_index_from_time(time);
+    _frameTimeHash = Hash::hash_bytes(&_frameIndex, sizeof(_frameIndex));
+    if (_frameTimeHash == 0) {
+        _frameTimeHash = 1;
+    }
 }
 
 void JuicerProcessor::setFrameBoundsVersion(std::uint32_t v) {
@@ -675,16 +737,8 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         opticsRuntime = &fallbackRuntime;
     }
 
-    const std::uint64_t buildCounter = _ws ? _ws->buildCounter : 0;
-    const std::uint64_t seedFields[3] = {
-        static_cast<std::uint64_t>(_clipToken),
-        _frameTimeHash,
-        buildCounter
-    };
-    std::uint64_t seedBase = Hash::hash_bytes(seedFields, sizeof(seedFields));
-    if (seedBase == 0) {
-        seedBase = 1;
-    }
+    const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+    const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
 
     ScannerOptics::RenderContext optCtx{};
     optCtx.medium = mediumRuntime;
@@ -1288,16 +1342,8 @@ void JuicerProcessor::processImagesCUDA() {
                 glareRoughness = _ws->negativeMediumRuntime.glare.roughness;
                 glareBlurSigmaPx = _ws->negativeMediumRuntime.glare.blur;
 
-                const std::uint64_t buildCounter = _ws->buildCounter;
-                const std::uint64_t seedBaseFields[3] = {
-                    static_cast<std::uint64_t>(_clipToken),
-                    _frameTimeHash,
-                    buildCounter
-                };
-                std::uint64_t seedBase = Hash::hash_bytes(seedBaseFields, sizeof(seedBaseFields));
-                if (seedBase == 0) {
-                    seedBase = 1;
-                }
+                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+                const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
 
                 const std::uint64_t glareFields[4] = {
                     seedBase,
@@ -1389,6 +1435,20 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain = JuicerCuda::GrainPayload{};
             run.grainKernels = JuicerCuda::GrainKernelPayload{};
             run.grain.useFastStats = 1;
+            {
+                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+                run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
+                if (cudaResources && cudaResources->stbnData &&
+                    cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
+                    run.grain.stbn = cudaResources->stbnData;
+                    run.grain.stbnWidth = cudaResources->stbnWidth;
+                    run.grain.stbnHeight = cudaResources->stbnHeight;
+                    run.grain.stbnFrames = cudaResources->stbnFrames;
+                    run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
+                    run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
+                    run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
+                }
+            }
             if (wantGrain) {
                 float densityMin[3] = {
                     grainUi.densityMin[0],
@@ -2155,16 +2215,8 @@ void JuicerProcessor::processImagesCUDA() {
                 glareRoughness = printMedium.glare.roughness;
                 glareBlurSigmaPx = printMedium.glare.blur;
 
-                const std::uint64_t buildCounter = _ws->buildCounter;
-                const std::uint64_t seedBaseFields[3] = {
-                    static_cast<std::uint64_t>(_clipToken),
-                    _frameTimeHash,
-                    buildCounter
-                };
-                std::uint64_t seedBase = Hash::hash_bytes(seedBaseFields, sizeof(seedBaseFields));
-                if (seedBase == 0) {
-                    seedBase = 1;
-                }
+                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+                const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
 
                 const std::uint64_t glareFields[4] = {
                     seedBase,
@@ -2256,6 +2308,20 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain = JuicerCuda::GrainPayload{};
             run.grainKernels = JuicerCuda::GrainKernelPayload{};
             run.grain.useFastStats = 1;
+            {
+                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+                run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
+                if (cudaResources && cudaResources->stbnData &&
+                    cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
+                    run.grain.stbn = cudaResources->stbnData;
+                    run.grain.stbnWidth = cudaResources->stbnWidth;
+                    run.grain.stbnHeight = cudaResources->stbnHeight;
+                    run.grain.stbnFrames = cudaResources->stbnFrames;
+                    run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
+                    run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
+                    run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
+                }
+            }
             if (wantGrain) {
                 float densityMin[3] = {
                     grainUi.densityMin[0],

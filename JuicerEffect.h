@@ -74,6 +74,7 @@ private:
         double sliderEV = 0.0;
         float sliderScale = 1.0f;
         bool cameraAutoEnabled = true;
+        int meteringMethod = 0;
     };
 
     struct AutoExposureResult {
@@ -128,6 +129,7 @@ private:
     OFX::DoubleParam* _pExposure = nullptr;
     OFX::BooleanParam* _pCameraAutoExposure = nullptr;
     OFX::DoubleParam* _pCameraFilmFormat = nullptr;
+    OFX::ChoiceParam* _pCameraMeteringMethod = nullptr;
     OFX::ChoiceParam* _pFilmStock = nullptr;
     OFX::ChoiceParam* _pSpectralMode = nullptr;
     OFX::ChoiceParam* _pPrintPaper = nullptr;

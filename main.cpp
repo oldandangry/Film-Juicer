@@ -227,6 +227,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDisplayRange(-4.0, 4.0);
     }
     {
+        OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kCameraMeteringMethod);
+        p->setLabel("Camera metering");
+        p->appendOption("Center-weighted");
+        p->appendOption("Median");
+        p->setDefault(0);
+        p->setEvaluateOnChange(true);
+    }
+    {
         OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamCameraAutoExposure);
         p->setLabel("Camera auto exposure");
         p->setHint("Enable the camera auto meter (agx-emulsion camera.auto_exposure). Scanner auto exposure remains independent.");
