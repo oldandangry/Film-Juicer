@@ -1440,6 +1440,13 @@ void JuicerProcessor::processImagesCUDA() {
             {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
                 run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
+                run.grain.frameIndex = _frameIndex;
+                run.grain.stbnSessionSeed = sessionSeed;
+                run.grain.macroTileSize = 128;
+                run.grain.clumpMacroTileSize = 256;
+                run.grain.weavePeriodFrames = 180;
+                run.grain.weaveAmplitudePx = 0.5f;
+                run.grain.clumpWeaveAmplitudePx = 0.25f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
                     run.grain.stbn = cudaResources->stbnData;
@@ -2318,6 +2325,13 @@ void JuicerProcessor::processImagesCUDA() {
             {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
                 run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
+                run.grain.frameIndex = _frameIndex;
+                run.grain.stbnSessionSeed = sessionSeed;
+                run.grain.macroTileSize = 128;
+                run.grain.clumpMacroTileSize = 256;
+                run.grain.weavePeriodFrames = 180;
+                run.grain.weaveAmplitudePx = 0.5f;
+                run.grain.clumpWeaveAmplitudePx = 0.25f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
                     run.grain.stbn = cudaResources->stbnData;

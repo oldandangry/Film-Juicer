@@ -30,20 +30,16 @@ namespace {
         return v ^ (v >> 31);
     }
 
-    __device__ __forceinline__ float stbn_sample_device(
+    __device__ __forceinline__ float stbn_lookup_device(
         const JuicerCuda::GrainPayload& grain,
-        std::uint64_t absX,
-        std::uint64_t absY,
-        int offsetX,
-        int offsetY,
-        int offsetT)
+        int x,
+        int y,
+        int t)
     {
         if (!grain.stbn || grain.stbnWidth <= 0 || grain.stbnHeight <= 0 || grain.stbnFrames <= 0) {
             return 0.0f;
         }
 
-        int x = static_cast<int>(absX) + offsetX;
-        int y = static_cast<int>(absY) + offsetY;
         if (grain.stbnWidth > 0) {
             x = (x + grain.stbnOffsetX) % grain.stbnWidth;
             if (x < 0) x += grain.stbnWidth;
@@ -53,7 +49,6 @@ namespace {
             if (y < 0) y += grain.stbnHeight;
         }
 
-        int t = grain.stbnFrame + offsetT;
         if (grain.stbnFrames > 0) {
             t = t % grain.stbnFrames;
             if (t < 0) t += grain.stbnFrames;
@@ -65,12 +60,98 @@ namespace {
         return (static_cast<float>(v) + 0.5f) * (1.0f / 256.0f);
     }
 
+    __device__ __forceinline__ void stbn_macro_offset_device(
+        const JuicerCuda::GrainPayload& grain,
+        int tileX,
+        int tileY,
+        int& outX,
+        int& outY)
+    {
+        if (grain.stbnWidth <= 0 || grain.stbnHeight <= 0) {
+            outX = 0;
+            outY = 0;
+            return;
+        }
+        const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t h = splitmix64_device(seed ^ (static_cast<std::uint64_t>(tileX) * 0x9E3779B97F4A7C15ULL) ^
+            (static_cast<std::uint64_t>(tileY) * 0xBF58476D1CE4E5B9ULL));
+        outX = static_cast<int>(h % static_cast<std::uint64_t>(grain.stbnWidth));
+        outY = static_cast<int>((h >> 32) % static_cast<std::uint64_t>(grain.stbnHeight));
+    }
+
+    __device__ __forceinline__ float stbn_sample_device(
+        const JuicerCuda::GrainPayload& grain,
+        std::uint64_t absX,
+        std::uint64_t absY,
+        int offsetX,
+        int offsetY,
+        int offsetT,
+        int useClumpParams)
+    {
+        if (!grain.stbn || grain.stbnWidth <= 0 || grain.stbnHeight <= 0 || grain.stbnFrames <= 0) {
+            return 0.0f;
+        }
+
+        const int macroTileSize = (useClumpParams != 0) ? grain.clumpMacroTileSize : grain.macroTileSize;
+        const float weaveAmplitude = (useClumpParams != 0) ? grain.clumpWeaveAmplitudePx : grain.weaveAmplitudePx;
+        const int weavePeriod = grain.weavePeriodFrames;
+
+        float weaveX = 0.0f;
+        float weaveY = 0.0f;
+        if (weaveAmplitude > 0.0f && weavePeriod > 0) {
+            const float t = static_cast<float>(grain.frameIndex);
+            constexpr float kTwoPi = 6.28318530717958647692f;
+            const float phase = kTwoPi * (t / static_cast<float>(weavePeriod));
+            weaveX = weaveAmplitude * sinf(phase);
+            weaveY = weaveAmplitude * cosf(phase);
+        }
+
+        const float baseX = static_cast<float>(absX) + weaveX;
+        const float baseY = static_cast<float>(absY) + weaveY;
+        const int t = grain.stbnFrame + offsetT;
+
+        if (macroTileSize > 0) {
+            const float tileSize = static_cast<float>(macroTileSize);
+            const float invTile = 1.0f / tileSize;
+            const int tileX = static_cast<int>(floorf(baseX * invTile));
+            const int tileY = static_cast<int>(floorf(baseY * invTile));
+
+            int offX0 = 0, offY0 = 0;
+            int offX1 = 0, offY1 = 0;
+            int offX2 = 0, offY2 = 0;
+            int offX3 = 0, offY3 = 0;
+            stbn_macro_offset_device(grain, tileX, tileY, offX0, offY0);
+            stbn_macro_offset_device(grain, tileX + 1, tileY, offX1, offY1);
+            stbn_macro_offset_device(grain, tileX, tileY + 1, offX2, offY2);
+            stbn_macro_offset_device(grain, tileX + 1, tileY + 1, offX3, offY3);
+
+            const int baseXi = static_cast<int>(floorf(baseX)) + offsetX;
+            const int baseYi = static_cast<int>(floorf(baseY)) + offsetY;
+
+            const float u0 = stbn_lookup_device(grain, baseXi + offX0, baseYi + offY0, t);
+            const float u1 = stbn_lookup_device(grain, baseXi + offX1, baseYi + offY1, t);
+            const float u2 = stbn_lookup_device(grain, baseXi + offX2, baseYi + offY2, t);
+            const float u3 = stbn_lookup_device(grain, baseXi + offX3, baseYi + offY3, t);
+
+            const int selX = baseXi + 157;
+            const int selY = baseYi + 263;
+            const int selT = t + 17;
+            const float selector = stbn_lookup_device(grain, selX, selY, selT);
+            const int pick = (selector >= 0.75f) ? 3 : (selector >= 0.5f) ? 2 : (selector >= 0.25f) ? 1 : 0;
+            return (pick == 0) ? u0 : (pick == 1) ? u1 : (pick == 2) ? u2 : u3;
+        }
+
+        const int x = static_cast<int>(absX) + offsetX;
+        const int y = static_cast<int>(absY) + offsetY;
+        return stbn_lookup_device(grain, x, y, t);
+    }
+
     __device__ __forceinline__ float stbn_sample_device(
         const JuicerCuda::GrainPayload& grain,
         std::uint64_t absX,
         std::uint64_t absY)
     {
-        return stbn_sample_device(grain, absX, absY, 0, 0, 0);
+        return stbn_sample_device(grain, absX, absY, 0, 0, 0, 0);
     }
 
     struct GrainRngDevice {
@@ -81,6 +162,7 @@ namespace {
         std::uint64_t seed = 0;
         std::uint32_t drawIndex = 0;
         int useStbn = 0;
+        int useClumpParams = 0;
 
         __device__ GrainRngDevice(
             std::uint64_t seed_,
@@ -89,13 +171,15 @@ namespace {
             const JuicerCuda::GrainPayload* grain_,
             std::uint64_t absX_,
             std::uint64_t absY_,
-            int useStbn_)
+            int useStbn_,
+            int useClumpParams_)
             : rng(seed_, ctr0, openrand::DEFAULT_GLOBAL_SEED, ctr1),
               grain(grain_),
               absX(absX_),
               absY(absY_),
               seed(seed_),
-              useStbn(useStbn_)
+              useStbn(useStbn_),
+              useClumpParams(useClumpParams_)
         {}
 
         __device__ __forceinline__ float uniform() {
@@ -104,7 +188,7 @@ namespace {
                 const std::uint64_t h = splitmix64_device(seed + static_cast<std::uint64_t>(draw) * 0x9E3779B97F4A7C15ULL);
                 const int offsetX = static_cast<int>(h & 0xFFFFu);
                 const int offsetY = static_cast<int>((h >> 16) & 0xFFFFu);
-                return stbn_sample_device(*grain, absX, absY, offsetX, offsetY, 0);
+                return stbn_sample_device(*grain, absX, absY, offsetX, offsetY, 0, useClumpParams);
             }
             return rng.rand<float>();
         }
@@ -267,7 +351,7 @@ namespace {
             saturation = 1e-6f;
         }
 
-        GrainRngDevice rng(seed, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn);
+        GrainRngDevice rng(seed, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn, 0);
         const float lambda = nParticles / saturation;
         const int seeds = poisson_sample_device(lambda, rng, useFastStats);
         const int grainCount = binomial_sample_device(seeds, probability, rng, useFastStats);
@@ -631,7 +715,7 @@ __global__ void grain_build_clumping_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
-    GrainRngDevice rng(seedBase, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn);
+    GrainRngDevice rng(seedBase, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn, 1);
     const float n = rng.normal();
     float v = lognormal_from_mean_std_device(mean, stddev, n);
     if (!device_isfinite(v)) {

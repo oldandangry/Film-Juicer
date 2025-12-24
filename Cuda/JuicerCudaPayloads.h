@@ -175,6 +175,13 @@ namespace JuicerCuda {
         int stbnOffsetX = 0;
         int stbnOffsetY = 0;
         int stbnFrame = 0;
+        std::int64_t frameIndex = 0;
+        std::uint64_t stbnSessionSeed = 0;
+        int macroTileSize = 0;
+        int clumpMacroTileSize = 0;
+        int weavePeriodFrames = 0;
+        float weaveAmplitudePx = 0.0f;
+        float clumpWeaveAmplitudePx = 0.0f;
         float pixelSizeUm = 0.0f;
         float blurSigmaPx = 0.0f;
         float blurDyeCloudsUm = 0.0f;

@@ -198,8 +198,8 @@ namespace JuicerCuda {
 
     struct StbnCpuCache {
         std::vector<std::uint8_t> data;
-        int width = 128;
-        int height = 128;
+        int width = 512;
+        int height = 512;
         int frames = 256;
         bool loaded = false;
         bool valid = false;
@@ -224,7 +224,7 @@ namespace JuicerCuda {
             return false;
         }
 
-        std::filesystem::path path = std::filesystem::path(gDataDir) / "Noise" / "stbn_scalar_128x128x256_u8.bin";
+        std::filesystem::path path = std::filesystem::path(gDataDir) / "Noise" / "stbn_scalar_512x512x256_u8.bin";
         path.make_preferred();
 
         std::ifstream file(path, std::ios::binary | std::ios::ate);
