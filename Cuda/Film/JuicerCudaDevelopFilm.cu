@@ -101,6 +101,47 @@ namespace {
         outY = static_cast<float>(h1) * kInvU32 - 0.5f;
     }
 
+    __device__ __forceinline__ float grain_breathing_factor_device(
+        const JuicerCuda::GrainPayload& grain,
+        std::uint64_t absX,
+        std::uint64_t absY)
+    {
+        const float amp = grain.breathingAmplitude;
+        const int period = grain.breathingPeriodFrames;
+        if (!(amp > 0.0f) || period <= 0) {
+            return 1.0f;
+        }
+
+        int macroSize = grain.macroTileSize;
+        if (macroSize <= 0) {
+            macroSize = 128;
+        }
+
+        const int tileX = static_cast<int>(absX / static_cast<std::uint64_t>(macroSize));
+        const int tileY = static_cast<int>(absY / static_cast<std::uint64_t>(macroSize));
+        const std::int64_t frame = grain.frameIndex;
+        const std::int64_t step = frame / static_cast<std::int64_t>(period);
+        const float frac = static_cast<float>(frame - step * static_cast<std::int64_t>(period)) / static_cast<float>(period);
+
+        const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t h0 = splitmix64_device(seed ^
+            (static_cast<std::uint64_t>(tileX) * 0xA0761D6478BD642FULL) ^
+            (static_cast<std::uint64_t>(tileY) * 0xE7037ED1A0B428DBULL) ^
+            (static_cast<std::uint64_t>(step) * 0x8EBC6AF09C88C6E3ULL));
+        const std::uint64_t h1 = splitmix64_device(seed ^
+            (static_cast<std::uint64_t>(tileX) * 0xC0B3C9B1A1E38B93ULL) ^
+            (static_cast<std::uint64_t>(tileY) * 0x1D8E4E27C47D124FULL) ^
+            (static_cast<std::uint64_t>(step + 1) * 0x8EBC6AF09C88C6E3ULL));
+        constexpr float kInvU32 = 1.0f / 4294967296.0f;
+        const float v0 = static_cast<float>(static_cast<std::uint32_t>(h0 & 0xFFFFFFFFu)) * kInvU32;
+        const float v1 = static_cast<float>(static_cast<std::uint32_t>(h1 & 0xFFFFFFFFu)) * kInvU32;
+        const float f = frac * frac * (3.0f - 2.0f * frac);
+        const float v = v0 + (v1 - v0) * f;
+        const float n = v * 2.0f - 1.0f;
+        const float factor = 1.0f + amp * n;
+        return (factor > 0.0f) ? factor : 0.0f;
+    }
+
     __device__ __forceinline__ float stbn_sample_device(
         const JuicerCuda::GrainPayload& grain,
         std::uint64_t absX,
@@ -697,6 +738,7 @@ __global__ void grain_apply_simple_kernel(
         acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, false, useStbn);
     }
     acc /= static_cast<float>(nSubLayers);
+    acc *= grain_breathing_factor_device(grain, absX, absY);
     inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
 }
 
@@ -754,6 +796,7 @@ __global__ void grain_layer_kernel(
 
     const bool useFastStats = (grain.useFastStats != 0);
     float grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+    grainSample *= grain_breathing_factor_device(grain, absX, absY);
     outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }
 

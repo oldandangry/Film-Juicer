@@ -182,6 +182,8 @@ namespace JuicerCuda {
         int weavePeriodFrames = 0;
         float weaveAmplitudePx = 0.0f;
         float clumpWeaveAmplitudePx = 0.0f;
+        int breathingPeriodFrames = 0;
+        float breathingAmplitude = 0.0f;
         float pixelSizeUm = 0.0f;
         float blurSigmaPx = 0.0f;
         float blurDyeCloudsUm = 0.0f;
