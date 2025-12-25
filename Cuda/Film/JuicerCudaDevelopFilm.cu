@@ -718,6 +718,11 @@ __global__ void grain_apply_simple_kernel(
     const float odParticle = grain.odParticle[channelIndex];
     const float uniformity = grain.uniformity[channelIndex];
     const int nSubLayers = (grain.nSubLayers > 0) ? grain.nSubLayers : 1;
+    const float mixWeight = grain.sizeMixWeight;
+    const float mixScale = grain.sizeMixScale;
+    const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
+    const float wFine = 1.0f - wCoarse;
+    const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -735,7 +740,18 @@ __global__ void grain_apply_simple_kernel(
     float acc = 0.0f;
     for (int sl = 0; sl < nSubLayers; ++sl) {
         const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
-        acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, false, useStbn);
+        if (!useMix) {
+            acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, false, useStbn);
+        }
+        else {
+            if (wFine > 0.0f) {
+                acc += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, false, useStbn);
+            }
+            const float nParticlesCoarse = nParticles / mixScale;
+            if (nParticlesCoarse > 0.0f) {
+                acc += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, false, useStbn);
+            }
+        }
     }
     acc /= static_cast<float>(nSubLayers);
     acc *= grain_breathing_factor_device(grain, absX, absY);
@@ -775,6 +791,11 @@ __global__ void grain_layer_kernel(
     const float nParticles = grain.nParticlesLayers[sublayerIndex][channelIndex];
     const float odParticle = grain.odParticleLayers[sublayerIndex][channelIndex];
     const float uniformity = grain.uniformity[channelIndex];
+    const float mixWeight = grain.sizeMixWeight;
+    const float mixScale = grain.sizeMixScale;
+    const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
+    const float wFine = 1.0f - wCoarse;
+    const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -795,7 +816,19 @@ __global__ void grain_layer_kernel(
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
 
     const bool useFastStats = (grain.useFastStats != 0);
-    float grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+    float grainSample = 0.0f;
+    if (!useMix) {
+        grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+    }
+    else {
+        if (wFine > 0.0f) {
+            grainSample += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+        }
+        const float nParticlesCoarse = nParticles / mixScale;
+        if (nParticlesCoarse > 0.0f) {
+            grainSample += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+        }
+    }
     grainSample *= grain_breathing_factor_device(grain, absX, absY);
     outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }

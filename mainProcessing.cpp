@@ -1447,6 +1447,14 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.weavePeriodFrames = 180;
                 run.grain.weaveAmplitudePx = 0.5f;
                 run.grain.clumpWeaveAmplitudePx = 0.25f;
+                run.grain.breathingPeriodFrames = 240;
+                run.grain.breathingAmplitude = 0.03f;
+                run.grain.sizeMixWeight = 0.30f;
+                run.grain.sizeMixScale = 3.0f;
+                run.grain.sizeMixWeight = 0.30f;
+                run.grain.sizeMixScale = 3.0f;
+                run.grain.breathingPeriodFrames = 240;
+                run.grain.breathingAmplitude = 0.03f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
                     run.grain.stbn = cudaResources->stbnData;
