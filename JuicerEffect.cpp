@@ -620,6 +620,26 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     blurDyeClouds = sanitize(blurDyeClouds, 1.0, 0.0, 10.0);
     grain.blurDyeCloudsUm = static_cast<float>(blurDyeClouds);
 
+    double sizeMixWeight = 0.30;
+    if (_pGrainSizeMixWeight) {
+        _pGrainSizeMixWeight->getValue(sizeMixWeight);
+    }
+    sizeMixWeight = sanitize(sizeMixWeight, 0.30, 0.0, 1.0);
+    grain.sizeMixWeight = static_cast<float>(sizeMixWeight);
+
+    double sizeMixScale = 3.0;
+    if (_pGrainSizeMixScale) {
+        _pGrainSizeMixScale->getValue(sizeMixScale);
+    }
+    sizeMixScale = sanitize(sizeMixScale, 3.0, 1.0, 10.0);
+    grain.sizeMixScale = static_cast<float>(sizeMixScale);
+
+    bool breathingDebug = false;
+    if (_pGrainBreathingDebug) {
+        _pGrainBreathingDebug->getValue(breathingDebug);
+    }
+    grain.breathingDebug = breathingDebug;
+
     const std::array<double, 2> microStructure = read2(_pGrainMicroStructure, { {0.1, 30.0} }, 0.0, 1000.0);
     grain.microStructure[0] = static_cast<float>(microStructure[0]);
     grain.microStructure[1] = static_cast<float>(microStructure[1]);
@@ -1175,6 +1195,9 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainUniformity = fetchDouble3DParam(JuicerParams::kGrainUniformity);
         _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
         _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
+        _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
+        _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
+        _pGrainBreathingDebug = fetchBooleanParam(JuicerParams::kGrainBreathingDebug);
         _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
 
         _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
@@ -1448,6 +1471,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setOutputEncoding(outputEncodingParams);
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
     proc.setClipToken(renderClipToken);
+    proc.setFrameRate(getFrameRate());
     proc.setFrameTime(args.time);
     proc.setRenderWindowRect(roi);
     proc.setGPURenderArgs(args);

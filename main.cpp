@@ -696,11 +696,39 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixWeight);
+            p->setLabel("Size mix weight");
+            p->setHint("Weight of the coarse grain population in the size mixture.");
+            p->setDefault(0.30);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 1.0);
+            if (grpGrain) p->setParent(*grpGrain);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixScale);
+            p->setLabel("Size mix scale");
+            p->setHint("Relative particle size scale for the coarse grain population.");
+            p->setDefault(3.0);
+            p->setRange(1.0, 10.0);
+            p->setDisplayRange(1.0, 10.0);
+            if (grpGrain) p->setParent(*grpGrain);
+            p->setEvaluateOnChange(true);
+        }
         OFX::GroupParamDescriptor* grpGrainAdvanced = desc.defineGroupParam("GrainAdvancedGroup");
         if (grpGrainAdvanced) {
             grpGrainAdvanced->setLabel("Advanced");
             grpGrainAdvanced->setOpen(false);
             if (grpGrain) grpGrainAdvanced->setParent(*grpGrain);
+        }
+        {
+            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kGrainBreathingDebug);
+            p->setLabel("Breathing debug");
+            p->setHint("Debug view for the breathing field.");
+            p->setDefault(false);
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
         }
         {
             OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScale);

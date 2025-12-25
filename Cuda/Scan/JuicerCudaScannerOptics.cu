@@ -18,10 +18,6 @@ namespace {
         __device__ GlareRngDevice(std::uint64_t seed, std::uint32_t ctr0, std::uint32_t ctr1, std::uint32_t globalSeed)
             : rng(seed, ctr0, globalSeed, ctr1) {}
 
-        __device__ __forceinline__ float uniform() {
-            return rng.rand<float>();
-        }
-
         __device__ __forceinline__ float normal() {
             float u1 = rng.rand<float>();
             u1 = fminf(fmaxf(u1, 1e-7f), 1.0f);

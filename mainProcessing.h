@@ -62,6 +62,7 @@ public:
     void setInstanceState(InstanceState* s);
     void setClipToken(std::uintptr_t token);
     void setFrameTime(double time);
+    void setFrameRate(double frameRate);
     void setFrameBoundsVersion(std::uint32_t v);
     void setPixelSizeUm(float pixelSizeUm);
 
@@ -113,6 +114,7 @@ private:
     std::uintptr_t _clipToken = 0;
     std::uint64_t _frameTimeHash = 0;
     std::int64_t _frameIndex = 0;
+    double _frameRate = 0.0;
 
     JuicerProc::StageScratch _scratch;
     JuicerProc::DensityBuffer _density;

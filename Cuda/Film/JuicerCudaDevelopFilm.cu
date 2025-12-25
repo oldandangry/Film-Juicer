@@ -101,6 +101,36 @@ namespace {
         outY = static_cast<float>(h1) * kInvU32 - 0.5f;
     }
 
+    __device__ __forceinline__ float smoothstep_device(float t) {
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    __device__ __forceinline__ float hash01_device(int x, int y, std::uint64_t seed) {
+        const std::uint64_t h = splitmix64_device(seed ^
+            (static_cast<std::uint64_t>(x) * 0x9E3779B97F4A7C15ULL) ^
+            (static_cast<std::uint64_t>(y) * 0xBF58476D1CE4E5B9ULL));
+        constexpr float kInvU32 = 1.0f / 4294967296.0f;
+        return static_cast<float>(static_cast<std::uint32_t>(h & 0xFFFFFFFFu)) * kInvU32;
+    }
+
+    __device__ __forceinline__ float value_noise_device(float x, float y, std::uint64_t seed) {
+        const int ix = static_cast<int>(floorf(x));
+        const int iy = static_cast<int>(floorf(y));
+        const float fx = x - static_cast<float>(ix);
+        const float fy = y - static_cast<float>(iy);
+        const float sx = smoothstep_device(fx);
+        const float sy = smoothstep_device(fy);
+
+        const float v00 = hash01_device(ix, iy, seed);
+        const float v10 = hash01_device(ix + 1, iy, seed);
+        const float v01 = hash01_device(ix, iy + 1, seed);
+        const float v11 = hash01_device(ix + 1, iy + 1, seed);
+
+        const float v0 = v00 + (v10 - v00) * sx;
+        const float v1 = v01 + (v11 - v01) * sx;
+        return v0 + (v1 - v0) * sy;
+    }
+
     __device__ __forceinline__ float grain_breathing_factor_device(
         const JuicerCuda::GrainPayload& grain,
         std::uint64_t absX,
@@ -108,38 +138,143 @@ namespace {
     {
         const float amp = grain.breathingAmplitude;
         const int period = grain.breathingPeriodFrames;
-        if (!(amp > 0.0f) || period <= 0) {
+        if (!(amp > 0.0f) || period <= 0 || !(grain.pixelSizeUm > 0.0f)) {
             return 1.0f;
         }
 
-        int macroSize = grain.macroTileSize;
-        if (macroSize <= 0) {
-            macroSize = 128;
+        const float cellSmallUm = grain.breathingCellUmSmall;
+        const float cellLargeUm = grain.breathingCellUmLarge;
+        if (!(cellSmallUm > 0.0f) || !(cellLargeUm > 0.0f)) {
+            return 1.0f;
         }
 
-        const int tileX = static_cast<int>(absX / static_cast<std::uint64_t>(macroSize));
-        const int tileY = static_cast<int>(absY / static_cast<std::uint64_t>(macroSize));
         const std::int64_t frame = grain.frameIndex;
         const std::int64_t step = frame / static_cast<std::int64_t>(period);
         const float frac = static_cast<float>(frame - step * static_cast<std::int64_t>(period)) / static_cast<float>(period);
+        const float t = smoothstep_device(fminf(fmaxf(frac, 0.0f), 1.0f));
 
         const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t h0 = splitmix64_device(seed ^
-            (static_cast<std::uint64_t>(tileX) * 0xA0761D6478BD642FULL) ^
-            (static_cast<std::uint64_t>(tileY) * 0xE7037ED1A0B428DBULL) ^
-            (static_cast<std::uint64_t>(step) * 0x8EBC6AF09C88C6E3ULL));
-        const std::uint64_t h1 = splitmix64_device(seed ^
-            (static_cast<std::uint64_t>(tileX) * 0xC0B3C9B1A1E38B93ULL) ^
-            (static_cast<std::uint64_t>(tileY) * 0x1D8E4E27C47D124FULL) ^
-            (static_cast<std::uint64_t>(step + 1) * 0x8EBC6AF09C88C6E3ULL));
-        constexpr float kInvU32 = 1.0f / 4294967296.0f;
-        const float v0 = static_cast<float>(static_cast<std::uint32_t>(h0 & 0xFFFFFFFFu)) * kInvU32;
-        const float v1 = static_cast<float>(static_cast<std::uint32_t>(h1 & 0xFFFFFFFFu)) * kInvU32;
-        const float f = frac * frac * (3.0f - 2.0f * frac);
-        const float v = v0 + (v1 - v0) * f;
-        const float n = v * 2.0f - 1.0f;
+        const std::uint64_t seedA = splitmix64_device(seed ^ (static_cast<std::uint64_t>(step) * 0x8EBC6AF09C88C6E3ULL));
+        const std::uint64_t seedB = splitmix64_device(seed ^ (static_cast<std::uint64_t>(step + 1) * 0x8EBC6AF09C88C6E3ULL));
+
+        const float invPixel = 1.0f / grain.pixelSizeUm;
+        const float cellSmallPx = fmaxf(4.0f, cellSmallUm * invPixel);
+        const float cellLargePx = fmaxf(4.0f, cellLargeUm * invPixel);
+
+        float driftPx = 0.0f;
+        if (grain.breathingDriftUmPerFrame > 0.0f) {
+            driftPx = grain.breathingDriftUmPerFrame * invPixel;
+        }
+        float driftX = 0.0f;
+        float driftY = 0.0f;
+        if (driftPx > 0.0f) {
+            const std::uint64_t h = splitmix64_device(seed ^ 0x6A09E667F3BCC909ULL);
+            constexpr float kTwoPi = 6.28318530717958647692f;
+            constexpr float kInvU32 = 1.0f / 4294967296.0f;
+            const float angle = static_cast<float>(static_cast<std::uint32_t>(h & 0xFFFFFFFFu)) * kInvU32 * kTwoPi;
+            driftX = cosf(angle) * driftPx;
+            driftY = sinf(angle) * driftPx;
+        }
+
+        const float baseX = static_cast<float>(absX) + driftX * static_cast<float>(frame);
+        const float baseY = static_cast<float>(absY) + driftY * static_cast<float>(frame);
+
+        const float xSmall = baseX / cellSmallPx;
+        const float ySmall = baseY / cellSmallPx;
+        const float xLarge = baseX / cellLargePx;
+        const float yLarge = baseY / cellLargePx;
+
+        const float noiseSmallA = value_noise_device(xSmall, ySmall, seedA ^ 0x9E3779B97F4A7C15ULL);
+        const float noiseSmallB = value_noise_device(xSmall, ySmall, seedB ^ 0x9E3779B97F4A7C15ULL);
+        const float noiseLargeA = value_noise_device(xLarge, yLarge, seedA ^ 0xBF58476D1CE4E5B9ULL);
+        const float noiseLargeB = value_noise_device(xLarge, yLarge, seedB ^ 0xBF58476D1CE4E5B9ULL);
+
+        const float noiseSmall = noiseSmallA + (noiseSmallB - noiseSmallA) * t;
+        const float noiseLarge = noiseLargeA + (noiseLargeB - noiseLargeA) * t;
+        const float mix = fminf(fmaxf(grain.breathingMix, 0.0f), 1.0f);
+        const float noise = mix * noiseSmall + (1.0f - mix) * noiseLarge;
+
+        const float n = noise * 2.0f - 1.0f;
         const float factor = 1.0f + amp * n;
         return (factor > 0.0f) ? factor : 0.0f;
+    }
+
+    __device__ __forceinline__ float grain_clump_factor_device(
+        const JuicerCuda::GrainPayload& grain,
+        std::uint64_t absX,
+        std::uint64_t absY)
+    {
+        const float stddev = grain.microStructure[1] * 0.001f;
+        if (!(stddev > 0.0f) || !(grain.pixelSizeUm > 0.0f)) {
+            return 1.0f;
+        }
+
+        float cellUm = grain.microStructure[0];
+        if (!(cellUm > 0.0f)) {
+            cellUm = 0.0f;
+        }
+        const float invPixel = 1.0f / grain.pixelSizeUm;
+        float cellPx = cellUm * invPixel;
+        const float minCellPx = 4.0f;
+        if (!(cellPx > minCellPx)) {
+            cellPx = minCellPx;
+        }
+
+        int period = grain.breathingPeriodFrames;
+        if (period > 0) {
+            period *= 2;
+        }
+        if (period <= 0) {
+            period = 1;
+        }
+
+        const std::int64_t frame = grain.frameIndex;
+        const std::int64_t step = frame / static_cast<std::int64_t>(period);
+        const float frac = static_cast<float>(frame - step * static_cast<std::int64_t>(period)) / static_cast<float>(period);
+        const float t = smoothstep_device(fminf(fmaxf(frac, 0.0f), 1.0f));
+
+        const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t seedA = splitmix64_device(seed ^ (static_cast<std::uint64_t>(step) * 0xD2B74407B1CE6E93ULL));
+        const std::uint64_t seedB = splitmix64_device(seed ^ (static_cast<std::uint64_t>(step + 1) * 0xD2B74407B1CE6E93ULL));
+
+        float driftPx = 0.0f;
+        if (grain.breathingDriftUmPerFrame > 0.0f) {
+            driftPx = grain.breathingDriftUmPerFrame * invPixel * 0.5f;
+        }
+        float driftX = 0.0f;
+        float driftY = 0.0f;
+        if (driftPx > 0.0f) {
+            const std::uint64_t h = splitmix64_device(seed ^ 0xC6A4A7935BD1E995ULL);
+            constexpr float kTwoPi = 6.28318530717958647692f;
+            constexpr float kInvU32 = 1.0f / 4294967296.0f;
+            const float angle = static_cast<float>(static_cast<std::uint32_t>(h & 0xFFFFFFFFu)) * kInvU32 * kTwoPi;
+            driftX = cosf(angle) * driftPx;
+            driftY = sinf(angle) * driftPx;
+        }
+
+        const float baseX = static_cast<float>(absX) + driftX * static_cast<float>(frame);
+        const float baseY = static_cast<float>(absY) + driftY * static_cast<float>(frame);
+        const float x = baseX / cellPx;
+        const float y = baseY / cellPx;
+
+        const float u1A = value_noise_device(x, y, seedA ^ 0x9E3779B97F4A7C15ULL);
+        const float u2A = value_noise_device(x + 19.19f, y + 7.23f, seedA ^ 0xBF58476D1CE4E5B9ULL);
+        const float u1B = value_noise_device(x, y, seedB ^ 0x9E3779B97F4A7C15ULL);
+        const float u2B = value_noise_device(x + 19.19f, y + 7.23f, seedB ^ 0xBF58476D1CE4E5B9ULL);
+
+        float u1 = u1A + (u1B - u1A) * t;
+        float u2 = u2A + (u2B - u2A) * t;
+        u1 = fminf(fmaxf(u1, 1e-6f), 1.0f - 1e-6f);
+        u2 = fminf(fmaxf(u2, 0.0f), 1.0f);
+
+        const float r = sqrtf(-2.0f * logf(u1));
+        constexpr float kTwoPi = 6.28318530717958647692f;
+        const float n = r * cosf(kTwoPi * u2);
+        float v = lognormal_from_mean_std_device(1.0f, stddev, n);
+        if (!device_isfinite(v)) {
+            v = 1.0f;
+        }
+        return v;
     }
 
     __device__ __forceinline__ float stbn_sample_device(
@@ -248,14 +383,6 @@ namespace {
         const int x = static_cast<int>(absX) + offsetX;
         const int y = static_cast<int>(absY) + offsetY;
         return stbn_lookup_device(grain, x, y, t);
-    }
-
-    __device__ __forceinline__ float stbn_sample_device(
-        const JuicerCuda::GrainPayload& grain,
-        std::uint64_t absX,
-        std::uint64_t absY)
-    {
-        return stbn_sample_device(grain, absX, absY, 0, 0, 0, 0);
     }
 
     struct GrainRngDevice {
@@ -718,11 +845,8 @@ __global__ void grain_apply_simple_kernel(
     const float odParticle = grain.odParticle[channelIndex];
     const float uniformity = grain.uniformity[channelIndex];
     const int nSubLayers = (grain.nSubLayers > 0) ? grain.nSubLayers : 1;
-    const float mixWeight = grain.sizeMixWeight;
-    const float mixScale = grain.sizeMixScale;
-    const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
-    const float wFine = 1.0f - wCoarse;
-    const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
+    float mixWeight = grain.sizeMixWeight;
+    float mixScale = grain.sizeMixScale;
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -731,11 +855,33 @@ __global__ void grain_apply_simple_kernel(
         return;
     }
 
-    density += densityMin;
-
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
+
+    if (grain.breathingDebug != 0) {
+        const float amp = (grain.breathingAmplitude > 0.0f) ? grain.breathingAmplitude : 1.0f;
+        const float factor = grain_breathing_factor_device(grain, absX, absY);
+        float visual = 0.5f + 0.5f * ((factor - 1.0f) / amp);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        inOut[idx] = visual;
+        return;
+    }
+
+    density += densityMin;
+
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
+
+    const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
+    if (clumpFactor != 1.0f) {
+        const float clumpBias = clumpFactor - 1.0f;
+        constexpr float kMixWeightBias = 0.35f;
+        constexpr float kMixScaleBias = 0.5f;
+        mixWeight = fminf(fmaxf(mixWeight + clumpBias * kMixWeightBias, 0.0f), 1.0f);
+        mixScale = fmaxf(1.0f, mixScale * (1.0f + clumpBias * kMixScaleBias));
+    }
+    const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
+    const float wFine = 1.0f - wCoarse;
+    const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
 
     float acc = 0.0f;
     for (int sl = 0; sl < nSubLayers; ++sl) {
@@ -754,7 +900,8 @@ __global__ void grain_apply_simple_kernel(
         }
     }
     acc /= static_cast<float>(nSubLayers);
-    acc *= grain_breathing_factor_device(grain, absX, absY);
+    const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
+    acc = density + (acc - density) * breathingFactor * clumpFactor;
     inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
 }
 
@@ -791,11 +938,8 @@ __global__ void grain_layer_kernel(
     const float nParticles = grain.nParticlesLayers[sublayerIndex][channelIndex];
     const float odParticle = grain.odParticleLayers[sublayerIndex][channelIndex];
     const float uniformity = grain.uniformity[channelIndex];
-    const float mixWeight = grain.sizeMixWeight;
-    const float mixScale = grain.sizeMixScale;
-    const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
-    const float wFine = 1.0f - wCoarse;
-    const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
+    float mixWeight = grain.sizeMixWeight;
+    float mixScale = grain.sizeMixScale;
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -805,15 +949,37 @@ __global__ void grain_layer_kernel(
         return;
     }
 
+    const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
+    const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
+
+    if (grain.breathingDebug != 0) {
+        const float amp = (grain.breathingAmplitude > 0.0f) ? grain.breathingAmplitude : 1.0f;
+        const float factor = grain_breathing_factor_device(grain, absX, absY);
+        float visual = 0.5f + 0.5f * ((factor - 1.0f) / amp);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        outGrain[idx] = visual;
+        return;
+    }
+
     const JuicerCuda::DeviceCurveView curve = curve_for_channel_device(dev, channelIndex);
     const float* layerCurve = grain.densityCurvesLayers[sublayerIndex][channelIndex];
     density = interp_density_layer_device(density, curve.y, layerCurve, curve.n);
     density += densityMin;
 
-    const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
-    const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
     const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
+
+    const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
+    if (clumpFactor != 1.0f) {
+        const float clumpBias = clumpFactor - 1.0f;
+        constexpr float kMixWeightBias = 0.35f;
+        constexpr float kMixScaleBias = 0.5f;
+        mixWeight = fminf(fmaxf(mixWeight + clumpBias * kMixWeightBias, 0.0f), 1.0f);
+        mixScale = fmaxf(1.0f, mixScale * (1.0f + clumpBias * kMixScaleBias));
+    }
+    const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
+    const float wFine = 1.0f - wCoarse;
+    const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
 
     const bool useFastStats = (grain.useFastStats != 0);
     float grainSample = 0.0f;
@@ -829,7 +995,8 @@ __global__ void grain_layer_kernel(
             grainSample += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
         }
     }
-    grainSample *= grain_breathing_factor_device(grain, absX, absY);
+    const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
+    grainSample = density + (grainSample - density) * breathingFactor * clumpFactor;
     outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }
 

@@ -33,6 +33,9 @@ namespace Profiles {
         std::array<float, 3> uniformity{ {0.0f, 0.0f, 0.0f} };
         float blur = 0.0f;
         float blurDyeCloudsUm = 0.0f;
+        float sizeMixWeight = 0.30f;
+        float sizeMixScale = 3.0f;
+        bool breathingDebug = false;
         std::array<float, 2> microStructure{ {0.0f, 0.0f} };
         int nSubLayers = 1;
     };

@@ -191,6 +191,9 @@ private:
     OFX::Double3DParam* _pGrainUniformity = nullptr;
     OFX::DoubleParam* _pGrainBlur = nullptr;
     OFX::DoubleParam* _pGrainBlurDyeCloudsUm = nullptr;
+    OFX::DoubleParam* _pGrainSizeMixWeight = nullptr;
+    OFX::DoubleParam* _pGrainSizeMixScale = nullptr;
+    OFX::BooleanParam* _pGrainBreathingDebug = nullptr;
     OFX::Double2DParam* _pGrainMicroStructure = nullptr;
 
     OFX::BooleanParam* _pGlareActive = nullptr;

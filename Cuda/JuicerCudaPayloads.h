@@ -184,6 +184,11 @@ namespace JuicerCuda {
         float clumpWeaveAmplitudePx = 0.0f;
         int breathingPeriodFrames = 0;
         float breathingAmplitude = 0.0f;
+        float breathingCellUmSmall = 0.0f;
+        float breathingCellUmLarge = 0.0f;
+        float breathingMix = 0.0f;
+        float breathingDriftUmPerFrame = 0.0f;
+        int breathingDebug = 0;
         float pixelSizeUm = 0.0f;
         float blurSigmaPx = 0.0f;
         float blurDyeCloudsUm = 0.0f;

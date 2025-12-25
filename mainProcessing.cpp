@@ -346,6 +346,15 @@ void JuicerProcessor::setFrameTime(double time) {
     }
 }
 
+void JuicerProcessor::setFrameRate(double frameRate) {
+    if (std::isfinite(frameRate) && frameRate > 0.0) {
+        _frameRate = frameRate;
+    }
+    else {
+        _frameRate = 0.0;
+    }
+}
+
 void JuicerProcessor::setFrameBoundsVersion(std::uint32_t v) {
     _frameBoundsVersion = v;
 }
@@ -1427,11 +1436,8 @@ void JuicerProcessor::processImagesCUDA() {
             bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
             bool wantGrainSublayers = false;
             bool wantGrainBlur = false;
-            bool wantGrainMicro = false;
             bool wantGrainMicroBlur = false;
             float grainBlurSigmaPx = 0.0f;
-            float grainMicroBlurPx = 0.0f;
-            float grainMicroSigma = 0.0f;
             float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
 
             run.grain = JuicerCuda::GrainPayload{};
@@ -1439,6 +1445,13 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.useFastStats = 1;
             {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 30.0;
+                const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
+                const double longEdgePx = static_cast<double>(std::max(width, height));
+                const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
+                    ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
+                    : 0.0;
+                const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
                 run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
@@ -1447,14 +1460,14 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.weavePeriodFrames = 180;
                 run.grain.weaveAmplitudePx = 0.5f;
                 run.grain.clumpWeaveAmplitudePx = 0.25f;
-                run.grain.breathingPeriodFrames = 240;
-                run.grain.breathingAmplitude = 0.03f;
+                run.grain.breathingPeriodFrames = breathingPeriodFrames;
+                run.grain.breathingAmplitude = 0.01f;
+                run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
+                run.grain.breathingCellUmLarge = static_cast<float>(5000.0 * filmScale);
+                run.grain.breathingMix = 0.30f;
+                run.grain.breathingDriftUmPerFrame = 1.0f;
                 run.grain.sizeMixWeight = 0.30f;
                 run.grain.sizeMixScale = 3.0f;
-                run.grain.sizeMixWeight = 0.30f;
-                run.grain.sizeMixScale = 3.0f;
-                run.grain.breathingPeriodFrames = 240;
-                run.grain.breathingAmplitude = 0.03f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
                     run.grain.stbn = cudaResources->stbnData;
@@ -1510,6 +1523,9 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
                 run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
                 run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
+                run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
+                run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
+                run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
                 run.grain.microStructure[0] = grainUi.microStructure[0];
                 run.grain.microStructure[1] = grainUi.microStructure[1];
                 for (int i = 0; i < 3; ++i) {
@@ -1549,17 +1565,11 @@ void JuicerProcessor::processImagesCUDA() {
                     grainBlurSigmaPx = run.grain.blurSigmaPx;
                     wantGrainBlur = false;
 
-                    if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
-                        grainMicroBlurPx = grainUi.microStructure[0] / static_cast<float>(_pixelSizeUm);
-                        grainMicroSigma = grainUi.microStructure[1] * 0.001f / static_cast<float>(_pixelSizeUm);
+                    wantGrainMicroBlur = false;
+                    if (!std::isfinite(run.grain.microStructure[1]) || !(run.grain.microStructure[1] > 0.0f)) {
+                        run.grain.microStructure[0] = 0.0f;
+                        run.grain.microStructure[1] = 0.0f;
                     }
-                    constexpr float kMicroEpsilon = 1e-4f;
-                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > kMicroEpsilon);
-                    int microBlurRadius = 0;
-                    if (wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > kMicroEpsilon)) {
-                        microBlurRadius = JuicerGaussian::scipy_gaussian_radius(grainMicroBlurPx, 4.0f);
-                    }
-                    wantGrainMicroBlur = wantGrainMicro && (microBlurRadius > 0);
 
                     if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
                         float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
@@ -1690,15 +1700,15 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
 
-                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, wantGrainMicroBlur ? grainMicroBlurPx : 0.0f, _pCudaStream, opticsError)) {
-                        JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                        throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                    }
                     if (wantGrainMicroBlur) {
+                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, 0.0f, _pCudaStream, opticsError)) {
+                            JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                        }
                         run.grainKernels.microKernel = cudaResources->grainMicroKernel.weights;
                         run.grainKernels.microRadius = cudaResources->grainMicroKernel.radius;
                     }
@@ -2320,11 +2330,8 @@ void JuicerProcessor::processImagesCUDA() {
             bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
             bool wantGrainSublayers = false;
             bool wantGrainBlur = false;
-            bool wantGrainMicro = false;
             bool wantGrainMicroBlur = false;
             float grainBlurSigmaPx = 0.0f;
-            float grainMicroBlurPx = 0.0f;
-            float grainMicroSigma = 0.0f;
             float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
 
             run.grain = JuicerCuda::GrainPayload{};
@@ -2332,6 +2339,13 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.useFastStats = 1;
             {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 30.0;
+                const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
+                const double longEdgePx = static_cast<double>(std::max(width, height));
+                const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
+                    ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
+                    : 0.0;
+                const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
                 run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
@@ -2340,6 +2354,14 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.weavePeriodFrames = 180;
                 run.grain.weaveAmplitudePx = 0.5f;
                 run.grain.clumpWeaveAmplitudePx = 0.25f;
+                run.grain.breathingPeriodFrames = breathingPeriodFrames;
+                run.grain.breathingAmplitude = 0.01f;
+                run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
+                run.grain.breathingCellUmLarge = static_cast<float>(5000.0 * filmScale);
+                run.grain.breathingMix = 0.30f;
+                run.grain.breathingDriftUmPerFrame = 1.0f;
+                run.grain.sizeMixWeight = 0.30f;
+                run.grain.sizeMixScale = 3.0f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
                     run.grain.stbn = cudaResources->stbnData;
@@ -2395,6 +2417,9 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
                 run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
                 run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
+                run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
+                run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
+                run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
                 run.grain.microStructure[0] = grainUi.microStructure[0];
                 run.grain.microStructure[1] = grainUi.microStructure[1];
                 for (int i = 0; i < 3; ++i) {
@@ -2434,17 +2459,11 @@ void JuicerProcessor::processImagesCUDA() {
                     grainBlurSigmaPx = run.grain.blurSigmaPx;
                     wantGrainBlur = false;
 
-                    if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
-                        grainMicroBlurPx = grainUi.microStructure[0] / static_cast<float>(_pixelSizeUm);
-                        grainMicroSigma = grainUi.microStructure[1] * 0.001f / static_cast<float>(_pixelSizeUm);
+                    wantGrainMicroBlur = false;
+                    if (!std::isfinite(run.grain.microStructure[1]) || !(run.grain.microStructure[1] > 0.0f)) {
+                        run.grain.microStructure[0] = 0.0f;
+                        run.grain.microStructure[1] = 0.0f;
                     }
-                    constexpr float kMicroEpsilon = 1e-4f;
-                    wantGrainMicro = std::isfinite(grainMicroSigma) && (grainMicroSigma > kMicroEpsilon);
-                    int microBlurRadius = 0;
-                    if (wantGrainMicro && std::isfinite(grainMicroBlurPx) && (grainMicroBlurPx > kMicroEpsilon)) {
-                        microBlurRadius = JuicerGaussian::scipy_gaussian_radius(grainMicroBlurPx, 4.0f);
-                    }
-                    wantGrainMicroBlur = wantGrainMicro && (microBlurRadius > 0);
 
                     if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
                         float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
@@ -2579,15 +2598,15 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
 
-                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, wantGrainMicroBlur ? grainMicroBlurPx : 0.0f, _pCudaStream, opticsError)) {
-                        JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                        throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                    }
                     if (wantGrainMicroBlur) {
+                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, 0.0f, _pCudaStream, opticsError)) {
+                            JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                        }
                         run.grainKernels.microKernel = cudaResources->grainMicroKernel.weights;
                         run.grainKernels.microRadius = cudaResources->grainMicroKernel.radius;
                     }
