@@ -79,6 +79,28 @@ namespace {
         outY = static_cast<int>((h >> 32) % static_cast<std::uint64_t>(grain.stbnHeight));
     }
 
+    __device__ __forceinline__ void stbn_macro_jitter_device(
+        const JuicerCuda::GrainPayload& grain,
+        int tileX,
+        int tileY,
+        float& outX,
+        float& outY)
+    {
+        if (grain.stbnWidth <= 0 || grain.stbnHeight <= 0) {
+            outX = 0.0f;
+            outY = 0.0f;
+            return;
+        }
+        const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t h = splitmix64_device(seed ^ (static_cast<std::uint64_t>(tileX) * 0xD2B74407B1CE6E93ULL) ^
+            (static_cast<std::uint64_t>(tileY) * 0xCA5A826395121157ULL));
+        constexpr float kInvU32 = 1.0f / 4294967296.0f;
+        const std::uint32_t h0 = static_cast<std::uint32_t>(h & 0xFFFFFFFFu);
+        const std::uint32_t h1 = static_cast<std::uint32_t>(h >> 32);
+        outX = static_cast<float>(h0) * kInvU32 - 0.5f;
+        outY = static_cast<float>(h1) * kInvU32 - 0.5f;
+    }
+
     __device__ __forceinline__ float stbn_sample_device(
         const JuicerCuda::GrainPayload& grain,
         std::uint64_t absX,
@@ -116,29 +138,36 @@ namespace {
             const int tileX = static_cast<int>(floorf(baseX * invTile));
             const int tileY = static_cast<int>(floorf(baseY * invTile));
 
-            int offX0 = 0, offY0 = 0;
-            int offX1 = 0, offY1 = 0;
-            int offX2 = 0, offY2 = 0;
-            int offX3 = 0, offY3 = 0;
-            stbn_macro_offset_device(grain, tileX, tileY, offX0, offY0);
-            stbn_macro_offset_device(grain, tileX + 1, tileY, offX1, offY1);
-            stbn_macro_offset_device(grain, tileX, tileY + 1, offX2, offY2);
-            stbn_macro_offset_device(grain, tileX + 1, tileY + 1, offX3, offY3);
+            constexpr float kJitterScale = 0.45f;
+            float bestDist2 = 1e30f;
+            int bestTileX = tileX;
+            int bestTileY = tileY;
 
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int cellX = tileX + dx;
+                    const int cellY = tileY + dy;
+                    float jitterX = 0.0f;
+                    float jitterY = 0.0f;
+                    stbn_macro_jitter_device(grain, cellX, cellY, jitterX, jitterY);
+                    const float centerX = (static_cast<float>(cellX) + 0.5f + jitterX * kJitterScale) * tileSize;
+                    const float centerY = (static_cast<float>(cellY) + 0.5f + jitterY * kJitterScale) * tileSize;
+                    const float dxp = baseX - centerX;
+                    const float dyp = baseY - centerY;
+                    const float dist2 = dxp * dxp + dyp * dyp;
+                    if (dist2 < bestDist2) {
+                        bestDist2 = dist2;
+                        bestTileX = cellX;
+                        bestTileY = cellY;
+                    }
+                }
+            }
+
+            int offX = 0, offY = 0;
+            stbn_macro_offset_device(grain, bestTileX, bestTileY, offX, offY);
             const int baseXi = static_cast<int>(floorf(baseX)) + offsetX;
             const int baseYi = static_cast<int>(floorf(baseY)) + offsetY;
-
-            const float u0 = stbn_lookup_device(grain, baseXi + offX0, baseYi + offY0, t);
-            const float u1 = stbn_lookup_device(grain, baseXi + offX1, baseYi + offY1, t);
-            const float u2 = stbn_lookup_device(grain, baseXi + offX2, baseYi + offY2, t);
-            const float u3 = stbn_lookup_device(grain, baseXi + offX3, baseYi + offY3, t);
-
-            const int selX = baseXi + 157;
-            const int selY = baseYi + 263;
-            const int selT = t + 17;
-            const float selector = stbn_lookup_device(grain, selX, selY, selT);
-            const int pick = (selector >= 0.75f) ? 3 : (selector >= 0.5f) ? 2 : (selector >= 0.25f) ? 1 : 0;
-            return (pick == 0) ? u0 : (pick == 1) ? u1 : (pick == 2) ? u2 : u3;
+            return stbn_lookup_device(grain, baseXi + offX, baseYi + offY, t);
         }
 
         const int x = static_cast<int>(absX) + offsetX;
