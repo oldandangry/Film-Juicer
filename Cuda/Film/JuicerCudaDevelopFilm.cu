@@ -139,9 +139,13 @@ namespace {
             const int tileY = static_cast<int>(floorf(baseY * invTile));
 
             constexpr float kJitterScale = 0.45f;
+            constexpr float kBoundaryFrac = 0.02f;
             float bestDist2 = 1e30f;
+            float secondDist2 = 1e30f;
             int bestTileX = tileX;
             int bestTileY = tileY;
+            int secondTileX = tileX;
+            int secondTileY = tileY;
 
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
@@ -156,17 +160,47 @@ namespace {
                     const float dyp = baseY - centerY;
                     const float dist2 = dxp * dxp + dyp * dyp;
                     if (dist2 < bestDist2) {
+                        secondDist2 = bestDist2;
+                        secondTileX = bestTileX;
+                        secondTileY = bestTileY;
                         bestDist2 = dist2;
                         bestTileX = cellX;
                         bestTileY = cellY;
+                    }
+                    else if (dist2 < secondDist2) {
+                        secondDist2 = dist2;
+                        secondTileX = cellX;
+                        secondTileY = cellY;
+                    }
+                }
+            }
+
+            const int baseXi = static_cast<int>(floorf(baseX)) + offsetX;
+            const int baseYi = static_cast<int>(floorf(baseY)) + offsetY;
+            int chosenTileX = bestTileX;
+            int chosenTileY = bestTileY;
+
+            if (secondDist2 < 1e29f) {
+                const float bestDist = sqrtf(bestDist2);
+                const float secondDist = sqrtf(secondDist2);
+                const float boundary = fmaxf(1.0f, fminf(2.0f, tileSize * kBoundaryFrac));
+                const float edge = secondDist - bestDist;
+                if (edge < boundary) {
+                    const float w = fminf(fmaxf(edge / boundary, 0.0f), 1.0f);
+                    const int selX = baseXi + 379;
+                    const int selY = baseYi + 593;
+                    const int selT = t + 23;
+                    const float selector = stbn_lookup_device(grain, selX, selY, selT);
+                    const float thresh = 0.5f + 0.5f * w;
+                    if (selector >= thresh) {
+                        chosenTileX = secondTileX;
+                        chosenTileY = secondTileY;
                     }
                 }
             }
 
             int offX = 0, offY = 0;
-            stbn_macro_offset_device(grain, bestTileX, bestTileY, offX, offY);
-            const int baseXi = static_cast<int>(floorf(baseX)) + offsetX;
-            const int baseYi = static_cast<int>(floorf(baseY)) + offsetY;
+            stbn_macro_offset_device(grain, chosenTileX, chosenTileY, offX, offY);
             return stbn_lookup_device(grain, baseXi + offX, baseYi + offY, t);
         }
 
