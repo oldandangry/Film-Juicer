@@ -168,6 +168,7 @@ namespace JuicerCuda {
         int originX = 0;
         int originY = 0;
         std::uint64_t seedBase = 0;
+        std::uint64_t seedBaseNext = 0;
         const std::uint8_t* JUICER_RESTRICT stbn = nullptr;
         int stbnWidth = 0;
         int stbnHeight = 0;
@@ -177,11 +178,6 @@ namespace JuicerCuda {
         int stbnFrame = 0;
         std::int64_t frameIndex = 0;
         std::uint64_t stbnSessionSeed = 0;
-        int macroTileSize = 0;
-        int clumpMacroTileSize = 0;
-        int weavePeriodFrames = 0;
-        float weaveAmplitudePx = 0.0f;
-        float clumpWeaveAmplitudePx = 0.0f;
         int breathingPeriodFrames = 0;
         float breathingAmplitude = 0.0f;
         float breathingCellUmSmall = 0.0f;
@@ -189,7 +185,9 @@ namespace JuicerCuda {
         float breathingMix = 0.0f;
         float breathingDriftUmPerFrame = 0.0f;
         int breathingDebug = 0;
+        int debugView = 0;
         float pixelSizeUm = 0.0f;
+        int pitchPx = 0;
         float blurSigmaPx = 0.0f;
         float blurDyeCloudsUm = 0.0f;
         float microStructure[2] = { 0.0f, 0.0f };
@@ -218,6 +216,15 @@ namespace JuicerCuda {
             { nullptr, nullptr, nullptr },
             { nullptr, nullptr, nullptr }
         };
+    };
+
+    struct GateWeavePayload {
+        int active = 0;
+        float dxPx = 0.0f;
+        float dyPx = 0.0f;
+        float cosRot = 1.0f;
+        float sinRot = 0.0f;
+        float debugScalePx = 1.0f;
     };
 
     struct GrainKernelPayload {
@@ -296,6 +303,7 @@ namespace JuicerCuda {
         HalationKernelPayload halationKernels{};
         GrainPayload grain{};
         GrainKernelPayload grainKernels{};
+        GateWeavePayload gateWeave{};
         PrintExposePayload printExpose{};
         PrintDevelopPayload printDevelop{};
         ScanStagePayload scanStage{};

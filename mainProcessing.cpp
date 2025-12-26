@@ -121,7 +121,7 @@ namespace {
         if (!std::isfinite(time)) {
             return 0;
         }
-        return static_cast<std::int64_t>(std::llround(time));
+        return static_cast<std::int64_t>(std::floor(time));
     }
 
     std::uint64_t safe_session_seed(const InstanceState* state) {
@@ -168,6 +168,99 @@ namespace {
         const std::uint64_t fields[2] = { sessionSeed, salt };
         const std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
         return static_cast<int>(h % static_cast<std::uint64_t>(dim));
+    }
+
+    constexpr std::uint64_t kSeedPassWeave = 3;
+
+    double hash_to_unit(std::uint64_t h) {
+        // Convert to [0,1) using the top 53 bits (double mantissa).
+        constexpr double kInv = 1.0 / 9007199254740992.0; // 2^53
+        return static_cast<double>(h >> 11) * kInv;
+    }
+
+    double phase_from_seed(std::uint64_t sessionSeed, std::uint64_t passId, int axis, int component) {
+        const std::uint64_t fields[4] = {
+            sessionSeed,
+            passId,
+            static_cast<std::uint64_t>(axis),
+            static_cast<std::uint64_t>(component)
+        };
+        std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
+        if (h == 0) {
+            h = 1;
+        }
+        constexpr double kTwoPi = 6.28318530717958647692;
+        return hash_to_unit(h) * kTwoPi;
+    }
+
+    double sin_sum(const double* freqs, int count, std::uint64_t sessionSeed, std::uint64_t passId, int axis, int componentOffset, double timeSeconds) {
+        constexpr double kTwoPi = 6.28318530717958647692;
+        double sum = 0.0;
+        for (int i = 0; i < count; ++i) {
+            const double phase = phase_from_seed(sessionSeed, passId, axis, componentOffset + i);
+            sum += std::sin(kTwoPi * freqs[i] * timeSeconds + phase);
+        }
+        return sum;
+    }
+
+    struct GateWeaveSignal {
+        float dxPx = 0.0f;
+        float dyPx = 0.0f;
+        float cosRot = 1.0f;
+        float sinRot = 0.0f;
+    };
+
+    GateWeaveSignal compute_gate_weave(
+        std::uint64_t sessionSeed,
+        double timeSeconds,
+        double translateRmsUm,
+        double rotateRmsDeg,
+        double pixelSizeUm,
+        double amount)
+    {
+        GateWeaveSignal out{};
+        if (!(amount > 0.0) || !(pixelSizeUm > 0.0) || !std::isfinite(pixelSizeUm)) {
+            return out;
+        }
+
+        const double translateRms = translateRmsUm * amount;
+        const double rotateRms = rotateRmsDeg * amount;
+        if (!(translateRms > 0.0 || rotateRms > 0.0)) {
+            return out;
+        }
+
+        constexpr double driftFreqs[] = { 0.15, 0.35, 0.80 };
+        constexpr double jitterFreqs[] = { 6.0, 12.0 };
+        constexpr int driftCount = static_cast<int>(sizeof(driftFreqs) / sizeof(driftFreqs[0]));
+        constexpr int jitterCount = static_cast<int>(sizeof(jitterFreqs) / sizeof(jitterFreqs[0]));
+        const double driftNorm = 1.0 / std::sqrt(0.5 * static_cast<double>(driftCount));
+        const double jitterNorm = 1.0 / std::sqrt(0.5 * static_cast<double>(jitterCount));
+        const double driftWeight = 0.85;
+        const double jitterWeight = 0.15;
+        const double weightNorm = 1.0 / std::sqrt(driftWeight * driftWeight + jitterWeight * jitterWeight);
+
+        for (int axis = 0; axis < 2; ++axis) {
+            const double drift = sin_sum(driftFreqs, driftCount, sessionSeed, kSeedPassWeave, axis, 0, timeSeconds) * driftNorm;
+            const double jitter = sin_sum(jitterFreqs, jitterCount, sessionSeed, kSeedPassWeave, axis, 10, timeSeconds) * jitterNorm;
+            const double composite = (driftWeight * drift + jitterWeight * jitter) * weightNorm;
+            const double deltaUm = composite * translateRms;
+            const double deltaPx = deltaUm / pixelSizeUm;
+            if (axis == 0) {
+                out.dxPx = static_cast<float>(deltaPx);
+            }
+            else {
+                out.dyPx = static_cast<float>(deltaPx);
+            }
+        }
+
+        if (rotateRms > 0.0) {
+            const double rotSignal = sin_sum(driftFreqs, driftCount, sessionSeed, kSeedPassWeave, 2, 0, timeSeconds) * driftNorm;
+            const double rotDeg = rotSignal * rotateRms;
+            const double rotRad = rotDeg * (3.14159265358979323846 / 180.0);
+            out.cosRot = static_cast<float>(std::cos(rotRad));
+            out.sinRot = static_cast<float>(std::sin(rotRad));
+        }
+        return out;
     }
 }
 
@@ -338,7 +431,14 @@ void JuicerProcessor::setClipToken(std::uintptr_t token) {
     _clipToken = token;
 }
 
+void JuicerProcessor::setGateWeaveAmount(double amount) {
+    if (std::isfinite(amount)) {
+        _gateWeaveAmount = amount;
+    }
+}
+
 void JuicerProcessor::setFrameTime(double time) {
+    _timeFrames = time;
     _frameIndex = frame_index_from_time(time);
     _frameTimeHash = Hash::hash_bytes(&_frameIndex, sizeof(_frameIndex));
     if (_frameTimeHash == 0) {
@@ -1445,21 +1545,45 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.useFastStats = 1;
             {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 30.0;
+                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
+                const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
+                const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
+                const double weaveAmount = std::isfinite(_gateWeaveAmount)
+                    ? std::clamp(_gateWeaveAmount, 0.0, 1.0)
+                    : 0.0;
+                const GateWeaveSignal weave = compute_gate_weave(
+                    sessionSeed,
+                    timeSeconds,
+                    6.0,
+                    0.005,
+                    static_cast<double>(_pixelSizeUm),
+                    weaveAmount);
+                const double debugScalePx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0)
+                    ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
+                    : 1.0;
                 const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
                 const double longEdgePx = static_cast<double>(std::max(width, height));
                 const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
                     ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
                     : 0.0;
+                const double pitchMm = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0)
+                    ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
+                    : 0.0;
+                const int pitchPx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && pitchMm > 0.0)
+                    ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
+                    : height;
                 const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
                 run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
+                run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
-                run.grain.macroTileSize = 128;
-                run.grain.clumpMacroTileSize = 256;
-                run.grain.weavePeriodFrames = 180;
-                run.grain.weaveAmplitudePx = 0.5f;
-                run.grain.clumpWeaveAmplitudePx = 0.25f;
+                run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
+                run.gateWeave.dxPx = weave.dxPx;
+                run.gateWeave.dyPx = weave.dyPx;
+                run.gateWeave.cosRot = weave.cosRot;
+                run.gateWeave.sinRot = weave.sinRot;
+                run.gateWeave.debugScalePx = static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
+                run.grain.pitchPx = pitchPx;
                 run.grain.breathingPeriodFrames = breathingPeriodFrames;
                 run.grain.breathingAmplitude = 0.01f;
                 run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
@@ -1526,6 +1650,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
                 run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
                 run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
+                run.grain.debugView = std::clamp(grainUi.debugView, 0, 4);
                 run.grain.microStructure[0] = grainUi.microStructure[0];
                 run.grain.microStructure[1] = grainUi.microStructure[1];
                 for (int i = 0; i < 3; ++i) {
@@ -1633,7 +1758,8 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
             const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain;
+            const bool wantWeave = (run.gateWeave.active != 0);
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
@@ -2339,21 +2465,45 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.useFastStats = 1;
             {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 30.0;
+                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
+                const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
+                const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
+                const double weaveAmount = std::isfinite(_gateWeaveAmount)
+                    ? std::clamp(_gateWeaveAmount, 0.0, 1.0)
+                    : 0.0;
+                const GateWeaveSignal weave = compute_gate_weave(
+                    sessionSeed,
+                    timeSeconds,
+                    6.0,
+                    0.005,
+                    static_cast<double>(_pixelSizeUm),
+                    weaveAmount);
+                const double debugScalePx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0)
+                    ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
+                    : 1.0;
                 const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
                 const double longEdgePx = static_cast<double>(std::max(width, height));
                 const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
                     ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
                     : 0.0;
+                const double pitchMm = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0)
+                    ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
+                    : 0.0;
+                const int pitchPx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && pitchMm > 0.0)
+                    ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
+                    : height;
                 const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
                 run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
+                run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
-                run.grain.macroTileSize = 128;
-                run.grain.clumpMacroTileSize = 256;
-                run.grain.weavePeriodFrames = 180;
-                run.grain.weaveAmplitudePx = 0.5f;
-                run.grain.clumpWeaveAmplitudePx = 0.25f;
+                run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
+                run.gateWeave.dxPx = weave.dxPx;
+                run.gateWeave.dyPx = weave.dyPx;
+                run.gateWeave.cosRot = weave.cosRot;
+                run.gateWeave.sinRot = weave.sinRot;
+                run.gateWeave.debugScalePx = static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
+                run.grain.pitchPx = pitchPx;
                 run.grain.breathingPeriodFrames = breathingPeriodFrames;
                 run.grain.breathingAmplitude = 0.01f;
                 run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
@@ -2420,6 +2570,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
                 run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
                 run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
+                run.grain.debugView = std::clamp(grainUi.debugView, 0, 4);
                 run.grain.microStructure[0] = grainUi.microStructure[0];
                 run.grain.microStructure[1] = grainUi.microStructure[1];
                 for (int i = 0; i < 3; ++i) {
@@ -2531,7 +2682,8 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
             const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain;
+            const bool wantWeave = (run.gateWeave.active != 0);
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {

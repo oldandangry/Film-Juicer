@@ -731,6 +731,19 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
+            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kGrainDebugView);
+            p->setLabel("Grain debug view");
+            p->appendOption("Off");
+            p->appendOption("Grain delta");
+            p->appendOption("Clump field");
+            p->appendOption("Weave field");
+            p->appendOption("Frame diff");
+            p->setDefault(0);
+            p->setHint("Debug view selector for grain/clump/weave fields.");
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
             OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScale);
             p->setLabel("Particle scale");
             p->setHint("Scale of particle area for the RGB layers (multiplies particle area).");
@@ -782,6 +795,16 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 10.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 1.0, 200.0);
             p->setDimensionLabels("Blur (um)", "Clump (nm)");
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGateWeaveAmount);
+            p->setLabel("Gate weave");
+            p->setHint("Scales the global gate weave (film transport jitter).");
+            p->setDefault(1.0);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 1.0);
             if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }

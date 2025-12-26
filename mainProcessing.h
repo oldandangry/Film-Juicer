@@ -61,6 +61,7 @@ public:
     void setOutputEncoding(const OutputEncoding::Params& p);
     void setInstanceState(InstanceState* s);
     void setClipToken(std::uintptr_t token);
+    void setGateWeaveAmount(double amount);
     void setFrameTime(double time);
     void setFrameRate(double frameRate);
     void setFrameBoundsVersion(std::uint32_t v);
@@ -114,7 +115,9 @@ private:
     std::uintptr_t _clipToken = 0;
     std::uint64_t _frameTimeHash = 0;
     std::int64_t _frameIndex = 0;
+    double _timeFrames = 0.0;
     double _frameRate = 0.0;
+    double _gateWeaveAmount = 1.0;
 
     JuicerProc::StageScratch _scratch;
     JuicerProc::DensityBuffer _density;

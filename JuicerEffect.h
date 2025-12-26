@@ -194,7 +194,9 @@ private:
     OFX::DoubleParam* _pGrainSizeMixWeight = nullptr;
     OFX::DoubleParam* _pGrainSizeMixScale = nullptr;
     OFX::BooleanParam* _pGrainBreathingDebug = nullptr;
+    OFX::ChoiceParam* _pGrainDebugView = nullptr;
     OFX::Double2DParam* _pGrainMicroStructure = nullptr;
+    OFX::DoubleParam* _pGateWeaveAmount = nullptr;
 
     OFX::BooleanParam* _pGlareActive = nullptr;
     OFX::DoubleParam* _pGlarePercent = nullptr;

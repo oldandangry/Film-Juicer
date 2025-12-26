@@ -640,6 +640,12 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     }
     grain.breathingDebug = breathingDebug;
 
+    int debugView = 0;
+    if (_pGrainDebugView) {
+        _pGrainDebugView->getValue(debugView);
+    }
+    grain.debugView = std::clamp(debugView, 0, 4);
+
     const std::array<double, 2> microStructure = read2(_pGrainMicroStructure, { {0.1, 30.0} }, 0.0, 1000.0);
     grain.microStructure[0] = static_cast<float>(microStructure[0]);
     grain.microStructure[1] = static_cast<float>(microStructure[1]);
@@ -1198,7 +1204,9 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
         _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
         _pGrainBreathingDebug = fetchBooleanParam(JuicerParams::kGrainBreathingDebug);
+        _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
         _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
+        _pGateWeaveAmount = fetchDoubleParam(JuicerParams::kGateWeaveAmount);
 
         _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
         _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
@@ -1383,6 +1391,10 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const Profiles::HalationMetadata halationUi = gatherHalationUi();
     const Profiles::GrainMetadata grainUi = gatherGrainUi();
     const Profiles::ProfileGlare glareUi = gatherGlareUi();
+    double gateWeaveAmount = 1.0;
+    if (_pGateWeaveAmount) {
+        _pGateWeaveAmount->getValue(gateWeaveAmount);
+    }
     OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
 
     const AutoExposureResult autoExposure = computeAutoExposure(
@@ -1452,6 +1464,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setPrintParams(printParams);
     proc.setHalationOverride(halationUi);
     proc.setGrainOverride(grainUi);
+    proc.setGateWeaveAmount(gateWeaveAmount);
     proc.setPrintGlareOverride(glareUi);
     proc.setDirRuntime(dirRT);
     proc.setWorkingState(ws, wsReady);

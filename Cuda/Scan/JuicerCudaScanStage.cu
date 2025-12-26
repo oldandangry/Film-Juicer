@@ -91,6 +91,59 @@ __global__ void halation_apply_kernel(
 
 namespace {
 
+    __device__ __forceinline__ int clamp_index_device(int idx, int maxIndex) {
+        if (idx < 0) return 0;
+        if (idx > maxIndex) return maxIndex;
+        return idx;
+    }
+
+    __device__ __forceinline__ float sample_plane_mitchell_device(
+        const float* JUICER_RESTRICT plane,
+        int width,
+        int height,
+        float x,
+        float y)
+    {
+        if (!plane || width <= 0 || height <= 0) {
+            return 0.0f;
+        }
+
+        const float maxX = static_cast<float>(width - 1);
+        const float maxY = static_cast<float>(height - 1);
+        x = fminf(fmaxf(x, 0.0f), maxX);
+        y = fminf(fmaxf(y, 0.0f), maxY);
+
+        const int ix = static_cast<int>(floorf(x));
+        const int iy = static_cast<int>(floorf(y));
+        const double tx = static_cast<double>(x - static_cast<float>(ix));
+        const double ty = static_cast<double>(y - static_cast<float>(iy));
+
+        double wx[4];
+        double wy[4];
+        wx[0] = mitchell_weight_device(tx + 1.0);
+        wx[1] = mitchell_weight_device(tx);
+        wx[2] = mitchell_weight_device(tx - 1.0);
+        wx[3] = mitchell_weight_device(tx - 2.0);
+        wy[0] = mitchell_weight_device(ty + 1.0);
+        wy[1] = mitchell_weight_device(ty);
+        wy[2] = mitchell_weight_device(ty - 1.0);
+        wy[3] = mitchell_weight_device(ty - 2.0);
+
+        const int maxXi = width - 1;
+        const int maxYi = height - 1;
+        double acc = 0.0;
+        for (int j = 0; j < 4; ++j) {
+            const int sy = clamp_index_device(iy + j - 1, maxYi);
+            const double wyj = wy[j];
+            const std::size_t row = static_cast<std::size_t>(sy) * static_cast<std::size_t>(width);
+            for (int i = 0; i < 4; ++i) {
+                const int sx = clamp_index_device(ix + i - 1, maxXi);
+                acc += wyj * wx[i] * static_cast<double>(plane[row + static_cast<std::size_t>(sx)]);
+            }
+        }
+        return static_cast<float>(acc);
+    }
+
     __global__ void pipeline_direct_kernel(JuicerCuda::PipelineRunParams params) {
         const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
         const JuicerCuda::PrintExposePayload& printExpose = params.printExpose;
@@ -315,6 +368,7 @@ namespace {
         const float* rgbB)
     {
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
+        const JuicerCuda::GateWeavePayload& weave = params.gateWeave;
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
         const int y = blockIdx.y * blockDim.y + threadIdx.y;
         if (x >= params.width || y >= params.height) {
@@ -333,13 +387,40 @@ namespace {
             return;
         }
 
-        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-        double rgbOut[3] = {
-            static_cast<double>(rgbR[idx]),
-            static_cast<double>(rgbG[idx]),
-            static_cast<double>(rgbB[idx])
-        };
-        apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
+        const int debugView = params.grain.debugView;
+        double rgbOut[3];
+        if (debugView == 3) {
+            const float scale = (weave.debugScalePx > 1e-6f) ? weave.debugScalePx : 1.0f;
+            float r = 0.5f + 0.5f * (weave.dxPx / scale);
+            float g = 0.5f + 0.5f * (weave.dyPx / scale);
+            r = fminf(fmaxf(r, 0.0f), 1.0f);
+            g = fminf(fmaxf(g, 0.0f), 1.0f);
+            rgbOut[0] = static_cast<double>(r);
+            rgbOut[1] = static_cast<double>(g);
+            rgbOut[2] = 0.5;
+        }
+        else if (weave.active != 0) {
+            const float cx = 0.5f * static_cast<float>(params.width - 1);
+            const float cy = 0.5f * static_cast<float>(params.height - 1);
+            const float fx = static_cast<float>(x) - cx;
+            const float fy = static_cast<float>(y) - cy;
+            const float c = weave.cosRot;
+            const float s = weave.sinRot;
+            const float srcX = c * fx - s * fy + cx + weave.dxPx;
+            const float srcY = s * fx + c * fy + cy + weave.dyPx;
+            rgbOut[0] = static_cast<double>(sample_plane_mitchell_device(rgbR, params.width, params.height, srcX, srcY));
+            rgbOut[1] = static_cast<double>(sample_plane_mitchell_device(rgbG, params.width, params.height, srcX, srcY));
+            rgbOut[2] = static_cast<double>(sample_plane_mitchell_device(rgbB, params.width, params.height, srcX, srcY));
+        }
+        else {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            rgbOut[0] = static_cast<double>(rgbR[idx]);
+            rgbOut[1] = static_cast<double>(rgbG[idx]);
+            rgbOut[2] = static_cast<double>(rgbB[idx]);
+        }
+        if (debugView == 0) {
+            apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
+        }
 
         const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
         char* dstRow = reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
@@ -514,13 +595,14 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     const JuicerCuda::GrainKernelPayload& grainKernels = params.grainKernels;
     const bool doGrain = (grain.active != 0);
     if (doGrain) {
-        const bool debugBreathing = (grain.breathingDebug != 0);
+        const int debugView = grain.debugView;
+        const bool debugAny = (grain.breathingDebug != 0) || (debugView != 0);
         const int total = params.width * params.height;
         const int threads1D = 256;
         const int blocks1D = (total + threads1D - 1) / threads1D;
-        const bool useSublayers = (!debugBreathing && grain.sublayersActive != 0);
-        const bool doFinalBlur = (!debugBreathing && grainKernels.blurKernel && grainKernels.blurRadius > 0);
-        const bool needBlurScratch = (!debugBreathing) && doFinalBlur;
+        const bool useSublayers = (!debugAny && grain.sublayersActive != 0);
+        const bool doFinalBlur = (!debugAny && grainKernels.blurKernel && grainKernels.blurRadius > 0);
+        const bool needBlurScratch = (!debugAny) && doFinalBlur;
         if (needBlurScratch && !dScratchBlurred) {
             return cudaErrorInvalidValue;
         }
@@ -594,7 +676,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             if (err != cudaSuccess) return err;
         }
 
-        if (!debugBreathing) {
+        if (!debugAny) {
             auto apply_bias = [&](float* plane, int channel) -> cudaError_t {
                 const float bias = -grain.densityMin[channel];
                 if (std::isfinite(bias) && bias != 0.0f) {
@@ -620,6 +702,11 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                 if (err != cudaSuccess) return err;
             }
         }
+    }
+
+    if (grain.debugView != 0) {
+        scan_output_encode_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+        return cudaGetLastError();
     }
 
     if (params.printExpose.active) {

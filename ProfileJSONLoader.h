@@ -36,6 +36,7 @@ namespace Profiles {
         float sizeMixWeight = 0.30f;
         float sizeMixScale = 3.0f;
         bool breathingDebug = false;
+        int debugView = 0;
         std::array<float, 2> microStructure{ {0.0f, 0.0f} };
         int nSubLayers = 1;
     };

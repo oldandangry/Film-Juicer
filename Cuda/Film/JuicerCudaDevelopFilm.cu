@@ -60,47 +60,6 @@ namespace {
         return (static_cast<float>(v) + 0.5f) * (1.0f / 256.0f);
     }
 
-    __device__ __forceinline__ void stbn_macro_offset_device(
-        const JuicerCuda::GrainPayload& grain,
-        int tileX,
-        int tileY,
-        int& outX,
-        int& outY)
-    {
-        if (grain.stbnWidth <= 0 || grain.stbnHeight <= 0) {
-            outX = 0;
-            outY = 0;
-            return;
-        }
-        const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t h = splitmix64_device(seed ^ (static_cast<std::uint64_t>(tileX) * 0x9E3779B97F4A7C15ULL) ^
-            (static_cast<std::uint64_t>(tileY) * 0xBF58476D1CE4E5B9ULL));
-        outX = static_cast<int>(h % static_cast<std::uint64_t>(grain.stbnWidth));
-        outY = static_cast<int>((h >> 32) % static_cast<std::uint64_t>(grain.stbnHeight));
-    }
-
-    __device__ __forceinline__ void stbn_macro_jitter_device(
-        const JuicerCuda::GrainPayload& grain,
-        int tileX,
-        int tileY,
-        float& outX,
-        float& outY)
-    {
-        if (grain.stbnWidth <= 0 || grain.stbnHeight <= 0) {
-            outX = 0.0f;
-            outY = 0.0f;
-            return;
-        }
-        const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t h = splitmix64_device(seed ^ (static_cast<std::uint64_t>(tileX) * 0xD2B74407B1CE6E93ULL) ^
-            (static_cast<std::uint64_t>(tileY) * 0xCA5A826395121157ULL));
-        constexpr float kInvU32 = 1.0f / 4294967296.0f;
-        const std::uint32_t h0 = static_cast<std::uint32_t>(h & 0xFFFFFFFFu);
-        const std::uint32_t h1 = static_cast<std::uint32_t>(h >> 32);
-        outX = static_cast<float>(h0) * kInvU32 - 0.5f;
-        outY = static_cast<float>(h1) * kInvU32 - 0.5f;
-    }
-
     __device__ __forceinline__ float smoothstep_device(float t) {
         return t * t * (3.0f - 2.0f * t);
     }
@@ -283,105 +242,32 @@ namespace {
         std::uint64_t absY,
         int offsetX,
         int offsetY,
-        int offsetT,
-        int useClumpParams)
+        int offsetT)
     {
         if (!grain.stbn || grain.stbnWidth <= 0 || grain.stbnHeight <= 0 || grain.stbnFrames <= 0) {
             return 0.0f;
         }
 
-        const int macroTileSize = (useClumpParams != 0) ? grain.clumpMacroTileSize : grain.macroTileSize;
-        const float weaveAmplitude = (useClumpParams != 0) ? grain.clumpWeaveAmplitudePx : grain.weaveAmplitudePx;
-        const int weavePeriod = grain.weavePeriodFrames;
-
-        float weaveX = 0.0f;
-        float weaveY = 0.0f;
-        if (weaveAmplitude > 0.0f && weavePeriod > 0) {
-            const float t = static_cast<float>(grain.frameIndex);
-            constexpr float kTwoPi = 6.28318530717958647692f;
-            const float phase = kTwoPi * (t / static_cast<float>(weavePeriod));
-            weaveX = weaveAmplitude * sinf(phase);
-            weaveY = weaveAmplitude * cosf(phase);
-        }
-
-        const float baseX = static_cast<float>(absX) + weaveX;
-        const float baseY = static_cast<float>(absY) + weaveY;
         const int t = grain.stbnFrame + offsetT;
-
-        if (macroTileSize > 0) {
-            const float tileSize = static_cast<float>(macroTileSize);
-            const float invTile = 1.0f / tileSize;
-            const int tileX = static_cast<int>(floorf(baseX * invTile));
-            const int tileY = static_cast<int>(floorf(baseY * invTile));
-
-            constexpr float kJitterScale = 0.45f;
-            constexpr float kBoundaryFrac = 0.02f;
-            float bestDist2 = 1e30f;
-            float secondDist2 = 1e30f;
-            int bestTileX = tileX;
-            int bestTileY = tileY;
-            int secondTileX = tileX;
-            int secondTileY = tileY;
-
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
-                    const int cellX = tileX + dx;
-                    const int cellY = tileY + dy;
-                    float jitterX = 0.0f;
-                    float jitterY = 0.0f;
-                    stbn_macro_jitter_device(grain, cellX, cellY, jitterX, jitterY);
-                    const float centerX = (static_cast<float>(cellX) + 0.5f + jitterX * kJitterScale) * tileSize;
-                    const float centerY = (static_cast<float>(cellY) + 0.5f + jitterY * kJitterScale) * tileSize;
-                    const float dxp = baseX - centerX;
-                    const float dyp = baseY - centerY;
-                    const float dist2 = dxp * dxp + dyp * dyp;
-                    if (dist2 < bestDist2) {
-                        secondDist2 = bestDist2;
-                        secondTileX = bestTileX;
-                        secondTileY = bestTileY;
-                        bestDist2 = dist2;
-                        bestTileX = cellX;
-                        bestTileY = cellY;
-                    }
-                    else if (dist2 < secondDist2) {
-                        secondDist2 = dist2;
-                        secondTileX = cellX;
-                        secondTileY = cellY;
-                    }
-                }
-            }
-
-            const int baseXi = static_cast<int>(floorf(baseX)) + offsetX;
-            const int baseYi = static_cast<int>(floorf(baseY)) + offsetY;
-            int chosenTileX = bestTileX;
-            int chosenTileY = bestTileY;
-
-            if (secondDist2 < 1e29f) {
-                const float bestDist = sqrtf(bestDist2);
-                const float secondDist = sqrtf(secondDist2);
-                const float boundary = fmaxf(1.0f, fminf(2.0f, tileSize * kBoundaryFrac));
-                const float edge = secondDist - bestDist;
-                if (edge < boundary) {
-                    const float w = fminf(fmaxf(edge / boundary, 0.0f), 1.0f);
-                    const int selX = baseXi + 379;
-                    const int selY = baseYi + 593;
-                    const int selT = t + 23;
-                    const float selector = stbn_lookup_device(grain, selX, selY, selT);
-                    const float thresh = 0.5f + 0.5f * w;
-                    if (selector >= thresh) {
-                        chosenTileX = secondTileX;
-                        chosenTileY = secondTileY;
-                    }
-                }
-            }
-
-            int offX = 0, offY = 0;
-            stbn_macro_offset_device(grain, chosenTileX, chosenTileY, offX, offY);
-            return stbn_lookup_device(grain, baseXi + offX, baseYi + offY, t);
+        std::int64_t x64 = static_cast<std::int64_t>(absX) + static_cast<std::int64_t>(offsetX);
+        std::int64_t y64 = static_cast<std::int64_t>(absY) + static_cast<std::int64_t>(offsetY);
+        if (grain.pitchPx > 0) {
+            y64 += static_cast<std::int64_t>(grain.pitchPx) * static_cast<std::int64_t>(grain.frameIndex);
         }
 
-        const int x = static_cast<int>(absX) + offsetX;
-        const int y = static_cast<int>(absY) + offsetY;
+        if (grain.stbnWidth > 0) {
+            const std::int64_t w = static_cast<std::int64_t>(grain.stbnWidth);
+            x64 %= w;
+            if (x64 < 0) x64 += w;
+        }
+        if (grain.stbnHeight > 0) {
+            const std::int64_t h = static_cast<std::int64_t>(grain.stbnHeight);
+            y64 %= h;
+            if (y64 < 0) y64 += h;
+        }
+
+        const int x = static_cast<int>(x64);
+        const int y = static_cast<int>(y64);
         return stbn_lookup_device(grain, x, y, t);
     }
 
@@ -393,7 +279,6 @@ namespace {
         std::uint64_t seed = 0;
         std::uint32_t drawIndex = 0;
         int useStbn = 0;
-        int useClumpParams = 0;
 
         __device__ GrainRngDevice(
             std::uint64_t seed_,
@@ -402,15 +287,13 @@ namespace {
             const JuicerCuda::GrainPayload* grain_,
             std::uint64_t absX_,
             std::uint64_t absY_,
-            int useStbn_,
-            int useClumpParams_)
+            int useStbn_)
             : rng(seed_, ctr0, openrand::DEFAULT_GLOBAL_SEED, ctr1),
               grain(grain_),
               absX(absX_),
               absY(absY_),
               seed(seed_),
-              useStbn(useStbn_),
-              useClumpParams(useClumpParams_)
+              useStbn(useStbn_)
         {}
 
         __device__ __forceinline__ float uniform() {
@@ -419,7 +302,7 @@ namespace {
                 const std::uint64_t h = splitmix64_device(seed + static_cast<std::uint64_t>(draw) * 0x9E3779B97F4A7C15ULL);
                 const int offsetX = static_cast<int>(h & 0xFFFFu);
                 const int offsetY = static_cast<int>((h >> 16) & 0xFFFFu);
-                return stbn_sample_device(*grain, absX, absY, offsetX, offsetY, 0, useClumpParams);
+                return stbn_sample_device(*grain, absX, absY, offsetX, offsetY, 0);
             }
             return rng.rand<float>();
         }
@@ -582,7 +465,7 @@ namespace {
             saturation = 1e-6f;
         }
 
-        GrainRngDevice rng(seed, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn, 0);
+        GrainRngDevice rng(seed, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn);
         const float lambda = nParticles / saturation;
         const int seeds = poisson_sample_device(lambda, rng, useFastStats);
         const int grainCount = binomial_sample_device(seeds, probability, rng, useFastStats);
@@ -847,6 +730,8 @@ __global__ void grain_apply_simple_kernel(
     const int nSubLayers = (grain.nSubLayers > 0) ? grain.nSubLayers : 1;
     float mixWeight = grain.sizeMixWeight;
     float mixScale = grain.sizeMixScale;
+    const int debugView = grain.debugView;
+    const bool wantFrameDiff = (debugView == 4);
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -858,7 +743,18 @@ __global__ void grain_apply_simple_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
 
-    if (grain.breathingDebug != 0) {
+    if (debugView == 2) {
+        const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
+        float stddev = grain.microStructure[1] * 0.001f;
+        if (!device_isfinite(stddev) || !(stddev > 0.0f)) {
+            stddev = 0.1f;
+        }
+        float visual = 0.5f + 0.5f * ((clumpFactor - 1.0f) / stddev);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        inOut[idx] = visual;
+        return;
+    }
+    if (grain.breathingDebug != 0 && debugView == 0) {
         const float amp = (grain.breathingAmplitude > 0.0f) ? grain.breathingAmplitude : 1.0f;
         const float factor = grain_breathing_factor_device(grain, absX, absY);
         float visual = 0.5f + 0.5f * ((factor - 1.0f) / amp);
@@ -884,24 +780,55 @@ __global__ void grain_apply_simple_kernel(
     const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
 
     float acc = 0.0f;
+    float accNext = 0.0f;
     for (int sl = 0; sl < nSubLayers; ++sl) {
         const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
+        const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
         if (!useMix) {
             acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, false, useStbn);
+            if (wantFrameDiff) {
+                accNext += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seedNext, absX, absY, grain, false, useStbn);
+            }
         }
         else {
             if (wFine > 0.0f) {
                 acc += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, false, useStbn);
+                if (wantFrameDiff) {
+                    accNext += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seedNext, absX, absY, grain, false, useStbn);
+                }
             }
             const float nParticlesCoarse = nParticles / mixScale;
             if (nParticlesCoarse > 0.0f) {
                 acc += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, false, useStbn);
+                if (wantFrameDiff) {
+                    accNext += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seedNext, absX, absY, grain, false, useStbn);
+                }
             }
         }
     }
     acc /= static_cast<float>(nSubLayers);
+    if (wantFrameDiff) {
+        accNext /= static_cast<float>(nSubLayers);
+    }
     const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
     acc = density + (acc - density) * breathingFactor * clumpFactor;
+    if (wantFrameDiff) {
+        accNext = density + (accNext - density) * breathingFactor * clumpFactor;
+        const float delta = accNext - acc;
+        const float scale = fmaxf(densityMax, 1e-3f);
+        float visual = 0.5f + 0.5f * (delta / scale);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        inOut[idx] = visual;
+        return;
+    }
+    if (debugView == 1) {
+        const float delta = acc - density;
+        const float scale = fmaxf(densityMax, 1e-3f);
+        float visual = 0.5f + 0.5f * (delta / scale);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        inOut[idx] = visual;
+        return;
+    }
     inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
 }
 
@@ -940,6 +867,8 @@ __global__ void grain_layer_kernel(
     const float uniformity = grain.uniformity[channelIndex];
     float mixWeight = grain.sizeMixWeight;
     float mixScale = grain.sizeMixScale;
+    const int debugView = grain.debugView;
+    const bool wantFrameDiff = (debugView == 4);
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -952,7 +881,18 @@ __global__ void grain_layer_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
 
-    if (grain.breathingDebug != 0) {
+    if (debugView == 2) {
+        const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
+        float stddev = grain.microStructure[1] * 0.001f;
+        if (!device_isfinite(stddev) || !(stddev > 0.0f)) {
+            stddev = 0.1f;
+        }
+        float visual = 0.5f + 0.5f * ((clumpFactor - 1.0f) / stddev);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        outGrain[idx] = visual;
+        return;
+    }
+    if (grain.breathingDebug != 0 && debugView == 0) {
         const float amp = (grain.breathingAmplitude > 0.0f) ? grain.breathingAmplitude : 1.0f;
         const float factor = grain_breathing_factor_device(grain, absX, absY);
         float visual = 0.5f + 0.5f * ((factor - 1.0f) / amp);
@@ -983,20 +923,50 @@ __global__ void grain_layer_kernel(
 
     const bool useFastStats = (grain.useFastStats != 0);
     float grainSample = 0.0f;
+    float grainSampleNext = 0.0f;
     if (!useMix) {
         grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+        if (wantFrameDiff) {
+            const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
+            grainSampleNext = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seedNext, absX, absY, grain, useFastStats, useStbn);
+        }
     }
     else {
         if (wFine > 0.0f) {
             grainSample += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+            if (wantFrameDiff) {
+                const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
+                grainSampleNext += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seedNext, absX, absY, grain, useFastStats, useStbn);
+            }
         }
         const float nParticlesCoarse = nParticles / mixScale;
         if (nParticlesCoarse > 0.0f) {
             grainSample += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, useFastStats, useStbn);
+            if (wantFrameDiff) {
+                const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
+                grainSampleNext += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seedNext, absX, absY, grain, useFastStats, useStbn);
+            }
         }
     }
     const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
     grainSample = density + (grainSample - density) * breathingFactor * clumpFactor;
+    if (wantFrameDiff) {
+        grainSampleNext = density + (grainSampleNext - density) * breathingFactor * clumpFactor;
+        const float delta = grainSampleNext - grainSample;
+        const float scale = fmaxf(densityMax, 1e-3f);
+        float visual = 0.5f + 0.5f * (delta / scale);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        outGrain[idx] = visual;
+        return;
+    }
+    if (debugView == 1) {
+        const float delta = grainSample - density;
+        const float scale = fmaxf(densityMax, 1e-3f);
+        float visual = 0.5f + 0.5f * (delta / scale);
+        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
+        outGrain[idx] = visual;
+        return;
+    }
     outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }
 
@@ -1021,7 +991,7 @@ __global__ void grain_build_clumping_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
-    GrainRngDevice rng(seedBase, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn, 1);
+    GrainRngDevice rng(seedBase, static_cast<std::uint32_t>(absX), static_cast<std::uint32_t>(absY), &grain, absX, absY, useStbn);
     const float n = rng.normal();
     float v = lognormal_from_mean_std_device(mean, stddev, n);
     if (!device_isfinite(v)) {
