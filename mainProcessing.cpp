@@ -1547,6 +1547,10 @@ void JuicerProcessor::processImagesCUDA() {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
                 const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
                 const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
+                const double alphaFrames = std::isfinite(timeFrames)
+                    ? (timeFrames - static_cast<double>(_frameIndex))
+                    : 0.0;
+                const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
                 const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
                 const double weaveAmount = std::isfinite(_gateWeaveAmount)
                     ? std::clamp(_gateWeaveAmount, 0.0, 1.0)
@@ -1577,6 +1581,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
+                run.grain.timeAlpha = timeAlpha;
                 run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
                 run.gateWeave.dxPx = weave.dxPx;
                 run.gateWeave.dyPx = weave.dyPx;
@@ -2467,6 +2472,10 @@ void JuicerProcessor::processImagesCUDA() {
                 const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
                 const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
                 const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
+                const double alphaFrames = std::isfinite(timeFrames)
+                    ? (timeFrames - static_cast<double>(_frameIndex))
+                    : 0.0;
+                const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
                 const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
                 const double weaveAmount = std::isfinite(_gateWeaveAmount)
                     ? std::clamp(_gateWeaveAmount, 0.0, 1.0)
@@ -2497,6 +2506,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
+                run.grain.timeAlpha = timeAlpha;
                 run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
                 run.gateWeave.dxPx = weave.dxPx;
                 run.gateWeave.dyPx = weave.dyPx;

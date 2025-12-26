@@ -177,6 +177,7 @@ namespace JuicerCuda {
         int stbnOffsetY = 0;
         int stbnFrame = 0;
         std::int64_t frameIndex = 0;
+        float timeAlpha = 0.0f;
         std::uint64_t stbnSessionSeed = 0;
         int breathingPeriodFrames = 0;
         float breathingAmplitude = 0.0f;
