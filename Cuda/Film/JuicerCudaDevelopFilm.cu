@@ -847,7 +847,11 @@ __global__ void grain_apply_simple_kernel(
     if (useRetime) {
         const float delta0 = acc - density;
         const float delta1 = accNext - density;
-        acc = density + (delta0 + (delta1 - delta0) * timeAlpha);
+        const float blend = delta0 + (delta1 - delta0) * timeAlpha;
+        const float w0 = 1.0f - timeAlpha;
+        const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
+        const float norm = rsqrtf(denom);
+        acc = density + blend * norm;
     }
     if (debugView == 1) {
         const float delta = acc - density;
@@ -995,7 +999,11 @@ __global__ void grain_layer_kernel(
     if (useRetime) {
         const float delta0 = grainSample - density;
         const float delta1 = grainSampleNext - density;
-        grainSample = density + (delta0 + (delta1 - delta0) * timeAlpha);
+        const float blend = delta0 + (delta1 - delta0) * timeAlpha;
+        const float w0 = 1.0f - timeAlpha;
+        const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
+        const float norm = rsqrtf(denom);
+        grainSample = density + blend * norm;
     }
     if (debugView == 1) {
         const float delta = grainSample - density;

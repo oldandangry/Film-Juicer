@@ -1553,7 +1553,7 @@ void JuicerProcessor::processImagesCUDA() {
                 const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
                 const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
                 const double weaveAmount = std::isfinite(_gateWeaveAmount)
-                    ? std::clamp(_gateWeaveAmount, 0.0, 1.0)
+                    ? std::clamp(_gateWeaveAmount, 0.0, 10.0)
                     : 0.0;
                 const GateWeaveSignal weave = compute_gate_weave(
                     sessionSeed,
@@ -2504,7 +2504,7 @@ void JuicerProcessor::processImagesCUDA() {
                 const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
                 const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
                 const double weaveAmount = std::isfinite(_gateWeaveAmount)
-                    ? std::clamp(_gateWeaveAmount, 0.0, 1.0)
+                    ? std::clamp(_gateWeaveAmount, 0.0, 10.0)
                     : 0.0;
                 const GateWeaveSignal weave = compute_gate_weave(
                     sessionSeed,

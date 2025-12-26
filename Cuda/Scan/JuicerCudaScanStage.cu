@@ -111,7 +111,9 @@ namespace {
         float cellPx,
         float baseProb,
         float sizeUm,
-        float strength)
+        float strength,
+        float brightMix,
+        float brightScale)
     {
         if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellPx > 0.0f)) {
             return 0.0f;
@@ -130,6 +132,7 @@ namespace {
         const float u2 = hash_to_unit_device(h ^ 0x94D049BB133111EBULL);
         const float u3 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
         const float u4 = hash_to_unit_device(h ^ 0xA5A5A5A5A5A5A5A5ULL);
+        const float u5 = hash_to_unit_device(h ^ 0x8EBC6AF09C88C6E3ULL);
         const float cx = (static_cast<float>(cellX) + u1) * cellPx;
         const float cy = (static_cast<float>(cellY) + u2) * cellPx;
         const float baseRadius = fmaxf(0.5f, sizeUm / pixelSizeUm);
@@ -139,7 +142,11 @@ namespace {
         const float dist = sqrtf(dx * dx + dy * dy);
         const float edge = fmaxf(0.5f, radius * 0.6f);
         const float mask = 1.0f - smoothstep_device(radius, radius + edge, dist);
-        const float intensity = strength * amount * (0.5f + 0.5f * u4);
+        float intensity = strength * amount * (0.5f + 0.5f * u4);
+        if (u5 < brightMix) {
+            intensity *= brightScale;
+            return -mask * intensity;
+        }
         return mask * intensity;
     }
 
@@ -154,7 +161,9 @@ namespace {
         float baseProb,
         float widthUm,
         float strength,
-        float maxAngleRad)
+        float maxAngleRad,
+        float brightMix,
+        float brightScale)
     {
         if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellPxX > 0.0f) || !(cellPxY > 0.0f)) {
             return 0.0f;
@@ -174,6 +183,7 @@ namespace {
         const float u3 = hash_to_unit_device(h ^ 0xA5A5A5A5A5A5A5A5ULL);
         const float u4 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
         const float u5 = hash_to_unit_device(h ^ 0x9E3779B97F4A7C15ULL);
+        const float u6 = hash_to_unit_device(h ^ 0x8EBC6AF09C88C6E3ULL);
         const float cx = (static_cast<float>(cellX) + u1) * cellPxX;
         const float cy = (static_cast<float>(cellY) + u2) * cellPxY;
         const float baseWidth = fmaxf(0.5f, widthUm / pixelSizeUm);
@@ -191,7 +201,11 @@ namespace {
         }
         const float edge = fmaxf(0.5f, width * 0.8f);
         const float mask = 1.0f - smoothstep_device(width, width + edge, dist);
-        const float intensity = strength * amount * (0.5f + 0.5f * u2);
+        float intensity = strength * amount * (0.5f + 0.5f * u2);
+        if (u6 < brightMix) {
+            intensity *= brightScale;
+            return -mask * intensity;
+        }
         return mask * intensity;
     }
 
@@ -515,24 +529,32 @@ namespace {
         const float absY = static_cast<float>(grain.originY + y);
         const float rollY = absY + rollPx * time;
 
-        constexpr float kDustCellPx = 64.0f;
+        constexpr float kDustCellUm = 400.0f;
         constexpr float kDustBaseProb = 0.02f;
         constexpr float kDustSizeUm = 25.0f;
         constexpr float kDustStrength = 0.45f;
+        constexpr float kDustBrightMix = 0.20f;
+        constexpr float kDustBrightScale = 0.5f;
 
-        constexpr float kScratchCellPxX = 512.0f;
-        constexpr float kScratchCellPxY = 1024.0f;
+        constexpr float kScratchCellUmX = 3500.0f;
+        constexpr float kScratchCellUmY = 7000.0f;
         constexpr float kScratchBaseProb = 0.01f;
         constexpr float kScratchWidthUm = 15.0f;
         constexpr float kScratchStrength = 0.35f;
+        constexpr float kScratchBrightMix = 0.10f;
+        constexpr float kScratchBrightScale = 0.4f;
         constexpr float kScratchMaxAngle = 0.08726646f; // 5 deg
+
+        const float dustCellPx = fmaxf(1.0f, kDustCellUm / grain.pixelSizeUm);
+        const float scratchCellPxX = fmaxf(1.0f, kScratchCellUmX / grain.pixelSizeUm);
+        const float scratchCellPxY = fmaxf(1.0f, kScratchCellUmY / grain.pixelSizeUm);
 
         const float dustMask = dust_mask_device(
             dustAmount, absX, rollY, grain.pixelSizeUm, seedDust,
-            kDustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength);
+            dustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
         const float scratchMask = scratch_mask_device(
             scratchAmount, absX, rollY, grain.pixelSizeUm, seedScratch,
-            kScratchCellPxX, kScratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle);
+            scratchCellPxX, scratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
         float delta = dustMask + scratchMask;
         if (!device_isfinite(delta)) {
             delta = 0.0f;
@@ -585,40 +607,55 @@ namespace {
         const std::uint64_t seedGateScratch = splitmix64_device(seedBase ^ 0xC6A4A7935BD1E995ULL);
         double rgbOut[3];
         if (debugView == 5 || debugView == 6) {
-            constexpr float kDustCellPx = 64.0f;
-            constexpr float kGateDustCellPx = 96.0f;
+            constexpr float kDustCellUm = 400.0f;
+            constexpr float kGateDustCellUm = 600.0f;
             constexpr float kDustBaseProb = 0.02f;
             constexpr float kGateDustBaseProb = 0.01f;
             constexpr float kDustSizeUm = 25.0f;
             constexpr float kGateDustSizeUm = 28.0f;
             constexpr float kDustStrength = 0.45f;
             constexpr float kGateDustStrength = 0.35f;
+            constexpr float kDustBrightMix = 0.20f;
+            constexpr float kDustBrightScale = 0.5f;
+            constexpr float kGateDustBrightMix = 0.15f;
+            constexpr float kGateDustBrightScale = 0.5f;
 
-            constexpr float kScratchCellPxX = 512.0f;
-            constexpr float kScratchCellPxY = 1024.0f;
-            constexpr float kGateScratchCellPxX = 512.0f;
-            constexpr float kGateScratchCellPxY = 512.0f;
+            constexpr float kScratchCellUmX = 3500.0f;
+            constexpr float kScratchCellUmY = 7000.0f;
+            constexpr float kGateScratchCellUmX = 3500.0f;
+            constexpr float kGateScratchCellUmY = 3500.0f;
             constexpr float kScratchBaseProb = 0.01f;
             constexpr float kGateScratchBaseProb = 0.008f;
             constexpr float kScratchWidthUm = 15.0f;
             constexpr float kGateScratchWidthUm = 12.0f;
             constexpr float kScratchStrength = 0.35f;
             constexpr float kGateScratchStrength = 0.30f;
+            constexpr float kScratchBrightMix = 0.10f;
+            constexpr float kScratchBrightScale = 0.4f;
+            constexpr float kGateScratchBrightMix = 0.08f;
+            constexpr float kGateScratchBrightScale = 0.4f;
             constexpr float kScratchMaxAngle = 0.08726646f;
+
+            const float dustCellPx = fmaxf(1.0f, kDustCellUm / grain.pixelSizeUm);
+            const float gateDustCellPx = fmaxf(1.0f, kGateDustCellUm / grain.pixelSizeUm);
+            const float scratchCellPxX = fmaxf(1.0f, kScratchCellUmX / grain.pixelSizeUm);
+            const float scratchCellPxY = fmaxf(1.0f, kScratchCellUmY / grain.pixelSizeUm);
+            const float gateScratchCellPxX = fmaxf(1.0f, kGateScratchCellUmX / grain.pixelSizeUm);
+            const float gateScratchCellPxY = fmaxf(1.0f, kGateScratchCellUmY / grain.pixelSizeUm);
 
             float filmMask = 0.0f;
             float gateMask = 0.0f;
             if (debugView == 5) {
                 filmMask = dust_mask_device(grain.filmDustAmount, absX, rollY, grain.pixelSizeUm, seedFilmDust,
-                    kDustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength);
+                    dustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
                 gateMask = dust_mask_device(grain.gateDustAmount, absX, absY, grain.pixelSizeUm, seedGateDust,
-                    kGateDustCellPx, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength);
+                    gateDustCellPx, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
             }
             else {
                 filmMask = scratch_mask_device(grain.filmScratchAmount, absX, rollY, grain.pixelSizeUm, seedFilmScratch,
-                    kScratchCellPxX, kScratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle);
+                    scratchCellPxX, scratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
                 gateMask = scratch_mask_device(grain.gateScratchAmount, absX, absY, grain.pixelSizeUm, seedGateScratch,
-                    kGateScratchCellPxX, kGateScratchCellPxY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength, kScratchMaxAngle);
+                    gateScratchCellPxX, gateScratchCellPxY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength, kScratchMaxAngle, kGateScratchBrightMix, kGateScratchBrightScale);
             }
             float mask = filmMask + gateMask;
             if (!device_isfinite(mask)) {
@@ -659,10 +696,12 @@ namespace {
             rgbOut[2] = static_cast<double>(rgbB[idx]);
         }
         if (debugView == 0) {
+            const float gateDustCellPx = fmaxf(1.0f, 600.0f / grain.pixelSizeUm);
+            const float gateScratchCellPx = fmaxf(1.0f, 3500.0f / grain.pixelSizeUm);
             const float gateDust = dust_mask_device(grain.gateDustAmount, absX, absY, grain.pixelSizeUm, seedGateDust,
-                96.0f, 0.01f, 28.0f, 0.35f);
+                gateDustCellPx, 0.01f, 28.0f, 0.35f, 0.15f, 0.5f);
             const float gateScratch = scratch_mask_device(grain.gateScratchAmount, absX, absY, grain.pixelSizeUm, seedGateScratch,
-                512.0f, 512.0f, 0.008f, 12.0f, 0.30f, 0.08726646f);
+                gateScratchCellPx, gateScratchCellPx, 0.008f, 12.0f, 0.30f, 0.08726646f, 0.08f, 0.4f);
             float gateMask = gateDust + gateScratch;
             if (device_isfinite(gateMask) && gateMask > 0.0f) {
                 gateMask = fminf(gateMask, 0.95f);
