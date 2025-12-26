@@ -1655,9 +1655,33 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
                 run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
                 run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
-                run.grain.debugView = std::clamp(grainUi.debugView, 0, 4);
+                run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
                 run.grain.microStructure[0] = grainUi.microStructure[0];
                 run.grain.microStructure[1] = grainUi.microStructure[1];
+                run.grain.filmDustAmount = std::isfinite(grainUi.filmDustAmount)
+                    ? std::clamp(grainUi.filmDustAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.gateDustAmount = std::isfinite(grainUi.gateDustAmount)
+                    ? std::clamp(grainUi.gateDustAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.filmScratchAmount = std::isfinite(grainUi.filmScratchAmount)
+                    ? std::clamp(grainUi.filmScratchAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.gateScratchAmount = std::isfinite(grainUi.gateScratchAmount)
+                    ? std::clamp(grainUi.gateScratchAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.filmDustAmount = std::isfinite(grainUi.filmDustAmount)
+                    ? std::clamp(grainUi.filmDustAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.gateDustAmount = std::isfinite(grainUi.gateDustAmount)
+                    ? std::clamp(grainUi.gateDustAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.filmScratchAmount = std::isfinite(grainUi.filmScratchAmount)
+                    ? std::clamp(grainUi.filmScratchAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.gateScratchAmount = std::isfinite(grainUi.gateScratchAmount)
+                    ? std::clamp(grainUi.gateScratchAmount, 0.0f, 10.0f)
+                    : 0.0f;
                 for (int i = 0; i < 3; ++i) {
                     run.grain.densityMin[i] = densityMin[i];
                     run.grain.uniformity[i] = uniformity[i];
@@ -1764,7 +1788,9 @@ void JuicerProcessor::processImagesCUDA() {
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
             const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
             const bool wantWeave = (run.gateWeave.active != 0);
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave;
+            const bool wantDefects = (run.grain.filmDustAmount > 0.0f) || (run.grain.gateDustAmount > 0.0f) ||
+                (run.grain.filmScratchAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
@@ -2580,7 +2606,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
                 run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
                 run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
-                run.grain.debugView = std::clamp(grainUi.debugView, 0, 4);
+                run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
                 run.grain.microStructure[0] = grainUi.microStructure[0];
                 run.grain.microStructure[1] = grainUi.microStructure[1];
                 for (int i = 0; i < 3; ++i) {
@@ -2693,7 +2719,9 @@ void JuicerProcessor::processImagesCUDA() {
                 std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
             const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
             const bool wantWeave = (run.gateWeave.active != 0);
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave;
+            const bool wantDefects = (run.grain.filmDustAmount > 0.0f) || (run.grain.gateDustAmount > 0.0f) ||
+                (run.grain.filmScratchAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
+            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
 
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {

@@ -197,6 +197,10 @@ private:
     OFX::ChoiceParam* _pGrainDebugView = nullptr;
     OFX::Double2DParam* _pGrainMicroStructure = nullptr;
     OFX::DoubleParam* _pGateWeaveAmount = nullptr;
+    OFX::DoubleParam* _pFilmDustAmount = nullptr;
+    OFX::DoubleParam* _pGateDustAmount = nullptr;
+    OFX::DoubleParam* _pFilmScratchAmount = nullptr;
+    OFX::DoubleParam* _pGateScratchAmount = nullptr;
 
     OFX::BooleanParam* _pGlareActive = nullptr;
     OFX::DoubleParam* _pGlarePercent = nullptr;

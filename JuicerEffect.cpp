@@ -644,11 +644,39 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     if (_pGrainDebugView) {
         _pGrainDebugView->getValue(debugView);
     }
-    grain.debugView = std::clamp(debugView, 0, 4);
+    grain.debugView = std::clamp(debugView, 0, 6);
 
     const std::array<double, 2> microStructure = read2(_pGrainMicroStructure, { {0.1, 30.0} }, 0.0, 1000.0);
     grain.microStructure[0] = static_cast<float>(microStructure[0]);
     grain.microStructure[1] = static_cast<float>(microStructure[1]);
+
+    double filmDust = 0.0;
+    if (_pFilmDustAmount) {
+        _pFilmDustAmount->getValue(filmDust);
+    }
+    filmDust = sanitize(filmDust, 0.0, 0.0, 10.0);
+    grain.filmDustAmount = static_cast<float>(filmDust);
+
+    double gateDust = 0.0;
+    if (_pGateDustAmount) {
+        _pGateDustAmount->getValue(gateDust);
+    }
+    gateDust = sanitize(gateDust, 0.0, 0.0, 10.0);
+    grain.gateDustAmount = static_cast<float>(gateDust);
+
+    double filmScratch = 0.0;
+    if (_pFilmScratchAmount) {
+        _pFilmScratchAmount->getValue(filmScratch);
+    }
+    filmScratch = sanitize(filmScratch, 0.0, 0.0, 10.0);
+    grain.filmScratchAmount = static_cast<float>(filmScratch);
+
+    double gateScratch = 0.0;
+    if (_pGateScratchAmount) {
+        _pGateScratchAmount->getValue(gateScratch);
+    }
+    gateScratch = sanitize(gateScratch, 0.0, 0.0, 10.0);
+    grain.gateScratchAmount = static_cast<float>(gateScratch);
 
     grain.nSubLayers = 1;
     return grain;
@@ -1207,6 +1235,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
         _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);
         _pGateWeaveAmount = fetchDoubleParam(JuicerParams::kGateWeaveAmount);
+        _pFilmDustAmount = fetchDoubleParam(JuicerParams::kFilmDustAmount);
+        _pGateDustAmount = fetchDoubleParam(JuicerParams::kGateDustAmount);
+        _pFilmScratchAmount = fetchDoubleParam(JuicerParams::kFilmScratchAmount);
+        _pGateScratchAmount = fetchDoubleParam(JuicerParams::kGateScratchAmount);
 
         _pGlareActive = fetchBooleanParam(JuicerParams::kGlareActive);
         _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);

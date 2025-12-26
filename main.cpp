@@ -738,8 +738,10 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption("Clump field");
             p->appendOption("Weave field");
             p->appendOption("Frame diff");
+            p->appendOption("Dust mask");
+            p->appendOption("Scratch mask");
             p->setDefault(0);
-            p->setHint("Debug view selector for grain/clump/weave fields.");
+            p->setHint("Debug view selector for grain/clump/weave/dust fields.");
             if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
@@ -798,14 +800,64 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
+    }
+
+    // Effects group
+    {
+        OFX::GroupParamDescriptor* grpEffects = desc.defineGroupParam("EffectsGroup");
+        if (grpEffects) {
+            grpEffects->setLabel("Effects");
+            grpEffects->setOpen(false);
+        }
+
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGateWeaveAmount);
             p->setLabel("Gate weave");
             p->setHint("Scales the global gate weave (film transport jitter).");
             p->setDefault(1.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 10.0);
+            if (grpEffects) p->setParent(*grpEffects);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kFilmDustAmount);
+            p->setLabel("Film dust");
+            p->setHint("Amount of film-local dust specks (strip space).");
+            p->setDefault(0.0);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 10.0);
+            if (grpEffects) p->setParent(*grpEffects);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGateDustAmount);
+            p->setLabel("Gate dust");
+            p->setHint("Amount of gate-local dust specks (sensor/gate space).");
+            p->setDefault(0.0);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 10.0);
+            if (grpEffects) p->setParent(*grpEffects);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kFilmScratchAmount);
+            p->setLabel("Film scratches");
+            p->setHint("Amount of film-local scratches (strip space).");
+            p->setDefault(0.0);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 10.0);
+            if (grpEffects) p->setParent(*grpEffects);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGateScratchAmount);
+            p->setLabel("Gate scratches");
+            p->setHint("Amount of gate-local scratches (sensor/gate space).");
+            p->setDefault(0.0);
+            p->setRange(0.0, 10.0);
+            p->setDisplayRange(0.0, 10.0);
+            if (grpEffects) p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
     }

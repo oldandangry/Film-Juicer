@@ -35,6 +35,10 @@ namespace JuicerParams {
     inline constexpr const char kGrainMicroStructure[] = "GrainMicroStructure";
     inline constexpr const char kGrainSubLayers[] = "GrainSubLayers";
     inline constexpr const char kGateWeaveAmount[] = "GateWeaveAmount";
+    inline constexpr const char kFilmDustAmount[] = "FilmDustAmount";
+    inline constexpr const char kGateDustAmount[] = "GateDustAmount";
+    inline constexpr const char kFilmScratchAmount[] = "FilmScratchAmount";
+    inline constexpr const char kGateScratchAmount[] = "GateScratchAmount";
     inline constexpr const char kGlareActive[] = "GlareActive";
     inline constexpr const char kGlarePercent[] = "GlarePercent";
     inline constexpr const char kGlareRoughness[] = "GlareRoughness";

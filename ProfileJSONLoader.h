@@ -39,6 +39,10 @@ namespace Profiles {
         int debugView = 0;
         std::array<float, 2> microStructure{ {0.0f, 0.0f} };
         int nSubLayers = 1;
+        float filmDustAmount = 0.0f;
+        float gateDustAmount = 0.0f;
+        float filmScratchAmount = 0.0f;
+        float gateScratchAmount = 0.0f;
     };
 
     struct HalationMetadata {

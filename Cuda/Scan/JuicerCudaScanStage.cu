@@ -78,6 +78,125 @@ __global__ void grain_layer_kernel(
     float* outGrain,
     int channelIndex,
     int sublayerIndex);
+
+namespace {
+
+    __device__ __forceinline__ std::uint64_t splitmix64_device(std::uint64_t x) {
+        x += 0x9E3779B97F4A7C15ULL;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+        return x ^ (x >> 31);
+    }
+
+    __device__ __forceinline__ float hash_to_unit_device(std::uint64_t h) {
+        constexpr float kInv = 1.0f / 16777216.0f; // 2^24
+        return static_cast<float>((h >> 40) & 0xFFFFFFu) * kInv;
+    }
+
+    __device__ __forceinline__ float smoothstep_device(float edge0, float edge1, float x) {
+        if (edge1 <= edge0) {
+            return (x < edge0) ? 0.0f : 1.0f;
+        }
+        float t = (x - edge0) / (edge1 - edge0);
+        t = fminf(fmaxf(t, 0.0f), 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    __device__ __forceinline__ float dust_mask_device(
+        float amount,
+        float x,
+        float y,
+        float pixelSizeUm,
+        std::uint64_t seed,
+        float cellPx,
+        float baseProb,
+        float sizeUm,
+        float strength)
+    {
+        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellPx > 0.0f)) {
+            return 0.0f;
+        }
+        const int cellX = static_cast<int>(floorf(x / cellPx));
+        const int cellY = static_cast<int>(floorf(y / cellPx));
+        std::uint64_t h = splitmix64_device(seed ^
+            (static_cast<std::uint64_t>(cellX) * 0x8EBC6AF09C88C6E3ULL) ^
+            (static_cast<std::uint64_t>(cellY) * 0x9E3779B97F4A7C15ULL));
+        const float u = hash_to_unit_device(h);
+        const float p = baseProb * amount;
+        if (u >= p) {
+            return 0.0f;
+        }
+        const float u1 = hash_to_unit_device(h ^ 0xBF58476D1CE4E5B9ULL);
+        const float u2 = hash_to_unit_device(h ^ 0x94D049BB133111EBULL);
+        const float u3 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
+        const float u4 = hash_to_unit_device(h ^ 0xA5A5A5A5A5A5A5A5ULL);
+        const float cx = (static_cast<float>(cellX) + u1) * cellPx;
+        const float cy = (static_cast<float>(cellY) + u2) * cellPx;
+        const float baseRadius = fmaxf(0.5f, sizeUm / pixelSizeUm);
+        const float radius = baseRadius * (0.5f + 1.2f * u3);
+        const float dx = x - cx;
+        const float dy = y - cy;
+        const float dist = sqrtf(dx * dx + dy * dy);
+        const float edge = fmaxf(0.5f, radius * 0.6f);
+        const float mask = 1.0f - smoothstep_device(radius, radius + edge, dist);
+        const float intensity = strength * amount * (0.5f + 0.5f * u4);
+        return mask * intensity;
+    }
+
+    __device__ __forceinline__ float scratch_mask_device(
+        float amount,
+        float x,
+        float y,
+        float pixelSizeUm,
+        std::uint64_t seed,
+        float cellPxX,
+        float cellPxY,
+        float baseProb,
+        float widthUm,
+        float strength,
+        float maxAngleRad)
+    {
+        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellPxX > 0.0f) || !(cellPxY > 0.0f)) {
+            return 0.0f;
+        }
+        const int cellX = static_cast<int>(floorf(x / cellPxX));
+        const int cellY = static_cast<int>(floorf(y / cellPxY));
+        std::uint64_t h = splitmix64_device(seed ^
+            (static_cast<std::uint64_t>(cellX) * 0xC6A4A7935BD1E995ULL) ^
+            (static_cast<std::uint64_t>(cellY) * 0xD2B74407B1CE6E93ULL));
+        const float u = hash_to_unit_device(h);
+        const float p = baseProb * amount;
+        if (u >= p) {
+            return 0.0f;
+        }
+        const float u1 = hash_to_unit_device(h ^ 0xBF58476D1CE4E5B9ULL);
+        const float u2 = hash_to_unit_device(h ^ 0x94D049BB133111EBULL);
+        const float u3 = hash_to_unit_device(h ^ 0xA5A5A5A5A5A5A5A5ULL);
+        const float u4 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
+        const float u5 = hash_to_unit_device(h ^ 0x9E3779B97F4A7C15ULL);
+        const float cx = (static_cast<float>(cellX) + u1) * cellPxX;
+        const float cy = (static_cast<float>(cellY) + u2) * cellPxY;
+        const float baseWidth = fmaxf(0.5f, widthUm / pixelSizeUm);
+        const float width = baseWidth * (0.6f + 1.4f * u3);
+        const float halfLen = cellPxY * (0.35f + 0.4f * u4);
+        const float angle = (u5 * 2.0f - 1.0f) * maxAngleRad;
+        const float c = cosf(angle);
+        const float s = sinf(angle);
+        const float dx = x - cx;
+        const float dy = y - cy;
+        const float dist = fabsf(dx * c - dy * s);
+        const float along = fabsf(dx * s + dy * c);
+        if (along > halfLen) {
+            return 0.0f;
+        }
+        const float edge = fmaxf(0.5f, width * 0.8f);
+        const float mask = 1.0f - smoothstep_device(width, width + edge, dist);
+        const float intensity = strength * amount * (0.5f + 0.5f * u2);
+        return mask * intensity;
+    }
+
+} // namespace
+
 __global__ void develop_print_density_kernel(
     JuicerCuda::PipelineRunParams params,
     float* ioC,
@@ -361,6 +480,71 @@ namespace {
         outB[idx] = static_cast<float>(rgbOut[2]);
     }
 
+    __global__ void apply_film_defects_kernel(
+        JuicerCuda::PipelineRunParams params,
+        float* ioC,
+        float* ioM,
+        float* ioY)
+    {
+        const JuicerCuda::GrainPayload& grain = params.grain;
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= params.width || y >= params.height) {
+            return;
+        }
+        if (!ioC || !ioM || !ioY) {
+            return;
+        }
+        const float dustAmount = grain.filmDustAmount;
+        const float scratchAmount = grain.filmScratchAmount;
+        if (!(dustAmount > 0.0f) && !(scratchAmount > 0.0f)) {
+            return;
+        }
+        if (!(grain.pixelSizeUm > 0.0f)) {
+            return;
+        }
+
+        const std::uint64_t seedBase = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t seedDust = splitmix64_device(seedBase ^ 0xF0D0C0B0A0908071ULL);
+        const std::uint64_t seedScratch = splitmix64_device(seedBase ^ 0x8EBC6AF09C88C6E3ULL);
+
+        const float time = static_cast<float>(grain.frameIndex) + grain.timeAlpha;
+        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
+
+        const float absX = static_cast<float>(grain.originX + x);
+        const float absY = static_cast<float>(grain.originY + y);
+        const float rollY = absY + rollPx * time;
+
+        constexpr float kDustCellPx = 64.0f;
+        constexpr float kDustBaseProb = 0.02f;
+        constexpr float kDustSizeUm = 25.0f;
+        constexpr float kDustStrength = 0.45f;
+
+        constexpr float kScratchCellPxX = 512.0f;
+        constexpr float kScratchCellPxY = 1024.0f;
+        constexpr float kScratchBaseProb = 0.01f;
+        constexpr float kScratchWidthUm = 15.0f;
+        constexpr float kScratchStrength = 0.35f;
+        constexpr float kScratchMaxAngle = 0.08726646f; // 5 deg
+
+        const float dustMask = dust_mask_device(
+            dustAmount, absX, rollY, grain.pixelSizeUm, seedDust,
+            kDustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength);
+        const float scratchMask = scratch_mask_device(
+            scratchAmount, absX, rollY, grain.pixelSizeUm, seedScratch,
+            kScratchCellPxX, kScratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle);
+        float delta = dustMask + scratchMask;
+        if (!device_isfinite(delta)) {
+            delta = 0.0f;
+        }
+        if (delta != 0.0f) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            ioC[idx] = ioC[idx] + delta;
+            ioM[idx] = ioM[idx] + delta;
+            ioY[idx] = ioY[idx] + delta;
+        }
+    }
+
     __global__ void scan_output_encode_kernel(
         JuicerCuda::PipelineRunParams params,
         const float* rgbR,
@@ -369,6 +553,7 @@ namespace {
     {
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
         const JuicerCuda::GateWeavePayload& weave = params.gateWeave;
+        const JuicerCuda::GrainPayload& grain = params.grain;
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
         const int y = blockIdx.y * blockDim.y + threadIdx.y;
         if (x >= params.width || y >= params.height) {
@@ -387,9 +572,64 @@ namespace {
             return;
         }
 
-        const int debugView = params.grain.debugView;
+        const int debugView = grain.debugView;
+        const float time = static_cast<float>(grain.frameIndex) + grain.timeAlpha;
+        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
+        const float absX = static_cast<float>(grain.originX + x);
+        const float absY = static_cast<float>(grain.originY + y);
+        const float rollY = absY + rollPx * time;
+        const std::uint64_t seedBase = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t seedFilmDust = splitmix64_device(seedBase ^ 0xF0D0C0B0A0908071ULL);
+        const std::uint64_t seedGateDust = splitmix64_device(seedBase ^ 0xA1B2C3D4E5F60718ULL);
+        const std::uint64_t seedFilmScratch = splitmix64_device(seedBase ^ 0x8EBC6AF09C88C6E3ULL);
+        const std::uint64_t seedGateScratch = splitmix64_device(seedBase ^ 0xC6A4A7935BD1E995ULL);
         double rgbOut[3];
-        if (debugView == 3) {
+        if (debugView == 5 || debugView == 6) {
+            constexpr float kDustCellPx = 64.0f;
+            constexpr float kGateDustCellPx = 96.0f;
+            constexpr float kDustBaseProb = 0.02f;
+            constexpr float kGateDustBaseProb = 0.01f;
+            constexpr float kDustSizeUm = 25.0f;
+            constexpr float kGateDustSizeUm = 28.0f;
+            constexpr float kDustStrength = 0.45f;
+            constexpr float kGateDustStrength = 0.35f;
+
+            constexpr float kScratchCellPxX = 512.0f;
+            constexpr float kScratchCellPxY = 1024.0f;
+            constexpr float kGateScratchCellPxX = 512.0f;
+            constexpr float kGateScratchCellPxY = 512.0f;
+            constexpr float kScratchBaseProb = 0.01f;
+            constexpr float kGateScratchBaseProb = 0.008f;
+            constexpr float kScratchWidthUm = 15.0f;
+            constexpr float kGateScratchWidthUm = 12.0f;
+            constexpr float kScratchStrength = 0.35f;
+            constexpr float kGateScratchStrength = 0.30f;
+            constexpr float kScratchMaxAngle = 0.08726646f;
+
+            float filmMask = 0.0f;
+            float gateMask = 0.0f;
+            if (debugView == 5) {
+                filmMask = dust_mask_device(grain.filmDustAmount, absX, rollY, grain.pixelSizeUm, seedFilmDust,
+                    kDustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength);
+                gateMask = dust_mask_device(grain.gateDustAmount, absX, absY, grain.pixelSizeUm, seedGateDust,
+                    kGateDustCellPx, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength);
+            }
+            else {
+                filmMask = scratch_mask_device(grain.filmScratchAmount, absX, rollY, grain.pixelSizeUm, seedFilmScratch,
+                    kScratchCellPxX, kScratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle);
+                gateMask = scratch_mask_device(grain.gateScratchAmount, absX, absY, grain.pixelSizeUm, seedGateScratch,
+                    kGateScratchCellPxX, kGateScratchCellPxY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength, kScratchMaxAngle);
+            }
+            float mask = filmMask + gateMask;
+            if (!device_isfinite(mask)) {
+                mask = 0.0f;
+            }
+            mask = fminf(fmaxf(mask, 0.0f), 1.0f);
+            rgbOut[0] = static_cast<double>(mask);
+            rgbOut[1] = static_cast<double>(mask);
+            rgbOut[2] = static_cast<double>(mask);
+        }
+        else if (debugView == 3) {
             const float scale = (weave.debugScalePx > 1e-6f) ? weave.debugScalePx : 1.0f;
             float r = 0.5f + 0.5f * (weave.dxPx / scale);
             float g = 0.5f + 0.5f * (weave.dyPx / scale);
@@ -419,6 +659,18 @@ namespace {
             rgbOut[2] = static_cast<double>(rgbB[idx]);
         }
         if (debugView == 0) {
+            const float gateDust = dust_mask_device(grain.gateDustAmount, absX, absY, grain.pixelSizeUm, seedGateDust,
+                96.0f, 0.01f, 28.0f, 0.35f);
+            const float gateScratch = scratch_mask_device(grain.gateScratchAmount, absX, absY, grain.pixelSizeUm, seedGateScratch,
+                512.0f, 512.0f, 0.008f, 12.0f, 0.30f, 0.08726646f);
+            float gateMask = gateDust + gateScratch;
+            if (device_isfinite(gateMask) && gateMask > 0.0f) {
+                gateMask = fminf(gateMask, 0.95f);
+                const float trans = 1.0f - gateMask;
+                rgbOut[0] *= static_cast<double>(trans);
+                rgbOut[1] *= static_cast<double>(trans);
+                rgbOut[2] *= static_cast<double>(trans);
+            }
             apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
         }
 
@@ -701,6 +953,15 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                 err = blur_plane_in_place(dRgbB, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
                 if (err != cudaSuccess) return err;
             }
+        }
+    }
+
+    const bool doFilmDefects = (grain.filmDustAmount > 0.0f) || (grain.filmScratchAmount > 0.0f);
+    if (grain.debugView == 0 && doFilmDefects) {
+        apply_film_defects_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            return err;
         }
     }
 
