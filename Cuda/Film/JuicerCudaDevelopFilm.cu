@@ -137,8 +137,9 @@ namespace {
             driftY = sinf(angle) * driftPx;
         }
 
+        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
         const float baseX = static_cast<float>(absX) + driftX * time;
-        const float baseY = static_cast<float>(absY) + driftY * time;
+        const float baseY = static_cast<float>(absY) + driftY * time + rollPx * time;
 
         const float xSmall = baseX / cellSmallPx;
         const float ySmall = baseY / cellSmallPx;
@@ -215,8 +216,9 @@ namespace {
             driftY = sinf(angle) * driftPx;
         }
 
+        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
         const float baseX = static_cast<float>(absX) + driftX * time;
-        const float baseY = static_cast<float>(absY) + driftY * time;
+        const float baseY = static_cast<float>(absY) + driftY * time + rollPx * time;
         const float x = baseX / cellPx;
         const float y = baseY / cellPx;
 
