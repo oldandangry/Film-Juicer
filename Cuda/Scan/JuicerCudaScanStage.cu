@@ -108,23 +108,27 @@ namespace {
         float y,
         float pixelSizeUm,
         std::uint64_t seed,
-        float cellPx,
-        float baseProb,
+        float cellMm,
+        float lambdaPerMm2,
         float sizeUm,
         float strength,
         float brightMix,
         float brightScale)
     {
-        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellPx > 0.0f)) {
+        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellMm > 0.0f)) {
             return 0.0f;
         }
-        const int cellX = static_cast<int>(floorf(x / cellPx));
-        const int cellY = static_cast<int>(floorf(y / cellPx));
+        const float amountProb = fmaxf(amount, 0.0f);
+        const float probScale = amountProb * amountProb;
+        const float intensityScale = amountProb;
+        const int cellX = static_cast<int>(floorf(x / cellMm));
+        const int cellY = static_cast<int>(floorf(y / cellMm));
         std::uint64_t h = splitmix64_device(seed ^
             (static_cast<std::uint64_t>(cellX) * 0x8EBC6AF09C88C6E3ULL) ^
             (static_cast<std::uint64_t>(cellY) * 0x9E3779B97F4A7C15ULL));
         const float u = hash_to_unit_device(h);
-        const float p = baseProb * amount;
+        const float areaMm2 = cellMm * cellMm;
+        const float p = 1.0f - expf(-lambdaPerMm2 * probScale * areaMm2);
         if (u >= p) {
             return 0.0f;
         }
@@ -133,16 +137,16 @@ namespace {
         const float u3 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
         const float u4 = hash_to_unit_device(h ^ 0xA5A5A5A5A5A5A5A5ULL);
         const float u5 = hash_to_unit_device(h ^ 0x8EBC6AF09C88C6E3ULL);
-        const float cx = (static_cast<float>(cellX) + u1) * cellPx;
-        const float cy = (static_cast<float>(cellY) + u2) * cellPx;
-        const float baseRadius = fmaxf(0.5f, sizeUm / pixelSizeUm);
+        const float cx = (static_cast<float>(cellX) + u1) * cellMm;
+        const float cy = (static_cast<float>(cellY) + u2) * cellMm;
+        const float baseRadius = fmaxf(0.0005f, sizeUm * 0.001f);
         const float radius = baseRadius * (0.5f + 1.2f * u3);
         const float dx = x - cx;
         const float dy = y - cy;
         const float dist = sqrtf(dx * dx + dy * dy);
-        const float edge = fmaxf(0.5f, radius * 0.6f);
+        const float edge = fmaxf(0.0005f, radius * 0.6f);
         const float mask = 1.0f - smoothstep_device(radius, radius + edge, dist);
-        float intensity = strength * amount * (0.5f + 0.5f * u4);
+        float intensity = strength * intensityScale * (0.5f + 0.5f * u4);
         if (u5 < brightMix) {
             intensity *= brightScale;
             return -mask * intensity;
@@ -156,25 +160,28 @@ namespace {
         float y,
         float pixelSizeUm,
         std::uint64_t seed,
-        float cellPxX,
-        float cellPxY,
-        float baseProb,
+        float cellMmX,
+        float cellMmY,
+        float lambdaPerMm,
         float widthUm,
         float strength,
         float maxAngleRad,
         float brightMix,
         float brightScale)
     {
-        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellPxX > 0.0f) || !(cellPxY > 0.0f)) {
+        if (!(amount > 0.0f) || !(pixelSizeUm > 0.0f) || !(cellMmX > 0.0f) || !(cellMmY > 0.0f)) {
             return 0.0f;
         }
-        const int cellX = static_cast<int>(floorf(x / cellPxX));
-        const int cellY = static_cast<int>(floorf(y / cellPxY));
+        const float amountProb = fmaxf(amount, 0.0f);
+        const float probScale = amountProb * amountProb;
+        const float intensityScale = amountProb;
+        const int cellX = static_cast<int>(floorf(x / cellMmX));
+        const int cellY = static_cast<int>(floorf(y / cellMmY));
         std::uint64_t h = splitmix64_device(seed ^
             (static_cast<std::uint64_t>(cellX) * 0xC6A4A7935BD1E995ULL) ^
             (static_cast<std::uint64_t>(cellY) * 0xD2B74407B1CE6E93ULL));
         const float u = hash_to_unit_device(h);
-        const float p = baseProb * amount;
+        const float p = 1.0f - expf(-lambdaPerMm * probScale * cellMmY);
         if (u >= p) {
             return 0.0f;
         }
@@ -184,11 +191,11 @@ namespace {
         const float u4 = hash_to_unit_device(h ^ 0xD6E8FEB86659FD93ULL);
         const float u5 = hash_to_unit_device(h ^ 0x9E3779B97F4A7C15ULL);
         const float u6 = hash_to_unit_device(h ^ 0x8EBC6AF09C88C6E3ULL);
-        const float cx = (static_cast<float>(cellX) + u1) * cellPxX;
-        const float cy = (static_cast<float>(cellY) + u2) * cellPxY;
-        const float baseWidth = fmaxf(0.5f, widthUm / pixelSizeUm);
+        const float cx = (static_cast<float>(cellX) + u1) * cellMmX;
+        const float cy = (static_cast<float>(cellY) + u2) * cellMmY;
+        const float baseWidth = fmaxf(0.0005f, widthUm * 0.001f);
         const float width = baseWidth * (0.6f + 1.4f * u3);
-        const float halfLen = cellPxY * (0.35f + 0.4f * u4);
+        const float halfLen = cellMmY * (0.35f + 0.4f * u4);
         const float angle = (u5 * 2.0f - 1.0f) * maxAngleRad;
         const float c = cosf(angle);
         const float s = sinf(angle);
@@ -199,9 +206,9 @@ namespace {
         if (along > halfLen) {
             return 0.0f;
         }
-        const float edge = fmaxf(0.5f, width * 0.8f);
+        const float edge = fmaxf(0.0005f, width * 0.8f);
         const float mask = 1.0f - smoothstep_device(width, width + edge, dist);
-        float intensity = strength * amount * (0.5f + 0.5f * u2);
+        float intensity = strength * intensityScale * (0.5f + 0.5f * u2);
         if (u6 < brightMix) {
             intensity *= brightScale;
             return -mask * intensity;
@@ -237,16 +244,16 @@ namespace {
         constexpr float kGateScratchBrightScale = 0.4f;
         constexpr float kGateScratchMaxAngle = 0.08726646f;
 
-        const float gateDustCellPx = fmaxf(1.0f, kGateDustCellUm / pixelSizeUm);
-        const float gateScratchCellPxX = fmaxf(1.0f, kGateScratchCellUmX / pixelSizeUm);
-        const float gateScratchCellPxY = fmaxf(1.0f, kGateScratchCellUmY / pixelSizeUm);
+        const float gateDustCellMm = kGateDustCellUm * 0.001f;
+        const float gateScratchCellMmX = kGateScratchCellUmX * 0.001f;
+        const float gateScratchCellMmY = kGateScratchCellUmY * 0.001f;
 
         const float gateDust = dust_mask_device(
             dustAmount, x, y, pixelSizeUm, seedDust,
-            gateDustCellPx, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
+            gateDustCellMm, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
         const float gateScratch = scratch_mask_device(
             scratchAmount, x, y, pixelSizeUm, seedScratch,
-            gateScratchCellPxX, gateScratchCellPxY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength,
+            gateScratchCellMmX, gateScratchCellMmY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength,
             kGateScratchMaxAngle, kGateScratchBrightMix, kGateScratchBrightScale);
         float gateMask = gateDust + gateScratch;
         if (!device_isfinite(gateMask)) {
@@ -622,16 +629,19 @@ namespace {
         constexpr float kScratchBrightScale = 0.4f;
         constexpr float kScratchMaxAngle = 0.08726646f; // 5 deg
 
-        const float dustCellPx = fmaxf(1.0f, kDustCellUm / grain.pixelSizeUm);
-        const float scratchCellPxX = fmaxf(1.0f, kScratchCellUmX / grain.pixelSizeUm);
-        const float scratchCellPxY = fmaxf(1.0f, kScratchCellUmY / grain.pixelSizeUm);
+        const float pixelToMm = grain.pixelSizeUm * 0.001f;
+        const float dustCellMm = kDustCellUm * 0.001f;
+        const float scratchCellMmX = kScratchCellUmX * 0.001f;
+        const float scratchCellMmY = kScratchCellUmY * 0.001f;
+        const float xMm = absX * pixelToMm;
+        const float rollYMm = rollY * pixelToMm;
 
         const float dustMask = dust_mask_device(
-            dustAmount, absX, rollY, grain.pixelSizeUm, seedDust,
-            dustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
+            dustAmount, xMm, rollYMm, grain.pixelSizeUm, seedDust,
+            dustCellMm, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
         const float scratchMask = scratch_mask_device(
-            scratchAmount, absX, rollY, grain.pixelSizeUm, seedScratch,
-            scratchCellPxX, scratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
+            scratchAmount, xMm, rollYMm, grain.pixelSizeUm, seedScratch,
+            scratchCellMmX, scratchCellMmY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
         float delta = dustMask + scratchMask;
         if (!device_isfinite(delta)) {
             delta = 0.0f;
@@ -675,14 +685,17 @@ namespace {
         const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
         const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
 
+        const float pixelToMm = grain.pixelSizeUm * 0.001f;
         const float absX = static_cast<float>(grain.originX) + static_cast<float>(x) * 2.0f;
         const float absY = static_cast<float>(grain.originY) + static_cast<float>(y) * 2.0f;
+        const float xMm = absX * pixelToMm;
+        const float yMm = absY * pixelToMm;
 
         const float gateMask = gate_mask_device(
             dustAmount,
             scratchAmount,
-            absX,
-            absY,
+            xMm,
+            yMm,
             grain.pixelSizeUm,
             seedGateDust,
             seedGateScratch);
@@ -723,6 +736,10 @@ namespace {
         const float absX = static_cast<float>(grain.originX + x);
         const float absY = static_cast<float>(grain.originY + y);
         const float rollY = absY + rollPx * time;
+        const float pixelToMm = grain.pixelSizeUm * 0.001f;
+        const float xMm = absX * pixelToMm;
+        const float yMm = absY * pixelToMm;
+        const float rollYMm = rollY * pixelToMm;
         const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
         const std::uint64_t clipSeed = splitmix64_device(grain.clipToken ^ 0xD1B54A32D192ED03ULL);
         const std::uint64_t seedBaseFilm = sessionSeed ^ clipSeed;
@@ -762,26 +779,26 @@ namespace {
             constexpr float kGateScratchBrightScale = 0.4f;
             constexpr float kScratchMaxAngle = 0.08726646f;
 
-            const float dustCellPx = fmaxf(1.0f, kDustCellUm / grain.pixelSizeUm);
-            const float gateDustCellPx = fmaxf(1.0f, kGateDustCellUm / grain.pixelSizeUm);
-            const float scratchCellPxX = fmaxf(1.0f, kScratchCellUmX / grain.pixelSizeUm);
-            const float scratchCellPxY = fmaxf(1.0f, kScratchCellUmY / grain.pixelSizeUm);
-            const float gateScratchCellPxX = fmaxf(1.0f, kGateScratchCellUmX / grain.pixelSizeUm);
-            const float gateScratchCellPxY = fmaxf(1.0f, kGateScratchCellUmY / grain.pixelSizeUm);
+            const float dustCellMm = kDustCellUm * 0.001f;
+            const float gateDustCellMm = kGateDustCellUm * 0.001f;
+            const float scratchCellMmX = kScratchCellUmX * 0.001f;
+            const float scratchCellMmY = kScratchCellUmY * 0.001f;
+            const float gateScratchCellMmX = kGateScratchCellUmX * 0.001f;
+            const float gateScratchCellMmY = kGateScratchCellUmY * 0.001f;
 
             float filmMask = 0.0f;
             float gateMask = 0.0f;
             if (debugView == 5) {
-                filmMask = dust_mask_device(grain.filmDustAmount, absX, rollY, grain.pixelSizeUm, seedFilmDust,
-                    dustCellPx, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
-                gateMask = dust_mask_device(grain.gateDustAmount, absX, absY, grain.pixelSizeUm, seedGateDust,
-                    gateDustCellPx, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
+                filmMask = dust_mask_device(grain.filmDustAmount, xMm, rollYMm, grain.pixelSizeUm, seedFilmDust,
+                    dustCellMm, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
+                gateMask = dust_mask_device(grain.gateDustAmount, xMm, yMm, grain.pixelSizeUm, seedGateDust,
+                    gateDustCellMm, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
             }
             else {
-                filmMask = scratch_mask_device(grain.filmScratchAmount, absX, rollY, grain.pixelSizeUm, seedFilmScratch,
-                    scratchCellPxX, scratchCellPxY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
-                gateMask = scratch_mask_device(grain.gateScratchAmount, absX, absY, grain.pixelSizeUm, seedGateScratch,
-                    gateScratchCellPxX, gateScratchCellPxY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength, kScratchMaxAngle, kGateScratchBrightMix, kGateScratchBrightScale);
+                filmMask = scratch_mask_device(grain.filmScratchAmount, xMm, rollYMm, grain.pixelSizeUm, seedFilmScratch,
+                    scratchCellMmX, scratchCellMmY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
+                gateMask = scratch_mask_device(grain.gateScratchAmount, xMm, yMm, grain.pixelSizeUm, seedGateScratch,
+                    gateScratchCellMmX, gateScratchCellMmY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength, kScratchMaxAngle, kGateScratchBrightMix, kGateScratchBrightScale);
             }
             float mask = filmMask + gateMask;
             if (!device_isfinite(mask)) {
@@ -834,8 +851,8 @@ namespace {
                     gateMask = gate_mask_device(
                         grain.gateDustAmount,
                         grain.gateScratchAmount,
-                        absX,
-                        absY,
+                        xMm,
+                        yMm,
                         grain.pixelSizeUm,
                         seedGateDust,
                         seedGateScratch);
