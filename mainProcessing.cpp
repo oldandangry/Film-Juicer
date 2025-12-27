@@ -1678,18 +1678,6 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.gateScratchAmount = std::isfinite(grainUi.gateScratchAmount)
                     ? std::clamp(grainUi.gateScratchAmount, 0.0f, 10.0f)
                     : 0.0f;
-                run.grain.filmDustAmount = std::isfinite(grainUi.filmDustAmount)
-                    ? std::clamp(grainUi.filmDustAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.gateDustAmount = std::isfinite(grainUi.gateDustAmount)
-                    ? std::clamp(grainUi.gateDustAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.filmScratchAmount = std::isfinite(grainUi.filmScratchAmount)
-                    ? std::clamp(grainUi.filmScratchAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.gateScratchAmount = std::isfinite(grainUi.gateScratchAmount)
-                    ? std::clamp(grainUi.gateScratchAmount, 0.0f, 10.0f)
-                    : 0.0f;
                 for (int i = 0; i < 3; ++i) {
                     run.grain.densityMin[i] = densityMin[i];
                     run.grain.uniformity[i] = uniformity[i];
