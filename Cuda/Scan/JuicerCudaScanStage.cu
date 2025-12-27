@@ -209,6 +209,81 @@ namespace {
         return mask * intensity;
     }
 
+    __device__ __forceinline__ float gate_mask_device(
+        float dustAmount,
+        float scratchAmount,
+        float x,
+        float y,
+        float pixelSizeUm,
+        std::uint64_t seedDust,
+        std::uint64_t seedScratch)
+    {
+        if (!(pixelSizeUm > 0.0f)) {
+            return 0.0f;
+        }
+        constexpr float kGateDustCellUm = 600.0f;
+        constexpr float kGateDustBaseProb = 0.01f;
+        constexpr float kGateDustSizeUm = 28.0f;
+        constexpr float kGateDustStrength = 0.35f;
+        constexpr float kGateDustBrightMix = 0.15f;
+        constexpr float kGateDustBrightScale = 0.5f;
+
+        constexpr float kGateScratchCellUmX = 3500.0f;
+        constexpr float kGateScratchCellUmY = 3500.0f;
+        constexpr float kGateScratchBaseProb = 0.008f;
+        constexpr float kGateScratchWidthUm = 12.0f;
+        constexpr float kGateScratchStrength = 0.30f;
+        constexpr float kGateScratchBrightMix = 0.08f;
+        constexpr float kGateScratchBrightScale = 0.4f;
+        constexpr float kGateScratchMaxAngle = 0.08726646f;
+
+        const float gateDustCellPx = fmaxf(1.0f, kGateDustCellUm / pixelSizeUm);
+        const float gateScratchCellPxX = fmaxf(1.0f, kGateScratchCellUmX / pixelSizeUm);
+        const float gateScratchCellPxY = fmaxf(1.0f, kGateScratchCellUmY / pixelSizeUm);
+
+        const float gateDust = dust_mask_device(
+            dustAmount, x, y, pixelSizeUm, seedDust,
+            gateDustCellPx, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
+        const float gateScratch = scratch_mask_device(
+            scratchAmount, x, y, pixelSizeUm, seedScratch,
+            gateScratchCellPxX, gateScratchCellPxY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength,
+            kGateScratchMaxAngle, kGateScratchBrightMix, kGateScratchBrightScale);
+        float gateMask = gateDust + gateScratch;
+        if (!device_isfinite(gateMask)) {
+            gateMask = 0.0f;
+        }
+        return gateMask;
+    }
+
+    __device__ __forceinline__ float sample_gate_mask_device(
+        const float* mask,
+        int width,
+        int height,
+        float x,
+        float y)
+    {
+        if (!mask || width <= 0 || height <= 0) {
+            return 0.0f;
+        }
+        const float fx = fminf(fmaxf(x, 0.0f), static_cast<float>(width - 1));
+        const float fy = fminf(fmaxf(y, 0.0f), static_cast<float>(height - 1));
+        const int x0 = static_cast<int>(floorf(fx));
+        const int y0 = static_cast<int>(floorf(fy));
+        const int x1 = (x0 + 1 < width) ? (x0 + 1) : x0;
+        const int y1 = (y0 + 1 < height) ? (y0 + 1) : y0;
+        const float tx = fx - static_cast<float>(x0);
+        const float ty = fy - static_cast<float>(y0);
+        const int row0 = y0 * width;
+        const int row1 = y1 * width;
+        const float m00 = ldg_f(mask + row0 + x0);
+        const float m10 = ldg_f(mask + row0 + x1);
+        const float m01 = ldg_f(mask + row1 + x0);
+        const float m11 = ldg_f(mask + row1 + x1);
+        const float m0 = m00 + (m10 - m00) * tx;
+        const float m1 = m01 + (m11 - m01) * tx;
+        return m0 + (m1 - m0) * ty;
+    }
+
 } // namespace
 
 __global__ void develop_print_density_kernel(
@@ -518,7 +593,9 @@ namespace {
             return;
         }
 
-        const std::uint64_t seedBase = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t clipSeed = splitmix64_device(grain.clipToken ^ 0xD1B54A32D192ED03ULL);
+        const std::uint64_t seedBase = sessionSeed ^ clipSeed;
         const std::uint64_t seedDust = splitmix64_device(seedBase ^ 0xF0D0C0B0A0908071ULL);
         const std::uint64_t seedScratch = splitmix64_device(seedBase ^ 0x8EBC6AF09C88C6E3ULL);
 
@@ -567,6 +644,52 @@ namespace {
         }
     }
 
+    __global__ void gate_defect_mask_kernel(
+        JuicerCuda::PipelineRunParams params,
+        float* outMask,
+        int maskWidth,
+        int maskHeight)
+    {
+        const JuicerCuda::GrainPayload& grain = params.grain;
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= maskWidth || y >= maskHeight) {
+            return;
+        }
+        if (!outMask) {
+            return;
+        }
+
+        const float dustAmount = grain.gateDustAmount;
+        const float scratchAmount = grain.gateScratchAmount;
+        if (!(dustAmount > 0.0f) && !(scratchAmount > 0.0f)) {
+            outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = 0.0f;
+            return;
+        }
+        if (!(grain.pixelSizeUm > 0.0f)) {
+            outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = 0.0f;
+            return;
+        }
+
+        const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
+        const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
+
+        const float absX = static_cast<float>(grain.originX) + static_cast<float>(x) * 2.0f;
+        const float absY = static_cast<float>(grain.originY) + static_cast<float>(y) * 2.0f;
+
+        const float gateMask = gate_mask_device(
+            dustAmount,
+            scratchAmount,
+            absX,
+            absY,
+            grain.pixelSizeUm,
+            seedGateDust,
+            seedGateScratch);
+
+        outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = gateMask;
+    }
+
     __global__ void scan_output_encode_kernel(
         JuicerCuda::PipelineRunParams params,
         const float* rgbR,
@@ -600,11 +723,14 @@ namespace {
         const float absX = static_cast<float>(grain.originX + x);
         const float absY = static_cast<float>(grain.originY + y);
         const float rollY = absY + rollPx * time;
-        const std::uint64_t seedBase = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t seedFilmDust = splitmix64_device(seedBase ^ 0xF0D0C0B0A0908071ULL);
-        const std::uint64_t seedGateDust = splitmix64_device(seedBase ^ 0xA1B2C3D4E5F60718ULL);
-        const std::uint64_t seedFilmScratch = splitmix64_device(seedBase ^ 0x8EBC6AF09C88C6E3ULL);
-        const std::uint64_t seedGateScratch = splitmix64_device(seedBase ^ 0xC6A4A7935BD1E995ULL);
+        const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t clipSeed = splitmix64_device(grain.clipToken ^ 0xD1B54A32D192ED03ULL);
+        const std::uint64_t seedBaseFilm = sessionSeed ^ clipSeed;
+        const std::uint64_t seedBaseGate = sessionSeed;
+        const std::uint64_t seedFilmDust = splitmix64_device(seedBaseFilm ^ 0xF0D0C0B0A0908071ULL);
+        const std::uint64_t seedGateDust = splitmix64_device(seedBaseGate ^ 0xA1B2C3D4E5F60718ULL);
+        const std::uint64_t seedFilmScratch = splitmix64_device(seedBaseFilm ^ 0x8EBC6AF09C88C6E3ULL);
+        const std::uint64_t seedGateScratch = splitmix64_device(seedBaseGate ^ 0xC6A4A7935BD1E995ULL);
         double rgbOut[3];
         if (debugView == 5 || debugView == 6) {
             constexpr float kDustCellUm = 400.0f;
@@ -696,19 +822,31 @@ namespace {
             rgbOut[2] = static_cast<double>(rgbB[idx]);
         }
         if (debugView == 0) {
-            const float gateDustCellPx = fmaxf(1.0f, 600.0f / grain.pixelSizeUm);
-            const float gateScratchCellPx = fmaxf(1.0f, 3500.0f / grain.pixelSizeUm);
-            const float gateDust = dust_mask_device(grain.gateDustAmount, absX, absY, grain.pixelSizeUm, seedGateDust,
-                gateDustCellPx, 0.01f, 28.0f, 0.35f, 0.15f, 0.5f);
-            const float gateScratch = scratch_mask_device(grain.gateScratchAmount, absX, absY, grain.pixelSizeUm, seedGateScratch,
-                gateScratchCellPx, gateScratchCellPx, 0.008f, 12.0f, 0.30f, 0.08726646f, 0.08f, 0.4f);
-            float gateMask = gateDust + gateScratch;
-            if (device_isfinite(gateMask) && gateMask > 0.0f) {
-                gateMask = fminf(gateMask, 0.95f);
-                const float trans = 1.0f - gateMask;
-                rgbOut[0] *= static_cast<double>(trans);
-                rgbOut[1] *= static_cast<double>(trans);
-                rgbOut[2] *= static_cast<double>(trans);
+            const bool gateActive = (grain.gateDustAmount > 0.0f) || (grain.gateScratchAmount > 0.0f);
+            if (gateActive) {
+                float gateMask = 0.0f;
+                if (grain.gateMask && grain.gateMaskWidth > 0 && grain.gateMaskHeight > 0) {
+                    const float maskX = (absX - static_cast<float>(grain.originX)) * 0.5f;
+                    const float maskY = (absY - static_cast<float>(grain.originY)) * 0.5f;
+                    gateMask = sample_gate_mask_device(grain.gateMask, grain.gateMaskWidth, grain.gateMaskHeight, maskX, maskY);
+                }
+                else {
+                    gateMask = gate_mask_device(
+                        grain.gateDustAmount,
+                        grain.gateScratchAmount,
+                        absX,
+                        absY,
+                        grain.pixelSizeUm,
+                        seedGateDust,
+                        seedGateScratch);
+                }
+                if (device_isfinite(gateMask) && gateMask != 0.0f) {
+                    gateMask = fminf(fmaxf(gateMask, -0.5f), 0.95f);
+                    const float trans = 1.0f - gateMask;
+                    rgbOut[0] *= static_cast<double>(trans);
+                    rgbOut[1] *= static_cast<double>(trans);
+                    rgbOut[2] *= static_cast<double>(trans);
+                }
             }
             apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
         }
@@ -728,6 +866,32 @@ namespace {
     }
 
 } // namespace
+
+extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
+    const JuicerCuda::PipelineRunParams* hParams,
+    float* dGateMask,
+    int gateWidth,
+    int gateHeight,
+    void* cudaStreamOpaque)
+{
+    if (!hParams || !dGateMask) {
+        return cudaErrorInvalidValue;
+    }
+
+    if (gateWidth <= 0 || gateHeight <= 0) {
+        return cudaSuccess;
+    }
+
+    const JuicerCuda::PipelineRunParams params = *hParams;
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    dim3 threads(32, 8);
+    dim3 blocks(
+        static_cast<unsigned int>((gateWidth + threads.x - 1) / threads.x),
+        static_cast<unsigned int>((gateHeight + threads.y - 1) / threads.y));
+    gate_defect_mask_kernel<<<blocks, threads, 0, stream>>>(params, dGateMask, gateWidth, gateHeight);
+    return cudaGetLastError();
+}
 
 extern "C" cudaError_t juicer_cuda_negative_pipeline(
     const JuicerCuda::PipelineRunParams* hParams,

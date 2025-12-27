@@ -360,9 +360,13 @@ namespace JuicerCuda {
         if (s.tmp) { cudaFree(s.tmp); s.tmp = nullptr; }
         if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
         if (s.aux) { cudaFree(s.aux); s.aux = nullptr; }
+        if (s.gateMask) { cudaFree(s.gateMask); s.gateMask = nullptr; }
 #endif
         s.width = 0;
         s.height = 0;
+        s.gateWidth = 0;
+        s.gateHeight = 0;
+        s.gateMaskHash = 0;
     }
 
     static void free_spatial_dir_scratch(Resources::DeviceSpatialDirScratch& s) noexcept {
@@ -1244,13 +1248,14 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)width;
         (void)height;
         (void)needBlurredScratch;
         (void)needAuxScratch;
+        (void)needGateMask;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
         return false;
@@ -1281,7 +1286,8 @@ namespace JuicerCuda {
         const bool haveBase = resources.scannerScratch.rgbR && resources.scannerScratch.rgbG && resources.scannerScratch.rgbB && resources.scannerScratch.tmp;
 
         if (!dimsMatch || !haveBase) {
-            if (resources.scannerScratch.rgbR || resources.scannerScratch.tmp || resources.scannerScratch.blurred || resources.scannerScratch.aux) {
+            if (resources.scannerScratch.rgbR || resources.scannerScratch.tmp || resources.scannerScratch.blurred ||
+                resources.scannerScratch.aux || resources.scannerScratch.gateMask) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -1365,6 +1371,42 @@ namespace JuicerCuda {
                 cudaFree(resources.scannerScratch.aux);
                 resources.scannerScratch.aux = nullptr;
             }
+        }
+
+        const int gateWidth = (width + 1) / 2;
+        const int gateHeight = (height + 1) / 2;
+        if (needGateMask) {
+            const bool gateDimsMatch = (resources.scannerScratch.gateWidth == gateWidth &&
+                resources.scannerScratch.gateHeight == gateHeight);
+            if (!resources.scannerScratch.gateMask || !gateDimsMatch) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "gate defect mask", outError)) {
+                    return false;
+                }
+                if (resources.scannerScratch.gateMask) {
+                    cudaFree(resources.scannerScratch.gateMask);
+                    resources.scannerScratch.gateMask = nullptr;
+                }
+                const size_t n = static_cast<size_t>(gateWidth) * static_cast<size_t>(gateHeight);
+                const size_t bytes = n * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.gateMask), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(scannerScratch.gateMask) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+                resources.scannerScratch.gateWidth = gateWidth;
+                resources.scannerScratch.gateHeight = gateHeight;
+                resources.scannerScratch.gateMaskHash = 0;
+            }
+        }
+        else if (resources.scannerScratch.gateMask) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "gate defect mask free", outError)) {
+                return false;
+            }
+            cudaFree(resources.scannerScratch.gateMask);
+            resources.scannerScratch.gateMask = nullptr;
+            resources.scannerScratch.gateWidth = 0;
+            resources.scannerScratch.gateHeight = 0;
+            resources.scannerScratch.gateMaskHash = 0;
         }
 
         return true;

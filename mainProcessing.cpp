@@ -32,6 +32,13 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline(
     const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque);
 
+extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
+    const JuicerCuda::PipelineRunParams* hParams,
+    float* dGateMask,
+    int gateWidth,
+    int gateHeight,
+    void* cudaStreamOpaque);
+
 extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     const JuicerCuda::PipelineRunParams* hParams,
     float* dCorrY,
@@ -1581,6 +1588,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
+                run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
                 run.grain.timeAlpha = timeAlpha;
                 run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
                 run.gateWeave.dxPx = weave.dxPx;
@@ -1790,6 +1798,7 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantWeave = (run.gateWeave.active != 0);
             const bool wantDefects = (run.grain.filmDustAmount > 0.0f) || (run.grain.gateDustAmount > 0.0f) ||
                 (run.grain.filmScratchAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
+            const bool needGateMask = (run.grain.gateDustAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
             const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
 
             cudaError_t err = cudaSuccess;
@@ -1800,13 +1809,55 @@ void JuicerProcessor::processImagesCUDA() {
                 std::string opticsError;
                 const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainMicroBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGateMask, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
 #else
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+                }
+                if (needGateMask && cudaResources->scannerScratch.gateMask) {
+                    struct GateMaskHashFields {
+                        std::uint64_t sessionSeed = 0;
+                        std::uint64_t originX = 0;
+                        std::uint64_t originY = 0;
+                        std::uint64_t width = 0;
+                        std::uint64_t height = 0;
+                        float pixelSizeUm = 0.0f;
+                        float gateDustAmount = 0.0f;
+                        float gateScratchAmount = 0.0f;
+                    };
+                    GateMaskHashFields fields{};
+                    fields.sessionSeed = run.grain.stbnSessionSeed;
+                    fields.originX = static_cast<std::uint64_t>(run.grain.originX);
+                    fields.originY = static_cast<std::uint64_t>(run.grain.originY);
+                    fields.width = static_cast<std::uint64_t>(width);
+                    fields.height = static_cast<std::uint64_t>(height);
+                    fields.pixelSizeUm = run.grain.pixelSizeUm;
+                    fields.gateDustAmount = run.grain.gateDustAmount;
+                    fields.gateScratchAmount = run.grain.gateScratchAmount;
+                    std::uint64_t gateHash = Hash::hash_bytes(&fields, sizeof(fields));
+                    if (gateHash == 0) {
+                        gateHash = 1;
+                    }
+                    if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
+                        cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
+                            &run,
+                            cudaResources->scannerScratch.gateMask,
+                            cudaResources->scannerScratch.gateWidth,
+                            cudaResources->scannerScratch.gateHeight,
+                            _pCudaStream);
+                        if (gateErr != cudaSuccess) {
+                            const char* msg = cudaGetErrorString(gateErr);
+                            JTRACE("CUDA", std::string("FATAL: gate defect mask build failed: ") + (msg ? msg : "(unknown)"));
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                        cudaResources->scannerScratch.gateMaskHash = gateHash;
+                    }
+                    run.grain.gateMask = cudaResources->scannerScratch.gateMask;
+                    run.grain.gateMaskWidth = cudaResources->scannerScratch.gateWidth;
+                    run.grain.gateMaskHeight = cudaResources->scannerScratch.gateHeight;
                 }
                 if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA lens blur kernel upload failed: ") + opticsError);
@@ -2532,6 +2583,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
                 run.grain.frameIndex = _frameIndex;
                 run.grain.stbnSessionSeed = sessionSeed;
+                run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
                 run.grain.timeAlpha = timeAlpha;
                 run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
                 run.gateWeave.dxPx = weave.dxPx;
@@ -2721,6 +2773,7 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantWeave = (run.gateWeave.active != 0);
             const bool wantDefects = (run.grain.filmDustAmount > 0.0f) || (run.grain.gateDustAmount > 0.0f) ||
                 (run.grain.filmScratchAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
+            const bool needGateMask = (run.grain.gateDustAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
             const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
 
             cudaError_t err = cudaSuccess;
@@ -2731,13 +2784,55 @@ void JuicerProcessor::processImagesCUDA() {
                 std::string opticsError;
                 const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainMicroBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGateMask, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
 #else
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
+                }
+                if (needGateMask && cudaResources->scannerScratch.gateMask) {
+                    struct GateMaskHashFields {
+                        std::uint64_t sessionSeed = 0;
+                        std::uint64_t originX = 0;
+                        std::uint64_t originY = 0;
+                        std::uint64_t width = 0;
+                        std::uint64_t height = 0;
+                        float pixelSizeUm = 0.0f;
+                        float gateDustAmount = 0.0f;
+                        float gateScratchAmount = 0.0f;
+                    };
+                    GateMaskHashFields fields{};
+                    fields.sessionSeed = run.grain.stbnSessionSeed;
+                    fields.originX = static_cast<std::uint64_t>(run.grain.originX);
+                    fields.originY = static_cast<std::uint64_t>(run.grain.originY);
+                    fields.width = static_cast<std::uint64_t>(width);
+                    fields.height = static_cast<std::uint64_t>(height);
+                    fields.pixelSizeUm = run.grain.pixelSizeUm;
+                    fields.gateDustAmount = run.grain.gateDustAmount;
+                    fields.gateScratchAmount = run.grain.gateScratchAmount;
+                    std::uint64_t gateHash = Hash::hash_bytes(&fields, sizeof(fields));
+                    if (gateHash == 0) {
+                        gateHash = 1;
+                    }
+                    if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
+                        cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
+                            &run,
+                            cudaResources->scannerScratch.gateMask,
+                            cudaResources->scannerScratch.gateWidth,
+                            cudaResources->scannerScratch.gateHeight,
+                            _pCudaStream);
+                        if (gateErr != cudaSuccess) {
+                            const char* msg = cudaGetErrorString(gateErr);
+                            JTRACE("CUDA", std::string("FATAL: gate defect mask build failed: ") + (msg ? msg : "(unknown)"));
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                        cudaResources->scannerScratch.gateMaskHash = gateHash;
+                    }
+                    run.grain.gateMask = cudaResources->scannerScratch.gateMask;
+                    run.grain.gateMaskWidth = cudaResources->scannerScratch.gateWidth;
+                    run.grain.gateMaskHeight = cudaResources->scannerScratch.gateHeight;
                 }
                 if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA lens blur kernel upload failed: ") + opticsError);

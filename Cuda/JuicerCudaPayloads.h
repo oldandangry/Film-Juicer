@@ -179,6 +179,7 @@ namespace JuicerCuda {
         std::int64_t frameIndex = 0;
         float timeAlpha = 0.0f;
         std::uint64_t stbnSessionSeed = 0;
+        std::uint64_t clipToken = 0;
         int breathingPeriodFrames = 0;
         float breathingAmplitude = 0.0f;
         float breathingCellUmSmall = 0.0f;
@@ -196,6 +197,9 @@ namespace JuicerCuda {
         float gateDustAmount = 0.0f;
         float filmScratchAmount = 0.0f;
         float gateScratchAmount = 0.0f;
+        const float* JUICER_RESTRICT gateMask = nullptr;
+        int gateMaskWidth = 0;
+        int gateMaskHeight = 0;
         float densityMin[3] = { 0.0f, 0.0f, 0.0f };
         float uniformity[3] = { 0.0f, 0.0f, 0.0f };
         float densityMax[3] = { 0.0f, 0.0f, 0.0f };
