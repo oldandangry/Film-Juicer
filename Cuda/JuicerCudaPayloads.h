@@ -180,6 +180,13 @@ namespace JuicerCuda {
         float timeAlpha = 0.0f;
         std::uint64_t stbnSessionSeed = 0;
         std::uint64_t clipToken = 0;
+        const std::uint8_t* JUICER_RESTRICT wangTiles = nullptr;
+        const std::uint8_t* JUICER_RESTRICT wangLut = nullptr;
+        int wangWidth = 0;
+        int wangHeight = 0;
+        int wangCount = 0;
+        int wangColors = 0;
+        float wangCellMm = 0.0f;
         int breathingPeriodFrames = 0;
         float breathingAmplitude = 0.0f;
         float breathingCellUmSmall = 0.0f;

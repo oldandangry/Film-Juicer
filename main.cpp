@@ -629,7 +629,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleAreaUm2);
             p->setLabel("Particle area (um^2)");
             p->setHint("Particle area in um^2; roughly 0.1 for ISO 100-200, 0.4 for ISO 400.");
-            p->setDefault(0.2);
+            p->setDefault(0.330);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 1.0);
             p->setIncrement(0.1);
@@ -640,7 +640,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleScaleMaster);
             p->setLabel("Particle scale (M)");
             p->setHint("Master control for particle scale; adjusts RGB values together.");
-            p->setDefault((0.8 + 1.0 + 2.0) / 3.0);
+            p->setDefault(1.826);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -650,7 +650,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
             p->setLabel("Particle scale layers (M)");
             p->setHint("Master control for sublayer particle scale; adjusts RGB values together.");
-            p->setDefault((2.5 + 1.0 + 0.5) / 3.0);
+            p->setDefault(1.922);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 4.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -660,7 +660,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainDensityMinMaster);
             p->setLabel("Density min (M)");
             p->setHint("Master control for minimum grain density; adjusts RGB values together.");
-            p->setDefault((0.07 + 0.08 + 0.12) / 3.0);
+            p->setDefault(0.09);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 0.2);
             if (grpGrain) p->setParent(*grpGrain);
@@ -670,7 +670,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainUniformityMaster);
             p->setLabel("Uniformity (M)");
             p->setHint("Master control for grain uniformity; adjusts RGB values together.");
-            p->setDefault((0.97 + 0.97 + 0.99) / 3.0);
+            p->setDefault(0.95);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.9, 1.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -700,7 +700,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixWeight);
             p->setLabel("Size mix weight");
             p->setHint("Weight of the coarse grain population in the size mixture.");
-            p->setDefault(0.30);
+            p->setDefault(0.25);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -710,7 +710,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixScale);
             p->setLabel("Size mix scale");
             p->setHint("Relative particle size scale for the coarse grain population.");
-            p->setDefault(3.0);
+            p->setDefault(9.0);
             p->setRange(1.0, 10.0);
             p->setDisplayRange(1.0, 10.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -749,7 +749,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScale);
             p->setLabel("Particle scale");
             p->setHint("Scale of particle area for the RGB layers (multiplies particle area).");
-            p->setDefault(0.8, 1.0, 2.0);
+            p->setDefault(1.359, 1.559, 2.559);
             p->setRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 3.0, 3.0, 3.0);
             p->setDimensionLabels("R", "G", "B");
@@ -760,7 +760,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
             p->setLabel("Particle scale layers");
             p->setHint("Scale of particle area for sublayers in each color layer.");
-            p->setDefault(2.5, 1.0, 0.5);
+            p->setDefault(3.089, 1.589, 1.089);
             p->setRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
             p->setDimensionLabels("R", "G", "B");
@@ -793,9 +793,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kGrainMicroStructure);
             p->setLabel("Micro-structure");
             p->setHint("Micro-structure parameters: blur (um) and clump size (nm).");
-            p->setDefault(0.1, 30.0);
-            p->setRange(0.0, 0.0, 10.0, 1000.0);
-            p->setDisplayRange(0.0, 0.0, 1.0, 200.0);
+            p->setDefault(60.0, 120.0);
+            p->setRange(0.0, 0.0, 100.0, 1000.0);
+            p->setDisplayRange(0.0, 0.0, 100.0, 200.0);
             p->setDimensionLabels("Blur (um)", "Clump (nm)");
             if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);

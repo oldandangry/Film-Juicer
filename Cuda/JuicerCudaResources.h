@@ -141,6 +141,12 @@ namespace JuicerCuda {
         int stbnWidth = 0;
         int stbnHeight = 0;
         int stbnFrames = 0;
+        std::uint8_t* wangTilesData = nullptr;
+        std::uint8_t* wangLutData = nullptr;
+        int wangWidth = 0;
+        int wangHeight = 0;
+        int wangCount = 0;
+        int wangColors = 0;
 
         // Print pipeline (PrintBypass=false) payloads.
         DeviceCurve printDcC;

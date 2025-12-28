@@ -19,6 +19,7 @@
 #include "Logging.h"
 #include "Hash.h"
 #include "SpectralContext.h"
+#include "nlohmann/json.hpp"
 
 extern const std::string gDataDir;
 
@@ -205,12 +206,29 @@ namespace JuicerCuda {
         bool valid = false;
     };
 
+    struct WangCpuCache {
+        std::vector<std::uint8_t> tiles;
+        std::vector<std::uint8_t> lut;
+        int width = 0;
+        int height = 0;
+        int count = 0;
+        int colors = 0;
+        bool loaded = false;
+        bool valid = false;
+    };
+
     static StbnCpuCache& stbn_cache() {
         static StbnCpuCache cache;
         return cache;
     }
 
+    static WangCpuCache& wang_cache() {
+        static WangCpuCache cache;
+        return cache;
+    }
+
     static std::atomic<bool> gStbnWarned{ false };
+    static std::atomic<bool> gWangWarned{ false };
 
     static bool load_stbn_cpu(StbnCpuCache& cache, std::string& outError) {
         if (cache.loaded) {
@@ -259,6 +277,124 @@ namespace JuicerCuda {
         return true;
     }
 
+    static std::size_t wang_lut_index(int l, int r, int t, int b, int colors) {
+        const std::size_t c = static_cast<std::size_t>(colors);
+        return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
+                  static_cast<std::size_t>(t)) * c +
+                static_cast<std::size_t>(b));
+    }
+
+    static bool load_wang_cpu(WangCpuCache& cache, std::string& outError) {
+        if (cache.loaded) {
+            return cache.valid;
+        }
+        cache.loaded = true;
+        cache.valid = false;
+
+        if (gDataDir.empty()) {
+            outError = "Wang tiles load failed: data directory missing";
+            return false;
+        }
+
+        std::filesystem::path base = std::filesystem::path(gDataDir) / "Noise" / "Wang";
+        base.make_preferred();
+        std::filesystem::path binPath = base / "wang_tiles_256x256x16_u8.bin";
+        std::filesystem::path jsonPath = base / "tiles.json";
+
+        if (!std::filesystem::exists(binPath) || !std::filesystem::exists(jsonPath)) {
+            outError = std::string("Wang tiles load failed: missing assets under ") + base.string();
+            return false;
+        }
+
+        std::ifstream jf(jsonPath);
+        if (!jf) {
+            outError = std::string("Wang tiles load failed: cannot open ") + jsonPath.string();
+            return false;
+        }
+
+        nlohmann::json root;
+        try {
+            jf >> root;
+        } catch (const std::exception& e) {
+            outError = std::string("Wang tiles load failed: invalid JSON ") + e.what();
+            return false;
+        }
+
+        if (!root.contains("resolution") || !root.contains("tiles") || !root.contains("colors") || !root.contains("mapping")) {
+            outError = "Wang tiles load failed: tiles.json missing required fields";
+            return false;
+        }
+
+        cache.width = root.value("resolution", 0);
+        cache.height = cache.width;
+        cache.count = root.value("tiles", 0);
+        cache.colors = root.value("colors", 0);
+        if (cache.width <= 0 || cache.height <= 0 || cache.count <= 0 || cache.colors <= 0) {
+            outError = "Wang tiles load failed: invalid metadata in tiles.json";
+            return false;
+        }
+
+        const std::size_t lutSize = static_cast<std::size_t>(cache.colors) *
+            static_cast<std::size_t>(cache.colors) *
+            static_cast<std::size_t>(cache.colors) *
+            static_cast<std::size_t>(cache.colors);
+        cache.lut.assign(lutSize, 0);
+
+        const auto& mapping = root["mapping"];
+        if (!mapping.is_array()) {
+            outError = "Wang tiles load failed: mapping is not an array";
+            return false;
+        }
+
+        for (const auto& entry : mapping) {
+            if (!entry.contains("index") || !entry.contains("labels")) {
+                continue;
+            }
+            const int idx = entry.value("index", 0);
+            const auto& labels = entry["labels"];
+            const int l = labels.value("L", 0);
+            const int r = labels.value("R", 0);
+            const int t = labels.value("T", 0);
+            const int b = labels.value("B", 0);
+            if (l < 0 || r < 0 || t < 0 || b < 0 ||
+                l >= cache.colors || r >= cache.colors || t >= cache.colors || b >= cache.colors) {
+                continue;
+            }
+            const std::size_t lutIndex = wang_lut_index(l, r, t, b, cache.colors);
+            if (lutIndex < cache.lut.size() && idx >= 0 && idx < cache.count) {
+                cache.lut[lutIndex] = static_cast<std::uint8_t>(idx);
+            }
+        }
+
+        std::ifstream bin(binPath, std::ios::binary | std::ios::ate);
+        if (!bin) {
+            outError = std::string("Wang tiles load failed: cannot open ") + binPath.string();
+            return false;
+        }
+        const std::streamsize size = bin.tellg();
+        if (size <= 0) {
+            outError = std::string("Wang tiles load failed: empty file ") + binPath.string();
+            return false;
+        }
+        const std::size_t expected = static_cast<std::size_t>(cache.width) *
+            static_cast<std::size_t>(cache.height) *
+            static_cast<std::size_t>(cache.count);
+        if (static_cast<std::size_t>(size) != expected) {
+            outError = std::string("Wang tiles load failed: unexpected size for ") + binPath.string();
+            return false;
+        }
+        cache.tiles.resize(expected);
+        bin.seekg(0, std::ios::beg);
+        if (!bin.read(reinterpret_cast<char*>(cache.tiles.data()), size)) {
+            outError = std::string("Wang tiles load failed: read error for ") + binPath.string();
+            cache.tiles.clear();
+            return false;
+        }
+
+        cache.valid = true;
+        return true;
+    }
+
     static void free_stbn(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.stbnData) {
@@ -269,6 +405,23 @@ namespace JuicerCuda {
         resources.stbnWidth = 0;
         resources.stbnHeight = 0;
         resources.stbnFrames = 0;
+    }
+
+    static void free_wang(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.wangTilesData) {
+            cudaFree(resources.wangTilesData);
+            resources.wangTilesData = nullptr;
+        }
+        if (resources.wangLutData) {
+            cudaFree(resources.wangLutData);
+            resources.wangLutData = nullptr;
+        }
+#endif
+        resources.wangWidth = 0;
+        resources.wangHeight = 0;
+        resources.wangCount = 0;
+        resources.wangColors = 0;
     }
 
     static void free_scan_error_flag(Resources& resources) noexcept {
@@ -568,6 +721,7 @@ namespace JuicerCuda {
         free_gaussian_kernel(spatialDirKernel);
         free_spatial_dir_scratch(spatialDirScratch);
         free_stbn(*this);
+        free_wang(*this);
         free_print_payloads(*this);
         free_hanatos(*this);
         free_hanatos_integrated(*this);
@@ -655,6 +809,44 @@ namespace JuicerCuda {
             }
             if (!stbnError.empty() && !gStbnWarned.exchange(true)) {
                 JTRACE("CUDA", stbnError);
+            }
+        }
+
+        if (!resources.wangTilesData || !resources.wangLutData) {
+            if (resources.wangTilesData || resources.wangLutData) {
+                free_wang(resources);
+            }
+            std::string wangError;
+            WangCpuCache& cache = wang_cache();
+            if (load_wang_cpu(cache, wangError)) {
+                const std::size_t tileBytes = cache.tiles.size();
+                const std::size_t lutBytes = cache.lut.size();
+                if (tileBytes > 0 && lutBytes > 0) {
+                    const cudaError_t allocTiles = cudaMalloc(reinterpret_cast<void**>(&resources.wangTilesData), tileBytes);
+                    const cudaError_t allocLut = cudaMalloc(reinterpret_cast<void**>(&resources.wangLutData), lutBytes);
+                    if (allocTiles == cudaSuccess && allocLut == cudaSuccess) {
+                        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+                        const cudaError_t copyTiles = cudaMemcpyAsync(resources.wangTilesData, cache.tiles.data(), tileBytes, cudaMemcpyHostToDevice, stream);
+                        const cudaError_t copyLut = cudaMemcpyAsync(resources.wangLutData, cache.lut.data(), lutBytes, cudaMemcpyHostToDevice, stream);
+                        if (copyTiles != cudaSuccess || copyLut != cudaSuccess) {
+                            wangError = std::string("cudaMemcpyAsync(Wang) failed: ") +
+                                (cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) ? cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) : "(unknown)");
+                            free_wang(resources);
+                        } else {
+                            resources.wangWidth = cache.width;
+                            resources.wangHeight = cache.height;
+                            resources.wangCount = cache.count;
+                            resources.wangColors = cache.colors;
+                        }
+                    } else {
+                        wangError = std::string("cudaMalloc(Wang) failed: ") +
+                            (cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) ? cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) : "(unknown)");
+                        free_wang(resources);
+                    }
+                }
+            }
+            if (!wangError.empty() && !gWangWarned.exchange(true)) {
+                JTRACE("CUDA", wangError);
             }
         }
 

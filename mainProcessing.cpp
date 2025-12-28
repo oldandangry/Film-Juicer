@@ -1605,6 +1605,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.breathingDriftUmPerFrame = 1.0f;
                 run.grain.sizeMixWeight = 0.30f;
                 run.grain.sizeMixScale = 3.0f;
+                run.grain.wangCellMm = 2.0f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
                     run.grain.stbn = cudaResources->stbnData;
@@ -1614,6 +1615,16 @@ void JuicerProcessor::processImagesCUDA() {
                     run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
                     run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
                     run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
+                }
+                if (cudaResources && cudaResources->wangTilesData && cudaResources->wangLutData &&
+                    cudaResources->wangWidth > 0 && cudaResources->wangHeight > 0 &&
+                    cudaResources->wangCount > 0 && cudaResources->wangColors > 0) {
+                    run.grain.wangTiles = cudaResources->wangTilesData;
+                    run.grain.wangLut = cudaResources->wangLutData;
+                    run.grain.wangWidth = cudaResources->wangWidth;
+                    run.grain.wangHeight = cudaResources->wangHeight;
+                    run.grain.wangCount = cudaResources->wangCount;
+                    run.grain.wangColors = cudaResources->wangColors;
                 }
             }
             if (wantGrain) {
@@ -2588,6 +2599,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.breathingDriftUmPerFrame = 1.0f;
                 run.grain.sizeMixWeight = 0.30f;
                 run.grain.sizeMixScale = 3.0f;
+                run.grain.wangCellMm = 2.0f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
                     run.grain.stbn = cudaResources->stbnData;
@@ -2597,6 +2609,16 @@ void JuicerProcessor::processImagesCUDA() {
                     run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
                     run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
                     run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
+                }
+                if (cudaResources && cudaResources->wangTilesData && cudaResources->wangLutData &&
+                    cudaResources->wangWidth > 0 && cudaResources->wangHeight > 0 &&
+                    cudaResources->wangCount > 0 && cudaResources->wangColors > 0) {
+                    run.grain.wangTiles = cudaResources->wangTilesData;
+                    run.grain.wangLut = cudaResources->wangLutData;
+                    run.grain.wangWidth = cudaResources->wangWidth;
+                    run.grain.wangHeight = cudaResources->wangHeight;
+                    run.grain.wangCount = cudaResources->wangCount;
+                    run.grain.wangColors = cudaResources->wangColors;
                 }
             }
             if (wantGrain) {

@@ -72,6 +72,103 @@ namespace {
         return static_cast<float>(static_cast<std::uint32_t>(h & 0xFFFFFFFFu)) * kInvU32;
     }
 
+    __device__ __forceinline__ std::uint32_t hash_u32_device(int x, int y, std::uint64_t seed, std::uint64_t salt) {
+        const std::uint64_t h = splitmix64_device(seed ^ salt ^
+            (static_cast<std::uint64_t>(x) * 0x9E3779B97F4A7C15ULL) ^
+            (static_cast<std::uint64_t>(y) * 0xBF58476D1CE4E5B9ULL));
+        return static_cast<std::uint32_t>(h & 0xFFFFFFFFu);
+    }
+
+    __device__ __forceinline__ std::size_t wang_lut_index_device(int l, int r, int t, int b, int colors) {
+        const std::size_t c = static_cast<std::size_t>(colors);
+        return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
+                  static_cast<std::size_t>(t)) * c +
+                static_cast<std::size_t>(b));
+    }
+
+    __device__ __forceinline__ int wang_tile_id_device(const JuicerCuda::GrainPayload& grain, std::int64_t mx, std::int64_t my) {
+        if (!grain.wangLut || grain.wangColors <= 0) {
+            return -1;
+        }
+        const int colors = grain.wangColors;
+        const std::uint64_t seed = (grain.clipToken != 0) ? grain.clipToken : grain.stbnSessionSeed;
+        const std::uint64_t baseSeed = (seed != 0) ? seed : 1ULL;
+        const std::uint32_t l = hash_u32_device(static_cast<int>(mx), static_cast<int>(my), baseSeed, 0xA5A5A5A5u) % colors;
+        const std::uint32_t r = hash_u32_device(static_cast<int>(mx + 1), static_cast<int>(my), baseSeed, 0x5A5A5A5Au) % colors;
+        const std::uint32_t t = hash_u32_device(static_cast<int>(mx), static_cast<int>(my), baseSeed, 0xC3C3C3C3u) % colors;
+        const std::uint32_t b = hash_u32_device(static_cast<int>(mx), static_cast<int>(my + 1), baseSeed, 0x3C3C3C3Cu) % colors;
+        const std::size_t idx = wang_lut_index_device(static_cast<int>(l), static_cast<int>(r), static_cast<int>(t), static_cast<int>(b), colors);
+        return static_cast<int>(grain.wangLut[idx]);
+    }
+
+    __device__ __forceinline__ float wang_tile_sample_device(const JuicerCuda::GrainPayload& grain, int tileId, int x, int y) {
+        if (!grain.wangTiles || grain.wangWidth <= 0 || grain.wangHeight <= 0 || grain.wangCount <= 0) {
+            return 0.0f;
+        }
+        if (tileId < 0 || tileId >= grain.wangCount) {
+            return 0.0f;
+        }
+        const int w = grain.wangWidth;
+        const int h = grain.wangHeight;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x >= w) x = w - 1;
+        if (y >= h) y = h - 1;
+        const std::size_t idx = (static_cast<std::size_t>(tileId) * static_cast<std::size_t>(h) + static_cast<std::size_t>(y)) *
+            static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
+        const std::uint8_t v = grain.wangTiles[idx];
+        return (static_cast<float>(v) + 0.5f) * (1.0f / 256.0f);
+    }
+
+    __device__ __forceinline__ void wang_offsets_device(
+        const JuicerCuda::GrainPayload& grain,
+        std::uint64_t absX,
+        std::uint64_t absY,
+        int& outX,
+        int& outY)
+    {
+        outX = 0;
+        outY = 0;
+        if (!grain.wangTiles || !grain.wangLut || grain.wangWidth <= 0 || grain.wangHeight <= 0 || grain.wangCount <= 0) {
+            return;
+        }
+        if (!(grain.pixelSizeUm > 0.0f) || !(grain.wangCellMm > 0.0f)) {
+            return;
+        }
+
+        const float xMm = static_cast<float>(absX) * (grain.pixelSizeUm * 0.001f);
+        const float yMm = static_cast<float>(absY) * (grain.pixelSizeUm * 0.001f);
+        const float invCell = 1.0f / grain.wangCellMm;
+        const float cellX = xMm * invCell;
+        const float cellY = yMm * invCell;
+        const float cellFx = cellX - floorf(cellX);
+        const float cellFy = cellY - floorf(cellY);
+        const std::int64_t mx = static_cast<std::int64_t>(floorf(cellX));
+        const std::int64_t my = static_cast<std::int64_t>(floorf(cellY));
+
+        const int tileId = wang_tile_id_device(grain, mx, my);
+        if (tileId < 0) {
+            return;
+        }
+
+        const int w = grain.wangWidth;
+        const int h = grain.wangHeight;
+        int tx = static_cast<int>(floorf(cellFx * static_cast<float>(w)));
+        int ty = static_cast<int>(floorf(cellFy * static_cast<float>(h)));
+        if (tx >= w) tx = w - 1;
+        if (ty >= h) ty = h - 1;
+        const float v0 = wang_tile_sample_device(grain, tileId, tx, ty);
+        const float v1 = wang_tile_sample_device(grain, tileId, (tx + (w >> 1)) % w, (ty + (h >> 1)) % h);
+
+        const int warpX = (grain.stbnWidth > 0) ? ((grain.stbnWidth / 8) > 4 ? (grain.stbnWidth / 8) : 4) : 0;
+        const int warpY = (grain.stbnHeight > 0) ? ((grain.stbnHeight / 8) > 4 ? (grain.stbnHeight / 8) : 4) : 0;
+        if (warpX == 0 || warpY == 0) {
+            return;
+        }
+        outX = static_cast<int>(floorf((v0 - 0.5f) * 2.0f * static_cast<float>(warpX)));
+        outY = static_cast<int>(floorf((v1 - 0.5f) * 2.0f * static_cast<float>(warpY)));
+    }
+
     __device__ __forceinline__ float value_noise_device(float x, float y, std::uint64_t seed) {
         const int ix = static_cast<int>(floorf(x));
         const int iy = static_cast<int>(floorf(y));
@@ -287,6 +384,8 @@ namespace {
         std::uint32_t drawIndex = 0;
         int useStbn = 0;
         int frameOffset = 0;
+        int wangOffsetX = 0;
+        int wangOffsetY = 0;
 
         __device__ GrainRngDevice(
             std::uint64_t seed_,
@@ -304,14 +403,18 @@ namespace {
               seed(seed_),
               useStbn(useStbn_),
               frameOffset(frameOffset_)
-        {}
+        {
+            if (useStbn && grain) {
+                wang_offsets_device(*grain, absX, absY, wangOffsetX, wangOffsetY);
+            }
+        }
 
         __device__ __forceinline__ float uniform() {
             if (useStbn && grain) {
                 const std::uint32_t draw = drawIndex++;
                 const std::uint64_t h = splitmix64_device(seed + static_cast<std::uint64_t>(draw) * 0x9E3779B97F4A7C15ULL);
-                const int offsetX = static_cast<int>(h & 0xFFFFu);
-                const int offsetY = static_cast<int>((h >> 16) & 0xFFFFu);
+                const int offsetX = static_cast<int>(h & 0xFFFFu) + wangOffsetX;
+                const int offsetY = static_cast<int>((h >> 16) & 0xFFFFu) + wangOffsetY;
                 return stbn_sample_device(*grain, absX, absY, offsetX, offsetY, frameOffset);
             }
             return rng.rand<float>();
