@@ -193,6 +193,8 @@ private:
     OFX::DoubleParam* _pGrainBlurDyeCloudsUm = nullptr;
     OFX::DoubleParam* _pGrainSizeMixWeight = nullptr;
     OFX::DoubleParam* _pGrainSizeMixScale = nullptr;
+    OFX::DoubleParam* _pGrainClumpTemporalMix = nullptr;
+    OFX::DoubleParam* _pGrainClumpMorphPeriodSec = nullptr;
     OFX::BooleanParam* _pGrainBreathingDebug = nullptr;
     OFX::ChoiceParam* _pGrainDebugView = nullptr;
     OFX::Double2DParam* _pGrainMicroStructure = nullptr;

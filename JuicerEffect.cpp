@@ -587,11 +587,11 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         return values;
     };
 
-    double particleArea = 0.2;
+    double particleArea = 0.335;
     if (_pGrainParticleAreaUm2) {
         _pGrainParticleAreaUm2->getValue(particleArea);
     }
-    particleArea = sanitize(particleArea, 0.2, 0.0, 10.0);
+    particleArea = sanitize(particleArea, 0.335, 0.0, 10.0);
     grain.agxParticleAreaUm2 = static_cast<float>(particleArea);
 
     const std::array<double, 3> particleScale = read3(_pGrainParticleScale, { {0.8, 1.0, 2.0} }, 0.0, 10.0);
@@ -620,19 +620,33 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     blurDyeClouds = sanitize(blurDyeClouds, 1.0, 0.0, 10.0);
     grain.blurDyeCloudsUm = static_cast<float>(blurDyeClouds);
 
-    double sizeMixWeight = 0.30;
+    double sizeMixWeight = 0.23;
     if (_pGrainSizeMixWeight) {
         _pGrainSizeMixWeight->getValue(sizeMixWeight);
     }
-    sizeMixWeight = sanitize(sizeMixWeight, 0.30, 0.0, 1.0);
+    sizeMixWeight = sanitize(sizeMixWeight, 0.23, 0.0, 1.0);
     grain.sizeMixWeight = static_cast<float>(sizeMixWeight);
 
-    double sizeMixScale = 3.0;
+    double sizeMixScale = 9.0;
     if (_pGrainSizeMixScale) {
         _pGrainSizeMixScale->getValue(sizeMixScale);
     }
-    sizeMixScale = sanitize(sizeMixScale, 3.0, 1.0, 10.0);
+    sizeMixScale = sanitize(sizeMixScale, 9.0, 1.0, 10.0);
     grain.sizeMixScale = static_cast<float>(sizeMixScale);
+
+    double clumpTemporalMix = 0.30;
+    if (_pGrainClumpTemporalMix) {
+        _pGrainClumpTemporalMix->getValue(clumpTemporalMix);
+    }
+    clumpTemporalMix = sanitize(clumpTemporalMix, 0.30, 0.0, 0.30);
+    grain.clumpTemporalMix = static_cast<float>(clumpTemporalMix);
+
+    double clumpMorphPeriodSec = 8.0;
+    if (_pGrainClumpMorphPeriodSec) {
+        _pGrainClumpMorphPeriodSec->getValue(clumpMorphPeriodSec);
+    }
+    clumpMorphPeriodSec = sanitize(clumpMorphPeriodSec, 8.0, 5.0, 60.0);
+    grain.clumpMorphPeriodSec = static_cast<float>(clumpMorphPeriodSec);
 
     bool breathingDebug = false;
     if (_pGrainBreathingDebug) {
@@ -646,7 +660,7 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     }
     grain.debugView = std::clamp(debugView, 0, 6);
 
-    const std::array<double, 2> microStructure = read2(_pGrainMicroStructure, { {0.1, 30.0} }, 0.0, 1000.0);
+    const std::array<double, 2> microStructure = read2(_pGrainMicroStructure, { {60.0, 150.0} }, 0.0, 1000.0);
     grain.microStructure[0] = static_cast<float>(microStructure[0]);
     grain.microStructure[1] = static_cast<float>(microStructure[1]);
 
@@ -1231,6 +1245,8 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
         _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
         _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
+        _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
+        _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
         _pGrainBreathingDebug = fetchBooleanParam(JuicerParams::kGrainBreathingDebug);
         _pGrainDebugView = fetchChoiceParam(JuicerParams::kGrainDebugView);
         _pGrainMicroStructure = fetchDouble2DParam(JuicerParams::kGrainMicroStructure);

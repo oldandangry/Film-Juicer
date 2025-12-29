@@ -1573,6 +1573,11 @@ void JuicerProcessor::processImagesCUDA() {
                     ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
                     : 1.0;
                 const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
+                const double clumpPeriodSec = std::isfinite(grainUi.clumpMorphPeriodSec)
+                    ? std::clamp(static_cast<double>(grainUi.clumpMorphPeriodSec), 5.0, 60.0)
+                    : 25.0;
+                const double clumpFps = (fps > 0.0) ? fps : 24.0;
+                const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(clumpFps * clumpPeriodSec)));
                 const double longEdgePx = static_cast<double>(std::max(width, height));
                 const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
                     ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
@@ -1605,6 +1610,8 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.breathingDriftUmPerFrame = 1.0f;
                 run.grain.sizeMixWeight = 0.30f;
                 run.grain.sizeMixScale = 3.0f;
+                run.grain.clumpTemporalMix = std::clamp(grainUi.clumpTemporalMix, 0.0f, 0.30f);
+                run.grain.clumpMorphPeriodFrames = clumpMorphPeriodFrames;
                 run.grain.wangCellMm = 2.0f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
@@ -2567,6 +2574,11 @@ void JuicerProcessor::processImagesCUDA() {
                     ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
                     : 1.0;
                 const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
+                const double clumpPeriodSec = std::isfinite(grainUi.clumpMorphPeriodSec)
+                    ? std::clamp(static_cast<double>(grainUi.clumpMorphPeriodSec), 5.0, 60.0)
+                    : 25.0;
+                const double clumpFps = (fps > 0.0) ? fps : 24.0;
+                const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(clumpFps * clumpPeriodSec)));
                 const double longEdgePx = static_cast<double>(std::max(width, height));
                 const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
                     ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
@@ -2599,6 +2611,8 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.breathingDriftUmPerFrame = 1.0f;
                 run.grain.sizeMixWeight = 0.30f;
                 run.grain.sizeMixScale = 3.0f;
+                run.grain.clumpTemporalMix = std::clamp(grainUi.clumpTemporalMix, 0.0f, 0.30f);
+                run.grain.clumpMorphPeriodFrames = clumpMorphPeriodFrames;
                 run.grain.wangCellMm = 2.0f;
                 if (cudaResources && cudaResources->stbnData &&
                     cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {

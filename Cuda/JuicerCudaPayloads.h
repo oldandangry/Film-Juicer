@@ -200,6 +200,8 @@ namespace JuicerCuda {
         float blurSigmaPx = 0.0f;
         float blurDyeCloudsUm = 0.0f;
         float microStructure[2] = { 0.0f, 0.0f };
+        float clumpTemporalMix = 0.0f;
+        int clumpMorphPeriodFrames = 0;
         float filmDustAmount = 0.0f;
         float gateDustAmount = 0.0f;
         float filmScratchAmount = 0.0f;

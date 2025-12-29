@@ -629,7 +629,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleAreaUm2);
             p->setLabel("Particle area (um^2)");
             p->setHint("Particle area in um^2; roughly 0.1 for ISO 100-200, 0.4 for ISO 400.");
-            p->setDefault(0.330);
+            p->setDefault(0.335);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 1.0);
             p->setIncrement(0.1);
@@ -700,7 +700,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixWeight);
             p->setLabel("Size mix weight");
             p->setHint("Weight of the coarse grain population in the size mixture.");
-            p->setDefault(0.25);
+            p->setDefault(0.23);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -713,6 +713,17 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(9.0);
             p->setRange(1.0, 10.0);
             p->setDisplayRange(1.0, 10.0);
+            if (grpGrain) p->setParent(*grpGrain);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kGrainMicroStructure);
+            p->setLabel("Micro-structure");
+            p->setHint("Micro-structure parameters: blur (um) and clump size (nm).");
+            p->setDefault(60.0, 150.0);
+            p->setRange(0.0, 0.0, 100.0, 1000.0);
+            p->setDisplayRange(0.0, 0.0, 100.0, 200.0);
+            p->setDimensionLabels("Blur (um)", "Clump (nm)");
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
@@ -790,13 +801,22 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kGrainMicroStructure);
-            p->setLabel("Micro-structure");
-            p->setHint("Micro-structure parameters: blur (um) and clump size (nm).");
-            p->setDefault(60.0, 120.0);
-            p->setRange(0.0, 0.0, 100.0, 1000.0);
-            p->setDisplayRange(0.0, 0.0, 100.0, 200.0);
-            p->setDimensionLabels("Blur (um)", "Clump (nm)");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainClumpTemporalMix);
+            p->setLabel("Clump temporal mix");
+            p->setHint("Scales temporal variance of clump modulation (0 = static, higher = more breathing).");
+            p->setDefault(0.30);
+            p->setRange(0.0, 0.30);
+            p->setDisplayRange(0.0, 0.30);
+            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            p->setEvaluateOnChange(true);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
+            p->setLabel("Clump morph period (s)");
+            p->setHint("Seconds for clump field to evolve; longer is more stable.");
+            p->setDefault(8.0);
+            p->setRange(5.0, 60.0);
+            p->setDisplayRange(5.0, 60.0);
             if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }

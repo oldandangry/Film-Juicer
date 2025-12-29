@@ -263,8 +263,8 @@ namespace {
         std::uint64_t absX,
         std::uint64_t absY)
     {
-        const float stddev = grain.microStructure[1] * 0.001f;
-        if (!(stddev > 0.0f) || !(grain.pixelSizeUm > 0.0f)) {
+        const float stddevSpatial = grain.microStructure[1] * 0.001f;
+        if (!(stddevSpatial > 0.0f) || !(grain.pixelSizeUm > 0.0f)) {
             return 1.0f;
         }
 
@@ -279,24 +279,48 @@ namespace {
             cellPx = minCellPx;
         }
 
-        int period = grain.breathingPeriodFrames;
-        if (period > 0) {
-            period *= 2;
+        const float time = static_cast<float>(grain.frameIndex) + grain.timeAlpha;
+
+        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
+        const float baseXStatic = static_cast<float>(absX);
+        const float baseYStatic = static_cast<float>(absY) + rollPx * time;
+        const float xStatic = baseXStatic / cellPx;
+        const float yStatic = baseYStatic / cellPx;
+
+        std::uint64_t staticSeed = (grain.clipToken != 0) ? grain.clipToken : grain.stbnSessionSeed;
+        if (staticSeed == 0) {
+            staticSeed = 1ULL;
         }
+        const float u1S = value_noise_device(xStatic, yStatic, staticSeed ^ 0x9E3779B97F4A7C15ULL);
+        const float u2S = value_noise_device(xStatic + 19.19f, yStatic + 7.23f, staticSeed ^ 0xBF58476D1CE4E5B9ULL);
+        float u1 = fminf(fmaxf(u1S, 1e-6f), 1.0f - 1e-6f);
+        float u2 = fminf(fmaxf(u2S, 0.0f), 1.0f);
+        const float r = sqrtf(-2.0f * logf(u1));
+        constexpr float kTwoPi = 6.28318530717958647692f;
+        const float nStatic = r * cosf(kTwoPi * u2);
+        float staticVal = lognormal_from_mean_std_device(1.0f, stddevSpatial, nStatic);
+        if (!device_isfinite(staticVal)) {
+            staticVal = 1.0f;
+        }
+
+        const float mix = fminf(fmaxf(grain.clumpTemporalMix, 0.0f), 1.0f);
+        if (!(mix > 0.0f)) {
+            return staticVal;
+        }
+
+        int period = grain.clumpMorphPeriodFrames;
         if (period <= 0) {
             period = 1;
         }
-
-        const float time = static_cast<float>(grain.frameIndex) + grain.timeAlpha;
         const float periodF = static_cast<float>(period);
         const float stepF = floorf(time / periodF);
         const std::int64_t step = static_cast<std::int64_t>(stepF);
         const float frac = (time - stepF * periodF) / periodF;
         const float t = smoothstep_device(fminf(fmaxf(frac, 0.0f), 1.0f));
 
-        const std::uint64_t seed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t seedA = splitmix64_device(seed ^ (static_cast<std::uint64_t>(step) * 0xD2B74407B1CE6E93ULL));
-        const std::uint64_t seedB = splitmix64_device(seed ^ (static_cast<std::uint64_t>(step + 1) * 0xD2B74407B1CE6E93ULL));
+        std::uint64_t temporalSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+        const std::uint64_t seedA = splitmix64_device(temporalSeed ^ (static_cast<std::uint64_t>(step) * 0xD2B74407B1CE6E93ULL));
+        const std::uint64_t seedB = splitmix64_device(temporalSeed ^ (static_cast<std::uint64_t>(step + 1) * 0xD2B74407B1CE6E93ULL));
 
         float driftPx = 0.0f;
         if (grain.breathingDriftUmPerFrame > 0.0f) {
@@ -305,15 +329,13 @@ namespace {
         float driftX = 0.0f;
         float driftY = 0.0f;
         if (driftPx > 0.0f) {
-            const std::uint64_t h = splitmix64_device(seed ^ 0xC6A4A7935BD1E995ULL);
-            constexpr float kTwoPi = 6.28318530717958647692f;
+            const std::uint64_t h = splitmix64_device(temporalSeed ^ 0xC6A4A7935BD1E995ULL);
             constexpr float kInvU32 = 1.0f / 4294967296.0f;
             const float angle = static_cast<float>(static_cast<std::uint32_t>(h & 0xFFFFFFFFu)) * kInvU32 * kTwoPi;
             driftX = cosf(angle) * driftPx;
             driftY = sinf(angle) * driftPx;
         }
 
-        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
         const float baseX = static_cast<float>(absX) + driftX * time;
         const float baseY = static_cast<float>(absY) + driftY * time + rollPx * time;
         const float x = baseX / cellPx;
@@ -324,19 +346,20 @@ namespace {
         const float u1B = value_noise_device(x, y, seedB ^ 0x9E3779B97F4A7C15ULL);
         const float u2B = value_noise_device(x + 19.19f, y + 7.23f, seedB ^ 0xBF58476D1CE4E5B9ULL);
 
-        float u1 = u1A + (u1B - u1A) * t;
-        float u2 = u2A + (u2B - u2A) * t;
+        u1 = u1A + (u1B - u1A) * t;
+        u2 = u2A + (u2B - u2A) * t;
         u1 = fminf(fmaxf(u1, 1e-6f), 1.0f - 1e-6f);
         u2 = fminf(fmaxf(u2, 0.0f), 1.0f);
 
-        const float r = sqrtf(-2.0f * logf(u1));
-        constexpr float kTwoPi = 6.28318530717958647692f;
-        const float n = r * cosf(kTwoPi * u2);
-        float v = lognormal_from_mean_std_device(1.0f, stddev, n);
-        if (!device_isfinite(v)) {
-            v = 1.0f;
+        const float rT = sqrtf(-2.0f * logf(u1));
+        const float nTemporal = rT * cosf(kTwoPi * u2);
+        const float stddevTemporal = stddevSpatial * mix;
+        float temporalVal = lognormal_from_mean_std_device(1.0f, stddevTemporal, nTemporal);
+        if (!device_isfinite(temporalVal)) {
+            temporalVal = 1.0f;
         }
-        return v;
+
+        return staticVal * temporalVal;
     }
 
     __device__ __forceinline__ float stbn_sample_device(
