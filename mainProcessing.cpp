@@ -1702,7 +1702,12 @@ void JuicerProcessor::processImagesCUDA() {
                 }
 
                 bool paramsOk = wantGrain;
+                float blurAreaRatio = 1.0f;
+                float blurRatioSum = 0.0f;
+                int blurRatioCount = 0;
                 if (paramsOk) {
+                    constexpr float kDefaultParticleAreaUm2 = 0.335f;
+                    constexpr float kDefaultParticleScale[3] = { 1.10f, 1.27f, 2.08f };
                     const float densityMaxCurves[3] = { maxC, maxM, maxY };
                     for (int i = 0; i < 3; ++i) {
                         const float densityMax = densityMaxCurves[i] + densityMin[i];
@@ -1710,6 +1715,11 @@ void JuicerProcessor::processImagesCUDA() {
                         if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
                             paramsOk = false;
                             break;
+                        }
+                        const float particleAreaRef = kDefaultParticleAreaUm2 * kDefaultParticleScale[i];
+                        if (std::isfinite(particleAreaRef) && particleAreaRef > 0.0f) {
+                            blurRatioSum += particleArea / particleAreaRef;
+                            blurRatioCount += 1;
                         }
                         float nParticles = pixelAreaUm2 / particleArea;
                         if (nSubLayers > 1) {
@@ -1730,7 +1740,13 @@ void JuicerProcessor::processImagesCUDA() {
                 }
 
                 if (wantGrain) {
+                    if (blurRatioCount > 0) {
+                        blurAreaRatio = blurRatioSum / static_cast<float>(blurRatioCount);
+                    }
                     grainBlurSigmaPx = run.grain.blurSigmaPx;
+                    if (std::isfinite(grainBlurSigmaPx)) {
+                        grainBlurSigmaPx *= std::sqrt(std::max(blurAreaRatio, 0.0f));
+                    }
                     wantGrainBlur = false;
 
                     wantGrainMicroBlur = false;
@@ -2691,7 +2707,12 @@ void JuicerProcessor::processImagesCUDA() {
                 }
 
                 bool paramsOk = wantGrain;
+                float blurAreaRatio = 1.0f;
+                float blurRatioSum = 0.0f;
+                int blurRatioCount = 0;
                 if (paramsOk) {
+                    constexpr float kDefaultParticleAreaUm2 = 0.335f;
+                    constexpr float kDefaultParticleScale[3] = { 1.10f, 1.27f, 2.08f };
                     const float densityMaxCurves[3] = { maxC, maxM, maxY };
                     for (int i = 0; i < 3; ++i) {
                         const float densityMax = densityMaxCurves[i] + densityMin[i];
@@ -2699,6 +2720,11 @@ void JuicerProcessor::processImagesCUDA() {
                         if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
                             paramsOk = false;
                             break;
+                        }
+                        const float particleAreaRef = kDefaultParticleAreaUm2 * kDefaultParticleScale[i];
+                        if (std::isfinite(particleAreaRef) && particleAreaRef > 0.0f) {
+                            blurRatioSum += particleArea / particleAreaRef;
+                            blurRatioCount += 1;
                         }
                         float nParticles = pixelAreaUm2 / particleArea;
                         if (nSubLayers > 1) {
@@ -2719,7 +2745,13 @@ void JuicerProcessor::processImagesCUDA() {
                 }
 
                 if (wantGrain) {
+                    if (blurRatioCount > 0) {
+                        blurAreaRatio = blurRatioSum / static_cast<float>(blurRatioCount);
+                    }
                     grainBlurSigmaPx = run.grain.blurSigmaPx;
+                    if (std::isfinite(grainBlurSigmaPx)) {
+                        grainBlurSigmaPx *= std::sqrt(std::max(blurAreaRatio, 0.0f));
+                    }
                     wantGrainBlur = false;
 
                     wantGrainMicroBlur = false;
