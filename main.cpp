@@ -640,7 +640,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleScaleMaster);
             p->setLabel("Particle scale (M)");
             p->setHint("Master control for particle scale; adjusts RGB values together.");
-            p->setDefault(1.826);
+            p->setDefault(1.48);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -688,8 +688,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
-            p->setLabel("Dye cloud blur scale (\xC2\xB5m)");
-            p->setHint("Scale factor for dye cloud blur sigma in micrometers.");
+            p->setLabel("Dye cloud blur scale (px)");
+            p->setHint("Scale factor for dye cloud blur sigma in pixels.");
             p->setDefault(1.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
@@ -719,11 +719,11 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kGrainMicroStructure);
             p->setLabel("Micro-structure");
-            p->setHint("Micro-structure parameters: blur (um) and clump size (nm).");
+            p->setHint("Micro-structure parameters: clump cell size (um) and clump sigma (x1e-3).");
             p->setDefault(60.0, 150.0);
             p->setRange(0.0, 0.0, 100.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 100.0, 200.0);
-            p->setDimensionLabels("Blur (um)", "Clump (nm)");
+            p->setDimensionLabels("Cell (um)", "Sigma (1e-3)");
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
@@ -760,7 +760,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kGrainParticleScale);
             p->setLabel("Particle scale");
             p->setHint("Scale of particle area for the RGB layers (multiplies particle area).");
-            p->setDefault(1.359, 1.559, 2.559);
+            p->setDefault(1.10, 1.27, 2.08);
             p->setRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 3.0, 3.0, 3.0);
             p->setDimensionLabels("R", "G", "B");

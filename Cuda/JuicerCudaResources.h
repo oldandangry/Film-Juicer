@@ -129,7 +129,6 @@ namespace JuicerCuda {
         DeviceGaussianKernel scannerUnsharpKernel;
         DeviceGaussianKernel scannerGlareKernel;
         DeviceGaussianKernel grainBlurKernel;
-        DeviceGaussianKernel grainMicroKernel;
         DeviceGaussianKernel grainDyeKernel[3][3];
         DeviceGaussianKernel halationKernel[3];
         DeviceGaussianKernel halationScatterKernel[3];

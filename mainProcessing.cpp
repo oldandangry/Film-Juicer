@@ -1195,6 +1195,322 @@ void JuicerProcessor::processImagesCUDA() {
 
     const RenderMode renderMode = _printParams.bypass ? RenderMode::NegativeOnly : RenderMode::Print;
 
+    struct GrainSetupResult {
+        bool wantGrain = false;
+        bool wantGrainSublayers = false;
+        bool wantGrainBlur = false;
+        float grainBlurSigmaPx = 0.0f;
+        float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+    };
+
+    auto setup_grain_payload = [&](JuicerCuda::PipelineRunParams& run,
+                                   const Profiles::GrainMetadata& grainUi,
+                                   bool includeDefects) -> GrainSetupResult {
+        GrainSetupResult result{};
+
+        auto nanmax_vector = [](const std::vector<float>& values, float& outMax) -> bool {
+            double m = -std::numeric_limits<double>::infinity();
+            bool found = false;
+            for (float v : values) {
+                if (std::isfinite(v)) {
+                    m = std::max(m, static_cast<double>(v));
+                    found = true;
+                }
+            }
+            if (!found || !std::isfinite(m)) {
+                return false;
+            }
+            outMax = static_cast<float>(m);
+            return std::isfinite(outMax);
+        };
+        auto nanmax_curve = [&](const Spectral::Curve& curve, float& outMax) -> bool {
+            return nanmax_vector(curve.linear, outMax);
+        };
+
+        bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
+        bool wantGrainSublayers = false;
+        bool wantGrainBlur = false;
+        float grainBlurSigmaPx = 0.0f;
+        float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+
+        run.grain = JuicerCuda::GrainPayload{};
+        run.grainKernels = JuicerCuda::GrainKernelPayload{};
+        {
+            const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+            const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
+            const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
+            const double alphaFrames = std::isfinite(timeFrames)
+                ? (timeFrames - static_cast<double>(_frameIndex))
+                : 0.0;
+            const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
+            const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
+            const double weaveAmount = std::isfinite(_gateWeaveAmount)
+                ? std::clamp(_gateWeaveAmount, 0.0, 10.0)
+                : 0.0;
+            const GateWeaveSignal weave = compute_gate_weave(
+                sessionSeed,
+                timeSeconds,
+                6.0,
+                0.005,
+                static_cast<double>(_pixelSizeUm),
+                weaveAmount);
+            const double debugScalePx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0)
+                ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
+                : 1.0;
+            const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
+            const double clumpPeriodSec = std::isfinite(grainUi.clumpMorphPeriodSec)
+                ? std::clamp(static_cast<double>(grainUi.clumpMorphPeriodSec), 5.0, 60.0)
+                : 25.0;
+            const double clumpFps = (fps > 0.0) ? fps : 24.0;
+            const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(clumpFps * clumpPeriodSec)));
+            const double longEdgePx = static_cast<double>(std::max(width, height));
+            const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
+                ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
+                : 0.0;
+            const double pitchMm = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0)
+                ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
+                : 0.0;
+            const int pitchPx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && pitchMm > 0.0)
+                ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
+                : height;
+            const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
+            run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
+            run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
+            run.grain.frameIndex = _frameIndex;
+            run.grain.stbnSessionSeed = sessionSeed;
+            run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
+            run.grain.timeAlpha = timeAlpha;
+            run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
+            run.gateWeave.dxPx = weave.dxPx;
+            run.gateWeave.dyPx = weave.dyPx;
+            run.gateWeave.cosRot = weave.cosRot;
+            run.gateWeave.sinRot = weave.sinRot;
+            run.gateWeave.debugScalePx = static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
+            run.grain.pitchPx = pitchPx;
+            run.grain.breathingPeriodFrames = breathingPeriodFrames;
+            run.grain.breathingAmplitude = 0.01f;
+            run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
+            run.grain.breathingCellUmLarge = static_cast<float>(5000.0 * filmScale);
+            run.grain.breathingMix = 0.30f;
+            run.grain.breathingDriftUmPerFrame = 1.0f;
+            run.grain.sizeMixWeight = 0.30f;
+            run.grain.sizeMixScale = 3.0f;
+            run.grain.clumpTemporalMix = std::clamp(grainUi.clumpTemporalMix, 0.0f, 0.30f);
+            run.grain.clumpMorphPeriodFrames = clumpMorphPeriodFrames;
+            run.grain.wangCellMm = 2.0f;
+            if (cudaResources && cudaResources->stbnData &&
+                cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
+                run.grain.stbn = cudaResources->stbnData;
+                run.grain.stbnWidth = cudaResources->stbnWidth;
+                run.grain.stbnHeight = cudaResources->stbnHeight;
+                run.grain.stbnFrames = cudaResources->stbnFrames;
+                run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
+                run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
+                run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
+            }
+            if (cudaResources && cudaResources->wangTilesData && cudaResources->wangLutData &&
+                cudaResources->wangWidth > 0 && cudaResources->wangHeight > 0 &&
+                cudaResources->wangCount > 0 && cudaResources->wangColors > 0) {
+                run.grain.wangTiles = cudaResources->wangTilesData;
+                run.grain.wangLut = cudaResources->wangLutData;
+                run.grain.wangWidth = cudaResources->wangWidth;
+                run.grain.wangHeight = cudaResources->wangHeight;
+                run.grain.wangCount = cudaResources->wangCount;
+                run.grain.wangColors = cudaResources->wangColors;
+            }
+        }
+        if (wantGrain) {
+            float densityMin[3] = {
+                grainUi.densityMin[0],
+                grainUi.densityMin[1],
+                grainUi.densityMin[2]
+            };
+            float uniformity[3] = {
+                grainUi.uniformity[0],
+                grainUi.uniformity[1],
+                grainUi.uniformity[2]
+            };
+            for (int i = 0; i < 3; ++i) {
+                if (!std::isfinite(densityMin[i]) || densityMin[i] < 0.0f) {
+                    densityMin[i] = 0.0f;
+                }
+                if (!std::isfinite(uniformity[i])) {
+                    uniformity[i] = 0.0f;
+                }
+                uniformity[i] = std::clamp(uniformity[i], 0.0f, 1.0f);
+            }
+
+            float maxC = 0.0f;
+            float maxM = 0.0f;
+            float maxY = 0.0f;
+            const bool maxOk =
+                nanmax_curve(_ws->densR, maxC) &&
+                nanmax_curve(_ws->densG, maxM) &&
+                nanmax_curve(_ws->densB, maxY);
+            if (!maxOk) {
+                wantGrain = false;
+            }
+
+            const float pixelAreaUm2 = _pixelSizeUm * _pixelSizeUm;
+            if (!std::isfinite(pixelAreaUm2) || !(pixelAreaUm2 > 0.0f)) {
+                wantGrain = false;
+            }
+
+            const int nSubLayers = (grainUi.nSubLayers > 0) ? grainUi.nSubLayers : 1;
+            run.grain.nSubLayers = nSubLayers;
+            run.grain.originX = win.x1;
+            run.grain.originY = win.y1;
+            run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
+            run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
+            run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
+            run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
+            run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
+            run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
+            run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
+            run.grain.microStructure[0] = grainUi.microStructure[0];
+            run.grain.microStructure[1] = grainUi.microStructure[1];
+            if (includeDefects) {
+                run.grain.filmDustAmount = std::isfinite(grainUi.filmDustAmount)
+                    ? std::clamp(grainUi.filmDustAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.gateDustAmount = std::isfinite(grainUi.gateDustAmount)
+                    ? std::clamp(grainUi.gateDustAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.filmScratchAmount = std::isfinite(grainUi.filmScratchAmount)
+                    ? std::clamp(grainUi.filmScratchAmount, 0.0f, 10.0f)
+                    : 0.0f;
+                run.grain.gateScratchAmount = std::isfinite(grainUi.gateScratchAmount)
+                    ? std::clamp(grainUi.gateScratchAmount, 0.0f, 10.0f)
+                    : 0.0f;
+            }
+            for (int i = 0; i < 3; ++i) {
+                run.grain.densityMin[i] = densityMin[i];
+                run.grain.uniformity[i] = uniformity[i];
+            }
+
+            bool paramsOk = wantGrain;
+            float blurAreaRatio = 1.0f;
+            float blurRatioSum = 0.0f;
+            int blurRatioCount = 0;
+            if (paramsOk) {
+                constexpr float kDefaultParticleAreaUm2 = 0.335f;
+                constexpr float kDefaultParticleScale[3] = { 1.10f, 1.27f, 2.08f };
+                const float densityMaxCurves[3] = { maxC, maxM, maxY };
+                for (int i = 0; i < 3; ++i) {
+                    const float densityMax = densityMaxCurves[i] + densityMin[i];
+                    const float particleArea = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[i];
+                    if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
+                        paramsOk = false;
+                        break;
+                    }
+                    const float particleAreaRef = kDefaultParticleAreaUm2 * kDefaultParticleScale[i];
+                    if (std::isfinite(particleAreaRef) && particleAreaRef > 0.0f) {
+                        blurRatioSum += particleArea / particleAreaRef;
+                        blurRatioCount += 1;
+                    }
+                    float nParticles = pixelAreaUm2 / particleArea;
+                    if (nSubLayers > 1) {
+                        nParticles /= static_cast<float>(nSubLayers);
+                    }
+                    if (!std::isfinite(nParticles) || !(nParticles > 0.0f)) {
+                        paramsOk = false;
+                        break;
+                    }
+                    const float odParticle = densityMax / nParticles;
+                    run.grain.densityMax[i] = densityMax;
+                    run.grain.nParticles[i] = nParticles;
+                    run.grain.odParticle[i] = std::isfinite(odParticle) ? odParticle : 0.0f;
+                }
+            }
+            if (!paramsOk) {
+                wantGrain = false;
+            }
+
+            if (wantGrain) {
+                if (blurRatioCount > 0) {
+                    blurAreaRatio = blurRatioSum / static_cast<float>(blurRatioCount);
+                }
+                grainBlurSigmaPx = run.grain.blurSigmaPx;
+                if (std::isfinite(grainBlurSigmaPx)) {
+                    grainBlurSigmaPx *= std::sqrt(std::max(blurAreaRatio, 0.0f));
+                }
+
+                if (!std::isfinite(run.grain.microStructure[1]) || !(run.grain.microStructure[1] > 0.0f)) {
+                    run.grain.microStructure[0] = 0.0f;
+                    run.grain.microStructure[1] = 0.0f;
+                }
+
+                if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
+                    float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
+                                                     {0.0f, 0.0f, 0.0f},
+                                                     {0.0f, 0.0f, 0.0f} };
+                    bool layersOk = true;
+                    for (int layer = 0; layer < 3; ++layer) {
+                        for (int ch = 0; ch < 3; ++ch) {
+                            if (!nanmax_vector(_ws->densityCurvesLayers[layer][ch], densityMaxLayers[layer][ch])) {
+                                layersOk = false;
+                            }
+                        }
+                    }
+
+                    if (layersOk) {
+                        for (int ch = 0; ch < 3; ++ch) {
+                            float total = 0.0f;
+                            for (int layer = 0; layer < 3; ++layer) {
+                                total += densityMaxLayers[layer][ch];
+                            }
+                            if (!(std::isfinite(total) && total > 0.0f)) {
+                                layersOk = false;
+                                break;
+                            }
+
+                            for (int layer = 0; layer < 3; ++layer) {
+                                const float fraction = densityMaxLayers[layer][ch] / total;
+                                const float minLayer = fraction * densityMin[ch];
+                                const float maxLayer = densityMaxLayers[layer][ch] + minLayer;
+                                const float particleAreaLayer = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[ch] * grainUi.agxParticleScaleLayers[layer];
+                                if (!std::isfinite(particleAreaLayer) || !(particleAreaLayer > 0.0f)) {
+                                    layersOk = false;
+                                    break;
+                                }
+                                const float nParticlesLayer = pixelAreaUm2 * fraction / particleAreaLayer;
+                                const float odParticle = (nParticlesLayer > 0.0f) ? (maxLayer / nParticlesLayer) : 0.0f;
+                                run.grain.densityMinLayers[layer][ch] = minLayer;
+                                run.grain.densityMaxLayers[layer][ch] = maxLayer;
+                                run.grain.nParticlesLayers[layer][ch] = std::isfinite(nParticlesLayer) ? nParticlesLayer : 0.0f;
+                                run.grain.odParticleLayers[layer][ch] = std::isfinite(odParticle) ? odParticle : 0.0f;
+                                run.grain.densityCurvesLayers[layer][ch] = cudaResources->densityCurvesLayers[layer][ch];
+                                const float dyeSigma = run.grain.blurDyeCloudsUm * std::sqrt(std::max(0.0f, run.grain.odParticleLayers[layer][ch]));
+                                grainDyeSigmaPx[layer][ch] = std::isfinite(dyeSigma) ? dyeSigma : 0.0f;
+                            }
+                            if (!layersOk) {
+                                break;
+                            }
+                        }
+                    }
+                    wantGrainSublayers = layersOk;
+                }
+            }
+            if (std::isfinite(grainBlurSigmaPx)) {
+                wantGrainBlur = wantGrainSublayers ? (grainBlurSigmaPx > 0.0f) : (grainBlurSigmaPx > 0.4f);
+            }
+        }
+        run.grain.active = wantGrain ? 1 : 0;
+        run.grain.sublayersActive = wantGrainSublayers ? 1 : 0;
+
+        result.wantGrain = wantGrain;
+        result.wantGrainSublayers = wantGrainSublayers;
+        result.wantGrainBlur = wantGrainBlur;
+        result.grainBlurSigmaPx = grainBlurSigmaPx;
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                result.grainDyeSigmaPx[layer][ch] = grainDyeSigmaPx[layer][ch];
+            }
+        }
+
+        return result;
+    };
+
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
         const bool scannerUseLut = _scannerSettings.useLut;
@@ -1521,281 +1837,11 @@ void JuicerProcessor::processImagesCUDA() {
                 (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
 
             const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
-            auto nanmax_vector = [](const std::vector<float>& values, float& outMax) -> bool {
-                double m = -std::numeric_limits<double>::infinity();
-                bool found = false;
-                for (float v : values) {
-                    if (std::isfinite(v)) {
-                        m = std::max(m, static_cast<double>(v));
-                        found = true;
-                    }
-                }
-                if (!found || !std::isfinite(m)) {
-                    return false;
-                }
-                outMax = static_cast<float>(m);
-                return std::isfinite(outMax);
-            };
-            auto nanmax_curve = [&](const Spectral::Curve& curve, float& outMax) -> bool {
-                return nanmax_vector(curve.linear, outMax);
-            };
-
-            bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
-            bool wantGrainSublayers = false;
-            bool wantGrainBlur = false;
-            bool wantGrainMicroBlur = false;
-            float grainBlurSigmaPx = 0.0f;
-            float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
-
-            run.grain = JuicerCuda::GrainPayload{};
-            run.grainKernels = JuicerCuda::GrainKernelPayload{};
-            run.grain.useFastStats = 1;
-            {
-                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
-                const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
-                const double alphaFrames = std::isfinite(timeFrames)
-                    ? (timeFrames - static_cast<double>(_frameIndex))
-                    : 0.0;
-                const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
-                const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
-                const double weaveAmount = std::isfinite(_gateWeaveAmount)
-                    ? std::clamp(_gateWeaveAmount, 0.0, 10.0)
-                    : 0.0;
-                const GateWeaveSignal weave = compute_gate_weave(
-                    sessionSeed,
-                    timeSeconds,
-                    6.0,
-                    0.005,
-                    static_cast<double>(_pixelSizeUm),
-                    weaveAmount);
-                const double debugScalePx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0)
-                    ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
-                    : 1.0;
-                const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
-                const double clumpPeriodSec = std::isfinite(grainUi.clumpMorphPeriodSec)
-                    ? std::clamp(static_cast<double>(grainUi.clumpMorphPeriodSec), 5.0, 60.0)
-                    : 25.0;
-                const double clumpFps = (fps > 0.0) ? fps : 24.0;
-                const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(clumpFps * clumpPeriodSec)));
-                const double longEdgePx = static_cast<double>(std::max(width, height));
-                const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
-                    ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
-                    : 0.0;
-                const double pitchMm = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0)
-                    ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
-                    : 0.0;
-                const int pitchPx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && pitchMm > 0.0)
-                    ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
-                    : height;
-                const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
-                run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
-                run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
-                run.grain.frameIndex = _frameIndex;
-                run.grain.stbnSessionSeed = sessionSeed;
-                run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
-                run.grain.timeAlpha = timeAlpha;
-                run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
-                run.gateWeave.dxPx = weave.dxPx;
-                run.gateWeave.dyPx = weave.dyPx;
-                run.gateWeave.cosRot = weave.cosRot;
-                run.gateWeave.sinRot = weave.sinRot;
-                run.gateWeave.debugScalePx = static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
-                run.grain.pitchPx = pitchPx;
-                run.grain.breathingPeriodFrames = breathingPeriodFrames;
-                run.grain.breathingAmplitude = 0.01f;
-                run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
-                run.grain.breathingCellUmLarge = static_cast<float>(5000.0 * filmScale);
-                run.grain.breathingMix = 0.30f;
-                run.grain.breathingDriftUmPerFrame = 1.0f;
-                run.grain.sizeMixWeight = 0.30f;
-                run.grain.sizeMixScale = 3.0f;
-                run.grain.clumpTemporalMix = std::clamp(grainUi.clumpTemporalMix, 0.0f, 0.30f);
-                run.grain.clumpMorphPeriodFrames = clumpMorphPeriodFrames;
-                run.grain.wangCellMm = 2.0f;
-                if (cudaResources && cudaResources->stbnData &&
-                    cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
-                    run.grain.stbn = cudaResources->stbnData;
-                    run.grain.stbnWidth = cudaResources->stbnWidth;
-                    run.grain.stbnHeight = cudaResources->stbnHeight;
-                    run.grain.stbnFrames = cudaResources->stbnFrames;
-                    run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
-                    run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
-                    run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
-                }
-                if (cudaResources && cudaResources->wangTilesData && cudaResources->wangLutData &&
-                    cudaResources->wangWidth > 0 && cudaResources->wangHeight > 0 &&
-                    cudaResources->wangCount > 0 && cudaResources->wangColors > 0) {
-                    run.grain.wangTiles = cudaResources->wangTilesData;
-                    run.grain.wangLut = cudaResources->wangLutData;
-                    run.grain.wangWidth = cudaResources->wangWidth;
-                    run.grain.wangHeight = cudaResources->wangHeight;
-                    run.grain.wangCount = cudaResources->wangCount;
-                    run.grain.wangColors = cudaResources->wangColors;
-                }
-            }
-            if (wantGrain) {
-                float densityMin[3] = {
-                    grainUi.densityMin[0],
-                    grainUi.densityMin[1],
-                    grainUi.densityMin[2]
-                };
-                float uniformity[3] = {
-                    grainUi.uniformity[0],
-                    grainUi.uniformity[1],
-                    grainUi.uniformity[2]
-                };
-                for (int i = 0; i < 3; ++i) {
-                    if (!std::isfinite(densityMin[i]) || densityMin[i] < 0.0f) {
-                        densityMin[i] = 0.0f;
-                    }
-                    if (!std::isfinite(uniformity[i])) {
-                        uniformity[i] = 0.0f;
-                    }
-                    uniformity[i] = std::clamp(uniformity[i], 0.0f, 1.0f);
-                }
-
-                float maxC = 0.0f;
-                float maxM = 0.0f;
-                float maxY = 0.0f;
-                const bool maxOk =
-                    nanmax_curve(_ws->densR, maxC) &&
-                    nanmax_curve(_ws->densG, maxM) &&
-                    nanmax_curve(_ws->densB, maxY);
-                if (!maxOk) {
-                    wantGrain = false;
-                }
-
-                const float pixelAreaUm2 = _pixelSizeUm * _pixelSizeUm;
-                if (!std::isfinite(pixelAreaUm2) || !(pixelAreaUm2 > 0.0f)) {
-                    wantGrain = false;
-                }
-
-                const int nSubLayers = (grainUi.nSubLayers > 0) ? grainUi.nSubLayers : 1;
-                run.grain.nSubLayers = nSubLayers;
-                run.grain.originX = win.x1;
-                run.grain.originY = win.y1;
-                run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
-                run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
-                run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
-                run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
-                run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
-                run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
-                run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
-                run.grain.microStructure[0] = grainUi.microStructure[0];
-                run.grain.microStructure[1] = grainUi.microStructure[1];
-                run.grain.filmDustAmount = std::isfinite(grainUi.filmDustAmount)
-                    ? std::clamp(grainUi.filmDustAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.gateDustAmount = std::isfinite(grainUi.gateDustAmount)
-                    ? std::clamp(grainUi.gateDustAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.filmScratchAmount = std::isfinite(grainUi.filmScratchAmount)
-                    ? std::clamp(grainUi.filmScratchAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.gateScratchAmount = std::isfinite(grainUi.gateScratchAmount)
-                    ? std::clamp(grainUi.gateScratchAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                for (int i = 0; i < 3; ++i) {
-                    run.grain.densityMin[i] = densityMin[i];
-                    run.grain.uniformity[i] = uniformity[i];
-                }
-
-                bool paramsOk = wantGrain;
-                if (paramsOk) {
-                    const float densityMaxCurves[3] = { maxC, maxM, maxY };
-                    for (int i = 0; i < 3; ++i) {
-                        const float densityMax = densityMaxCurves[i] + densityMin[i];
-                        const float particleArea = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[i];
-                        if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
-                            paramsOk = false;
-                            break;
-                        }
-                        float nParticles = pixelAreaUm2 / particleArea;
-                        if (nSubLayers > 1) {
-                            nParticles /= static_cast<float>(nSubLayers);
-                        }
-                        if (!std::isfinite(nParticles) || !(nParticles > 0.0f)) {
-                            paramsOk = false;
-                            break;
-                        }
-                        const float odParticle = densityMax / nParticles;
-                        run.grain.densityMax[i] = densityMax;
-                        run.grain.nParticles[i] = nParticles;
-                        run.grain.odParticle[i] = std::isfinite(odParticle) ? odParticle : 0.0f;
-                    }
-                }
-                if (!paramsOk) {
-                    wantGrain = false;
-                }
-
-                if (wantGrain) {
-                    grainBlurSigmaPx = run.grain.blurSigmaPx;
-                    wantGrainBlur = false;
-
-                    wantGrainMicroBlur = false;
-                    if (!std::isfinite(run.grain.microStructure[1]) || !(run.grain.microStructure[1] > 0.0f)) {
-                        run.grain.microStructure[0] = 0.0f;
-                        run.grain.microStructure[1] = 0.0f;
-                    }
-
-                    if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
-                        float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
-                                                         {0.0f, 0.0f, 0.0f},
-                                                         {0.0f, 0.0f, 0.0f} };
-                        bool layersOk = true;
-                        for (int layer = 0; layer < 3; ++layer) {
-                            for (int ch = 0; ch < 3; ++ch) {
-                                if (!nanmax_vector(_ws->densityCurvesLayers[layer][ch], densityMaxLayers[layer][ch])) {
-                                    layersOk = false;
-                                }
-                            }
-                        }
-
-                        if (layersOk) {
-                            for (int ch = 0; ch < 3; ++ch) {
-                                float total = 0.0f;
-                                for (int layer = 0; layer < 3; ++layer) {
-                                    total += densityMaxLayers[layer][ch];
-                                }
-                                if (!(std::isfinite(total) && total > 0.0f)) {
-                                    layersOk = false;
-                                    break;
-                                }
-
-                                for (int layer = 0; layer < 3; ++layer) {
-                                    const float fraction = densityMaxLayers[layer][ch] / total;
-                                    const float minLayer = fraction * densityMin[ch];
-                                    const float maxLayer = densityMaxLayers[layer][ch] + minLayer;
-                                    const float particleAreaLayer = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[ch] * grainUi.agxParticleScaleLayers[layer];
-                                    if (!std::isfinite(particleAreaLayer) || !(particleAreaLayer > 0.0f)) {
-                                        layersOk = false;
-                                        break;
-                                    }
-                                    const float nParticlesLayer = pixelAreaUm2 * fraction / particleAreaLayer;
-                                    const float odParticle = (nParticlesLayer > 0.0f) ? (maxLayer / nParticlesLayer) : 0.0f;
-                                    run.grain.densityMinLayers[layer][ch] = minLayer;
-                                    run.grain.densityMaxLayers[layer][ch] = maxLayer;
-                                    run.grain.nParticlesLayers[layer][ch] = std::isfinite(nParticlesLayer) ? nParticlesLayer : 0.0f;
-                                    run.grain.odParticleLayers[layer][ch] = std::isfinite(odParticle) ? odParticle : 0.0f;
-                                    run.grain.densityCurvesLayers[layer][ch] = cudaResources->densityCurvesLayers[layer][ch];
-                                    const float dyeSigma = run.grain.blurDyeCloudsUm * std::sqrt(std::max(0.0f, run.grain.odParticleLayers[layer][ch]));
-                                    grainDyeSigmaPx[layer][ch] = std::isfinite(dyeSigma) ? dyeSigma : 0.0f;
-                                }
-                                if (!layersOk) {
-                                    break;
-                                }
-                            }
-                        }
-                        wantGrainSublayers = layersOk;
-                    }
-                }
-                if (std::isfinite(grainBlurSigmaPx)) {
-                    wantGrainBlur = wantGrainSublayers ? (grainBlurSigmaPx > 0.0f) : (grainBlurSigmaPx > 0.4f);
-                }
-            }
-            run.grain.active = wantGrain ? 1 : 0;
-            run.grain.sublayersActive = wantGrainSublayers ? 1 : 0;
+            const GrainSetupResult grainSetup = setup_grain_payload(run, grainUi, true);
+            const bool wantGrain = grainSetup.wantGrain;
+            const bool wantGrainSublayers = grainSetup.wantGrainSublayers;
+            const bool wantGrainBlur = grainSetup.wantGrainBlur;
+            const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
 
             const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
@@ -1813,7 +1859,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainMicroBlur || wantGrainSublayers;
+                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGateMask, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
@@ -1892,8 +1938,6 @@ void JuicerProcessor::processImagesCUDA() {
 
                 run.grainKernels.blurKernel = nullptr;
                 run.grainKernels.blurRadius = 0;
-                run.grainKernels.microKernel = nullptr;
-                run.grainKernels.microRadius = 0;
                 for (int layer = 0; layer < 3; ++layer) {
                     for (int ch = 0; ch < 3; ++ch) {
                         run.grainKernels.dyeKernel[layer][ch] = nullptr;
@@ -1914,23 +1958,10 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
 
-                    if (wantGrainMicroBlur) {
-                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, 0.0f, _pCudaStream, opticsError)) {
-                            JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                        }
-                        run.grainKernels.microKernel = cudaResources->grainMicroKernel.weights;
-                        run.grainKernels.microRadius = cudaResources->grainMicroKernel.radius;
-                    }
-
                     if (wantGrainSublayers) {
                         for (int layer = 0; layer < 3; ++layer) {
                             for (int ch = 0; ch < 3; ++ch) {
-                                const float sigma = grainDyeSigmaPx[layer][ch];
+                                const float sigma = grainSetup.grainDyeSigmaPx[layer][ch];
                                 if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainDyeKernel[layer][ch], sigma, _pCudaStream, opticsError)) {
                                     JTRACE("CUDA", std::string("CUDA grain dye-cloud kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
@@ -2522,269 +2553,11 @@ void JuicerProcessor::processImagesCUDA() {
                 (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
 
             const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
-            auto nanmax_vector = [](const std::vector<float>& values, float& outMax) -> bool {
-                double m = -std::numeric_limits<double>::infinity();
-                bool found = false;
-                for (float v : values) {
-                    if (std::isfinite(v)) {
-                        m = std::max(m, static_cast<double>(v));
-                        found = true;
-                    }
-                }
-                if (!found || !std::isfinite(m)) {
-                    return false;
-                }
-                outMax = static_cast<float>(m);
-                return std::isfinite(outMax);
-            };
-            auto nanmax_curve = [&](const Spectral::Curve& curve, float& outMax) -> bool {
-                return nanmax_vector(curve.linear, outMax);
-            };
-
-            bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
-            bool wantGrainSublayers = false;
-            bool wantGrainBlur = false;
-            bool wantGrainMicroBlur = false;
-            float grainBlurSigmaPx = 0.0f;
-            float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
-
-            run.grain = JuicerCuda::GrainPayload{};
-            run.grainKernels = JuicerCuda::GrainKernelPayload{};
-            run.grain.useFastStats = 1;
-            {
-                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-                const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
-                const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
-                const double alphaFrames = std::isfinite(timeFrames)
-                    ? (timeFrames - static_cast<double>(_frameIndex))
-                    : 0.0;
-                const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
-                const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
-                const double weaveAmount = std::isfinite(_gateWeaveAmount)
-                    ? std::clamp(_gateWeaveAmount, 0.0, 10.0)
-                    : 0.0;
-                const GateWeaveSignal weave = compute_gate_weave(
-                    sessionSeed,
-                    timeSeconds,
-                    6.0,
-                    0.005,
-                    static_cast<double>(_pixelSizeUm),
-                    weaveAmount);
-                const double debugScalePx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0)
-                    ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
-                    : 1.0;
-                const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
-                const double clumpPeriodSec = std::isfinite(grainUi.clumpMorphPeriodSec)
-                    ? std::clamp(static_cast<double>(grainUi.clumpMorphPeriodSec), 5.0, 60.0)
-                    : 25.0;
-                const double clumpFps = (fps > 0.0) ? fps : 24.0;
-                const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(clumpFps * clumpPeriodSec)));
-                const double longEdgePx = static_cast<double>(std::max(width, height));
-                const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
-                    ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
-                    : 0.0;
-                const double pitchMm = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0)
-                    ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
-                    : 0.0;
-                const int pitchPx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && pitchMm > 0.0)
-                    ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
-                    : height;
-                const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
-                run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
-                run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
-                run.grain.frameIndex = _frameIndex;
-                run.grain.stbnSessionSeed = sessionSeed;
-                run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
-                run.grain.timeAlpha = timeAlpha;
-                run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
-                run.gateWeave.dxPx = weave.dxPx;
-                run.gateWeave.dyPx = weave.dyPx;
-                run.gateWeave.cosRot = weave.cosRot;
-                run.gateWeave.sinRot = weave.sinRot;
-                run.gateWeave.debugScalePx = static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
-                run.grain.pitchPx = pitchPx;
-                run.grain.breathingPeriodFrames = breathingPeriodFrames;
-                run.grain.breathingAmplitude = 0.01f;
-                run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
-                run.grain.breathingCellUmLarge = static_cast<float>(5000.0 * filmScale);
-                run.grain.breathingMix = 0.30f;
-                run.grain.breathingDriftUmPerFrame = 1.0f;
-                run.grain.sizeMixWeight = 0.30f;
-                run.grain.sizeMixScale = 3.0f;
-                run.grain.clumpTemporalMix = std::clamp(grainUi.clumpTemporalMix, 0.0f, 0.30f);
-                run.grain.clumpMorphPeriodFrames = clumpMorphPeriodFrames;
-                run.grain.wangCellMm = 2.0f;
-                if (cudaResources && cudaResources->stbnData &&
-                    cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
-                    run.grain.stbn = cudaResources->stbnData;
-                    run.grain.stbnWidth = cudaResources->stbnWidth;
-                    run.grain.stbnHeight = cudaResources->stbnHeight;
-                    run.grain.stbnFrames = cudaResources->stbnFrames;
-                    run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
-                    run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
-                    run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
-                }
-                if (cudaResources && cudaResources->wangTilesData && cudaResources->wangLutData &&
-                    cudaResources->wangWidth > 0 && cudaResources->wangHeight > 0 &&
-                    cudaResources->wangCount > 0 && cudaResources->wangColors > 0) {
-                    run.grain.wangTiles = cudaResources->wangTilesData;
-                    run.grain.wangLut = cudaResources->wangLutData;
-                    run.grain.wangWidth = cudaResources->wangWidth;
-                    run.grain.wangHeight = cudaResources->wangHeight;
-                    run.grain.wangCount = cudaResources->wangCount;
-                    run.grain.wangColors = cudaResources->wangColors;
-                }
-            }
-            if (wantGrain) {
-                float densityMin[3] = {
-                    grainUi.densityMin[0],
-                    grainUi.densityMin[1],
-                    grainUi.densityMin[2]
-                };
-                float uniformity[3] = {
-                    grainUi.uniformity[0],
-                    grainUi.uniformity[1],
-                    grainUi.uniformity[2]
-                };
-                for (int i = 0; i < 3; ++i) {
-                    if (!std::isfinite(densityMin[i]) || densityMin[i] < 0.0f) {
-                        densityMin[i] = 0.0f;
-                    }
-                    if (!std::isfinite(uniformity[i])) {
-                        uniformity[i] = 0.0f;
-                    }
-                    uniformity[i] = std::clamp(uniformity[i], 0.0f, 1.0f);
-                }
-
-                float maxC = 0.0f;
-                float maxM = 0.0f;
-                float maxY = 0.0f;
-                const bool maxOk =
-                    nanmax_curve(_ws->densR, maxC) &&
-                    nanmax_curve(_ws->densG, maxM) &&
-                    nanmax_curve(_ws->densB, maxY);
-                if (!maxOk) {
-                    wantGrain = false;
-                }
-
-                const float pixelAreaUm2 = _pixelSizeUm * _pixelSizeUm;
-                if (!std::isfinite(pixelAreaUm2) || !(pixelAreaUm2 > 0.0f)) {
-                    wantGrain = false;
-                }
-
-                const int nSubLayers = (grainUi.nSubLayers > 0) ? grainUi.nSubLayers : 1;
-                run.grain.nSubLayers = nSubLayers;
-                run.grain.originX = win.x1;
-                run.grain.originY = win.y1;
-                run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
-                run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
-                run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
-                run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
-                run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
-                run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
-                run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
-                run.grain.microStructure[0] = grainUi.microStructure[0];
-                run.grain.microStructure[1] = grainUi.microStructure[1];
-                for (int i = 0; i < 3; ++i) {
-                    run.grain.densityMin[i] = densityMin[i];
-                    run.grain.uniformity[i] = uniformity[i];
-                }
-
-                bool paramsOk = wantGrain;
-                if (paramsOk) {
-                    const float densityMaxCurves[3] = { maxC, maxM, maxY };
-                    for (int i = 0; i < 3; ++i) {
-                        const float densityMax = densityMaxCurves[i] + densityMin[i];
-                        const float particleArea = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[i];
-                        if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
-                            paramsOk = false;
-                            break;
-                        }
-                        float nParticles = pixelAreaUm2 / particleArea;
-                        if (nSubLayers > 1) {
-                            nParticles /= static_cast<float>(nSubLayers);
-                        }
-                        if (!std::isfinite(nParticles) || !(nParticles > 0.0f)) {
-                            paramsOk = false;
-                            break;
-                        }
-                        const float odParticle = densityMax / nParticles;
-                        run.grain.densityMax[i] = densityMax;
-                        run.grain.nParticles[i] = nParticles;
-                        run.grain.odParticle[i] = std::isfinite(odParticle) ? odParticle : 0.0f;
-                    }
-                }
-                if (!paramsOk) {
-                    wantGrain = false;
-                }
-
-                if (wantGrain) {
-                    grainBlurSigmaPx = run.grain.blurSigmaPx;
-                    wantGrainBlur = false;
-
-                    wantGrainMicroBlur = false;
-                    if (!std::isfinite(run.grain.microStructure[1]) || !(run.grain.microStructure[1] > 0.0f)) {
-                        run.grain.microStructure[0] = 0.0f;
-                        run.grain.microStructure[1] = 0.0f;
-                    }
-
-                    if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
-                        float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
-                                                         {0.0f, 0.0f, 0.0f},
-                                                         {0.0f, 0.0f, 0.0f} };
-                        bool layersOk = true;
-                        for (int layer = 0; layer < 3; ++layer) {
-                            for (int ch = 0; ch < 3; ++ch) {
-                                if (!nanmax_vector(_ws->densityCurvesLayers[layer][ch], densityMaxLayers[layer][ch])) {
-                                    layersOk = false;
-                                }
-                            }
-                        }
-
-                        if (layersOk) {
-                            for (int ch = 0; ch < 3; ++ch) {
-                                float total = 0.0f;
-                                for (int layer = 0; layer < 3; ++layer) {
-                                    total += densityMaxLayers[layer][ch];
-                                }
-                                if (!(std::isfinite(total) && total > 0.0f)) {
-                                    layersOk = false;
-                                    break;
-                                }
-
-                                for (int layer = 0; layer < 3; ++layer) {
-                                    const float fraction = densityMaxLayers[layer][ch] / total;
-                                    const float minLayer = fraction * densityMin[ch];
-                                    const float maxLayer = densityMaxLayers[layer][ch] + minLayer;
-                                    const float particleAreaLayer = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[ch] * grainUi.agxParticleScaleLayers[layer];
-                                    if (!std::isfinite(particleAreaLayer) || !(particleAreaLayer > 0.0f)) {
-                                        layersOk = false;
-                                        break;
-                                    }
-                                    const float nParticlesLayer = pixelAreaUm2 * fraction / particleAreaLayer;
-                                    const float odParticle = (nParticlesLayer > 0.0f) ? (maxLayer / nParticlesLayer) : 0.0f;
-                                    run.grain.densityMinLayers[layer][ch] = minLayer;
-                                    run.grain.densityMaxLayers[layer][ch] = maxLayer;
-                                    run.grain.nParticlesLayers[layer][ch] = std::isfinite(nParticlesLayer) ? nParticlesLayer : 0.0f;
-                                    run.grain.odParticleLayers[layer][ch] = std::isfinite(odParticle) ? odParticle : 0.0f;
-                                    run.grain.densityCurvesLayers[layer][ch] = cudaResources->densityCurvesLayers[layer][ch];
-                                    const float dyeSigma = run.grain.blurDyeCloudsUm * std::sqrt(std::max(0.0f, run.grain.odParticleLayers[layer][ch]));
-                                    grainDyeSigmaPx[layer][ch] = std::isfinite(dyeSigma) ? dyeSigma : 0.0f;
-                                }
-                                if (!layersOk) {
-                                    break;
-                                }
-                            }
-                        }
-                        wantGrainSublayers = layersOk;
-                    }
-                }
-                if (std::isfinite(grainBlurSigmaPx)) {
-                    wantGrainBlur = wantGrainSublayers ? (grainBlurSigmaPx > 0.0f) : (grainBlurSigmaPx > 0.4f);
-                }
-            }
-            run.grain.active = wantGrain ? 1 : 0;
-            run.grain.sublayersActive = wantGrainSublayers ? 1 : 0;
+            const GrainSetupResult grainSetup = setup_grain_payload(run, grainUi, false);
+            const bool wantGrain = grainSetup.wantGrain;
+            const bool wantGrainSublayers = grainSetup.wantGrainSublayers;
+            const bool wantGrainBlur = grainSetup.wantGrainBlur;
+            const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
 
             const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
             const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
@@ -2806,7 +2579,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainMicroBlur || wantGrainSublayers;
+                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGateMask, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
@@ -2885,8 +2658,6 @@ void JuicerProcessor::processImagesCUDA() {
 
                 run.grainKernels.blurKernel = nullptr;
                 run.grainKernels.blurRadius = 0;
-                run.grainKernels.microKernel = nullptr;
-                run.grainKernels.microRadius = 0;
                 for (int layer = 0; layer < 3; ++layer) {
                     for (int ch = 0; ch < 3; ++ch) {
                         run.grainKernels.dyeKernel[layer][ch] = nullptr;
@@ -2907,23 +2678,10 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
 
-                    if (wantGrainMicroBlur) {
-                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainMicroKernel, 0.0f, _pCudaStream, opticsError)) {
-                            JTRACE("CUDA", std::string("CUDA grain micro-structure kernel upload failed: ") + opticsError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                        }
-                        run.grainKernels.microKernel = cudaResources->grainMicroKernel.weights;
-                        run.grainKernels.microRadius = cudaResources->grainMicroKernel.radius;
-                    }
-
                     if (wantGrainSublayers) {
                         for (int layer = 0; layer < 3; ++layer) {
                             for (int ch = 0; ch < 3; ++ch) {
-                                const float sigma = grainDyeSigmaPx[layer][ch];
+                                const float sigma = grainSetup.grainDyeSigmaPx[layer][ch];
                                 if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainDyeKernel[layer][ch], sigma, _pCudaStream, opticsError)) {
                                     JTRACE("CUDA", std::string("CUDA grain dye-cloud kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)

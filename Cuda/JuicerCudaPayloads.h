@@ -163,7 +163,6 @@ namespace JuicerCuda {
     struct GrainPayload {
         int active = 0;
         int sublayersActive = 0;
-        int useFastStats = 1;
         int nSubLayers = 1;
         int originX = 0;
         int originY = 0;
@@ -195,11 +194,11 @@ namespace JuicerCuda {
         float breathingDriftUmPerFrame = 0.0f;
         int breathingDebug = 0;
         int debugView = 0;
-        float pixelSizeUm = 0.0f;
+        float pixelSizeUm = 0.0f; // Pixel size in micrometers.
         int pitchPx = 0;
-        float blurSigmaPx = 0.0f;
-        float blurDyeCloudsUm = 0.0f;
-        float microStructure[2] = { 0.0f, 0.0f };
+        float blurSigmaPx = 0.0f; // Grain blur sigma in pixels.
+        float blurDyeCloudsUm = 0.0f; // Dye-cloud blur sigma scale in pixels (legacy name).
+        float microStructure[2] = { 0.0f, 0.0f }; // [cell_um, clump_sigma_x1e-3]
         float clumpTemporalMix = 0.0f;
         int clumpMorphPeriodFrames = 0;
         float filmDustAmount = 0.0f;
@@ -248,8 +247,6 @@ namespace JuicerCuda {
     struct GrainKernelPayload {
         const float* JUICER_RESTRICT blurKernel = nullptr;
         int blurRadius = 0;
-        const float* JUICER_RESTRICT microKernel = nullptr;
-        int microRadius = 0;
         const float* JUICER_RESTRICT dyeKernel[3][3] = {
             { nullptr, nullptr, nullptr },
             { nullptr, nullptr, nullptr },

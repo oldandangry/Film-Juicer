@@ -707,7 +707,6 @@ namespace JuicerCuda {
         free_gaussian_kernel(scannerUnsharpKernel);
         free_gaussian_kernel(scannerGlareKernel);
         free_gaussian_kernel(grainBlurKernel);
-        free_gaussian_kernel(grainMicroKernel);
         for (int layer = 0; layer < 3; ++layer) {
             for (int ch = 0; ch < 3; ++ch) {
                 free_gaussian_kernel(grainDyeKernel[layer][ch]);

@@ -31,15 +31,15 @@ namespace Profiles {
         std::array<float, 3> agxParticleScaleLayers{ {0.0f, 0.0f, 0.0f} };
         std::array<float, 3> densityMin{ {0.0f, 0.0f, 0.0f} };
         std::array<float, 3> uniformity{ {0.0f, 0.0f, 0.0f} };
-        float blur = 0.0f;
-        float blurDyeCloudsUm = 0.0f;
+        float blur = 0.0f; // Grain blur sigma in pixels.
+        float blurDyeCloudsUm = 0.0f; // Dye-cloud blur sigma scale in pixels (legacy _um name).
         float sizeMixWeight = 0.30f;
         float sizeMixScale = 3.0f;
         float clumpTemporalMix = 0.30f;
         float clumpMorphPeriodSec = 8.0f;
         bool breathingDebug = false;
         int debugView = 0;
-        std::array<float, 2> microStructure{ {0.0f, 0.0f} };
+        std::array<float, 2> microStructure{ {0.0f, 0.0f} }; // [cell_um, clump_sigma_x1e-3]
         int nSubLayers = 1;
         float filmDustAmount = 0.0f;
         float gateDustAmount = 0.0f;
