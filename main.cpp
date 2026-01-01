@@ -629,7 +629,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleAreaUm2);
             p->setLabel("Particle area (um^2)");
             p->setHint("Particle area in um^2; roughly 0.1 for ISO 100-200, 0.4 for ISO 400.");
-            p->setDefault(0.318);
+            p->setDefault(0.335);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 1.0);
             p->setIncrement(0.1);
@@ -680,7 +680,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainBlur);
             p->setLabel("Grain blur (px)");
             p->setHint("Gaussian blur sigma in pixels for grain.");
-            p->setDefault(0.60);
+            p->setDefault(0.65);
             p->setRange(0.0, 5.0);
             p->setDisplayRange(0.0, 2.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -700,7 +700,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixWeight);
             p->setLabel("Size mix weight");
             p->setHint("Weight of the coarse grain population in the size mixture.");
-            p->setDefault(0.22);
+            p->setDefault(0.23);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -710,7 +710,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixScale);
             p->setLabel("Size mix scale");
             p->setHint("Relative particle size scale for the coarse grain population.");
-            p->setDefault(8.0);
+            p->setDefault(9.0);
             p->setRange(1.0, 10.0);
             p->setDisplayRange(1.0, 10.0);
             if (grpGrain) p->setParent(*grpGrain);
