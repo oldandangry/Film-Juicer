@@ -94,7 +94,7 @@ namespace Couplers {
         float amt[3] = { amountRGB[0], amountRGB[1], amountRGB[2] };
         for (int i = 0; i < 3; ++i) {
             if (!std::isfinite(amt[i])) amt[i] = 0.0f;
-            amt[i] = std::clamp(amt[i], 0.0f, 1.0f);
+            if (amt[i] < 0.0f) amt[i] = 0.0f;
         }
 
         auto gauss = [&](int dx)->float {
@@ -363,28 +363,28 @@ namespace Couplers {
 
         paramSuite->paramDefine(ps, kOfxParamTypeDouble, kParamCouplersAmountR, &p);
         propSuite->propSetString(p, kOfxPropLabel, 0, "Couplers ratio R");
-        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 0.7);
+        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 1.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMin, 0, 0.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 1.0);
         propSuite->propSetString(p, kOfxParamPropParent, 0, kParamCouplersGroup);
 
         paramSuite->paramDefine(ps, kOfxParamTypeDouble, kParamCouplersAmountG, &p);
         propSuite->propSetString(p, kOfxPropLabel, 0, "Couplers ratio G");
-        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 0.7);
+        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 1.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMin, 0, 0.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 1.0);
         propSuite->propSetString(p, kOfxParamPropParent, 0, kParamCouplersGroup);
 
         paramSuite->paramDefine(ps, kOfxParamTypeDouble, kParamCouplersAmountB, &p);
         propSuite->propSetString(p, kOfxPropLabel, 0, "Couplers ratio B");
-        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 0.5);
+        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 1.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMin, 0, 0.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 1.0);
         propSuite->propSetString(p, kOfxParamPropParent, 0, kParamCouplersGroup);
 
         paramSuite->paramDefine(ps, kOfxParamTypeDouble, kParamCouplersLayerSigma, &p);
         propSuite->propSetString(p, kOfxPropLabel, 0, "Layer diffusion");
-        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 1.0);
+        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 2.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMin, 0, 0.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 5.0);
         propSuite->propSetString(p, kOfxParamPropParent, 0, kParamCouplersGroup);
@@ -396,10 +396,10 @@ namespace Couplers {
         propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 1.0);
         propSuite->propSetString(p, kOfxParamPropParent, 0, kParamCouplersGroup);
 
-        // Spatial diffusion (xy Gaussian, micrometers on film long edge), default 0 for speed/parity now
+        // Spatial diffusion (xy Gaussian, micrometers on film long edge)
         paramSuite->paramDefine(ps, kOfxParamTypeDouble, kParamCouplersSpatialSigma, &p);
         propSuite->propSetString(p, kOfxPropLabel, 0, "Couplers spatial diffusion (\xC2\xB5m)");
-        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 0.0);
+        propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 10.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMin, 0, 0.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 50.0);
         propSuite->propSetString(p, kOfxParamPropHint, 0,
@@ -443,8 +443,8 @@ namespace Couplers {
         // Defaults
         rt.active = true;
         double amountSlider = 1.0;
-        double ar = 0.7, ag = 0.7, ab = 0.5, sigma = 1.0, high = 0.0;
-        double spatial = 0.0;
+        double ar = 1.0, ag = 1.0, ab = 1.0, sigma = 2.0, high = 0.0;
+        double spatial = 10.0;
         double filmLongEdgeMm = 35.0;
         int activeInt = 1;
 

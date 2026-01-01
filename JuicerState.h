@@ -102,15 +102,15 @@ struct ParamSnapshot {
     double glareCompRemovalTransition = 0.3;
     int couplersActive = 1;
     double couplersAmount = 1.0;
-    double ratioR = 0.7, ratioG = 0.7, ratioB = 0.5;
-    double sigma = 1.0, high = 0.0;
+    double ratioR = 1.0, ratioG = 1.0, ratioB = 1.0;
+    double sigma = 2.0, high = 0.0;
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
     double scannerLensBlurSigmaPx = 0.55;
     std::array<double, 2> scannerUnsharpMask{ {0.7, 1.0} };
     int scannerUseLut = 1;
     int scannerLutResolution = 17;
-    double spatialSigmaMicrometers = 0.0;
+    double spatialSigmaMicrometers = 10.0;
     int outputColorSpace = OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB);
     int outputCctfEncoding = 1;
     int outputLinearPassThrough = 0;
@@ -121,12 +121,12 @@ struct ParamSnapshot {
 
 constexpr int kFactoryCouplersActive = 1;
 constexpr double kFactoryCouplersAmount = 1.0;
-constexpr double kFactoryCouplersRatioR = 0.7;
-constexpr double kFactoryCouplersRatioG = 0.7;
-constexpr double kFactoryCouplersRatioB = 0.5;
-constexpr double kFactoryCouplersSigma = 1.0;
+constexpr double kFactoryCouplersRatioR = 1.0;
+constexpr double kFactoryCouplersRatioG = 1.0;
+constexpr double kFactoryCouplersRatioB = 1.0;
+constexpr double kFactoryCouplersSigma = 2.0;
 constexpr double kFactoryCouplersHigh = 0.0;
-constexpr double kFactoryCouplersSpatialSigma = 0.0;
+constexpr double kFactoryCouplersSpatialSigma = 10.0;
 
 uint64_t hash_params(const ParamSnapshot& p);
 uint64_t hash_params_core(const ParamSnapshot& p);
