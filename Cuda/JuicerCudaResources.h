@@ -92,7 +92,7 @@ namespace JuicerCuda {
         DeviceScanMedium scanPrint;
 
         struct DeviceSpectralLut {
-            double* logXYZ = nullptr; // layout: ((z*res + y)*res + x) * 3 + c
+            double* log2XYZ = nullptr; // layout: ((z*res + y)*res + x) * 3 + c
             std::uint32_t res = 0;
             std::uint64_t hash = 0;
         };
@@ -214,7 +214,7 @@ namespace JuicerCuda {
     // Uploads WorkingState curves when buildCounter changes; returns false on failure with outError filled.
     bool ensure_uploaded(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
 
-    // Builds + uploads scan-stage logXYZ LUT on demand (Mitchell cubic sampler parity with CPU).
+    // Builds + uploads scan-stage log2(XYZ) LUT on demand (Mitchell cubic sampler parity with CPU).
     bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
 
     // Ensures the scan error flag device buffer is allocated.

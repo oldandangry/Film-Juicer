@@ -1739,7 +1739,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
 
             run.scanStage.scannerUseLut = scannerUseLut ? 1 : 0;
-            run.scanStage.scanLutLogXYZ = nullptr;
+            run.scanStage.scanLutLog2XYZ = nullptr;
             run.scanStage.scanLutRes = 0;
             if (run.scanStage.scannerUseLut) {
                 std::string lutError;
@@ -1751,9 +1751,9 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                run.scanStage.scanLutLogXYZ = cudaResources->scanNegativeLut.logXYZ;
+                run.scanStage.scanLutLog2XYZ = cudaResources->scanNegativeLut.log2XYZ;
                 run.scanStage.scanLutRes = static_cast<int>(cudaResources->scanNegativeLut.res);
-                if (!run.scanStage.scanLutLogXYZ || run.scanStage.scanLutRes <= 0) {
+                if (!run.scanStage.scanLutLog2XYZ || run.scanStage.scanLutRes <= 0) {
                     JTRACE("CUDA", "FATAL: scan LUT missing after successful upload");
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
@@ -2405,7 +2405,7 @@ void JuicerProcessor::processImagesCUDA() {
 
             // Scan LUT selection (print medium).
             run.scanStage.scannerUseLut = _scannerSettings.useLut ? 1 : 0;
-            run.scanStage.scanLutLogXYZ = nullptr;
+            run.scanStage.scanLutLog2XYZ = nullptr;
             run.scanStage.scanLutRes = 0;
             if (run.scanStage.scannerUseLut) {
                 std::string lutError;
@@ -2417,9 +2417,9 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                run.scanStage.scanLutLogXYZ = cudaResources->scanPrintLut.logXYZ;
+                run.scanStage.scanLutLog2XYZ = cudaResources->scanPrintLut.log2XYZ;
                 run.scanStage.scanLutRes = static_cast<int>(cudaResources->scanPrintLut.res);
-                if (!run.scanStage.scanLutLogXYZ || run.scanStage.scanLutRes <= 0) {
+                if (!run.scanStage.scanLutLog2XYZ || run.scanStage.scanLutRes <= 0) {
                     JTRACE("CUDA", "FATAL: print scan LUT missing after successful upload");
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }

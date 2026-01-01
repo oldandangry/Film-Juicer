@@ -14,6 +14,10 @@ namespace JuicerCuda {
 namespace Precompute {
 
 bool build_scan_lut_cpu(const Scanner::ScannerMediumRuntime& medium, std::uint32_t res, std::vector<double>& out, std::string& outError) {
+    // Match the GPU hot path: store log2(XYZ) so device code can use exp2() instead of pow(10, ...).
+    // Note: Pipeline::ScanStage::spectral_to_log_xyz returns log10(XYZ) (with epsilon).
+    constexpr double kLog2_10 = 3.32192809488736234787;
+
     const size_t sRes = static_cast<size_t>(res);
     const size_t voxels = sRes * sRes * sRes;
     const size_t count = voxels * 3u;
@@ -38,6 +42,10 @@ bool build_scan_lut_cpu(const Scanner::ScannerMediumRuntime& medium, std::uint32
                 out[base + 0] = logXYZ[0];
                 out[base + 1] = logXYZ[1];
                 out[base + 2] = logXYZ[2];
+
+                out[base + 0] *= kLog2_10;
+                out[base + 1] *= kLog2_10;
+                out[base + 2] *= kLog2_10;
             }
         }
     }

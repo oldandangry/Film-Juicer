@@ -487,9 +487,9 @@ namespace JuicerCuda {
 
     static void free_scan_lut(Resources::DeviceSpectralLut& lut) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (lut.logXYZ) {
-            cudaFree(lut.logXYZ);
-            lut.logXYZ = nullptr;
+        if (lut.log2XYZ) {
+            cudaFree(lut.log2XYZ);
+            lut.log2XYZ = nullptr;
         }
 #endif
         lut.res = 0;
@@ -1367,7 +1367,7 @@ namespace JuicerCuda {
                 outError = "CUDA device mismatch for cached resources";
                 return false;
             }
-            if (dst->logXYZ && dst->res == res && dst->hash == expectedHash) {
+            if (dst->log2XYZ && dst->res == res && dst->hash == expectedHash) {
                 return true;
             }
         }
@@ -1392,11 +1392,11 @@ namespace JuicerCuda {
                 outError = "CUDA device mismatch for cached resources";
                 return false;
             }
-            if (dst->logXYZ && dst->res == res && dst->hash == expectedHash) {
+            if (dst->log2XYZ && dst->res == res && dst->hash == expectedHash) {
                 return true;
             }
 
-            if (dst->logXYZ) {
+            if (dst->log2XYZ) {
                 // Ensure no in-flight work can still reference the previous device LUT.
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "scan LUT", outError)) {
                     return false;
@@ -1420,7 +1420,7 @@ namespace JuicerCuda {
                 return false;
             }
 
-            dst->logXYZ = dLut;
+            dst->log2XYZ = dLut;
             dst->res = res;
             dst->hash = expectedHash;
             return true;

@@ -500,12 +500,16 @@ namespace {
             D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
         }
 
+        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
         double logXYZ[3] = { 0.0, 0.0, 0.0 };
         scan_log_xyz_device(scan, D_norm, logXYZ);
+
+        const bool useLutLog2 =
+            scan.scannerUseLut && scan.scanLutLog2XYZ && scan.scanLutRes > 0 && D_norm_finite;
         const double xyz[3] = {
-            pow(10.0, logXYZ[0]),
-            pow(10.0, logXYZ[1]),
-            pow(10.0, logXYZ[2])
+            useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
+            useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
+            useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])
         };
 
         double adapted[3];
@@ -582,13 +586,16 @@ namespace {
             D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
         }
 
+        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
         double logXYZ[3] = { 0.0, 0.0, 0.0 };
         scan_log_xyz_device(scan, D_norm, logXYZ);
 
+        const bool useLutLog2 =
+            scan.scannerUseLut && scan.scanLutLog2XYZ && scan.scanLutRes > 0 && D_norm_finite;
         double xyz[3] = {
-            pow(10.0, logXYZ[0]),
-            pow(10.0, logXYZ[1]),
-            pow(10.0, logXYZ[2])
+            useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
+            useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
+            useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])
         };
 
         if (glarePercent) {
