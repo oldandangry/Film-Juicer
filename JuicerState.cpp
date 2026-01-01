@@ -1241,6 +1241,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     JTRACE_SCOPE("BUILD", "rebuild_working_state");
 
     std::unique_lock<std::mutex> lk(S.m);
+    std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
+    WorkingState* target = next.get();
 
     {
         std::ostringstream oss;
@@ -1465,7 +1467,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             effectiveRatioR = sanitize_profile(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
         }
         if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
-            effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 3.0);
+            effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
         }
         if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
             effectiveCouplersHigh = sanitize_profile(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
@@ -1813,61 +1815,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             }
         }
     }
-
-    WorkingState* target = S.inactive();
-    while (S.renderWS.load(std::memory_order_acquire) == target &&
-        S.rendersInFlight.load(std::memory_order_acquire) > 0)
-    {
-        S.renderCv.wait(lk);
-        target = S.inactive();
-    }
-
-    auto reset_optics_runtime = [](ScannerOptics::Runtime& rt) {
-        rt.lut.cpu.clear();
-        rt.lut.hash = 0;
-        rt.lut.res = 0;
-        rt.lut.valid = false;
-        rt.key = Scanner::ScannerKey{};
-        rt.glare.amount.clear();
-        rt.glare.tmp.clear();
-        rt.glare.valid = false;
-        rt.glare.seedHash = 0;
-        rt.glare.width = 0;
-        rt.glare.height = 0;
-    };
-
-    auto invalidate_scanner_state = [&](WorkingState& ws) {
-        ws.negativeScannerValid = false;
-        ws.printScannerValid = false;
-        ws.printGlareCompensated = false;
-        ws.negativeStaticKey = Scanner::ScannerStaticKey{};
-        ws.printStaticKey = Scanner::ScannerStaticKey{};
-        ws.negativeColorRuntime = Scanner::ColorRuntime{};
-        ws.printColorRuntime = Scanner::ColorRuntime{};
-        ws.negativeMediumRuntime = Scanner::ScannerMediumRuntime{};
-        ws.printMediumRuntime = Scanner::ScannerMediumRuntime{};
-        ws.negativeDensityRange.digest = 0;
-        ws.printDensityRange.digest = 0;
-        if (&S.workA == &ws) {
-            reset_optics_runtime(S.scannerRuntimeA);
-        }
-        else if (&S.workB == &ws) {
-            reset_optics_runtime(S.scannerRuntimeB);
-        }
-    };
-
-    struct FailureGuard {
-        InstanceState& state;
-        WorkingState* target;
-        std::function<void(WorkingState&)> invalidate;
-        bool committed = false;
-        ~FailureGuard() {
-            if (!committed && target) {
-                invalidate(*target);
-                state.activeWS.store(nullptr, std::memory_order_release);
-            }
-        }
-    } failureGuard{ S, target, invalidate_scanner_state };
 
     target->negativeScannerValid = false;
     target->printScannerValid = false;
@@ -2279,15 +2226,15 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     S.spatialSigmaCacheValid.store(false, std::memory_order_release);
 
     {
-	        RebuildWorkingState::NegativeReuseContext reuseCtx;
-	        reuseCtx.activeBuildCounter = S.activeBuildCounter;
-	        reuseCtx.lastHash = S.lastHash.load(std::memory_order_acquire);
-	        reuseCtx.lastFilmStock = S.lastParams.filmStockIndex;
-	        reuseCtx.lastEnlargerIll = S.lastParams.enlIll;
+        RebuildWorkingState::NegativeReuseContext reuseCtx;
+        reuseCtx.activeBuildCounter = S.activeBuildCounter;
+        reuseCtx.lastHash = S.lastHash.load(std::memory_order_acquire);
+        reuseCtx.lastFilmStock = S.lastParams.filmStockIndex;
+        reuseCtx.lastEnlargerIll = S.lastParams.enlIll;
 
-        const WorkingState* prev = S.activeWS.load(std::memory_order_acquire);
+        const std::shared_ptr<const WorkingState> prev = JuicerAtomic::load_shared_ptr(&S.activeWorkingState);
         if (RebuildWorkingState::can_reuse_negative_params(
-            reuseCtx, prev, *target, P.filmStockIndex, P.enlIll)) {
+            reuseCtx, prev.get(), *target, P.filmStockIndex, P.enlIll)) {
             // Only reuse metadata that is guaranteed to be identical. Density
             // curves and dMax are left untouched so freshly computed values stay
             // active after rebuilds (agx-emulsion parity for stock/illuminant swaps).
@@ -2468,21 +2415,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->negativeScannerValid = true;
     target->printScannerValid = printRuntimeOk;
     target->printGlareCompensated = (printRuntimeOk && printProfile.glare.compensationRemovalFactor > 0.0f);
-    failureGuard.committed = true;
-
-    if (&S.workA == target) {
-        reset_optics_runtime(S.scannerRuntimeA);
-    }
-    else if (&S.workB == target) {
-        reset_optics_runtime(S.scannerRuntimeB);
-    }
 
     target->fullHash = hash_params(P);
     target->coreHash = hash_params_core(P);
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-#if JUICER_TRACE_PRINT_SWAP
-    {
+    if (JTRACE_ENABLED(3)) {
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
         const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
         const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
@@ -2496,9 +2434,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
             + " printRef=" + (target->printRT ? target->printRT->referenceIlluminant : std::string("<null>"))
             + " printView=" + (target->printRT ? target->printRT->viewingIlluminant : std::string("<null>"));
-        JTRACE("PRINTDBG", msg);
+        JTRACE_VERBOSE("PRINTDBG", msg);
     }
-#endif
 
     {
         std::ostringstream oss;
@@ -2506,10 +2443,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
 
-    S.activeWS.store(target, std::memory_order_release);
+    JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
     {
         std::ostringstream oss;
-        oss << "activeWS swapped; buildCounter=" << (long long)S.activeBuildCounter;
+        oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
         JTRACE("BUILD", oss.str());
     }
     S.activeBuildCounter = target->buildCounter;
@@ -2545,21 +2482,14 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
 
     std::unique_lock<std::mutex> lk(S.m);
 
-    const WorkingState* src = S.activeWS.load(std::memory_order_acquire);
+    const std::shared_ptr<const WorkingState> src = JuicerAtomic::load_shared_ptr(&S.activeWorkingState);
     if (!src || src->buildCounter == 0) {
         rebuild_working_state(instance, S, P);
         return;
     }
 
-    WorkingState* target = S.inactive();
-    while (S.renderWS.load(std::memory_order_acquire) == target &&
-        S.rendersInFlight.load(std::memory_order_acquire) > 0)
-    {
-        S.renderCv.wait(lk);
-        target = S.inactive();
-    }
-
-    *target = *src;
+    std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>(*src);
+    WorkingState* target = next.get();
 
     target->negativeMediumRuntime.tables = (target->tablesScan.K > 0) ? &target->tablesScan : nullptr;
     target->negativeMediumRuntime.color = &target->negativeColorRuntime;
@@ -2614,7 +2544,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
             effectiveRatioR = sanitize_profile(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
         }
         if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
-            effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 3.0);
+            effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
         }
         if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
             effectiveCouplersHigh = sanitize_profile(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
@@ -2738,7 +2668,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
 
-    S.activeWS.store(target, std::memory_order_release);
+    JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
     S.activeBuildCounter = target->buildCounter;
     S.lastParams = P;
     S.lastHash.store(target->fullHash, std::memory_order_release);

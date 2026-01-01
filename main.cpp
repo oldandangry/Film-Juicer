@@ -315,7 +315,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountR);
             p->setLabel("Couplers ratio R");
-            p->setDefault(0.7);
+            p->setDefault(1.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             if (grpCouplers) p->setParent(*grpCouplers);
@@ -324,7 +324,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountG);
             p->setLabel("Couplers ratio G");
-            p->setDefault(0.7);
+            p->setDefault(1.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             if (grpCouplers) p->setParent(*grpCouplers);
@@ -333,7 +333,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountB);
             p->setLabel("Couplers ratio B");
-            p->setDefault(0.5);
+            p->setDefault(1.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             if (grpCouplers) p->setParent(*grpCouplers);
@@ -342,9 +342,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersLayerSigma);
             p->setLabel("Layer diffusion");
-            p->setDefault(1.0);
-            p->setRange(0.0, 3.0);
-            p->setDisplayRange(0.0, 3.0);
+            p->setDefault(2.0);
+            p->setRange(0.0, 4.0);
+            p->setDisplayRange(0.0, 4.0);
             if (grpCouplers) p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
@@ -360,7 +360,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersSpatialSigma);
             p->setLabel("Couplers spatial diffusion (\xC2\xB5m)");
-            p->setDefault(0.0);
+            p->setDefault(10.0);
             p->setRange(0.0, 50.0);
             p->setDisplayRange(0.0, 50.0);
             p->setHint("Micrometers of DIR spatial diffusion; scaled by the Camera film format parameter.");

@@ -2,7 +2,6 @@
 
 #include <atomic>
 #include <array>
-#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <initializer_list>
@@ -25,6 +24,35 @@
 #include "ScannerOptics.h"
 
 extern const std::string gDataDir;
+
+namespace JuicerAtomic {
+
+    template <typename T>
+    inline std::shared_ptr<T> load_shared_ptr(const std::shared_ptr<T>* p) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+        std::shared_ptr<T> v = std::atomic_load(p);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+        return v;
+    }
+
+    template <typename T>
+    inline void store_shared_ptr(std::shared_ptr<T>* p, std::shared_ptr<T> value) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+        std::atomic_store(p, std::move(value));
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    }
+
+} // namespace JuicerAtomic
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace JuicerCuda {
@@ -160,12 +188,8 @@ struct PendingParamsState {
 struct InstanceState {
     std::mutex m;
     BaseState base;
-    WorkingState workA;
-    WorkingState workB;
-    std::atomic<WorkingState*> activeWS{ nullptr };
-    std::atomic<int> rendersInFlight{ 0 };
-    std::atomic<WorkingState*> renderWS{ nullptr };
-    std::condition_variable renderCv;
+    // Published render snapshot. Readers use std::atomic_load; writers use std::atomic_store.
+    std::shared_ptr<const WorkingState> activeWorkingState;
     uint64_t activeBuildCounter = 0;
     std::atomic<std::uint64_t> buildCounterNext{ 0 };
     std::atomic<std::uint32_t> frameBoundsVersion{ 0 };
@@ -232,6 +256,8 @@ struct InstanceState {
 
     ScannerOptics::Runtime scannerRuntimeA;
     ScannerOptics::Runtime scannerRuntimeB;
+    std::atomic<bool> scannerRuntimeAInUse{ false };
+    std::atomic<bool> scannerRuntimeBInUse{ false };
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     // CUDA: per-instance GPU cache keyed by WorkingState.buildCounter.
@@ -240,11 +266,6 @@ struct InstanceState {
     std::mutex cudaMutex;
     std::unordered_map<int, std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter>> cudaByDevice;
 #endif
-
-    WorkingState* inactive() {
-        WorkingState* a = activeWS.load(std::memory_order_acquire);
-        return (a == &workA) ? &workB : &workA;
-    }
 };
 
 std::string print_dir_for_index(int index);

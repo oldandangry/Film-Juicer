@@ -842,17 +842,44 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
-    ScannerOptics::Runtime* opticsRuntime = nullptr;
-    if (_instanceState) {
-        std::lock_guard<std::mutex> lock(_instanceState->m);
-        if (_ws == &_instanceState->workA) {
-            opticsRuntime = &_instanceState->scannerRuntimeA;
+    struct ScannerRuntimeLease {
+        InstanceState* state = nullptr;
+        ScannerOptics::Runtime* runtime = nullptr;
+        std::atomic<bool>* inUse = nullptr;
+
+        explicit ScannerRuntimeLease(InstanceState* s) : state(s) {}
+
+        ScannerOptics::Runtime* acquire() {
+            if (!state) {
+                return nullptr;
+            }
+            bool expected = false;
+            if (state->scannerRuntimeAInUse.compare_exchange_strong(
+                    expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                inUse = &state->scannerRuntimeAInUse;
+                runtime = &state->scannerRuntimeA;
+                return runtime;
+            }
+            expected = false;
+            if (state->scannerRuntimeBInUse.compare_exchange_strong(
+                    expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                inUse = &state->scannerRuntimeBInUse;
+                runtime = &state->scannerRuntimeB;
+                return runtime;
+            }
+            return nullptr;
         }
-        else if (_ws == &_instanceState->workB) {
-            opticsRuntime = &_instanceState->scannerRuntimeB;
+
+        ~ScannerRuntimeLease() {
+            if (inUse) {
+                inUse->store(false, std::memory_order_release);
+            }
         }
-    }
-    static ScannerOptics::Runtime fallbackRuntime;
+    };
+
+    ScannerRuntimeLease runtimeLease(_instanceState);
+    ScannerOptics::Runtime fallbackRuntime;
+    ScannerOptics::Runtime* opticsRuntime = runtimeLease.acquire();
     if (!opticsRuntime) {
         opticsRuntime = &fallbackRuntime;
     }
@@ -1056,9 +1083,7 @@ void JuicerProcessor::processImagesCUDA() {
     const unsigned char* srcPtr = srcBase + ySrc * srcRowBytes + xSrc * bytesPerPixel;
     unsigned char* dstPtr = dstBase + yDst * dstRowBytes + xDst * bytesPerPixel;
 
-#if defined(JUICER_TRACE_CUDA)
-    JTRACE("CUDA", "processImagesCUDA");
-#endif
+    JTRACE_VERBOSE("CUDA", "processImagesCUDA");
 
     const bool wsReady = _wsReady && _ws;
     if (!wsReady) {
@@ -1099,21 +1124,19 @@ void JuicerProcessor::processImagesCUDA() {
             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
         }
-#if JUICER_TRACE_PRINT_SWAP
-        {
+        if (JTRACE_ENABLED(3)) {
             std::lock_guard<std::mutex> resLock(cudaResources->m);
             const std::uint64_t build = _ws ? _ws->buildCounter : 0;
             std::string msg = std::string("cuda upload build=") + std::to_string(build)
                 + " uploaded=" + std::to_string(cudaResources->uploadedBuildCounter)
                 + " printIllumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
                 + " printPreflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
-            JTRACE("PRINTDBG", msg);
+            JTRACE_VERBOSE("PRINTDBG", msg);
         }
-#endif
     }
 
 #if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
-    {
+    if (JTRACE_ENABLED(3)) {
         std::string validateError;
         std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
         if (!cudaResources) {
@@ -2333,8 +2356,7 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             }
-#if JUICER_TRACE_PRINT_SWAP
-            {
+            if (JTRACE_ENABLED(3)) {
                 std::lock_guard<std::mutex> resLock(cudaResources->m);
                 const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(_prt);
                 const std::uintptr_t illumPtr = reinterpret_cast<std::uintptr_t>(cudaResources->printIllumRuntimePtr);
@@ -2354,9 +2376,8 @@ void JuicerProcessor::processImagesCUDA() {
                     + " preflashValid=" + std::to_string(cudaResources->printPreflashValid ? 1 : 0)
                     + " preflashPtr=" + std::to_string(preflashPtr)
                     + " preflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
-                JTRACE("PRINTDBG", msg);
+                JTRACE_VERBOSE("PRINTDBG", msg);
             }
-#endif
 
             // Film density curves + sensitivities + SPD reconstruction tables.
             run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n, cudaResources->densB.domainBegin, cudaResources->densB.domainEnd };

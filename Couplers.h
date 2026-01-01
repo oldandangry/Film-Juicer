@@ -386,7 +386,7 @@ namespace Couplers {
         propSuite->propSetString(p, kOfxPropLabel, 0, "Layer diffusion");
         propSuite->propSetDouble(p, kOfxParamPropDefault, 0, 2.0);
         propSuite->propSetDouble(p, kOfxParamPropDisplayMin, 0, 0.0);
-        propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 5.0);
+        propSuite->propSetDouble(p, kOfxParamPropDisplayMax, 0, 4.0);
         propSuite->propSetString(p, kOfxParamPropParent, 0, kParamCouplersGroup);
 
         paramSuite->paramDefine(ps, kOfxParamTypeDouble, kParamCouplersHighExpShift, &p);

@@ -83,8 +83,7 @@ private:
     };
 
     struct WorkingStateInfo {
-        WorkingState* activeWorkingState = nullptr;
-        const WorkingState* workingState = nullptr;
+        std::shared_ptr<const WorkingState> workingState;
         const Print::Runtime* printRuntime = nullptr;
         bool workingStateReady = false;
         bool printRuntimeReady = false;

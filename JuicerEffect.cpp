@@ -823,7 +823,7 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         }
     }
 
-    const WorkingState* wsCur = (_state ? _state->activeWS.load(std::memory_order_acquire) : nullptr);
+    const std::shared_ptr<const WorkingState> wsCur = (_state ? JuicerAtomic::load_shared_ptr(&_state->activeWorkingState) : nullptr);
     const uint64_t wsBuildCounter = wsCur ? wsCur->buildCounter : 0;
 
     // Camera auto-exposure always meters against AgX's fixed 18.4% target (independent of scanner target tweaks).
@@ -1030,7 +1030,7 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         return dirRT;
     }
 
-    const WorkingState* wsCur = _state->activeWS.load(std::memory_order_acquire);
+    const std::shared_ptr<const WorkingState> wsCur = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
     if (wsCur && wsCur->buildCounter > 0) {
         dirRT = wsCur->dirRT;
         for (int i = 0; i < 3; ++i) {
@@ -1098,10 +1098,9 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
         return info;
     }
 
-    info.activeWorkingState = _state->activeWS.load(std::memory_order_acquire);
-    info.workingState = info.activeWorkingState;
+    info.workingState = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
 
-    const WorkingState* ws = info.workingState;
+    const WorkingState* ws = info.workingState.get();
     if (ws && ws->buildCounter > 0 && ws->printRT) {
         info.printRuntime = ws->printRT.get();
     }
@@ -1289,7 +1288,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     // Own per-instance state
     _state = std::make_unique<InstanceState>();
     _state->dataDir = ensure_trailing_separator(data_dir_string());
-    _state->activeWS.store(&_state->workA, std::memory_order_release);
+    JuicerAtomic::store_shared_ptr(&_state->activeWorkingState, std::shared_ptr<const WorkingState>{});
     _state->activeBuildCounter = 0;
     {
         const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -1447,7 +1446,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
             pendingDirHash = _state->pending.dirHash;
         }
 
-        const WorkingState* wsCur = _state->activeWS.load(std::memory_order_acquire);
+        const std::shared_ptr<const WorkingState> wsCur = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
         const std::uint64_t builtFullHash = wsCur ? wsCur->fullHash : 0;
         if (pendingFullHash != 0 && pendingFullHash != builtFullHash) {
             const std::uint64_t builtCoreHash = wsCur ? wsCur->coreHash : 0;
@@ -1489,13 +1488,12 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 #endif
 
     WorkingStateInfo wsInfo = prepareWorkingState();
-    WorkingState* activeWorkingState = wsInfo.activeWorkingState;
-    const WorkingState* ws = wsInfo.workingState;
+    std::shared_ptr<const WorkingState> wsHold = wsInfo.workingState;
+    const WorkingState* ws = wsHold.get();
     const Print::Runtime* prt = wsInfo.printRuntime;
     const bool wsReady = wsInfo.workingStateReady;
     const bool printReady = wsInfo.printRuntimeReady;
-#if JUICER_TRACE_PRINT_SWAP
-    {
+    if (JTRACE_ENABLED(3)) {
         ParamSnapshot Pdbg = snapshotParams();
         const char* paperKey = print_paper_json_key_for_index(Pdbg.printPaperIndex);
         const char* filmKey = negative_json_key_for_stock_index(Pdbg.filmStockIndex);
@@ -1512,9 +1510,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
             + " yFilter=" + std::to_string(printParams.yFilter)
             + " mFilter=" + std::to_string(printParams.mFilter)
             + " bypass=" + std::to_string(printParams.bypass ? 1 : 0);
-        JTRACE("PRINTDBG", msg);
+        JTRACE_VERBOSE("PRINTDBG", msg);
     }
-#endif
     if (!wsReady) {
         JTRACE("BUILD", "FATAL: working state not ready; aborting render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1567,28 +1564,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setFrameTime(args.time);
     proc.setRenderWindowRect(roi);
     proc.setGPURenderArgs(args);
-
-    struct RenderGuard {
-        InstanceState* state;
-        WorkingState* ws;
-        RenderGuard(InstanceState* s, WorkingState* w) : state(s), ws(w) {
-            if (state) {
-                state->rendersInFlight.fetch_add(1, std::memory_order_acq_rel);
-                state->renderWS.store(w, std::memory_order_release);
-            }
-        }
-        ~RenderGuard() {
-            if (state) {
-                const int prev = state->rendersInFlight.fetch_sub(1, std::memory_order_acq_rel);
-                if (prev <= 1) {
-                    WorkingState* expected = ws;
-                    state->renderWS.compare_exchange_strong(
-                        expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
-                }
-                state->renderCv.notify_all();
-            }
-        }
-    } guard(_state.get(), activeWorkingState);
 
     // Dispatch to support library's threaded/tiled CPU path
     proc.process();
@@ -1805,16 +1780,15 @@ void JuicerEffect::bootstrap_after_attach() {
 
     applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/true);
 
-
-	    if (_state->baseLoaded) {
-	#ifdef JUICER_ENABLE_COUPLERS
-	        applyCouplerProfileDefaults(P);
-	#endif
-	        rebuild_working_state(this->getHandle(), *_state, P);
-	    }
-	    else {
-	        JTRACE("STOCK", "bootstrap: failed to load film stock; deferring rebuild");
-	    }
+    if (_state->baseLoaded) {
+#ifdef JUICER_ENABLE_COUPLERS
+        applyCouplerProfileDefaults(P);
+#endif
+        rebuild_working_state(this->getHandle(), *_state, P);
+    }
+    else {
+        JTRACE("STOCK", "bootstrap: failed to load film stock; deferring rebuild");
+    }
 
     // Re-enable changedParam handling now that bootstrap is complete
     _state->suppressParamEvents = false;
@@ -2020,7 +1994,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
     }
 
     if (!_state->couplerDirty.sigma.load(std::memory_order_acquire)) {
-        const double sigma = sanitize_range(dirCfg.diffusionInterlayer, P.sigma, 0.0, 3.0);
+        const double sigma = sanitize_range(dirCfg.diffusionInterlayer, P.sigma, 0.0, 4.0);
         if (_pCouplersSigma) {
             _pCouplersSigma->setValue(sigma);
         }
@@ -2064,11 +2038,10 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     ParamSnapshot P = snapshotParams();
-#if JUICER_TRACE_PRINT_SWAP
-    {
+    if (JTRACE_ENABLED(3)) {
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
         const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-        const WorkingState* wsDbg = _state->activeWS.load(std::memory_order_acquire);
+        const std::shared_ptr<const WorkingState> wsDbg = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
         const std::uint64_t activeBuild = wsDbg ? wsDbg->buildCounter : 0;
         const std::uint64_t lastHash = _state->lastHash.load(std::memory_order_acquire);
         std::string msg = std::string("params change name=") + (changedNameOrNull ? changedNameOrNull : "<null>")
@@ -2078,9 +2051,8 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
             + " filmKey=" + std::string(filmKey ? filmKey : "<null>")
             + " activeBuild=" + std::to_string(activeBuild)
             + " lastHash=" + std::to_string(lastHash);
-        JTRACE("PRINTDBG", msg);
+        JTRACE_VERBOSE("PRINTDBG", msg);
     }
-#endif
 #ifdef JUICER_ENABLE_COUPLERS
     if (changedNameOrNull) {
         if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersActive) == 0) {
@@ -2132,16 +2104,14 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         _state->printRT.midNeutralDensity = std::move(_state->printRT.profile.midNeutralDensity);
         _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
         _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
-#if JUICER_TRACE_PRINT_SWAP
-        {
+        if (JTRACE_ENABLED(3)) {
             std::string msg = std::string("print reload key=") + std::string(paperKey ? paperKey : "<null>")
                 + " dir=" + printDir
                 + " json=" + printProfileJson
                 + " ref=" + _state->printRT.referenceIlluminant
                 + " view=" + _state->printRT.viewingIlluminant;
-            JTRACE("PRINTDBG", msg);
+            JTRACE_VERBOSE("PRINTDBG", msg);
         }
-#endif
 
         // Reload dichroic filters (vendor selection controls which curves are used).
         const std::string dichroicDirReload = ensure_trailing_separator(
@@ -2193,8 +2163,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     if (printReloaded || dichroicReloaded) {
         applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
         neutralApplied = true;
-#if JUICER_TRACE_PRINT_SWAP
-        {
+        if (JTRACE_ENABLED(3)) {
             const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
             const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
             std::string msg = std::string("neutral filters applied (print/dichroic) paper=") + std::string(paperKey ? paperKey : "<null>")
@@ -2202,15 +2171,13 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
                 + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
                 + "/" + std::to_string(_state->printRT.neutralM)
                 + "/" + std::to_string(_state->printRT.neutralC);
-            JTRACE("PRINTDBG", msg);
+            JTRACE_VERBOSE("PRINTDBG", msg);
         }
-#endif
     }
     if (filmReloaded && !neutralApplied) {
         applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
         neutralApplied = true;
-#if JUICER_TRACE_PRINT_SWAP
-        {
+        if (JTRACE_ENABLED(3)) {
             const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
             const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
             std::string msg = std::string("neutral filters applied (film) paper=") + std::string(paperKey ? paperKey : "<null>")
@@ -2218,9 +2185,8 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
                 + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
                 + "/" + std::to_string(_state->printRT.neutralM)
                 + "/" + std::to_string(_state->printRT.neutralC);
-            JTRACE("PRINTDBG", msg);
+            JTRACE_VERBOSE("PRINTDBG", msg);
         }
-#endif
     }
 
     if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerIlluminant) == 0) {
