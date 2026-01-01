@@ -745,14 +745,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kGrainDebugView);
             p->setLabel("Grain debug view");
             p->appendOption("Off");
-            p->appendOption("Grain delta");
-            p->appendOption("Clump field");
-            p->appendOption("Weave field");
-            p->appendOption("Frame diff");
-            p->appendOption("Dust mask");
-            p->appendOption("Scratch mask");
+            p->appendOption("Delta mix");
+            p->appendOption("Delta fine");
+            p->appendOption("Delta coarse");
+            p->appendOption("Delta fine raw");
+            p->appendOption("Delta coarse raw");
+            p->appendOption("Mean density");
             p->setDefault(0);
-            p->setHint("Debug view selector for grain/clump/weave/dust fields.");
+            p->setHint("Debug view selector for grain delta fields (pre-scanner).");
             if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }

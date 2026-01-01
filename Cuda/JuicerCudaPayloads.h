@@ -215,6 +215,8 @@ namespace JuicerCuda {
         float odParticle[3] = { 0.0f, 0.0f, 0.0f };
         float sizeMixWeight = 0.0f;
         float sizeMixScale = 1.0f;
+        float sizeMixGain = 1.0f;
+        float debugScale = 1.0f;
 
         float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
                                          {0.0f, 0.0f, 0.0f},
@@ -247,6 +249,8 @@ namespace JuicerCuda {
     struct GrainKernelPayload {
         const float* JUICER_RESTRICT blurKernel = nullptr;
         int blurRadius = 0;
+        const float* JUICER_RESTRICT blurKernelCoarse = nullptr;
+        int blurRadiusCoarse = 0;
         const float* JUICER_RESTRICT dyeKernel[3][3] = {
             { nullptr, nullptr, nullptr },
             { nullptr, nullptr, nullptr },

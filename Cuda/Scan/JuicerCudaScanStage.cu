@@ -68,6 +68,24 @@ __global__ void grain_clear_kernel(float* out, int n);
 __global__ void grain_accumulate_kernel(float* dst, const float* src, int n);
 __global__ void grain_add_bias_kernel(float* inOut, int n, float bias);
 __global__ void grain_multiply_kernel(float* inOut, const float* mult, int n);
+__global__ void grain_subtract_kernel(float* inOut, const float* sub, int n);
+__global__ void grain_mix_delta_kernel(
+    float* outDelta,
+    const float* fineDelta,
+    const float* coarseDelta,
+    int n,
+    float wCoarse,
+    float gain);
+__global__ void grain_debug_encode_avg3_kernel(
+    float* outR,
+    float* outG,
+    float* outB,
+    const float* in0,
+    const float* in1,
+    const float* in2,
+    int n,
+    float offset,
+    float scale);
 __global__ void grain_apply_simple_kernel(
     JuicerCuda::PipelineRunParams params,
     float* inOut,
@@ -731,93 +749,14 @@ namespace {
         }
 
         const int debugView = grain.debugView;
-        const float time = static_cast<float>(grain.frameIndex) + grain.timeAlpha;
-        const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
         const float absX = static_cast<float>(grain.originX + x);
         const float absY = static_cast<float>(grain.originY + y);
-        const float rollY = absY + rollPx * time;
-        const float pixelToMm = grain.pixelSizeUm * 0.001f;
-        const float xMm = absX * pixelToMm;
-        const float yMm = absY * pixelToMm;
-        const float rollYMm = rollY * pixelToMm;
-        const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-        const std::uint64_t clipSeed = splitmix64_device(grain.clipToken ^ 0xD1B54A32D192ED03ULL);
-        const std::uint64_t seedBaseFilm = sessionSeed ^ clipSeed;
-        const std::uint64_t seedBaseGate = sessionSeed;
-        const std::uint64_t seedFilmDust = splitmix64_device(seedBaseFilm ^ 0xF0D0C0B0A0908071ULL);
-        const std::uint64_t seedGateDust = splitmix64_device(seedBaseGate ^ 0xA1B2C3D4E5F60718ULL);
-        const std::uint64_t seedFilmScratch = splitmix64_device(seedBaseFilm ^ 0x8EBC6AF09C88C6E3ULL);
-        const std::uint64_t seedGateScratch = splitmix64_device(seedBaseGate ^ 0xC6A4A7935BD1E995ULL);
         double rgbOut[3];
-        if (debugView == 5 || debugView == 6) {
-            constexpr float kDustCellUm = 400.0f;
-            constexpr float kGateDustCellUm = 600.0f;
-            constexpr float kDustBaseProb = 0.02f;
-            constexpr float kGateDustBaseProb = 0.01f;
-            constexpr float kDustSizeUm = 25.0f;
-            constexpr float kGateDustSizeUm = 28.0f;
-            constexpr float kDustStrength = 0.45f;
-            constexpr float kGateDustStrength = 0.35f;
-            constexpr float kDustBrightMix = 0.20f;
-            constexpr float kDustBrightScale = 0.5f;
-            constexpr float kGateDustBrightMix = 0.15f;
-            constexpr float kGateDustBrightScale = 0.5f;
-
-            constexpr float kScratchCellUmX = 3500.0f;
-            constexpr float kScratchCellUmY = 7000.0f;
-            constexpr float kGateScratchCellUmX = 3500.0f;
-            constexpr float kGateScratchCellUmY = 3500.0f;
-            constexpr float kScratchBaseProb = 0.01f;
-            constexpr float kGateScratchBaseProb = 0.008f;
-            constexpr float kScratchWidthUm = 15.0f;
-            constexpr float kGateScratchWidthUm = 12.0f;
-            constexpr float kScratchStrength = 0.35f;
-            constexpr float kGateScratchStrength = 0.30f;
-            constexpr float kScratchBrightMix = 0.10f;
-            constexpr float kScratchBrightScale = 0.4f;
-            constexpr float kGateScratchBrightMix = 0.08f;
-            constexpr float kGateScratchBrightScale = 0.4f;
-            constexpr float kScratchMaxAngle = 0.08726646f;
-
-            const float dustCellMm = kDustCellUm * 0.001f;
-            const float gateDustCellMm = kGateDustCellUm * 0.001f;
-            const float scratchCellMmX = kScratchCellUmX * 0.001f;
-            const float scratchCellMmY = kScratchCellUmY * 0.001f;
-            const float gateScratchCellMmX = kGateScratchCellUmX * 0.001f;
-            const float gateScratchCellMmY = kGateScratchCellUmY * 0.001f;
-
-            float filmMask = 0.0f;
-            float gateMask = 0.0f;
-            if (debugView == 5) {
-                filmMask = dust_mask_device(grain.filmDustAmount, xMm, rollYMm, grain.pixelSizeUm, seedFilmDust,
-                    dustCellMm, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
-                gateMask = dust_mask_device(grain.gateDustAmount, xMm, yMm, grain.pixelSizeUm, seedGateDust,
-                    gateDustCellMm, kGateDustBaseProb, kGateDustSizeUm, kGateDustStrength, kGateDustBrightMix, kGateDustBrightScale);
-            }
-            else {
-                filmMask = scratch_mask_device(grain.filmScratchAmount, xMm, rollYMm, grain.pixelSizeUm, seedFilmScratch,
-                    scratchCellMmX, scratchCellMmY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
-                gateMask = scratch_mask_device(grain.gateScratchAmount, xMm, yMm, grain.pixelSizeUm, seedGateScratch,
-                    gateScratchCellMmX, gateScratchCellMmY, kGateScratchBaseProb, kGateScratchWidthUm, kGateScratchStrength, kScratchMaxAngle, kGateScratchBrightMix, kGateScratchBrightScale);
-            }
-            float mask = filmMask + gateMask;
-            if (!device_isfinite(mask)) {
-                mask = 0.0f;
-            }
-            mask = fminf(fmaxf(mask, 0.0f), 1.0f);
-            rgbOut[0] = static_cast<double>(mask);
-            rgbOut[1] = static_cast<double>(mask);
-            rgbOut[2] = static_cast<double>(mask);
-        }
-        else if (debugView == 3) {
-            const float scale = (weave.debugScalePx > 1e-6f) ? weave.debugScalePx : 1.0f;
-            float r = 0.5f + 0.5f * (weave.dxPx / scale);
-            float g = 0.5f + 0.5f * (weave.dyPx / scale);
-            r = fminf(fmaxf(r, 0.0f), 1.0f);
-            g = fminf(fmaxf(g, 0.0f), 1.0f);
-            rgbOut[0] = static_cast<double>(r);
-            rgbOut[1] = static_cast<double>(g);
-            rgbOut[2] = 0.5;
+        if (debugView != 0) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            rgbOut[0] = static_cast<double>(rgbR[idx]);
+            rgbOut[1] = static_cast<double>(rgbG[idx]);
+            rgbOut[2] = static_cast<double>(rgbB[idx]);
         }
         else if (weave.active != 0) {
             const float cx = 0.5f * static_cast<float>(params.width - 1);
@@ -839,6 +778,12 @@ namespace {
             rgbOut[2] = static_cast<double>(rgbB[idx]);
         }
         if (debugView == 0) {
+            const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+            const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
+            const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
+            const float pixelToMm = grain.pixelSizeUm * 0.001f;
+            const float xMm = absX * pixelToMm;
+            const float yMm = absY * pixelToMm;
             const bool gateActive = (grain.gateDustAmount > 0.0f) || (grain.gateScratchAmount > 0.0f);
             if (gateActive) {
                 float gateMask = 0.0f;
@@ -950,6 +895,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     float* dTmp,
     float* dScratchBlurred,
     float* dAux,
+    float* dGrainTmp,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -1065,62 +1011,111 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
 
     const JuicerCuda::GrainPayload& grain = params.grain;
     const JuicerCuda::GrainKernelPayload& grainKernels = params.grainKernels;
-    const bool doGrain = (grain.active != 0);
-    if (doGrain) {
-        const int debugView = grain.debugView;
-        const bool debugAny = (grain.breathingDebug != 0) || (debugView != 0);
+    const int debugView = grain.debugView;
+    if (debugView == 6) {
         const int total = params.width * params.height;
         const int threads1D = 256;
         const int blocks1D = (total + threads1D - 1) / threads1D;
-        const bool useSublayers = (!debugAny && grain.sublayersActive != 0);
-        const bool doFinalBlur = (!debugAny && grainKernels.blurKernel && grainKernels.blurRadius > 0);
-        const bool needBlurScratch = (!debugAny) && doFinalBlur;
-        if (needBlurScratch && !dScratchBlurred) {
+
+        grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(
+            dRgbR,
+            dRgbG,
+            dRgbB,
+            dRgbR,
+            dRgbG,
+            dRgbB,
+            total,
+            0.0f,
+            grain.debugScale * 4.0f);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            return err;
+        }
+    }
+    else if (grain.active != 0) {
+        constexpr std::uint64_t kSeedSaltFine = 0xA24BAED4963EE407ULL;
+        constexpr std::uint64_t kSeedSaltCoarse = 0x3C79AC492BA7B653ULL;
+
+        const int total = params.width * params.height;
+        const int threads1D = 256;
+        const int blocks1D = (total + threads1D - 1) / threads1D;
+
+        const bool useSublayers = (grain.sublayersActive != 0);
+        const bool wantFineBlur = (grainKernels.blurKernel && grainKernels.blurRadius > 0);
+        const float wCoarse = std::isfinite(grain.sizeMixWeight)
+            ? fminf(fmaxf(grain.sizeMixWeight, 0.0f), 1.0f)
+            : 0.0f;
+        const float sizeMixScale = (std::isfinite(grain.sizeMixScale) && grain.sizeMixScale > 1.0f)
+            ? grain.sizeMixScale
+            : 1.0f;
+        const bool wantMix = wantFineBlur &&
+            (wCoarse > 0.0f) &&
+            (sizeMixScale > 1.0f) &&
+            dGrainTmp &&
+            grainKernels.blurKernelCoarse &&
+            (grainKernels.blurRadiusCoarse > 0);
+
+        const bool needFine = (debugView == 0 || debugView == 1 || debugView == 2 || debugView == 4);
+        const bool needCoarse = (debugView == 0 || debugView == 1 || debugView == 3 || debugView == 5) && wantMix;
+        const bool needMix = (debugView == 0 || debugView == 1) && wantMix;
+
+        float* meanBuf = useSublayers ? dAux : (wantFineBlur ? dScratchBlurred : dTmp);
+        if (!meanBuf || !dTmp) {
+            return cudaErrorInvalidValue;
+        }
+        if (useSublayers && !dAux) {
+            return cudaErrorInvalidValue;
+        }
+        if (!useSublayers && wantFineBlur && !dScratchBlurred) {
             return cudaErrorInvalidValue;
         }
 
-        auto process_channel_simple = [&](float* plane, int channel) -> cudaError_t {
-            grain_apply_simple_kernel<<<blocks2D, threads2D, 0, stream>>>(params, plane, channel);
-            cudaError_t e = cudaGetLastError();
-            if (e != cudaSuccess) {
-                return e;
+        const size_t bytes = static_cast<size_t>(total) * sizeof(float);
+
+        auto apply_bias = [&](float* plane, int channel) -> cudaError_t {
+            const float bias = -grain.densityMin[channel];
+            if (std::isfinite(bias) && bias != 0.0f) {
+                grain_add_bias_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total, bias);
+                return cudaGetLastError();
             }
             return cudaSuccess;
         };
 
-        auto process_channel_sublayers = [&](float* plane, int channel) -> cudaError_t {
-            if (!dAux) {
+        auto generate_channel_simple = [&](const JuicerCuda::PipelineRunParams& passParams, float* plane, int channel) -> cudaError_t {
+            grain_apply_simple_kernel<<<blocks2D, threads2D, 0, stream>>>(passParams, plane, channel);
+            return cudaGetLastError();
+        };
+
+        auto generate_channel_sublayers = [&](const JuicerCuda::PipelineRunParams& passParams, float* mean, float* plane, int channel) -> cudaError_t {
+            if (!mean || !plane) {
                 return cudaErrorInvalidValue;
             }
-            const size_t bytes = static_cast<size_t>(total) * sizeof(float);
-            cudaError_t e = cudaMemcpyAsync(dAux, plane, bytes, cudaMemcpyDeviceToDevice, stream);
-            if (e != cudaSuccess) {
-                return e;
+            if (!dScratchBlurred) {
+                return cudaErrorInvalidValue;
             }
 
             grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total);
-            e = cudaGetLastError();
+            cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
             }
 
             for (int sl = 0; sl < 3; ++sl) {
-                grain_layer_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dAux, dTmp, channel, sl);
+                grain_layer_kernel<<<blocks2D, threads2D, 0, stream>>>(passParams, mean, dTmp, channel, sl);
                 e = cudaGetLastError();
                 if (e != cudaSuccess) {
                     return e;
                 }
+
                 const float* dyeKernel = grainKernels.dyeKernel[sl][channel];
                 const int dyeRadius = grainKernels.dyeRadius[sl][channel];
                 if (dyeKernel && dyeRadius > 0) {
-                    if (!dScratchBlurred) {
-                        return cudaErrorInvalidValue;
-                    }
                     e = blur_plane_in_place(dTmp, dScratchBlurred, dyeKernel, dyeRadius);
                     if (e != cudaSuccess) {
                         return e;
                     }
                 }
+
                 grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dTmp, total);
                 e = cudaGetLastError();
                 if (e != cudaSuccess) {
@@ -1131,47 +1126,179 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             return cudaSuccess;
         };
 
-        if (useSublayers) {
-            err = process_channel_sublayers(dRgbR, 0);
-            if (err != cudaSuccess) return err;
-            err = process_channel_sublayers(dRgbG, 1);
-            if (err != cudaSuccess) return err;
-            err = process_channel_sublayers(dRgbB, 2);
-            if (err != cudaSuccess) return err;
-        }
-        else {
-            err = process_channel_simple(dRgbR, 0);
-            if (err != cudaSuccess) return err;
-            err = process_channel_simple(dRgbG, 1);
-            if (err != cudaSuccess) return err;
-            err = process_channel_simple(dRgbB, 2);
-            if (err != cudaSuccess) return err;
-        }
+        auto process_channel = [&](float* plane, int channel) -> cudaError_t {
+            if (!plane) {
+                return cudaErrorInvalidValue;
+            }
 
-        if (!debugAny) {
-            auto apply_bias = [&](float* plane, int channel) -> cudaError_t {
-                const float bias = -grain.densityMin[channel];
-                if (std::isfinite(bias) && bias != 0.0f) {
-                    grain_add_bias_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total, bias);
+            cudaError_t e = cudaMemcpyAsync(meanBuf, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+
+            if (needFine) {
+                JuicerCuda::PipelineRunParams fineParams = params;
+                fineParams.grain.seedBase ^= kSeedSaltFine;
+                fineParams.grain.seedBaseNext ^= kSeedSaltFine;
+                fineParams.grain.sizeMixWeight = 0.0f;
+                fineParams.grain.sizeMixScale = 1.0f;
+
+                if (useSublayers) {
+                    e = generate_channel_sublayers(fineParams, meanBuf, plane, channel);
+                }
+                else {
+                    e = generate_channel_simple(fineParams, plane, channel);
+                }
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = apply_bias(plane, channel);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                if (debugView != 4 && wantFineBlur) {
+                    e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+
+                if (debugView == 0 && !needCoarse) {
+                    grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
                     return cudaGetLastError();
                 }
-                return cudaSuccess;
-            };
 
-            err = apply_bias(dRgbR, 0);
-            if (err != cudaSuccess) return err;
-            err = apply_bias(dRgbG, 1);
-            if (err != cudaSuccess) return err;
-            err = apply_bias(dRgbB, 2);
-            if (err != cudaSuccess) return err;
+                if (!needCoarse) {
+                    if (debugView == 3 || debugView == 5) {
+                        grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total);
+                        return cudaGetLastError();
+                    }
+                    return cudaSuccess;
+                }
 
-            if (doFinalBlur) {
-                err = blur_plane_in_place(dRgbR, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
-                if (err != cudaSuccess) return err;
-                err = blur_plane_in_place(dRgbG, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
-                if (err != cudaSuccess) return err;
-                err = blur_plane_in_place(dRgbB, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
-                if (err != cudaSuccess) return err;
+                if (needMix) {
+                    e = cudaMemcpyAsync(dGrainTmp, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+
+                if (!useSublayers) {
+                    e = cudaMemcpyAsync(plane, meanBuf, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+            }
+            else if (debugView == 3 || debugView == 5) {
+                if (!wantMix) {
+                    grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total);
+                    return cudaGetLastError();
+                }
+            }
+
+            if (needCoarse) {
+                JuicerCuda::PipelineRunParams coarseParams = params;
+                coarseParams.grain.seedBase ^= kSeedSaltCoarse;
+                coarseParams.grain.seedBaseNext ^= kSeedSaltCoarse;
+                coarseParams.grain.sizeMixWeight = 0.0f;
+                coarseParams.grain.sizeMixScale = 1.0f;
+
+                for (int c = 0; c < 3; ++c) {
+                    coarseParams.grain.nParticles[c] = params.grain.nParticles[c] / sizeMixScale;
+                    coarseParams.grain.odParticle[c] = params.grain.odParticle[c] * sizeMixScale;
+                }
+                for (int layer = 0; layer < 3; ++layer) {
+                    for (int c = 0; c < 3; ++c) {
+                        coarseParams.grain.nParticlesLayers[layer][c] = params.grain.nParticlesLayers[layer][c] / sizeMixScale;
+                        coarseParams.grain.odParticleLayers[layer][c] = params.grain.odParticleLayers[layer][c] * sizeMixScale;
+                    }
+                }
+
+                if (useSublayers) {
+                    e = generate_channel_sublayers(coarseParams, meanBuf, plane, channel);
+                }
+                else {
+                    e = generate_channel_simple(coarseParams, plane, channel);
+                }
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = apply_bias(plane, channel);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                if (debugView != 5) {
+                    e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernelCoarse, grainKernels.blurRadiusCoarse);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+
+                if (debugView == 3 || debugView == 5) {
+                    return cudaSuccess;
+                }
+
+                if (needMix) {
+                    grain_mix_delta_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                        plane,
+                        dGrainTmp,
+                        plane,
+                        total,
+                        wCoarse,
+                        grain.sizeMixGain);
+                    e = cudaGetLastError();
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+
+                if (debugView == 0) {
+                    grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                    return cudaGetLastError();
+                }
+            }
+
+            return cudaSuccess;
+        };
+
+        err = process_channel(dRgbR, 0);
+        if (err != cudaSuccess) return err;
+        err = process_channel(dRgbG, 1);
+        if (err != cudaSuccess) return err;
+        err = process_channel(dRgbB, 2);
+        if (err != cudaSuccess) return err;
+
+        if (debugView != 0) {
+            grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                dRgbR,
+                dRgbG,
+                dRgbB,
+                dRgbR,
+                dRgbG,
+                dRgbB,
+                total,
+                0.5f,
+                grain.debugScale);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                return err;
             }
         }
     }
@@ -1301,6 +1428,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
     float* dTmp,
     float* dScratchBlurred,
     float* dAux,
+    float* dGrainTmp,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -1329,6 +1457,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
         dTmp,
         dScratchBlurred,
         dAux,
+        dGrainTmp,
         dLensBlurKernel,
         lensBlurRadius,
         dUnsharpKernel,

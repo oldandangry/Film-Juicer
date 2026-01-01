@@ -513,6 +513,7 @@ namespace JuicerCuda {
         if (s.tmp) { cudaFree(s.tmp); s.tmp = nullptr; }
         if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
         if (s.aux) { cudaFree(s.aux); s.aux = nullptr; }
+        if (s.grainTmp) { cudaFree(s.grainTmp); s.grainTmp = nullptr; }
         if (s.gateMask) { cudaFree(s.gateMask); s.gateMask = nullptr; }
 #endif
         s.width = 0;
@@ -707,6 +708,7 @@ namespace JuicerCuda {
         free_gaussian_kernel(scannerUnsharpKernel);
         free_gaussian_kernel(scannerGlareKernel);
         free_gaussian_kernel(grainBlurKernel);
+        free_gaussian_kernel(grainBlurKernelCoarse);
         for (int layer = 0; layer < 3; ++layer) {
             for (int ch = 0; ch < 3; ++ch) {
                 free_gaussian_kernel(grainDyeKernel[layer][ch]);
@@ -1439,13 +1441,14 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)width;
         (void)height;
         (void)needBlurredScratch;
         (void)needAuxScratch;
+        (void)needGrainScratch;
         (void)needGateMask;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
@@ -1561,6 +1564,30 @@ namespace JuicerCuda {
                 }
                 cudaFree(resources.scannerScratch.aux);
                 resources.scannerScratch.aux = nullptr;
+            }
+        }
+
+        if (needGrainScratch) {
+            if (!resources.scannerScratch.grainTmp) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix scratch", outError)) {
+                    return false;
+                }
+                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
+                const size_t bytes = n * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmp), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(scannerScratch.grainTmp) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+            }
+        }
+        else {
+            if (resources.scannerScratch.grainTmp) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix scratch free", outError)) {
+                    return false;
+                }
+                cudaFree(resources.scannerScratch.grainTmp);
+                resources.scannerScratch.grainTmp = nullptr;
             }
         }
 

@@ -841,6 +841,74 @@ __global__ void grain_multiply_kernel(float* inOut, const float* mult, int n) {
     inOut[idx] = device_isfinite(v) ? v : 0.0f;
 }
 
+__global__ void grain_subtract_kernel(float* inOut, const float* sub, int n) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) {
+        return;
+    }
+    if (!inOut || !sub) {
+        return;
+    }
+    const float v = inOut[idx] - sub[idx];
+    inOut[idx] = device_isfinite(v) ? v : 0.0f;
+}
+
+__global__ void grain_mix_delta_kernel(
+    float* outDelta,
+    const float* fineDelta,
+    const float* coarseDelta,
+    int n,
+    float wCoarse,
+    float gain)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) {
+        return;
+    }
+    if (!outDelta || !fineDelta || !coarseDelta) {
+        return;
+    }
+    const float w = fminf(fmaxf(wCoarse, 0.0f), 1.0f);
+    const float g = device_isfinite(gain) ? gain : 1.0f;
+    const float fine = fineDelta[idx];
+    const float coarse = coarseDelta[idx];
+    const float v = g * ((1.0f - w) * fine + w * coarse);
+    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+}
+
+__global__ void grain_debug_encode_avg3_kernel(
+    float* outR,
+    float* outG,
+    float* outB,
+    const float* in0,
+    const float* in1,
+    const float* in2,
+    int n,
+    float offset,
+    float scale)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) {
+        return;
+    }
+    if (!outR || !outG || !outB || !in0 || !in1 || !in2) {
+        return;
+    }
+    const float v0 = in0[idx];
+    const float v1 = in1[idx];
+    const float v2 = in2[idx];
+    float avg = (v0 + v1 + v2) * (1.0f / 3.0f);
+    if (!device_isfinite(avg)) {
+        avg = 0.0f;
+    }
+    const float s = device_isfinite(scale) ? scale : 1.0f;
+    const float o = device_isfinite(offset) ? offset : 0.0f;
+    const float out = o + avg * s;
+    outR[idx] = out;
+    outG[idx] = out;
+    outB[idx] = out;
+}
+
 __global__ void grain_apply_simple_kernel(
     JuicerCuda::PipelineRunParams params,
     float* inOut,
@@ -871,11 +939,9 @@ __global__ void grain_apply_simple_kernel(
     const int nSubLayers = (grain.nSubLayers > 0) ? grain.nSubLayers : 1;
     float mixWeight = grain.sizeMixWeight;
     float mixScale = grain.sizeMixScale;
-    const int debugView = grain.debugView;
-    const bool wantFrameDiff = (debugView == 4);
     const float timeAlpha = grain.timeAlpha;
     const bool useRetime = (timeAlpha > 1e-6f && timeAlpha < 0.999999f);
-    const bool wantNext = (wantFrameDiff || useRetime);
+    const bool wantNext = useRetime;
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -887,38 +953,11 @@ __global__ void grain_apply_simple_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
 
-    if (debugView == 2) {
-        const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
-        float stddev = grain.microStructure[1] * 0.001f;
-        if (!device_isfinite(stddev) || !(stddev > 0.0f)) {
-            stddev = 0.1f;
-        }
-        float visual = 0.5f + 0.5f * ((clumpFactor - 1.0f) / stddev);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        inOut[idx] = visual;
-        return;
-    }
-    if (grain.breathingDebug != 0 && debugView == 0) {
-        const float amp = (grain.breathingAmplitude > 0.0f) ? grain.breathingAmplitude : 1.0f;
-        const float factor = grain_breathing_factor_device(grain, absX, absY);
-        float visual = 0.5f + 0.5f * ((factor - 1.0f) / amp);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        inOut[idx] = visual;
-        return;
-    }
-
     density += densityMin;
 
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
 
     const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
-    if (clumpFactor != 1.0f) {
-        const float clumpBias = clumpFactor - 1.0f;
-        constexpr float kMixWeightBias = 0.35f;
-        constexpr float kMixScaleBias = 0.5f;
-        mixWeight = fminf(fmaxf(mixWeight + clumpBias * kMixWeightBias, 0.0f), 1.0f);
-        mixScale = fmaxf(1.0f, mixScale * (1.0f + clumpBias * kMixScaleBias));
-    }
     const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
     const float wFine = 1.0f - wCoarse;
     const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
@@ -959,14 +998,6 @@ __global__ void grain_apply_simple_kernel(
     if (wantNext) {
         accNext = density + (accNext - density) * breathingFactor * clumpFactor;
     }
-    if (wantFrameDiff) {
-        const float delta = accNext - acc;
-        const float scale = fmaxf(densityMax, 1e-3f);
-        float visual = 0.5f + 0.5f * (delta / scale);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        inOut[idx] = visual;
-        return;
-    }
     if (useRetime) {
         const float delta0 = acc - density;
         const float delta1 = accNext - density;
@@ -975,14 +1006,6 @@ __global__ void grain_apply_simple_kernel(
         const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
         const float norm = rsqrtf(denom);
         acc = density + blend * norm;
-    }
-    if (debugView == 1) {
-        const float delta = acc - density;
-        const float scale = fmaxf(densityMax, 1e-3f);
-        float visual = 0.5f + 0.5f * (delta / scale);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        inOut[idx] = visual;
-        return;
     }
     inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
 }
@@ -1022,11 +1045,9 @@ __global__ void grain_layer_kernel(
     const float uniformity = grain.uniformity[channelIndex];
     float mixWeight = grain.sizeMixWeight;
     float mixScale = grain.sizeMixScale;
-    const int debugView = grain.debugView;
-    const bool wantFrameDiff = (debugView == 4);
     const float timeAlpha = grain.timeAlpha;
     const bool useRetime = (timeAlpha > 1e-6f && timeAlpha < 0.999999f);
-    const bool wantNext = (wantFrameDiff || useRetime);
+    const bool wantNext = useRetime;
 
     if (!device_isfinite(densityMax) || !(densityMax > 0.0f) ||
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
@@ -1039,26 +1060,6 @@ __global__ void grain_layer_kernel(
     const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
     const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
 
-    if (debugView == 2) {
-        const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
-        float stddev = grain.microStructure[1] * 0.001f;
-        if (!device_isfinite(stddev) || !(stddev > 0.0f)) {
-            stddev = 0.1f;
-        }
-        float visual = 0.5f + 0.5f * ((clumpFactor - 1.0f) / stddev);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        outGrain[idx] = visual;
-        return;
-    }
-    if (grain.breathingDebug != 0 && debugView == 0) {
-        const float amp = (grain.breathingAmplitude > 0.0f) ? grain.breathingAmplitude : 1.0f;
-        const float factor = grain_breathing_factor_device(grain, absX, absY);
-        float visual = 0.5f + 0.5f * ((factor - 1.0f) / amp);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        outGrain[idx] = visual;
-        return;
-    }
-
     const JuicerCuda::DeviceCurveView curve = curve_for_channel_device(dev, channelIndex);
     const float* layerCurve = grain.densityCurvesLayers[sublayerIndex][channelIndex];
     density = interp_density_layer_device(density, curve.y, layerCurve, curve.n);
@@ -1068,13 +1069,6 @@ __global__ void grain_layer_kernel(
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
 
     const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
-    if (clumpFactor != 1.0f) {
-        const float clumpBias = clumpFactor - 1.0f;
-        constexpr float kMixWeightBias = 0.35f;
-        constexpr float kMixScaleBias = 0.5f;
-        mixWeight = fminf(fmaxf(mixWeight + clumpBias * kMixWeightBias, 0.0f), 1.0f);
-        mixScale = fmaxf(1.0f, mixScale * (1.0f + clumpBias * kMixScaleBias));
-    }
     const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
     const float wFine = 1.0f - wCoarse;
     const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
@@ -1110,14 +1104,6 @@ __global__ void grain_layer_kernel(
     if (wantNext) {
         grainSampleNext = density + (grainSampleNext - density) * breathingFactor * clumpFactor;
     }
-    if (wantFrameDiff) {
-        const float delta = grainSampleNext - grainSample;
-        const float scale = fmaxf(densityMax, 1e-3f);
-        float visual = 0.5f + 0.5f * (delta / scale);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        outGrain[idx] = visual;
-        return;
-    }
     if (useRetime) {
         const float delta0 = grainSample - density;
         const float delta1 = grainSampleNext - density;
@@ -1126,14 +1112,6 @@ __global__ void grain_layer_kernel(
         const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
         const float norm = rsqrtf(denom);
         grainSample = density + blend * norm;
-    }
-    if (debugView == 1) {
-        const float delta = grainSample - density;
-        const float scale = fmaxf(densityMax, 1e-3f);
-        float visual = 0.5f + 0.5f * (delta / scale);
-        visual = fminf(fmaxf(visual, 0.0f), 1.0f);
-        outGrain[idx] = visual;
-        return;
     }
     outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }

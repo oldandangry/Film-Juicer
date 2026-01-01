@@ -108,6 +108,7 @@ namespace JuicerCuda {
         float* tmp = nullptr;
         float* blurred = nullptr;
         float* aux = nullptr;
+        float* grainTmp = nullptr;
         float* gateMask = nullptr;
         int width = 0;
         int height = 0;
@@ -129,6 +130,7 @@ namespace JuicerCuda {
         DeviceGaussianKernel scannerUnsharpKernel;
         DeviceGaussianKernel scannerGlareKernel;
         DeviceGaussianKernel grainBlurKernel;
+        DeviceGaussianKernel grainBlurKernelCoarse;
         DeviceGaussianKernel grainDyeKernel[3][3];
         DeviceGaussianKernel halationKernel[3];
         DeviceGaussianKernel halationScatterKernel[3];
@@ -213,7 +215,7 @@ namespace JuicerCuda {
     bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
 
     // Allocates scratch buffers used by scanner optics (blur/unsharp/glare/grain) when active.
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
 
     // Allocates scratch buffers used by spatial DIR diffusion (corr planes + temp).
     bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);
