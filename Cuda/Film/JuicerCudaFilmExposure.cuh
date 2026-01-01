@@ -468,6 +468,28 @@ static __device__ __forceinline__ void compute_film_raw_device(
     }
 }
 
+static __device__ __forceinline__ void compute_logE_raw_from_film_raw_device(
+    const JuicerCuda::PipelineRunParams& params,
+    const float filmRaw[3],
+    float logE_raw[3])
+{
+    (void)params;
+    constexpr float kLogEps = 1e-10f;
+    logE_raw[0] = log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps);
+    logE_raw[1] = log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps);
+    logE_raw[2] = log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps);
+}
+
+static __device__ __forceinline__ void compute_logE_raw_device(
+    const JuicerCuda::PipelineRunParams& params,
+    const float rgbIn[3],
+    float logE_raw[3])
+{
+    float filmRaw[3] = { 0.0f, 0.0f, 0.0f };
+    compute_film_raw_device(params, rgbIn, filmRaw);
+    compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
+}
+
 static __device__ __forceinline__ void compute_logE_from_film_raw_device(
     const JuicerCuda::PipelineRunParams& params,
     const float filmRaw[3],
@@ -477,10 +499,7 @@ static __device__ __forceinline__ void compute_logE_from_film_raw_device(
 {
     const JuicerCuda::FilmDevelopPayload& develop = params.filmDevelop;
 
-    constexpr float kLogEps = 1e-10f;
-    logE_raw[0] = log10f(fmaxf(filmRaw[0], 0.0f) + kLogEps);
-    logE_raw[1] = log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps);
-    logE_raw[2] = log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps);
+    compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
 
     logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], develop.densB);
     logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], develop.densG);

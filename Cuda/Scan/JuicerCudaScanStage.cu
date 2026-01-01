@@ -403,16 +403,15 @@ namespace {
 
         const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
 
-        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
-        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
-        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
-        compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
-
-        float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
         const bool useSpatialDir =
             dev.spatialDir.active &&
             dev.spatialDir.corrY && dev.spatialDir.corrM && dev.spatialDir.corrC;
+
+        float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
         if (useSpatialDir) {
+            float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+            compute_logE_raw_device(params, rgbIn, logE_raw);
+
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
             const float corrY = dev.spatialDir.corrY[idx];
             const float corrM = dev.spatialDir.corrM[idx];
@@ -440,27 +439,34 @@ namespace {
             D_cmy[1] = DM;
             D_cmy[2] = DY;
         }
-        else if (dev.dir.active) {
-            float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
-            apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
-
-            const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-            const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-            const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
-
-            const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
-            const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
-            const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
-
-            D_cmy[0] = DC;
-            D_cmy[1] = DM;
-            D_cmy[2] = DY;
-        }
         else {
-            // Map B/G/R layer densities to C/M/Y dyes
-            D_cmy[0] = layerPre[2];
-            D_cmy[1] = layerPre[1];
-            D_cmy[2] = layerPre[0];
+            float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+            float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
+            float layerPre[3] = { 0.0f, 0.0f, 0.0f };
+            compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+
+            if (dev.dir.active) {
+                float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
+                apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
+
+                const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
+                const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
+                const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
+
+                const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
+                const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
+                const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
+
+                D_cmy[0] = DC;
+                D_cmy[1] = DM;
+                D_cmy[2] = DY;
+            }
+            else {
+                // Map B/G/R layer densities to C/M/Y dyes
+                D_cmy[0] = layerPre[2];
+                D_cmy[1] = layerPre[1];
+                D_cmy[2] = layerPre[0];
+            }
         }
 
         apply_print_pipeline_device(printExpose, printDevelop, D_cmy);
