@@ -129,21 +129,32 @@ constexpr double kFactoryCouplersHigh = 0.0;
 constexpr double kFactoryCouplersSpatialSigma = 0.0;
 
 uint64_t hash_params(const ParamSnapshot& p);
+uint64_t hash_params_core(const ParamSnapshot& p);
+uint64_t hash_params_dir(const ParamSnapshot& p);
 
 struct CouplerDirtyFlags {
-    bool active = false;
-    bool amount = false;
-    bool ratioR = false;
-    bool ratioG = false;
-    bool ratioB = false;
-    bool sigma = false;
-    bool high = false;
-    bool spatialSigma = false;
+    std::atomic<bool> active{ false };
+    std::atomic<bool> amount{ false };
+    std::atomic<bool> ratioR{ false };
+    std::atomic<bool> ratioG{ false };
+    std::atomic<bool> ratioB{ false };
+    std::atomic<bool> sigma{ false };
+    std::atomic<bool> high{ false };
+    std::atomic<bool> spatialSigma{ false };
 };
 
 struct IlluminantOverrideFlags {
     bool reference = false;
     bool enlarger = false;
+};
+
+struct PendingParamsState {
+    std::mutex m;
+    ParamSnapshot params;
+    std::uint64_t fullHash = 0;
+    std::uint64_t coreHash = 0;
+    std::uint64_t dirHash = 0;
+    std::uint64_t seq = 0;
 };
 
 struct InstanceState {
@@ -161,7 +172,10 @@ struct InstanceState {
     OfxRectI cachedFrameBounds{ 0, 0, 0, 0 };
 
     ParamSnapshot lastParams;
-    uint64_t lastHash = 0;
+    std::atomic<std::uint64_t> lastHash{ 0 };
+
+    // Latest parameter snapshot observed from UI callbacks; consumed/coalesced on render thread.
+    PendingParamsState pending;
 
     Print::Runtime printRT;
 
@@ -242,3 +256,4 @@ int print_paper_option_count();
 const char* print_paper_option_label(int index);
 bool load_film_stock_into_base(int filmIndex, InstanceState& S);
 void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);
+void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);

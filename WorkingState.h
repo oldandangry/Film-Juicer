@@ -103,11 +103,14 @@ struct WorkingState {
     Spectral::FilmRawConfig filmRaw;
 
     // Snapshot of print runtime used for this WorkingState build (immutable during render)
-    std::unique_ptr<Print::Runtime> printRT;
+    std::shared_ptr<const Print::Runtime> printRT;
 
     Spectral::NegativeCouplerParams negParams{};
 
     // Versioning for atomic swap / debugging
+    std::uint64_t fullHash = 0;
+    std::uint64_t coreHash = 0;
+    std::uint64_t dirHash = 0;
     std::uint64_t buildCounter = 0;
 };
 

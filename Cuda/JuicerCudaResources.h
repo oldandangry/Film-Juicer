@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaResources.h
 //
-// Per-instance CUDA resource cache keyed by WorkingState.buildCounter.
+// Per-instance CUDA resource cache keyed by WorkingState.{coreHash,dirHash}.
 //
 // This module intentionally owns only GPU-side mirrors of CPU WorkingState data (curves/tables/etc).
 // The render path remains responsible for gating unsupported features (e.g. auto-exposure) until
@@ -33,6 +33,8 @@ namespace JuicerCuda {
         std::mutex m;
         int deviceId = -1;
         std::uint64_t uploadedBuildCounter = 0;
+        std::uint64_t uploadedCoreHash = 0;
+        std::uint64_t uploadedDirHash = 0;
         std::uint64_t validatedBuildCounter = 0;
         std::uint64_t validatedPrintBuildCounter = 0;
         std::uint64_t validatedPrintParamsHash = 0;
@@ -179,6 +181,7 @@ namespace JuicerCuda {
         float printIllumCShiftSteps = 0.0f;
         int printIllumShapeK = 0;
         std::uint64_t printIllumBuildCounter = 0;
+        std::uint64_t printIllumCoreHash = 0;
         const void* printIllumRuntimePtr = nullptr;
 
         // Hanatos LUT (process-global on CPU, uploaded on demand).

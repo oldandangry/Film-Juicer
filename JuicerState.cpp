@@ -798,6 +798,60 @@ uint64_t hash_params(const ParamSnapshot& p) {
     return h;
 }
 
+uint64_t hash_params_core(const ParamSnapshot& p) {
+    auto mix = [](uint64_t h, uint64_t v) {
+        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+        };
+    uint64_t h = 0;
+    h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
+    h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
+    h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
+    h = mix(h, static_cast<uint64_t>(p.refIll));
+    h = mix(h, static_cast<uint64_t>(p.enlIll));
+    h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
+    h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
+    h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
+    h = mix(h, static_cast<uint64_t>(p.outputColorSpace));
+    h = mix(h, static_cast<uint64_t>(p.outputCctfEncoding));
+    h = mix(h, static_cast<uint64_t>(p.outputLinearPassThrough));
+    h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
+    if (p.cameraFilterOverride) {
+        auto mix_triplet = [&](const std::array<double, 3>& triplet) {
+            for (double v : triplet) {
+                if (std::isfinite(v)) {
+                    const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
+                    h = mix(h, static_cast<uint64_t>(scaled));
+                }
+            }
+            };
+        mix_triplet(p.cameraFilterUV);
+        mix_triplet(p.cameraFilterIR);
+    }
+    return h;
+}
+
+uint64_t hash_params_dir(const ParamSnapshot& p) {
+    auto mix = [](uint64_t h, uint64_t v) {
+        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+        };
+    uint64_t h = 0;
+    h = mix(h, static_cast<uint64_t>(p.couplersActive));
+    h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.ratioG * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.ratioB * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.sigma * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.high * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.spatialSigmaMicrometers * 10000.0));
+    return h;
+}
+
 std::string print_dir_for_index(int index) {
     const PrintPaperDefinition& paper = print_paper_for_index(index);
     if (paper.folderName.empty() || gDataDir.empty()) {
@@ -1395,28 +1449,28 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             return v;
             };
 
-        if (!S.couplerDirty.active && effectiveCouplersActive == kFactoryCouplersActive) {
+        if (!S.couplerDirty.active.load(std::memory_order_acquire) && effectiveCouplersActive == kFactoryCouplersActive) {
             effectiveCouplersActive = dirCfg.active ? 1 : 0;
         }
-        if (!S.couplerDirty.amount && approx_equal(effectiveCouplersAmount, kFactoryCouplersAmount)) {
+        if (!S.couplerDirty.amount.load(std::memory_order_acquire) && approx_equal(effectiveCouplersAmount, kFactoryCouplersAmount)) {
             effectiveCouplersAmount = sanitize_profile(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
         }
-        if (!S.couplerDirty.ratioB && approx_equal(effectiveRatioB, kFactoryCouplersRatioB)) {
+        if (!S.couplerDirty.ratioB.load(std::memory_order_acquire) && approx_equal(effectiveRatioB, kFactoryCouplersRatioB)) {
             effectiveRatioB = sanitize_profile(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
         }
-        if (!S.couplerDirty.ratioG && approx_equal(effectiveRatioG, kFactoryCouplersRatioG)) {
+        if (!S.couplerDirty.ratioG.load(std::memory_order_acquire) && approx_equal(effectiveRatioG, kFactoryCouplersRatioG)) {
             effectiveRatioG = sanitize_profile(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
         }
-        if (!S.couplerDirty.ratioR && approx_equal(effectiveRatioR, kFactoryCouplersRatioR)) {
+        if (!S.couplerDirty.ratioR.load(std::memory_order_acquire) && approx_equal(effectiveRatioR, kFactoryCouplersRatioR)) {
             effectiveRatioR = sanitize_profile(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
         }
-        if (!S.couplerDirty.sigma && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
+        if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
             effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 3.0);
         }
-        if (!S.couplerDirty.high && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
+        if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
             effectiveCouplersHigh = sanitize_profile(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
         }
-        if (!S.couplerDirty.spatialSigma && spatialSigmaIsUiDefault) {
+        if (!S.couplerDirty.spatialSigma.load(std::memory_order_acquire) && spatialSigmaIsUiDefault) {
             const double profileSpatialSigma = S.couplerProfileSpatialSigmaValid
                 ? S.couplerProfileSpatialSigmaMicrometers
                 : static_cast<double>(dirCfg.diffusionSizeUm);
@@ -1888,7 +1942,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target->tablesRef = Spectral::SpectralTables{};
     }
 
-    std::unique_ptr<Print::Runtime> printRuntimeCopy = std::make_unique<Print::Runtime>(S.printRT);
+    std::shared_ptr<Print::Runtime> printRuntimeCopy = std::make_shared<Print::Runtime>(S.printRT);
     Print::Profile printProfile = printRuntimeCopy->profile;
     Print::DensityCurves printCurves = printRuntimeCopy->densityCurvesRaw;
     Scanner::ScannerDensityRange printDensityRange;
@@ -2225,11 +2279,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     S.spatialSigmaCacheValid.store(false, std::memory_order_release);
 
     {
-        RebuildWorkingState::NegativeReuseContext reuseCtx;
-        reuseCtx.activeBuildCounter = S.activeBuildCounter;
-        reuseCtx.lastHash = S.lastHash;
-        reuseCtx.lastFilmStock = S.lastParams.filmStockIndex;
-        reuseCtx.lastEnlargerIll = S.lastParams.enlIll;
+	        RebuildWorkingState::NegativeReuseContext reuseCtx;
+	        reuseCtx.activeBuildCounter = S.activeBuildCounter;
+	        reuseCtx.lastHash = S.lastHash.load(std::memory_order_acquire);
+	        reuseCtx.lastFilmStock = S.lastParams.filmStockIndex;
+	        reuseCtx.lastEnlargerIll = S.lastParams.enlIll;
 
         const WorkingState* prev = S.activeWS.load(std::memory_order_acquire);
         if (RebuildWorkingState::can_reuse_negative_params(
@@ -2423,6 +2477,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         reset_optics_runtime(S.scannerRuntimeB);
     }
 
+    target->fullHash = hash_params(P);
+    target->coreHash = hash_params_core(P);
+    target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
 #if JUICER_TRACE_PRINT_SWAP
     {
@@ -2456,5 +2513,234 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
     S.activeBuildCounter = target->buildCounter;
+    S.lastParams = P;
+    S.lastHash.store(target->fullHash, std::memory_order_release);
 
+}
+
+void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P) {
+    (void)instance;
+
+#ifndef JUICER_ENABLE_COUPLERS
+    rebuild_working_state(instance, S, P);
+    return;
+#else
+    JTRACE_SCOPE("BUILD", "rebuild_working_state_couplers_only");
+
+    auto compute_curve_max = [](const Spectral::Curve& c) {
+        float m = 0.0f;
+        for (float v : c.linear) {
+            if (std::isfinite(v) && v > m) {
+                m = v;
+            }
+        }
+        if (!std::isfinite(m) || m <= 1e-4f) {
+            m = 1.0f;
+        }
+        if (m > 1000.0f) {
+            m = 1000.0f;
+        }
+        return m;
+        };
+
+    std::unique_lock<std::mutex> lk(S.m);
+
+    const WorkingState* src = S.activeWS.load(std::memory_order_acquire);
+    if (!src || src->buildCounter == 0) {
+        rebuild_working_state(instance, S, P);
+        return;
+    }
+
+    WorkingState* target = S.inactive();
+    while (S.renderWS.load(std::memory_order_acquire) == target &&
+        S.rendersInFlight.load(std::memory_order_acquire) > 0)
+    {
+        S.renderCv.wait(lk);
+        target = S.inactive();
+    }
+
+    *target = *src;
+
+    target->negativeMediumRuntime.tables = (target->tablesScan.K > 0) ? &target->tablesScan : nullptr;
+    target->negativeMediumRuntime.color = &target->negativeColorRuntime;
+    if (target->printScannerValid) {
+        target->printMediumRuntime.tables = (target->tablesPrint.K > 0) ? &target->tablesPrint : nullptr;
+        target->printMediumRuntime.color = &target->printColorRuntime;
+    }
+    else {
+        target->printMediumRuntime.tables = nullptr;
+        target->printMediumRuntime.color = nullptr;
+    }
+
+    const Profiles::DirCouplersProfile& dirCfg = S.base.dirCouplers;
+
+    int effectiveCouplersActive = P.couplersActive;
+    double effectiveCouplersAmount = P.couplersAmount;
+    double effectiveRatioB = P.ratioB;
+    double effectiveRatioG = P.ratioG;
+    double effectiveRatioR = P.ratioR;
+    double effectiveCouplersSigma = P.sigma;
+    double effectiveCouplersHigh = P.high;
+    const bool spatialSigmaIsUiDefault = approx_equal(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma);
+    double effectiveSpatialSigma = P.spatialSigmaMicrometers;
+    if (spatialSigmaIsUiDefault && S.couplerProfileSpatialSigmaValid) {
+        effectiveSpatialSigma = S.couplerProfileSpatialSigmaMicrometers;
+    }
+
+    if (dirCfg.hasData) {
+        auto sanitize_profile = [](float value, double fallback, double lo, double hi) -> double {
+            double v = static_cast<double>(value);
+            if (!std::isfinite(v)) {
+                return fallback;
+            }
+            if (v < lo) v = lo;
+            if (v > hi) v = hi;
+            return v;
+            };
+
+        if (!S.couplerDirty.active.load(std::memory_order_acquire) && effectiveCouplersActive == kFactoryCouplersActive) {
+            effectiveCouplersActive = dirCfg.active ? 1 : 0;
+        }
+        if (!S.couplerDirty.amount.load(std::memory_order_acquire) && approx_equal(effectiveCouplersAmount, kFactoryCouplersAmount)) {
+            effectiveCouplersAmount = sanitize_profile(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
+        }
+        if (!S.couplerDirty.ratioB.load(std::memory_order_acquire) && approx_equal(effectiveRatioB, kFactoryCouplersRatioB)) {
+            effectiveRatioB = sanitize_profile(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
+        }
+        if (!S.couplerDirty.ratioG.load(std::memory_order_acquire) && approx_equal(effectiveRatioG, kFactoryCouplersRatioG)) {
+            effectiveRatioG = sanitize_profile(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
+        }
+        if (!S.couplerDirty.ratioR.load(std::memory_order_acquire) && approx_equal(effectiveRatioR, kFactoryCouplersRatioR)) {
+            effectiveRatioR = sanitize_profile(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
+        }
+        if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
+            effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 3.0);
+        }
+        if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
+            effectiveCouplersHigh = sanitize_profile(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
+        }
+        if (!S.couplerDirty.spatialSigma.load(std::memory_order_acquire) && spatialSigmaIsUiDefault) {
+            const double profileSpatialSigma = S.couplerProfileSpatialSigmaValid
+                ? S.couplerProfileSpatialSigmaMicrometers
+                : static_cast<double>(dirCfg.diffusionSizeUm);
+            effectiveSpatialSigma = sanitize_profile(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
+        }
+    }
+
+    const std::array<float, 3> densityMaxPostDir{
+        compute_curve_max(target->densB),
+        compute_curve_max(target->densG),
+        compute_curve_max(target->densR)
+    };
+
+    bool precorrectApplied = false;
+    Couplers::Runtime dirRT{};
+    dirRT.active = (effectiveCouplersActive != 0);
+    {
+        auto clampRatio = [](double v) -> float {
+            if (!std::isfinite(v) || v < 0.0) return 0.0f;
+            if (v > 1.0) return 1.0f;
+            return static_cast<float>(v);
+            };
+        auto clampAmount = [](double v) -> float {
+            if (!std::isfinite(v) || v < 0.0) return 0.0f;
+            if (v > 2.0) return 2.0f;
+            return static_cast<float>(v);
+            };
+        const float amountScale = clampAmount(effectiveCouplersAmount);
+        const float amount[3] = {
+            amountScale * clampRatio(effectiveRatioB),
+            amountScale * clampRatio(effectiveRatioG),
+            amountScale * clampRatio(effectiveRatioR)
+        };
+        Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
+        dirRT.highShift = static_cast<float>(effectiveCouplersHigh);
+        dirRT.spatialSigmaMicrometers = static_cast<float>(effectiveSpatialSigma);
+        dirRT.spatialSigmaPixels = 0.0f;
+
+        if (dirRT.active) {
+            auto has_nonfinite_density = [](const Spectral::Curve& c) -> bool {
+                for (float v : c.linear) {
+                    if (!std::isfinite(v)) {
+                        return true;
+                    }
+                }
+                return false;
+                };
+
+            if (has_nonfinite_density(target->densB) || has_nonfinite_density(target->densG) || has_nonfinite_density(target->densR)) {
+                precorrectApplied = false;
+            }
+            else {
+                Spectral::Curve densB_corr, densG_corr, densR_corr;
+                Couplers::precorrect_density_curves_before_DIR_into(
+                    dirRT.M, dirRT.highShift,
+                    target->densB, target->densG, target->densR,
+                    densB_corr, densG_corr, densR_corr);
+                target->dirDensB = std::move(densB_corr);
+                target->dirDensG = std::move(densG_corr);
+                target->dirDensR = std::move(densR_corr);
+                precorrectApplied = true;
+            }
+        }
+    }
+
+    dirRT.dMax[0] = densityMaxPostDir[0];
+    dirRT.dMax[1] = densityMaxPostDir[1];
+    dirRT.dMax[2] = densityMaxPostDir[2];
+    target->dirRT = dirRT;
+    target->dirPrecorrected = precorrectApplied;
+    if (!precorrectApplied) {
+        target->dirDensB = target->densB;
+        target->dirDensG = target->densG;
+        target->dirDensR = target->densR;
+    }
+    target->dMax[0] = dirRT.dMax[0];
+    target->dMax[1] = dirRT.dMax[1];
+    target->dMax[2] = dirRT.dMax[2];
+
+    {
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                float v = target->dirRT.M[r][c];
+                if (!std::isfinite(v)) v = 0.0f;
+                if (v < -10.0f) v = -10.0f;
+                if (v > 10.0f)  v = 10.0f;
+                target->dirRT.M[r][c] = v;
+            }
+        }
+        for (int i = 0; i < 3; ++i) {
+            float v = target->dMax[i];
+            if (!std::isfinite(v) || v <= 1e-4f) v = 1.0f;
+            if (v > 1000.0f) v = 1000.0f;
+            target->dMax[i] = v;
+            target->dirRT.dMax[i] = v;
+        }
+    }
+
+    {
+        Spectral::DirRuntimeSnapshot snap;
+        snap.active = target->dirRT.active;
+        snap.highShift = target->dirRT.highShift;
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                snap.M[r][c] = target->dirRT.M[r][c];
+            }
+        }
+        snap.dMax[0] = target->dirRT.dMax[0];
+        snap.dMax[1] = target->dirRT.dMax[1];
+        snap.dMax[2] = target->dirRT.dMax[2];
+        Spectral::set_dir_runtime_snapshot(snap);
+    }
+
+    target->fullHash = hash_params(P);
+    target->coreHash = hash_params_core(P);
+    target->dirHash = hash_params_dir(P);
+    target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    S.activeWS.store(target, std::memory_order_release);
+    S.activeBuildCounter = target->buildCounter;
+    S.lastParams = P;
+    S.lastHash.store(target->fullHash, std::memory_order_release);
+#endif
 }

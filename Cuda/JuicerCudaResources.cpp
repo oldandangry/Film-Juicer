@@ -556,6 +556,7 @@ namespace JuicerCuda {
         resources.printIllumCShiftSteps = 0.0f;
         resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
+        resources.printIllumCoreHash = 0;
         resources.printIllumRuntimePtr = nullptr;
 
         resources.printGammaC = 1.0f;
@@ -866,57 +867,75 @@ namespace JuicerCuda {
             }
         }
 
-        if (resources.uploadedBuildCounter == ws.buildCounter && ws.buildCounter != 0) {
-            return true;
-        }
-
         if (ws.buildCounter == 0) {
             outError = "WorkingState buildCounter is 0";
             return false;
         }
 
-        // Important: OFX CUDA renders are async (we enqueue work on the host stream). When rebuilding
-        // GPU resources, ensure no in-flight work can still reference the previous device pointers.
-        // We do NOT assume the current render stream matches the stream used by the previous render.
-        if (resources.uploadedBuildCounter != ws.buildCounter) {
+        const std::uint64_t wsCoreHash = ws.coreHash;
+        const std::uint64_t wsDirHash = ws.dirHash;
+        if (wsCoreHash == 0 || wsDirHash == 0) {
+            outError = "WorkingState hash is 0";
+            return false;
+        }
+
+        const bool coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
+        const bool dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
+
+        if (coreUpToDate && dirUpToDate) {
+            resources.uploadedBuildCounter = ws.buildCounter;
+            return true;
+        }
+
+        // DIR-only update: avoid a full WorkingState re-upload when only the DIR pre-corrected
+        // density curves changed (slider interaction).
+        if (coreUpToDate && !dirUpToDate) {
             if (resources.uploadedBuildCounter != 0) {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-                if (resources.lastUseEventOpaque) {
-                    cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-                    const cudaError_t evErr = cudaEventSynchronize(ev);
-                    if (evErr != cudaSuccess) {
-                        outError = std::string("cudaEventSynchronize before rebuild failed: ") + (cudaGetErrorString(evErr) ? cudaGetErrorString(evErr) : "(unknown)");
-                        return false;
-                    }
-                } else {
-                    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-                    const cudaError_t syncErr = cudaStreamSynchronize(stream);
-                    if (syncErr != cudaSuccess) {
-                        outError = std::string("cudaStreamSynchronize before rebuild failed: ") + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-                        return false;
-                    }
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "DIR density curves", outError)) {
+                    return false;
                 }
-#endif
             }
 
-            // Clear any previously uploaded (or partially uploaded) curves before re-uploading.
-            free_curve(resources.densB);
-            free_curve(resources.densG);
-            free_curve(resources.densR);
-            free_density_layers(resources);
             free_curve(resources.dirDensB);
             free_curve(resources.dirDensG);
             free_curve(resources.dirDensR);
-            free_curve(resources.sensB);
-            free_curve(resources.sensG);
-            free_curve(resources.sensR);
-            free_tables(resources);
-            free_scan_medium(resources.scanNegative);
-            free_scan_medium(resources.scanPrint);
-            free_print_payloads(resources);
 
-            resources.validatedBuildCounter = 0;
+            if (!alloc_and_upload_curve(resources.dirDensB, ws.dirDensB, cudaStreamOpaque, outError)) return false;
+            if (!alloc_and_upload_curve(resources.dirDensG, ws.dirDensG, cudaStreamOpaque, outError)) return false;
+            if (!alloc_and_upload_curve(resources.dirDensR, ws.dirDensR, cudaStreamOpaque, outError)) return false;
+
+            resources.uploadedDirHash = wsDirHash;
+            resources.uploadedBuildCounter = ws.buildCounter;
+            return true;
         }
+
+        // Core rebuild required: synchronize before mutating any device pointers.
+        if (resources.uploadedBuildCounter != 0) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, "WorkingState", outError)) {
+                return false;
+            }
+        }
+
+        // Clear any previously uploaded (or partially uploaded) curves before re-uploading.
+        free_curve(resources.densB);
+        free_curve(resources.densG);
+        free_curve(resources.densR);
+        free_density_layers(resources);
+        free_curve(resources.dirDensB);
+        free_curve(resources.dirDensG);
+        free_curve(resources.dirDensR);
+        free_curve(resources.sensB);
+        free_curve(resources.sensG);
+        free_curve(resources.sensR);
+        free_tables(resources);
+        free_scan_medium(resources.scanNegative);
+        free_scan_medium(resources.scanPrint);
+        free_print_payloads(resources);
+
+        resources.validatedBuildCounter = 0;
+        resources.uploadedBuildCounter = 0;
+        resources.uploadedCoreHash = 0;
+        resources.uploadedDirHash = 0;
 
         if (!alloc_and_upload_curve(resources.densB, ws.densB, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.densG, ws.densG, cudaStreamOpaque, outError)) return false;
@@ -1273,6 +1292,8 @@ namespace JuicerCuda {
             }
         }
 
+        resources.uploadedCoreHash = wsCoreHash;
+        resources.uploadedDirHash = wsDirHash;
         resources.uploadedBuildCounter = ws.buildCounter;
         return true;
 #endif
@@ -2059,7 +2080,7 @@ namespace JuicerCuda {
             resources.printIllumFiltered &&
             resources.printIllumK == K &&
             resources.printIllumShapeK == K &&
-            resources.printIllumBuildCounter == ws.buildCounter &&
+            resources.printIllumCoreHash == ws.coreHash &&
             resources.printIllumRuntimePtr == &prt &&
             resources.printIllumYShiftSteps == yKey &&
             resources.printIllumMShiftSteps == mKey &&
@@ -2136,6 +2157,7 @@ namespace JuicerCuda {
         resources.printIllumCShiftSteps = cKey;
         resources.printIllumShapeK = K;
         resources.printIllumBuildCounter = ws.buildCounter;
+        resources.printIllumCoreHash = ws.coreHash;
         resources.printIllumRuntimePtr = &prt;
         return true;
 #endif

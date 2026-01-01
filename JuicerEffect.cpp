@@ -1432,6 +1432,37 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
             bootstrap_after_attach();
         }
     }
+
+    // Coalesce parameter-driven WorkingState rebuilds on the render thread to keep UI callbacks fast.
+    if (_state && _state->baseLoaded) {
+        ParamSnapshot pendingParams{};
+        std::uint64_t pendingFullHash = 0;
+        std::uint64_t pendingCoreHash = 0;
+        std::uint64_t pendingDirHash = 0;
+        {
+            std::lock_guard<std::mutex> lock(_state->pending.m);
+            pendingParams = _state->pending.params;
+            pendingFullHash = _state->pending.fullHash;
+            pendingCoreHash = _state->pending.coreHash;
+            pendingDirHash = _state->pending.dirHash;
+        }
+
+        const WorkingState* wsCur = _state->activeWS.load(std::memory_order_acquire);
+        const std::uint64_t builtFullHash = wsCur ? wsCur->fullHash : 0;
+        if (pendingFullHash != 0 && pendingFullHash != builtFullHash) {
+            const std::uint64_t builtCoreHash = wsCur ? wsCur->coreHash : 0;
+            const std::uint64_t builtDirHash = wsCur ? wsCur->dirHash : 0;
+            const bool dirOnly = (pendingCoreHash != 0) && (builtCoreHash != 0) &&
+                (pendingCoreHash == builtCoreHash) &&
+                (pendingDirHash != 0) && (pendingDirHash != builtDirHash);
+            if (dirOnly) {
+                rebuild_working_state_couplers_only(this->getHandle(), *_state, pendingParams);
+            }
+            else {
+                rebuild_working_state(this->getHandle(), *_state, pendingParams);
+            }
+        }
+    }
     const ExposureParams exposureParams = gatherExposureParams();
     const Scanner::Options scannerOptions = gatherScannerOptions();
     const Scanner::Settings scannerSettings = gatherScannerSettings();
@@ -1775,17 +1806,15 @@ void JuicerEffect::bootstrap_after_attach() {
     applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/true);
 
 
-    if (_state->baseLoaded) {
-#ifdef JUICER_ENABLE_COUPLERS
-        applyCouplerProfileDefaults(P);
-#endif
-        rebuild_working_state(this->getHandle(), *_state, P);
-        _state->lastParams = P;
-        _state->lastHash = hash_params(P);
-    }
-    else {
-        JTRACE("STOCK", "bootstrap: failed to load film stock; deferring rebuild");
-    }
+	    if (_state->baseLoaded) {
+	#ifdef JUICER_ENABLE_COUPLERS
+	        applyCouplerProfileDefaults(P);
+	#endif
+	        rebuild_working_state(this->getHandle(), *_state, P);
+	    }
+	    else {
+	        JTRACE("STOCK", "bootstrap: failed to load film stock; deferring rebuild");
+	    }
 
     // Re-enable changedParam handling now that bootstrap is complete
     _state->suppressParamEvents = false;
@@ -1950,7 +1979,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
     const bool wasSuppressed = _state->suppressParamEvents;
     _state->suppressParamEvents = true;
 
-    if (!_state->couplerDirty.active) {
+    if (!_state->couplerDirty.active.load(std::memory_order_acquire)) {
         const bool active = dirCfg.active;
         if (_pCouplersActive) {
             _pCouplersActive->setValue(active);
@@ -1958,7 +1987,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.couplersActive = active ? 1 : 0;
     }
 
-    if (!_state->couplerDirty.amount) {
+    if (!_state->couplerDirty.amount.load(std::memory_order_acquire)) {
         const double amount = sanitize_range(dirCfg.amount, P.couplersAmount, 0.0, 2.0);
         if (_pCouplersAmount) {
             _pCouplersAmount->setValue(amount);
@@ -1966,7 +1995,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.couplersAmount = amount;
     }
 
-    if (!_state->couplerDirty.ratioB) {
+    if (!_state->couplerDirty.ratioB.load(std::memory_order_acquire)) {
         const double ratioB = sanitize_range(dirCfg.ratioRGB[0], P.ratioB, 0.0, 1.0);
         if (_pCouplersAmountB) {
             _pCouplersAmountB->setValue(ratioB);
@@ -1974,7 +2003,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.ratioB = ratioB;
     }
 
-    if (!_state->couplerDirty.ratioG) {
+    if (!_state->couplerDirty.ratioG.load(std::memory_order_acquire)) {
         const double ratioG = sanitize_range(dirCfg.ratioRGB[1], P.ratioG, 0.0, 1.0);
         if (_pCouplersAmountG) {
             _pCouplersAmountG->setValue(ratioG);
@@ -1982,7 +2011,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.ratioG = ratioG;
     }
 
-    if (!_state->couplerDirty.ratioR) {
+    if (!_state->couplerDirty.ratioR.load(std::memory_order_acquire)) {
         const double ratioR = sanitize_range(dirCfg.ratioRGB[2], P.ratioR, 0.0, 1.0);
         if (_pCouplersAmountR) {
             _pCouplersAmountR->setValue(ratioR);
@@ -1990,7 +2019,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.ratioR = ratioR;
     }
 
-    if (!_state->couplerDirty.sigma) {
+    if (!_state->couplerDirty.sigma.load(std::memory_order_acquire)) {
         const double sigma = sanitize_range(dirCfg.diffusionInterlayer, P.sigma, 0.0, 3.0);
         if (_pCouplersSigma) {
             _pCouplersSigma->setValue(sigma);
@@ -1998,7 +2027,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.sigma = sigma;
     }
 
-    if (!_state->couplerDirty.high) {
+    if (!_state->couplerDirty.high.load(std::memory_order_acquire)) {
         const double high = sanitize_range(dirCfg.highExposureShift, P.high, 0.0, 1.0);
         if (_pCouplersHigh) {
             _pCouplersHigh->setValue(high);
@@ -2006,7 +2035,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.high = high;
     }
 
-    if (!_state->couplerDirty.spatialSigma) {
+    if (!_state->couplerDirty.spatialSigma.load(std::memory_order_acquire)) {
         const float profileSpatialSigma = _state->couplerProfileSpatialSigmaValid
             ? static_cast<float>(_state->couplerProfileSpatialSigmaMicrometers)
             : dirCfg.diffusionSizeUm;
@@ -2030,7 +2059,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     // If bootstrap hasn’t run yet, run it once now
-    if (_state->lastHash == 0 && !_state->baseLoaded) {
+    if (!_state->baseLoaded) {
         bootstrap_after_attach();
     }
 
@@ -2039,41 +2068,44 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     {
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
         const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+        const WorkingState* wsDbg = _state->activeWS.load(std::memory_order_acquire);
+        const std::uint64_t activeBuild = wsDbg ? wsDbg->buildCounter : 0;
+        const std::uint64_t lastHash = _state->lastHash.load(std::memory_order_acquire);
         std::string msg = std::string("params change name=") + (changedNameOrNull ? changedNameOrNull : "<null>")
             + " printIndex=" + std::to_string(P.printPaperIndex)
             + " printKey=" + std::string(paperKey ? paperKey : "<null>")
             + " filmIndex=" + std::to_string(P.filmStockIndex)
             + " filmKey=" + std::string(filmKey ? filmKey : "<null>")
-            + " lastPrintIndex=" + std::to_string(_state->lastParams.printPaperIndex)
-            + " lastFilmIndex=" + std::to_string(_state->lastParams.filmStockIndex);
+            + " activeBuild=" + std::to_string(activeBuild)
+            + " lastHash=" + std::to_string(lastHash);
         JTRACE("PRINTDBG", msg);
     }
 #endif
 #ifdef JUICER_ENABLE_COUPLERS
     if (changedNameOrNull) {
         if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersActive) == 0) {
-            _state->couplerDirty.active = true;
+            _state->couplerDirty.active.store(true, std::memory_order_release);
         }
         else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmount) == 0) {
-            _state->couplerDirty.amount = true;
+            _state->couplerDirty.amount.store(true, std::memory_order_release);
         }
         else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmountB) == 0) {
-            _state->couplerDirty.ratioB = true;
+            _state->couplerDirty.ratioB.store(true, std::memory_order_release);
         }
         else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmountG) == 0) {
-            _state->couplerDirty.ratioG = true;
+            _state->couplerDirty.ratioG.store(true, std::memory_order_release);
         }
         else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmountR) == 0) {
-            _state->couplerDirty.ratioR = true;
+            _state->couplerDirty.ratioR.store(true, std::memory_order_release);
         }
         else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersLayerSigma) == 0) {
-            _state->couplerDirty.sigma = true;
+            _state->couplerDirty.sigma.store(true, std::memory_order_release);
         }
         else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersHighExpShift) == 0) {
-            _state->couplerDirty.high = true;
+            _state->couplerDirty.high.store(true, std::memory_order_release);
         }
         else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersSpatialSigma) == 0) {
-            _state->couplerDirty.spatialSigma = true;
+            _state->couplerDirty.spatialSigma.store(true, std::memory_order_release);
         }
     }
 #endif
@@ -2142,27 +2174,9 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
             JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (unknown error); identity filters remain active");
         }
     }
-    else if (P.enlDichroicSet != _state->lastParams.enlDichroicSet) {
-        const std::string dichroicDirReload = ensure_trailing_separator(
-            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
-        try {
-            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
-            dichroicReloaded = true;
-        }
-        catch (const std::exception& ex) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (" + ex.what() + "); identity filters remain active");
-        }
-        catch (...) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (unknown error); identity filters remain active");
-        }
-    }
 
     bool filmReloaded = false;
     if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamFilmStock) == 0) {
-        _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);
-        filmReloaded = _state->baseLoaded;
-    }
-    else if (P.filmStockIndex != _state->lastParams.filmStockIndex) {
         _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);
         filmReloaded = _state->baseLoaded;
     }
@@ -2209,13 +2223,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
 #endif
     }
 
-    if (printReloaded && _state->baseLoaded) {
-        // Force working state snapshot to carry updated printRT profile into render
-        rebuild_working_state(this->getHandle(), *_state, P);
-        _state->lastParams = P;
-        _state->lastHash = hash_params(P);
-    }
-
     if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerIlluminant) == 0) {
         applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
     }
@@ -2227,11 +2234,17 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
 #endif
     }
 
-    const uint64_t h = hash_params(P);
-    if (_state->baseLoaded && h != _state->lastHash) {
-        rebuild_working_state(this->getHandle(), *_state, P);
-        _state->lastParams = P;
-        _state->lastHash = h;
+    const std::uint64_t fullHash = hash_params(P);
+    const std::uint64_t coreHash = hash_params_core(P);
+    const std::uint64_t dirHash = hash_params_dir(P);
+    {
+        std::lock_guard<std::mutex> lock(_state->pending.m);
+        _state->pending.params = P;
+        _state->pending.fullHash = fullHash;
+        _state->pending.coreHash = coreHash;
+        _state->pending.dirHash = dirHash;
+        std::uint64_t next = _state->pending.seq + 1;
+        _state->pending.seq = (next == 0) ? 1 : next;
     }
 
 #ifdef JUICER_ENABLE_COUPLERS
@@ -2248,12 +2261,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
             std::strcmp(changedNameOrNull, kParamCouplersSpatialSigma) == 0;
 
         if (isCouplerParam) {
-            // Avoid cascading rebuild loops: mark mixing dirty only if hash actually changes.
-            ParamSnapshot Pnew = snapshotParams();
-            const uint64_t hnew = hash_params(Pnew);
-            if (hnew != _state->lastHash) {
-                Couplers::on_param_changed(changedNameOrNull);
-            }
+            Couplers::on_param_changed(changedNameOrNull);
         }
     }
 #endif
