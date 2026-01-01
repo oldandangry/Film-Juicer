@@ -428,13 +428,13 @@ namespace {
             const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
             const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
 
-            logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB.x, cB.n);
-            logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG.x, cG.n);
-            logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR.x, cR.n);
+            logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB);
+            logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG);
+            logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR);
 
-            const float DY = sample_density_at_logE_device(cB.x, cB.y, cB.n, logE_corr[0], dev.gammaFactorB);
-            const float DM = sample_density_at_logE_device(cG.x, cG.y, cG.n, logE_corr[1], dev.gammaFactorG);
-            const float DC = sample_density_at_logE_device(cR.x, cR.y, cR.n, logE_corr[2], dev.gammaFactorR);
+            const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
+            const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
+            const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
 
             D_cmy[0] = DC;
             D_cmy[1] = DM;
@@ -448,9 +448,9 @@ namespace {
             const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
             const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
 
-            const float DY = sample_density_at_logE_device(cB.x, cB.y, cB.n, logE_corr[0], dev.gammaFactorB);
-            const float DM = sample_density_at_logE_device(cG.x, cG.y, cG.n, logE_corr[1], dev.gammaFactorG);
-            const float DC = sample_density_at_logE_device(cR.x, cR.y, cR.n, logE_corr[2], dev.gammaFactorR);
+            const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
+            const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
+            const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
 
             D_cmy[0] = DC;
             D_cmy[1] = DM;

@@ -482,13 +482,13 @@ static __device__ __forceinline__ void compute_logE_from_film_raw_device(
     logE_raw[1] = log10f(fmaxf(filmRaw[1], 0.0f) + kLogEps);
     logE_raw[2] = log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps);
 
-    logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], develop.densB.x, develop.densB.n);
-    logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], develop.densG.x, develop.densG.n);
-    logE_sanitized[2] = sanitize_inf_logE_for_curve_device(logE_raw[2], develop.densR.x, develop.densR.n);
+    logE_sanitized[0] = sanitize_inf_logE_for_curve_device(logE_raw[0], develop.densB);
+    logE_sanitized[1] = sanitize_inf_logE_for_curve_device(logE_raw[1], develop.densG);
+    logE_sanitized[2] = sanitize_inf_logE_for_curve_device(logE_raw[2], develop.densR);
 
-    layerPre[0] = sample_density_at_logE_device(develop.densB.x, develop.densB.y, develop.densB.n, logE_sanitized[0], develop.gammaFactorB);
-    layerPre[1] = sample_density_at_logE_device(develop.densG.x, develop.densG.y, develop.densG.n, logE_sanitized[1], develop.gammaFactorG);
-    layerPre[2] = sample_density_at_logE_device(develop.densR.x, develop.densR.y, develop.densR.n, logE_sanitized[2], develop.gammaFactorR);
+    layerPre[0] = sample_density_at_logE_device(develop.densB, logE_sanitized[0], develop.gammaFactorB);
+    layerPre[1] = sample_density_at_logE_device(develop.densG, logE_sanitized[1], develop.gammaFactorG);
+    layerPre[2] = sample_density_at_logE_device(develop.densR, logE_sanitized[2], develop.gammaFactorR);
 }
 
 static __device__ __forceinline__ void compute_logE_and_layer_pre_device(

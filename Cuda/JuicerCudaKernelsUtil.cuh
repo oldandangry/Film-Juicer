@@ -38,8 +38,12 @@ static __device__ __forceinline__ double ldg_d(const double* p) {
 #endif
 }
 
-static __device__ __forceinline__ float sample_density_at_logE_device(const float* JUICER_RESTRICT x, const float* JUICER_RESTRICT y, int n, float logE, float gammaFactor) {
-    if (!x || !y || n <= 0) {
+static __device__ __forceinline__ float sample_density_at_logE_device(
+    const JuicerCuda::DeviceCurveView& curve,
+    float logE,
+    float gammaFactor)
+{
+    if (!curve.x || !curve.y || curve.n <= 0) {
         return 0.0f;
     }
 
@@ -50,6 +54,77 @@ static __device__ __forceinline__ float sample_density_at_logE_device(const floa
 
     const float gammaSafe = (device_isfinite(gammaFactor) && gammaFactor > 0.0f) ? gammaFactor : 1.0f;
     const float xq = logE * gammaSafe;
+
+    int domainBegin = curve.domainBegin;
+    int domainEnd = curve.domainEnd;
+    if (domainBegin < 0) {
+        domainBegin = 0;
+    }
+    if (domainEnd >= curve.n) {
+        domainEnd = curve.n - 1;
+    }
+    if (domainBegin >= curve.n || domainEnd < domainBegin) {
+        return 0.0f;
+    }
+
+    const float xmin = ldg_f(curve.x + domainBegin);
+    const float xmax = ldg_f(curve.x + domainEnd);
+    if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
+        return ldg_f(curve.y + domainBegin);
+    }
+
+    // fast_interp endpoints: literal y[0]/y[-1], even if NaN.
+    if (xq <= xmin) {
+        return ldg_f(curve.y + domainBegin);
+    }
+    if (xq >= xmax) {
+        return ldg_f(curve.y + domainEnd);
+    }
+
+    // lower_bound: find first i1 in [domainBegin+1, domainEnd] where x[i1] >= xq.
+    int left = domainBegin + 1;
+    int right = domainEnd;
+    int i1 = domainEnd + 1;
+    while (left <= right) {
+        const int mid = left + ((right - left) >> 1);
+        const float xm = ldg_f(curve.x + mid);
+        if (!(xm < xq)) {
+            i1 = mid;
+            right = mid - 1;
+        }
+        else {
+            left = mid + 1;
+        }
+    }
+    if (i1 > domainEnd) {
+        return ldg_f(curve.y + domainEnd);
+    }
+
+    const int i0 = i1 - 1;
+    const float x0 = ldg_f(curve.x + i0);
+    const float x1 = ldg_f(curve.x + i1);
+    const float y0 = ldg_f(curve.y + i0);
+    const float y1 = ldg_f(curve.y + i1);
+
+    const float denom = x1 - x0;
+    if (!(denom > 0.0f) || !device_isfinite(denom)) {
+        return y0;
+    }
+
+    const float t = (xq - x0) / denom;
+    return y0 + t * (y1 - y0);
+}
+
+static __device__ __forceinline__ float sample_density_at_logE_device(
+    const float* JUICER_RESTRICT x,
+    const float* JUICER_RESTRICT y,
+    int n,
+    float logE,
+    float gammaFactor)
+{
+    if (!x || !y || n <= 0) {
+        return 0.0f;
+    }
 
     int domainBegin = 0;
     while (domainBegin < n && !device_isfinite(ldg_f(x + domainBegin))) {
@@ -63,40 +138,36 @@ static __device__ __forceinline__ float sample_density_at_logE_device(const floa
         --domainEnd;
     }
 
-    const float xmin = ldg_f(x + domainBegin);
-    const float xmax = ldg_f(x + domainEnd);
+    const JuicerCuda::DeviceCurveView curve = { x, y, n, domainBegin, domainEnd };
+    return sample_density_at_logE_device(curve, logE, gammaFactor);
+}
+
+static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float logE, const JuicerCuda::DeviceCurveView& curve) {
+    if (device_isfinite(logE) || isnan(logE)) {
+        return logE;
+    }
+    if (!curve.x || curve.n <= 0) {
+        return logE;
+    }
+
+    int begin = curve.domainBegin;
+    int end = curve.domainEnd;
+    if (begin < 0) {
+        begin = 0;
+    }
+    if (end >= curve.n) {
+        end = curve.n - 1;
+    }
+    if (begin >= curve.n || end < begin) {
+        return logE;
+    }
+
+    const float xmin = ldg_f(curve.x + begin);
+    const float xmax = ldg_f(curve.x + end);
     if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
-        return ldg_f(y + domainBegin);
+        return logE;
     }
-
-    if (xq <= xmin) {
-        return ldg_f(y + domainBegin);
-    }
-    if (xq >= xmax) {
-        return ldg_f(y + domainEnd);
-    }
-
-    int i1 = domainBegin + 1;
-    while (i1 <= domainEnd && ldg_f(x + i1) < xq) {
-        ++i1;
-    }
-    if (i1 > domainEnd) {
-        return ldg_f(y + domainEnd);
-    }
-
-    const int i0 = i1 - 1;
-    const float x0 = ldg_f(x + i0);
-    const float x1 = ldg_f(x + i1);
-    const float y0 = ldg_f(y + i0);
-    const float y1 = ldg_f(y + i1);
-
-    const float denom = x1 - x0;
-    if (!(denom > 0.0f) || !device_isfinite(denom)) {
-        return y0;
-    }
-
-    const float t = (xq - x0) / denom;
-    return y0 + t * (y1 - y0);
+    return (logE > 0.0f) ? xmax : xmin;
 }
 
 static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float logE, const float* JUICER_RESTRICT x, int n) {
@@ -118,12 +189,9 @@ static __device__ __forceinline__ float sanitize_inf_logE_for_curve_device(float
     while (end > begin && !device_isfinite(ldg_f(x + end))) {
         --end;
     }
-    const float xmin = ldg_f(x + begin);
-    const float xmax = ldg_f(x + end);
-    if (!device_isfinite(xmin) || !device_isfinite(xmax) || !(xmax >= xmin)) {
-        return logE;
-    }
-    return (logE > 0.0f) ? xmax : xmin;
+
+    const JuicerCuda::DeviceCurveView curve = { x, /*y*/nullptr, n, begin, end };
+    return sanitize_inf_logE_for_curve_device(logE, curve);
 }
 
 struct Mat3 {

@@ -24,6 +24,9 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT x = nullptr;
         const float* JUICER_RESTRICT y = nullptr;
         int n = 0;
+        // Inclusive finite-domain indices into x[]/y[] (precomputed on CPU to avoid per-call scans).
+        int domainBegin = 0;
+        int domainEnd = 0;
     };
 
     // Mirrors the subset of Spectral::FilmRawConfig needed by CUDA kernels.

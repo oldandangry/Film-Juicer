@@ -159,6 +159,8 @@ namespace JuicerCuda {
         }
 #endif
         c.n = 0;
+        c.domainBegin = 0;
+        c.domainEnd = 0;
     }
 
     static void free_density_layers(Resources& resources) noexcept {
@@ -618,6 +620,17 @@ namespace JuicerCuda {
             return false;
         }
 
+        int domainBegin = 0;
+        while (domainBegin < n && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainBegin)])) {
+            ++domainBegin;
+        }
+        int domainEnd = n - 1;
+        while (domainEnd > domainBegin && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainEnd)])) {
+            --domainEnd;
+        }
+        dst.domainBegin = domainBegin;
+        dst.domainEnd = domainEnd;
+
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dst.x), bytes);
         if (err != cudaSuccess) {
@@ -684,6 +697,8 @@ namespace JuicerCuda {
             return false;
         }
         dst.n = n;
+        dst.domainBegin = 0;
+        dst.domainEnd = n - 1;
         return true;
 #endif
     }
@@ -2759,12 +2774,12 @@ namespace JuicerCuda {
 
             run.printExpose.printIllumFiltered = resources.printIllumFiltered;
             run.printExpose.printIllumK = resources.printIllumK;
-            run.printExpose.printSensC = { resources.printSensC.x, resources.printSensC.y, resources.printSensC.n };
-            run.printExpose.printSensM = { resources.printSensM.x, resources.printSensM.y, resources.printSensM.n };
-            run.printExpose.printSensY = { resources.printSensY.x, resources.printSensY.y, resources.printSensY.n };
-            run.printDevelop.printDcC = { resources.printDcC.x, resources.printDcC.y, resources.printDcC.n };
-            run.printDevelop.printDcM = { resources.printDcM.x, resources.printDcM.y, resources.printDcM.n };
-            run.printDevelop.printDcY = { resources.printDcY.x, resources.printDcY.y, resources.printDcY.n };
+            run.printExpose.printSensC = { resources.printSensC.x, resources.printSensC.y, resources.printSensC.n, resources.printSensC.domainBegin, resources.printSensC.domainEnd };
+            run.printExpose.printSensM = { resources.printSensM.x, resources.printSensM.y, resources.printSensM.n, resources.printSensM.domainBegin, resources.printSensM.domainEnd };
+            run.printExpose.printSensY = { resources.printSensY.x, resources.printSensY.y, resources.printSensY.n, resources.printSensY.domainBegin, resources.printSensY.domainEnd };
+            run.printDevelop.printDcC = { resources.printDcC.x, resources.printDcC.y, resources.printDcC.n, resources.printDcC.domainBegin, resources.printDcC.domainEnd };
+            run.printDevelop.printDcM = { resources.printDcM.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd };
+            run.printDevelop.printDcY = { resources.printDcY.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd };
             run.printDevelop.printGammaC = resources.printGammaC;
             run.printDevelop.printGammaM = resources.printGammaM;
             run.printDevelop.printGammaY = resources.printGammaY;

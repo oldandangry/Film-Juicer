@@ -109,7 +109,7 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
     const float logM = log10f(rawM + kLogEps);
     const float logY = log10f(rawY + kLogEps);
 
-    D_cmy[0] = sample_density_at_logE_device(develop.printDcC.x, develop.printDcC.y, develop.printDcC.n, logC, develop.printGammaC);
-    D_cmy[1] = sample_density_at_logE_device(develop.printDcM.x, develop.printDcM.y, develop.printDcM.n, logM, develop.printGammaM);
-    D_cmy[2] = sample_density_at_logE_device(develop.printDcY.x, develop.printDcY.y, develop.printDcY.n, logY, develop.printGammaY);
+    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logC, develop.printGammaC);
+    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logM, develop.printGammaM);
+    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logY, develop.printGammaY);
 }

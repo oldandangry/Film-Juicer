@@ -24,6 +24,9 @@ namespace JuicerCuda {
         float* x = nullptr;
         float* y = nullptr;
         int n = 0;
+        // Inclusive finite-domain indices into x[]/y[] (precomputed on CPU).
+        int domainBegin = 0;
+        int domainEnd = 0;
     };
 
     struct Resources {
