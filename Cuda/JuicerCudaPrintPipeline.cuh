@@ -5,7 +5,9 @@
 #include "Cuda/JuicerCudaKernelsUtil.cuh"
 
 static __device__ __forceinline__ float density_to_light_sample_agx_device(float density, float illuminant) {
-    const double transmitted = pow(10.0, -static_cast<double>(density)) * static_cast<double>(illuminant);
+    // pow(10, -d) = exp2(-d * log2(10))
+    constexpr double kLog2_10 = 3.32192809488736234787;
+    const double transmitted = exp2(-static_cast<double>(density) * kLog2_10) * static_cast<double>(illuminant);
     const float out = static_cast<float>(transmitted);
     return isnan(out) ? 0.0f : out;
 }
@@ -46,6 +48,17 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
     double accumM = 0.0;
     double accumY = 0.0;
     for (int i = 0; i < K; ++i) {
+        const float sC = ldg_f(expose.printSensC.y + i);
+        const float sM = ldg_f(expose.printSensM.y + i);
+        const float sY = ldg_f(expose.printSensY.y + i);
+
+        const bool activeC = !isnan(sC);
+        const bool activeM = !isnan(sM);
+        const bool activeY = !isnan(sY);
+        if (!activeC && !activeM && !activeY) {
+            continue;
+        }
+
         const float baseD = haveBaseline ? ldg_f(expose.negTables.baseMin + i) : 0.0f;
         const float densitySpectral =
             D_cmy[0] * ldg_f(expose.negTables.epsC + i) +
@@ -54,17 +67,11 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
             baseD;
 
         const float e = density_to_light_sample_agx_device(densitySpectral, ldg_f(expose.printIllumFiltered + i));
-        if (isnan(e)) {
-            continue;
-        }
         const double e64 = static_cast<double>(e);
 
-        const float sC = ldg_f(expose.printSensC.y + i);
-        const float sM = ldg_f(expose.printSensM.y + i);
-        const float sY = ldg_f(expose.printSensY.y + i);
-        if (!isnan(sC)) accumC += e64 * static_cast<double>(sC);
-        if (!isnan(sM)) accumM += e64 * static_cast<double>(sM);
-        if (!isnan(sY)) accumY += e64 * static_cast<double>(sY);
+        if (activeC) accumC += e64 * static_cast<double>(sC);
+        if (activeM) accumM += e64 * static_cast<double>(sM);
+        if (activeY) accumY += e64 * static_cast<double>(sY);
     }
 
     float rawC = static_cast<float>(accumC);
