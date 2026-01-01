@@ -90,20 +90,54 @@ __global__ void optics_blur_horizontal_kernel(
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= width || y >= height) {
-        return;
-    }
     if (!in || !out || !k || radius <= 0) {
         return;
     }
 
+    const bool inBounds = (x < width && y < height);
+    const int kLen = 2 * radius + 1;
+    const int tileW = blockDim.x + 2 * radius;
+    const int tileH = blockDim.y;
+
+    extern __shared__ float shared[];
+    float* sWeights = shared;
+    float* sTile = shared + kLen;
+
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    const int tcount = blockDim.x * blockDim.y;
+
+    for (int i = tid; i < kLen; i += tcount) {
+        sWeights[i] = k[i];
+    }
+
+    const int blockX = blockIdx.x * blockDim.x;
+    const int blockY = blockIdx.y * blockDim.y;
+    const int yLocal = threadIdx.y;
+    const int yLoad = blockY + yLocal;
+    if (yLoad < height) {
+        const size_t rowBase = static_cast<size_t>(yLoad) * static_cast<size_t>(width);
+        for (int i = threadIdx.x; i < tileW; i += blockDim.x) {
+            const int xLoad = blockX + i - radius;
+            const int xx = reflect_index_repeat_device(xLoad, width);
+            sTile[yLocal * tileW + i] = in[rowBase + static_cast<size_t>(xx)];
+        }
+    }
+
+    __syncthreads();
+
+    if (!inBounds) {
+        return;
+    }
+
     double acc = 0.0;
+    const int tileX = threadIdx.x + radius;
+    const int tileRow = threadIdx.y * tileW;
     for (int j = -radius; j <= radius; ++j) {
-        const int xx = reflect_index_repeat_device(x + j, width);
-        const float v = in[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(xx)];
-        const float w = k[j + radius];
+        const float v = sTile[tileRow + tileX + j];
+        const float w = sWeights[j + radius];
         acc += static_cast<double>(v) * static_cast<double>(w);
     }
+
     out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
         (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
 }
@@ -118,20 +152,52 @@ __global__ void optics_blur_vertical_kernel(
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= width || y >= height) {
-        return;
-    }
     if (!in || !out || !k || radius <= 0) {
         return;
     }
 
+    const bool inBounds = (x < width && y < height);
+    const int kLen = 2 * radius + 1;
+    const int tileW = blockDim.x;
+    const int tileH = blockDim.y + 2 * radius;
+
+    extern __shared__ float shared[];
+    float* sWeights = shared;
+    float* sTile = shared + kLen;
+
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    const int tcount = blockDim.x * blockDim.y;
+
+    for (int i = tid; i < kLen; i += tcount) {
+        sWeights[i] = k[i];
+    }
+
+    const int blockX = blockIdx.x * blockDim.x;
+    const int blockY = blockIdx.y * blockDim.y;
+    const int xLocal = threadIdx.x;
+    const int xLoad = blockX + xLocal;
+    if (xLoad < width) {
+        for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
+            const int yLoad = blockY + i - radius;
+            const int yy = reflect_index_repeat_device(yLoad, height);
+            sTile[i * tileW + xLocal] = in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
+        }
+    }
+
+    __syncthreads();
+
+    if (!inBounds) {
+        return;
+    }
+
     double acc = 0.0;
+    const int tileY = threadIdx.y + radius;
     for (int j = -radius; j <= radius; ++j) {
-        const int yy = reflect_index_repeat_device(y + j, height);
-        const float v = in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(x)];
-        const float w = k[j + radius];
+        const float v = sTile[(tileY + j) * tileW + xLocal];
+        const float w = sWeights[j + radius];
         acc += static_cast<double>(v) * static_cast<double>(w);
     }
+
     out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
         (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
 }
@@ -149,4 +215,141 @@ __global__ void optics_unsharp_combine_kernel(float* inOut, const float* JUICER_
     const double a = static_cast<double>(amount);
     const double v = v0 + a * (v0 - vb);
     inOut[idx] = (isfinite(v) && !isnan(v)) ? static_cast<float>(v) : 0.0f;
+}
+
+__global__ void optics_unsharp_vertical_combine_kernel(
+    float* inOut,
+    const float* JUICER_RESTRICT in,
+    int width,
+    int height,
+    const float* JUICER_RESTRICT k,
+    int radius,
+    float amount)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (!inOut || !in || !k || radius <= 0) {
+        return;
+    }
+
+    const bool inBounds = (x < width && y < height);
+    const int kLen = 2 * radius + 1;
+    const int tileW = blockDim.x;
+    const int tileH = blockDim.y + 2 * radius;
+
+    extern __shared__ float shared[];
+    float* sWeights = shared;
+    float* sTile = shared + kLen;
+
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    const int tcount = blockDim.x * blockDim.y;
+
+    for (int i = tid; i < kLen; i += tcount) {
+        sWeights[i] = k[i];
+    }
+
+    const int blockX = blockIdx.x * blockDim.x;
+    const int blockY = blockIdx.y * blockDim.y;
+    const int xLocal = threadIdx.x;
+    const int xLoad = blockX + xLocal;
+    if (xLoad < width) {
+        for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
+            const int yLoad = blockY + i - radius;
+            const int yy = reflect_index_repeat_device(yLoad, height);
+            sTile[i * tileW + xLocal] = in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
+        }
+    }
+
+    __syncthreads();
+
+    if (!inBounds) {
+        return;
+    }
+
+    double acc = 0.0;
+    const int tileY = threadIdx.y + radius;
+    for (int j = -radius; j <= radius; ++j) {
+        const float v = sTile[(tileY + j) * tileW + xLocal];
+        const float w = sWeights[j + radius];
+        acc += static_cast<double>(v) * static_cast<double>(w);
+    }
+    const float blurred = (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
+
+    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+    const double v0 = static_cast<double>(inOut[idx]);
+    const double vb = static_cast<double>(blurred);
+    const double a = static_cast<double>(amount);
+    const double outV = v0 + a * (v0 - vb);
+    inOut[idx] = (isfinite(outV) && !isnan(outV)) ? static_cast<float>(outV) : 0.0f;
+}
+
+__global__ void optics_halation_vertical_apply_kernel(
+    float* inOut,
+    const float* JUICER_RESTRICT in,
+    int width,
+    int height,
+    const float* JUICER_RESTRICT k,
+    int radius,
+    float strength)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (!inOut || !in || !k || radius <= 0) {
+        return;
+    }
+
+    const float s = strength;
+    if (!(s > 0.0f)) {
+        return;
+    }
+
+    const bool inBounds = (x < width && y < height);
+    const int kLen = 2 * radius + 1;
+    const int tileW = blockDim.x;
+    const int tileH = blockDim.y + 2 * radius;
+
+    extern __shared__ float shared[];
+    float* sWeights = shared;
+    float* sTile = shared + kLen;
+
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    const int tcount = blockDim.x * blockDim.y;
+
+    for (int i = tid; i < kLen; i += tcount) {
+        sWeights[i] = k[i];
+    }
+
+    const int blockX = blockIdx.x * blockDim.x;
+    const int blockY = blockIdx.y * blockDim.y;
+    const int xLocal = threadIdx.x;
+    const int xLoad = blockX + xLocal;
+    if (xLoad < width) {
+        for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
+            const int yLoad = blockY + i - radius;
+            const int yy = reflect_index_repeat_device(yLoad, height);
+            sTile[i * tileW + xLocal] = in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
+        }
+    }
+
+    __syncthreads();
+
+    if (!inBounds) {
+        return;
+    }
+
+    double acc = 0.0;
+    const int tileY = threadIdx.y + radius;
+    for (int j = -radius; j <= radius; ++j) {
+        const float v = sTile[(tileY + j) * tileW + xLocal];
+        const float w = sWeights[j + radius];
+        acc += static_cast<double>(v) * static_cast<double>(w);
+    }
+    const float blurred = (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
+
+    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+    const double a = static_cast<double>(inOut[idx]);
+    const double b = static_cast<double>(blurred);
+    const double sd = static_cast<double>(s);
+    const double outV = (a + sd * b) / (1.0 + sd);
+    inOut[idx] = (isfinite(outV) && !isnan(outV)) ? static_cast<float>(outV) : 0.0f;
 }

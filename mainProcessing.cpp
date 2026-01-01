@@ -1936,7 +1936,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainSublayers;
+                const bool needBlurredScratch = wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 const bool needGrainScratch = wantGrainMix;
                 if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGateMask, _pCudaStream, opticsError)) {
@@ -2673,7 +2673,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = wantUnsharp || wantHalation || wantGlareBlur || wantGrainBlur || wantGrainSublayers;
+                const bool needBlurredScratch = wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 const bool needGrainScratch = wantGrainMix;
                 if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGateMask, _pCudaStream, opticsError)) {

@@ -203,12 +203,18 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
         if (!plane || !tmpBuf || !k || r <= 0) {
             return cudaSuccess;
         }
-        optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, tmpBuf, params.width, params.height, k, r);
+        const int kLen = 2 * r + 1;
+        const size_t shmemH = (static_cast<size_t>(kLen) +
+            static_cast<size_t>(threads2D.y) * static_cast<size_t>(threads2D.x + 2 * r)) * sizeof(float);
+        const size_t shmemV = (static_cast<size_t>(kLen) +
+            static_cast<size_t>(threads2D.x) * static_cast<size_t>(threads2D.y + 2 * r)) * sizeof(float);
+
+        optics_blur_horizontal_kernel<<<blocks2D, threads2D, shmemH, stream>>>(plane, tmpBuf, params.width, params.height, k, r);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
         }
-        optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(tmpBuf, plane, params.width, params.height, k, r);
+        optics_blur_vertical_kernel<<<blocks2D, threads2D, shmemV, stream>>>(tmpBuf, plane, params.width, params.height, k, r);
         return cudaGetLastError();
     };
 

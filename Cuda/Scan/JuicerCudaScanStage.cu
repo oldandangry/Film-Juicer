@@ -44,6 +44,22 @@ __global__ void optics_unsharp_combine_kernel(
     const float* JUICER_RESTRICT blurred,
     int n,
     float amount);
+__global__ void optics_unsharp_vertical_combine_kernel(
+    float* inOut,
+    const float* JUICER_RESTRICT in,
+    int width,
+    int height,
+    const float* JUICER_RESTRICT k,
+    int radius,
+    float amount);
+__global__ void optics_halation_vertical_apply_kernel(
+    float* inOut,
+    const float* JUICER_RESTRICT in,
+    int width,
+    int height,
+    const float* JUICER_RESTRICT k,
+    int radius,
+    float strength);
 
 // Film/print stage kernels are defined in their respective TUs.
 __global__ void expose_film_raw_kernel(
@@ -948,12 +964,18 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         if (!plane || !tmpBuf || !k || radius <= 0) {
             return cudaSuccess;
         }
-        optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, tmpBuf, params.width, params.height, k, radius);
+        const int kLen = 2 * radius + 1;
+        const size_t shmemH = (static_cast<size_t>(kLen) +
+            static_cast<size_t>(threads2D.y) * static_cast<size_t>(threads2D.x + 2 * radius)) * sizeof(float);
+        const size_t shmemV = (static_cast<size_t>(kLen) +
+            static_cast<size_t>(threads2D.x) * static_cast<size_t>(threads2D.y + 2 * radius)) * sizeof(float);
+
+        optics_blur_horizontal_kernel<<<blocks2D, threads2D, shmemH, stream>>>(plane, tmpBuf, params.width, params.height, k, radius);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
         }
-        optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(tmpBuf, plane, params.width, params.height, k, radius);
+        optics_blur_vertical_kernel<<<blocks2D, threads2D, shmemV, stream>>>(tmpBuf, plane, params.width, params.height, k, radius);
         return cudaGetLastError();
     };
 
@@ -969,28 +991,22 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         (halation.strength[0] > 0.0f || halation.strength[1] > 0.0f || halation.strength[2] > 0.0f ||
          halation.scatteringStrength[0] > 0.0f || halation.scatteringStrength[1] > 0.0f || halation.scatteringStrength[2] > 0.0f);
     if (doHalation) {
-        if (!dScratchBlurred) {
-            return cudaErrorInvalidValue;
-        }
-        const int total = params.width * params.height;
-        const int threads1D = 256;
-        const int blocks1D = (total + threads1D - 1) / threads1D;
-
         auto apply_halation_pass = [&](float* plane, const float* k, int radius, float strength) -> cudaError_t {
             if (!plane || !k || radius <= 0 || !(strength > 0.0f)) {
                 return cudaSuccess;
             }
-            optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, dTmp, params.width, params.height, k, radius);
+            const int kLen = 2 * radius + 1;
+            const size_t shmemH = (static_cast<size_t>(kLen) +
+                static_cast<size_t>(threads2D.y) * static_cast<size_t>(threads2D.x + 2 * radius)) * sizeof(float);
+            const size_t shmemV = (static_cast<size_t>(kLen) +
+                static_cast<size_t>(threads2D.x) * static_cast<size_t>(threads2D.y + 2 * radius)) * sizeof(float);
+
+            optics_blur_horizontal_kernel<<<blocks2D, threads2D, shmemH, stream>>>(plane, dTmp, params.width, params.height, k, radius);
             cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
             }
-            optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(dTmp, dScratchBlurred, params.width, params.height, k, radius);
-            e = cudaGetLastError();
-            if (e != cudaSuccess) {
-                return e;
-            }
-            halation_apply_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dScratchBlurred, total, strength);
+            optics_halation_vertical_apply_kernel<<<blocks2D, threads2D, shmemV, stream>>>(plane, dTmp, params.width, params.height, k, radius, strength);
             return cudaGetLastError();
         };
 
@@ -1378,26 +1394,19 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         (unsharpRadius > 0) && dUnsharpKernel &&
         std::isfinite(static_cast<double>(unsharpAmount)) && (unsharpAmount != 0.0f);
     if (doUnsharp) {
-        if (!dScratchBlurred) {
-            return cudaErrorInvalidValue;
-        }
-
-        const int total = params.width * params.height;
-        const int threads1D = 256;
-        const int blocks1D = (total + threads1D - 1) / threads1D;
-
         auto unsharp_plane_in_place = [&](float* plane) -> cudaError_t {
-            optics_blur_horizontal_kernel<<<blocks2D, threads2D, 0, stream>>>(plane, dTmp, params.width, params.height, dUnsharpKernel, unsharpRadius);
+            const int kLen = 2 * unsharpRadius + 1;
+            const size_t shmemH = (static_cast<size_t>(kLen) +
+                static_cast<size_t>(threads2D.y) * static_cast<size_t>(threads2D.x + 2 * unsharpRadius)) * sizeof(float);
+            const size_t shmemV = (static_cast<size_t>(kLen) +
+                static_cast<size_t>(threads2D.x) * static_cast<size_t>(threads2D.y + 2 * unsharpRadius)) * sizeof(float);
+
+            optics_blur_horizontal_kernel<<<blocks2D, threads2D, shmemH, stream>>>(plane, dTmp, params.width, params.height, dUnsharpKernel, unsharpRadius);
             cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
             }
-            optics_blur_vertical_kernel<<<blocks2D, threads2D, 0, stream>>>(dTmp, dScratchBlurred, params.width, params.height, dUnsharpKernel, unsharpRadius);
-            e = cudaGetLastError();
-            if (e != cudaSuccess) {
-                return e;
-            }
-            optics_unsharp_combine_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, dScratchBlurred, total, unsharpAmount);
+            optics_unsharp_vertical_combine_kernel<<<blocks2D, threads2D, shmemV, stream>>>(plane, dTmp, params.width, params.height, dUnsharpKernel, unsharpRadius, unsharpAmount);
             return cudaGetLastError();
         };
 
