@@ -19,10 +19,70 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp">
+    <ClCompile Include="src\Cuda\JuicerCudaPrecompute.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Cuda\JuicerCudaResources.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
+    <ClCompile Include="src\SpectralMathAVX.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="SpectralMathAVX.cpp">
+    <ClCompile Include="src\SpectralContext.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\SpatialDIR.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ScanStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ScannerOptics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ProfileJSONLoader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Print.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PipelineRunner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\OutputEncoding.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\NeutralFilters.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mainProcessing.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\JuicerState.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\JuicerEffect.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GeneratedColorSpaces.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ExposePrintStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ExposeFilmStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DevelopPrintStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DevelopFilmStage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AkimaInterpolator.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp">
@@ -49,235 +109,177 @@
     <ClCompile Include="..\OFXS\Support\Library\ofxsPropertyValidation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="mainProcessing.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="NeutralFilters.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ProfileJSONLoader.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="AkimaInterpolator.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DevelopFilmStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DevelopPrintStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ExposeFilmStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ExposePrintStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Cuda\\JuicerCudaPrecompute.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
-    <ClCompile Include="Cuda\\JuicerCudaResources.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
-    <ClCompile Include="OutputEncoding.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JuicerState.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="JuicerEffect.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Print.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="PipelineRunner.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ScanStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ScannerOptics.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="SpatialDIR.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="GeneratedColorSpaces.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="SpectralContext.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <CudaCompile Include="Cuda\\JuicerCudaSelfCheck.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\JuicerCudaValidation.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\JuicerCudaAutoExposure.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\Film\\JuicerCudaExposeFilm.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\Film\\JuicerCudaDevelopFilm.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\Print\\JuicerCudaExposePrint.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\Print\\JuicerCudaDevelopPrint.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScanStage.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScannerOptics.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="Cuda\\Dir\\JuicerCudaSpatialDIR.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Illuminants.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="IlluminantKeys.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="NpyLoader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Couplers.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Scanner.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Print.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="SpatialDIR.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="WorkingState.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="mainProcessing.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="NeutralFilters.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ProfileJSONLoader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="AkimaInterpolator.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="OutputEncoding.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JuicerState.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="JuicerEffect.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="PipelineRunner.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="PipelineTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ParamNames.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Hash.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="LogExposureOffsets.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="RebuildWorkingStateInternals.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="SpectralContext.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="SpectralTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ColorTransforms.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="SpectralProcessing.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="FilmProcessing.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="SpectralData.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ScannerOptics.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="GeneratedColorSpaces.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="GaussianSciPy.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="AgxNanSemantics.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="DevelopFilmStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="DevelopPrintStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ExposeFilmStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ExposePrintStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ScanStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Cuda\\JuicerCudaSelfCheck.h">
+    <ClInclude Include="src\Cuda\JuicerCudaAutoExposure.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\JuicerCudaKernelsUtil.cuh">
+    <ClInclude Include="src\Cuda\JuicerCudaKernelsUtil.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\JuicerCudaPrintPipeline.cuh">
+    <ClInclude Include="src\Cuda\JuicerCudaPayloads.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmExposure.cuh">
+    <ClInclude Include="src\Cuda\JuicerCudaPrintPipeline.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmDevelop.cuh">
+    <ClInclude Include="src\Cuda\JuicerCudaResources.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\Scan\\JuicerCudaScanStage.cuh">
+    <ClInclude Include="src\Cuda\JuicerCudaSelfCheck.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\Scan\\JuicerCudaScanOutput.cuh">
+    <ClInclude Include="src\AgxNanSemantics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AkimaInterpolator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ColorTransforms.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Couplers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DevelopFilmStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DevelopPrintStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ExposeFilmStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ExposePrintStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\FilmProcessing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GaussianSciPy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GeneratedColorSpaces.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Hash.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\IlluminantKeys.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Illuminants.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\JuicerEffect.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\JuicerState.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Logging.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mainProcessing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\NeutralFilters.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\NpyLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\OutputEncoding.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ParamNames.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PipelineRunner.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PipelineTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Print.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProfileJSONLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Scanner.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ScannerOptics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ScanStage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SpatialDIR.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SpectralContext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SpectralData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SpectralProcessing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SpectralTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SpectralUpsampling.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WorkingState.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Cuda\Film\JuicerCudaFilmDevelop.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\JuicerCudaResources.h">
+    <ClInclude Include="src\Cuda\Film\JuicerCudaFilmExposure.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\JuicerCudaAutoExposure.h">
+    <ClInclude Include="src\Cuda\Scan\JuicerCudaScanOutput.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="Cuda\\JuicerCudaPayloads.h">
+    <ClInclude Include="src\Cuda\Scan\JuicerCudaScanStage.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\JuicerCudaSelfCheck.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\JuicerCudaValidation.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Dir\JuicerCudaSpatialDIR.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Film\JuicerCudaDevelopFilm.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Film\JuicerCudaExposeFilm.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Print\JuicerCudaDevelopPrint.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Print\JuicerCudaExposePrint.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScannerOptics.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanStage.cu">
+      <Filter>Cuda</Filter>
+    </CudaCompile>
   </ItemGroup>
 </Project>
