@@ -463,6 +463,14 @@ namespace JuicerCuda {
             cudaFree(resources.autoExposureScratch.histogram);
             resources.autoExposureScratch.histogram = nullptr;
         }
+        if (resources.autoExposureScratch.weightsX) {
+            cudaFree(resources.autoExposureScratch.weightsX);
+            resources.autoExposureScratch.weightsX = nullptr;
+        }
+        if (resources.autoExposureScratch.weightsY) {
+            cudaFree(resources.autoExposureScratch.weightsY);
+            resources.autoExposureScratch.weightsY = nullptr;
+        }
         if (resources.autoExposureExposureScale) {
             cudaFree(resources.autoExposureExposureScale);
             resources.autoExposureExposureScale = nullptr;
@@ -477,6 +485,10 @@ namespace JuicerCuda {
         }
 #endif
         resources.autoExposureScratch.partialCapacity = 0;
+        resources.autoExposureScratch.weightsXCapacity = 0;
+        resources.autoExposureScratch.weightsYCapacity = 0;
+        resources.autoExposureScratch.weightsWidth = 0;
+        resources.autoExposureScratch.weightsHeight = 0;
         resources.autoExposureKeyHash = 0;
         resources.autoExposureSliderEV = std::numeric_limits<double>::quiet_NaN();
     }
@@ -1596,6 +1608,49 @@ namespace JuicerCuda {
                 free_auto_exposure(resources);
                 return false;
             }
+        }
+
+        const bool needWeightsX = resources.autoExposureScratch.weightsXCapacity < meterWidth || !resources.autoExposureScratch.weightsX;
+        const bool needWeightsY = resources.autoExposureScratch.weightsYCapacity < meterHeight || !resources.autoExposureScratch.weightsY;
+        if (needWeightsX || needWeightsY) {
+            const bool needSync = (needWeightsX && resources.autoExposureScratch.weightsX) ||
+                (needWeightsY && resources.autoExposureScratch.weightsY);
+            if (needSync) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "auto-exposure weights", outError)) {
+                    return false;
+                }
+            }
+            if (needWeightsX) {
+                if (resources.autoExposureScratch.weightsX) {
+                    cudaFree(resources.autoExposureScratch.weightsX);
+                    resources.autoExposureScratch.weightsX = nullptr;
+                }
+                const size_t bytes = static_cast<size_t>(meterWidth) * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureScratch.weightsX), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(auto-exposure weightsX) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    free_auto_exposure(resources);
+                    return false;
+                }
+                resources.autoExposureScratch.weightsXCapacity = meterWidth;
+            }
+            if (needWeightsY) {
+                if (resources.autoExposureScratch.weightsY) {
+                    cudaFree(resources.autoExposureScratch.weightsY);
+                    resources.autoExposureScratch.weightsY = nullptr;
+                }
+                const size_t bytes = static_cast<size_t>(meterHeight) * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureScratch.weightsY), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(auto-exposure weightsY) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    free_auto_exposure(resources);
+                    return false;
+                }
+                resources.autoExposureScratch.weightsYCapacity = meterHeight;
+            }
+
+            resources.autoExposureScratch.weightsWidth = 0;
+            resources.autoExposureScratch.weightsHeight = 0;
         }
 
         if (resources.autoExposureScratch.partialCapacity < neededPartials) {

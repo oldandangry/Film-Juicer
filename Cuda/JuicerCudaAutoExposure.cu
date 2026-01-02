@@ -294,6 +294,56 @@ namespace {
         }
     }
 
+    __global__ void build_center_weight_x_kernel(
+        int meterWidth,
+        int meterHeight,
+        float* outWX)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        if (x >= meterWidth) {
+            return;
+        }
+        if (!outWX || meterWidth <= 0 || meterHeight <= 0) {
+            return;
+        }
+
+        // Matches build_center_weight_mask() weighting.
+        constexpr float sigma = 0.2f;
+        const int maxDimInt = (meterWidth > meterHeight) ? meterWidth : meterHeight;
+        const float maxDim = static_cast<float>(maxDimInt);
+        const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
+        const float nx = (static_cast<float>(x) / static_cast<float>(meterWidth)) - 0.5f;
+        const float normX = nx * static_cast<float>(meterWidth) * invMax;
+        const float r2 = normX * normX;
+        const float w = expf(-r2 / (2.0f * sigma * sigma));
+        outWX[x] = w;
+    }
+
+    __global__ void build_center_weight_y_kernel(
+        int meterWidth,
+        int meterHeight,
+        float* outWY)
+    {
+        const int y = blockIdx.x * blockDim.x + threadIdx.x;
+        if (y >= meterHeight) {
+            return;
+        }
+        if (!outWY || meterWidth <= 0 || meterHeight <= 0) {
+            return;
+        }
+
+        // Matches build_center_weight_mask() weighting.
+        constexpr float sigma = 0.2f;
+        const int maxDimInt = (meterWidth > meterHeight) ? meterWidth : meterHeight;
+        const float maxDim = static_cast<float>(maxDimInt);
+        const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
+        const float ny = (static_cast<float>(y) / static_cast<float>(meterHeight)) - 0.5f;
+        const float normY = ny * static_cast<float>(meterHeight) * invMax;
+        const float r2 = normY * normY;
+        const float w = expf(-r2 / (2.0f * sigma * sigma));
+        outWY[y] = w;
+    }
+
     __global__ void meter_center_weighted_Y_partials_kernel(
         const unsigned char* srcBase,
         std::size_t srcRowBytes,
@@ -309,6 +359,8 @@ namespace {
         int inputColorSpaceIndex,
         int applyCctfDecoding,
         Mat3 rgbToXYZ,
+        const float* weightsX,
+        const float* weightsY,
         JuicerCudaAutoExposurePartial* outPartials)
     {
         const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -331,17 +383,13 @@ namespace {
 
                 const float Y = mulY(rgbToXYZ, lin);
                 if (isfinite(Y)) {
-                    // Matches build_center_weight_mask() weighting.
-                    constexpr float sigma = 0.2f;
-                    const float nx = (static_cast<float>(x) / static_cast<float>(width)) - 0.5f;
-                    const float ny = (static_cast<float>(y) / static_cast<float>(height)) - 0.5f;
-                    const int maxDimInt = (width > height) ? width : height;
-                    const float maxDim = static_cast<float>(maxDimInt);
-                    const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
-                    const float normX = nx * static_cast<float>(width) * invMax;
-                    const float normY = ny * static_cast<float>(height) * invMax;
-                    const float r2 = normX * normX + normY * normY;
-                    const float w = expf(-r2 / (2.0f * sigma * sigma));
+                    float w = 0.0f;
+                    if (weightsX && weightsY) {
+                        w = weightsX[x] * weightsY[y];
+                    }
+                    if (!isfinite(w) || !(w > 0.0f)) {
+                        w = 0.0f;
+                    }
 
                     localSumY = static_cast<double>(Y) * static_cast<double>(w);
                     localSumW = static_cast<double>(w);
@@ -479,9 +527,17 @@ namespace {
         if (maxYBits) {
             maxY = __uint_as_float(*maxYBits);
         }
-        if (!(maxY > 0.0f) || !isfinite(maxY)) {
+        if (!(maxY > 0.0f) || !isfinite(maxY) || !histogram) {
             return;
         }
+
+        __shared__ unsigned int sHist[kMedianHistogramBins];
+        const int t = threadIdx.y * blockDim.x + threadIdx.x;
+        const int threads = blockDim.x * blockDim.y;
+        for (int i = t; i < kMedianHistogramBins; i += threads) {
+            sHist[i] = 0U;
+        }
+        __syncthreads();
 
         if (x < width && y < height) {
             const int px = meterX1 + x;
@@ -502,8 +558,16 @@ namespace {
                     }
                     const float norm = fminf(1.0f, Y / maxY);
                     const int bin = static_cast<int>(norm * static_cast<float>(kMedianHistogramBins - 1));
-                    atomicAdd(&histogram[bin], 1U);
+                    atomicAdd(&sHist[bin], 1U);
                 }
+            }
+        }
+        __syncthreads();
+
+        for (int i = t; i < kMedianHistogramBins; i += threads) {
+            const unsigned int count = sHist[i];
+            if (count != 0U) {
+                atomicAdd(&histogram[i], count);
             }
         }
     }
@@ -1121,6 +1185,10 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
         if (outErrorMsg) *outErrorMsg = set_error(sError, "center-weighted metering partial buffers missing");
         return 12;
     }
+    if (!scratch.weightsX || !scratch.weightsY) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "center-weighted metering weights missing");
+        return 17;
+    }
 
     dim3 block(16, 16);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
@@ -1145,6 +1213,8 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
         inputColorSpaceIndex,
         applyCctfDecoding,
         m,
+        scratch.weightsX,
+        scratch.weightsY,
         scratch.partialsA);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -1207,6 +1277,49 @@ extern "C" int juicer_cuda_auto_exposure_update_scale_to_device(
     if (err != cudaSuccess) {
         if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "auto-exposure scale update failed: ", err);
         return 2;
+    }
+
+    return 0;
+}
+
+extern "C" int juicer_cuda_auto_exposure_build_center_weight_tables(
+    int meterWidth,
+    int meterHeight,
+    float* weightsX,
+    float* weightsY,
+    void* cudaStreamOpaque,
+    const char** outErrorMsg)
+{
+    thread_local std::string sError;
+    if (outErrorMsg) {
+        *outErrorMsg = nullptr;
+    }
+
+    if (meterWidth <= 0 || meterHeight <= 0) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "invalid meter dimensions");
+        return 1;
+    }
+    if (!weightsX || !weightsY) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "invalid weights buffers");
+        return 2;
+    }
+
+    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    const int threads = 256;
+    const int blocksX = (meterWidth + threads - 1) / threads;
+    build_center_weight_x_kernel<<<blocksX, threads, 0, stream>>>(meterWidth, meterHeight, weightsX);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "build_center_weight_x kernel launch failed: ", err);
+        return 3;
+    }
+
+    const int blocksY = (meterHeight + threads - 1) / threads;
+    build_center_weight_y_kernel<<<blocksY, threads, 0, stream>>>(meterWidth, meterHeight, weightsY);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "build_center_weight_y kernel launch failed: ", err);
+        return 4;
     }
 
     return 0;

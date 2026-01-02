@@ -20,6 +20,8 @@ struct JuicerCudaAutoExposureScratch {
     int partialCapacity = 0;
     unsigned int* maxYBits = nullptr;
     unsigned int* histogram = nullptr; // 2048 bins
+    float* weightsX = nullptr; // meterWidth floats
+    float* weightsY = nullptr; // meterHeight floats
 };
 
 // Device-side outputs for metering. All pointers are CUDA device pointers.
@@ -97,5 +99,15 @@ extern "C" int juicer_cuda_auto_exposure_meter_to_device(
 extern "C" int juicer_cuda_auto_exposure_update_scale_to_device(
     double sliderEV,
     JuicerCudaAutoExposureDeviceState state,
+    void* cudaStreamOpaque,
+    const char** outErrorMsg);
+
+// Builds separable center-weighted metering weights (wX/wY) on the GPU. This function does not
+// synchronize; it only enqueues work on the given stream.
+extern "C" int juicer_cuda_auto_exposure_build_center_weight_tables(
+    int meterWidth,
+    int meterHeight,
+    float* weightsX,
+    float* weightsY,
     void* cudaStreamOpaque,
     const char** outErrorMsg);

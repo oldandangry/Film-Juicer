@@ -210,6 +210,12 @@ namespace JuicerCuda {
             int partialCapacity = 0;
             unsigned int* maxYBits = nullptr;
             unsigned int* histogram = nullptr;
+            float* weightsX = nullptr;
+            float* weightsY = nullptr;
+            int weightsXCapacity = 0;
+            int weightsYCapacity = 0;
+            int weightsWidth = 0;
+            int weightsHeight = 0;
         };
 
         DeviceAutoExposureScratch autoExposureScratch;

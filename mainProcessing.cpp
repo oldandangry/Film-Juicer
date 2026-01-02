@@ -1288,6 +1288,8 @@ void JuicerProcessor::processImagesCUDA() {
         scratch.partialCapacity = cudaResources->autoExposureScratch.partialCapacity;
         scratch.maxYBits = cudaResources->autoExposureScratch.maxYBits;
         scratch.histogram = cudaResources->autoExposureScratch.histogram;
+        scratch.weightsX = cudaResources->autoExposureScratch.weightsX;
+        scratch.weightsY = cudaResources->autoExposureScratch.weightsY;
 
         JuicerCudaAutoExposureDeviceState state{};
         state.exposureScale = cudaResources->autoExposureExposureScale;
@@ -1321,6 +1323,30 @@ void JuicerProcessor::processImagesCUDA() {
         const bool needSliderUpdate = !slider_equal(cudaResources->autoExposureSliderEV, _cameraSliderEV);
         const char* errMsg = nullptr;
         if (needMeter) {
+            if (_cameraMeteringMethod == 0) {
+                if (!scratch.weightsX || !scratch.weightsY ||
+                    cudaResources->autoExposureScratch.weightsWidth != meterWidth ||
+                    cudaResources->autoExposureScratch.weightsHeight != meterHeight) {
+                    const int rcW = juicer_cuda_auto_exposure_build_center_weight_tables(
+                        meterWidth,
+                        meterHeight,
+                        scratch.weightsX,
+                        scratch.weightsY,
+                        _pCudaStream,
+                        &errMsg);
+                    if (rcW != 0) {
+                        JTRACE("CUDA", std::string("CUDA auto-exposure weight build failed: ") + (errMsg ? errMsg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                    }
+                    cudaResources->autoExposureScratch.weightsWidth = meterWidth;
+                    cudaResources->autoExposureScratch.weightsHeight = meterHeight;
+                }
+            }
+
             const int rc = juicer_cuda_auto_exposure_meter_to_device(
                 srcBase,
                 static_cast<std::size_t>(srcRowBytes),
