@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{e84c5d5e-aaad-4c04-b01b-5f8ca86fa950}</ProjectGuid>
+    <RootNamespace>juicer</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.1.props" Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="UserOverrides.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <JuicerCudaValidatePrimitives Condition="'$(JuicerCudaValidatePrimitives)'==''">0</JuicerCudaValidatePrimitives>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <TargetExt>.ofx</TargetExt>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TargetExt>.ofx</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\Dev\OpenFX\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+    </Link>
+    <CudaCompile>
+      <AdditionalOptions>--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <AdditionalOptions>/DJUICER_SPD_DEBUG=1 /DJUICER_SPD_DEBUG_MAX_SAMPLES=4 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <ModuleDefinitionFile>
+      </ModuleDefinitionFile>
+      <OutputFile>$(OutDir)juicer.ofx</OutputFile>
+    </Link>
+    <CudaCompile>
+      <AdditionalOptions>--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_CUDA_SELF_CHECK=1;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalIncludeDirectories Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">$(CudaToolkitDir)include;$(ProjectDir);C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">$(ProjectDir);C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <CudaCompile Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">
+      <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalLibraryDirectories Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">cudart.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_TRACE_CUDA=0;JUICER_CUDA_SELF_CHECK=0;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">C:\Dev\Juicer\third_party\openrand;$(CudaToolkitDir)include;$(ProjectDir);C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">$(ProjectDir);C:\Dev\Juicer\third_party;C:\Dev\OFXS\OpenFX-1.4\include;C:\Dev\OpenFX\include;C:\Dev\OFXS\Support\include;C:\Dev\eigen-3.4.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <DisableSpecificWarnings>5040;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <AdditionalOptions>/DJUICER_SPD_DEBUG=1 /DJUICER_SPD_DEBUG_MAX_SAMPLES=4 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <CudaCompile Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">
+      <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
+      <Include Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Dev\Juicer\third_party\openrand;%(Include)</Include>
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <ModuleDefinitionFile>
+      </ModuleDefinitionFile>
+      <OutputFile>$(OutDir)juicer.ofx</OutputFile>
+      <AdditionalLibraryDirectories Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">cudart.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsImageEffect.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsInteract.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsLog.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsMultiThread.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsParams.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsProperty.cpp" />
+    <ClCompile Include="..\OFXS\Support\Library\ofxsPropertyValidation.cpp" />
+    <ClCompile Include="AkimaInterpolator.cpp" />
+    <ClCompile Include="DevelopFilmStage.cpp" />
+    <ClCompile Include="DevelopPrintStage.cpp" />
+    <ClCompile Include="ExposeFilmStage.cpp" />
+    <ClCompile Include="ExposePrintStage.cpp" />
+    <ClCompile Include="Cuda\\JuicerCudaPrecompute.cpp" />
+    <ClCompile Include="Cuda\\JuicerCudaResources.cpp" />
+    <ClCompile Include="JuicerEffect.cpp" />
+    <ClCompile Include="JuicerState.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="mainProcessing.cpp" />
+    <ClCompile Include="NeutralFilters.cpp" />
+    <ClCompile Include="OutputEncoding.cpp" />
+    <ClCompile Include="PipelineRunner.cpp" />
+    <ClCompile Include="Print.cpp" />
+    <ClCompile Include="ProfileJSONLoader.cpp" />
+    <ClCompile Include="GeneratedColorSpaces.cpp" />
+    <ClCompile Include="ScanStage.cpp" />
+    <ClCompile Include="ScannerOptics.cpp" />
+    <ClCompile Include="SpatialDIR.cpp" />
+    <ClCompile Include="SpectralContext.cpp" />
+    <ClCompile Include="SpectralMathAVX.cpp">
+      <EnableEnhancedInstructionSet Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <EnableEnhancedInstructionSet Condition="'$(Configuration)|$(Platform)'=='Release|x64'">AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="Cuda\\JuicerCudaSelfCheck.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\JuicerCudaValidation.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\JuicerCudaAutoExposure.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Film\\JuicerCudaExposeFilm.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Film\\JuicerCudaDevelopFilm.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Print\\JuicerCudaExposePrint.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Print\\JuicerCudaDevelopPrint.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScanStage.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Scan\\JuicerCudaScannerOptics.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+    <CudaCompile Include="Cuda\\Dir\\JuicerCudaSpatialDIR.cu" Condition="'$(Platform)'=='x64' and Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AgxNanSemantics.h" />
+    <ClInclude Include="AkimaInterpolator.h" />
+    <ClInclude Include="ColorTransforms.h" />
+    <ClInclude Include="Couplers.h" />
+    <ClInclude Include="FilmProcessing.h" />
+    <ClInclude Include="GaussianSciPy.h" />
+    <ClInclude Include="Illuminants.h" />
+    <ClInclude Include="IlluminantKeys.h" />
+    <ClInclude Include="Hash.h" />
+    <ClInclude Include="JuicerEffect.h" />
+    <ClInclude Include="JuicerState.h" />
+    <ClInclude Include="LogExposureOffsets.h" />
+    <ClInclude Include="mainProcessing.h" />
+    <ClInclude Include="NeutralFilters.h" />
+    <ClInclude Include="NpyLoader.h" />
+    <ClInclude Include="OutputEncoding.h" />
+    <ClInclude Include="ParamNames.h" />
+    <ClInclude Include="PipelineRunner.h" />
+    <ClInclude Include="PipelineTypes.h" />
+    <ClInclude Include="Print.h" />
+    <ClInclude Include="Cuda\\JuicerCudaKernelsUtil.cuh" />
+    <ClInclude Include="Cuda\\JuicerCudaPrintPipeline.cuh" />
+    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmExposure.cuh" />
+    <ClInclude Include="Cuda\\Film\\JuicerCudaFilmDevelop.cuh" />
+    <ClInclude Include="Cuda\\Scan\\JuicerCudaScanStage.cuh" />
+    <ClInclude Include="Cuda\\Scan\\JuicerCudaScanOutput.cuh" />
+    <ClInclude Include="Cuda\\JuicerCudaResources.h" />
+    <ClInclude Include="SpatialDIR.h" />
+    <ClInclude Include="DevelopFilmStage.h" />
+    <ClInclude Include="DevelopPrintStage.h" />
+    <ClInclude Include="ExposeFilmStage.h" />
+    <ClInclude Include="ExposePrintStage.h" />
+    <ClInclude Include="ProfileJSONLoader.h" />
+    <ClInclude Include="RebuildWorkingStateInternals.h" />
+    <ClInclude Include="ScanStage.h" />
+    <ClInclude Include="Scanner.h" />
+    <ClInclude Include="ScannerOptics.h" />
+    <ClInclude Include="SpectralContext.h" />
+    <ClInclude Include="SpectralData.h" />
+    <ClInclude Include="SpectralProcessing.h" />
+    <ClInclude Include="SpectralTypes.h" />
+    <ClInclude Include="GeneratedColorSpaces.h" />
+    <ClInclude Include="WorkingState.h" />
+    <ClInclude Include="Cuda\\JuicerCudaSelfCheck.h" />
+    <ClInclude Include="Cuda\\JuicerCudaAutoExposure.h" />
+    <ClInclude Include="Cuda\\JuicerCudaPayloads.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.1.targets" Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.targets')" />
+  </ImportGroup>
+</Project>

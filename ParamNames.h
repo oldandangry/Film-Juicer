@@ -1,0 +1,55 @@
+#pragma once
+
+namespace JuicerParams {
+    inline constexpr const char kCameraFilmFormatMm[] = "CameraFilmFormatMm";
+    inline constexpr const char kCameraMeteringMethod[] = "CameraMeteringMethod";
+    inline constexpr const char kInputColorSpace[] = "InputColorSpace";
+    inline constexpr const char kInputCctfDecoding[] = "InputCctfDecoding";
+    inline constexpr const char kHalationActive[] = "HalationActive";
+    inline constexpr const char kHalationStrengthMaster[] = "HalationStrengthMaster";
+    inline constexpr const char kHalationSizeUmMaster[] = "HalationSizeUmMaster";
+    inline constexpr const char kHalationScatteringStrengthMaster[] = "HalationScatteringStrengthMaster";
+    inline constexpr const char kHalationScatteringSizeUmMaster[] = "HalationScatteringSizeUmMaster";
+    inline constexpr const char kHalationRevertToStock[] = "HalationRevertToStock";
+    inline constexpr const char kHalationStrength[] = "HalationStrength";
+    inline constexpr const char kHalationSizeUm[] = "HalationSizeUm";
+    inline constexpr const char kHalationScatteringStrength[] = "HalationScatteringStrength";
+    inline constexpr const char kHalationScatteringSizeUm[] = "HalationScatteringSizeUm";
+    inline constexpr const char kGrainActive[] = "GrainActive";
+    inline constexpr const char kGrainSublayersActive[] = "GrainSublayersActive";
+    inline constexpr const char kGrainParticleAreaUm2[] = "GrainParticleAreaUm2";
+    inline constexpr const char kGrainParticleScaleMaster[] = "GrainParticleScaleMaster";
+    inline constexpr const char kGrainParticleScaleLayersMaster[] = "GrainParticleScaleLayersMaster";
+    inline constexpr const char kGrainDensityMinMaster[] = "GrainDensityMinMaster";
+    inline constexpr const char kGrainUniformityMaster[] = "GrainUniformityMaster";
+    inline constexpr const char kGrainParticleScale[] = "GrainParticleScale";
+    inline constexpr const char kGrainParticleScaleLayers[] = "GrainParticleScaleLayers";
+    inline constexpr const char kGrainDensityMin[] = "GrainDensityMin";
+    inline constexpr const char kGrainUniformity[] = "GrainUniformity";
+    inline constexpr const char kGrainBlur[] = "GrainBlur";
+    inline constexpr const char kGrainBlurDyeCloudsUm[] = "GrainBlurDyeCloudsUm";
+    inline constexpr const char kGrainSizeMixWeight[] = "GrainSizeMixWeight";
+    inline constexpr const char kGrainSizeMixScale[] = "GrainSizeMixScale";
+    inline constexpr const char kGrainClumpTemporalMix[] = "GrainClumpTemporalMix";
+    inline constexpr const char kGrainClumpMorphPeriodSec[] = "GrainClumpMorphPeriodSec";
+    inline constexpr const char kGrainBreathingDebug[] = "GrainBreathingDebug";
+    inline constexpr const char kGrainDebugView[] = "GrainDebugView";
+    inline constexpr const char kGrainMicroStructure[] = "GrainMicroStructure";
+    inline constexpr const char kGrainSubLayers[] = "GrainSubLayers";
+    inline constexpr const char kGateWeaveAmount[] = "GateWeaveAmount";
+    inline constexpr const char kFilmDustAmount[] = "FilmDustAmount";
+    inline constexpr const char kGateDustAmount[] = "GateDustAmount";
+    inline constexpr const char kFilmScratchAmount[] = "FilmScratchAmount";
+    inline constexpr const char kGateScratchAmount[] = "GateScratchAmount";
+    inline constexpr const char kGlareActive[] = "GlareActive";
+    inline constexpr const char kGlarePercent[] = "GlarePercent";
+    inline constexpr const char kGlareRoughness[] = "GlareRoughness";
+    inline constexpr const char kGlareBlurSigmaPx[] = "GlareBlurSigmaPx";
+    inline constexpr const char kGlareCompensationRemovalFactor[] = "GlareCompensationRemovalFactor";
+    inline constexpr const char kGlareCompensationRemovalDensity[] = "GlareCompensationRemovalDensity";
+    inline constexpr const char kGlareCompensationRemovalTransition[] = "GlareCompensationRemovalTransition";
+    inline constexpr const char kScannerLensBlurSigmaPx[] = "ScannerLensBlurSigmaPx";
+    inline constexpr const char kScannerUnsharpMask[] = "ScannerUnsharpMask";
+    inline constexpr const char kScannerUseLut[] = "ScannerUseLUT";
+    inline constexpr const char kScannerLutResolution[] = "ScannerLutResolution";
+}
