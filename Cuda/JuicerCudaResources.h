@@ -8,10 +8,12 @@
 //
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "Cuda/JuicerCudaAutoExposure.h"
 
@@ -45,6 +47,24 @@ namespace JuicerCuda {
         // Opaque CUDA event (cudaEvent_t) recorded on the stream after enqueuing work that
         // uses this resource set. Used to safely retire/rebuild buffers across streams.
         void* lastUseEventOpaque = nullptr;
+
+        enum class RetireKind : int {
+            DeviceFree = 0,
+            HostPinnedFree = 1,
+            EventDestroy = 2
+        };
+
+        struct RetireEntry {
+            void* ptr = nullptr;
+            std::size_t bytes = 0;
+            RetireKind kind = RetireKind::DeviceFree;
+            void* doneEventOpaque = nullptr; // cudaEvent_t recorded once for this entry.
+        };
+
+        // Deferred frees to avoid blocking synchronize/free in hot paths.
+        std::vector<RetireEntry> retireQueue;
+        std::vector<void*> retireEventPoolOpaque; // cudaEvent_t pool (cudaEventDisableTiming)
+        std::size_t retireBytes = 0;
 
         DeviceCurve densB;
         DeviceCurve densG;
@@ -107,6 +127,7 @@ namespace JuicerCuda {
             float* weights = nullptr;
             int radius = 0;
             float sigma = 0.0f;
+            int capacity = 0;
         };
 
     struct DeviceOpticsScratch {

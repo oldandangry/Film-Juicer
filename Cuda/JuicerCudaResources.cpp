@@ -147,6 +147,232 @@ extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
 
 namespace JuicerCuda {
 
+    static void reap_retire_queue_locked(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        for (size_t i = 0; i < resources.retireQueue.size();) {
+            Resources::RetireEntry& e = resources.retireQueue[i];
+            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(e.doneEventOpaque);
+            if (!ev) {
+                // No fence: best-effort free immediately.
+                if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
+                    cudaFree(e.ptr);
+                }
+                else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
+                    cudaFreeHost(e.ptr);
+                }
+                else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
+                    cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
+                }
+                if (resources.retireBytes >= e.bytes) {
+                    resources.retireBytes -= e.bytes;
+                }
+                resources.retireQueue[i] = resources.retireQueue.back();
+                resources.retireQueue.pop_back();
+                continue;
+            }
+
+            const cudaError_t q = cudaEventQuery(ev);
+            if (q == cudaSuccess) {
+                if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
+                    cudaFree(e.ptr);
+                }
+                else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
+                    cudaFreeHost(e.ptr);
+                }
+                else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
+                    cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
+                }
+
+                // Return the fence to the pool.
+                resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+                if (resources.retireBytes >= e.bytes) {
+                    resources.retireBytes -= e.bytes;
+                }
+                resources.retireQueue[i] = resources.retireQueue.back();
+                resources.retireQueue.pop_back();
+                continue;
+            }
+            if (q == cudaErrorNotReady) {
+                ++i;
+                continue;
+            }
+
+            // On unexpected CUDA errors, keep the entry so we don't free too early.
+            ++i;
+        }
+#else
+        (void)resources;
+#endif
+    }
+
+    static void drain_retire_queue_blocking(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        for (Resources::RetireEntry& e : resources.retireQueue) {
+            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(e.doneEventOpaque);
+            if (ev) {
+                (void)cudaEventSynchronize(ev);
+            }
+            if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
+                cudaFree(e.ptr);
+            }
+            else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
+                cudaFreeHost(e.ptr);
+            }
+            else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
+                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
+            }
+            if (ev) {
+                resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+            }
+        }
+        resources.retireQueue.clear();
+        resources.retireBytes = 0;
+
+        // Destroy pooled events.
+        for (void* p : resources.retireEventPoolOpaque) {
+            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(p);
+            if (ev) {
+                cudaEventDestroy(ev);
+            }
+        }
+        resources.retireEventPoolOpaque.clear();
+#else
+        (void)resources;
+#endif
+    }
+
+    static bool acquire_retire_event_locked(Resources& resources, void*& outEventOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)outEventOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!resources.retireEventPoolOpaque.empty()) {
+            outEventOpaque = resources.retireEventPoolOpaque.back();
+            resources.retireEventPoolOpaque.pop_back();
+            return true;
+        }
+        cudaEvent_t ev = nullptr;
+        const cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+        if (err != cudaSuccess || !ev) {
+            outError = std::string("cudaEventCreateWithFlags failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            outEventOpaque = nullptr;
+            return false;
+        }
+        outEventOpaque = reinterpret_cast<void*>(ev);
+        return true;
+#endif
+    }
+
+    static bool record_retire_fence_locked(Resources& resources, void* retireEventOpaque, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)retireEventOpaque;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        cudaEvent_t retireEv = reinterpret_cast<cudaEvent_t>(retireEventOpaque);
+        if (!retireEv) {
+            outError = "retire fence event missing";
+            return false;
+        }
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        if (resources.lastUseEventOpaque) {
+            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+            if (waitErr != cudaSuccess) {
+                outError = std::string("cudaStreamWaitEvent before ") + label + " retire failed: " +
+                    (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                return false;
+            }
+        }
+        const cudaError_t recErr = cudaEventRecord(retireEv, stream);
+        if (recErr != cudaSuccess) {
+            outError = std::string("cudaEventRecord for ") + label + " retire failed: " +
+                (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
+            return false;
+        }
+        return true;
+#endif
+    }
+
+    static bool retire_ptr_locked(Resources& resources, void* ptr, std::size_t bytes, Resources::RetireKind kind, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ptr;
+        (void)bytes;
+        (void)kind;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!ptr) {
+            return true;
+        }
+
+        reap_retire_queue_locked(resources);
+
+        void* retireEventOpaque = nullptr;
+        if (!acquire_retire_event_locked(resources, retireEventOpaque, outError)) {
+            // Fallback: block and free immediately. This should be rare.
+            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+            const cudaError_t syncErr = cudaStreamSynchronize(stream);
+            if (syncErr != cudaSuccess) {
+                outError = std::string("cudaStreamSynchronize fallback before ") + label + " free failed: " +
+                    (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+                return false;
+            }
+            if (kind == Resources::RetireKind::DeviceFree) {
+                cudaFree(ptr);
+            }
+            else if (kind == Resources::RetireKind::HostPinnedFree) {
+                cudaFreeHost(ptr);
+            }
+            else if (kind == Resources::RetireKind::EventDestroy) {
+                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(ptr));
+            }
+            return true;
+        }
+
+        if (!record_retire_fence_locked(resources, retireEventOpaque, cudaStreamOpaque, label, outError)) {
+            // If we can't record the retire fence, destroy the event and fall back to a blocking free.
+            cudaEventDestroy(reinterpret_cast<cudaEvent_t>(retireEventOpaque));
+            retireEventOpaque = nullptr;
+
+            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+            const cudaError_t syncErr = cudaStreamSynchronize(stream);
+            if (syncErr != cudaSuccess) {
+                outError = std::string("cudaStreamSynchronize fallback before ") + label + " free failed: " +
+                    (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+                return false;
+            }
+            if (kind == Resources::RetireKind::DeviceFree) {
+                cudaFree(ptr);
+            }
+            else if (kind == Resources::RetireKind::HostPinnedFree) {
+                cudaFreeHost(ptr);
+            }
+            else if (kind == Resources::RetireKind::EventDestroy) {
+                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(ptr));
+            }
+            return true;
+        }
+
+        Resources::RetireEntry e{};
+        e.ptr = ptr;
+        e.bytes = bytes;
+        e.kind = kind;
+        e.doneEventOpaque = retireEventOpaque;
+        resources.retireQueue.push_back(e);
+        resources.retireBytes += bytes;
+        return true;
+#endif
+    }
+
     static void free_curve(DeviceCurve& c) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (c.x) {
@@ -163,6 +389,35 @@ namespace JuicerCuda {
         c.domainEnd = 0;
     }
 
+    static bool retire_curve_locked(Resources& resources, DeviceCurve& c, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)c;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        const size_t bytes = static_cast<size_t>(std::max(0, c.n)) * sizeof(float);
+        if (c.x) {
+            if (!retire_ptr_locked(resources, c.x, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            c.x = nullptr;
+        }
+        if (c.y) {
+            if (!retire_ptr_locked(resources, c.y, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            c.y = nullptr;
+        }
+        c.n = 0;
+        c.domainBegin = 0;
+        c.domainEnd = 0;
+        return true;
+#endif
+    }
+
     static void free_density_layers(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         for (int layer = 0; layer < 3; ++layer) {
@@ -176,6 +431,31 @@ namespace JuicerCuda {
 #endif
         resources.densityCurvesLayersN = 0;
         resources.hasDensityCurvesLayers = 0;
+    }
+
+    static bool retire_density_layers_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        const size_t bytes = static_cast<size_t>(std::max(0, resources.densityCurvesLayersN)) * sizeof(float);
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                if (resources.densityCurvesLayers[layer][ch]) {
+                    if (!retire_ptr_locked(resources, resources.densityCurvesLayers[layer][ch], bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                        return false;
+                    }
+                    resources.densityCurvesLayers[layer][ch] = nullptr;
+                }
+            }
+        }
+        resources.densityCurvesLayersN = 0;
+        resources.hasDensityCurvesLayers = 0;
+        return true;
+#endif
     }
 
     static void free_hanatos(Resources& resources) noexcept {
@@ -511,6 +791,38 @@ namespace JuicerCuda {
         resources.tablesK = 0;
     }
 
+    static bool retire_tables_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        const size_t bytes = static_cast<size_t>(std::max(0, resources.tablesK)) * sizeof(float);
+        if (resources.tablesAx) {
+            if (!retire_ptr_locked(resources, resources.tablesAx, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            resources.tablesAx = nullptr;
+        }
+        if (resources.tablesAy) {
+            if (!retire_ptr_locked(resources, resources.tablesAy, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            resources.tablesAy = nullptr;
+        }
+        if (resources.tablesAz) {
+            if (!retire_ptr_locked(resources, resources.tablesAz, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            resources.tablesAz = nullptr;
+        }
+        resources.tablesK = 0;
+        return true;
+#endif
+    }
+
     static void free_spectral_tables(Resources::DeviceSpectralTables& t) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (t.epsC) { cudaFree(t.epsC); t.epsC = nullptr; }
@@ -526,11 +838,75 @@ namespace JuicerCuda {
         t.invYn = 1.0f;
     }
 
+    static bool retire_spectral_tables_locked(Resources& resources, Resources::DeviceSpectralTables& t, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)t;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        const size_t bytes = static_cast<size_t>(std::max(0, t.K)) * sizeof(float);
+        if (t.epsC) {
+            if (!retire_ptr_locked(resources, t.epsC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            t.epsC = nullptr;
+        }
+        if (t.epsM) {
+            if (!retire_ptr_locked(resources, t.epsM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            t.epsM = nullptr;
+        }
+        if (t.epsY) {
+            if (!retire_ptr_locked(resources, t.epsY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            t.epsY = nullptr;
+        }
+        if (t.Ax) {
+            if (!retire_ptr_locked(resources, t.Ax, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            t.Ax = nullptr;
+        }
+        if (t.Ay) {
+            if (!retire_ptr_locked(resources, t.Ay, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            t.Ay = nullptr;
+        }
+        if (t.Az) {
+            if (!retire_ptr_locked(resources, t.Az, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            t.Az = nullptr;
+        }
+        if (t.baseMin) {
+            if (!retire_ptr_locked(resources, t.baseMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            t.baseMin = nullptr;
+        }
+        t.K = 0;
+        t.hasBaseline = 0;
+        t.invYn = 1.0f;
+        return true;
+#endif
+    }
+
     static void free_scan_medium(Resources::DeviceScanMedium& m) noexcept {
         free_spectral_tables(m.tables);
         m.mediumIsNegative = 1;
         m.min_cmy[0] = m.min_cmy[1] = m.min_cmy[2] = 0.0f;
         m.inv_max_cmy[0] = m.inv_max_cmy[1] = m.inv_max_cmy[2] = 1.0f;
+    }
+
+    static bool retire_scan_medium_locked(Resources& resources, Resources::DeviceScanMedium& m, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)m;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!retire_spectral_tables_locked(resources, m.tables, cudaStreamOpaque, label, outError)) {
+            return false;
+        }
+        m.mediumIsNegative = 1;
+        m.min_cmy[0] = m.min_cmy[1] = m.min_cmy[2] = 0.0f;
+        m.inv_max_cmy[0] = m.inv_max_cmy[1] = m.inv_max_cmy[2] = 1.0f;
+        return true;
+#endif
     }
 
     static void free_scan_lut(Resources::DeviceSpectralLut& lut) noexcept {
@@ -553,6 +929,7 @@ namespace JuicerCuda {
 #endif
         k.radius = 0;
         k.sigma = 0.0f;
+        k.capacity = 0;
     }
 
     static void free_optics_scratch(Resources::DeviceOpticsScratch& s) noexcept {
@@ -616,6 +993,51 @@ namespace JuicerCuda {
         resources.printPreflashBuildCounter = 0;
         resources.printPreflashRuntimePtr = nullptr;
         resources.printPreflashShapeK = 0;
+    }
+
+    static bool retire_print_payloads_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!retire_curve_locked(resources, resources.printDcC, cudaStreamOpaque, label, outError)) return false;
+        if (!retire_curve_locked(resources, resources.printDcM, cudaStreamOpaque, label, outError)) return false;
+        if (!retire_curve_locked(resources, resources.printDcY, cudaStreamOpaque, label, outError)) return false;
+        if (!retire_curve_locked(resources, resources.printSensC, cudaStreamOpaque, label, outError)) return false;
+        if (!retire_curve_locked(resources, resources.printSensM, cudaStreamOpaque, label, outError)) return false;
+        if (!retire_curve_locked(resources, resources.printSensY, cudaStreamOpaque, label, outError)) return false;
+
+        if (resources.printIllumFiltered) {
+            const size_t bytes = static_cast<size_t>(std::max(0, resources.printIllumK)) * sizeof(float);
+            if (!retire_ptr_locked(resources, resources.printIllumFiltered, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            resources.printIllumFiltered = nullptr;
+        }
+
+        resources.printIllumK = 0;
+        resources.printIllumYShiftSteps = 0.0f;
+        resources.printIllumMShiftSteps = 0.0f;
+        resources.printIllumCShiftSteps = 0.0f;
+        resources.printIllumShapeK = 0;
+        resources.printIllumBuildCounter = 0;
+        resources.printIllumCoreHash = 0;
+        resources.printIllumRuntimePtr = nullptr;
+
+        resources.printGammaC = 1.0f;
+        resources.printGammaM = 1.0f;
+        resources.printGammaY = 1.0f;
+
+        resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
+        resources.printPreflashValid = false;
+        resources.printPreflashBuildCounter = 0;
+        resources.printPreflashRuntimePtr = nullptr;
+        resources.printPreflashShapeK = 0;
+        return true;
+#endif
     }
 
     static bool alloc_and_upload_array(float*& dst, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -713,6 +1135,93 @@ namespace JuicerCuda {
 #endif
     }
 
+    static bool upload_curve_locked(Resources& resources, DeviceCurve& dst, const Spectral::Curve& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)dst;
+        (void)src;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (src.lambda_nm.empty() || src.linear.empty() || src.lambda_nm.size() != src.linear.size()) {
+            outError = std::string(label) + ": curve has no samples or mismatched arrays";
+            return false;
+        }
+        const int n = static_cast<int>(src.lambda_nm.size());
+        if (n <= 0) {
+            outError = std::string(label) + ": curve sample count invalid";
+            return false;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+
+        // If the allocation matches, update in place to avoid alloc/free churn (common during slider scrubs).
+        if (dst.x && dst.y && dst.n == n) {
+            if (resources.lastUseEventOpaque) {
+                const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+                if (waitErr != cudaSuccess) {
+                    outError = std::string("cudaStreamWaitEvent before ") + label + " update failed: " +
+                        (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                    return false;
+                }
+            }
+
+            cudaError_t err = cudaMemcpyAsync(dst.x, src.lambda_nm.data(), bytes, cudaMemcpyHostToDevice, stream);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMemcpyAsync(") + label + ".x failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                return false;
+            }
+            err = cudaMemcpyAsync(dst.y, src.linear.data(), bytes, cudaMemcpyHostToDevice, stream);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMemcpyAsync(") + label + ".y failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                return false;
+            }
+
+            int domainBegin = 0;
+            while (domainBegin < n && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainBegin)])) {
+                ++domainBegin;
+            }
+            int domainEnd = n - 1;
+            while (domainEnd > domainBegin && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainEnd)])) {
+                --domainEnd;
+            }
+            dst.domainBegin = domainBegin;
+            dst.domainEnd = domainEnd;
+            dst.n = n;
+            return true;
+        }
+
+        DeviceCurve tmp{};
+        if (!alloc_and_upload_curve(tmp, src, cudaStreamOpaque, outError)) {
+            outError = std::string(label) + ": " + outError;
+            return false;
+        }
+
+        const size_t oldBytes = static_cast<size_t>(std::max(0, dst.n)) * sizeof(float);
+        if (dst.x) {
+            if (!retire_ptr_locked(resources, dst.x, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                free_curve(tmp);
+                return false;
+            }
+            dst.x = nullptr;
+        }
+        if (dst.y) {
+            if (!retire_ptr_locked(resources, dst.y, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                free_curve(tmp);
+                return false;
+            }
+            dst.y = nullptr;
+        }
+
+        dst = tmp;
+        return true;
+#endif
+    }
+
     static bool alloc_and_upload_spectral_samples(DeviceCurve& dst, const std::vector<float>& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)dst;
@@ -753,6 +1262,7 @@ namespace JuicerCuda {
     }
 
     Resources::~Resources() {
+        drain_retire_queue_blocking(*this);
         free_curve(densB);
         free_curve(densG);
         free_curve(densR);
@@ -831,8 +1341,8 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        (void)cudaStreamOpaque;
-        std::lock_guard<std::mutex> lock(resources.m);
+        std::unique_lock<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
         {
             int cur = -1;
             const cudaError_t devErr = cudaGetDevice(&cur);
@@ -939,47 +1449,30 @@ namespace JuicerCuda {
         // DIR-only update: avoid a full WorkingState re-upload when only the DIR pre-corrected
         // density curves changed (slider interaction).
         if (coreUpToDate && !dirUpToDate) {
-            if (resources.uploadedBuildCounter != 0) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "DIR density curves", outError)) {
-                    return false;
-                }
-            }
-
-            free_curve(resources.dirDensB);
-            free_curve(resources.dirDensG);
-            free_curve(resources.dirDensR);
-
-            if (!alloc_and_upload_curve(resources.dirDensB, ws.dirDensB, cudaStreamOpaque, outError)) return false;
-            if (!alloc_and_upload_curve(resources.dirDensG, ws.dirDensG, cudaStreamOpaque, outError)) return false;
-            if (!alloc_and_upload_curve(resources.dirDensR, ws.dirDensR, cudaStreamOpaque, outError)) return false;
+            if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, "dirDensB", outError)) return false;
+            if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, "dirDensG", outError)) return false;
+            if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, "dirDensR", outError)) return false;
 
             resources.uploadedDirHash = wsDirHash;
             resources.uploadedBuildCounter = ws.buildCounter;
             return true;
         }
 
-        // Core rebuild required: synchronize before mutating any device pointers.
-        if (resources.uploadedBuildCounter != 0) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, "WorkingState", outError)) {
-                return false;
-            }
-        }
-
-        // Clear any previously uploaded (or partially uploaded) curves before re-uploading.
-        free_curve(resources.densB);
-        free_curve(resources.densG);
-        free_curve(resources.densR);
-        free_density_layers(resources);
-        free_curve(resources.dirDensB);
-        free_curve(resources.dirDensG);
-        free_curve(resources.dirDensR);
-        free_curve(resources.sensB);
-        free_curve(resources.sensG);
-        free_curve(resources.sensR);
-        free_tables(resources);
-        free_scan_medium(resources.scanNegative);
-        free_scan_medium(resources.scanPrint);
-        free_print_payloads(resources);
+        // Core rebuild required: retire and replace device pointers without blocking sync.
+        if (!retire_curve_locked(resources, resources.densB, cudaStreamOpaque, "densB", outError)) return false;
+        if (!retire_curve_locked(resources, resources.densG, cudaStreamOpaque, "densG", outError)) return false;
+        if (!retire_curve_locked(resources, resources.densR, cudaStreamOpaque, "densR", outError)) return false;
+        if (!retire_density_layers_locked(resources, cudaStreamOpaque, "densityCurvesLayers", outError)) return false;
+        if (!retire_curve_locked(resources, resources.dirDensB, cudaStreamOpaque, "dirDensB", outError)) return false;
+        if (!retire_curve_locked(resources, resources.dirDensG, cudaStreamOpaque, "dirDensG", outError)) return false;
+        if (!retire_curve_locked(resources, resources.dirDensR, cudaStreamOpaque, "dirDensR", outError)) return false;
+        if (!retire_curve_locked(resources, resources.sensB, cudaStreamOpaque, "sensB", outError)) return false;
+        if (!retire_curve_locked(resources, resources.sensG, cudaStreamOpaque, "sensG", outError)) return false;
+        if (!retire_curve_locked(resources, resources.sensR, cudaStreamOpaque, "sensR", outError)) return false;
+        if (!retire_tables_locked(resources, cudaStreamOpaque, "tables", outError)) return false;
+        if (!retire_scan_medium_locked(resources, resources.scanNegative, cudaStreamOpaque, "scanNegative", outError)) return false;
+        if (!retire_scan_medium_locked(resources, resources.scanPrint, cudaStreamOpaque, "scanPrint", outError)) return false;
+        if (!retire_print_payloads_locked(resources, cudaStreamOpaque, "print payloads", outError)) return false;
 
         resources.validatedBuildCounter = 0;
         resources.uploadedBuildCounter = 0;
@@ -1250,25 +1743,35 @@ namespace JuicerCuda {
             if (!want) {
                 // If Hanatos becomes unavailable (asset missing/mismatch), drop the device copy.
                 if (resources.hanatosLut) {
-                    if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos LUT", outError)) {
+                    const size_t count = static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(Spectral::kNumSamples);
+                    const size_t bytes = count * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.hanatosLut, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos LUT", outError)) {
                         return false;
                     }
-                    free_hanatos(resources);
+                    resources.hanatosLut = nullptr;
+                    resources.hanatosN = 0;
                 }
                 if (resources.hanatosLutIntegrated) {
-                    if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
+                    const size_t count = static_cast<size_t>(resources.hanatosNIntegrated) * static_cast<size_t>(resources.hanatosNIntegrated) * 4u;
+                    const size_t bytes = count * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.hanatosLutIntegrated, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
                         return false;
                     }
-                    free_hanatos_integrated(resources);
+                    resources.hanatosLutIntegrated = nullptr;
+                    resources.hanatosNIntegrated = 0;
+                    resources.hanatosIntegratedBuildCounter = 0;
                 }
             } else {
                 if (!resources.hanatosLut || resources.hanatosN != N) {
                     const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
                     if (resources.hanatosLut) {
-                        if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos LUT", outError)) {
+                        const size_t count = static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(Spectral::kNumSamples);
+                        const size_t bytes = count * sizeof(float);
+                        if (!retire_ptr_locked(resources, resources.hanatosLut, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos LUT", outError)) {
                             return false;
                         }
-                        free_hanatos(resources);
+                        resources.hanatosLut = nullptr;
+                        resources.hanatosN = 0;
                     }
 
                     const size_t count = static_cast<size_t>(N) * static_cast<size_t>(N) * static_cast<size_t>(K);
@@ -1297,46 +1800,58 @@ namespace JuicerCuda {
             const bool wantIntegrated = want && sensOk;
             if (!wantIntegrated) {
                 if (resources.hanatosLutIntegrated) {
-                    if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
+                    const size_t count = static_cast<size_t>(resources.hanatosNIntegrated) * static_cast<size_t>(resources.hanatosNIntegrated) * 4u;
+                    const size_t bytes = count * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.hanatosLutIntegrated, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
                         return false;
                     }
-                    free_hanatos_integrated(resources);
+                    resources.hanatosLutIntegrated = nullptr;
+                    resources.hanatosNIntegrated = 0;
+                    resources.hanatosIntegratedBuildCounter = 0;
                 }
             }
             else {
                 const bool needAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
                 const bool needUpload = needAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
                 if (needUpload) {
+                    // Build CPU LUT outside the resources lock.
+                    lock.unlock();
                     std::vector<float> cpu;
                     Precompute::build_hanatos_integrated_lut_cpu(ctx, ws, cpu);
+                    lock.lock();
+                    reap_retire_queue_locked(resources);
 
                     const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-                    if (needAlloc) {
-                        if (resources.hanatosLutIntegrated) {
-                            if (!sync_before_rebuild(resources, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
-                                return false;
-                            }
-                            free_hanatos_integrated(resources);
-                        }
+                    const bool stillNeedAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
+                    const bool stillNeedUpload = stillNeedAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
+                    if (stillNeedUpload) {
                         const size_t bytes = cpu.size() * sizeof(float);
-                        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.hanatosLutIntegrated), bytes);
+                        float* dLut = nullptr;
+                        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dLut), bytes);
                         if (err != cudaSuccess) {
                             outError = std::string("cudaMalloc(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                            free_hanatos_integrated(resources);
                             return false;
                         }
-                    }
+                        err = cudaMemcpyAsync(dLut, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+                        if (err != cudaSuccess) {
+                            outError = std::string("cudaMemcpyAsync(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                            cudaFree(dLut);
+                            return false;
+                        }
 
-                    const size_t bytes = cpu.size() * sizeof(float);
-                    cudaError_t err = cudaMemcpyAsync(resources.hanatosLutIntegrated, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
-                    if (err != cudaSuccess) {
-                        outError = std::string("cudaMemcpyAsync(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                        free_hanatos_integrated(resources);
-                        return false;
-                    }
+                        if (resources.hanatosLutIntegrated) {
+                            const size_t count = static_cast<size_t>(resources.hanatosNIntegrated) * static_cast<size_t>(resources.hanatosNIntegrated) * 4u;
+                            const size_t oldBytes = count * sizeof(float);
+                            if (!retire_ptr_locked(resources, resources.hanatosLutIntegrated, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
+                                cudaFree(dLut);
+                                return false;
+                            }
+                        }
 
-                    resources.hanatosNIntegrated = N;
-                    resources.hanatosIntegratedBuildCounter = ws.buildCounter;
+                        resources.hanatosLutIntegrated = dLut;
+                        resources.hanatosNIntegrated = N;
+                        resources.hanatosIntegratedBuildCounter = ws.buildCounter;
+                    }
                 }
             }
         }
@@ -1446,11 +1961,15 @@ namespace JuicerCuda {
             }
 
             if (dst->log2XYZ) {
-                // Ensure no in-flight work can still reference the previous device LUT.
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "scan LUT", outError)) {
+                // Retire the previous LUT without blocking the CPU.
+                const size_t count = static_cast<size_t>(dst->res) * static_cast<size_t>(dst->res) * static_cast<size_t>(dst->res) * 3u;
+                const size_t bytes = count * sizeof(double);
+                if (!retire_ptr_locked(resources, dst->log2XYZ, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "scan LUT", outError)) {
                     return false;
                 }
-                free_scan_lut(*dst);
+                dst->log2XYZ = nullptr;
+                dst->res = 0;
+                dst->hash = 0;
             }
 
             double* dLut = nullptr;
@@ -1967,8 +2486,17 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        std::lock_guard<std::mutex> lock(resources.m);
+        constexpr int kMaxRadius = 75;
+        constexpr int kMaxCount = 2 * kMaxRadius + 1;
+
+        const bool sigmaOk = (std::isfinite(sigma) && sigma > 0.0f);
+        const int radiusRaw = sigmaOk ? std::max(1, static_cast<int>(std::ceil(3.0f * sigma))) : 0;
+        const int radius = std::min(radiusRaw, kMaxRadius);
+        const bool wantDisable = (!sigmaOk || radius <= 0);
+
         {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
             int cur = -1;
             const cudaError_t devErr = cudaGetDevice(&cur);
             if (devErr != cudaSuccess || cur < 0) {
@@ -1982,33 +2510,25 @@ namespace JuicerCuda {
                 outError = "CUDA device mismatch for cached resources";
                 return false;
             }
-        }
 
-        if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
-            if (kernel.weights) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR kernel free", outError)) {
-                    return false;
+            if (wantDisable) {
+                if (kernel.weights) {
+                    const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
+                    if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "spatial DIR kernel", outError)) {
+                        return false;
+                    }
+                    kernel.weights = nullptr;
                 }
+                kernel.radius = 0;
+                kernel.sigma = 0.0f;
+                kernel.capacity = 0;
+                return true;
             }
-            free_gaussian_kernel(kernel);
-            return true;
-        }
 
-        const int radiusRaw = std::max(1, static_cast<int>(std::ceil(3.0f * sigma)));
-        const int radius = std::min(radiusRaw, 75);
-        if (radius <= 0) {
-            if (kernel.weights) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR kernel free", outError)) {
-                    return false;
-                }
+            const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+            if (same) {
+                return true;
             }
-            free_gaussian_kernel(kernel);
-            return true;
-        }
-
-        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
-        if (same) {
-            return true;
         }
 
         std::vector<float> cpu;
@@ -2025,26 +2545,63 @@ namespace JuicerCuda {
             w = static_cast<float>(static_cast<double>(w) * invW);
         }
 
-        if (kernel.weights) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR kernel", outError)) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
                 return false;
             }
-            free_gaussian_kernel(kernel);
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+        if (same) {
+            return true;
+        }
+
+        const bool overwriting = (kernel.weights != nullptr);
+        if (kernel.weights && kernel.capacity < kMaxCount) {
+            const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
+            if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "spatial DIR kernel resize", outError)) {
+                return false;
+            }
+            kernel.weights = nullptr;
+            kernel.capacity = 0;
+        }
+        if (!kernel.weights) {
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), static_cast<size_t>(kMaxCount) * sizeof(float));
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(spatial DIR kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                kernel.weights = nullptr;
+                kernel.capacity = 0;
+                return false;
+            }
+            kernel.capacity = kMaxCount;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        if (overwriting && resources.lastUseEventOpaque) {
+            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+            if (waitErr != cudaSuccess) {
+                outError = std::string("cudaStreamWaitEvent before spatial DIR kernel update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                return false;
+            }
         }
 
         const size_t bytes = cpu.size() * sizeof(float);
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(spatial DIR kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            free_gaussian_kernel(kernel);
-            return false;
-        }
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        cudaError_t err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
         if (err != cudaSuccess) {
             outError = std::string("cudaMemcpyAsync(spatial DIR kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            cudaFree(kernel.weights);
-            free_gaussian_kernel(kernel);
             return false;
         }
 
@@ -2063,8 +2620,17 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        std::lock_guard<std::mutex> lock(resources.m);
+        constexpr int kMaxRadius = 75;
+        constexpr int kMaxCount = 2 * kMaxRadius + 1;
+
+        const bool sigmaOk = (std::isfinite(sigma) && sigma > 0.0f);
+        const int radiusRaw = sigmaOk ? JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f) : 0;
+        const int radius = std::min(radiusRaw, kMaxRadius);
+        const bool wantDisable = (!sigmaOk || radius <= 0);
+
         {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
             int cur = -1;
             const cudaError_t devErr = cudaGetDevice(&cur);
             if (devErr != cudaSuccess || cur < 0) {
@@ -2078,33 +2644,25 @@ namespace JuicerCuda {
                 outError = "CUDA device mismatch for cached resources";
                 return false;
             }
-        }
 
-        if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
-            if (kernel.weights) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "gaussian kernel free", outError)) {
-                    return false;
+            if (wantDisable) {
+                if (kernel.weights) {
+                    const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
+                    if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gaussian kernel", outError)) {
+                        return false;
+                    }
+                    kernel.weights = nullptr;
                 }
+                kernel.radius = 0;
+                kernel.sigma = 0.0f;
+                kernel.capacity = 0;
+                return true;
             }
-            free_gaussian_kernel(kernel);
-            return true;
-        }
 
-        const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f);
-        const int radius = std::min(radiusRaw, 75);
-        if (radius <= 0) {
-            if (kernel.weights) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "gaussian kernel free", outError)) {
-                    return false;
-                }
+            const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+            if (same) {
+                return true;
             }
-            free_gaussian_kernel(kernel);
-            return true;
-        }
-
-        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
-        if (same) {
-            return true;
         }
 
         std::vector<float> cpu;
@@ -2121,26 +2679,64 @@ namespace JuicerCuda {
             w = static_cast<float>(static_cast<double>(w) * invW);
         }
 
-        if (kernel.weights) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, "gaussian kernel", outError)) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
                 return false;
             }
-            free_gaussian_kernel(kernel);
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+        if (same) {
+            return true;
+        }
+
+        // Fixed-capacity allocation: avoid alloc/free churn on animated sigma.
+        const bool overwriting = (kernel.weights != nullptr);
+        if (kernel.weights && kernel.capacity < kMaxCount) {
+            const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
+            if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gaussian kernel resize", outError)) {
+                return false;
+            }
+            kernel.weights = nullptr;
+            kernel.capacity = 0;
+        }
+        if (!kernel.weights) {
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), static_cast<size_t>(kMaxCount) * sizeof(float));
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                kernel.weights = nullptr;
+                kernel.capacity = 0;
+                return false;
+            }
+            kernel.capacity = kMaxCount;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        if (overwriting && resources.lastUseEventOpaque) {
+            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+            if (waitErr != cudaSuccess) {
+                outError = std::string("cudaStreamWaitEvent before gaussian kernel update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                return false;
+            }
         }
 
         const size_t bytes = cpu.size() * sizeof(float);
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            free_gaussian_kernel(kernel);
-            return false;
-        }
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        cudaError_t err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
         if (err != cudaSuccess) {
             outError = std::string("cudaMemcpyAsync(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            cudaFree(kernel.weights);
-            free_gaussian_kernel(kernel);
             return false;
         }
 
@@ -2159,8 +2755,17 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        std::lock_guard<std::mutex> lock(resources.m);
+        constexpr int kMaxRadius = 75;
+        constexpr int kMaxCount = 2 * kMaxRadius + 1;
+
+        const bool sigmaOk = (std::isfinite(sigma) && sigma > 0.0f);
+        const int radiusRaw = sigmaOk ? JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f) : 0;
+        const int radius = std::min(radiusRaw, kMaxRadius);
+        const bool wantDisable = (!sigmaOk || radius <= 0);
+
         {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
             int cur = -1;
             const cudaError_t devErr = cudaGetDevice(&cur);
             if (devErr != cudaSuccess || cur < 0) {
@@ -2174,33 +2779,25 @@ namespace JuicerCuda {
                 outError = "CUDA device mismatch for cached resources";
                 return false;
             }
-        }
 
-        if (!(std::isfinite(sigma)) || sigma <= 0.0f) {
-            if (kernel.weights) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "halation kernel free", outError)) {
-                    return false;
+            if (wantDisable) {
+                if (kernel.weights) {
+                    const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
+                    if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "halation kernel", outError)) {
+                        return false;
+                    }
+                    kernel.weights = nullptr;
                 }
+                kernel.radius = 0;
+                kernel.sigma = 0.0f;
+                kernel.capacity = 0;
+                return true;
             }
-            free_gaussian_kernel(kernel);
-            return true;
-        }
 
-        const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f);
-        const int radius = std::min(radiusRaw, 75);
-        if (radius <= 0) {
-            if (kernel.weights) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "halation kernel free", outError)) {
-                    return false;
-                }
+            const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+            if (same) {
+                return true;
             }
-            free_gaussian_kernel(kernel);
-            return true;
-        }
-
-        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
-        if (same) {
-            return true;
         }
 
         std::vector<float> cpu;
@@ -2217,26 +2814,63 @@ namespace JuicerCuda {
             w = static_cast<float>(static_cast<double>(w) * invW);
         }
 
-        if (kernel.weights) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, "halation kernel", outError)) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
                 return false;
             }
-            free_gaussian_kernel(kernel);
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+        if (same) {
+            return true;
+        }
+
+        const bool overwriting = (kernel.weights != nullptr);
+        if (kernel.weights && kernel.capacity < kMaxCount) {
+            const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
+            if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "halation kernel resize", outError)) {
+                return false;
+            }
+            kernel.weights = nullptr;
+            kernel.capacity = 0;
+        }
+        if (!kernel.weights) {
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), static_cast<size_t>(kMaxCount) * sizeof(float));
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(halation kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                kernel.weights = nullptr;
+                kernel.capacity = 0;
+                return false;
+            }
+            kernel.capacity = kMaxCount;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        if (overwriting && resources.lastUseEventOpaque) {
+            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+            if (waitErr != cudaSuccess) {
+                outError = std::string("cudaStreamWaitEvent before halation kernel update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                return false;
+            }
         }
 
         const size_t bytes = cpu.size() * sizeof(float);
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(halation kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            free_gaussian_kernel(kernel);
-            return false;
-        }
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+        cudaError_t err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
         if (err != cudaSuccess) {
             outError = std::string("cudaMemcpyAsync(halation kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            cudaFree(kernel.weights);
-            free_gaussian_kernel(kernel);
             return false;
         }
 
@@ -3098,6 +3732,7 @@ namespace JuicerCuda {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
         std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
         if (!resources.lastUseEventOpaque) {
             cudaEvent_t ev = nullptr;
             const cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
