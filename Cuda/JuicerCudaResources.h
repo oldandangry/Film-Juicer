@@ -9,8 +9,11 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <string>
+
+#include "Cuda/JuicerCudaAutoExposure.h"
 
 struct WorkingState;
 namespace Print {
@@ -201,6 +204,21 @@ namespace JuicerCuda {
         void* scanErrorEventOpaque = nullptr;
         int scanErrorPending = 0;
 
+        struct DeviceAutoExposureScratch {
+            JuicerCudaAutoExposurePartial* partialsA = nullptr;
+            JuicerCudaAutoExposurePartial* partialsB = nullptr;
+            int partialCapacity = 0;
+            unsigned int* maxYBits = nullptr;
+            unsigned int* histogram = nullptr;
+        };
+
+        DeviceAutoExposureScratch autoExposureScratch;
+        float* autoExposureExposureScale = nullptr;
+        double* autoExposureAutoEV = nullptr;
+        int* autoExposureValid = nullptr;
+        std::uint64_t autoExposureKeyHash = 0;
+        double autoExposureSliderEV = std::numeric_limits<double>::quiet_NaN();
+
         Resources() = default;
         Resources(const Resources&) = delete;
         Resources& operator=(const Resources&) = delete;
@@ -219,6 +237,9 @@ namespace JuicerCuda {
 
     // Ensures the scan error flag device buffer is allocated.
     bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
+
+    // Allocates scratch + state buffers used by CUDA auto-exposure metering.
+    bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
 
     // Allocates scratch buffers used by scanner optics (blur/unsharp/glare/grain) when active.
     bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);

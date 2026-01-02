@@ -18,6 +18,7 @@
 namespace {
 
     constexpr int kMedianHistogramBins = 2048;
+    constexpr double kCameraMeterTargetY = 0.184;
 
     struct DeviceAccumBuffers {
         double* sumY = nullptr;
@@ -251,6 +252,347 @@ namespace {
         }
         storage += (cudaMsg ? cudaMsg : "(unknown)");
         return storage.c_str();
+    }
+
+    __global__ void reset_auto_exposure_state_kernel(
+        double sliderEV,
+        double* outAutoEV,
+        float* outExposureScale,
+        int* outValid)
+    {
+        if (threadIdx.x != 0 || blockIdx.x != 0) {
+            return;
+        }
+        if (outAutoEV) {
+            *outAutoEV = 0.0;
+        }
+        if (outValid) {
+            *outValid = 0;
+        }
+        if (outExposureScale) {
+            const double scale64 = exp2(sliderEV);
+            const float scale = (isfinite(scale64) && scale64 > 0.0) ? static_cast<float>(scale64) : 1.0f;
+            *outExposureScale = scale;
+        }
+    }
+
+    __global__ void update_auto_exposure_scale_kernel(
+        double sliderEV,
+        const double* autoEV,
+        const int* valid,
+        float* outExposureScale)
+    {
+        if (threadIdx.x != 0 || blockIdx.x != 0) {
+            return;
+        }
+        const int v = valid ? *valid : 0;
+        const double ae = (v != 0 && autoEV) ? *autoEV : 0.0;
+        const double scale64 = exp2(ae + sliderEV);
+        const float scale = (isfinite(scale64) && scale64 > 0.0) ? static_cast<float>(scale64) : 1.0f;
+        if (outExposureScale) {
+            *outExposureScale = scale;
+        }
+    }
+
+    __global__ void meter_center_weighted_Y_partials_kernel(
+        const unsigned char* srcBase,
+        std::size_t srcRowBytes,
+        int srcBoundsX1,
+        int srcBoundsY1,
+        int srcBoundsX2,
+        int srcBoundsY2,
+        int meterX1,
+        int meterY1,
+        int width,
+        int height,
+        int nComponents,
+        int inputColorSpaceIndex,
+        int applyCctfDecoding,
+        Mat3 rgbToXYZ,
+        JuicerCudaAutoExposurePartial* outPartials)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+        double localSumY = 0.0;
+        double localSumW = 0.0;
+
+        if (x < width && y < height) {
+            const int px = meterX1 + x;
+            const int py = meterY1 + y;
+            if (px >= srcBoundsX1 && px < srcBoundsX2 && py >= srcBoundsY1 && py < srcBoundsY2) {
+                const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
+                const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+                const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
+
+                float inRgb[3] = { pix[0], pix[1], pix[2] };
+                float lin[3];
+                apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
+
+                const float Y = mulY(rgbToXYZ, lin);
+                if (isfinite(Y)) {
+                    // Matches build_center_weight_mask() weighting.
+                    constexpr float sigma = 0.2f;
+                    const float nx = (static_cast<float>(x) / static_cast<float>(width)) - 0.5f;
+                    const float ny = (static_cast<float>(y) / static_cast<float>(height)) - 0.5f;
+                    const int maxDimInt = (width > height) ? width : height;
+                    const float maxDim = static_cast<float>(maxDimInt);
+                    const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
+                    const float normX = nx * static_cast<float>(width) * invMax;
+                    const float normY = ny * static_cast<float>(height) * invMax;
+                    const float r2 = normX * normX + normY * normY;
+                    const float w = expf(-r2 / (2.0f * sigma * sigma));
+
+                    localSumY = static_cast<double>(Y) * static_cast<double>(w);
+                    localSumW = static_cast<double>(w);
+                }
+            }
+        }
+
+        __shared__ double sY[16 * 16];
+        __shared__ double sW[16 * 16];
+        const int t = threadIdx.y * blockDim.x + threadIdx.x;
+        sY[t] = localSumY;
+        sW[t] = localSumW;
+        __syncthreads();
+
+        int count = blockDim.x * blockDim.y;
+        for (int stride = count / 2; stride > 0; stride /= 2) {
+            if (t < stride) {
+                sY[t] += sY[t + stride];
+                sW[t] += sW[t + stride];
+            }
+            __syncthreads();
+        }
+
+        if (t == 0 && outPartials) {
+            const int blockId = blockIdx.y * gridDim.x + blockIdx.x;
+            outPartials[blockId].sumY = sY[0];
+            outPartials[blockId].sumW = sW[0];
+        }
+    }
+
+    __global__ void reduce_auto_exposure_partials_kernel(
+        const JuicerCudaAutoExposurePartial* inPartials,
+        int n,
+        JuicerCudaAutoExposurePartial* outPartials)
+    {
+        const int tid = threadIdx.x;
+        const int base = (blockIdx.x * blockDim.x * 2) + tid;
+        double sumY = 0.0;
+        double sumW = 0.0;
+        if (base < n) {
+            sumY += inPartials[base].sumY;
+            sumW += inPartials[base].sumW;
+        }
+        const int base2 = base + blockDim.x;
+        if (base2 < n) {
+            sumY += inPartials[base2].sumY;
+            sumW += inPartials[base2].sumW;
+        }
+
+        __shared__ double sY[256];
+        __shared__ double sW[256];
+        sY[tid] = sumY;
+        sW[tid] = sumW;
+        __syncthreads();
+
+        for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+            if (tid < stride) {
+                sY[tid] += sY[tid + stride];
+                sW[tid] += sW[tid + stride];
+            }
+            __syncthreads();
+        }
+
+        if (tid == 0 && outPartials) {
+            outPartials[blockIdx.x].sumY = sY[0];
+            outPartials[blockIdx.x].sumW = sW[0];
+        }
+    }
+
+    __global__ void finalize_auto_exposure_from_sums_kernel(
+        const JuicerCudaAutoExposurePartial* sums,
+        double sliderEV,
+        double* outAutoEV,
+        float* outExposureScale,
+        int* outValid)
+    {
+        if (threadIdx.x != 0 || blockIdx.x != 0) {
+            return;
+        }
+
+        double autoEV = 0.0;
+        int valid = 0;
+        if (sums) {
+            const double sumY = sums[0].sumY;
+            const double sumW = sums[0].sumW;
+            if ((sumW > 0.0) && isfinite(sumW) && isfinite(sumY)) {
+                const double Yexp = sumY / sumW;
+                if ((Yexp > 0.0) && (kCameraMeterTargetY > 0.0)) {
+                    const double exposureRatio = Yexp / kCameraMeterTargetY;
+                    const double evComp = -log(exposureRatio) / log(2.0);
+                    if (isfinite(evComp)) {
+                        autoEV = evComp;
+                        valid = 1;
+                    }
+                }
+            }
+        }
+
+        if (outAutoEV) {
+            *outAutoEV = autoEV;
+        }
+        if (outValid) {
+            *outValid = valid;
+        }
+
+        if (outExposureScale) {
+            const double scale64 = exp2(autoEV + sliderEV);
+            const float scale = (isfinite(scale64) && scale64 > 0.0) ? static_cast<float>(scale64) : 1.0f;
+            *outExposureScale = scale;
+        }
+    }
+
+    __global__ void meter_histogram_Y_bits_kernel(
+        const unsigned char* srcBase,
+        std::size_t srcRowBytes,
+        int srcBoundsX1,
+        int srcBoundsY1,
+        int srcBoundsX2,
+        int srcBoundsY2,
+        int meterX1,
+        int meterY1,
+        int width,
+        int height,
+        int nComponents,
+        int inputColorSpaceIndex,
+        int applyCctfDecoding,
+        Mat3 rgbToXYZ,
+        const unsigned int* maxYBits,
+        unsigned int* histogram)
+    {
+        const int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+        float maxY = 0.0f;
+        if (maxYBits) {
+            maxY = __uint_as_float(*maxYBits);
+        }
+        if (!(maxY > 0.0f) || !isfinite(maxY)) {
+            return;
+        }
+
+        if (x < width && y < height) {
+            const int px = meterX1 + x;
+            const int py = meterY1 + y;
+            if (px >= srcBoundsX1 && px < srcBoundsX2 && py >= srcBoundsY1 && py < srcBoundsY2) {
+                const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
+                const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+                const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
+
+                float inRgb[3] = { pix[0], pix[1], pix[2] };
+                float lin[3];
+                apply_input_cctf_decoding_device(inputColorSpaceIndex, applyCctfDecoding, inRgb, lin);
+
+                float Y = mulY(rgbToXYZ, lin);
+                if (isfinite(Y)) {
+                    if (Y < 0.0f) {
+                        Y = 0.0f;
+                    }
+                    const float norm = fminf(1.0f, Y / maxY);
+                    const int bin = static_cast<int>(norm * static_cast<float>(kMedianHistogramBins - 1));
+                    atomicAdd(&histogram[bin], 1U);
+                }
+            }
+        }
+    }
+
+    __global__ void finalize_auto_exposure_from_histogram_kernel(
+        const unsigned int* maxYBits,
+        const unsigned int* histogram,
+        double sliderEV,
+        double* outAutoEV,
+        float* outExposureScale,
+        int* outValid)
+    {
+        if (threadIdx.x != 0 || blockIdx.x != 0) {
+            return;
+        }
+
+        float maxY = 0.0f;
+        if (maxYBits) {
+            maxY = __uint_as_float(*maxYBits);
+        }
+        if (!(maxY > 0.0f) || !isfinite(maxY) || !histogram) {
+            if (outAutoEV) *outAutoEV = 0.0;
+            if (outValid) *outValid = 0;
+            if (outExposureScale) {
+                const double scale64 = exp2(sliderEV);
+                const float scale = (isfinite(scale64) && scale64 > 0.0) ? static_cast<float>(scale64) : 1.0f;
+                *outExposureScale = scale;
+            }
+            return;
+        }
+
+        unsigned long long totalCount = 0;
+        for (int i = 0; i < kMedianHistogramBins; ++i) {
+            totalCount += static_cast<unsigned long long>(histogram[i]);
+        }
+        if (totalCount == 0) {
+            if (outAutoEV) *outAutoEV = 0.0;
+            if (outValid) *outValid = 0;
+            if (outExposureScale) {
+                const double scale64 = exp2(sliderEV);
+                const float scale = (isfinite(scale64) && scale64 > 0.0) ? static_cast<float>(scale64) : 1.0f;
+                *outExposureScale = scale;
+            }
+            return;
+        }
+
+        const unsigned long long target = totalCount / 2ULL;
+        unsigned long long cumulative = 0;
+        int medianBin = kMedianHistogramBins - 1;
+        unsigned int countInBin = 0;
+        for (int i = 0; i < kMedianHistogramBins; ++i) {
+            const unsigned int count = histogram[i];
+            if (cumulative + count > target) {
+                medianBin = i;
+                countInBin = count;
+                break;
+            }
+            cumulative += count;
+        }
+
+        const double binWidth = static_cast<double>(maxY) / static_cast<double>(kMedianHistogramBins);
+        double fraction = 0.0;
+        if (countInBin > 0) {
+            fraction = static_cast<double>(target - cumulative) / static_cast<double>(countInBin);
+        }
+        const double medianY = (static_cast<double>(medianBin) + fraction) * binWidth;
+
+        double autoEV = 0.0;
+        int valid = 0;
+        if ((medianY > 0.0) && isfinite(medianY) && (kCameraMeterTargetY > 0.0)) {
+            const double exposureRatio = medianY / kCameraMeterTargetY;
+            const double evComp = -log(exposureRatio) / log(2.0);
+            if (isfinite(evComp)) {
+                autoEV = evComp;
+                valid = 1;
+            }
+        }
+
+        if (outAutoEV) {
+            *outAutoEV = autoEV;
+        }
+        if (outValid) {
+            *outValid = valid;
+        }
+        if (outExposureScale) {
+            const double scale64 = exp2(autoEV + sliderEV);
+            const float scale = (isfinite(scale64) && scale64 > 0.0) ? static_cast<float>(scale64) : 1.0f;
+            *outExposureScale = scale;
+        }
     }
 
 } // namespace
@@ -627,5 +969,245 @@ extern "C" int juicer_cuda_measure_median_Y(
     }
     const double medianY = (static_cast<double>(medianBin) + fraction) * binWidth;
     *outY = std::isfinite(medianY) ? medianY : 0.0;
+    return 0;
+}
+
+extern "C" int juicer_cuda_auto_exposure_meter_to_device(
+    const void* srcDeviceBase,
+    std::size_t srcRowBytes,
+    int srcBoundsX1,
+    int srcBoundsY1,
+    int srcBoundsX2,
+    int srcBoundsY2,
+    int meterX1,
+    int meterY1,
+    int meterX2,
+    int meterY2,
+    int nComponents,
+    int inputColorSpaceIndex,
+    int applyCctfDecoding,
+    const float* rgbToXYZ9,
+    int meteringMethod,
+    double sliderEV,
+    JuicerCudaAutoExposureScratch scratch,
+    JuicerCudaAutoExposureDeviceState outState,
+    void* cudaStreamOpaque,
+    const char** outErrorMsg)
+{
+    thread_local std::string sError;
+    if (outErrorMsg) {
+        *outErrorMsg = nullptr;
+    }
+
+    if (!srcDeviceBase || srcRowBytes == 0 || !rgbToXYZ9) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "invalid arguments");
+        return 1;
+    }
+    if (!(nComponents == 3 || nComponents == 4)) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "unsupported component count");
+        return 2;
+    }
+    if (!outState.exposureScale || !outState.autoEV || !outState.valid) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "invalid output device state");
+        return 3;
+    }
+
+    const int width = meterX2 - meterX1;
+    const int height = meterY2 - meterY1;
+    if (width <= 0 || height <= 0) {
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        reset_auto_exposure_state_kernel<<<1, 1, 0, stream>>>(sliderEV, outState.autoEV, outState.exposureScale, outState.valid);
+        const cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "reset auto-exposure state failed: ", err);
+            return 4;
+        }
+        return 0;
+    }
+
+    if (srcBoundsX2 < srcBoundsX1 || srcBoundsY2 < srcBoundsY1) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "invalid source bounds");
+        return 5;
+    }
+
+    Mat3 m{};
+    for (int i = 0; i < 9; ++i) {
+        m.m[i] = rgbToXYZ9[i];
+    }
+
+    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+    if (meteringMethod == 1) {
+        if (!scratch.maxYBits || !scratch.histogram) {
+            if (outErrorMsg) *outErrorMsg = set_error(sError, "median metering scratch buffers missing");
+            return 6;
+        }
+
+        cudaError_t err = cudaMemsetAsync(scratch.maxYBits, 0, sizeof(unsigned int), stream);
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMemsetAsync(maxYBits) failed: ", err);
+            return 7;
+        }
+
+        dim3 block(16, 16);
+        dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+        meter_max_Y_kernel<<<grid, block, 0, stream>>>(
+            reinterpret_cast<const unsigned char*>(srcDeviceBase),
+            srcRowBytes,
+            srcBoundsX1,
+            srcBoundsY1,
+            srcBoundsX2,
+            srcBoundsY2,
+            meterX1,
+            meterY1,
+            width,
+            height,
+            nComponents,
+            inputColorSpaceIndex,
+            applyCctfDecoding,
+            m,
+            scratch.maxYBits);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "meter_max_Y_kernel launch failed: ", err);
+            return 8;
+        }
+
+        err = cudaMemsetAsync(scratch.histogram, 0, sizeof(unsigned int) * kMedianHistogramBins, stream);
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "cudaMemsetAsync(histogram) failed: ", err);
+            return 9;
+        }
+
+        meter_histogram_Y_bits_kernel<<<grid, block, 0, stream>>>(
+            reinterpret_cast<const unsigned char*>(srcDeviceBase),
+            srcRowBytes,
+            srcBoundsX1,
+            srcBoundsY1,
+            srcBoundsX2,
+            srcBoundsY2,
+            meterX1,
+            meterY1,
+            width,
+            height,
+            nComponents,
+            inputColorSpaceIndex,
+            applyCctfDecoding,
+            m,
+            scratch.maxYBits,
+            scratch.histogram);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "meter_histogram kernel launch failed: ", err);
+            return 10;
+        }
+
+        finalize_auto_exposure_from_histogram_kernel<<<1, 1, 0, stream>>>(
+            scratch.maxYBits,
+            scratch.histogram,
+            sliderEV,
+            outState.autoEV,
+            outState.exposureScale,
+            outState.valid);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "finalize histogram kernel launch failed: ", err);
+            return 11;
+        }
+        return 0;
+    }
+
+    if (!scratch.partialsA || !scratch.partialsB || scratch.partialCapacity <= 0) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "center-weighted metering partial buffers missing");
+        return 12;
+    }
+
+    dim3 block(16, 16);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    const int blocksCount = static_cast<int>(grid.x * grid.y);
+    if (blocksCount > scratch.partialCapacity) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "center-weighted metering partial buffer capacity too small");
+        return 13;
+    }
+
+    meter_center_weighted_Y_partials_kernel<<<grid, block, 0, stream>>>(
+        reinterpret_cast<const unsigned char*>(srcDeviceBase),
+        srcRowBytes,
+        srcBoundsX1,
+        srcBoundsY1,
+        srcBoundsX2,
+        srcBoundsY2,
+        meterX1,
+        meterY1,
+        width,
+        height,
+        nComponents,
+        inputColorSpaceIndex,
+        applyCctfDecoding,
+        m,
+        scratch.partialsA);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "meter_center_weighted partials kernel launch failed: ", err);
+        return 14;
+    }
+
+    const int reduceThreads = 256;
+    int n = blocksCount;
+    const JuicerCudaAutoExposurePartial* in = scratch.partialsA;
+    JuicerCudaAutoExposurePartial* out = scratch.partialsB;
+    while (n > 1) {
+        const int blocks = (n + reduceThreads * 2 - 1) / (reduceThreads * 2);
+        reduce_auto_exposure_partials_kernel<<<blocks, reduceThreads, 0, stream>>>(in, n, out);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "reduce partials kernel launch failed: ", err);
+            return 15;
+        }
+        n = blocks;
+        const JuicerCudaAutoExposurePartial* nextIn = out;
+        out = (JuicerCudaAutoExposurePartial*)in;
+        in = nextIn;
+    }
+
+    finalize_auto_exposure_from_sums_kernel<<<1, 1, 0, stream>>>(
+        in,
+        sliderEV,
+        outState.autoEV,
+        outState.exposureScale,
+        outState.valid);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "finalize sums kernel launch failed: ", err);
+        return 16;
+    }
+
+    return 0;
+}
+
+extern "C" int juicer_cuda_auto_exposure_update_scale_to_device(
+    double sliderEV,
+    JuicerCudaAutoExposureDeviceState state,
+    void* cudaStreamOpaque,
+    const char** outErrorMsg)
+{
+    thread_local std::string sError;
+    if (outErrorMsg) {
+        *outErrorMsg = nullptr;
+    }
+
+    if (!state.exposureScale || !state.autoEV || !state.valid) {
+        if (outErrorMsg) *outErrorMsg = set_error(sError, "invalid output device state");
+        return 1;
+    }
+
+    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    update_auto_exposure_scale_kernel<<<1, 1, 0, stream>>>(sliderEV, state.autoEV, state.valid, state.exposureScale);
+    const cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        if (outErrorMsg) *outErrorMsg = set_error_cuda(sError, "auto-exposure scale update failed: ", err);
+        return 2;
+    }
+
     return 0;
 }

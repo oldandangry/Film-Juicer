@@ -823,6 +823,22 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         }
     }
 
+    if (_state) {
+        std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
+        _state->autoExposureCanonicalBounds = meterBounds;
+        _state->autoExposureCanonicalValid = true;
+    }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    // CUDA path: metering + exposure scale are computed and applied entirely on the GPU to avoid
+    // forcing a stream synchronization just to read back Y/EV on the CPU.
+    if (exposureParams.cameraAutoEnabled && args.isEnabledCudaRender) {
+        result.autoEV = 0.0;
+        result.exposureScale = 1.0f;
+        return result;
+    }
+#endif
+
     const std::shared_ptr<const WorkingState> wsCur = (_state ? JuicerAtomic::load_shared_ptr(&_state->activeWorkingState) : nullptr);
     const uint64_t wsBuildCounter = wsCur ? wsCur->buildCounter : 0;
 
@@ -1557,6 +1573,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         filmExposureScale = 1.0f;
     }
     proc.setExposure(filmExposureScale);
+    proc.setCameraAutoExposure(exposureParams.cameraAutoEnabled, exposureParams.meteringMethod, exposureParams.sliderEV);
     proc.setOutputEncoding(outputEncodingParams);
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
     proc.setClipToken(renderClipToken);

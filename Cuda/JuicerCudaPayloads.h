@@ -121,6 +121,7 @@ namespace JuicerCuda {
 
     struct FilmExposurePayload {
         float exposureScale = 1.0f;
+        const float* JUICER_RESTRICT exposureScaleDevice = nullptr;
         DeviceCurveView sensB{};
         DeviceCurveView sensG{};
         DeviceCurveView sensR{};

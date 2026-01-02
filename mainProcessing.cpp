@@ -24,6 +24,7 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
+#include "Cuda/JuicerCudaAutoExposure.h"
 #include "GeneratedColorSpaces.h"
 #endif
 
@@ -426,6 +427,12 @@ void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
 void JuicerProcessor::setPrintRuntime(const Print::Runtime* prt, bool printReady) { _prt = prt; _printReady = printReady; }
 void JuicerProcessor::setExposure(float exposureScale) {
     _exposureScale = exposureScale;
+}
+
+void JuicerProcessor::setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV) {
+    _cameraAutoEnabled = enabled;
+    _cameraMeteringMethod = meteringMethod;
+    _cameraSliderEV = sliderEV;
 }
 
 void JuicerProcessor::setOutputEncoding(const OutputEncoding::Params& p) {
@@ -1220,6 +1227,153 @@ void JuicerProcessor::processImagesCUDA() {
 
     const RenderMode renderMode = _printParams.bypass ? RenderMode::NegativeOnly : RenderMode::Print;
 
+    OfxRectI meterBounds = srcBounds;
+    if (_cameraAutoEnabled && _instanceState) {
+        std::lock_guard<std::mutex> lock(_instanceState->autoExposureMutex);
+        if (_instanceState->autoExposureCanonicalValid) {
+            meterBounds = _instanceState->autoExposureCanonicalBounds;
+        }
+    }
+    auto clamp_rect = [](OfxRectI r, const OfxRectI& bounds) {
+        r.x1 = std::clamp(r.x1, bounds.x1, bounds.x2);
+        r.x2 = std::clamp(r.x2, bounds.x1, bounds.x2);
+        r.y1 = std::clamp(r.y1, bounds.y1, bounds.y2);
+        r.y2 = std::clamp(r.y2, bounds.y1, bounds.y2);
+        if (r.x2 < r.x1) {
+            const int tmp = r.x1;
+            r.x1 = r.x2;
+            r.x2 = tmp;
+        }
+        if (r.y2 < r.y1) {
+            const int tmp = r.y1;
+            r.y1 = r.y2;
+            r.y2 = tmp;
+        }
+        return r;
+    };
+    meterBounds = clamp_rect(meterBounds, srcBounds);
+    if ((meterBounds.x2 - meterBounds.x1) <= 0 || (meterBounds.y2 - meterBounds.y1) <= 0) {
+        meterBounds = srcBounds;
+    }
+
+    auto setup_camera_auto_exposure = [&](
+        JuicerCuda::PipelineRunParams& run,
+        JuicerCuda::Resources* cudaResources) {
+        if (!_cameraAutoEnabled || !cudaResources) {
+            return;
+        }
+        if (!(run.nComponents == 3 || run.nComponents == 4)) {
+            return;
+        }
+
+        const int meterWidth = meterBounds.x2 - meterBounds.x1;
+        const int meterHeight = meterBounds.y2 - meterBounds.y1;
+        if (meterWidth <= 0 || meterHeight <= 0) {
+            return;
+        }
+
+        std::string aeError;
+        if (!JuicerCuda::ensure_auto_exposure_buffers(*cudaResources, meterWidth, meterHeight, _pCudaStream, aeError)) {
+            JTRACE("CUDA", std::string("CUDA auto-exposure buffer allocation failed: ") + aeError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+
+        JuicerCudaAutoExposureScratch scratch{};
+        scratch.partialsA = cudaResources->autoExposureScratch.partialsA;
+        scratch.partialsB = cudaResources->autoExposureScratch.partialsB;
+        scratch.partialCapacity = cudaResources->autoExposureScratch.partialCapacity;
+        scratch.maxYBits = cudaResources->autoExposureScratch.maxYBits;
+        scratch.histogram = cudaResources->autoExposureScratch.histogram;
+
+        JuicerCudaAutoExposureDeviceState state{};
+        state.exposureScale = cudaResources->autoExposureExposureScale;
+        state.autoEV = cudaResources->autoExposureAutoEV;
+        state.valid = cudaResources->autoExposureValid;
+
+        std::uint64_t key = Hash::kFnvOffset;
+        const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : 0.0;
+        Hash::hash_bytes_update(key, &timeFrames, sizeof(timeFrames));
+        Hash::hash_bytes_update(key, &_clipToken, sizeof(_clipToken));
+        Hash::hash_bytes_update(key, &meterBounds, sizeof(meterBounds));
+        Hash::hash_bytes_update(key, &srcBounds, sizeof(srcBounds));
+        Hash::hash_bytes_update(key, &srcRowBytes, sizeof(srcRowBytes));
+        Hash::hash_bytes_update(key, &run.nComponents, sizeof(run.nComponents));
+        Hash::hash_bytes_update(key, &run.filmRaw.inputColorSpaceIndex, sizeof(run.filmRaw.inputColorSpaceIndex));
+        Hash::hash_bytes_update(key, &run.filmRaw.applyCctfDecoding, sizeof(run.filmRaw.applyCctfDecoding));
+        Hash::hash_bytes_update(key, &run.filmRaw.inputRGBToXYZ, sizeof(run.filmRaw.inputRGBToXYZ));
+        Hash::hash_bytes_update(key, &_cameraMeteringMethod, sizeof(_cameraMeteringMethod));
+        if (key == 0) {
+            key = 1;
+        }
+
+        auto slider_equal = [](double a, double b) -> bool {
+            if (!(std::isfinite(a) && std::isfinite(b))) {
+                return false;
+            }
+            return std::abs(a - b) <= 1e-12;
+        };
+
+        const bool needMeter = (cudaResources->autoExposureKeyHash != key);
+        const bool needSliderUpdate = !slider_equal(cudaResources->autoExposureSliderEV, _cameraSliderEV);
+        const char* errMsg = nullptr;
+        if (needMeter) {
+            const int rc = juicer_cuda_auto_exposure_meter_to_device(
+                srcBase,
+                static_cast<std::size_t>(srcRowBytes),
+                srcBounds.x1,
+                srcBounds.y1,
+                srcBounds.x2,
+                srcBounds.y2,
+                meterBounds.x1,
+                meterBounds.y1,
+                meterBounds.x2,
+                meterBounds.y2,
+                run.nComponents,
+                run.filmRaw.inputColorSpaceIndex,
+                run.filmRaw.applyCctfDecoding,
+                run.filmRaw.inputRGBToXYZ,
+                _cameraMeteringMethod,
+                _cameraSliderEV,
+                scratch,
+                state,
+                _pCudaStream,
+                &errMsg);
+            if (rc != 0) {
+                JTRACE("CUDA", std::string("CUDA auto-exposure metering failed: ") + (errMsg ? errMsg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+            cudaResources->autoExposureKeyHash = key;
+            cudaResources->autoExposureSliderEV = _cameraSliderEV;
+        }
+        else if (needSliderUpdate) {
+            const int rc = juicer_cuda_auto_exposure_update_scale_to_device(
+                _cameraSliderEV,
+                state,
+                _pCudaStream,
+                &errMsg);
+            if (rc != 0) {
+                JTRACE("CUDA", std::string("CUDA auto-exposure slider update failed: ") + (errMsg ? errMsg : "(unknown)"));
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+            cudaResources->autoExposureSliderEV = _cameraSliderEV;
+        }
+
+        run.filmExpose.exposureScaleDevice = cudaResources->autoExposureExposureScale;
+        run.filmExpose.exposureScale = 1.0f;
+    };
+
     struct GrainSetupResult {
         bool wantGrain = false;
         bool wantGrainSublayers = false;
@@ -1714,6 +1868,8 @@ void JuicerProcessor::processImagesCUDA() {
                 JTRACE("CUDA", "FATAL: CUDA resources missing for negative pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
+
+            setup_camera_auto_exposure(run, cudaResources);
 
             run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n, cudaResources->densB.domainBegin, cudaResources->densB.domainEnd };
             run.filmDevelop.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n, cudaResources->densG.domainBegin, cudaResources->densG.domainEnd };
@@ -2345,6 +2501,8 @@ void JuicerProcessor::processImagesCUDA() {
                 JTRACE("CUDA", "FATAL: CUDA resources missing for print pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
+
+            setup_camera_auto_exposure(run, cudaResources);
 
             // Ensure the print illuminant filtered is available for current print params.
             std::string illumError;

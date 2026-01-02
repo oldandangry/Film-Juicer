@@ -445,6 +445,42 @@ namespace JuicerCuda {
         resources.scanErrorPending = 0;
     }
 
+    static void free_auto_exposure(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.autoExposureScratch.partialsA) {
+            cudaFree(resources.autoExposureScratch.partialsA);
+            resources.autoExposureScratch.partialsA = nullptr;
+        }
+        if (resources.autoExposureScratch.partialsB) {
+            cudaFree(resources.autoExposureScratch.partialsB);
+            resources.autoExposureScratch.partialsB = nullptr;
+        }
+        if (resources.autoExposureScratch.maxYBits) {
+            cudaFree(resources.autoExposureScratch.maxYBits);
+            resources.autoExposureScratch.maxYBits = nullptr;
+        }
+        if (resources.autoExposureScratch.histogram) {
+            cudaFree(resources.autoExposureScratch.histogram);
+            resources.autoExposureScratch.histogram = nullptr;
+        }
+        if (resources.autoExposureExposureScale) {
+            cudaFree(resources.autoExposureExposureScale);
+            resources.autoExposureExposureScale = nullptr;
+        }
+        if (resources.autoExposureAutoEV) {
+            cudaFree(resources.autoExposureAutoEV);
+            resources.autoExposureAutoEV = nullptr;
+        }
+        if (resources.autoExposureValid) {
+            cudaFree(resources.autoExposureValid);
+            resources.autoExposureValid = nullptr;
+        }
+#endif
+        resources.autoExposureScratch.partialCapacity = 0;
+        resources.autoExposureKeyHash = 0;
+        resources.autoExposureSliderEV = std::numeric_limits<double>::quiet_NaN();
+    }
+
     static void free_tables(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.tablesAx) {
@@ -743,6 +779,7 @@ namespace JuicerCuda {
         free_hanatos(*this);
         free_hanatos_integrated(*this);
         free_scan_error_flag(*this);
+        free_auto_exposure(*this);
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (lastUseEventOpaque) {
             cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
@@ -1473,6 +1510,129 @@ namespace JuicerCuda {
                 resources.scanErrorEventOpaque = reinterpret_cast<void*>(ev);
             }
         }
+        return true;
+#endif
+    }
+
+    bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)meterWidth;
+        (void)meterHeight;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (meterWidth <= 0 || meterHeight <= 0) {
+            outError = "auto-exposure meter dimensions invalid";
+            return false;
+        }
+
+        const int blockX = 16;
+        const int blockY = 16;
+        const int gridX = (meterWidth + blockX - 1) / blockX;
+        const int gridY = (meterHeight + blockY - 1) / blockY;
+        const int neededPartials = gridX * gridY;
+        if (neededPartials <= 0) {
+            outError = "auto-exposure partial count invalid";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        if (!resources.autoExposureExposureScale) {
+            const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureExposureScale), sizeof(float));
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(auto-exposure scale) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_auto_exposure(resources);
+                return false;
+            }
+        }
+        if (!resources.autoExposureAutoEV) {
+            const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureAutoEV), sizeof(double));
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(auto-exposure autoEV) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_auto_exposure(resources);
+                return false;
+            }
+        }
+        if (!resources.autoExposureValid) {
+            const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureValid), sizeof(int));
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(auto-exposure valid) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_auto_exposure(resources);
+                return false;
+            }
+        }
+
+        if (!resources.autoExposureScratch.maxYBits) {
+            const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureScratch.maxYBits), sizeof(unsigned int));
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(auto-exposure maxYBits) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_auto_exposure(resources);
+                return false;
+            }
+        }
+        if (!resources.autoExposureScratch.histogram) {
+            const size_t bytes = sizeof(unsigned int) * 2048u;
+            const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureScratch.histogram), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(auto-exposure histogram) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_auto_exposure(resources);
+                return false;
+            }
+        }
+
+        if (resources.autoExposureScratch.partialCapacity < neededPartials) {
+            if (resources.autoExposureScratch.partialsA || resources.autoExposureScratch.partialsB) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "auto-exposure", outError)) {
+                    return false;
+                }
+                if (resources.autoExposureScratch.partialsA) {
+                    cudaFree(resources.autoExposureScratch.partialsA);
+                    resources.autoExposureScratch.partialsA = nullptr;
+                }
+                if (resources.autoExposureScratch.partialsB) {
+                    cudaFree(resources.autoExposureScratch.partialsB);
+                    resources.autoExposureScratch.partialsB = nullptr;
+                }
+                resources.autoExposureScratch.partialCapacity = 0;
+            }
+
+            const size_t bytes = static_cast<size_t>(neededPartials) * sizeof(JuicerCudaAutoExposurePartial);
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureScratch.partialsA), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(auto-exposure partialsA) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_auto_exposure(resources);
+                return false;
+            }
+            err = cudaMalloc(reinterpret_cast<void**>(&resources.autoExposureScratch.partialsB), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(auto-exposure partialsB) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                free_auto_exposure(resources);
+                return false;
+            }
+
+            resources.autoExposureScratch.partialCapacity = neededPartials;
+            resources.autoExposureKeyHash = 0;
+            resources.autoExposureSliderEV = std::numeric_limits<double>::quiet_NaN();
+        }
+
         return true;
 #endif
     }

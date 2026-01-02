@@ -458,6 +458,13 @@ static __device__ __forceinline__ void compute_film_raw_device(
     if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
         exposureScale = 1.0f;
     }
+    if (expose.exposureScaleDevice) {
+        float deviceScale = *expose.exposureScaleDevice;
+        if (!isfinite(deviceScale) || !(deviceScale > 0.0f)) {
+            deviceScale = 1.0f;
+        }
+        exposureScale = deviceScale;
+    }
 
     for (int i = 0; i < 3; ++i) {
         float v = E_raw[i];

@@ -58,6 +58,7 @@ public:
     void setWorkingState(const WorkingState* ws, bool wsReady);
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
     void setExposure(float exposureScale);
+    void setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV);
     void setOutputEncoding(const OutputEncoding::Params& p);
     void setInstanceState(InstanceState* s);
     void setClipToken(std::uintptr_t token);
@@ -111,6 +112,9 @@ private:
     bool _printReady;
 
     float _exposureScale;
+    bool _cameraAutoEnabled = false;
+    int _cameraMeteringMethod = 0;
+    double _cameraSliderEV = 0.0;
     OutputEncoding::Params _outputEncoding;
     std::uintptr_t _clipToken = 0;
     std::uint64_t _frameTimeHash = 0;
