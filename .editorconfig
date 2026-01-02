@@ -1,0 +1,19 @@
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+
+# Default to LF everywhere; override for Windows-native project files/scripts.
+end_of_line = lf
+
+[*.{sln,vcxproj,vcxproj.user,filters,props,targets,csproj}]
+end_of_line = crlf
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+[*.{c,cc,cpp,cxx,h,hh,hpp,hxx,inl,ixx,cu,cuh}]
+indent_style = space
+indent_size = 4
+

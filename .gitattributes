@@ -1,5 +1,5 @@
 # --- Core: normalize text ---
-* text=auto
+* text=auto eol=lf
 
 # Visual Studio project/solution metadata (keep CRLF on checkout)
 *.sln      text eol=crlf
