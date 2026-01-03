@@ -1104,6 +1104,30 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
     }
     dirRT.spatialSigmaPixels = sigmaPixels;
 
+    auto dir_has_effect = [](const Couplers::Runtime& rt) -> bool {
+        if (!rt.active) {
+            return false;
+        }
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                const float v = rt.M[r][c];
+                if (!std::isfinite(v)) {
+                    continue;
+                }
+                if (v != 0.0f) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    if (!dir_has_effect(dirRT)) {
+        // Provably zero-effect DIR (e.g. amount==0). Treat as inactive so we can skip the
+        // extra DIR sampling path and any spatial-DIR build work without changing results.
+        dirRT.active = false;
+    }
+
     return dirRT;
 }
 #endif

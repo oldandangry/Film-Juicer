@@ -133,6 +133,12 @@ namespace JuicerCuda {
             int capacity = 0;
         };
 
+        // Shared single-plane W×H float scratch used as a blur/unsharp intermediate.
+        // Spatial DIR and scanner optics reuse this to reduce peak VRAM.
+        float* sharedTmpPlane = nullptr;
+        int sharedTmpWidth = 0;
+        int sharedTmpHeight = 0;
+
     struct DeviceOpticsScratch {
         float* rgbR = nullptr;
         float* rgbG = nullptr;

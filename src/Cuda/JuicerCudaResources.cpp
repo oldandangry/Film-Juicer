@@ -937,12 +937,12 @@ namespace JuicerCuda {
         if (s.rgbR) { cudaFree(s.rgbR); s.rgbR = nullptr; }
         if (s.rgbG) { cudaFree(s.rgbG); s.rgbG = nullptr; }
         if (s.rgbB) { cudaFree(s.rgbB); s.rgbB = nullptr; }
-        if (s.tmp) { cudaFree(s.tmp); s.tmp = nullptr; }
         if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
         if (s.aux) { cudaFree(s.aux); s.aux = nullptr; }
         if (s.grainTmp) { cudaFree(s.grainTmp); s.grainTmp = nullptr; }
         if (s.gateMask) { cudaFree(s.gateMask); s.gateMask = nullptr; }
 #endif
+        s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
         s.gateWidth = 0;
@@ -955,10 +955,21 @@ namespace JuicerCuda {
         if (s.corrY) { cudaFree(s.corrY); s.corrY = nullptr; }
         if (s.corrM) { cudaFree(s.corrM); s.corrM = nullptr; }
         if (s.corrC) { cudaFree(s.corrC); s.corrC = nullptr; }
-        if (s.tmp) { cudaFree(s.tmp); s.tmp = nullptr; }
 #endif
+        s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
+    }
+
+    static void free_shared_tmp_plane(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.sharedTmpPlane) {
+            cudaFree(resources.sharedTmpPlane);
+            resources.sharedTmpPlane = nullptr;
+        }
+#endif
+        resources.sharedTmpWidth = 0;
+        resources.sharedTmpHeight = 0;
     }
 
     static void free_print_payloads(Resources& resources) noexcept {
@@ -1319,6 +1330,7 @@ namespace JuicerCuda {
         free_optics_scratch(scannerScratch);
         free_gaussian_kernel(spatialDirKernel);
         free_spatial_dir_scratch(spatialDirScratch);
+        free_shared_tmp_plane(*this);
         free_stbn(*this);
         free_wang(*this);
         free_print_payloads(*this);
@@ -2235,6 +2247,53 @@ namespace JuicerCuda {
 #endif
     }
 
+    static bool ensure_shared_tmp_plane_locked(Resources& resources, int width, int height, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)width;
+        (void)height;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (width <= 0 || height <= 0) {
+            outError = std::string(label ? label : "shared tmp") + " dimensions invalid";
+            return false;
+        }
+
+        if (resources.sharedTmpPlane &&
+            resources.sharedTmpWidth == width &&
+            resources.sharedTmpHeight == height) {
+            return true;
+        }
+
+        if (resources.sharedTmpPlane) {
+            if (!sync_before_rebuild(resources, cudaStreamOpaque, label ? label : "shared tmp", outError)) {
+                return false;
+            }
+            cudaFree(resources.sharedTmpPlane);
+            resources.sharedTmpPlane = nullptr;
+        }
+        resources.sharedTmpWidth = 0;
+        resources.sharedTmpHeight = 0;
+
+        const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
+        const size_t bytes = n * sizeof(float);
+        const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.sharedTmpPlane), bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(") + (label ? label : "shared tmp") + ") failed: " +
+                (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            resources.sharedTmpPlane = nullptr;
+            return false;
+        }
+
+        resources.sharedTmpWidth = width;
+        resources.sharedTmpHeight = height;
+        return true;
+#endif
+    }
+
     bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
@@ -2271,11 +2330,12 @@ namespace JuicerCuda {
         }
 
         const bool dimsMatch = (resources.scannerScratch.width == width && resources.scannerScratch.height == height);
-        const bool haveBase = resources.scannerScratch.rgbR && resources.scannerScratch.rgbG && resources.scannerScratch.rgbB && resources.scannerScratch.tmp;
+        const bool haveBase = resources.scannerScratch.rgbR && resources.scannerScratch.rgbG && resources.scannerScratch.rgbB;
 
         if (!dimsMatch || !haveBase) {
-            if (resources.scannerScratch.rgbR || resources.scannerScratch.tmp || resources.scannerScratch.blurred ||
-                resources.scannerScratch.aux || resources.scannerScratch.gateMask) {
+            if (resources.scannerScratch.rgbR || resources.scannerScratch.rgbG || resources.scannerScratch.rgbB ||
+                resources.scannerScratch.blurred || resources.scannerScratch.aux || resources.scannerScratch.grainTmp ||
+                resources.scannerScratch.gateMask) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -2302,16 +2362,16 @@ namespace JuicerCuda {
                 free_optics_scratch(resources.scannerScratch);
                 return false;
             }
-            err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.tmp), bytes);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(scannerScratch.tmp) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                free_optics_scratch(resources.scannerScratch);
-                return false;
-            }
 
             resources.scannerScratch.width = width;
             resources.scannerScratch.height = height;
         }
+
+        if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
+            free_optics_scratch(resources.scannerScratch);
+            return false;
+        }
+        resources.scannerScratch.tmp = resources.sharedTmpPlane;
 
         if (needBlurredScratch) {
             if (!resources.scannerScratch.blurred) {
@@ -2457,11 +2517,16 @@ namespace JuicerCuda {
         }
 
         Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
-        if (scratch.width == width && scratch.height == height && scratch.corrY && scratch.corrM && scratch.corrC && scratch.tmp) {
+        const bool haveBase = (scratch.width == width && scratch.height == height && scratch.corrY && scratch.corrM && scratch.corrC);
+        if (haveBase) {
+            if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
+                return false;
+            }
+            scratch.tmp = resources.sharedTmpPlane;
             return true;
         }
 
-        if (scratch.corrY || scratch.corrM || scratch.corrC || scratch.tmp) {
+        if (scratch.corrY || scratch.corrM || scratch.corrC) {
             if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR scratch", outError)) {
                 return false;
             }
@@ -2488,12 +2553,11 @@ namespace JuicerCuda {
             free_spatial_dir_scratch(scratch);
             return false;
         }
-        err = cudaMalloc(reinterpret_cast<void**>(&scratch.tmp), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(spatial DIR tmp) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
             free_spatial_dir_scratch(scratch);
             return false;
         }
+        scratch.tmp = resources.sharedTmpPlane;
 
         scratch.width = width;
         scratch.height = height;
