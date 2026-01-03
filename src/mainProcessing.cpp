@@ -479,6 +479,12 @@ void JuicerProcessor::setPixelSizeUm(float pixelSizeUm) {
     _pixelSizeUm = pixelSizeUm;
 }
 
+void JuicerProcessor::setRenderHints(bool interactiveRenderStatus, bool renderQualityDraft, bool sequentialRenderStatus) {
+    _renderInteractiveStatus = interactiveRenderStatus;
+    _renderQualityDraft = renderQualityDraft;
+    _renderSequentialStatus = sequentialRenderStatus;
+}
+
 JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
     RenderContext ctx{};
     ctx.window = _renderWindow;
@@ -1009,6 +1015,8 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
+    const bool isInteractive = (_renderInteractiveStatus || _renderQualityDraft);
+
     if (!(_nComponents == 1 || _nComponents == 3 || _nComponents == 4)) {
         OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
     }
@@ -1087,6 +1095,10 @@ void JuicerProcessor::processImagesCUDA() {
         }
     }
 
+    if (_effect.abort()) {
+        return;
+    }
+
     const unsigned char* srcPtr = srcBase + ySrc * srcRowBytes + xSrc * bytesPerPixel;
     unsigned char* dstPtr = dstBase + yDst * dstRowBytes + xDst * bytesPerPixel;
 
@@ -1116,9 +1128,13 @@ void JuicerProcessor::processImagesCUDA() {
         cudaResources = slot.get();
     }
 
+    if (_effect.abort()) {
+        return;
+    }
+
     std::string uploadError;
     {
-        std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+        std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
         if (!cudaResources) {
             JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1142,10 +1158,17 @@ void JuicerProcessor::processImagesCUDA() {
         }
     }
 
+    if (_effect.abort()) {
+        if (cudaResources) {
+            JuicerCuda::record_use(*cudaResources, _pCudaStream);
+        }
+        return;
+    }
+
 #if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
     if (JTRACE_ENABLED(3)) {
         std::string validateError;
-        std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+        std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
         if (!cudaResources) {
             JTRACE("CUDA", "FATAL: CUDA resources missing for validation");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -1260,6 +1283,9 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerCuda::PipelineRunParams& run,
         JuicerCuda::Resources* cudaResources) {
         if (!_cameraAutoEnabled || !cudaResources) {
+            return;
+        }
+        if (_effect.abort()) {
             return;
         }
         if (!(run.nComponents == 3 || run.nComponents == 4)) {
@@ -1790,6 +1816,218 @@ void JuicerProcessor::processImagesCUDA() {
         return result;
     };
 
+    using BasePipelineLaunchFn = cudaError_t(*)(const JuicerCuda::PipelineRunParams*, void*);
+
+    auto destroy_base_graph_entry = [](JuicerCuda::Resources::BaseGraphEntry& entry) {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (entry.execOpaque) {
+            cudaGraphExecDestroy(reinterpret_cast<cudaGraphExec_t>(entry.execOpaque));
+            entry.execOpaque = nullptr;
+        }
+        if (entry.graphOpaque) {
+            cudaGraphDestroy(reinterpret_cast<cudaGraph_t>(entry.graphOpaque));
+            entry.graphOpaque = nullptr;
+        }
+        entry.kernelNodeOpaque = nullptr;
+        entry.kernelFuncOpaque = nullptr;
+        entry.gridX = 0;
+        entry.gridY = 0;
+        entry.gridZ = 0;
+        entry.blockX = 0;
+        entry.blockY = 0;
+        entry.blockZ = 0;
+        entry.sharedMemBytes = 0;
+#else
+        (void)entry;
+#endif
+    };
+
+    auto launch_base_pipeline_graph = [&](JuicerCuda::Resources& resources,
+                                         int renderModeKey,
+                                         BasePipelineLaunchFn launchFn,
+                                         JuicerCuda::PipelineRunParams& run,
+                                         cudaStream_t stream) -> cudaError_t {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)renderModeKey;
+        (void)launchFn;
+        (void)run;
+        (void)stream;
+        return cudaErrorNotSupported;
+#else
+        if (!launchFn) {
+            return cudaErrorInvalidValue;
+        }
+
+        // Base graphs are capped to avoid unbounded growth if the host requests many sizes.
+        constexpr std::size_t kBaseGraphCap = 4;
+
+        JuicerCuda::Resources::BaseGraphKey key{};
+        key.width = run.width;
+        key.height = run.height;
+        key.nComponents = run.nComponents;
+        key.renderMode = renderModeKey;
+
+        auto key_equal = [](const JuicerCuda::Resources::BaseGraphKey& a, const JuicerCuda::Resources::BaseGraphKey& b) {
+            return a.width == b.width &&
+                a.height == b.height &&
+                a.nComponents == b.nComponents &&
+                a.renderMode == b.renderMode;
+        };
+
+        resources.baseGraphTick++;
+        const std::uint64_t useTick = resources.baseGraphTick;
+
+        JuicerCuda::Resources::BaseGraphEntry* found = nullptr;
+        for (auto& entry : resources.baseGraphs) {
+            if (key_equal(entry.key, key) && entry.execOpaque && entry.graphOpaque && entry.kernelNodeOpaque) {
+                found = &entry;
+                break;
+            }
+        }
+
+        auto evict_one_lru = [&]() {
+            if (resources.baseGraphs.empty()) {
+                return;
+            }
+            std::size_t victim = 0;
+            std::uint64_t best = resources.baseGraphs[0].lastUseTick;
+            for (std::size_t i = 1; i < resources.baseGraphs.size(); ++i) {
+                const std::uint64_t t = resources.baseGraphs[i].lastUseTick;
+                if (t < best) {
+                    best = t;
+                    victim = i;
+                }
+            }
+            destroy_base_graph_entry(resources.baseGraphs[victim]);
+            resources.baseGraphs.erase(resources.baseGraphs.begin() + static_cast<std::ptrdiff_t>(victim));
+        };
+
+        auto build_graph = [&]() -> JuicerCuda::Resources::BaseGraphEntry* {
+            if (resources.baseGraphs.size() >= kBaseGraphCap) {
+                evict_one_lru();
+            }
+
+            cudaGraph_t graph = nullptr;
+            cudaGraphExec_t exec = nullptr;
+            cudaGraphNode_t kernelNode = nullptr;
+
+            cudaError_t capErr = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+            if (capErr != cudaSuccess) {
+                return nullptr;
+            }
+
+            // Capture only the steady-state base kernel launch for this key.
+            cudaError_t launchErr = launchFn(&run, reinterpret_cast<void*>(stream));
+            if (launchErr != cudaSuccess) {
+                cudaGraph_t abortGraph = nullptr;
+                cudaStreamEndCapture(stream, &abortGraph);
+                if (abortGraph) {
+                    cudaGraphDestroy(abortGraph);
+                }
+                return nullptr;
+            }
+
+            capErr = cudaStreamEndCapture(stream, &graph);
+            if (capErr != cudaSuccess || !graph) {
+                return nullptr;
+            }
+
+            cudaError_t instErr = cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+            if (instErr != cudaSuccess || !exec) {
+                cudaGraphDestroy(graph);
+                return nullptr;
+            }
+
+            std::size_t nodeCount = 0;
+            cudaError_t nodeErr = cudaGraphGetNodes(graph, nullptr, &nodeCount);
+            if (nodeErr == cudaSuccess && nodeCount > 0) {
+                std::vector<cudaGraphNode_t> nodes;
+                nodes.resize(nodeCount);
+                nodeErr = cudaGraphGetNodes(graph, nodes.data(), &nodeCount);
+                if (nodeErr == cudaSuccess) {
+                    for (cudaGraphNode_t n : nodes) {
+                        cudaGraphNodeType t = cudaGraphNodeTypeEmpty;
+                        if (cudaGraphNodeGetType(n, &t) == cudaSuccess && t == cudaGraphNodeTypeKernel) {
+                            kernelNode = n;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!kernelNode) {
+                cudaGraphExecDestroy(exec);
+                cudaGraphDestroy(graph);
+                return nullptr;
+            }
+
+            cudaKernelNodeParams baseParams{};
+            if (cudaGraphKernelNodeGetParams(kernelNode, &baseParams) != cudaSuccess || !baseParams.func) {
+                cudaGraphExecDestroy(exec);
+                cudaGraphDestroy(graph);
+                return nullptr;
+            }
+
+            JuicerCuda::Resources::BaseGraphEntry entry{};
+            entry.key = key;
+            entry.graphOpaque = reinterpret_cast<void*>(graph);
+            entry.execOpaque = reinterpret_cast<void*>(exec);
+            entry.kernelNodeOpaque = reinterpret_cast<void*>(kernelNode);
+            entry.kernelFuncOpaque = baseParams.func;
+            entry.gridX = baseParams.gridDim.x;
+            entry.gridY = baseParams.gridDim.y;
+            entry.gridZ = baseParams.gridDim.z;
+            entry.blockX = baseParams.blockDim.x;
+            entry.blockY = baseParams.blockDim.y;
+            entry.blockZ = baseParams.blockDim.z;
+            entry.sharedMemBytes = baseParams.sharedMemBytes;
+            entry.lastUseTick = useTick;
+            resources.baseGraphs.push_back(entry);
+            return &resources.baseGraphs.back();
+        };
+
+        if (!found) {
+            found = build_graph();
+        }
+
+        if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
+            // Capture failed or graph missing; fall back to normal dispatch.
+            return launchFn(&run, reinterpret_cast<void*>(stream));
+        }
+
+        found->lastUseTick = useTick;
+
+        cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(found->execOpaque);
+        cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(found->kernelNodeOpaque);
+
+        cudaKernelNodeParams nodeParams{};
+        nodeParams.func = found->kernelFuncOpaque;
+        nodeParams.gridDim = dim3(found->gridX, found->gridY, found->gridZ);
+        nodeParams.blockDim = dim3(found->blockX, found->blockY, found->blockZ);
+        nodeParams.sharedMemBytes = found->sharedMemBytes;
+        void* kernelArgs[] = { &run };
+        nodeParams.kernelParams = kernelArgs;
+        nodeParams.extra = nullptr;
+        cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
+        if (setErr != cudaSuccess) {
+            destroy_base_graph_entry(*found);
+            return launchFn(&run, reinterpret_cast<void*>(stream));
+        }
+
+        cudaError_t runErr = cudaGraphLaunch(exec, stream);
+        if (runErr == cudaSuccess) {
+            runErr = cudaGetLastError();
+        }
+        if (runErr != cudaSuccess) {
+            destroy_base_graph_entry(*found);
+            return launchFn(&run, reinterpret_cast<void*>(stream));
+        }
+
+        return cudaSuccess;
+#endif
+    };
+
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
         const bool scannerUseLut = _scannerSettings.useLut;
@@ -1886,13 +2124,18 @@ void JuicerProcessor::processImagesCUDA() {
 
         const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
 
-        // Device pointers from the per-instance cache + kernel launch + record_use must be
-        // serialized to avoid rebuild races before lastUseEvent is recorded.
+        // Per-resource submission (ensure_* + kernel launch + record_use) is serialized to keep
+        // lastUseEvent ordering correct across streams without blocking the CPU.
         {
-            std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+            std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
             if (!cudaResources) {
                 JTRACE("CUDA", "FATAL: CUDA resources missing for negative pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            if (_effect.abort()) {
+                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                return;
             }
 
             setup_camera_auto_exposure(run, cudaResources);
@@ -1978,17 +2221,43 @@ void JuicerProcessor::processImagesCUDA() {
                 : nullptr;
             if (cudaResources->scanErrorPending && scanEvent && cudaResources->scanErrorHost) {
                 cudaError_t pollErr = cudaEventQuery(scanEvent);
-                if (pollErr == cudaErrorNotReady) {
-                    pollErr = cudaEventSynchronize(scanEvent);
+                if (pollErr == cudaSuccess) {
+                    cudaResources->scanErrorPending = 0;
+                    if (*cudaResources->scanErrorHost != 0) {
+                        JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
                 }
-                if (pollErr != cudaSuccess) {
+                else if (pollErr == cudaErrorNotReady) {
+                    if (!isInteractive) {
+                        pollErr = cudaEventSynchronize(scanEvent);
+                        if (pollErr != cudaSuccess) {
+                            const char* msg = cudaGetErrorString(pollErr);
+                            JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                        cudaResources->scanErrorPending = 0;
+                        if (*cudaResources->scanErrorHost != 0) {
+                            JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                    }
+                    else {
+                        // Interactive renders: do not block the CPU. Ensure safe reuse of the
+                        // event/host staging by ordering this stream after the pending readback.
+                        const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
+                        if (waitErr != cudaSuccess) {
+                            const char* msg = cudaGetErrorString(waitErr);
+                            JTRACE("CUDA", std::string("CUDA scan error stream wait failed: ") + (msg ? msg : "(unknown)"));
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                        // Drop the pending check for interactive renders; we'll reuse the event for this render.
+                        cudaResources->scanErrorPending = 0;
+                    }
+                }
+                else {
                     const char* msg = cudaGetErrorString(pollErr);
-                    JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-                cudaResources->scanErrorPending = 0;
-                if (*cudaResources->scanErrorHost != 0) {
-                    JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                    JTRACE("CUDA", std::string("CUDA scan error event query failed: ") + (msg ? msg : "(unknown)"));
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }
@@ -2009,6 +2278,10 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmDevelop.spatialDir.corrM = nullptr;
             run.filmDevelop.spatialDir.corrC = nullptr;
             if (useSpatialDIR) {
+                if (_effect.abort()) {
+                    JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                    return;
+                }
                 std::string dirError;
                 if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
                     JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
@@ -2135,9 +2408,19 @@ void JuicerProcessor::processImagesCUDA() {
             const bool needGateMask = (run.grain.gateDustAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
             const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
 
+            if (_effect.abort()) {
+                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                return;
+            }
+
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
-                err = juicer_cuda_negative_pipeline(&run, _pCudaStream);
+                err = launch_base_pipeline_graph(
+                    *cudaResources,
+                    static_cast<int>(renderMode),
+                    juicer_cuda_negative_pipeline,
+                    run,
+                    stream);
             }
             else {
                 std::string opticsError;
@@ -2177,6 +2460,10 @@ void JuicerProcessor::processImagesCUDA() {
                         gateHash = 1;
                     }
                     if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
+                        if (_effect.abort()) {
+                            JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                            return;
+                        }
                         cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
                             &run,
                             cudaResources->scannerScratch.gateMask,
@@ -2343,6 +2630,11 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
+            if (_effect.abort()) {
+                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                return;
+            }
+
             if (cudaResources->scanErrorHost && scanEvent) {
                 flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
@@ -2375,26 +2667,30 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
             else {
-                int scanError = 0;
-                flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
-                if (flagErr != cudaSuccess) {
-                    const char* msg = cudaGetErrorString(flagErr);
-                    JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
+                // If the pinned host staging/event path isn't available, the legacy fallback requires a
+                // stream sync to read back the flag. Avoid that in interactive/draft renders.
+                if (!isInteractive) {
+                    int scanError = 0;
+                    flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                    if (flagErr != cudaSuccess) {
+                        const char* msg = cudaGetErrorString(flagErr);
+                        JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
 #else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
-                }
-                flagErr = cudaStreamSynchronize(stream);
-                if (flagErr != cudaSuccess) {
-                    const char* msg = cudaGetErrorString(flagErr);
-                    JTRACE("CUDA", std::string("CUDA stream sync failed after negative pipeline: ") + (msg ? msg : "(unknown)"));
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-                if (scanError != 0) {
-                    JTRACE("CUDA", "FATAL: negative pipeline scan produced non-finite RGB");
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
+                    flagErr = cudaStreamSynchronize(stream);
+                    if (flagErr != cudaSuccess) {
+                        const char* msg = cudaGetErrorString(flagErr);
+                        JTRACE("CUDA", std::string("CUDA stream sync failed after negative pipeline: ") + (msg ? msg : "(unknown)"));
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
+                    if (scanError != 0) {
+                        JTRACE("CUDA", "FATAL: negative pipeline scan produced non-finite RGB");
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
                 }
             }
 
@@ -2519,13 +2815,18 @@ void JuicerProcessor::processImagesCUDA() {
 
         const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
 
-        // Device pointers from the per-instance cache + kernel launch + record_use must be
-        // serialized to avoid rebuild races before lastUseEvent is recorded.
+        // Per-resource submission (ensure_* + kernel launch + record_use) is serialized to keep
+        // lastUseEvent ordering correct across streams without blocking the CPU.
         {
-            std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
+            std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
             if (!cudaResources) {
                 JTRACE("CUDA", "FATAL: CUDA resources missing for print pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+
+            if (_effect.abort()) {
+                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                return;
             }
 
             setup_camera_auto_exposure(run, cudaResources);
@@ -2646,17 +2947,40 @@ void JuicerProcessor::processImagesCUDA() {
                 : nullptr;
             if (cudaResources->scanErrorPending && scanEvent && cudaResources->scanErrorHost) {
                 cudaError_t pollErr = cudaEventQuery(scanEvent);
-                if (pollErr == cudaErrorNotReady) {
-                    pollErr = cudaEventSynchronize(scanEvent);
+                if (pollErr == cudaSuccess) {
+                    cudaResources->scanErrorPending = 0;
+                    if (*cudaResources->scanErrorHost != 0) {
+                        JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
                 }
-                if (pollErr != cudaSuccess) {
+                else if (pollErr == cudaErrorNotReady) {
+                    if (!isInteractive) {
+                        pollErr = cudaEventSynchronize(scanEvent);
+                        if (pollErr != cudaSuccess) {
+                            const char* msg = cudaGetErrorString(pollErr);
+                            JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                        cudaResources->scanErrorPending = 0;
+                        if (*cudaResources->scanErrorHost != 0) {
+                            JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                    }
+                    else {
+                        const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
+                        if (waitErr != cudaSuccess) {
+                            const char* msg = cudaGetErrorString(waitErr);
+                            JTRACE("CUDA", std::string("CUDA scan error stream wait failed: ") + (msg ? msg : "(unknown)"));
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        }
+                        cudaResources->scanErrorPending = 0;
+                    }
+                }
+                else {
                     const char* msg = cudaGetErrorString(pollErr);
-                    JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-                cudaResources->scanErrorPending = 0;
-                if (*cudaResources->scanErrorHost != 0) {
-                    JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                    JTRACE("CUDA", std::string("CUDA scan error event query failed: ") + (msg ? msg : "(unknown)"));
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }
@@ -2677,6 +3001,10 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmDevelop.spatialDir.corrM = nullptr;
             run.filmDevelop.spatialDir.corrC = nullptr;
             if (useSpatialDIR) {
+                if (_effect.abort()) {
+                    JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                    return;
+                }
                 std::string dirError;
                 if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
                     JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
@@ -2872,9 +3200,19 @@ void JuicerProcessor::processImagesCUDA() {
             const bool needGateMask = (run.grain.gateDustAmount > 0.0f) || (run.grain.gateScratchAmount > 0.0f);
             const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
 
+            if (_effect.abort()) {
+                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                return;
+            }
+
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
-                err = juicer_cuda_print_pipeline(&run, _pCudaStream);
+                err = launch_base_pipeline_graph(
+                    *cudaResources,
+                    static_cast<int>(renderMode),
+                    juicer_cuda_print_pipeline,
+                    run,
+                    stream);
             }
             else {
                 std::string opticsError;
@@ -2914,6 +3252,10 @@ void JuicerProcessor::processImagesCUDA() {
                         gateHash = 1;
                     }
                     if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
+                        if (_effect.abort()) {
+                            JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                            return;
+                        }
                         cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
                             &run,
                             cudaResources->scannerScratch.gateMask,
@@ -3080,6 +3422,11 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
+            if (_effect.abort()) {
+                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+                return;
+            }
+
             if (cudaResources->scanErrorHost && scanEvent) {
                 flagErr = cudaMemcpyAsync(cudaResources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
                 if (flagErr != cudaSuccess) {
@@ -3113,26 +3460,28 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
             else {
-                int scanError = 0;
-                flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
-                if (flagErr != cudaSuccess) {
-                    const char* msg = cudaGetErrorString(flagErr);
-                    JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
+                if (!isInteractive) {
+                    int scanError = 0;
+                    flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+                    if (flagErr != cudaSuccess) {
+                        const char* msg = cudaGetErrorString(flagErr);
+                        JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
 #else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
-                }
-                flagErr = cudaStreamSynchronize(stream);
-                if (flagErr != cudaSuccess) {
-                    const char* msg = cudaGetErrorString(flagErr);
-                    JTRACE("CUDA", std::string("CUDA stream sync failed after print pipeline: ") + (msg ? msg : "(unknown)"));
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-                if (scanError != 0) {
-                    JTRACE("CUDA", "FATAL: print pipeline scan produced non-finite RGB");
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
+                    flagErr = cudaStreamSynchronize(stream);
+                    if (flagErr != cudaSuccess) {
+                        const char* msg = cudaGetErrorString(flagErr);
+                        JTRACE("CUDA", std::string("CUDA stream sync failed after print pipeline: ") + (msg ? msg : "(unknown)"));
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
+                    if (scanError != 0) {
+                        JTRACE("CUDA", "FATAL: print pipeline scan produced non-finite RGB");
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    }
                 }
             }
 

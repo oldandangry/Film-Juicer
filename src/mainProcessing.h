@@ -67,6 +67,7 @@ public:
     void setFrameRate(double frameRate);
     void setFrameBoundsVersion(std::uint32_t v);
     void setPixelSizeUm(float pixelSizeUm);
+    void setRenderHints(bool interactiveRenderStatus, bool renderQualityDraft, bool sequentialRenderStatus);
 
     void process() override;
     void multiThreadProcessImages(OfxRectI procWindow) override;
@@ -122,6 +123,9 @@ private:
     double _timeFrames = 0.0;
     double _frameRate = 0.0;
     double _gateWeaveAmount = 1.0;
+    bool _renderInteractiveStatus = false;
+    bool _renderQualityDraft = false;
+    bool _renderSequentialStatus = false;
 
     JuicerProc::StageScratch _scratch;
     JuicerProc::DensityBuffer _density;

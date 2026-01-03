@@ -1262,6 +1262,30 @@ namespace JuicerCuda {
     }
 
     Resources::~Resources() {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        for (auto& entry : baseGraphs) {
+            if (entry.execOpaque) {
+                cudaGraphExecDestroy(reinterpret_cast<cudaGraphExec_t>(entry.execOpaque));
+                entry.execOpaque = nullptr;
+            }
+            if (entry.graphOpaque) {
+                cudaGraphDestroy(reinterpret_cast<cudaGraph_t>(entry.graphOpaque));
+                entry.graphOpaque = nullptr;
+            }
+            entry.kernelNodeOpaque = nullptr;
+            entry.kernelFuncOpaque = nullptr;
+            entry.gridX = 0;
+            entry.gridY = 0;
+            entry.gridZ = 0;
+            entry.blockX = 0;
+            entry.blockY = 0;
+            entry.blockZ = 0;
+            entry.sharedMemBytes = 0;
+        }
+        baseGraphs.clear();
+        baseGraphTick = 0;
+#endif
+
         drain_retire_queue_blocking(*this);
         free_curve(densB);
         free_curve(densG);

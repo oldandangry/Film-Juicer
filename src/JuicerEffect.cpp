@@ -1581,6 +1581,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setFrameTime(args.time);
     proc.setRenderWindowRect(roi);
     proc.setGPURenderArgs(args);
+    proc.setRenderHints(args.interactiveRenderStatus, args.renderQualityDraft, args.sequentialRenderStatus);
 
     // Dispatch to support library's threaded/tiled CPU path
     proc.process();
