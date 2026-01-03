@@ -262,6 +262,17 @@ struct InstanceState {
     std::uintptr_t autoExposureMaskClipToken = 0;
     std::vector<double> autoExposureMaskWeights;
 
+    // Print mid-gray (kMidSpectral) cache: avoids recomputing the mid-gray probe for every render call.
+    // Keyed by WorkingState.buildCounter and the small set of print parameters that affect the probe.
+    std::mutex printMidgrayMutex;
+    bool printMidgrayValid = false;
+    std::uint64_t printMidgrayBuildCounter = 0;
+    const Print::Runtime* printMidgrayRuntime = nullptr;
+    float printMidgrayYShiftSteps = 0.0f;
+    float printMidgrayMShiftSteps = 0.0f;
+    float printMidgrayExposureCompScale = 1.0f;
+    float printMidgrayFactor = 1.0f;
+
     ScannerOptics::Runtime scannerRuntimeA;
     ScannerOptics::Runtime scannerRuntimeB;
     std::atomic<bool> scannerRuntimeAInUse{ false };

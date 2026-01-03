@@ -386,14 +386,14 @@ namespace Pipeline {
 	        };
 
 	        // 4) Print illuminant + negative density -> transmitted light (agx parity: NaNs collapse to 0 here only).
-	        std::vector<float> density_spectral;
-	        std::vector<float> print_illuminant;
-	        std::vector<float> light;
-        density_to_filtered_light_agx(
-            ws, printRuntime,
-            printParams.yFilter,
-            printParams.mFilter,
-            /*cShiftSteps=*/0.0f,
+	        static thread_local std::vector<float> density_spectral;
+	        static thread_local std::vector<float> print_illuminant;
+	        static thread_local std::vector<float> light;
+	        density_to_filtered_light_agx(
+	            ws, printRuntime,
+	            printParams.yFilter,
+	            printParams.mFilter,
+	            /*cShiftSteps=*/0.0f,
             D_neg,
             density_spectral,
             print_illuminant,

@@ -2985,23 +2985,6 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        std::lock_guard<std::mutex> lock(resources.m);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
-        }
-
         const int K = Spectral::gShape.K;
         if (K <= 0) {
             outError = "spectral shape invalid";
@@ -3012,19 +2995,6 @@ namespace JuicerCuda {
         const float yKey = std::isfinite(prm.yFilter) ? prm.yFilter : 0.0f;
         const float mKey = std::isfinite(prm.mFilter) ? prm.mFilter : 0.0f;
         const float cKey = 0.0f;
-
-        const bool cached =
-            resources.printIllumFiltered &&
-            resources.printIllumK == K &&
-            resources.printIllumShapeK == K &&
-            resources.printIllumCoreHash == ws.coreHash &&
-            resources.printIllumRuntimePtr == &prt &&
-            resources.printIllumYShiftSteps == yKey &&
-            resources.printIllumMShiftSteps == mKey &&
-            resources.printIllumCShiftSteps == cKey;
-        if (cached) {
-            return true;
-        }
 
         auto blend = [](float curveVal, float normalizedAmount) -> float {
             const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
@@ -3044,6 +3014,39 @@ namespace JuicerCuda {
         const float mAmount = compose_amount(prt.neutralM, mKey);
         const float cAmount = compose_amount(prt.neutralC, cKey);
 
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+                return false;
+            }
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+
+            const bool cached =
+                resources.printIllumFiltered &&
+                resources.printIllumK == K &&
+                resources.printIllumShapeK == K &&
+                resources.printIllumCoreHash == ws.coreHash &&
+                resources.printIllumRuntimePtr == &prt &&
+                resources.printIllumYShiftSteps == yKey &&
+                resources.printIllumMShiftSteps == mKey &&
+                resources.printIllumCShiftSteps == cKey;
+            if (cached) {
+                return true;
+            }
+        }
+
         std::vector<float> cpu;
         cpu.resize(static_cast<size_t>(K));
         for (int i = 0; i < K; ++i) {
@@ -3062,33 +3065,74 @@ namespace JuicerCuda {
             cpu[static_cast<size_t>(i)] = Ee * (fY * fM * fC);
         }
 
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-
-        if (resources.printIllumFiltered) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, "print illuminant filtered", outError)) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        {
+            int cur = -1;
+            const cudaError_t devErr = cudaGetDevice(&cur);
+            if (devErr != cudaSuccess || cur < 0) {
+                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
                 return false;
             }
-            cudaFree(resources.printIllumFiltered);
+            if (resources.deviceId < 0) {
+                resources.deviceId = cur;
+            }
+            if (resources.deviceId != cur) {
+                outError = "CUDA device mismatch for cached resources";
+                return false;
+            }
+        }
+
+        const bool cached =
+            resources.printIllumFiltered &&
+            resources.printIllumK == K &&
+            resources.printIllumShapeK == K &&
+            resources.printIllumCoreHash == ws.coreHash &&
+            resources.printIllumRuntimePtr == &prt &&
+            resources.printIllumYShiftSteps == yKey &&
+            resources.printIllumMShiftSteps == mKey &&
+            resources.printIllumCShiftSteps == cKey;
+        if (cached) {
+            return true;
+        }
+
+        const bool overwriting = (resources.printIllumFiltered != nullptr) && (resources.printIllumK == K);
+        if (resources.printIllumFiltered && resources.printIllumK != K) {
+            const size_t oldBytes = static_cast<size_t>(std::max(0, resources.printIllumK)) * sizeof(float);
+            if (!retire_ptr_locked(resources, resources.printIllumFiltered, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "print illuminant filtered resize", outError)) {
+                return false;
+            }
             resources.printIllumFiltered = nullptr;
             resources.printIllumK = 0;
         }
-
-        float* dIllum = nullptr;
-        const size_t bytes = static_cast<size_t>(K) * sizeof(float);
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dIllum), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            return false;
+        if (!resources.printIllumFiltered) {
+            const size_t bytes = static_cast<size_t>(K) * sizeof(float);
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.printIllumFiltered), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                resources.printIllumFiltered = nullptr;
+                resources.printIllumK = 0;
+                return false;
+            }
+            resources.printIllumK = K;
         }
-        err = cudaMemcpyAsync(dIllum, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
+
+        if (overwriting && resources.lastUseEventOpaque) {
+            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+            if (waitErr != cudaSuccess) {
+                outError = std::string("cudaStreamWaitEvent before print illuminant filtered update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                return false;
+            }
+        }
+
+        const size_t bytes = static_cast<size_t>(K) * sizeof(float);
+        const cudaError_t err = cudaMemcpyAsync(resources.printIllumFiltered, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
         if (err != cudaSuccess) {
             outError = std::string("cudaMemcpyAsync(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            cudaFree(dIllum);
             return false;
         }
 
-        resources.printIllumFiltered = dIllum;
-        resources.printIllumK = K;
         resources.printIllumYShiftSteps = yKey;
         resources.printIllumMShiftSteps = mKey;
         resources.printIllumCShiftSteps = cKey;
