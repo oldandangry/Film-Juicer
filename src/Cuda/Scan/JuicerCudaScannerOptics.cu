@@ -97,7 +97,6 @@ __global__ void optics_blur_horizontal_kernel(
     const bool inBounds = (x < width && y < height);
     const int kLen = 2 * radius + 1;
     const int tileW = blockDim.x + 2 * radius;
-    const int tileH = blockDim.y;
 
     extern __shared__ float shared[];
     float* sWeights = shared;
