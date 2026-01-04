@@ -170,7 +170,10 @@ namespace Print {
         }
 
         if (p.hasBaseline) {
-            if (!spectral_curve_ok(p.baseMin) || !spectral_curve_ok(p.baseMid)) {
+            if (!spectral_curve_ok(p.baseMin)) {
+                return false;
+            }
+            if (!p.baseMid.linear.empty() && !spectral_curve_ok(p.baseMid)) {
                 return false;
             }
         }

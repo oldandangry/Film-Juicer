@@ -1302,6 +1302,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalFactor);
         _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalDensity);
         _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalTransition);
+        _pPrintDminFactor = fetchDoubleParam(JuicerParams::kPrintDminFactor);
     }
     catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
@@ -1743,6 +1744,12 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
         _pGlareCompRemovalTransition->getValue(v);
         if (!std::isfinite(v)) v = 0.3;
         P.glareCompRemovalTransition = std::clamp(v, 0.0, 2.0);
+    }
+    if (_pPrintDminFactor) {
+        double v = P.printDminFactor;
+        _pPrintDminFactor->getValue(v);
+        if (!std::isfinite(v)) v = 0.4;
+        P.printDminFactor = std::clamp(v, 0.0, 1.0);
     }
     if (_pInputColorSpace) _pInputColorSpace->getValue(P.inputColorSpace);
     if (_pInputCctfDecoding) { bool v = false; _pInputCctfDecoding->getValue(v); P.inputCctfDecoding = v ? 1 : 0; }

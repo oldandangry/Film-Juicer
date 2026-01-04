@@ -48,6 +48,7 @@ namespace JuicerParams {
     inline constexpr const char kGlareCompensationRemovalFactor[] = "GlareCompensationRemovalFactor";
     inline constexpr const char kGlareCompensationRemovalDensity[] = "GlareCompensationRemovalDensity";
     inline constexpr const char kGlareCompensationRemovalTransition[] = "GlareCompensationRemovalTransition";
+    inline constexpr const char kPrintDminFactor[] = "PrintDminFactor";
     inline constexpr const char kScannerLensBlurSigmaPx[] = "ScannerLensBlurSigmaPx";
     inline constexpr const char kScannerUnsharpMask[] = "ScannerUnsharpMask";
     inline constexpr const char kScannerUseLut[] = "ScannerUseLUT";

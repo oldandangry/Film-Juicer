@@ -962,6 +962,26 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         }
     }
 
+    // Special group
+    {
+        OFX::GroupParamDescriptor* grpSpecial = desc.defineGroupParam("SpecialGroup");
+        if (grpSpecial) {
+            grpSpecial->setLabel("Special");
+            grpSpecial->setOpen(false);
+        }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kPrintDminFactor);
+            p->setLabel("Print Dmin");
+            p->setDefault(0.4);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 1.0);
+            p->setIncrement(0.2);
+            p->setHint("Minimum density factor of the print paper (0-1), make the white less white.");
+            if (grpSpecial) p->setParent(*grpSpecial);
+            p->setEvaluateOnChange(true);
+        }
+    }
+
     // Illuminants
     {
         OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam("ReferenceIlluminant");

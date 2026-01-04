@@ -136,6 +136,7 @@ struct ParamSnapshot {
     double glareCompRemovalFactor = 0.0;
     double glareCompRemovalDensity = 1.2;
     double glareCompRemovalTransition = 0.3;
+    double printDminFactor = 0.4;
     int couplersActive = 1;
     double couplersAmount = 1.0;
     double ratioR = 1.0, ratioG = 1.0, ratioB = 1.0;

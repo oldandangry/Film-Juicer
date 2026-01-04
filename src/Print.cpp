@@ -1285,19 +1285,13 @@ namespace Print {
         }
 
         void merge_baseline_with_json(const JsonProfileContext& ctx,
-            BaselineCurves& curves,
-            float& baselineScale)
+            BaselineCurves& curves)
         {
-            baselineScale = 1.0f;
             if (!ctx.hasProfile) {
                 return;
             }
 
             const auto& profileJson = ctx.profile;
-            if (std::isfinite(profileJson.dyeDensityMinFactor)) {
-                baselineScale = profileJson.dyeDensityMinFactor;
-            }
-
             if (curves.minPairs.empty() && !profileJson.baseMin.empty()) {
                 curves.minPairs = profileJson.baseMin;
             }
@@ -1307,10 +1301,9 @@ namespace Print {
         }
 
         void apply_baseline_to_profile(const BaselineCurves& curves,
-            float baselineScale,
             Profile& out)
         {
-            if (curves.minPairs.empty() || curves.midPairs.empty()) {
+            if (curves.minPairs.empty()) {
                 out.baseMin.lambda_nm.clear();
                 out.baseMin.linear.clear();
                 out.baseMid.lambda_nm.clear();
@@ -1321,17 +1314,6 @@ namespace Print {
 
             auto scaledMin = curves.minPairs;
             auto scaledMid = curves.midPairs;
-            if (baselineScale != 1.0f) {
-                auto scale_samples = [baselineScale](FloatPairs& samples) {
-                    for (auto& sample : samples) {
-                        if (std::isfinite(sample.second)) {
-                            sample.second *= baselineScale;
-                        }
-                    }
-                    };
-                scale_samples(scaledMin);
-                scale_samples(scaledMid);
-            }
 
             auto build_baseline_curve = [](Spectral::Curve& dst, FloatPairs& pairs) -> bool {
                 if (Spectral::samples_follow_reference_axis(pairs)) {
@@ -1345,14 +1327,26 @@ namespace Print {
                 };
 
             const bool minOk = build_baseline_curve(out.baseMin, scaledMin);
-            const bool midOk = build_baseline_curve(out.baseMid, scaledMid);
-            out.hasBaseline = minOk && midOk;
+            bool midOk = true;
+            if (!scaledMid.empty()) {
+                midOk = build_baseline_curve(out.baseMid, scaledMid);
+            }
+            else {
+                out.baseMid.lambda_nm.clear();
+                out.baseMid.linear.clear();
+            }
+
+            out.hasBaseline = minOk && !out.baseMin.linear.empty();
             if (!out.hasBaseline) {
                 std::ostringstream warn;
-                warn << "WARN: Failed to resample print baseline curves"
-                    << " (min=" << (minOk ? "ok" : "empty after filter")
-                    << ", mid=" << (midOk ? "ok" : "empty after filter")
-                    << ")";
+                warn << "WARN: Failed to resample print baseline min curve"
+                    << " (min=" << (minOk ? "ok" : "empty after filter") << ")";
+                JTRACE("PRINT", warn.str());
+            }
+            else if (!midOk && !scaledMid.empty()) {
+                std::ostringstream warn;
+                warn << "WARN: Failed to resample print baseline mid curve"
+                    << " (mid=" << (midOk ? "ok" : "empty after filter") << ")";
                 JTRACE("PRINT", warn.str());
             }
         }
@@ -1505,9 +1499,8 @@ namespace Print {
         const bool densityCurvesOk = rebuild_density_curves(out, densityCurves);
 
         BaselineCurves baselineCurves = load_baseline_csvs(dir);
-        float baselineScale = 1.0f;
-        merge_baseline_with_json(jsonCtx, baselineCurves, baselineScale);
-        apply_baseline_to_profile(baselineCurves, baselineScale, out);
+        merge_baseline_with_json(jsonCtx, baselineCurves);
+        apply_baseline_to_profile(baselineCurves, out);
         recompute_mid_neutral(out, runtime);
 
         out.logEOffC = 0.0f;

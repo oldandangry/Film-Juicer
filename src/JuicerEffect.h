@@ -218,6 +218,7 @@ private:
     OFX::DoubleParam* _pGlareCompRemovalFactor = nullptr;
     OFX::DoubleParam* _pGlareCompRemovalDensity = nullptr;
     OFX::DoubleParam* _pGlareCompRemovalTransition = nullptr;
+    OFX::DoubleParam* _pPrintDminFactor = nullptr;
 
     std::unique_ptr<InstanceState> _state;
 

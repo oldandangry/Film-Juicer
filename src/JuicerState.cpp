@@ -768,6 +768,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.couplersActive));
     h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));
@@ -813,6 +814,7 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
     h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
     h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
     h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
@@ -1117,13 +1119,41 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     subtract_baseline_floor(S.base.densG);
     subtract_baseline_floor(S.base.densR);
 
-    const bool baseMinOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMin, dmin);
-    const bool baseMidOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMid, dmid);
-    S.base.hasBaseline = baseMinOk && baseMidOk && !S.base.baseMin.linear.empty();
-    if (!(baseMinOk && baseMidOk)) {
+    bool baseMinOk = false;
+    if (!dmin.empty()) {
+        baseMinOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMin, dmin);
+        if (!baseMinOk) {
+            S.base.baseMin.lambda_nm.clear();
+            S.base.baseMin.linear.clear();
+        }
+    }
+    else {
+        S.base.baseMin.lambda_nm.clear();
+        S.base.baseMin.linear.clear();
+    }
+
+    bool baseMidOk = true;
+    if (!dmid.empty()) {
+        baseMidOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMid, dmid);
+        if (!baseMidOk) {
+            S.base.baseMid.lambda_nm.clear();
+            S.base.baseMid.linear.clear();
+        }
+    }
+    else {
+        S.base.baseMid.lambda_nm.clear();
+        S.base.baseMid.linear.clear();
+    }
+
+    S.base.hasBaseline = baseMinOk && !S.base.baseMin.linear.empty();
+    if (!baseMinOk) {
         std::ostringstream oss;
-        oss << "baseline resample failure (min=" << (baseMinOk ? "ok" : "empty")
-            << ", mid=" << (baseMidOk ? "ok" : "empty") << ")";
+        oss << "baseline resample failure (min=" << (baseMinOk ? "ok" : "empty") << ")";
+        JTRACE("STOCK", oss.str());
+    }
+    else if (!baseMidOk && !dmid.empty()) {
+        std::ostringstream oss;
+        oss << "baseline resample warning (mid=" << (baseMidOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
     }
 
@@ -1937,6 +1967,16 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         Print::profile_is_valid(printProfile) &&
         printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K))
     {
+        const float printDminFactor = std::isfinite(P.printDminFactor)
+            ? static_cast<float>(std::clamp(P.printDminFactor, 0.0, 1.0))
+            : 0.4f;
+        if (printProfile.hasBaseline && !approx_equal(printDminFactor, 1.0f)) {
+            for (float& v : printProfile.baseMin.linear) {
+                if (std::isfinite(v)) {
+                    v *= printDminFactor;
+                }
+            }
+        }
         if (printProfile.hasBaseline) {
             for (float& v : printProfile.baseMin.linear) {
                 if (std::isfinite(v) && v < 0.0f) {
@@ -2054,9 +2094,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
         const bool ok_dens = density_curve_ok(densB) && density_curve_ok(densG) && density_curve_ok(densR);
         const bool ok_sens = all_finite_curve(sensB) && all_finite_curve(sensG) && all_finite_curve(sensR);
+        const bool baseMidOk = baseMid.linear.empty() ||
+            static_cast<int>(baseMid.linear.size()) == Spectral::gShape.K;
         const bool ok_base = !hasBaseline ||
-            (static_cast<int>(baseMin.linear.size()) == Spectral::gShape.K &&
-                static_cast<int>(baseMid.linear.size()) == Spectral::gShape.K);
+            (static_cast<int>(baseMin.linear.size()) == Spectral::gShape.K && baseMidOk);
         const bool ok_tables =
             (target->tablesView.K == Spectral::gShape.K) &&
             (target->tablesScan.K == Spectral::gShape.K) &&
