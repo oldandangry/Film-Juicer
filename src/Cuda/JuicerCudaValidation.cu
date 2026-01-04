@@ -97,16 +97,16 @@ namespace {
             DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
             DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
         };
-        XYZ[0] = device_sanitize_nonneg(XYZ[0]);
-        XYZ[1] = device_sanitize_nonneg(XYZ[1]);
-        XYZ[2] = device_sanitize_nonneg(XYZ[2]);
+        XYZ[0] = device_sanitize_channel(XYZ[0]);
+        XYZ[1] = device_sanitize_channel(XYZ[1]);
+        XYZ[2] = device_sanitize_channel(XYZ[2]);
 
         const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
 
         float refWhite[3] = {
-            device_sanitize_nonneg(refIllumWhiteXYZ[0]),
-            device_sanitize_nonneg(refIllumWhiteXYZ[1]),
-            device_sanitize_nonneg(refIllumWhiteXYZ[2])
+            device_sanitize_channel(refIllumWhiteXYZ[0]),
+            device_sanitize_channel(refIllumWhiteXYZ[1]),
+            device_sanitize_channel(refIllumWhiteXYZ[2])
         };
         if (!(refWhite[1] > 0.0f)) {
             refWhite[0] = D65[0];
@@ -116,25 +116,15 @@ namespace {
 
         float adaptedXYZ[3];
         chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
-        adaptedXYZ[0] = device_sanitize_nonneg(adaptedXYZ[0]);
-        adaptedXYZ[1] = device_sanitize_nonneg(adaptedXYZ[1]);
-        adaptedXYZ[2] = device_sanitize_nonneg(adaptedXYZ[2]);
+        adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
+        adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
+        adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
 
         const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
-        const float safeSum = (sumXYZ > 0.0f) ? sumXYZ : 0.0f;
-        if (!(safeSum > 0.0f)) {
-            for (int k = 0; k < K; ++k) {
-                outEe[k] = 0.0f;
-            }
-            return;
-        }
+        const float denom = fmaxf(sumXYZ, 1e-10f);
 
-        float x = 1.0f / 3.0f;
-        float y = 1.0f / 3.0f;
-        if (sumXYZ > 1e-12f) {
-            x = adaptedXYZ[0] / sumXYZ;
-            y = adaptedXYZ[1] / sumXYZ;
-        }
+        float x = adaptedXYZ[0] / denom;
+        float y = adaptedXYZ[1] / denom;
         x = fminf(1.0f, fmaxf(0.0f, x));
         y = fminf(1.0f, fmaxf(0.0f, y));
 
@@ -162,7 +152,7 @@ namespace {
             const float v0 = v00 * (1.0f - tx) + v10 * tx;
             const float v1 = v01 * (1.0f - tx) + v11 * tx;
             const float raw = v0 * (1.0f - ty) + v1 * ty;
-            outEe[k] = fmaxf(0.0f, safeSum * raw);
+            outEe[k] = device_sanitize_channel(sumXYZ * raw);
         }
     }
 
@@ -214,9 +204,9 @@ namespace {
         const float safeScale = fmaxf(0.0f, exposureScale);
         const double delta = applyDeltaLambda ? 5.0 : 1.0;
         const double dl = delta * static_cast<double>(safeScale);
-        outE3[0] = fmaxf(0.0f, static_cast<float>(Eb * dl));
-        outE3[1] = fmaxf(0.0f, static_cast<float>(Eg * dl));
-        outE3[2] = fmaxf(0.0f, static_cast<float>(Er * dl));
+        outE3[0] = device_isfinite(static_cast<float>(Eb * dl)) ? static_cast<float>(Eb * dl) : 0.0f;
+        outE3[1] = device_isfinite(static_cast<float>(Eg * dl)) ? static_cast<float>(Eg * dl) : 0.0f;
+        outE3[2] = device_isfinite(static_cast<float>(Er * dl)) ? static_cast<float>(Er * dl) : 0.0f;
     }
 
     struct TablesProbeParams {

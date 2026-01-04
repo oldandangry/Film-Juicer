@@ -40,6 +40,52 @@ namespace Spectral {
     inline Curve& gBaseMid = context().baseMid;
     inline bool& gHasBaseline = context().hasBaseline;
 
+    inline bool spectral_shape_matches_reference(const SpectralShape& s);
+
+    // =========================================================================
+    // Hanatos 2025 LUT availability (shared across modules)
+    // =========================================================================
+
+    inline std::atomic<bool>& gHanatosAvailable = context().hanatosAvailable;
+
+    inline bool hanatos_available() {
+        return gHanatosAvailable.load(std::memory_order_acquire);
+    }
+
+    inline void set_hanatos_available(bool available) {
+        gHanatosAvailable.store(available, std::memory_order_release);
+    }
+
+    inline NpySpectraLUT& gHanSpectra = context().hanSpectra;
+
+    inline bool hanatos_matches_reference_shape() {
+        if (gHanSpectra.size <= 0) {
+            return false;
+        }
+        if (gHanSpectra.numSamples != Spectral::kNumSamples) {
+            return false;
+        }
+        if (!spectral_shape_matches_reference(gShape)) {
+            return false;
+        }
+        return gShape.K == gHanSpectra.numSamples;
+    }
+
+    inline void disable_hanatos_if_reference_mismatch() {
+        if (hanatos_available() && !hanatos_matches_reference_shape()) {
+            JTRACE("HANATOS", "Disabling spectral LUT: reference axis mismatch");
+            set_hanatos_available(false);
+        }
+    }
+
+    inline void load_hanatos_spectra_lut(const std::string& path) {
+        bool success = load_npy_spectra_lut(path, gHanSpectra);
+        set_hanatos_available(success && gHanSpectra.size > 0 && gHanSpectra.numSamples > 0);
+        if (hanatos_available() && !hanatos_matches_reference_shape()) {
+            disable_hanatos_if_reference_mismatch();
+        }
+    }
+
     // =========================================================================
     // Constants
     // =========================================================================

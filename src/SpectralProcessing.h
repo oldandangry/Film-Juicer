@@ -538,48 +538,6 @@ namespace Spectral {
         spd_probe_record_spectrum(Ee_out);
     }
 
-    // --- Hanatos 2025 LUT reconstruction ---
-
-    inline std::atomic<bool>& gHanatosAvailable = context().hanatosAvailable;
-
-    inline bool hanatos_available() {
-        return gHanatosAvailable.load(std::memory_order_acquire);
-    }
-
-    inline void set_hanatos_available(bool available) {
-        gHanatosAvailable.store(available, std::memory_order_release);
-    }
-
-    inline NpySpectraLUT& gHanSpectra = context().hanSpectra;
-
-    inline bool hanatos_matches_reference_shape() {
-        if (gHanSpectra.size <= 0) {
-            return false;
-        }
-        if (gHanSpectra.numSamples != Spectral::kNumSamples) {
-            return false;
-        }
-        if (!spectral_shape_matches_reference(gShape)) {
-            return false;
-        }
-        return gShape.K == gHanSpectra.numSamples;
-    }
-
-    inline void disable_hanatos_if_reference_mismatch() {
-        if (hanatos_available() && !hanatos_matches_reference_shape()) {
-            JTRACE("HANATOS", "Disabling spectral LUT: reference axis mismatch");
-            set_hanatos_available(false);
-        }
-    }
-
-    inline void load_hanatos_spectra_lut(const std::string& path) {
-        bool success = load_npy_spectra_lut(path, gHanSpectra);
-        set_hanatos_available(success && gHanSpectra.size > 0 && gHanSpectra.numSamples > 0);
-        if (hanatos_available() && !hanatos_matches_reference_shape()) {
-            disable_hanatos_if_reference_mismatch();
-        }
-    }
-
     // Tri->quad mapping identical to agx-emulsion
     inline void tri2quad(float tx, float ty, float& qx, float& qy) {
         const float denom = std::max(1.0f - tx, 1e-10f);
@@ -774,9 +732,12 @@ namespace Spectral {
         // Convert DWG RGB to XYZ (DWG uses D65 white point)
         float XYZ[3];
         DWG_linear_to_XYZ(rgbDWG, XYZ);
-        XYZ[0] = std::max(0.0f, XYZ[0]);
-        XYZ[1] = std::max(0.0f, XYZ[1]);
-        XYZ[2] = std::max(0.0f, XYZ[2]);
+        // agx-emulsion parity: keep signed XYZ; only sanitize non-finite components.
+        for (int i = 0; i < 3; ++i) {
+            if (!std::isfinite(XYZ[i])) {
+                XYZ[i] = 0.0f;
+            }
+        }
 
         auto sanitize_white = [](const float* white, float dst[3]) {
             const float fallback[3] = {
@@ -805,20 +766,22 @@ namespace Spectral {
         chromatic_adapt_XYZ_CAT02(XYZ, gDWG_WhitePoint_XYZ, refWhiteXYZ, adaptedXYZ);
         spd_probe_record_cat02(XYZ, adaptedXYZ, gDWG_WhitePoint_XYZ, refWhiteXYZ);
 
-        // Compute xy chromaticity from adapted XYZ
-        adaptedXYZ[0] = std::max(0.0f, adaptedXYZ[0]);
-        adaptedXYZ[1] = std::max(0.0f, adaptedXYZ[1]);
-        adaptedXYZ[2] = std::max(0.0f, adaptedXYZ[2]);
-        const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
-        const float safeSum = (sumXYZ > 0.0f) ? sumXYZ : 0.0f;
-        const float targetScale = safeSum;
-        spd_probe_record_target_scale(targetScale);
-
-        float x = 1.0f / 3.0f, y = 1.0f / 3.0f;
-        if (safeSum > 1e-12f) {
-            x = adaptedXYZ[0] / safeSum;
-            y = adaptedXYZ[1] / safeSum;
+        // agx-emulsion parity:
+        // - sanitize adaptedXYZ (non-finite -> 0), do not clamp negatives
+        // - b = sum(adaptedXYZ) (signed)
+        // - xy uses denom = max(b, 1e-10) and is then clamped to [0, 1]
+        for (int i = 0; i < 3; ++i) {
+            if (!std::isfinite(adaptedXYZ[i])) {
+                adaptedXYZ[i] = 0.0f;
+            }
         }
+        const float b = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
+        const float bSafe = std::isfinite(b) ? b : 0.0f;
+        spd_probe_record_target_scale(bSafe);
+
+        const float denom = std::max(bSafe, 1e-10f);
+        float x = adaptedXYZ[0] / denom;
+        float y = adaptedXYZ[1] / denom;
         x = std::clamp(x, 0.0f, 1.0f);
         y = std::clamp(y, 0.0f, 1.0f);
 
@@ -829,16 +792,13 @@ namespace Spectral {
         hanatos_linear_spectrum(qx, qy, Ee_out);  // Use bilinear to match Python's RegularGridInterpolator
         spd_probe_record_raw_lut(Ee_out);  // Log raw LUT spectrum BEFORE targetScale
 
-        if (!(targetScale > 0.0f) || !(safeSum > 0.0f)) {
-            std::fill(Ee_out.begin(), Ee_out.end(), 0.0f);
-            spd_probe_record_spectrum(Ee_out);
-            return;
-        }
-
-        // Multiply by targetScale to get final Ee spectrum
-        // This matches Python: Ee = raw_spectrum * target_scale
+        // Multiply by b to get final Ee spectrum (signed; matches Python).
         for (int i = 0; i < K; ++i) {
-            Ee_out[i] = std::max(0.0f, safeSum * Ee_out[i]);
+            float v = bSafe * Ee_out[i];
+            if (!std::isfinite(v)) {
+                v = 0.0f;
+            }
+            Ee_out[i] = v;
         }
 
         // Compute Y_recon for diagnostic logging (should match Python's ~3.95 for mid-gray)
@@ -849,8 +809,7 @@ namespace Spectral {
         for (int i = 0; i < K; ++i) {
             const float lambda = hasLambda ? gShape.wavelengths[i] : (380.0f + 5.0f * i);
             const float ybar = hasYbar ? gYBar.linear[i] : cie_ybar(lambda);
-            const float Ei = std::max(0.0f, Ee_out[i]);
-            Y_recon += static_cast<double>(Ei) * static_cast<double>(std::max(0.0f, ybar));
+            Y_recon += static_cast<double>(Ee_out[i]) * static_cast<double>(ybar);
         }
         spd_probe_record_yrecon(Y_recon);
 

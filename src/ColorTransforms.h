@@ -415,7 +415,8 @@ namespace Spectral {
         const FilmRawConfig& cfg,
         const float rgbIn[3],
         float rgbDWG[3],
-        float* outXYZ = nullptr)
+        float* outXYZ = nullptr,
+        bool clampNonNegative = true)
     {
         float linear[3];
         apply_input_cctf_decoding(cfg.inputColorSpace, cfg.applyCctfDecoding, rgbIn, linear);
@@ -431,20 +432,32 @@ namespace Spectral {
         }
 
         if (outXYZ) {
-            outXYZ[0] = std::max(0.0f, xyzPtr[0]);
-            outXYZ[1] = std::max(0.0f, xyzPtr[1]);
-            outXYZ[2] = std::max(0.0f, xyzPtr[2]);
+            if (clampNonNegative) {
+                outXYZ[0] = std::max(0.0f, xyzPtr[0]);
+                outXYZ[1] = std::max(0.0f, xyzPtr[1]);
+                outXYZ[2] = std::max(0.0f, xyzPtr[2]);
+            }
+            else {
+                outXYZ[0] = (std::isfinite(xyzPtr[0])) ? xyzPtr[0] : 0.0f;
+                outXYZ[1] = (std::isfinite(xyzPtr[1])) ? xyzPtr[1] : 0.0f;
+                outXYZ[2] = (std::isfinite(xyzPtr[2])) ? xyzPtr[2] : 0.0f;
+            }
         }
 
         float dwgLinear[3];
-        XYZ_to_DWG_linear(xyzPtr, dwgLinear);
+        if (clampNonNegative) {
+            XYZ_to_DWG_linear(xyzPtr, dwgLinear);
+        }
+        else {
+            gDWG_XYZ_to_RGB.mul(xyzPtr, dwgLinear);
+        }
 
         for (int i = 0; i < 3; ++i) {
             float v = dwgLinear[i];
             if (!std::isfinite(v)) {
                 v = 0.0f;
             }
-            if (v < 0.0f) {
+            if (clampNonNegative && v < 0.0f) {
                 v = 0.0f;
             }
             rgbDWG[i] = v;
@@ -461,12 +474,14 @@ namespace Spectral {
     {
         const float rgbMid[3] = { 0.184f, 0.184f, 0.184f };
         float rgbMidDWG[3];
-        convert_input_rgb_to_DWG(cfg, rgbMid, rgbMidDWG);
+        const bool spdReady = tablesSPD && S_inv && tablesSPD->K > 0;
+        const bool allowHanatos = (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
+        const bool useHanatos = spdReady && allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
+        convert_input_rgb_to_DWG(cfg, rgbMid, rgbMidDWG, nullptr, !useHanatos);
         cfg.midgrayDWG[0] = rgbMidDWG[0];
         cfg.midgrayDWG[1] = rgbMidDWG[1];
         cfg.midgrayDWG[2] = rgbMidDWG[2];
 
-        const bool spdReady = tablesSPD && S_inv && tablesSPD->K > 0;
         float E[3] = { 0.0f, 0.0f, 0.0f };
         if (!spdReady) {
             cfg.rawMidgray[0] = cfg.rawMidgray[1] = cfg.rawMidgray[2] = 0.0f;
@@ -509,7 +524,9 @@ namespace Spectral {
         const bool spdReady = useSPD && tablesSPD && S_inv && tablesSPD->K > 0;
         float rgbDWG[3];
         float xyzWorking[3];
-        convert_input_rgb_to_DWG(cfg, rgbIn, rgbDWG, xyzWorking);
+        const bool allowHanatos = (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
+        const bool useHanatos = spdReady && allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
+        convert_input_rgb_to_DWG(cfg, rgbIn, rgbDWG, xyzWorking, !useHanatos);
 
 #if defined(JUICER_SPD_DEBUG)
         spd_probe_begin_capture(rgbIn, rgbDWG, spdReady);

@@ -333,6 +333,19 @@ static __device__ __forceinline__ void XYZ_to_DWG_linear_device(const float XYZ[
     }
 }
 
+static __device__ __forceinline__ void XYZ_to_DWG_linear_unclamped_device(const float XYZ[3], float RGB[3]) {
+    const float DWG_XYZ_to_RGB[9] = {
+        1.51667204f, -0.28147805f, -0.14696363f,
+       -0.46491710f,  1.25142378f,  0.17488461f,
+        0.07578536f,  0.08076209f,  0.76034476f
+    };
+    float out[3];
+    mat3_mul9_device(DWG_XYZ_to_RGB, XYZ, out);
+    for (int i = 0; i < 3; ++i) {
+        RGB[i] = device_sanitize_channel(out[i]);
+    }
+}
+
 static __device__ __forceinline__ void tri2quad_device(float tx, float ty, float& qx, float& qy) {
     // Matches Spectral::tri2quad in SpectralProcessing.h
     const float denom = fmaxf(1.0f - tx, 1e-10f);

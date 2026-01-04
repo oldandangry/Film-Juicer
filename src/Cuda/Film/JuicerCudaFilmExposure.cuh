@@ -10,7 +10,8 @@
 static __device__ __forceinline__ void convert_input_to_DWG_device(
     const JuicerCuda::FilmRawPayload& cfg,
     const float rgbIn[3],
-    float rgbDWG[3])
+    float rgbDWG[3],
+    bool clampNonNegative)
 {
     float linear[3];
     apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
@@ -26,7 +27,12 @@ static __device__ __forceinline__ void convert_input_to_DWG_device(
     }
 
     float dwg[3];
-    XYZ_to_DWG_linear_device(xyzPtr, dwg);
+    if (clampNonNegative) {
+        XYZ_to_DWG_linear_device(xyzPtr, dwg);
+    }
+    else {
+        XYZ_to_DWG_linear_unclamped_device(xyzPtr, dwg);
+    }
     rgbDWG[0] = dwg[0];
     rgbDWG[1] = dwg[1];
     rgbDWG[2] = dwg[2];
@@ -62,16 +68,16 @@ static __device__ void hanatos_layer_exposures_device(
         DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
         DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
     };
-    XYZ[0] = device_sanitize_nonneg(XYZ[0]);
-    XYZ[1] = device_sanitize_nonneg(XYZ[1]);
-    XYZ[2] = device_sanitize_nonneg(XYZ[2]);
+    XYZ[0] = device_sanitize_channel(XYZ[0]);
+    XYZ[1] = device_sanitize_channel(XYZ[1]);
+    XYZ[2] = device_sanitize_channel(XYZ[2]);
 
     const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
 
     float refWhite[3] = {
-        device_sanitize_nonneg(refIllumWhiteXYZ[0]),
-        device_sanitize_nonneg(refIllumWhiteXYZ[1]),
-        device_sanitize_nonneg(refIllumWhiteXYZ[2])
+        device_sanitize_channel(refIllumWhiteXYZ[0]),
+        device_sanitize_channel(refIllumWhiteXYZ[1]),
+        device_sanitize_channel(refIllumWhiteXYZ[2])
     };
     if (!(refWhite[1] > 0.0f)) {
         refWhite[0] = D65[0];
@@ -81,23 +87,15 @@ static __device__ void hanatos_layer_exposures_device(
 
     float adaptedXYZ[3];
     chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
-    adaptedXYZ[0] = device_sanitize_nonneg(adaptedXYZ[0]);
-    adaptedXYZ[1] = device_sanitize_nonneg(adaptedXYZ[1]);
-    adaptedXYZ[2] = device_sanitize_nonneg(adaptedXYZ[2]);
+    adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
+    adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
+    adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
 
     const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
-    const float safeSum = (sumXYZ > 0.0f) ? sumXYZ : 0.0f;
-    if (!(safeSum > 0.0f)) {
-        E_out[0] = E_out[1] = E_out[2] = 0.0f;
-        return;
-    }
+    const float denom = fmaxf(sumXYZ, 1e-10f);
 
-    float x = 1.0f / 3.0f;
-    float y = 1.0f / 3.0f;
-    if (sumXYZ > 1e-12f) {
-        x = adaptedXYZ[0] / sumXYZ;
-        y = adaptedXYZ[1] / sumXYZ;
-    }
+    float x = adaptedXYZ[0] / denom;
+    float y = adaptedXYZ[1] / denom;
     x = fminf(1.0f, fmaxf(0.0f, x));
     y = fminf(1.0f, fmaxf(0.0f, y));
 
@@ -131,7 +129,7 @@ static __device__ void hanatos_layer_exposures_device(
         const float v1 = v01 * (1.0f - tx) + v11 * tx;
         const float raw = v0 * (1.0f - ty) + v1 * ty;
 
-        const float e = fmaxf(0.0f, safeSum * raw);
+        const float e = device_sanitize_channel(sumXYZ * raw);
         if (!device_isfinite(e)) {
             continue;
         }
@@ -145,9 +143,9 @@ static __device__ void hanatos_layer_exposures_device(
         if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
     }
 
-    E_out[0] = fmaxf(0.0f, static_cast<float>(Eb));
-    E_out[1] = fmaxf(0.0f, static_cast<float>(Eg));
-    E_out[2] = fmaxf(0.0f, static_cast<float>(Er));
+    E_out[0] = device_isfinite(static_cast<float>(Eb)) ? static_cast<float>(Eb) : 0.0f;
+    E_out[1] = device_isfinite(static_cast<float>(Eg)) ? static_cast<float>(Eg) : 0.0f;
+    E_out[2] = device_isfinite(static_cast<float>(Er)) ? static_cast<float>(Er) : 0.0f;
 }
 
 static __device__ void hanatos_integrated_exposures_device(
@@ -177,16 +175,16 @@ static __device__ void hanatos_integrated_exposures_device(
         DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
         DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
     };
-    XYZ[0] = device_sanitize_nonneg(XYZ[0]);
-    XYZ[1] = device_sanitize_nonneg(XYZ[1]);
-    XYZ[2] = device_sanitize_nonneg(XYZ[2]);
+    XYZ[0] = device_sanitize_channel(XYZ[0]);
+    XYZ[1] = device_sanitize_channel(XYZ[1]);
+    XYZ[2] = device_sanitize_channel(XYZ[2]);
 
     const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
 
     float refWhite[3] = {
-        device_sanitize_nonneg(refIllumWhiteXYZ[0]),
-        device_sanitize_nonneg(refIllumWhiteXYZ[1]),
-        device_sanitize_nonneg(refIllumWhiteXYZ[2])
+        device_sanitize_channel(refIllumWhiteXYZ[0]),
+        device_sanitize_channel(refIllumWhiteXYZ[1]),
+        device_sanitize_channel(refIllumWhiteXYZ[2])
     };
     if (!(refWhite[1] > 0.0f)) {
         refWhite[0] = D65[0];
@@ -196,23 +194,15 @@ static __device__ void hanatos_integrated_exposures_device(
 
     float adaptedXYZ[3];
     chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
-    adaptedXYZ[0] = device_sanitize_nonneg(adaptedXYZ[0]);
-    adaptedXYZ[1] = device_sanitize_nonneg(adaptedXYZ[1]);
-    adaptedXYZ[2] = device_sanitize_nonneg(adaptedXYZ[2]);
+    adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
+    adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
+    adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
 
     const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
-    const float safeSum = (sumXYZ > 0.0f) ? sumXYZ : 0.0f;
-    if (!(safeSum > 0.0f)) {
-        E_out[0] = E_out[1] = E_out[2] = 0.0f;
-        return;
-    }
+    const float denom = fmaxf(sumXYZ, 1e-10f);
 
-    float x = 1.0f / 3.0f;
-    float y = 1.0f / 3.0f;
-    if (sumXYZ > 1e-12f) {
-        x = adaptedXYZ[0] / sumXYZ;
-        y = adaptedXYZ[1] / sumXYZ;
-    }
+    float x = adaptedXYZ[0] / denom;
+    float y = adaptedXYZ[1] / denom;
     x = fminf(1.0f, fmaxf(0.0f, x));
     y = fminf(1.0f, fmaxf(0.0f, y));
 
@@ -264,9 +254,9 @@ static __device__ void hanatos_integrated_exposures_device(
     const float bSafe = device_isfinite(b) ? b : 0.0f;
 
     // lutIntegrated stores R,G,B; map to E_out order B,G,R.
-    E_out[0] = fmaxf(0.0f, safeSum * bSafe);
-    E_out[1] = fmaxf(0.0f, safeSum * gSafe);
-    E_out[2] = fmaxf(0.0f, safeSum * rSafe);
+    E_out[0] = device_sanitize_channel(sumXYZ * bSafe);
+    E_out[1] = device_sanitize_channel(sumXYZ * gSafe);
+    E_out[2] = device_sanitize_channel(sumXYZ * rSafe);
 }
 
 static __device__ void tables_layer_exposures_device(
@@ -391,9 +381,6 @@ static __device__ __forceinline__ void compute_film_raw_device(
 {
     const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
 
-    float rgbDWG[3];
-    convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG);
-
     float E_raw[3] = { 0.0f, 0.0f, 0.0f };
     const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
     const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
@@ -415,6 +402,9 @@ static __device__ __forceinline__ void compute_film_raw_device(
         (expose.sensB.n >= 81) &&
         (expose.sensG.n >= 81) &&
         (expose.sensR.n >= 81);
+
+    float rgbDWG[3];
+    convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG, !useHanatos);
 
     if (useHanatosIntegrated) {
         hanatos_integrated_exposures_device(
