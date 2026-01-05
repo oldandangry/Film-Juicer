@@ -1646,6 +1646,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
             run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
             run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
+            run.grain.amplitude = std::isfinite(grainUi.amplitude) ? std::max(0.0f, grainUi.amplitude) : 1.0f;
             run.grain.microStructure[0] = grainUi.microStructure[0];
             run.grain.microStructure[1] = grainUi.microStructure[1];
             if (includeDefects) {

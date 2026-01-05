@@ -847,7 +847,7 @@ __global__ void grain_multiply_kernel(float* inOut, const float* mult, int n) {
     inOut[idx] = device_isfinite(v) ? v : 0.0f;
 }
 
-__global__ void grain_subtract_kernel(float* inOut, const float* sub, int n) {
+__global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, float amplitude) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) {
         return;
@@ -855,7 +855,11 @@ __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n) {
     if (!inOut || !sub) {
         return;
     }
-    const float v = inOut[idx] - sub[idx];
+    float a = device_isfinite(amplitude) ? amplitude : 1.0f;
+    if (a < 0.0f) {
+        a = 0.0f;
+    }
+    const float v = (inOut[idx] - sub[idx]) * a;
     inOut[idx] = device_isfinite(v) ? v : 0.0f;
 }
 
@@ -890,7 +894,8 @@ __global__ void grain_mix_delta3_kernel(
     int n,
     float wMid,
     float wCoarse,
-    float gain)
+    float gain,
+    float amplitude)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) {
@@ -906,10 +911,14 @@ __global__ void grain_mix_delta3_kernel(
         wF = 0.0f;
     }
     const float g = device_isfinite(gain) ? gain : 1.0f;
+    float a = device_isfinite(amplitude) ? amplitude : 1.0f;
+    if (a < 0.0f) {
+        a = 0.0f;
+    }
     const float fine = fineDelta[idx];
     const float mid = midDelta[idx];
     const float coarse = coarseDelta[idx];
-    const float v = g * (wF * fine + wM * mid + wC * coarse);
+    const float v = a * g * (wF * fine + wM * mid + wC * coarse);
     outDelta[idx] = device_isfinite(v) ? v : 0.0f;
 }
 

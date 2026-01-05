@@ -84,7 +84,7 @@ __global__ void grain_clear_kernel(float* out, int n);
 __global__ void grain_accumulate_kernel(float* dst, const float* src, int n);
 __global__ void grain_add_bias_kernel(float* inOut, int n, float bias);
 __global__ void grain_multiply_kernel(float* inOut, const float* mult, int n);
-__global__ void grain_subtract_kernel(float* inOut, const float* sub, int n);
+__global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, float amplitude);
 __global__ void grain_mix_delta3_kernel(
     float* outDelta,
     const float* fineDelta,
@@ -93,7 +93,8 @@ __global__ void grain_mix_delta3_kernel(
     int n,
     float wMid,
     float wCoarse,
-    float gain);
+    float gain,
+    float amplitude);
 __global__ void grain_debug_encode_avg3_kernel(
     float* outR,
     float* outG,
@@ -1097,6 +1098,9 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         const bool needMid = (debugView == 0 || debugView == 1) && wantMix && (wMid > 0.0f);
         const bool needCoarse = (debugView == 0 || debugView == 1 || debugView == 3 || debugView == 5) && wantMix && (wCoarse > 0.0f);
         const bool needMix = (debugView == 0 || debugView == 1) && wantMix;
+        float amplitude = (std::isfinite(grain.amplitude) && grain.amplitude >= 0.0f) ? grain.amplitude : 1.0f;
+        const bool applyAmpInMix = wantMix && (debugView == 0 || debugView == 1);
+        const float deltaAmp = applyAmpInMix ? 1.0f : amplitude;
 
         float* meanBuf = useSublayers ? dAux : (wantFineBlur ? dScratchBlurred : dTmp);
         if (!meanBuf || !dTmp) {
@@ -1213,7 +1217,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                     return e;
                 }
 
-                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total, deltaAmp);
                 e = cudaGetLastError();
                 if (e != cudaSuccess) {
                     return e;
@@ -1284,7 +1288,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                     return e;
                 }
 
-                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total, deltaAmp);
                 e = cudaGetLastError();
                 if (e != cudaSuccess) {
                     return e;
@@ -1334,7 +1338,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                     return e;
                 }
 
-                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total, deltaAmp);
                 e = cudaGetLastError();
                 if (e != cudaSuccess) {
                     return e;
@@ -1372,7 +1376,8 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                     total,
                     wM,
                     wC,
-                    grain.sizeMixGain);
+                    grain.sizeMixGain,
+                    amplitude);
                 e = cudaGetLastError();
                 if (e != cudaSuccess) {
                     return e;

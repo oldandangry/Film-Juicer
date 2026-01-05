@@ -188,6 +188,7 @@ private:
     OFX::BooleanParam* _pGrainActive = nullptr;
     OFX::BooleanParam* _pGrainSublayersActive = nullptr;
     OFX::DoubleParam* _pGrainParticleAreaUm2 = nullptr;
+    OFX::DoubleParam* _pGrainAmplitude = nullptr;
     OFX::DoubleParam* _pGrainParticleScaleMaster = nullptr;
     OFX::DoubleParam* _pGrainParticleScaleLayersMaster = nullptr;
     OFX::DoubleParam* _pGrainDensityMinMaster = nullptr;

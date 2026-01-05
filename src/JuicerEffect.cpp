@@ -594,6 +594,17 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     particleArea = sanitize(particleArea, 0.335, 0.0, 10.0);
     grain.agxParticleAreaUm2 = static_cast<float>(particleArea);
 
+    double amplitudeEV = 0.0;
+    if (_pGrainAmplitude) {
+        _pGrainAmplitude->getValue(amplitudeEV);
+    }
+    amplitudeEV = sanitize(amplitudeEV, 0.0, -3.0, 3.0);
+    double amplitude = std::pow(2.0, amplitudeEV);
+    if (!std::isfinite(amplitude) || amplitude < 0.0) {
+        amplitude = 1.0;
+    }
+    grain.amplitude = static_cast<float>(amplitude);
+
     const std::array<double, 3> particleScale = read3(_pGrainParticleScale, { {0.8, 1.0, 2.0} }, 0.0, 10.0);
     const std::array<double, 3> particleScaleLayers = read3(_pGrainParticleScaleLayers, { {2.5, 1.0, 0.5} }, 0.0, 10.0);
     const std::array<double, 3> densityMin = read3(_pGrainDensityMin, { {0.07, 0.08, 0.12} }, 0.0, 1.0);
@@ -1279,6 +1290,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
         _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
         _pGrainParticleAreaUm2 = fetchDoubleParam(JuicerParams::kGrainParticleAreaUm2);
+        _pGrainAmplitude = fetchDoubleParam(JuicerParams::kGrainAmplitude);
         _pGrainParticleScaleMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleMaster);
         _pGrainParticleScaleLayersMaster = fetchDoubleParam(JuicerParams::kGrainParticleScaleLayersMaster);
         _pGrainDensityMinMaster = fetchDoubleParam(JuicerParams::kGrainDensityMinMaster);

@@ -637,6 +637,17 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainAmplitude);
+            p->setLabel("Grain Amp");
+            p->setHint("Grain amplitude in stops (EV); scales OD delta.");
+            p->setDefault(0.0);
+            p->setRange(-3.0, 3.0);
+            p->setDisplayRange(-3.0, 3.0);
+            p->setIncrement(0.1);
+            if (grpGrain) p->setParent(*grpGrain);
+            p->setEvaluateOnChange(true);
+        }
+        {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleScaleMaster);
             p->setLabel("Particle scale (M)");
             p->setHint("Master control for particle scale; adjusts RGB values together.");

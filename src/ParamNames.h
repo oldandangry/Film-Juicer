@@ -18,6 +18,7 @@ namespace JuicerParams {
     inline constexpr const char kGrainActive[] = "GrainActive";
     inline constexpr const char kGrainSublayersActive[] = "GrainSublayersActive";
     inline constexpr const char kGrainParticleAreaUm2[] = "GrainParticleAreaUm2";
+    inline constexpr const char kGrainAmplitude[] = "GrainAmplitude";
     inline constexpr const char kGrainParticleScaleMaster[] = "GrainParticleScaleMaster";
     inline constexpr const char kGrainParticleScaleLayersMaster[] = "GrainParticleScaleLayersMaster";
     inline constexpr const char kGrainDensityMinMaster[] = "GrainDensityMinMaster";
