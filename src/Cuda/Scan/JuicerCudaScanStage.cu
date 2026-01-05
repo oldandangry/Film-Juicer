@@ -85,11 +85,13 @@ __global__ void grain_accumulate_kernel(float* dst, const float* src, int n);
 __global__ void grain_add_bias_kernel(float* inOut, int n, float bias);
 __global__ void grain_multiply_kernel(float* inOut, const float* mult, int n);
 __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n);
-__global__ void grain_mix_delta_kernel(
+__global__ void grain_mix_delta3_kernel(
     float* outDelta,
     const float* fineDelta,
+    const float* midDelta,
     const float* coarseDelta,
     int n,
+    float wMid,
     float wCoarse,
     float gain);
 __global__ void grain_debug_encode_avg3_kernel(
@@ -925,6 +927,8 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpMid,
+    float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -1063,6 +1067,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     }
     else if (grain.active != 0) {
         constexpr std::uint64_t kSeedSaltFine = 0xA24BAED4963EE407ULL;
+        constexpr std::uint64_t kSeedSaltMid = 0x9F6C1E6B2C4D7A13ULL;
         constexpr std::uint64_t kSeedSaltCoarse = 0x3C79AC492BA7B653ULL;
 
         const int total = params.width * params.height;
@@ -1074,18 +1079,23 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         const float wCoarse = std::isfinite(grain.sizeMixWeight)
             ? fminf(fmaxf(grain.sizeMixWeight, 0.0f), 1.0f)
             : 0.0f;
+        const float wMid = std::isfinite(grain.sizeMixWeightMid)
+            ? fminf(fmaxf(grain.sizeMixWeightMid, 0.0f), 1.0f)
+            : 0.0f;
         const float sizeMixScale = (std::isfinite(grain.sizeMixScale) && grain.sizeMixScale > 1.0f)
             ? grain.sizeMixScale
             : 1.0f;
+        const float midScale = (sizeMixScale > 1.0f) ? sqrtf(sizeMixScale) : 1.0f;
+        const bool hasMidKernel = (grainKernels.blurKernelMid && grainKernels.blurRadiusMid > 0);
+        const bool hasCoarseKernel = (grainKernels.blurKernelCoarse && grainKernels.blurRadiusCoarse > 0);
         const bool wantMix = wantFineBlur &&
-            (wCoarse > 0.0f) &&
             (sizeMixScale > 1.0f) &&
-            dGrainTmp &&
-            grainKernels.blurKernelCoarse &&
-            (grainKernels.blurRadiusCoarse > 0);
+            ((wMid > 0.0f && hasMidKernel) || (wCoarse > 0.0f && hasCoarseKernel)) &&
+            dGrainTmp && dGrainTmpMid && dGrainTmpCoarse;
 
         const bool needFine = (debugView == 0 || debugView == 1 || debugView == 2 || debugView == 4);
-        const bool needCoarse = (debugView == 0 || debugView == 1 || debugView == 3 || debugView == 5) && wantMix;
+        const bool needMid = (debugView == 0 || debugView == 1) && wantMix && (wMid > 0.0f);
+        const bool needCoarse = (debugView == 0 || debugView == 1 || debugView == 3 || debugView == 5) && wantMix && (wCoarse > 0.0f);
         const bool needMix = (debugView == 0 || debugView == 1) && wantMix;
 
         float* meanBuf = useSublayers ? dAux : (wantFineBlur ? dScratchBlurred : dTmp);
@@ -1155,6 +1165,22 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             return cudaSuccess;
         };
 
+        auto apply_scale_params = [&](JuicerCuda::PipelineRunParams& passParams, float scaleFactor) {
+            if (!(scaleFactor > 0.0f) || !std::isfinite(scaleFactor)) {
+                return;
+            }
+            for (int c = 0; c < 3; ++c) {
+                passParams.grain.nParticles[c] = params.grain.nParticles[c] / scaleFactor;
+                passParams.grain.odParticle[c] = params.grain.odParticle[c] * scaleFactor;
+            }
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int c = 0; c < 3; ++c) {
+                    passParams.grain.nParticlesLayers[layer][c] = params.grain.nParticlesLayers[layer][c] / scaleFactor;
+                    passParams.grain.odParticleLayers[layer][c] = params.grain.odParticleLayers[layer][c] * scaleFactor;
+                }
+            }
+        };
+
         auto process_channel = [&](float* plane, int channel) -> cudaError_t {
             if (!plane) {
                 return cudaErrorInvalidValue;
@@ -1200,12 +1226,12 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                     }
                 }
 
-                if (debugView == 0 && !needCoarse) {
+                if (debugView == 0 && !needMid && !needCoarse) {
                     grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
                     return cudaGetLastError();
                 }
 
-                if (!needCoarse) {
+                if (!needMid && !needCoarse) {
                     if (debugView == 3 || debugView == 5) {
                         grain_clear_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, total);
                         return cudaGetLastError();
@@ -1234,23 +1260,64 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                 }
             }
 
+            if (needMid) {
+                JuicerCuda::PipelineRunParams midParams = params;
+                midParams.grain.seedBase ^= kSeedSaltMid;
+                midParams.grain.seedBaseNext ^= kSeedSaltMid;
+                midParams.grain.sizeMixWeight = 0.0f;
+                midParams.grain.sizeMixWeightMid = 0.0f;
+                midParams.grain.sizeMixScale = 1.0f;
+                apply_scale_params(midParams, midScale);
+
+                if (useSublayers) {
+                    e = generate_channel_sublayers(midParams, meanBuf, plane, channel);
+                }
+                else {
+                    e = generate_channel_simple(midParams, plane, channel);
+                }
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = apply_bias(plane, channel);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernelMid, grainKernels.blurRadiusMid);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                if (needMix) {
+                    e = cudaMemcpyAsync(dGrainTmpMid, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+
+                if (!useSublayers) {
+                    e = cudaMemcpyAsync(plane, meanBuf, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+            }
+
             if (needCoarse) {
                 JuicerCuda::PipelineRunParams coarseParams = params;
                 coarseParams.grain.seedBase ^= kSeedSaltCoarse;
                 coarseParams.grain.seedBaseNext ^= kSeedSaltCoarse;
                 coarseParams.grain.sizeMixWeight = 0.0f;
+                coarseParams.grain.sizeMixWeightMid = 0.0f;
                 coarseParams.grain.sizeMixScale = 1.0f;
-
-                for (int c = 0; c < 3; ++c) {
-                    coarseParams.grain.nParticles[c] = params.grain.nParticles[c] / sizeMixScale;
-                    coarseParams.grain.odParticle[c] = params.grain.odParticle[c] * sizeMixScale;
-                }
-                for (int layer = 0; layer < 3; ++layer) {
-                    for (int c = 0; c < 3; ++c) {
-                        coarseParams.grain.nParticlesLayers[layer][c] = params.grain.nParticlesLayers[layer][c] / sizeMixScale;
-                        coarseParams.grain.odParticleLayers[layer][c] = params.grain.odParticleLayers[layer][c] * sizeMixScale;
-                    }
-                }
+                apply_scale_params(coarseParams, sizeMixScale);
 
                 if (useSublayers) {
                     e = generate_channel_sublayers(coarseParams, meanBuf, plane, channel);
@@ -1285,23 +1352,36 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                 }
 
                 if (needMix) {
-                    grain_mix_delta_kernel<<<blocks1D, threads1D, 0, stream>>>(
-                        plane,
-                        dGrainTmp,
-                        plane,
-                        total,
-                        wCoarse,
-                        grain.sizeMixGain);
-                    e = cudaGetLastError();
+                    e = cudaMemcpyAsync(dGrainTmpCoarse, plane, bytes, cudaMemcpyDeviceToDevice, stream);
                     if (e != cudaSuccess) {
                         return e;
                     }
                 }
+            }
 
-                if (debugView == 0) {
-                    grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
-                    return cudaGetLastError();
+            if (needMix) {
+                const float wM = wMid;
+                const float wC = wCoarse;
+                const float* midPtr = (wM > 0.0f) ? dGrainTmpMid : dGrainTmp;
+                const float* coarsePtr = (wC > 0.0f) ? dGrainTmpCoarse : dGrainTmp;
+                grain_mix_delta3_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                    plane,
+                    dGrainTmp,
+                    midPtr,
+                    coarsePtr,
+                    total,
+                    wM,
+                    wC,
+                    grain.sizeMixGain);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
                 }
+            }
+
+            if (debugView == 0) {
+                grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                return cudaGetLastError();
             }
 
             return cudaSuccess;
@@ -1451,6 +1531,8 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpMid,
+    float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -1480,6 +1562,8 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
         dScratchBlurred,
         dAux,
         dGrainTmp,
+        dGrainTmpMid,
+        dGrainTmpCoarse,
         dLensBlurKernel,
         lensBlurRadius,
         dUnsharpKernel,

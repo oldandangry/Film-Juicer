@@ -34,6 +34,7 @@ namespace Profiles {
         float blur = 0.0f; // Grain blur sigma in pixels.
         float blurDyeCloudsUm = 0.0f; // Dye-cloud blur sigma scale in pixels (legacy _um name).
         float sizeMixWeight = 0.30f;
+        float sizeMixWeightMid = 0.0f;
         float sizeMixScale = 3.0f;
         float clumpTemporalMix = 0.30f;
         float clumpMorphPeriodSec = 8.0f;

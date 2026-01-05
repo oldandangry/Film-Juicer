@@ -707,6 +707,16 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixWeightMid);
+            p->setLabel("Size mix mid weight");
+            p->setHint("Weight of the mid grain population in the size mixture.");
+            p->setDefault(0.0);
+            p->setRange(0.0, 1.0);
+            p->setDisplayRange(0.0, 1.0);
+            if (grpGrain) p->setParent(*grpGrain);
+            p->setEvaluateOnChange(true);
+        }
+        {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainSizeMixScale);
             p->setLabel("Size mix scale");
             p->setHint("Relative particle size scale for the coarse grain population.");

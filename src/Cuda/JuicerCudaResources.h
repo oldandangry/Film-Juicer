@@ -147,6 +147,8 @@ namespace JuicerCuda {
         float* blurred = nullptr;
         float* aux = nullptr;
         float* grainTmp = nullptr;
+        float* grainTmpMid = nullptr;
+        float* grainTmpCoarse = nullptr;
         float* gateMask = nullptr;
         int width = 0;
         int height = 0;
@@ -168,6 +170,7 @@ namespace JuicerCuda {
         DeviceGaussianKernel scannerUnsharpKernel;
         DeviceGaussianKernel scannerGlareKernel;
         DeviceGaussianKernel grainBlurKernel;
+        DeviceGaussianKernel grainBlurKernelMid;
         DeviceGaussianKernel grainBlurKernelCoarse;
         DeviceGaussianKernel grainDyeKernel[3][3];
         DeviceGaussianKernel halationKernel[3];

@@ -1021,6 +1021,11 @@ namespace Profiles {
             if (!require_float("blur_dye_clouds_um", grain.blurDyeCloudsUm)) return false;
             if (!require_float_array2("micro_structure", grain.microStructure)) return false;
             if (!require_int("n_sub_layers", grain.nSubLayers)) return false;
+            if (auto val = parse_optional_float(grainNode.value("size_mix_weight_mid", Json{}))) {
+                if (std::isfinite(*val)) {
+                    grain.sizeMixWeightMid = *val;
+                }
+            }
             if (auto val = parse_optional_float(grainNode.value("clump_temporal_mix", Json{}))) {
                 if (std::isfinite(*val)) {
                     grain.clumpTemporalMix = *val;

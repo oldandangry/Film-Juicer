@@ -627,6 +627,13 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     sizeMixWeight = sanitize(sizeMixWeight, 0.23, 0.0, 1.0);
     grain.sizeMixWeight = static_cast<float>(sizeMixWeight);
 
+    double sizeMixWeightMid = 0.0;
+    if (_pGrainSizeMixWeightMid) {
+        _pGrainSizeMixWeightMid->getValue(sizeMixWeightMid);
+    }
+    sizeMixWeightMid = sanitize(sizeMixWeightMid, 0.0, 0.0, 1.0);
+    grain.sizeMixWeightMid = static_cast<float>(sizeMixWeightMid);
+
     double sizeMixScale = 9.0;
     if (_pGrainSizeMixScale) {
         _pGrainSizeMixScale->getValue(sizeMixScale);
@@ -1280,10 +1287,11 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGrainParticleScaleLayers = fetchDouble3DParam(JuicerParams::kGrainParticleScaleLayers);
         _pGrainDensityMin = fetchDouble3DParam(JuicerParams::kGrainDensityMin);
         _pGrainUniformity = fetchDouble3DParam(JuicerParams::kGrainUniformity);
-        _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
-        _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
-        _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
-        _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
+    _pGrainBlur = fetchDoubleParam(JuicerParams::kGrainBlur);
+    _pGrainBlurDyeCloudsUm = fetchDoubleParam(JuicerParams::kGrainBlurDyeCloudsUm);
+    _pGrainSizeMixWeight = fetchDoubleParam(JuicerParams::kGrainSizeMixWeight);
+    _pGrainSizeMixWeightMid = fetchDoubleParam(JuicerParams::kGrainSizeMixWeightMid);
+    _pGrainSizeMixScale = fetchDoubleParam(JuicerParams::kGrainSizeMixScale);
         _pGrainClumpTemporalMix = fetchDoubleParam(JuicerParams::kGrainClumpTemporalMix);
         _pGrainClumpMorphPeriodSec = fetchDoubleParam(JuicerParams::kGrainClumpMorphPeriodSec);
         _pGrainBreathingDebug = fetchBooleanParam(JuicerParams::kGrainBreathingDebug);

@@ -59,6 +59,8 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpMid,
+    float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -86,6 +88,8 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpMid,
+    float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
     int lensBlurRadius,
     const float* dUnsharpKernel,
@@ -1469,6 +1473,7 @@ void JuicerProcessor::processImagesCUDA() {
         bool wantGrainBlur = false;
         bool wantGrainMix = false;
         float grainBlurSigmaPx = 0.0f;
+        float grainBlurSigmaMidPx = 0.0f;
         float grainBlurSigmaCoarsePx = 0.0f;
         float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
     };
@@ -1502,6 +1507,7 @@ void JuicerProcessor::processImagesCUDA() {
         bool wantGrainBlur = false;
         bool wantGrainMix = false;
         float grainBlurSigmaPx = 0.0f;
+        float grainBlurSigmaMidPx = 0.0f;
         float grainBlurSigmaCoarsePx = 0.0f;
         float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
 
@@ -1636,6 +1642,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
             run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
             run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
+            run.grain.sizeMixWeightMid = (std::isfinite(grainUi.sizeMixWeightMid)) ? std::clamp(grainUi.sizeMixWeightMid, 0.0f, 1.0f) : 0.0f;
             run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
             run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
             run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
@@ -1779,13 +1786,34 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.debugScale = 0.25f / std::max(1e-6f, densityMaxAvg);
         }
 
-        // Phase 2: two-scale mix configuration (Option A).
+        // Phase 3: three-scale mix configuration (fine + mid + coarse).
         {
-            const float w = std::isfinite(run.grain.sizeMixWeight) ? std::clamp(run.grain.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
-            const float scale = std::isfinite(run.grain.sizeMixScale) ? std::max(1.0f, run.grain.sizeMixScale) : 1.0f;
-            wantGrainMix = wantGrain && wantGrainBlur && (w > 0.0f) && (scale > 1.0f);
+            float wC = std::isfinite(run.grain.sizeMixWeight) ? std::clamp(run.grain.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
+            float wM = std::isfinite(run.grain.sizeMixWeightMid) ? std::clamp(run.grain.sizeMixWeightMid, 0.0f, 1.0f) : 0.0f;
+            float wF = 1.0f - wM - wC;
+            if (wF < 0.0f) {
+                wF = 0.0f;
+            }
+            float wSum = wF + wM + wC;
+            if (wSum > 0.0f) {
+                const float invSum = 1.0f / wSum;
+                wF *= invSum;
+                wM *= invSum;
+                wC *= invSum;
+            }
+            else {
+                wF = 1.0f;
+                wM = 0.0f;
+                wC = 0.0f;
+            }
+            run.grain.sizeMixWeight = wC;
+            run.grain.sizeMixWeightMid = wM;
 
-            if (wantGrainMix && grainBlurSigmaPx > 0.0f) {
+            const float scale = std::isfinite(run.grain.sizeMixScale) ? std::max(1.0f, run.grain.sizeMixScale) : 1.0f;
+            const bool canMix = wantGrain && wantGrainBlur && (grainBlurSigmaPx > 0.0f) && (scale > 1.0f);
+            wantGrainMix = canMix && ((wM > 0.0f) || (wC > 0.0f));
+
+            if (wantGrainMix) {
                 const float sigmaF = grainBlurSigmaPx;
                 const float sigmaCRaw = sigmaF * std::sqrt(scale);
                 grainBlurSigmaCoarsePx = std::max(sigmaF, std::min(sigmaCRaw, sigmaF * 4.0f));
@@ -1793,10 +1821,20 @@ void JuicerProcessor::processImagesCUDA() {
                     wantGrainMix = false;
                     grainBlurSigmaCoarsePx = 0.0f;
                 }
+                if (wantGrainMix) {
+                    grainBlurSigmaMidPx = std::sqrt(std::max(0.0f, sigmaF * grainBlurSigmaCoarsePx));
+                    if (!(std::isfinite(grainBlurSigmaMidPx) && grainBlurSigmaMidPx > 0.0f)) {
+                        wantGrainMix = false;
+                        grainBlurSigmaMidPx = 0.0f;
+                    }
+                }
             }
-
             if (!wantGrainMix) {
                 run.grain.sizeMixGain = 1.0f;
+                run.grain.sizeMixWeight = 0.0f;
+                run.grain.sizeMixWeightMid = 0.0f;
+                grainBlurSigmaMidPx = 0.0f;
+                grainBlurSigmaCoarsePx = 0.0f;
             }
             else {
                 auto kernel_energy_2d = [](float sigma) -> float {
@@ -1829,11 +1867,15 @@ void JuicerProcessor::processImagesCUDA() {
                 };
 
                 const float sigmaF = grainBlurSigmaPx;
+                const float sigmaM = grainBlurSigmaMidPx;
                 const float sigmaC = grainBlurSigmaCoarsePx;
                 const float eF = kernel_energy_2d(sigmaF);
+                const float eM = kernel_energy_2d(sigmaM);
                 const float eC = kernel_energy_2d(sigmaC);
-                const float r = scale * (eC / std::max(1e-12f, eF));
-                const float denom = (1.0f - w) * (1.0f - w) + w * w * r;
+                const float midScale = std::sqrt(scale);
+                const float rM = midScale * (eM / std::max(1e-12f, eF));
+                const float rC = scale * (eC / std::max(1e-12f, eF));
+                const float denom = wF * wF + wM * wM * rM + wC * wC * rC;
                 run.grain.sizeMixGain = (denom > 1e-12f) ? (1.0f / std::sqrt(denom)) : 1.0f;
             }
         }
@@ -1843,6 +1885,7 @@ void JuicerProcessor::processImagesCUDA() {
         result.wantGrainBlur = wantGrainBlur;
         result.wantGrainMix = wantGrainMix;
         result.grainBlurSigmaPx = grainBlurSigmaPx;
+        result.grainBlurSigmaMidPx = grainBlurSigmaMidPx;
         result.grainBlurSigmaCoarsePx = grainBlurSigmaCoarsePx;
         for (int layer = 0; layer < 3; ++layer) {
             for (int ch = 0; ch < 3; ++ch) {
@@ -2434,6 +2477,7 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantGrainBlur = grainSetup.wantGrainBlur;
             const bool wantGrainMix = grainSetup.wantGrainMix;
             const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
+            const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
 
             const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
@@ -2545,6 +2589,8 @@ void JuicerProcessor::processImagesCUDA() {
 
                 run.grainKernels.blurKernel = nullptr;
                 run.grainKernels.blurRadius = 0;
+                run.grainKernels.blurKernelMid = nullptr;
+                run.grainKernels.blurRadiusMid = 0;
                 run.grainKernels.blurKernelCoarse = nullptr;
                 run.grainKernels.blurRadiusCoarse = 0;
                 for (int layer = 0; layer < 3; ++layer) {
@@ -2567,6 +2613,14 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
                     if (wantGrainMix) {
+                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelMid, grainBlurSigmaMidPx, _pCudaStream, opticsError)) {
+                            JTRACE("CUDA", std::string("CUDA grain mid blur kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                        }
                         if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelCoarse, grainSetup.grainBlurSigmaCoarsePx, _pCudaStream, opticsError)) {
                             JTRACE("CUDA", std::string("CUDA grain coarse blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
@@ -2575,6 +2629,8 @@ void JuicerProcessor::processImagesCUDA() {
                             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                         }
+                        run.grainKernels.blurKernelMid = cudaResources->grainBlurKernelMid.weights;
+                        run.grainKernels.blurRadiusMid = cudaResources->grainBlurKernelMid.radius;
                         run.grainKernels.blurKernelCoarse = cudaResources->grainBlurKernelCoarse.weights;
                         run.grainKernels.blurRadiusCoarse = cudaResources->grainBlurKernelCoarse.radius;
                     }
@@ -2647,6 +2703,8 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerScratch.blurred,
                     cudaResources->scannerScratch.aux,
                     cudaResources->scannerScratch.grainTmp,
+                    cudaResources->scannerScratch.grainTmpMid,
+                    cudaResources->scannerScratch.grainTmpCoarse,
                     cudaResources->scannerLensBlurKernel.weights,
                     cudaResources->scannerLensBlurKernel.radius,
                     cudaResources->scannerUnsharpKernel.weights,
@@ -3213,6 +3271,7 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantGrainBlur = grainSetup.wantGrainBlur;
             const bool wantGrainMix = grainSetup.wantGrainMix;
             const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
+            const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
 
             const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
             const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
@@ -3328,6 +3387,8 @@ void JuicerProcessor::processImagesCUDA() {
 
                 run.grainKernels.blurKernel = nullptr;
                 run.grainKernels.blurRadius = 0;
+                run.grainKernels.blurKernelMid = nullptr;
+                run.grainKernels.blurRadiusMid = 0;
                 run.grainKernels.blurKernelCoarse = nullptr;
                 run.grainKernels.blurRadiusCoarse = 0;
                 for (int layer = 0; layer < 3; ++layer) {
@@ -3350,6 +3411,14 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
                     if (wantGrainMix) {
+                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelMid, grainBlurSigmaMidPx, _pCudaStream, opticsError)) {
+                            JTRACE("CUDA", std::string("CUDA grain mid blur kernel upload failed: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                        }
                         if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelCoarse, grainSetup.grainBlurSigmaCoarsePx, _pCudaStream, opticsError)) {
                             JTRACE("CUDA", std::string("CUDA grain coarse blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
@@ -3358,6 +3427,8 @@ void JuicerProcessor::processImagesCUDA() {
                             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                         }
+                        run.grainKernels.blurKernelMid = cudaResources->grainBlurKernelMid.weights;
+                        run.grainKernels.blurRadiusMid = cudaResources->grainBlurKernelMid.radius;
                         run.grainKernels.blurKernelCoarse = cudaResources->grainBlurKernelCoarse.weights;
                         run.grainKernels.blurRadiusCoarse = cudaResources->grainBlurKernelCoarse.radius;
                     }
@@ -3430,6 +3501,8 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerScratch.blurred,
                     cudaResources->scannerScratch.aux,
                     cudaResources->scannerScratch.grainTmp,
+                    cudaResources->scannerScratch.grainTmpMid,
+                    cudaResources->scannerScratch.grainTmpCoarse,
                     cudaResources->scannerLensBlurKernel.weights,
                     cudaResources->scannerLensBlurKernel.radius,
                     cudaResources->scannerUnsharpKernel.weights,

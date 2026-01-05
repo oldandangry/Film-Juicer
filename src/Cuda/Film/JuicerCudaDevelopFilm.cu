@@ -882,6 +882,37 @@ __global__ void grain_mix_delta_kernel(
     outDelta[idx] = device_isfinite(v) ? v : 0.0f;
 }
 
+__global__ void grain_mix_delta3_kernel(
+    float* outDelta,
+    const float* fineDelta,
+    const float* midDelta,
+    const float* coarseDelta,
+    int n,
+    float wMid,
+    float wCoarse,
+    float gain)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) {
+        return;
+    }
+    if (!outDelta || !fineDelta || !midDelta || !coarseDelta) {
+        return;
+    }
+    const float wM = fminf(fmaxf(wMid, 0.0f), 1.0f);
+    const float wC = fminf(fmaxf(wCoarse, 0.0f), 1.0f);
+    float wF = 1.0f - wM - wC;
+    if (!device_isfinite(wF) || wF < 0.0f) {
+        wF = 0.0f;
+    }
+    const float g = device_isfinite(gain) ? gain : 1.0f;
+    const float fine = fineDelta[idx];
+    const float mid = midDelta[idx];
+    const float coarse = coarseDelta[idx];
+    const float v = g * (wF * fine + wM * mid + wC * coarse);
+    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+}
+
 __global__ void grain_debug_encode_avg3_kernel(
     float* outR,
     float* outG,

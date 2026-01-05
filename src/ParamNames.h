@@ -29,6 +29,7 @@ namespace JuicerParams {
     inline constexpr const char kGrainBlur[] = "GrainBlur";
     inline constexpr const char kGrainBlurDyeCloudsUm[] = "GrainBlurDyeCloudsUm";
     inline constexpr const char kGrainSizeMixWeight[] = "GrainSizeMixWeight";
+    inline constexpr const char kGrainSizeMixWeightMid[] = "GrainSizeMixWeightMid";
     inline constexpr const char kGrainSizeMixScale[] = "GrainSizeMixScale";
     inline constexpr const char kGrainClumpTemporalMix[] = "GrainClumpTemporalMix";
     inline constexpr const char kGrainClumpMorphPeriodSec[] = "GrainClumpMorphPeriodSec";

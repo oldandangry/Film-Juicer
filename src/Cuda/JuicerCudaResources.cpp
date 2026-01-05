@@ -940,6 +940,8 @@ namespace JuicerCuda {
         if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
         if (s.aux) { cudaFree(s.aux); s.aux = nullptr; }
         if (s.grainTmp) { cudaFree(s.grainTmp); s.grainTmp = nullptr; }
+        if (s.grainTmpMid) { cudaFree(s.grainTmpMid); s.grainTmpMid = nullptr; }
+        if (s.grainTmpCoarse) { cudaFree(s.grainTmpCoarse); s.grainTmpCoarse = nullptr; }
         if (s.gateMask) { cudaFree(s.gateMask); s.gateMask = nullptr; }
 #endif
         s.tmp = nullptr;
@@ -1317,6 +1319,7 @@ namespace JuicerCuda {
         free_gaussian_kernel(scannerUnsharpKernel);
         free_gaussian_kernel(scannerGlareKernel);
         free_gaussian_kernel(grainBlurKernel);
+        free_gaussian_kernel(grainBlurKernelMid);
         free_gaussian_kernel(grainBlurKernelCoarse);
         for (int layer = 0; layer < 3; ++layer) {
             for (int ch = 0; ch < 3; ++ch) {
@@ -2335,7 +2338,7 @@ namespace JuicerCuda {
         if (!dimsMatch || !haveBase) {
             if (resources.scannerScratch.rgbR || resources.scannerScratch.rgbG || resources.scannerScratch.rgbB ||
                 resources.scannerScratch.blurred || resources.scannerScratch.aux || resources.scannerScratch.grainTmp ||
-                resources.scannerScratch.gateMask) {
+                resources.scannerScratch.grainTmpMid || resources.scannerScratch.grainTmpCoarse || resources.scannerScratch.gateMask) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -2434,6 +2437,30 @@ namespace JuicerCuda {
                     return false;
                 }
             }
+            if (!resources.scannerScratch.grainTmpMid) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix mid scratch", outError)) {
+                    return false;
+                }
+                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
+                const size_t bytes = n * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpMid), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(scannerScratch.grainTmpMid) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+            }
+            if (!resources.scannerScratch.grainTmpCoarse) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix coarse scratch", outError)) {
+                    return false;
+                }
+                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
+                const size_t bytes = n * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpCoarse), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(scannerScratch.grainTmpCoarse) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+            }
         }
         else {
             if (resources.scannerScratch.grainTmp) {
@@ -2442,6 +2469,20 @@ namespace JuicerCuda {
                 }
                 cudaFree(resources.scannerScratch.grainTmp);
                 resources.scannerScratch.grainTmp = nullptr;
+            }
+            if (resources.scannerScratch.grainTmpMid) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix mid scratch free", outError)) {
+                    return false;
+                }
+                cudaFree(resources.scannerScratch.grainTmpMid);
+                resources.scannerScratch.grainTmpMid = nullptr;
+            }
+            if (resources.scannerScratch.grainTmpCoarse) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix coarse scratch free", outError)) {
+                    return false;
+                }
+                cudaFree(resources.scannerScratch.grainTmpCoarse);
+                resources.scannerScratch.grainTmpCoarse = nullptr;
             }
         }
 
