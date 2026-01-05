@@ -721,8 +721,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Size mix scale");
             p->setHint("Relative particle size scale for the coarse grain population.");
             p->setDefault(9.0);
-            p->setRange(1.0, 10.0);
-            p->setDisplayRange(1.0, 10.0);
+            p->setRange(1.0, 20.0);
+            p->setDisplayRange(1.0, 20.0);
             if (grpGrain) p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }

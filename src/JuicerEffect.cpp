@@ -638,7 +638,7 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     if (_pGrainSizeMixScale) {
         _pGrainSizeMixScale->getValue(sizeMixScale);
     }
-    sizeMixScale = sanitize(sizeMixScale, 9.0, 1.0, 10.0);
+    sizeMixScale = sanitize(sizeMixScale, 9.0, 1.0, 20.0);
     grain.sizeMixScale = static_cast<float>(sizeMixScale);
 
     double clumpTemporalMix = 0.30;

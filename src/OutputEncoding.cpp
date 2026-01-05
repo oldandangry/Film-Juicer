@@ -36,8 +36,9 @@ namespace OutputEncoding {
             return v;
         }
 
-        inline float encode_gamma(float v, float exponent) {
-            return static_cast<float>(std::pow(v, exponent));
+        inline float encode_gamma_signed(float v, float exponent) {
+            const float mag = static_cast<float>(std::pow(std::abs(v), exponent));
+            return std::copysign(mag, v);
         }
 
         inline float encode_sRGB(float v) {
@@ -75,7 +76,7 @@ namespace OutputEncoding {
             case Kind::Linear:
                 return v;
             case Kind::Gamma:
-                return encode_gamma(v, cctf.gamma);
+                return encode_gamma_signed(v, cctf.gamma);
             case Kind::SRGB:
                 return encode_sRGB(v);
             case Kind::BT2020:
@@ -95,8 +96,9 @@ namespace OutputEncoding {
             return v;
         }
 
-        inline double encode_gammad(double v, double exponent) {
-            return std::pow(v, exponent);
+        inline double encode_gammad_signed(double v, double exponent) {
+            const double mag = std::pow(std::abs(v), exponent);
+            return std::copysign(mag, v);
         }
 
         inline double encode_sRGBd(double v) {
@@ -134,7 +136,7 @@ namespace OutputEncoding {
             case Kind::Linear:
                 return v;
             case Kind::Gamma:
-                return encode_gammad(v, static_cast<double>(cctf.gamma));
+                return encode_gammad_signed(v, static_cast<double>(cctf.gamma));
             case Kind::SRGB:
                 return encode_sRGBd(v);
             case Kind::BT2020:

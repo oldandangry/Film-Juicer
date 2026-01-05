@@ -21,8 +21,9 @@ static __device__ __forceinline__ double encode_sRGBd_device(double v) {
     return 1.055 * pow(v, 1.0 / 2.4) - 0.055;
 }
 
-static __device__ __forceinline__ double encode_gammad_device(double v, double exponent) {
-    return pow(v, exponent);
+static __device__ __forceinline__ double encode_gammad_signed_device(double v, double exponent) {
+    const double mag = pow(fabs(v), exponent);
+    return copysign(mag, v);
 }
 
 static __device__ __forceinline__ double encode_BT2020d_device(double v, double a, double b) {
@@ -53,7 +54,7 @@ static __device__ __forceinline__ double encode_channel_double_device(const Juic
     case 0: // Linear
         return v;
     case 1: // Gamma
-        return encode_gammad_device(v, static_cast<double>(cctf.gamma));
+        return encode_gammad_signed_device(v, static_cast<double>(cctf.gamma));
     case 2: // SRGB
         return encode_sRGBd_device(v);
     case 3: // BT2020
