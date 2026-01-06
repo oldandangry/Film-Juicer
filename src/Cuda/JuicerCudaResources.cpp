@@ -940,6 +940,7 @@ namespace JuicerCuda {
         if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
         if (s.aux) { cudaFree(s.aux); s.aux = nullptr; }
         if (s.grainTmp) { cudaFree(s.grainTmp); s.grainTmp = nullptr; }
+        if (s.grainTmpShared) { cudaFree(s.grainTmpShared); s.grainTmpShared = nullptr; }
         if (s.grainTmpMid) { cudaFree(s.grainTmpMid); s.grainTmpMid = nullptr; }
         if (s.grainTmpCoarse) { cudaFree(s.grainTmpCoarse); s.grainTmpCoarse = nullptr; }
         if (s.gateMask) { cudaFree(s.gateMask); s.gateMask = nullptr; }
@@ -2297,7 +2298,7 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)width;
@@ -2338,7 +2339,8 @@ namespace JuicerCuda {
         if (!dimsMatch || !haveBase) {
             if (resources.scannerScratch.rgbR || resources.scannerScratch.rgbG || resources.scannerScratch.rgbB ||
                 resources.scannerScratch.blurred || resources.scannerScratch.aux || resources.scannerScratch.grainTmp ||
-                resources.scannerScratch.grainTmpMid || resources.scannerScratch.grainTmpCoarse || resources.scannerScratch.gateMask) {
+                resources.scannerScratch.grainTmpShared || resources.scannerScratch.grainTmpMid ||
+                resources.scannerScratch.grainTmpCoarse || resources.scannerScratch.gateMask) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -2483,6 +2485,30 @@ namespace JuicerCuda {
                 }
                 cudaFree(resources.scannerScratch.grainTmpCoarse);
                 resources.scannerScratch.grainTmpCoarse = nullptr;
+            }
+        }
+
+        if (needGrainSharedScratch) {
+            if (!resources.scannerScratch.grainTmpShared) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain shared scratch", outError)) {
+                    return false;
+                }
+                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
+                const size_t bytes = n * sizeof(float);
+                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpShared), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(scannerScratch.grainTmpShared) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
+            }
+        }
+        else {
+            if (resources.scannerScratch.grainTmpShared) {
+                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain shared scratch free", outError)) {
+                    return false;
+                }
+                cudaFree(resources.scannerScratch.grainTmpShared);
+                resources.scannerScratch.grainTmpShared = nullptr;
             }
         }
 

@@ -922,6 +922,34 @@ __global__ void grain_mix_delta3_kernel(
     outDelta[idx] = device_isfinite(v) ? v : 0.0f;
 }
 
+__global__ void grain_mix_shared_kernel(
+    float* outDelta,
+    const float* indDelta,
+    const float* sharedDelta,
+    int n,
+    float wShared,
+    float wInd,
+    float amplitude)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) {
+        return;
+    }
+    if (!outDelta) {
+        return;
+    }
+    const float ws = fminf(fmaxf(wShared, 0.0f), 1.0f);
+    const float wi = fminf(fmaxf(wInd, 0.0f), 1.0f);
+    float a = device_isfinite(amplitude) ? amplitude : 1.0f;
+    if (a < 0.0f) {
+        a = 0.0f;
+    }
+    const float shared = (sharedDelta && ws > 0.0f) ? sharedDelta[idx] : 0.0f;
+    const float ind = (indDelta && wi > 0.0f) ? indDelta[idx] : 0.0f;
+    const float v = a * (ws * shared + wi * ind);
+    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+}
+
 __global__ void grain_debug_encode_avg3_kernel(
     float* outR,
     float* outG,

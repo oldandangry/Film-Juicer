@@ -147,6 +147,7 @@ namespace JuicerCuda {
         float* blurred = nullptr;
         float* aux = nullptr;
         float* grainTmp = nullptr;
+        float* grainTmpShared = nullptr;
         float* grainTmpMid = nullptr;
         float* grainTmpCoarse = nullptr;
         float* gateMask = nullptr;
@@ -307,7 +308,7 @@ namespace JuicerCuda {
     bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
 
     // Allocates scratch buffers used by scanner optics (blur/unsharp/glare/grain) when active.
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
 
     // Allocates scratch buffers used by spatial DIR diffusion (corr planes + temp).
     bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);

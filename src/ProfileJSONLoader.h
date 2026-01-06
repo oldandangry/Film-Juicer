@@ -32,6 +32,9 @@ namespace Profiles {
         std::array<float, 3> densityMin{ {0.0f, 0.0f, 0.0f} };
         std::array<float, 3> uniformity{ {0.0f, 0.0f, 0.0f} };
         float amplitude = 1.0f; // Grain amplitude scalar (OD delta multiplier).
+        float chroma = 1.0f; // Grain chroma correlation mix (0=shared, 1=independent).
+        float chromaSharedWeight = 0.0f; // sqrt(1 - chroma)
+        float chromaIndWeight = 1.0f; // sqrt(chroma)
         float blur = 0.0f; // Grain blur sigma in pixels.
         float blurDyeCloudsUm = 0.0f; // Dye-cloud blur sigma scale in pixels (legacy _um name).
         float sizeMixWeight = 0.30f;

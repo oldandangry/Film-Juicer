@@ -95,6 +95,14 @@ __global__ void grain_mix_delta3_kernel(
     float wCoarse,
     float gain,
     float amplitude);
+__global__ void grain_mix_shared_kernel(
+    float* outDelta,
+    const float* indDelta,
+    const float* sharedDelta,
+    int n,
+    float wShared,
+    float wInd,
+    float amplitude);
 __global__ void grain_debug_encode_avg3_kernel(
     float* outR,
     float* outG,
@@ -928,6 +936,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpShared,
     float* dGrainTmpMid,
     float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
@@ -1070,6 +1079,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         constexpr std::uint64_t kSeedSaltFine = 0xA24BAED4963EE407ULL;
         constexpr std::uint64_t kSeedSaltMid = 0x9F6C1E6B2C4D7A13ULL;
         constexpr std::uint64_t kSeedSaltCoarse = 0x3C79AC492BA7B653ULL;
+        constexpr std::uint64_t kSeedSaltShared = 0x7E8A1B9D3F2C65A1ULL;
 
         const int total = params.width * params.height;
         const int threads1D = 256;
@@ -1100,7 +1110,12 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
         const bool needMix = (debugView == 0 || debugView == 1) && wantMix;
         float amplitude = (std::isfinite(grain.amplitude) && grain.amplitude >= 0.0f) ? grain.amplitude : 1.0f;
         const bool applyAmpInMix = wantMix && (debugView == 0 || debugView == 1);
-        const float deltaAmp = applyAmpInMix ? 1.0f : amplitude;
+        const float chromaMix = std::isfinite(grain.chromaMix) ? grain.chromaMix : 1.0f;
+        const float chromaSharedWeight = std::isfinite(grain.chromaSharedWeight) ? grain.chromaSharedWeight : 0.0f;
+        const float chromaIndWeight = std::isfinite(grain.chromaIndWeight) ? grain.chromaIndWeight : 1.0f;
+        const bool wantChromaMix = (debugView == 0 || debugView == 1) && (chromaMix < 0.999f);
+        const float deltaAmp = (applyAmpInMix || wantChromaMix) ? 1.0f : amplitude;
+        const float mixAmplitude = wantChromaMix ? 1.0f : amplitude;
 
         float* meanBuf = useSublayers ? dAux : (wantFineBlur ? dScratchBlurred : dTmp);
         if (!meanBuf || !dTmp) {
@@ -1183,6 +1198,189 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                     passParams.grain.odParticleLayers[layer][c] = params.grain.odParticleLayers[layer][c] * scaleFactor;
                 }
             }
+        };
+
+        auto generate_delta_mix = [&](const JuicerCuda::PipelineRunParams& baseParams,
+                                      float* plane,
+                                      int channel,
+                                      float deltaAmpLocal,
+                                      float mixAmplitudeLocal) -> cudaError_t {
+            if (!plane) {
+                return cudaErrorInvalidValue;
+            }
+
+            cudaError_t e = cudaMemcpyAsync(meanBuf, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+
+            if (needFine) {
+                JuicerCuda::PipelineRunParams fineParams = baseParams;
+                fineParams.grain.seedBase ^= kSeedSaltFine;
+                fineParams.grain.seedBaseNext ^= kSeedSaltFine;
+                fineParams.grain.sizeMixWeight = 0.0f;
+                fineParams.grain.sizeMixScale = 1.0f;
+
+                if (useSublayers) {
+                    e = generate_channel_sublayers(fineParams, meanBuf, plane, channel);
+                }
+                else {
+                    e = generate_channel_simple(fineParams, plane, channel);
+                }
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = apply_bias(plane, channel);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total, deltaAmpLocal);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                if (wantFineBlur) {
+                    e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernel, grainKernels.blurRadius);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+
+                if (!needMix) {
+                    return cudaSuccess;
+                }
+
+                e = cudaMemcpyAsync(dGrainTmp, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                if (!useSublayers) {
+                    e = cudaMemcpyAsync(plane, meanBuf, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+            }
+
+            if (needMid) {
+                JuicerCuda::PipelineRunParams midParams = baseParams;
+                midParams.grain.seedBase ^= kSeedSaltMid;
+                midParams.grain.seedBaseNext ^= kSeedSaltMid;
+                midParams.grain.sizeMixWeight = 0.0f;
+                midParams.grain.sizeMixWeightMid = 0.0f;
+                midParams.grain.sizeMixScale = 1.0f;
+                apply_scale_params(midParams, midScale);
+
+                if (useSublayers) {
+                    e = generate_channel_sublayers(midParams, meanBuf, plane, channel);
+                }
+                else {
+                    e = generate_channel_simple(midParams, plane, channel);
+                }
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = apply_bias(plane, channel);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total, deltaAmpLocal);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernelMid, grainKernels.blurRadiusMid);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                if (needMix) {
+                    e = cudaMemcpyAsync(dGrainTmpMid, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+
+                if (!useSublayers) {
+                    e = cudaMemcpyAsync(plane, meanBuf, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+            }
+
+            if (needCoarse) {
+                JuicerCuda::PipelineRunParams coarseParams = baseParams;
+                coarseParams.grain.seedBase ^= kSeedSaltCoarse;
+                coarseParams.grain.seedBaseNext ^= kSeedSaltCoarse;
+                coarseParams.grain.sizeMixWeight = 0.0f;
+                coarseParams.grain.sizeMixWeightMid = 0.0f;
+                coarseParams.grain.sizeMixScale = 1.0f;
+                apply_scale_params(coarseParams, sizeMixScale);
+
+                if (useSublayers) {
+                    e = generate_channel_sublayers(coarseParams, meanBuf, plane, channel);
+                }
+                else {
+                    e = generate_channel_simple(coarseParams, plane, channel);
+                }
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = apply_bias(plane, channel);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                grain_subtract_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total, deltaAmpLocal);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                e = blur_plane_in_place(plane, dTmp, grainKernels.blurKernelCoarse, grainKernels.blurRadiusCoarse);
+                if (e != cudaSuccess) {
+                    return e;
+                }
+
+                if (needMix) {
+                    e = cudaMemcpyAsync(dGrainTmpCoarse, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+            }
+
+            if (needMix) {
+                const float wM = wMid;
+                const float wC = wCoarse;
+                const float* midPtr = (wM > 0.0f) ? dGrainTmpMid : dGrainTmp;
+                const float* coarsePtr = (wC > 0.0f) ? dGrainTmpCoarse : dGrainTmp;
+                grain_mix_delta3_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                    plane,
+                    dGrainTmp,
+                    midPtr,
+                    coarsePtr,
+                    total,
+                    wM,
+                    wC,
+                    grain.sizeMixGain,
+                    mixAmplitudeLocal);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+            }
+
+            return cudaSuccess;
         };
 
         auto process_channel = [&](float* plane, int channel) -> cudaError_t {
@@ -1377,7 +1575,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
                     wM,
                     wC,
                     grain.sizeMixGain,
-                    amplitude);
+                    mixAmplitude);
                 e = cudaGetLastError();
                 if (e != cudaSuccess) {
                     return e;
@@ -1392,12 +1590,77 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             return cudaSuccess;
         };
 
-        err = process_channel(dRgbR, 0);
-        if (err != cudaSuccess) return err;
-        err = process_channel(dRgbG, 1);
-        if (err != cudaSuccess) return err;
-        err = process_channel(dRgbB, 2);
-        if (err != cudaSuccess) return err;
+        if (wantChromaMix) {
+            const bool needShared = (chromaSharedWeight > 0.0f);
+            if (needShared && !dGrainTmpShared) {
+                return cudaErrorInvalidValue;
+            }
+            const int sharedChannel = 1;
+            if (needShared) {
+                const float* sharedSrc = (sharedChannel == 0) ? dRgbR : (sharedChannel == 1 ? dRgbG : dRgbB);
+                err = cudaMemcpyAsync(dGrainTmpShared, sharedSrc, bytes, cudaMemcpyDeviceToDevice, stream);
+                if (err != cudaSuccess) {
+                    return err;
+                }
+                JuicerCuda::PipelineRunParams sharedParams = params;
+                sharedParams.grain.seedBase ^= kSeedSaltShared;
+                sharedParams.grain.seedBaseNext ^= kSeedSaltShared;
+                err = generate_delta_mix(sharedParams, dGrainTmpShared, sharedChannel, 1.0f, 1.0f);
+                if (err != cudaSuccess) {
+                    return err;
+                }
+            }
+
+            auto process_channel_chroma = [&](float* plane, int channel) -> cudaError_t {
+                if (!plane) {
+                    return cudaErrorInvalidValue;
+                }
+                if (chromaIndWeight > 0.0f) {
+                    cudaError_t e = generate_delta_mix(params, plane, channel, 1.0f, 1.0f);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+                else {
+                    cudaError_t e = cudaMemcpyAsync(meanBuf, plane, bytes, cudaMemcpyDeviceToDevice, stream);
+                    if (e != cudaSuccess) {
+                        return e;
+                    }
+                }
+                grain_mix_shared_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                    plane,
+                    (chromaIndWeight > 0.0f) ? plane : nullptr,
+                    dGrainTmpShared,
+                    total,
+                    chromaSharedWeight,
+                    chromaIndWeight,
+                    amplitude);
+                cudaError_t e = cudaGetLastError();
+                if (e != cudaSuccess) {
+                    return e;
+                }
+                if (debugView == 0) {
+                    grain_accumulate_kernel<<<blocks1D, threads1D, 0, stream>>>(plane, meanBuf, total);
+                    return cudaGetLastError();
+                }
+                return cudaSuccess;
+            };
+
+            err = process_channel_chroma(dRgbR, 0);
+            if (err != cudaSuccess) return err;
+            err = process_channel_chroma(dRgbG, 1);
+            if (err != cudaSuccess) return err;
+            err = process_channel_chroma(dRgbB, 2);
+            if (err != cudaSuccess) return err;
+        }
+        else {
+            err = process_channel(dRgbR, 0);
+            if (err != cudaSuccess) return err;
+            err = process_channel(dRgbG, 1);
+            if (err != cudaSuccess) return err;
+            err = process_channel(dRgbB, 2);
+            if (err != cudaSuccess) return err;
+        }
 
         if (debugView != 0) {
             grain_debug_encode_avg3_kernel<<<blocks1D, threads1D, 0, stream>>>(
@@ -1536,6 +1799,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpShared,
     float* dGrainTmpMid,
     float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
@@ -1567,6 +1831,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
         dScratchBlurred,
         dAux,
         dGrainTmp,
+        dGrainTmpShared,
         dGrainTmpMid,
         dGrainTmpCoarse,
         dLensBlurKernel,

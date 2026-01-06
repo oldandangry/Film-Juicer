@@ -106,6 +106,14 @@ private:
     Profiles::ProfileGlare gatherGlareUi() const;
     OutputEncoding::Params gatherOutputEncodingParams() const;
     void applyHalationProfileDefaults();
+    void applyGrainPresetDefaults(int presetIndex);
+    void resetGrainAdvancedControls();
+    void updateGrainPresetLabel(bool custom);
+    void updateGrainChromaEnabled();
+    void getGrainRatioSets(std::array<double, 3>& outRgb,
+        std::array<double, 3>& outLayers,
+        std::array<double, 3>& outDensityMin,
+        std::array<double, 3>& outUniformity) const;
     AutoExposureResult computeAutoExposure(
         const OFX::RenderArguments& args,
         OFX::Image* srcImg,
@@ -187,8 +195,12 @@ private:
 
     OFX::BooleanParam* _pGrainActive = nullptr;
     OFX::BooleanParam* _pGrainSublayersActive = nullptr;
+    OFX::ChoiceParam* _pGrainPreset = nullptr;
     OFX::DoubleParam* _pGrainParticleAreaUm2 = nullptr;
     OFX::DoubleParam* _pGrainAmplitude = nullptr;
+    OFX::DoubleParam* _pGrainSharpness = nullptr;
+    OFX::DoubleParam* _pGrainChroma = nullptr;
+    OFX::DoubleParam* _pGrainTexture = nullptr;
     OFX::DoubleParam* _pGrainParticleScaleMaster = nullptr;
     OFX::DoubleParam* _pGrainParticleScaleLayersMaster = nullptr;
     OFX::DoubleParam* _pGrainDensityMinMaster = nullptr;
@@ -207,6 +219,31 @@ private:
     OFX::BooleanParam* _pGrainBreathingDebug = nullptr;
     OFX::ChoiceParam* _pGrainDebugView = nullptr;
     OFX::Double2DParam* _pGrainMicroStructure = nullptr;
+    OFX::PushButtonParam* _pGrainResetAdvanced = nullptr;
+
+    struct GrainAdvancedDirtyFlags {
+        bool particleArea = false;
+        bool particleScaleMaster = false;
+        bool particleScaleLayersMaster = false;
+        bool densityMinMaster = false;
+        bool uniformityMaster = false;
+        bool particleScale = false;
+        bool particleScaleLayers = false;
+        bool densityMin = false;
+        bool uniformity = false;
+        bool blurDyeClouds = false;
+        bool sizeMixWeight = false;
+        bool sizeMixWeightMid = false;
+        bool sizeMixScale = false;
+        bool microStructure = false;
+        bool clumpTemporalMix = false;
+        bool clumpMorphPeriodSec = false;
+    };
+
+    GrainAdvancedDirtyFlags _grainAdvancedDirty{};
+    bool _grainPresetCustom = false;
+    std::string _grainPresetLabel = "Grain Preset";
+    std::string _grainChromaHint = "0 = achromatic, 1 = independent RGB grain.";
     OFX::DoubleParam* _pGateWeaveAmount = nullptr;
     OFX::DoubleParam* _pFilmDustAmount = nullptr;
     OFX::DoubleParam* _pGateDustAmount = nullptr;

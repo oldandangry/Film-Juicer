@@ -59,6 +59,7 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpShared,
     float* dGrainTmpMid,
     float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
@@ -88,6 +89,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
     float* dScratchBlurred,
     float* dAux,
     float* dGrainTmp,
+    float* dGrainTmpShared,
     float* dGrainTmpMid,
     float* dGrainTmpCoarse,
     const float* dLensBlurKernel,
@@ -1647,6 +1649,12 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
             run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
             run.grain.amplitude = std::isfinite(grainUi.amplitude) ? std::max(0.0f, grainUi.amplitude) : 1.0f;
+            const float chromaMix = (std::isfinite(grainUi.chroma))
+                ? std::clamp(grainUi.chroma, 0.0f, 1.0f)
+                : 1.0f;
+            run.grain.chromaMix = chromaMix;
+            run.grain.chromaSharedWeight = std::sqrt(std::max(0.0f, 1.0f - chromaMix));
+            run.grain.chromaIndWeight = std::sqrt(std::max(0.0f, chromaMix));
             run.grain.microStructure[0] = grainUi.microStructure[0];
             run.grain.microStructure[1] = grainUi.microStructure[1];
             if (includeDefects) {
@@ -2479,6 +2487,9 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantGrainMix = grainSetup.wantGrainMix;
             const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
             const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
+            const bool needGrainShared = wantGrain &&
+                (run.grain.debugView == 0 || run.grain.debugView == 1) &&
+                (std::isfinite(run.grain.chromaMix) && run.grain.chromaMix < 0.999f);
 
             const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
             const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
@@ -2509,7 +2520,7 @@ void JuicerProcessor::processImagesCUDA() {
                 const bool needBlurredScratch = wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 const bool needGrainScratch = wantGrainMix;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGateMask, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGrainShared, needGateMask, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2704,6 +2715,7 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerScratch.blurred,
                     cudaResources->scannerScratch.aux,
                     cudaResources->scannerScratch.grainTmp,
+                    cudaResources->scannerScratch.grainTmpShared,
                     cudaResources->scannerScratch.grainTmpMid,
                     cudaResources->scannerScratch.grainTmpCoarse,
                     cudaResources->scannerLensBlurKernel.weights,
@@ -3273,6 +3285,9 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantGrainMix = grainSetup.wantGrainMix;
             const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
             const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
+            const bool needGrainShared = wantGrain &&
+                (run.grain.debugView == 0 || run.grain.debugView == 1) &&
+                (std::isfinite(run.grain.chromaMix) && run.grain.chromaMix < 0.999f);
 
             const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
             const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
@@ -3307,7 +3322,7 @@ void JuicerProcessor::processImagesCUDA() {
                 const bool needBlurredScratch = wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 const bool needGrainScratch = wantGrainMix;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGateMask, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGrainShared, needGateMask, _pCudaStream, opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3502,6 +3517,7 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerScratch.blurred,
                     cudaResources->scannerScratch.aux,
                     cudaResources->scannerScratch.grainTmp,
+                    cudaResources->scannerScratch.grainTmpShared,
                     cudaResources->scannerScratch.grainTmpMid,
                     cudaResources->scannerScratch.grainTmpCoarse,
                     cudaResources->scannerLensBlurKernel.weights,

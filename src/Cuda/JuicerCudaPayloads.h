@@ -222,6 +222,9 @@ namespace JuicerCuda {
         float sizeMixScale = 1.0f;
         float sizeMixGain = 1.0f;
         float amplitude = 1.0f;
+        float chromaMix = 1.0f;
+        float chromaSharedWeight = 0.0f;
+        float chromaIndWeight = 1.0f;
         float debugScale = 1.0f;
 
         float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
