@@ -640,7 +640,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainAmplitude);
             p->setLabel("Grain Amount (EV)");
             p->setHint("Grain amount in stops (EV); scales OD delta.");
-            p->setDefault(-0.90);
+            p->setDefault(-1.20);
             p->setRange(-3.0, 3.0);
             p->setDisplayRange(-3.0, 3.0);
             p->setIncrement(0.1);
@@ -651,7 +651,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainBlur);
             p->setLabel("Grain Size (px)");
             p->setHint("Grain correlation size in pixels.");
-            p->setDefault(0.46);
+            p->setDefault(0.50);
             p->setRange(0.20, 2.00);
             p->setDisplayRange(0.20, 2.00);
             if (grpGrain) p->setParent(*grpGrain);
@@ -681,7 +681,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainTexture);
             p->setLabel("Grain Texture");
             p->setHint("Controls clumping and PSD tail.");
-            p->setDefault(0.5);
+            p->setDefault(0.55);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             if (grpGrain) p->setParent(*grpGrain);
@@ -875,7 +875,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainClumpTemporalMix);
             p->setLabel("Clump temporal mix");
-            p->setHint("Scales temporal variance of clump modulation (0 = static, higher = more breathing).");
+            p->setHint("Blends between static and temporal clump fields (0 = static, higher = more breathing).");
             p->setDefault(0.30);
             p->setRange(0.0, 0.30);
             p->setDisplayRange(0.0, 0.30);

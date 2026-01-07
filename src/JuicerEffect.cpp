@@ -549,11 +549,11 @@ void JuicerEffect::applyHalationProfileDefaults() {
 
 namespace {
     struct GrainPresetDefaults {
-        double amountEV = -0.90;
-        double sizePx = 0.46;
+        double amountEV = -1.20;
+        double sizePx = 0.50;
         double sharpness = 0.5;
         double chroma = 0.3;
-        double texture = 0.5;
+        double texture = 0.55;
         double particleAreaUm2 = 0.25;
         double sizeMixScale = 19.0;
         double densityMinMaster = 0.08;

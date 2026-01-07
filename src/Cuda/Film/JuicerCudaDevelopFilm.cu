@@ -298,13 +298,13 @@ namespace {
         const float r = sqrtf(-2.0f * logf(u1));
         constexpr float kTwoPi = 6.28318530717958647692f;
         const float nStatic = r * cosf(kTwoPi * u2);
-        float staticVal = lognormal_from_mean_std_device(1.0f, stddevSpatial, nStatic);
-        if (!device_isfinite(staticVal)) {
-            staticVal = 1.0f;
-        }
 
         const float mix = fminf(fmaxf(grain.clumpTemporalMix, 0.0f), 1.0f);
         if (!(mix > 0.0f)) {
+            float staticVal = lognormal_from_mean_std_device(1.0f, stddevSpatial, nStatic);
+            if (!device_isfinite(staticVal)) {
+                staticVal = 1.0f;
+            }
             return staticVal;
         }
 
@@ -353,13 +353,20 @@ namespace {
 
         const float rT = sqrtf(-2.0f * logf(u1));
         const float nTemporal = rT * cosf(kTwoPi * u2);
-        const float stddevTemporal = stddevSpatial * mix;
-        float temporalVal = lognormal_from_mean_std_device(1.0f, stddevTemporal, nTemporal);
-        if (!device_isfinite(temporalVal)) {
-            temporalVal = 1.0f;
+
+        const float wStatic = 1.0f - mix;
+        const float wTemporal = mix;
+        const float denom = sqrtf(wStatic * wStatic + wTemporal * wTemporal);
+        const float nMix = (denom > 0.0f)
+            ? ((wStatic * nStatic + wTemporal * nTemporal) / denom)
+            : nStatic;
+
+        float clumpVal = lognormal_from_mean_std_device(1.0f, stddevSpatial, nMix);
+        if (!device_isfinite(clumpVal)) {
+            clumpVal = 1.0f;
         }
 
-        return staticVal * temporalVal;
+        return clumpVal;
     }
 
     __device__ __forceinline__ float stbn_sample_device(
