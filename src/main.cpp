@@ -875,7 +875,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainClumpTemporalMix);
             p->setLabel("Clump temporal mix");
-            p->setHint("Blends between static and temporal clump fields (0 = static, higher = more breathing).");
+            p->setHint("Modulates clump strength over time (0 = static, higher = more breathing).");
             p->setDefault(0.30);
             p->setRange(0.0, 0.30);
             p->setDisplayRange(0.0, 0.30);

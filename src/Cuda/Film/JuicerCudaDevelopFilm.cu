@@ -322,29 +322,10 @@ namespace {
         const std::uint64_t seedA = splitmix64_device(temporalSeed ^ (static_cast<std::uint64_t>(step) * 0xD2B74407B1CE6E93ULL));
         const std::uint64_t seedB = splitmix64_device(temporalSeed ^ (static_cast<std::uint64_t>(step + 1) * 0xD2B74407B1CE6E93ULL));
 
-        float driftPx = 0.0f;
-        if (grain.breathingDriftUmPerFrame > 0.0f) {
-            driftPx = grain.breathingDriftUmPerFrame * invPixel * 0.5f;
-        }
-        float driftX = 0.0f;
-        float driftY = 0.0f;
-        if (driftPx > 0.0f) {
-            const std::uint64_t h = splitmix64_device(temporalSeed ^ 0xC6A4A7935BD1E995ULL);
-            constexpr float kInvU32 = 1.0f / 4294967296.0f;
-            const float angle = static_cast<float>(static_cast<std::uint32_t>(h & 0xFFFFFFFFu)) * kInvU32 * kTwoPi;
-            driftX = cosf(angle) * driftPx;
-            driftY = sinf(angle) * driftPx;
-        }
-
-        const float baseX = static_cast<float>(absX) + driftX * time;
-        const float baseY = static_cast<float>(absY) + driftY * time + rollPx * time;
-        const float x = baseX / cellPx;
-        const float y = baseY / cellPx;
-
-        const float u1A = value_noise_device(x, y, seedA ^ 0x9E3779B97F4A7C15ULL);
-        const float u2A = value_noise_device(x + 19.19f, y + 7.23f, seedA ^ 0xBF58476D1CE4E5B9ULL);
-        const float u1B = value_noise_device(x, y, seedB ^ 0x9E3779B97F4A7C15ULL);
-        const float u2B = value_noise_device(x + 19.19f, y + 7.23f, seedB ^ 0xBF58476D1CE4E5B9ULL);
+        const float u1A = hash01_device(0, 0, seedA ^ 0x9E3779B97F4A7C15ULL);
+        const float u2A = hash01_device(1, 0, seedA ^ 0xBF58476D1CE4E5B9ULL);
+        const float u1B = hash01_device(0, 0, seedB ^ 0x9E3779B97F4A7C15ULL);
+        const float u2B = hash01_device(1, 0, seedB ^ 0xBF58476D1CE4E5B9ULL);
 
         u1 = u1A + (u1B - u1A) * t;
         u2 = u2A + (u2B - u2A) * t;
@@ -354,17 +335,21 @@ namespace {
         const float rT = sqrtf(-2.0f * logf(u1));
         const float nTemporal = rT * cosf(kTwoPi * u2);
 
-        const float wStatic = 1.0f - mix;
-        const float wTemporal = mix;
-        const float denom = sqrtf(wStatic * wStatic + wTemporal * wTemporal);
-        const float nMix = (denom > 0.0f)
-            ? ((wStatic * nStatic + wTemporal * nTemporal) / denom)
-            : nStatic;
+        constexpr float kClumpStrengthStdScale = 0.65f;
+        const float strengthStd = mix * kClumpStrengthStdScale;
+        float strength = lognormal_from_mean_std_device(1.0f, strengthStd, nTemporal);
+        const float strengthNorm = rsqrtf(1.0f + strengthStd * strengthStd);
+        strength *= strengthNorm;
+        const float stddev = stddevSpatial * strength;
+        const float denom = 1.0f + stddev * stddev;
+        const float numer = 1.0f + stddevSpatial * stddevSpatial;
+        const float clumpRmsNorm = (denom > 0.0f) ? sqrtf(numer / denom) : 1.0f;
 
-        float clumpVal = lognormal_from_mean_std_device(1.0f, stddevSpatial, nMix);
+        float clumpVal = lognormal_from_mean_std_device(1.0f, stddev, nStatic);
         if (!device_isfinite(clumpVal)) {
             clumpVal = 1.0f;
         }
+        clumpVal *= clumpRmsNorm;
 
         return clumpVal;
     }
