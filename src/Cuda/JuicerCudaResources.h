@@ -86,13 +86,17 @@ namespace JuicerCuda {
         DeviceCurve sensG;
         DeviceCurve sensR;
 
-        // SPD reconstruction (Mallett 2019 basis via per-instance tables + S_inv).
+        // SPD reconstruction (reference illuminant tables; Mallett basis uses illum + sensitivities).
         float* tablesAx = nullptr;
         float* tablesAy = nullptr;
         float* tablesAz = nullptr;
+        float* tablesIllum = nullptr;
         int tablesK = 0;
         float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
         float refIllumWhiteXYZ[3] = { 0.950455f, 1.0f, 1.089058f };
+
+        float* mallettBasis = nullptr;
+        int mallettBasisK = 0;
 
         struct DeviceSpectralTables {
             float* epsC = nullptr;

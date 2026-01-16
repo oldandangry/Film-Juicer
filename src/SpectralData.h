@@ -57,6 +57,8 @@ namespace Spectral {
     }
 
     inline NpySpectraLUT& gHanSpectra = context().hanSpectra;
+    inline std::atomic<bool>& gMallettAvailable = context().mallettAvailable;
+    inline NpyFloat2D& gMallettBasis = context().mallettBasis;
 
     inline bool hanatos_matches_reference_shape() {
         if (gHanSpectra.size <= 0) {
@@ -86,6 +88,53 @@ namespace Spectral {
         }
     }
 
+    inline bool mallett_available() {
+        return gMallettAvailable.load(std::memory_order_acquire);
+    }
+
+    inline void set_mallett_available(bool available) {
+        gMallettAvailable.store(available, std::memory_order_release);
+    }
+
+    inline bool mallett_basis_matches_reference_shape() {
+        if (gMallettBasis.rows != Spectral::kNumSamples) {
+            return false;
+        }
+        if (gMallettBasis.cols != 3) {
+            return false;
+        }
+        return true;
+    }
+
+    inline void load_mallett2019_basis_npy(const std::string& path) {
+        NpyFloat2D basis;
+        bool success = load_npy_float2d(path, basis);
+        if (success) {
+            if (basis.rows == Spectral::kNumSamples && basis.cols == 3) {
+                gMallettBasis = std::move(basis);
+                set_mallett_available(true);
+                return;
+            }
+            if (basis.rows == 3 && basis.cols == Spectral::kNumSamples) {
+                NpyFloat2D transposed;
+                transposed.rows = Spectral::kNumSamples;
+                transposed.cols = 3;
+                transposed.data.resize(static_cast<size_t>(transposed.rows) * transposed.cols);
+                for (int r = 0; r < basis.rows; ++r) {
+                    for (int c = 0; c < basis.cols; ++c) {
+                        transposed.data[static_cast<size_t>(c) * 3 + r] =
+                            basis.data[static_cast<size_t>(r) * basis.cols + c];
+                    }
+                }
+                gMallettBasis = std::move(transposed);
+                set_mallett_available(true);
+                return;
+            }
+        }
+        gMallettBasis = NpyFloat2D{};
+        set_mallett_available(false);
+    }
+
     // =========================================================================
     // Constants
     // =========================================================================
@@ -96,7 +145,7 @@ namespace Spectral {
     };
 
     // Spectral upsampling / SPD reconstruction selection.
-    // Note: "Mallett" refers to the tables + S-inverse basis reconstruction used when Hanatos LUT is not selected/available.
+    // Note: "Mallett" refers to the Mallett 2019 sRGB basis reconstruction (when Hanatos LUT is not selected/available).
     enum class SpectralUpsamplingMode : int {
         PreferHanatos = 0,
         ForceMallett = 1
@@ -126,6 +175,7 @@ namespace Spectral {
         // Illuminant-weighted CMFs (Ax, Ay, Az) and raw CMFs
         std::vector<float> Ax, Ay, Az;
         std::vector<float> Xbar, Ybar, Zbar;
+        std::vector<float> illum; // Illuminant SPD used to build Ax/Ay/Az.
 
         // Dye extinction tables
         std::vector<float> epsY, epsM, epsC;

@@ -128,12 +128,15 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT tablesAx = nullptr;
         const float* JUICER_RESTRICT tablesAy = nullptr;
         const float* JUICER_RESTRICT tablesAz = nullptr;
+        const float* JUICER_RESTRICT tablesIllum = nullptr;
         int tablesK = 0;
         float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
         const float* JUICER_RESTRICT hanatosLut = nullptr;
         int hanatosN = 0;
         const float* JUICER_RESTRICT hanatosLutIntegrated = nullptr;
         int hanatosNIntegrated = 0;
+        const float* JUICER_RESTRICT mallettBasis = nullptr;
+        int mallettBasisK = 0;
     };
 
     struct FilmDevelopPayload {

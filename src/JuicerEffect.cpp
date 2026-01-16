@@ -272,6 +272,15 @@ namespace {
             Spectral::set_hanatos_available(false);
         }
 
+        // Mallett 2019 basis: load once for sRGB basis reconstruction.
+        try {
+            const std::string basisPath = data_dir_string("luts", "spectral_upsampling", "mallett2019_basis.npy");
+            Spectral::load_mallett2019_basis_npy(basisPath);
+        }
+        catch (...) {
+            Spectral::set_mallett_available(false);
+        }
+
         // KG3 filter fallback: set once if not present; safe idempotently.
         std::vector<std::pair<float, float>> kg3_pairs_raw;
         try { kg3_pairs_raw = Spectral::load_csv_pairs(data_dir_string("filters", "heat_absorbing", "schott", "KG3.csv")); }

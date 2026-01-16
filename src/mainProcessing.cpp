@@ -2245,6 +2245,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmExpose.tablesAx = cudaResources->tablesAx;
             run.filmExpose.tablesAy = cudaResources->tablesAy;
             run.filmExpose.tablesAz = cudaResources->tablesAz;
+            run.filmExpose.tablesIllum = cudaResources->tablesIllum;
             run.filmExpose.tablesK = cudaResources->tablesK;
             for (int i = 0; i < 9; ++i) {
                 run.filmExpose.spdSInv[i] = cudaResources->spdSInv[i];
@@ -2254,6 +2255,8 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmExpose.hanatosN = cudaResources->hanatosN;
             run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
             run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
+            run.filmExpose.mallettBasis = cudaResources->mallettBasis;
+            run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
 
             run.scanStage.scannerUseLut = scannerUseLut ? 1 : 0;
             run.scanStage.scanLutLog2XYZ = nullptr;
@@ -2981,6 +2984,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmExpose.tablesAx = cudaResources->tablesAx;
             run.filmExpose.tablesAy = cudaResources->tablesAy;
             run.filmExpose.tablesAz = cudaResources->tablesAz;
+            run.filmExpose.tablesIllum = cudaResources->tablesIllum;
             run.filmExpose.tablesK = cudaResources->tablesK;
             for (int i = 0; i < 9; ++i) {
                 run.filmExpose.spdSInv[i] = cudaResources->spdSInv[i];
@@ -2990,6 +2994,8 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmExpose.hanatosN = cudaResources->hanatosN;
             run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
             run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
+            run.filmExpose.mallettBasis = cudaResources->mallettBasis;
+            run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
 
             // Scan LUT selection (print medium).
             run.scanStage.scannerUseLut = _scannerSettings.useLut ? 1 : 0;

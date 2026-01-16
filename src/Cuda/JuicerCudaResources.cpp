@@ -479,6 +479,16 @@ namespace JuicerCuda {
         resources.hanatosIntegratedBuildCounter = 0;
     }
 
+    static void free_mallett_basis(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (resources.mallettBasis) {
+            cudaFree(resources.mallettBasis);
+            resources.mallettBasis = nullptr;
+        }
+#endif
+        resources.mallettBasisK = 0;
+    }
+
     struct StbnCpuCache {
         std::vector<std::uint8_t> data;
         int width = 512;
@@ -787,6 +797,10 @@ namespace JuicerCuda {
             cudaFree(resources.tablesAz);
             resources.tablesAz = nullptr;
         }
+        if (resources.tablesIllum) {
+            cudaFree(resources.tablesIllum);
+            resources.tablesIllum = nullptr;
+        }
 #endif
         resources.tablesK = 0;
     }
@@ -817,6 +831,12 @@ namespace JuicerCuda {
                 return false;
             }
             resources.tablesAz = nullptr;
+        }
+        if (resources.tablesIllum) {
+            if (!retire_ptr_locked(resources, resources.tablesIllum, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            resources.tablesIllum = nullptr;
         }
         resources.tablesK = 0;
         return true;
@@ -1340,6 +1360,7 @@ namespace JuicerCuda {
         free_print_payloads(*this);
         free_hanatos(*this);
         free_hanatos_integrated(*this);
+        free_mallett_basis(*this);
         free_scan_error_flag(*this);
         free_auto_exposure(*this);
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1575,7 +1596,7 @@ namespace JuicerCuda {
         if (!alloc_and_upload_curve(resources.sensG, ws.sensG, cudaStreamOpaque, outError)) return false;
         if (!alloc_and_upload_curve(resources.sensR, ws.sensR, cudaStreamOpaque, outError)) return false;
 
-        // Upload per-instance Mallett basis tables (Ax/Ay/Az) and keep a host-side copy of S_inv + ref white.
+        // Upload per-instance reference illuminant tables (Ax/Ay/Az + illum) and keep a host-side copy of S_inv + ref white.
         {
             const int K = ws.tablesRef.K;
             const bool want =
@@ -1583,15 +1604,17 @@ namespace JuicerCuda {
                 K == Spectral::gShape.K &&
                 static_cast<int>(ws.tablesRef.Ax.size()) == K &&
                 static_cast<int>(ws.tablesRef.Ay.size()) == K &&
-                static_cast<int>(ws.tablesRef.Az.size()) == K;
+                static_cast<int>(ws.tablesRef.Az.size()) == K &&
+                static_cast<int>(ws.tablesRef.illum.size()) == K;
 
             if (!want) {
                 free_tables(resources);
-            } else if (resources.tablesK != K || !resources.tablesAx || !resources.tablesAy || !resources.tablesAz) {
+            } else if (resources.tablesK != K || !resources.tablesAx || !resources.tablesAy || !resources.tablesAz || !resources.tablesIllum) {
                 free_tables(resources);
                 if (!alloc_and_upload_array(resources.tablesAx, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, "tablesAx", outError)) { free_tables(resources); return false; }
                 if (!alloc_and_upload_array(resources.tablesAy, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, "tablesAy", outError)) { free_tables(resources); return false; }
                 if (!alloc_and_upload_array(resources.tablesAz, ws.tablesRef.Az.data(), K, cudaStreamOpaque, "tablesAz", outError)) { free_tables(resources); return false; }
+                if (!alloc_and_upload_array(resources.tablesIllum, ws.tablesRef.illum.data(), K, cudaStreamOpaque, "tablesIllum", outError)) { free_tables(resources); return false; }
                 resources.tablesK = K;
             }
 
@@ -1893,6 +1916,58 @@ namespace JuicerCuda {
                         resources.hanatosIntegratedBuildCounter = ws.buildCounter;
                     }
                 }
+            }
+        }
+
+        // Upload Mallett 2019 basis if available (uploaded once and reused across WorkingState rebuilds).
+        {
+            Spectral::SpectralContext& ctx = Spectral::context();
+            const bool mallettAvailable = ctx.mallettAvailable.load(std::memory_order_acquire);
+            const int K = ctx.mallettBasis.rows;
+            const int cols = ctx.mallettBasis.cols;
+            const bool want =
+                mallettAvailable &&
+                K == Spectral::kNumSamples &&
+                cols == 3 &&
+                !ctx.mallettBasis.data.empty();
+
+            if (!want) {
+                if (resources.mallettBasis) {
+                    const size_t count = static_cast<size_t>(resources.mallettBasisK) * 3u;
+                    const size_t bytes = count * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.mallettBasis, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Mallett basis", outError)) {
+                        return false;
+                    }
+                    resources.mallettBasis = nullptr;
+                    resources.mallettBasisK = 0;
+                }
+            }
+            else if (!resources.mallettBasis || resources.mallettBasisK != K) {
+                const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+                if (resources.mallettBasis) {
+                    const size_t count = static_cast<size_t>(resources.mallettBasisK) * 3u;
+                    const size_t bytes = count * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.mallettBasis, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Mallett basis", outError)) {
+                        return false;
+                    }
+                    resources.mallettBasis = nullptr;
+                    resources.mallettBasisK = 0;
+                }
+                const size_t count = static_cast<size_t>(K) * 3u;
+                const size_t bytes = count * sizeof(float);
+                cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.mallettBasis), bytes);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMalloc(Mallett basis) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    free_mallett_basis(resources);
+                    return false;
+                }
+                err = cudaMemcpyAsync(resources.mallettBasis, ctx.mallettBasis.data.data(), bytes, cudaMemcpyHostToDevice, stream);
+                if (err != cudaSuccess) {
+                    outError = std::string("cudaMemcpyAsync(Mallett basis) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    free_mallett_basis(resources);
+                    return false;
+                }
+                resources.mallettBasisK = K;
             }
         }
 
@@ -3587,7 +3662,7 @@ namespace JuicerCuda {
             }
         }
 
-        // Validate Mallett (tables + S_inv) exposure primitive against CPU (forced non-Hanatos path).
+        // Validate table-based (S_inv) exposure primitive against CPU (forced non-Hanatos path).
         if (ws.spdReady && resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesK == Spectral::gShape.K) {
             const float samples[][3] = {
                 { 0.184f, 0.184f, 0.184f }, // mid-gray

@@ -268,7 +268,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->appendOption("Mallett");
         p->setHint("Choose the spectral reconstruction method used for film exposure. "
             "Hanatos uses the Hanatos 2025 LUT when available; "
-            "Mallett uses the Mallett 2019 basis reconstruction (tables + S-inverse).");
+            "Mallett uses the Mallett 2019 sRGB basis reconstruction.");
         p->setDefault(0);
         p->setEvaluateOnChange(true);
 

@@ -464,6 +464,112 @@ namespace Spectral {
         }
     }
 
+    inline void convert_input_rgb_to_sRGB_linear(
+        const FilmRawConfig& cfg,
+        const float rgbIn[3],
+        float rgbSRGB[3],
+        float* outXYZ = nullptr)
+    {
+        float linear[3];
+        apply_input_cctf_decoding(cfg.inputColorSpace, cfg.applyCctfDecoding, rgbIn, linear);
+
+        float XYZ[3];
+        cfg.inputRGBToXYZ.mul(linear, XYZ);
+
+        const float* xyzPtr = XYZ;
+        float adapted[3];
+        if (cfg.applyInputChromaticAdapt) {
+            cfg.inputXYZAdapt.mul(XYZ, adapted);
+            xyzPtr = adapted;
+        }
+
+        if (outXYZ) {
+            outXYZ[0] = sanitize_channel(xyzPtr[0]);
+            outXYZ[1] = sanitize_channel(xyzPtr[1]);
+            outXYZ[2] = sanitize_channel(xyzPtr[2]);
+        }
+
+        static const Mat3 kXYZ_to_sRGB = kRGB_to_XYZ_sRGB_Rec709.inverse();
+        float rgbLinear[3];
+        kXYZ_to_sRGB.mul(xyzPtr, rgbLinear);
+        for (int i = 0; i < 3; ++i) {
+            float v = rgbLinear[i];
+            if (!std::isfinite(v)) {
+                v = 0.0f;
+            }
+            rgbSRGB[i] = v;
+        }
+    }
+
+    inline bool mallett_basis_ready_for_tables(
+        const SpectralTables* tables,
+        const Curve& sB,
+        const Curve& sG,
+        const Curve& sR)
+    {
+        if (!tables || tables->K <= 0) {
+            return false;
+        }
+        if (!mallett_available() || !mallett_basis_matches_reference_shape()) {
+            return false;
+        }
+        const int K = tables->K;
+        if (static_cast<int>(tables->illum.size()) != K) {
+            return false;
+        }
+        if (static_cast<int>(sB.linear.size()) != K ||
+            static_cast<int>(sG.linear.size()) != K ||
+            static_cast<int>(sR.linear.size()) != K) {
+            return false;
+        }
+        const size_t expected = static_cast<size_t>(K) * 3;
+        if (gMallettBasis.data.size() != expected) {
+            return false;
+        }
+        return true;
+    }
+
+    inline void mallett2019_exposures_from_linear_srgb(
+        const float lrgb[3],
+        const SpectralTables& tables,
+        const Curve& sB,
+        const Curve& sG,
+        const Curve& sR,
+        float E[3])
+    {
+        const int K = tables.K;
+        double Eb = 0.0;
+        double Eg = 0.0;
+        double Er = 0.0;
+        const float r = std::max(0.0f, std::isfinite(lrgb[0]) ? lrgb[0] : 0.0f);
+        const float g = std::max(0.0f, std::isfinite(lrgb[1]) ? lrgb[1] : 0.0f);
+        const float b = std::max(0.0f, std::isfinite(lrgb[2]) ? lrgb[2] : 0.0f);
+        const float* basis = gMallettBasis.data.data();
+
+        for (int i = 0; i < K; ++i) {
+            const float illum = tables.illum[i];
+            const float b0 = basis[i * 3 + 0];
+            const float b1 = basis[i * 3 + 1];
+            const float b2 = basis[i * 3 + 2];
+            const float spd = (r * b0 + g * b1 + b * b2) * illum;
+            if (!std::isfinite(spd)) {
+                continue;
+            }
+            const double e64 = static_cast<double>(spd);
+
+            const float sb = sB.linear[i];
+            const float sg = sG.linear[i];
+            const float sr = sR.linear[i];
+            if (std::isfinite(sb)) Eb += e64 * static_cast<double>(sb);
+            if (std::isfinite(sg)) Eg += e64 * static_cast<double>(sg);
+            if (std::isfinite(sr)) Er += e64 * static_cast<double>(sr);
+        }
+
+        E[0] = std::isfinite(Eb) ? static_cast<float>(Eb) : 0.0f;
+        E[1] = std::isfinite(Eg) ? static_cast<float>(Eg) : 0.0f;
+        E[2] = std::isfinite(Er) ? static_cast<float>(Er) : 0.0f;
+    }
+
     inline void compute_film_raw_midgray(
         FilmRawConfig& cfg,
         const SpectralTables* tablesSPD,
@@ -477,6 +583,9 @@ namespace Spectral {
         const bool spdReady = tablesSPD && S_inv && tablesSPD->K > 0;
         const bool allowHanatos = (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
         const bool useHanatos = spdReady && allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
+        const bool useMallett = spdReady &&
+            (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::ForceMallett) &&
+            mallett_basis_ready_for_tables(tablesSPD, sB, sG, sR);
         convert_input_rgb_to_DWG(cfg, rgbMid, rgbMidDWG, nullptr, !useHanatos);
         cfg.midgrayDWG[0] = rgbMidDWG[0];
         cfg.midgrayDWG[1] = rgbMidDWG[1];
@@ -490,13 +599,20 @@ namespace Spectral {
             return;
         }
 
-        rgbDWG_to_layerExposures_from_tables_with_curves(
-            rgbMidDWG, E, 1.0f,
-            tablesSPD,
-            S_inv,
-            sB, sG, sR,
-            cfg.spectralUpsamplingMode,
-            cfg.refIllumWhiteXYZ);
+        if (useMallett) {
+            float rgbSRGB[3];
+            convert_input_rgb_to_sRGB_linear(cfg, rgbMid, rgbSRGB, nullptr);
+            mallett2019_exposures_from_linear_srgb(rgbSRGB, *tablesSPD, sB, sG, sR, E);
+        }
+        else {
+            rgbDWG_to_layerExposures_from_tables_with_curves(
+                rgbMidDWG, E, 1.0f,
+                tablesSPD,
+                S_inv,
+                sB, sG, sR,
+                cfg.spectralUpsamplingMode,
+                cfg.refIllumWhiteXYZ);
+        }
 
         cfg.rawMidgray[0] = E[0];
         cfg.rawMidgray[1] = E[1];
@@ -526,6 +642,9 @@ namespace Spectral {
         float xyzWorking[3];
         const bool allowHanatos = (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
         const bool useHanatos = spdReady && allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
+        const bool useMallett = spdReady &&
+            (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::ForceMallett) &&
+            mallett_basis_ready_for_tables(tablesSPD, sB, sG, sR);
         convert_input_rgb_to_DWG(cfg, rgbIn, rgbDWG, xyzWorking, !useHanatos);
 
 #if defined(JUICER_SPD_DEBUG)
@@ -534,13 +653,20 @@ namespace Spectral {
 
         float normScale = cfg.midgrayScale;
         if (spdReady) {
-            rgbDWG_to_layerExposures_from_tables_with_curves(
-                rgbDWG, E, 1.0f,
-                tablesSPD,
-                S_inv,
-                sB, sG, sR,
-                cfg.spectralUpsamplingMode,
-                cfg.refIllumWhiteXYZ);
+            if (useMallett) {
+                float rgbSRGB[3];
+                convert_input_rgb_to_sRGB_linear(cfg, rgbIn, rgbSRGB, nullptr);
+                mallett2019_exposures_from_linear_srgb(rgbSRGB, *tablesSPD, sB, sG, sR, E);
+            }
+            else {
+                rgbDWG_to_layerExposures_from_tables_with_curves(
+                    rgbDWG, E, 1.0f,
+                    tablesSPD,
+                    S_inv,
+                    sB, sG, sR,
+                    cfg.spectralUpsamplingMode,
+                    cfg.refIllumWhiteXYZ);
+            }
 
             normScale = cfg.midgrayScale;
             E[0] = std::max(0.0f, E[0] * normScale);

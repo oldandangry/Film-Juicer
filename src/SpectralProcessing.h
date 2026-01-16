@@ -381,7 +381,7 @@ namespace Spectral {
     inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]);
     inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]);
 
-    // --- S-matrix inversion for Mallett 2019 basis reconstruction ---
+    // --- S-matrix inversion for CMF-based SPD reconstruction ---
 
     // Global variables for SPD reconstruction
     inline std::atomic<bool>& gSPDInit = context().spdInit;
@@ -489,7 +489,7 @@ namespace Spectral {
         S_inv_out[8] = static_cast<float>((Sxx * Syy - Sxy * Syx) * invDet);
     }
 
-    // --- Mallett 2019 basis reconstruction (global) ---
+    // --- CMF-based SPD reconstruction (global) ---
 
     inline void reconstruct_Ee_from_DWG_RGB(const float rgbDWG[3], std::vector<float>& Ee_out) {
         compute_S_inverse_once();
@@ -1005,6 +1005,7 @@ namespace Spectral {
         T.Ax.resize(K);
         T.Ay.resize(K);
         T.Az.resize(K);
+        T.illum.resize(K);
 
         const bool hasIll = (!illumView.linear.empty() && (int)illumView.linear.size() == K);
         double Yn = 0.0;
@@ -1029,6 +1030,7 @@ namespace Spectral {
             T.Zbar[i] = (!zbar.linear.empty() && (int)zbar.linear.size() == K) ? zbar.linear[i] : cie_zbar(l);
 
             const float Ee = hasIll ? illumView.linear[i] : 1.0f;
+            T.illum[i] = Ee;
             T.Ax[i] = Ee * T.Xbar[i];
             T.Ay[i] = Ee * T.Ybar[i];
             T.Az[i] = Ee * T.Zbar[i];
@@ -1101,6 +1103,7 @@ namespace Spectral {
             hash_vec(T.Ax),
             hash_vec(T.Ay),
             hash_vec(T.Az),
+            hash_vec(T.illum),
             hash_vec(T.Xbar),
             hash_vec(T.Ybar),
             hash_vec(T.Zbar),

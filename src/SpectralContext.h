@@ -43,6 +43,8 @@ namespace Spectral {
 
         std::atomic<bool> hanatosAvailable{ false };
         NpySpectraLUT hanSpectra;
+        std::atomic<bool> mallettAvailable{ false };
+        NpyFloat2D mallettBasis;
 
         std::atomic<bool> spdInit{ false };
         float sInv[9] = { 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,1.0f };

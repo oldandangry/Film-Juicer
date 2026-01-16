@@ -38,6 +38,38 @@ static __device__ __forceinline__ void convert_input_to_DWG_device(
     rgbDWG[2] = dwg[2];
 }
 
+static __device__ __forceinline__ void convert_input_to_sRGB_device(
+    const JuicerCuda::FilmRawPayload& cfg,
+    const float rgbIn[3],
+    float rgbSRGB[3])
+{
+    float linear[3];
+    apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
+
+    float XYZ[3];
+    mat3_mul9_device(cfg.inputRGBToXYZ, linear, XYZ);
+
+    const float* xyzPtr = XYZ;
+    float adapted[3];
+    if (cfg.applyInputChromaticAdapt) {
+        mat3_mul9_device(cfg.inputXYZAdapt, XYZ, adapted);
+        xyzPtr = adapted;
+    }
+
+    const float XYZ_to_sRGB[9] = {
+        3.2404542f, -1.5371385f, -0.4985314f,
+       -0.9692660f,  1.8760108f,  0.0415560f,
+        0.0556434f, -0.2040259f,  1.0572252f
+    };
+
+    float srgb[3];
+    mat3_mul9_device(XYZ_to_sRGB, xyzPtr, srgb);
+
+    rgbSRGB[0] = device_isfinite(srgb[0]) ? srgb[0] : 0.0f;
+    rgbSRGB[1] = device_isfinite(srgb[1]) ? srgb[1] : 0.0f;
+    rgbSRGB[2] = device_isfinite(srgb[2]) ? srgb[2] : 0.0f;
+}
+
 static __device__ void hanatos_layer_exposures_device(
     const float rgbDWG[3],
     const float* JUICER_RESTRICT hanatosLut,
@@ -367,11 +399,60 @@ static __device__ void tables_layer_exposures_device(
         Eb = Eg = Er = 0.0;
     }
 
-    // Mallett path uses applyDeltaLambda=true (Δλ=5nm) and exposureScale=1.0 for raw film exposure.
+    // Table-based SPD path applies Δλ=5nm; exposure scale is applied later in the pipeline.
     const double dl = 5.0;
     E_out[0] = fmaxf(0.0f, static_cast<float>(Eb * dl));
     E_out[1] = fmaxf(0.0f, static_cast<float>(Eg * dl));
     E_out[2] = fmaxf(0.0f, static_cast<float>(Er * dl));
+}
+
+static __device__ void mallett_layer_exposures_device(
+    const float rgbSRGB[3],
+    const float* JUICER_RESTRICT mallettBasis,
+    const float* JUICER_RESTRICT illum,
+    int K,
+    const float* JUICER_RESTRICT sensB,
+    const float* JUICER_RESTRICT sensG,
+    const float* JUICER_RESTRICT sensR,
+    float E_out[3])
+{
+    if (!E_out) {
+        return;
+    }
+    if (!rgbSRGB || !mallettBasis || !illum || !sensB || !sensG || !sensR || K <= 0) {
+        E_out[0] = E_out[1] = E_out[2] = 0.0f;
+        return;
+    }
+
+    const float r = fmaxf(0.0f, device_sanitize_channel(rgbSRGB[0]));
+    const float g = fmaxf(0.0f, device_sanitize_channel(rgbSRGB[1]));
+    const float b = fmaxf(0.0f, device_sanitize_channel(rgbSRGB[2]));
+
+    double Eb = 0.0;
+    double Eg = 0.0;
+    double Er = 0.0;
+
+    for (int i = 0; i < K; ++i) {
+        const float illum_i = ldg_f(illum + i);
+        const float b0 = ldg_f(mallettBasis + i * 3 + 0);
+        const float b1 = ldg_f(mallettBasis + i * 3 + 1);
+        const float b2 = ldg_f(mallettBasis + i * 3 + 2);
+        const float spd = (r * b0 + g * b1 + b * b2) * illum_i;
+        if (!device_isfinite(spd)) {
+            continue;
+        }
+        const double e64 = static_cast<double>(spd);
+        const float sb = ldg_f(sensB + i);
+        const float sg = ldg_f(sensG + i);
+        const float sr = ldg_f(sensR + i);
+        if (isfinite(sb)) Eb += e64 * static_cast<double>(sb);
+        if (isfinite(sg)) Eg += e64 * static_cast<double>(sg);
+        if (isfinite(sr)) Er += e64 * static_cast<double>(sr);
+    }
+
+    E_out[0] = device_isfinite(static_cast<float>(Eb)) ? static_cast<float>(Eb) : 0.0f;
+    E_out[1] = device_isfinite(static_cast<float>(Eg)) ? static_cast<float>(Eg) : 0.0f;
+    E_out[2] = device_isfinite(static_cast<float>(Er)) ? static_cast<float>(Er) : 0.0f;
 }
 
 static __device__ __forceinline__ void compute_film_raw_device(
@@ -383,6 +464,7 @@ static __device__ __forceinline__ void compute_film_raw_device(
 
     float E_raw[3] = { 0.0f, 0.0f, 0.0f };
     const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
+    const bool allowMallett = (params.filmRaw.spectralUpsamplingMode != 0);
     const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
     const bool useHanatos = allowHanatos &&
         spdReady &&
@@ -402,9 +484,17 @@ static __device__ __forceinline__ void compute_film_raw_device(
         (expose.sensB.n >= 81) &&
         (expose.sensG.n >= 81) &&
         (expose.sensR.n >= 81);
+    const bool useMallett = allowMallett &&
+        spdReady &&
+        expose.tablesIllum &&
+        expose.mallettBasis &&
+        (expose.mallettBasisK == 81) &&
+        canTables;
 
     float rgbDWG[3];
-    convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG, !useHanatos);
+    if (!useMallett) {
+        convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG, !useHanatos);
+    }
 
     if (useHanatosIntegrated) {
         hanatos_integrated_exposures_device(
@@ -420,6 +510,19 @@ static __device__ __forceinline__ void compute_film_raw_device(
             expose.hanatosLut,
             expose.hanatosN,
             params.filmRaw.refIllumWhiteXYZ,
+            expose.sensB.y,
+            expose.sensG.y,
+            expose.sensR.y,
+            E_raw);
+    }
+    else if (useMallett) {
+        float rgbSRGB[3];
+        convert_input_to_sRGB_device(params.filmRaw, rgbIn, rgbSRGB);
+        mallett_layer_exposures_device(
+            rgbSRGB,
+            expose.mallettBasis,
+            expose.tablesIllum,
+            expose.tablesK,
             expose.sensB.y,
             expose.sensG.y,
             expose.sensR.y,
