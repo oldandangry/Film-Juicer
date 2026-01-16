@@ -131,7 +131,7 @@ private:
     ParamSnapshot snapshotParams() const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
     void bootstrap_after_attach();
-    void applyNeutralFilters(const ParamSnapshot& P, bool resetFilterParams, bool ensureExposureComp);
+    void applyNeutralFilters(const ParamSnapshot& P);
     bool applyMetadataIlluminantDefaults(ParamSnapshot& P);
 #ifdef JUICER_ENABLE_COUPLERS
     void applyCouplerProfileDefaults(ParamSnapshot& P);

@@ -1568,7 +1568,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.gateWeave.debugScalePx = static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
             run.grain.pitchPx = pitchPx;
             run.grain.breathingPeriodFrames = breathingPeriodFrames;
-            run.grain.breathingAmplitude = 0.01f;
+            run.grain.breathingAmplitude = 0.01902219f;
             run.grain.breathingCellUmSmall = static_cast<float>(2500.0 * filmScale);
             run.grain.breathingCellUmLarge = static_cast<float>(5000.0 * filmScale);
             run.grain.breathingMix = 0.30f;

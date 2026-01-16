@@ -335,7 +335,7 @@ namespace {
         const float rT = sqrtf(-2.0f * logf(u1));
         const float nTemporal = rT * cosf(kTwoPi * u2);
 
-        constexpr float kClumpStrengthStdScale = 0.65f;
+        constexpr float kClumpStrengthStdScale = 0.23597824f;
         const float strengthStd = mix * kClumpStrengthStdScale;
         float strength = lognormal_from_mean_std_device(1.0f, strengthStd, nTemporal);
         const float strengthNorm = rsqrtf(1.0f + strengthStd * strengthStd);

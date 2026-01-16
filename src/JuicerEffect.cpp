@@ -794,7 +794,7 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     if (_grainAdvancedDirty.sizeMixScale && _pGrainSizeMixScale) {
         _pGrainSizeMixScale->getValue(sizeMixScale);
     }
-    sizeMixScale = sanitize(sizeMixScale, preset.sizeMixScale, 1.0, 25.0);
+    sizeMixScale = sanitize(sizeMixScale, preset.sizeMixScale, 1.0, 50.0);
     grain.sizeMixScale = static_cast<float>(sizeMixScale);
 
     double sizeMixWeight = sizeMixWeightBase;
@@ -2385,7 +2385,7 @@ void JuicerEffect::bootstrap_after_attach() {
         JTRACE("PRINT", std::string("dichroic load failed at '") + dichroicDir + "' (unknown error); using identity filters");
     }
 
-    applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/true);
+    applyNeutralFilters(P);
 
     if (_state->baseLoaded) {
 #ifdef JUICER_ENABLE_COUPLERS
@@ -2402,7 +2402,7 @@ void JuicerEffect::bootstrap_after_attach() {
     _state->inBootstrap = false;
 }
 
-void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, bool resetFilterParams, bool ensureExposureComp) {
+void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
     if (!_state) {
         return;
     }
@@ -2471,25 +2471,8 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, bool resetFilterP
     _state->printRT.neutralY = neutralY;
     _state->printRT.neutralM = neutralM;
     _state->printRT.neutralC = neutralC;
+    // Preserve user-entered enlarger offsets and exposure toggle; neutral baselines update independently.
 
-    if (resetFilterParams) {
-        const bool wasSuppressed = _state->suppressParamEvents;
-        _state->suppressParamEvents = true;
-        if (_pEnlargerY) _pEnlargerY->setValue(0.0);
-        if (_pEnlargerM) _pEnlargerM->setValue(0.0);
-        _state->suppressParamEvents = wasSuppressed;
-    }
-
-    if (ensureExposureComp && _pPrintExposureComp) {
-        bool exposureToggle = false;
-        _pPrintExposureComp->getValue(exposureToggle);
-        if (!exposureToggle) {
-            const bool wasSuppressed = _state->suppressParamEvents;
-            _state->suppressParamEvents = true;
-            _pPrintExposureComp->setValue(true);
-            _state->suppressParamEvents = wasSuppressed;
-        }
-    }
 }
 
 bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P) {
@@ -2768,7 +2751,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
 
     bool neutralApplied = false;
     if (printReloaded || dichroicReloaded) {
-        applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
+        applyNeutralFilters(P);
         neutralApplied = true;
         if (JTRACE_ENABLED(3)) {
             const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
@@ -2782,7 +2765,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         }
     }
     if (filmReloaded && !neutralApplied) {
-        applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
+        applyNeutralFilters(P);
         neutralApplied = true;
         if (JTRACE_ENABLED(3)) {
             const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
@@ -2797,7 +2780,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerIlluminant) == 0) {
-        applyNeutralFilters(P, /*resetFilterParams*/true, /*ensureExposureComp*/false);
+        applyNeutralFilters(P);
     }
 
     // Rebuild if any effective param changed
