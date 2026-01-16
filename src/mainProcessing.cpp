@@ -173,6 +173,7 @@ namespace {
     {
         const float yKey = std::isfinite(printParams.yFilter) ? printParams.yFilter : 0.0f;
         const float mKey = std::isfinite(printParams.mFilter) ? printParams.mFilter : 0.0f;
+        const float cKey = std::isfinite(printParams.cFilter) ? printParams.cFilter : 0.0f;
         const float exposureCompScale = printParams.exposureCompensationEnabled
             ? printParams.exposureCompensationScale
             : 1.0f;
@@ -184,6 +185,7 @@ namespace {
                 instanceState->printMidgrayRuntime == &prt &&
                 instanceState->printMidgrayYShiftSteps == yKey &&
                 instanceState->printMidgrayMShiftSteps == mKey &&
+                instanceState->printMidgrayCShiftSteps == cKey &&
                 instanceState->printMidgrayExposureCompScale == exposureCompScale) {
                 return instanceState->printMidgrayFactor;
             }
@@ -206,6 +208,7 @@ namespace {
             instanceState->printMidgrayRuntime = &prt;
             instanceState->printMidgrayYShiftSteps = yKey;
             instanceState->printMidgrayMShiftSteps = mKey;
+            instanceState->printMidgrayCShiftSteps = cKey;
             instanceState->printMidgrayExposureCompScale = exposureCompScale;
             instanceState->printMidgrayFactor = kMid;
         }
@@ -2952,6 +2955,7 @@ void JuicerProcessor::processImagesCUDA() {
                     + "/" + std::to_string(_prt ? _prt->neutralC : 0.0f)
                     + " yFilter=" + std::to_string(_printParams.yFilter)
                     + " mFilter=" + std::to_string(_printParams.mFilter)
+                    + " cFilter=" + std::to_string(_printParams.cFilter)
                     + " illumPtr=" + std::to_string(illumPtr)
                     + " illumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
                     + " illumY/M/Csteps=" + std::to_string(cudaResources->printIllumYShiftSteps)

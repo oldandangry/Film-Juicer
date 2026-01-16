@@ -181,6 +181,7 @@ private:
     OFX::BooleanParam* _pPrintExposureComp = nullptr;
     OFX::DoubleParam* _pEnlargerY = nullptr;
     OFX::DoubleParam* _pEnlargerM = nullptr;
+    OFX::DoubleParam* _pEnlargerC = nullptr;
 
     OFX::BooleanParam* _pHalationActive = nullptr;
     OFX::DoubleParam* _pHalationStrengthMaster = nullptr;

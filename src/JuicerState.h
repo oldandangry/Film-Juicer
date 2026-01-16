@@ -271,6 +271,7 @@ struct InstanceState {
     const Print::Runtime* printMidgrayRuntime = nullptr;
     float printMidgrayYShiftSteps = 0.0f;
     float printMidgrayMShiftSteps = 0.0f;
+    float printMidgrayCShiftSteps = 0.0f;
     float printMidgrayExposureCompScale = 1.0f;
     float printMidgrayFactor = 1.0f;
 

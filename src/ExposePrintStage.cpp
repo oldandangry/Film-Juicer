@@ -301,7 +301,7 @@ namespace Pipeline {
             prt,
             prm.yFilter,
             prm.mFilter,
-            /*cShiftSteps=*/0.0f,
+            prm.cFilter,
             scratch);
 
         negative_density_spectral_from_dyes(ws, D_cmy, scratch.Tneg);
@@ -389,11 +389,11 @@ namespace Pipeline {
 	        static thread_local std::vector<float> density_spectral;
 	        static thread_local std::vector<float> print_illuminant;
 	        static thread_local std::vector<float> light;
-	        density_to_filtered_light_agx(
-	            ws, printRuntime,
-	            printParams.yFilter,
-	            printParams.mFilter,
-	            /*cShiftSteps=*/0.0f,
+        density_to_filtered_light_agx(
+            ws, printRuntime,
+            printParams.yFilter,
+            printParams.mFilter,
+            printParams.cFilter,
             D_neg,
             density_spectral,
             print_illuminant,

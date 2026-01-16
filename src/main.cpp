@@ -487,6 +487,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setIncrement(1.0);
             if (grpPrint) p->setParent(*grpPrint);
         }
+        {
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerC");
+            p->setLabel("Enlarger C");
+            p->setDefault(0.0);
+            p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
+            p->setIncrement(1.0);
+            if (grpPrint) p->setParent(*grpPrint);
+        }
     }
 
     // Halation group

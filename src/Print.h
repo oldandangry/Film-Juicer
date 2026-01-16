@@ -93,6 +93,7 @@ namespace Print {
         float preflashExposure = 0.0f; // additional uniform print exposure (linear scale)
         float yFilter = 0.0f;    // delta from neutral baseline in Durst steps (±170)
         float mFilter = 0.0f;
+        float cFilter = 0.0f;
 
         // Whether print exposure compensation is enabled in the UI.
         bool exposureCompensationEnabled = false;

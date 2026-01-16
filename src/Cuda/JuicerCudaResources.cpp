@@ -3061,7 +3061,7 @@ namespace JuicerCuda {
         // Normalize filter step keys for cache parity with ExposePrintStage.
         const float yKey = std::isfinite(prm.yFilter) ? prm.yFilter : 0.0f;
         const float mKey = std::isfinite(prm.mFilter) ? prm.mFilter : 0.0f;
-        const float cKey = 0.0f;
+        const float cKey = std::isfinite(prm.cFilter) ? prm.cFilter : 0.0f;
 
         auto blend = [](float curveVal, float normalizedAmount) -> float {
             const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
@@ -3745,6 +3745,7 @@ namespace JuicerCuda {
         hash_f32(prm.preflashExposure);
         hash_f32(prm.yFilter);
         hash_f32(prm.mFilter);
+        hash_f32(prm.cFilter);
         hash_bool(prm.exposureCompensationEnabled);
         hash_f32(prm.exposureCompensationScale);
         hash_f32(midgrayFactor);

@@ -401,11 +401,13 @@ Print::Params JuicerEffect::gatherPrintParams() const {
     double preflash = 0.0;
     double y = 0.0;
     double m = 0.0;
+    double c = 0.0;
     if (_pPrintBypass) _pPrintBypass->getValue(bypass);
     if (_pPrintExposure) _pPrintExposure->getValue(pexp);
     if (_pPrintPreflash) _pPrintPreflash->getValue(preflash);
     if (_pEnlargerY) _pEnlargerY->getValue(y);
     if (_pEnlargerM) _pEnlargerM->getValue(m);
+    if (_pEnlargerC) _pEnlargerC->getValue(c);
     auto clampShift = [](double v) -> double {
         if (!std::isfinite(v)) return 0.0;
         const double limit = static_cast<double>(Print::kEnlargerSteps);
@@ -416,6 +418,7 @@ Print::Params JuicerEffect::gatherPrintParams() const {
     params.preflashExposure = static_cast<float>(preflash);
     params.yFilter = static_cast<float>(clampShift(y));
     params.mFilter = static_cast<float>(clampShift(m));
+    params.cFilter = static_cast<float>(clampShift(c));
     return params;
 }
 
@@ -1702,6 +1705,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
         _pEnlargerY = fetchDoubleParam("EnlargerY");
         _pEnlargerM = fetchDoubleParam("EnlargerM");
+        _pEnlargerC = fetchDoubleParam("EnlargerC");
 
         _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
         _pHalationStrengthMaster = fetchDoubleParam(JuicerParams::kHalationStrengthMaster);
@@ -2016,6 +2020,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
             + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
             + " yFilter=" + std::to_string(printParams.yFilter)
             + " mFilter=" + std::to_string(printParams.mFilter)
+            + " cFilter=" + std::to_string(printParams.cFilter)
             + " bypass=" + std::to_string(printParams.bypass ? 1 : 0);
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
