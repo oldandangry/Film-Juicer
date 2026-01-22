@@ -16,6 +16,7 @@ Film-Juicer is a Resolve-targeted port of Andrea Volpato’s [agx-emulsion](http
 - [System Requirements](#system-requirements)
 - [Install / Uninstall (Windows)](#install--uninstall-windows)
 - [Using It in Resolve](#using-it-in-resolve)
+- [Terminology (Quick)](#terminology-quick)
 - [What It Simulates](#what-it-simulates)
 - [Color Pipeline (Input → Output)](#color-pipeline-input--output)
 - [How the Simulation Works](#how-the-simulation-works)
@@ -63,22 +64,37 @@ Remove `Juicer.ofx.bundle` from the OFX plug-in directory and restart Resolve.
    - Managed pipeline: enable `Output linear pass-through`
    - Display-referred: set `Output color space` and keep `Apply output CCTF` enabled
 
+## Terminology (Quick)
+
+- **Scene-linear**: values are proportional to light. Not log, not gamma-encoded.
+- **SPD**: spectral power distribution — think “the spectrum” of the light.
+- **Illuminant**: the light source spectrum used for a stage (reference, enlarger, viewing/scanner).
+- **Density (OD)**: optical density — higher density means more absorption (darker / less light transmitted).
+- **CMY density**: densities of the cyan, magenta, and yellow dyes formed by development.
+- **XYZ**: CIE XYZ tristimulus values used as an intermediate for color conversion.
+- **CCTF**: “color component transfer function” — basically the gamma/transfer function for encoding/decoding.
+- **LUT**: lookup table — a precomputed approximation used for speed.
+
 ## What It Simulates
 
 Film-Juicer explicitly models the “photographic chain” rather than applying a 3D LUT:
 
-- **Spectral domain**: internal spectral tables are sampled at **81 wavelengths** (380–780 nm in 5 nm steps).
-- **Units**: dye densities are optical densities (OD). “μm” controls are physical micrometers; they are converted to pixels using `Camera film format (mm)`.
-- **Film negative**: exposure is formed by integrating the reconstructed SPD against **film layer sensitivities**, then developed through **H–D density curves** into **CMY dye densities**.
-- **Print (optional)**: negative density modulates an **enlarger illuminant** filtered by **dichroic Y/M/C filtration**; the paper receives per-layer exposures and is developed through **paper density curves**.
-- **Scanner/viewing**: dye density is converted back to tristimulus by Beer–Lambert transmittance and spectral integration against an illuminant + CMFs, then mapped into your target output color space (with optional output encoding).
-- **Artifacts (optional)**: halation, grain, glare, blur/unsharp, and gate effects are applied at physically-relevant stages (not as a single post look).
+- **It works in spectra internally**: instead of only pushing RGB numbers around, the plug-in estimates a full visible spectrum per pixel. Internally this is sampled at **81 wavelengths** (380–780 nm in 5 nm steps).
+- **Film negative**: the estimated spectrum is “seen” by three film layers (blue/green/red sensitive). Those three layer exposures are developed through film response curves into **CMY dye densities** (how much dye is formed).
+- **Print (optional)**: the negative is projected onto paper using an enlarger light and Y/M/C filtration. Paper has its own sensitivities and response curves, producing print dye densities.
+- **Scan / view**: dye densities are converted back into color by simulating how much light makes it through (or off) the medium, then converting to XYZ and finally to your chosen output RGB space.
+- **Artifacts (optional)**: halation, grain, glare, blur/unsharp, and gate effects are applied in the stage where they physically belong (not as one “look” at the end).
 
 ## Color Pipeline (Input → Output)
 
 ### Input expectations
 
-Film-Juicer expects **linear-light, scene-referred RGB** in the selected input primaries unless you enable decoding.
+Film-Juicer expects **scene-linear RGB** in the selected input primaries unless you enable decoding.
+
+Plain-English check:
+
+- If your values “look like a photo” on a waveform/parade (already contrasty), they’re probably **not** linear.
+- If they look “flat” and highlights feel huge, they’re more likely linear (or log).
 
 Supported input primaries:
 
@@ -89,13 +105,14 @@ Supported input primaries:
 
 `Decode input CCTF`:
 
-- When enabled, Film-Juicer decodes **BT.2020** and **sRGB/Rec.709** transfer functions to linear.
-- For scene-linear encodings (DWG / ACES2065-1), leave it off.
-- Film-Juicer does not decode log/scene-encoding curves like DaVinci Intermediate or ACEScct; if your node graph is in a non-linear working encoding, convert to a scene-linear signal (e.g. via Resolve CST) before the OFX.
+- Think of this as “decode gamma / transfer function”.
+- When enabled, Film-Juicer decodes **BT.2020** and **sRGB/Rec.709** into linear.
+- For already-linear encodings (DWG / ACES2065-1), leave it off.
+- Film-Juicer does **not** decode log working encodings like DaVinci Intermediate or ACEScct. If your node graph is in log, convert to a scene-linear signal (e.g. via Resolve CST) before the OFX.
 
 Practical guidance:
 
-- If your pipeline is managed (RCM/ACES), explicitly ensure the signal into Juicer is scene-linear (e.g. CST into linear DWG or ACES2065-1), then keep decoding off.
+- If your pipeline is managed (RCM/ACES), explicitly ensure the signal into Juicer is scene-linear (for example: CST into linear DWG or ACES2065-1), then keep decoding off.
 - Avoid feeding display-referred, heavily clipped values; the model assumes physically-plausible radiometric inputs.
 
 ### Output
@@ -114,10 +131,10 @@ This section is written for technical users who want to reason about the behavio
 
 ### 1) RGB → SPD (Spectral Reconstruction)
 
-RGB does not uniquely determine a spectrum (metamerism). Film-Juicer reconstructs a plausible **spectral power distribution** (SPD) from RGB using one of two methods:
+RGB does not uniquely determine a spectrum (metamerism). Film-Juicer therefore **guesses a plausible spectrum** (SPD) that would produce the input RGB.
 
-- `Spectral upsampling = Hanatos`: uses a LUT-based reconstruction (high fidelity when the LUT is applicable).
-- `Spectral upsampling = Mallett`: uses a basis reconstruction (lower-dimensional approximation).
+- `Spectral upsampling = Hanatos`: LUT-based reconstruction (generally higher fidelity).
+- `Spectral upsampling = Mallett`: basis-based reconstruction (simpler approximation).
 
 The reconstructed SPD is then used for all “spectral” steps: film exposure, illuminant interactions, and spectral integration for scanning.
 
@@ -125,26 +142,20 @@ Implication: highly non-standard emitters (narrow-band LEDs, lasers, display pri
 
 ### 2) Film Exposure (Per-Layer Raw)
 
-The film negative is modeled as three spectrally sensitive layers. Conceptually:
+The film negative is modeled as three spectrally sensitive layers (blue/green/red sensitive). For each pixel, Film-Juicer computes three “raw” exposure values — one per layer.
 
-- Reconstructed scene SPD: `S(λ)`
-- Film sensitivities: `s_B(λ)`, `s_G(λ)`, `s_R(λ)`
+In plain terms: the spectrum is multiplied by each layer’s sensitivity curve and summed up across wavelengths.
 
-Layer exposures (film “raw”) are formed by spectral contraction:
+`Exposure Compensation Ev` is applied like a camera exposure change:
 
-`E_k = ∫ S(λ) · s_k(λ) dλ` for k ∈ {B,G,R}
-
-`Exposure Compensation Ev` applies as a physical exposure scalar:
-
-`E_k ← E_k · 2^EV`
+- `+1 EV` = double the exposure into the negative layers
+- `-1 EV` = half the exposure
 
 ### 3) Film Development (Raw → Density CMY)
 
-Film development is modeled with H–D curves in **log exposure**.
+Film development is modeled with film response curves in **log exposure** (the classic H–D curves).
 
-Log exposure is computed with a small epsilon to avoid `log(0)`:
-
-`logE_k = log10(max(E_k, 0) + 1e-10)`
+In practice: Film-Juicer takes the three layer exposures, converts to log exposure, then samples each layer’s density curve.
 
 Each layer is mapped through its density curve (including per-layer gamma factors from the profile), then remapped to **CMY dye densities**:
 
@@ -165,28 +176,31 @@ Film-Juicer models two important coupler families:
 
 If `Bypass print` is disabled, the model simulates enlarger + paper.
 
-1) **Negative transmittance** via Beer–Lambert optical density:
+1) **Negative transmittance**
 
-- Per-wavelength density: `D(λ) = D_C·ε_C(λ) + D_M·ε_M(λ) + D_Y·ε_Y(λ) + base(λ)`
-- Transmittance: `T(λ) = 10^{-D(λ)}`
+“Density” is basically “how much dye is there”. More dye means less light passes through the negative.
 
-2) **Enlarger illumination** filtered by dichroic filtration:
+Film-Juicer converts CMY dye densities into “light transmitted vs wavelength” and uses that to compute what spectrum hits the paper.
 
-- Enlarger illuminant SPD: `E_e(λ)` (set by `Enlarger illuminant`)
-- Dichroic filters (set family + neutral baseline + user shifts): `fY(λ), fM(λ), fC(λ)`
-- Filtered enlarger SPD: `E_f(λ) = E_e(λ) · fY(λ) · fM(λ) · fC(λ)`
+2) **Enlarger light + filtration**
+
+- Choose the enlarger light source (`Enlarger illuminant`).
+- Apply Y/M/C filtration (filter set + neutral baseline + your Y/M/C shifts).
+- In spectral terms, this is “enlarger spectrum multiplied by the three filter transmittance curves”.
 
 3) **Paper exposure + development**
 
-Paper receives exposures by contracting `E_f(λ) · T(λ)` against paper sensitivities. `Print exposure` scales exposure energy; `Print preflash` adds a base exposure term. The result is developed through paper density curves into print CMY density.
+Paper “sees” the filtered enlarger light after it passes through the negative, then integrates that spectrum against the paper’s own sensitivity curves to get three paper-layer exposures.
+
+`Print exposure` scales exposure energy; `Print preflash` adds a base exposure term. The result is developed through paper response curves into print CMY density.
 
 ### 5) Scanner / Viewing Model (Density → RGB)
 
 Whether you are scanning a negative (`Bypass print = true`) or a print (`Bypass print = false`), Film-Juicer converts dye density back into color by spectral integration:
 
-1) Form per-wavelength transmittance `T(λ)` from CMY density (same Beer–Lambert form as above).
-2) Integrate against spectral tables to obtain XYZ under the viewing/scanner illuminant.
-3) Apply chromatic adaptation + matrix to obtain output RGB, then apply output encoding if configured.
+1) Convert dye density into “how much light gets through” per wavelength.
+2) Convert that spectrum into XYZ under the viewing/scanner illuminant.
+3) Convert XYZ into your output RGB space, then (optionally) apply output encoding.
 
 Viewing/scanner illuminant:
 
@@ -206,14 +220,14 @@ This is a map of the most important controls in physical terms.
 
 - `Camera auto exposure`: enables scene metering to set an exposure offset before film exposure.
 - `Camera metering`: metering strategy (center-weighted vs median).
-- `Exposure Compensation Ev`: multiplies film exposure by `2^EV`.
+- `Exposure Compensation Ev`: exposure of the virtual negative in stops (`+1 EV` doubles exposure, `-1 EV` halves it).
 - `Camera film format (mm)`: sets the physical scale for μm→pixel conversions (DIR spatial diffusion, halation radii, etc.).
 
 ### Spectral / Stock
 
 - `Film stock`: selects the negative profile (sensitivities, dye densities, H–D curves, coupler metadata).
 - `Spectral upsampling`: chooses the RGB→SPD reconstruction method.
-- `Reference illuminant`: selects the illuminant used when building spectral tables and interpreting the reconstructed spectrum.
+- `Reference illuminant`: the “white light” the model uses when building spectral tables and interpreting the reconstructed spectrum.
   - Options: D65 / D55 / D50 / TH-KG3-L / T / K75P / Equal energy
   - Notes: `TH-KG3-L` is a tungsten-halogen source filtered by a KG3 heat filter (used to approximate enlarger-style spectra).
 
@@ -225,7 +239,7 @@ This is a map of the most important controls in physical terms.
 
 - `Bypass print`: when enabled, skips enlarger + paper and scans the negative directly.
 - `Print paper`: selects the paper profile.
-- `Enlarger illuminant`: illuminant SPD used for print exposure.
+- `Enlarger illuminant`: the enlarger light source spectrum used for print exposure.
   - Options: D65 / D55 / D50 / TH-KG3-L / T / K75P / Equal energy
 - `Enlarger dichroics`: selects the dichroic filter set; this also controls the neutral baseline behavior of the Y/M/C wheels.
 - `Enlarger Y/M/C`: filtration shifts in enlarger “steps” around the neutral baseline (0 = neutral; positive increases filtration, negative decreases).
@@ -239,16 +253,16 @@ This is a map of the most important controls in physical terms.
 
 - `Scanner lens blur (px)`: Gaussian blur sigma in pixels.
 - `Scanner unsharp mask`: (sigma px, amount) applied after scanner blur.
-- `Scanner use LUT` + `Scanner LUT resolution`: trades accuracy vs speed for density→color mapping.
-- `Output color space`: target RGB primaries/matrix.
-- `Apply output CCTF`: apply display encoding (gamma/OETF).
+- `Scanner use LUT` + `Scanner LUT resolution`: use a precomputed lookup table for speed; higher resolutions are more accurate but heavier to build/use.
+- `Output color space`: where you want the result to land (e.g. sRGB/Rec.709/BT.2020/DWG/ACES2065-1).
+- `Apply output CCTF`: apply output gamma/transfer function for display delivery.
 - `Output linear pass-through`: keep output linear for managed pipelines.
 
 ### Artifacts
 
 - `Halation`: scattering in the film stage (physically earlier than “glow” post effects).
-  - `Scattering strength (%)` / `Scattering size (μm)`: controls the pre-halation scatter (Gaussian sigma in μm).
-  - `Halation strength (%)` / `Halation size (μm)`: controls the halo component (Gaussian sigma in μm).
+  - `Scattering strength (%)` / `Scattering size (μm)`: controls how much and how far light scatters before the main halo.
+  - `Halation strength (%)` / `Halation size (μm)`: controls the strength and spread of the halo itself.
 - `Grain`: stochastic density modulation; key controls include `Grain Amount (EV)`, `Grain Size (px)`, `Grain Sharpness`, `Grain Chroma`, and `Grain Texture`.
 - `Gate weave / dust / scratches`: gate/transport artifacts.
 - `Glare`: veiling glare / flare behavior in the scanner/view stage.
@@ -278,7 +292,7 @@ Goal: explicitly linearize on input and re-encode on output.
 
 Primary cost drivers:
 
-- Spectral pipeline (especially when SPD reconstruction is enabled and when scanner LUTs are disabled or high-res).
+- Spectral reconstruction + scan mapping (especially with spectral reconstruction enabled, scan LUT disabled, or very high LUT resolution).
 - Grain / halation / glare (stochastic and/or multi-pass blurs).
 
 Tuning guidance:
@@ -288,9 +302,9 @@ Tuning guidance:
 
 ## Validation & Common Pitfalls
 
-### 1) “My color management is wrong”
+### 1) Color management mismatch
 
-Most “this looks wrong” reports reduce to **double-decoding** or **double-encoding**.
+Most “unexpected contrast / saturation / density” reports reduce to **double-decoding**, **double-encoding**, or running the simulation on a **log-encoded** signal.
 
 Baseline for a managed pipeline (RCM/ACES):
 
@@ -303,7 +317,7 @@ Baseline for a display-referred pipeline:
 - `Decode input CCTF = on` when feeding `sRGB / Rec.709` or `ITU-R BT.2020` display-encoded values
 - `Apply output CCTF = on` when delivering display-encoded output
 
-### 2) “Y/M/C doesn’t do anything”
+### 2) Print stage is bypassed
 
 Make sure you are actually running the print stage:
 
@@ -311,21 +325,21 @@ Make sure you are actually running the print stage:
 
 Also note that enlarger filtration is defined as a **shift around a neutral baseline**. If you change paper / film / enlarger illuminant, the neutral baseline can change; re-evaluate filtration under the new combination (or leave `Print exposure compensation` enabled to keep mid-gray behavior stable).
 
-### 3) “The image is unexpectedly clipped / desaturated”
+### 3) Input gamut / metamerism limits
 
 Even though the internal pipeline is spectral, your input is still RGB. Spectral reconstruction from RGB is inherently underdetermined:
 
-- Narrow-band emitters / display primaries cannot be reconstructed uniquely from 3-channel RGB (metamerism).
+- Narrow-band emitters / display primaries cannot be reconstructed uniquely from 3-channel RGB (metamerism: different spectra can match the same RGB).
 - If you are chasing extreme saturation, feed a **wide-gamut, scene-linear** signal (DWG/ACES/BT.2020), not a clipped Rec.709 delivery image.
 
-### 4) “Performance tanks / playback is not interactive”
+### 4) Performance baseline
 
 Start from a “clean” baseline and add complexity:
 
 - Disable grain/halation/glare first.
 - Keep `Scanner use LUT = on` for interactive work; raise LUT resolution only when you need it.
 
-### 5) “Resolve can’t load the plug-in”
+### 5) Load failures
 
 - Ensure your GPU meets the CUDA target (SM75+/Turing or newer) and that you installed a CUDA-enabled build of the plug-in.
 - If Resolve fails due to missing CUDA runtime DLLs, ensure the required `cudart64_*.dll` is available in Resolve’s DLL search path (commonly shipped alongside the plug-in binary in `Contents/Win64/`, or installed system-wide).
