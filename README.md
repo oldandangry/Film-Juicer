@@ -9,6 +9,8 @@ Film-Juicer is an OpenFX 1.4 plug-in for DaVinci Resolve that implements a **spe
 
 This is not a LUT. The look emerges from explicit modeling of **exposure, dye densities, illuminants, filtration, and scanning**.
 
+Film-Juicer is a Resolve-targeted port of Andrea Volpato’s [agx-emulsion](https://github.com/andreavolpato/agx-emulsion) (simulation of color film photography from scratch). The control surface and stage order are designed to remain close to the upstream model.
+
 ## Contents
 
 - [System Requirements](#system-requirements)
@@ -25,7 +27,7 @@ This is not a LUT. The look emerges from explicit modeling of **exposure, dye de
 - [Controls (Physical Semantics)](#controls-physical-semantics)
 - [Recommended Resolve Workflows](#recommended-resolve-workflows)
 - [Performance / Quality Trade-offs](#performance--quality-trade-offs)
-- [Troubleshooting](#troubleshooting)
+- [Validation & Common Pitfalls](#validation--common-pitfalls)
 - [References](#references)
 
 ## System Requirements
@@ -33,7 +35,6 @@ This is not a LUT. The look emerges from explicit modeling of **exposure, dye de
 - Host: DaVinci Resolve (OFX)
 - OS: Windows 10/11 x64
 - GPU: NVIDIA CUDA (the release configuration targets **SM75+ / Turing or newer**)
-- Pixel format: float RGB/RGBA (OpenFX `eBitDepthFloat`)
 
 ## Install / Uninstall (Windows)
 
@@ -43,7 +44,7 @@ This is not a LUT. The look emerges from explicit modeling of **exposure, dye de
    - `C:\\Program Files\\Common Files\\OFX\\Plugins\\`
 2. Confirm the bundle contains:
    - `Juicer.ofx.bundle/Contents/Win64/juicer.ofx`
-   - `Juicer.ofx.bundle/Contents/Resources/` (profiles, spectral tables, noise, etc.)
+   - `Juicer.ofx.bundle/Contents/Resources/` (required runtime assets)
 3. Restart Resolve.
 
 ### Uninstall
@@ -90,10 +91,11 @@ Supported input primaries:
 
 - When enabled, Film-Juicer decodes **BT.2020** and **sRGB/Rec.709** transfer functions to linear.
 - For scene-linear encodings (DWG / ACES2065-1), leave it off.
+- Film-Juicer does not decode log/scene-encoding curves like DaVinci Intermediate or ACEScct; if your node graph is in a non-linear working encoding, convert to a scene-linear signal (e.g. via Resolve CST) before the OFX.
 
 Practical guidance:
 
-- If your timeline is managed (RCM/ACES) and the node feeding Juicer is already in a scene-linear working space, keep decoding off.
+- If your pipeline is managed (RCM/ACES), explicitly ensure the signal into Juicer is scene-linear (e.g. CST into linear DWG or ACES2065-1), then keep decoding off.
 - Avoid feeding display-referred, heavily clipped values; the model assumes physically-plausible radiometric inputs.
 
 ### Output
@@ -102,7 +104,9 @@ At the end of the scan/view stage, Film-Juicer produces linear RGB and can optio
 
 - Transform into a selected `Output color space`
 - Apply `Apply output CCTF` (display encoding)
-- Or bypass encoding with `Output linear pass-through` for managed pipelines
+- Or bypass encoding/clipping with `Output linear pass-through` for managed pipelines
+
+Note: when `Output linear pass-through` is disabled, Film-Juicer applies output encoding (if enabled) and then clips to display range.
 
 ## How the Simulation Works
 
@@ -148,7 +152,14 @@ Each layer is mapped through its density curve (including per-layer gamma factor
 - Green layer → Magenta dye density
 - Red layer → Cyan dye density
 
-DIR couplers (optional) introduce inter-layer interactions and diffusion-like behavior. When enabled, they perturb effective log exposure before density sampling, with optional spatial diffusion controlled in micrometers and scaled by `Camera film format (mm)`.
+#### Couplers (why they matter)
+
+Data-sheet curves alone are typically not enough to reproduce convincing film behavior. Couplers are a major part of “why film looks like film”, and the upstream agx-emulsion model treats them as first-class components.
+
+Film-Juicer models two important coupler families:
+
+- **Masking couplers**: reduce spectral cross-talk between formed dyes and tend to increase apparent saturation. In practice this manifests as an “orange mask” character in the developed negative and is modeled as additional spectral absorption/offset terms.
+- **DIR (Direct Inhibitor Release) couplers**: introduce inter-layer development interactions (inhibition) that can increase saturation/contrast. When enabled, they perturb effective log exposure before density sampling. Optional spatial diffusion (in micrometers, scaled by `Camera film format (mm)`) behaves like an adjacency effect and can change local contrast/sharpness.
 
 ### 4) Print Simulation (Optional)
 
@@ -218,6 +229,7 @@ This is a map of the most important controls in physical terms.
   - Options: D65 / D55 / D50 / TH-KG3-L / T / K75P / Equal energy
 - `Enlarger dichroics`: selects the dichroic filter set; this also controls the neutral baseline behavior of the Y/M/C wheels.
 - `Enlarger Y/M/C`: filtration shifts in enlarger “steps” around the neutral baseline (0 = neutral; positive increases filtration, negative decreases).
+  - Neutral is defined as a starting point intended to render an 18% gray target neutral for the current paper/illuminant/film combination (the enlarger step model uses 170 steps).
 - `Print exposure`: scalar on print exposure energy.
 - `Print preflash`: adds a base exposure to paper (toe lift / shadow behavior).
 - `Print exposure compensation`: keeps mid-gray behavior consistent when paper/illuminant/filtration changes.
@@ -235,9 +247,13 @@ This is a map of the most important controls in physical terms.
 ### Artifacts
 
 - `Halation`: scattering in the film stage (physically earlier than “glow” post effects).
+  - `Scattering strength (%)` / `Scattering size (μm)`: controls the pre-halation scatter (Gaussian sigma in μm).
+  - `Halation strength (%)` / `Halation size (μm)`: controls the halo component (Gaussian sigma in μm).
 - `Grain`: stochastic density modulation; key controls include `Grain Amount (EV)`, `Grain Size (px)`, `Grain Sharpness`, `Grain Chroma`, and `Grain Texture`.
 - `Gate weave / dust / scratches`: gate/transport artifacts.
 - `Glare`: veiling glare / flare behavior in the scanner/view stage.
+  - `Glare percent`, `Glare roughness`, `Glare blur sigma (px)` tune the glare model.
+  - Compensation removal controls are intended to remove a modeled glare-compensation term over a density range (useful for matching certain paper profiles).
 
 ## Recommended Resolve Workflows
 
@@ -246,7 +262,8 @@ This is a map of the most important controls in physical terms.
 Goal: keep Juicer operating on scene-linear values, and keep color space transforms in the managed pipeline.
 
 - Set `Input color space` to match the RGB values arriving at the OFX.
-- Keep `Decode input CCTF = off` if values are already linear.
+- Ensure the signal arriving at the OFX is **scene-linear**. If your working space is log-encoded (e.g. DaVinci Intermediate / ACEScct), insert a CST to convert into a linear encoding before Juicer.
+- Keep `Decode input CCTF = off` unless you are feeding display-encoded `sRGB/Rec.709` or `BT.2020`.
 - Prefer `Output linear pass-through = on`.
 - Apply your timeline/output transforms outside Juicer (RCM/ACES handles it).
 
@@ -269,18 +286,59 @@ Tuning guidance:
 - Start with artifacts off; dial the base negative/print/scanner behavior first.
 - Use `Scanner use LUT = on` for interactive work; increase LUT resolution for higher fidelity if needed.
 
-## Troubleshooting
+## Validation & Common Pitfalls
 
-- “It looks wrong / too dark / too saturated”: first verify **input linearization** (input color space + decode toggle) and **output encoding** (linear pass-through vs output CCTF).
-- “The print look doesn’t change with Y/M/C”: disable `Bypass print`.
-- “Film stock / print paper menus are empty”: confirm `Juicer.ofx.bundle/Contents/Resources/` is present next to the plug-in binary.
-- “Resolve can’t load the plug-in”: ensure your GPU meets the CUDA target (SM75+/Turing or newer) and that you installed a CUDA-enabled build of the plug-in.
-- “Resolve fails to load due to missing CUDA runtime DLLs”: ensure the required `cudart64_*.dll` is available in Resolve’s DLL search path (commonly shipped alongside the plug-in binary in `Contents/Win64/`, or installed system-wide).
+### 1) “My color management is wrong”
+
+Most “this looks wrong” reports reduce to **double-decoding** or **double-encoding**.
+
+Baseline for a managed pipeline (RCM/ACES):
+
+- Ensure the signal into Juicer is scene-linear (use CST if your working encoding is log).
+- `Decode input CCTF = off` (unless feeding display-encoded sRGB/Rec.709 or BT.2020)
+- `Output linear pass-through = on`
+
+Baseline for a display-referred pipeline:
+
+- `Decode input CCTF = on` when feeding `sRGB / Rec.709` or `ITU-R BT.2020` display-encoded values
+- `Apply output CCTF = on` when delivering display-encoded output
+
+### 2) “Y/M/C doesn’t do anything”
+
+Make sure you are actually running the print stage:
+
+- `Bypass print = off`
+
+Also note that enlarger filtration is defined as a **shift around a neutral baseline**. If you change paper / film / enlarger illuminant, the neutral baseline can change; re-evaluate filtration under the new combination (or leave `Print exposure compensation` enabled to keep mid-gray behavior stable).
+
+### 3) “The image is unexpectedly clipped / desaturated”
+
+Even though the internal pipeline is spectral, your input is still RGB. Spectral reconstruction from RGB is inherently underdetermined:
+
+- Narrow-band emitters / display primaries cannot be reconstructed uniquely from 3-channel RGB (metamerism).
+- If you are chasing extreme saturation, feed a **wide-gamut, scene-linear** signal (DWG/ACES/BT.2020), not a clipped Rec.709 delivery image.
+
+### 4) “Performance tanks / playback is not interactive”
+
+Start from a “clean” baseline and add complexity:
+
+- Disable grain/halation/glare first.
+- Keep `Scanner use LUT = on` for interactive work; raise LUT resolution only when you need it.
+
+### 5) “Resolve can’t load the plug-in”
+
+- Ensure your GPU meets the CUDA target (SM75+/Turing or newer) and that you installed a CUDA-enabled build of the plug-in.
+- If Resolve fails due to missing CUDA runtime DLLs, ensure the required `cudart64_*.dll` is available in Resolve’s DLL search path (commonly shipped alongside the plug-in binary in `Contents/Win64/`, or installed system-wide).
+- If film/paper menus are empty, confirm `Juicer.ofx.bundle/Contents/Resources/` is present next to the plug-in binary.
 
 ## References
 
 - Upstream modeling reference: [agx-emulsion]
 - Parity/porting notes (developer-facing): `agx-documentation.md`
 - Contributing/build notes (developer-facing): `DEVELOPING.md`
+- Background reading (as referenced by agx-emulsion):
+  - Giorgianni, Madden — *Digital Color Management* (2nd ed., 2008)
+  - Hunt — *The Reproduction of Colour* (6th ed., 2004)
+  - Mallett, Yuksel — “Spectral Primary Decomposition for Rendering with sRGB Reflectance” (2019)
 
 [agx-emulsion]: https://github.com/andreavolpato/agx-emulsion
