@@ -1,152 +1,39 @@
-# Film-Juicer
+# Film-Juicer (DaVinci Resolve OFX)
 
-**Film-Juicer** is an OpenFX 1.4 plug-in for DaVinci Resolve implementing **spectral film emulation** with a physically-motivated negative → print → scan pipeline.
+Film-Juicer is an OpenFX 1.4 plug-in for DaVinci Resolve that implements a **spectral, stage-based film pipeline**:
 
-The core model is a C++ port of Andrea Volpato’s [agx-emulsion] reference implementation, with an explicit goal of **technical parity** (constants, transforms, stochastic processes, and serialization semantics).
+1. **RGB → spectral reconstruction** (estimated scene SPD)
+2. **Negative exposure + development** (layer sensitivities, H–D curves, couplers)
+3. Optional **print exposure + paper development** (enlarger illuminant + Y/M/C filtration + paper model)
+4. **Scanner / viewing transform** (spectral → XYZ → output RGB, with optics/artifacts)
 
----
+This is not a LUT. The look emerges from explicit modeling of **exposure, dye densities, illuminants, filtration, and scanning**.
 
 ## Contents
 
-- [What This Is](#what-this-is)
-- [Pipeline Overview](#pipeline-overview)
-- [Model Invariants](#model-invariants)
-- [Runtime Assets & Profiles](#runtime-assets--profiles)
 - [System Requirements](#system-requirements)
 - [Install / Uninstall (Windows)](#install--uninstall-windows)
 - [Using It in Resolve](#using-it-in-resolve)
-- [Color Management (Input/Output)](#color-management-inputoutput)
-- [Controls (Map)](#controls-map)
-- [Build From Source (Windows)](#build-from-source-windows)
-- [Diagnostics & Debugging](#diagnostics--debugging)
-- [Performance Notes](#performance-notes)
-- [Upstream Parity](#upstream-parity)
-- [Developer Tooling](#developer-tooling)
-- [Support](#support)
-- [License and Third-Party Notices](#license-and-third-party-notices)
-
----
-
-## What This Is
-
-Film-Juicer models the photographic pipeline explicitly:
-
-- **Input RGB → spectral reconstruction (SPD)** (81 wavelength samples, 380–780 nm @ 5 nm)
-- **Film exposure** using stock spectral sensitivities + camera spectral filtering
-- **Film development** via H–D density curves, masking, and optional DIR coupler effects
-- **Print exposure/development** (optional) via enlarger illuminant + dichroic filtration + paper model
-- **Scanner/viewing model**: spectral → tristimulus → output color space + optional output encoding
-- Optional artifacts (grain, halation, glare, optics)
-
-The plug-in is **data-driven**: film stocks, papers, and spectral tables are shipped in `Resources/` and loaded at runtime from the plug-in bundle.
-
----
-
-## Pipeline Overview
-
-The codebase is organised around a stage-aligned pipeline mirroring `agx-emulsion`:
-
-- `src/JuicerEffect.*`: OFX wiring, parameter definitions, instance lifecycle
-- `src/JuicerState.*`, `src/WorkingState.h`: immutable base profile data + derived render-ready state (double-buffered)
-- Spectral core: `src/SpectralData.h`, `src/SpectralContext.*`, `src/SpectralProcessing.h`, `src/SpectralMathAVX.cpp`
-- Film stages: `src/ExposeFilmStage.*`, `src/DevelopFilmStage.*`, `src/FilmProcessing.h`, `src/Couplers.h`, `src/SpatialDIR.*`
-- Print stages: `src/ExposePrintStage.*`, `src/DevelopPrintStage.*`, `src/Print.*`, `src/NeutralFilters.*`
-- Scanner/output: `src/ScanStage.*`, `src/Scanner*.{h,cpp}`, `src/OutputEncoding.*`, `src/ColorTransforms.h`
-- CUDA stages live under `src/Cuda/` (built when `JUICER_ENABLE_CUDA=1`)
-
-Execution paths:
-
-- **CPU path**: multithreaded `OFX::ImageProcessor` pipeline (also used for non-CUDA hosts / development).
-- **CUDA path**: Resolve CUDA render entry points when built with CUDA; device pointers are used end-to-end to avoid round-trips.
-
----
-
-## Model Invariants
-
-These invariants are assumed across code, profiles, and LUTs:
-
-- **Spectral axis**: 81 samples at **380–780 nm** in **5 nm** steps.
-- **Log exposure axis**: 256 samples spanning **−3 EV → +4 EV** (used by density curve LUTs).
-- **Enlarger neutral steps**: 170 steps (neutral Y/M/C values in the filter database are normalized to this).
-
-If you change any of these, you must regenerate dependent assets and re-validate parity.
-
----
-
-## Runtime Assets & Profiles
-
-### Bundle layout (runtime)
-
-At runtime the plug-in resolves `gDataDir` to:
-
-- `Juicer.ofx.bundle/Contents/Resources/`
-
-If the Resources directory is missing or moved, the plug-in will load fallback catalog entries and may refuse to build working state.
-
-### `Resources/` structure (high level)
-
-- `Resources/profiles/`: JSON profiles (film stocks + print papers) and neutral filter database
-- `Resources/paper/<paper>/`: print-paper CSV spectra + baselines (paired with JSON profile metadata)
-- `Resources/illuminants/`: standard illuminant SPDs (CSV)
-- `Resources/filters/`: dichroics, KG3 heat filter, lens transmission spectra (CSV)
-- `Resources/luts/spectral_upsampling/`: spectral upsampling tables (e.g. Hanatos 2025 LUTs)
-- `Resources/Noise/`: stochastic textures/tiles (used by grain and related effects)
-
-### Profile schema (JSON)
-
-Profiles are dense arrays aligned to the reference axes. In particular:
-
-- File structure:
-  - `info`: lightweight metadata used for cataloging and defaults (`stock`, `name`, `type`, illuminants, etc.)
-  - `data`: dense numeric arrays (spectral curves, density curves, axis arrays)
-- `wavelengths`: 81 samples matching 380–780 nm @ 5 nm
-- `log_exposure`: 256 samples matching −3 → +4 EV
-- `log_sensitivity`: 81×3 (log10 sensitivities)
-- `dye_density`: 81×5 (CMY + additional components as authored)
-- `density_curves`: 256×3 (CMY optical densities vs log exposure)
-
-The loaders validate axis compatibility; assets that do not match the reference grids are rejected.
-
-Notes:
-
-- Profiles in `Resources/profiles/` commonly use `NaN` to encode “missing” samples (toe/shoulder gaps); the implementation is written to preserve missingness semantics rather than silently “healing” NaNs.
-- Catalog keys come from `info.stock` (and typically match the JSON filename stem). Keep these stable because they are also referenced by the neutral filter database.
-
-Neutral filter database:
-
-- `Resources/profiles/enlarger_neutral_ymc_filters.json` maps `[paper][illuminant][film] → (Y,M,C)` normalized to 170 enlarger steps.
-
-### Catalog behavior (films/papers menus)
-
-The UI film/paper option lists are derived from shipped data:
-
-- Primary path: keys present in `Resources/profiles/enlarger_neutral_ymc_filters.json` (so neutral defaults exist for common paper/illuminant/film combinations).
-- Fallback path: scan `Resources/profiles/*.json` and include any `type=negative` (film) and `type=paper` (print) profiles.
-- Final fallback: a small hard-coded set of stocks/papers if the Resources directory is unavailable.
-
-For print papers, the runtime also expects a corresponding `Resources/paper/<paper>/` directory containing the per-paper CSV curves (dye epsilons, log sensitivities, baselines). The mapping between a paper profile and its folder uses name/key heuristics; keep folder names closely related to `info.stock`/`info.name` to avoid mismatches.
-
----
+- [What It Simulates](#what-it-simulates)
+- [Color Pipeline (Input → Output)](#color-pipeline-input--output)
+- [How the Simulation Works](#how-the-simulation-works)
+  - [1) RGB → SPD (Spectral Reconstruction)](#1-rgb--spd-spectral-reconstruction)
+  - [2) Film Exposure (Per-Layer Raw)](#2-film-exposure-per-layer-raw)
+  - [3) Film Development (Raw → Density CMY)](#3-film-development-raw--density-cmy)
+  - [4) Print Simulation (Optional)](#4-print-simulation-optional)
+  - [5) Scanner / Viewing Model (Density → RGB)](#5-scanner--viewing-model-density--rgb)
+- [Controls (Physical Semantics)](#controls-physical-semantics)
+- [Recommended Resolve Workflows](#recommended-resolve-workflows)
+- [Performance / Quality Trade-offs](#performance--quality-trade-offs)
+- [Troubleshooting](#troubleshooting)
+- [References](#references)
 
 ## System Requirements
 
-Runtime target:
-
-- Host: DaVinci Resolve (other OFX hosts are untested / unsupported)
+- Host: DaVinci Resolve (OFX)
 - OS: Windows 10/11 x64
-- Images: float RGB/RGBA (OpenFX `eBitDepthFloat`)
-
-CUDA target (default release configuration):
-
-- NVIDIA GPU with **compute capability 7.5+** (Turing / SM75 or newer)
-- A compatible NVIDIA driver for the CUDA runtime shipped with the plug-in
-
-Notes:
-
-- The shipped Visual Studio CUDA configuration targets `sm_75` by default (`juicer.vcxproj` `CudaCompile/CodeGeneration`).
-- CPU rendering is available for development and non-CUDA builds, but the primary performance target is the CUDA path.
-
----
+- GPU: NVIDIA CUDA (the release configuration targets **SM75+ / Turing or newer**)
+- Pixel format: float RGB/RGBA (OpenFX `eBitDepthFloat`)
 
 ## Install / Uninstall (Windows)
 
@@ -154,209 +41,246 @@ Notes:
 
 1. Copy `Juicer.ofx.bundle` to:
    - `C:\\Program Files\\Common Files\\OFX\\Plugins\\`
-2. Confirm the bundle contains both the plug-in binary and runtime resources:
+2. Confirm the bundle contains:
    - `Juicer.ofx.bundle/Contents/Win64/juicer.ofx`
-   - `Juicer.ofx.bundle/Contents/Resources/...`
-3. Restart DaVinci Resolve.
-
-Troubleshooting:
-
-- If Resolve fails to load the plug-in due to missing CUDA runtime DLLs, ensure the required `cudart64_*.dll` is available in Resolve’s DLL search path (commonly shipped alongside the plug-in binary in `Contents/Win64/`, or installed system-wide).
+   - `Juicer.ofx.bundle/Contents/Resources/` (profiles, spectral tables, noise, etc.)
+3. Restart Resolve.
 
 ### Uninstall
 
-Remove `Juicer.ofx.bundle` from the OFX plug-in directory and restart DaVinci Resolve.
-
-For installer packaging, see `installer/README.md`.
-
----
+Remove `Juicer.ofx.bundle` from the OFX plug-in directory and restart Resolve.
 
 ## Using It in Resolve
 
-1. Add the OFX effect `Juicer` (group: `Negative-juice`) to your node graph.
+1. Add the OFX effect `Juicer` (group: `Negative-juice`) to a node.
 2. Set `Input color space` to match the RGB values being fed into the OFX.
-3. Choose a `Film stock`.
-4. Choose a print workflow:
-   - Print simulation: select a `Print paper` and keep `Bypass print` disabled.
-   - Negative view: enable `Bypass print` (scanner is configured for negative viewing and may apply auto-gain).
-5. Configure output encoding so the result lands in the space/transfer your downstream pipeline expects.
+3. Pick a `Film stock`.
+4. Decide whether you want a print stage:
+   - **Negative scan**: leave `Bypass print = on`
+   - **Print simulation**: set `Bypass print = off`, then pick a `Print paper` and tune `Print` / `Enlarger` controls
+5. Set output behavior:
+   - Managed pipeline: enable `Output linear pass-through`
+   - Display-referred: set `Output color space` and keep `Apply output CCTF` enabled
 
----
+## What It Simulates
 
-## Color Management (Input/Output)
+Film-Juicer explicitly models the “photographic chain” rather than applying a 3D LUT:
 
-Film-Juicer expects **linear-light RGB** in the selected space unless you explicitly enable decoding.
+- **Spectral domain**: internal spectral tables are sampled at **81 wavelengths** (380–780 nm in 5 nm steps).
+- **Units**: dye densities are optical densities (OD). “μm” controls are physical micrometers; they are converted to pixels using `Camera film format (mm)`.
+- **Film negative**: exposure is formed by integrating the reconstructed SPD against **film layer sensitivities**, then developed through **H–D density curves** into **CMY dye densities**.
+- **Print (optional)**: negative density modulates an **enlarger illuminant** filtered by **dichroic Y/M/C filtration**; the paper receives per-layer exposures and is developed through **paper density curves**.
+- **Scanner/viewing**: dye density is converted back to tristimulus by Beer–Lambert transmittance and spectral integration against an illuminant + CMFs, then mapped into your target output color space (with optional output encoding).
+- **Artifacts (optional)**: halation, grain, glare, blur/unsharp, and gate effects are applied at physically-relevant stages (not as a single post look).
 
-Input:
+## Color Pipeline (Input → Output)
 
-- `Input color space`: selects primaries/matrix used for input handling.
-- `Decode input CCTF`:
-  - Enable when feeding gamma-encoded `ITU-R BT.2020` or `sRGB / Rec.709` and you want Film-Juicer to linearize internally.
-  - For scene-linear spaces (e.g. DaVinci Wide Gamut / Intermediate, ACES2065-1), keep this disabled.
+### Input expectations
 
-Output:
+Film-Juicer expects **linear-light, scene-referred RGB** in the selected input primaries unless you enable decoding.
 
-- `Output color space` + `Apply output CCTF`: encodes the final RGB for delivery in the chosen output space/transfer.
-- `Output linear pass-through`: bypasses output encoding when you want Film-Juicer to stay in linear and let Resolve/ACES handle transforms.
+Supported input primaries:
 
-Resolve examples (common):
+- DaVinci Wide Gamut
+- ITU-R BT.2020
+- ACES2065-1
+- sRGB / Rec.709
 
-- RCM timeline working space = DaVinci Wide Gamut / Intermediate:
-  - `Input color space = DaVinci Wide Gamut`, `Decode input CCTF = off`
-  - Prefer `Output linear pass-through = on` and keep transforms in RCM
-- Non-managed Rec.709:
-  - `Input color space = sRGB / Rec.709`, `Decode input CCTF = on`
-  - Set output encoding to your desired delivery target
+`Decode input CCTF`:
 
-For output encoding implementation notes, see `output-encoding.md`.
+- When enabled, Film-Juicer decodes **BT.2020** and **sRGB/Rec.709** transfer functions to linear.
+- For scene-linear encodings (DWG / ACES2065-1), leave it off.
 
----
+Practical guidance:
 
-## Controls (Map)
+- If your timeline is managed (RCM/ACES) and the node feeding Juicer is already in a scene-linear working space, keep decoding off.
+- Avoid feeding display-referred, heavily clipped values; the model assumes physically-plausible radiometric inputs.
 
-The UI is grouped by pipeline stage:
+### Output
 
-- Camera/exposure: exposure compensation, metering/auto exposure, film format scaling
-- Spectral: SPD reconstruction method, reference/enlarger illuminant selection
-- Film: stock selection, development controls, masking / DIR couplers
-- Print: paper selection, print exposure + preflash, enlarger Y/M/C filtration
-- Scanner/output: scanner controls, output encoding / pass-through
-- Artifacts: grain, halation, glare, plus optional gate effects
+At the end of the scan/view stage, Film-Juicer produces linear RGB and can optionally:
 
----
+- Transform into a selected `Output color space`
+- Apply `Apply output CCTF` (display encoding)
+- Or bypass encoding with `Output linear pass-through` for managed pipelines
 
-## Build From Source (Windows)
+## How the Simulation Works
 
-### Toolchain & dependencies
+This section is written for technical users who want to reason about the behavior of the model.
 
-- Visual Studio 2022 (v143 toolset)
-- CUDA Toolkit (the project is wired to VS CUDA build customizations; see `juicer.vcxproj`)
-- OpenFX 1.4 headers + OFX Support library (OFXS)
-- Eigen 3.4 (configured as an external include directory)
+### 1) RGB → SPD (Spectral Reconstruction)
 
-This repository vendors several dependencies under `external/` and `third_party/`, but the `.vcxproj` currently uses **machine-local include paths** by default (e.g. `C:\\Dev\\...`). Adjust them to match your environment.
+RGB does not uniquely determine a spectrum (metamerism). Film-Juicer reconstructs a plausible **spectral power distribution** (SPD) from RGB using one of two methods:
 
-Practical notes:
+- `Spectral upsampling = Hanatos`: uses a LUT-based reconstruction (high fidelity when the LUT is applicable).
+- `Spectral upsampling = Mallett`: uses a basis reconstruction (lower-dimensional approximation).
 
-- The project conditionally enables CUDA when Visual Studio CUDA build customizations are present (see the `CUDA 13.1.props` import in `juicer.vcxproj`); this defines `JUICER_ENABLE_CUDA=1` in the CUDA-enabled build.
-- The Visual Studio project references OFXS support sources via `..\\OFXS\\Support\\Library\\...`. If you want to use the vendored copy in `external/OFXS/`, either update the `.vcxproj` entries or provide an equivalent `..\\OFXS` path (e.g. junction/symlink).
+The reconstructed SPD is then used for all “spectral” steps: film exposure, illuminant interactions, and spectral integration for scanning.
 
-### Build
+Implication: highly non-standard emitters (narrow-band LEDs, lasers, display primaries) may not be reproduced with true spectral accuracy because the input is still 3-channel RGB.
 
-From a “x64 Native Tools for VS 2022” prompt:
+### 2) Film Exposure (Per-Layer Raw)
 
-```bat
-msbuild juicer.sln /p:Configuration=Debug /p:Platform=x64
-msbuild juicer.sln /p:Configuration=Release /p:Platform=x64
-msbuild juicer.sln /t:Clean /p:Platform=x64
-```
+The film negative is modeled as three spectrally sensitive layers. Conceptually:
 
-Outputs:
+- Reconstructed scene SPD: `S(λ)`
+- Film sensitivities: `s_B(λ)`, `s_G(λ)`, `s_R(λ)`
 
-- Plug-in binary: `juicer/x64/<Config>/juicer.ofx`
-- MSVC intermediates: `x64/<Config>/` (do not commit)
+Layer exposures (film “raw”) are formed by spectral contraction:
 
-### Bundle for Resolve
+`E_k = ∫ S(λ) · s_k(λ) dλ` for k ∈ {B,G,R}
 
-Create the following structure and copy the outputs:
+`Exposure Compensation Ev` applies as a physical exposure scalar:
 
-- `Juicer.ofx.bundle/Contents/Win64/juicer.ofx` (from the build output)
-- `Juicer.ofx.bundle/Contents/Resources/` (copy `Resources/` from the repo)
+`E_k ← E_k · 2^EV`
 
-Install by copying the bundle to the Resolve OFX directory (see above).
+### 3) Film Development (Raw → Density CMY)
 
----
+Film development is modeled with H–D curves in **log exposure**.
 
-## Diagnostics & Debugging
+Log exposure is computed with a small epsilon to avoid `log(0)`:
 
-### Runtime tracing
+`logE_k = log10(max(E_k, 0) + 1e-10)`
 
-Tracing is controlled via environment variables:
+Each layer is mapped through its density curve (including per-layer gamma factors from the profile), then remapped to **CMY dye densities**:
 
-- `JUICER_DIAGNOSTICS`:
-  - `0`: off (default)
-  - `1`: errors
-  - `2`: high-level state changes
-  - `3`: verbose (per-frame / heavy traces)
-- `JUICER_DIAGNOSTICS_PATH`: optional path override for the trace file
+- Blue layer → Yellow dye density
+- Green layer → Magenta dye density
+- Red layer → Cyan dye density
 
-Default log path (when enabled): the OS temp directory, `juicer_trace.txt` (see `src/Logging.h`).
+DIR couplers (optional) introduce inter-layer interactions and diffusion-like behavior. When enabled, they perturb effective log exposure before density sampling, with optional spatial diffusion controlled in micrometers and scaled by `Camera film format (mm)`.
 
-Set these environment variables **before launching Resolve** (the plug-in initializes logging from the process environment).
+### 4) Print Simulation (Optional)
 
-### Build-time / parity flags
+If `Bypass print` is disabled, the model simulates enlarger + paper.
 
-Common build flags used during development:
+1) **Negative transmittance** via Beer–Lambert optical density:
 
-- `JUICER_ENABLE_CUDA`: compile CUDA support and advertise CUDA render capability to the host
-- `JUICER_CUDA_ONLY`: reject non-CUDA render entry points (useful when validating that Resolve is dispatching CUDA)
-- `JUICER_CUDA_SELF_CHECK` / `JUICER_CUDA_VALIDATE_PRIMITIVES`: CUDA parity checks (see `UserOverrides.props`)
-- `JUICER_SPD_DEBUG`: SPD sampling probes and related logging
+- Per-wavelength density: `D(λ) = D_C·ε_C(λ) + D_M·ε_M(λ) + D_Y·ε_Y(λ) + base(λ)`
+- Transmittance: `T(λ) = 10^{-D(λ)}`
 
-Notes:
+2) **Enlarger illumination** filtered by dichroic filtration:
 
-- `UserOverrides.props` is imported by the `Release|x64` configuration in `juicer.vcxproj`; set `<JuicerCudaValidatePrimitives>1</JuicerCudaValidatePrimitives>` to enable additional CUDA-vs-CPU validation during development.
+- Enlarger illuminant SPD: `E_e(λ)` (set by `Enlarger illuminant`)
+- Dichroic filters (set family + neutral baseline + user shifts): `fY(λ), fM(λ), fC(λ)`
+- Filtered enlarger SPD: `E_f(λ) = E_e(λ) · fY(λ) · fM(λ) · fC(λ)`
 
----
+3) **Paper exposure + development**
 
-## Performance Notes
+Paper receives exposures by contracting `E_f(λ) · T(λ)` against paper sensitivities. `Print exposure` scales exposure energy; `Print preflash` adds a base exposure term. The result is developed through paper density curves into print CMY density.
 
-Cost drivers are dominated by spectral processing and stochastic/spatial effects.
+### 5) Scanner / Viewing Model (Density → RGB)
 
-Practical tuning workflow:
+Whether you are scanning a negative (`Bypass print = true`) or a print (`Bypass print = false`), Film-Juicer converts dye density back into color by spectral integration:
 
-- Disable grain/halation/glare first; enable them one at a time.
-- Prefer running in a managed linear pipeline and avoid extra gamma transforms inside the plug-in.
-- Validate performance in Resolve using the CUDA render path (CPU path exists but is not the primary target).
+1) Form per-wavelength transmittance `T(λ)` from CMY density (same Beer–Lambert form as above).
+2) Integrate against spectral tables to obtain XYZ under the viewing/scanner illuminant.
+3) Apply chromatic adaptation + matrix to obtain output RGB, then apply output encoding if configured.
 
-For deeper performance notes and experiments, see `docs/`.
+Viewing/scanner illuminant:
 
----
+- Currently this is **profile-driven** (chosen stock/paper metadata + internal defaults) rather than a user-facing control.
 
-## Upstream Parity
+Scanner optics operate in image space:
 
-- Parity rules and upstream constant references: `agx-documentation.md`
-- How to fetch upstream sources locally for inspection: `UPSTREAM.md`
+- `Scanner lens blur (px)`: Gaussian blur
+- `Scanner unsharp mask`: post-blur sharpening
+- `Glare`: veiling glare model with optional compensation removal controls
 
-When changing math, constants, or serialization details, update parity notes and re-validate against the upstream reference.
+## Controls (Physical Semantics)
 
----
+This is a map of the most important controls in physical terms.
 
-## Developer Tooling
+### Camera / Exposure
 
-The `tools/` directory contains scripts used to generate or validate shipped assets, including:
+- `Camera auto exposure`: enables scene metering to set an exposure offset before film exposure.
+- `Camera metering`: metering strategy (center-weighted vs median).
+- `Exposure Compensation Ev`: multiplies film exposure by `2^EV`.
+- `Camera film format (mm)`: sets the physical scale for μm→pixel conversions (DIR spatial diffusion, halation radii, etc.).
 
-- Neutral filter database generation (`tools/generate_enlarger_neutral_ymc_filters.py`)
-- Color space table generation (`tools/generate_colourspace_tables.py`)
-- Negative curve derivation tooling (`tools/derive_negative_curves.py`, `tools/README-derive-negative-curves.md`)
+### Spectral / Stock
 
-These tools are not part of the runtime plug-in; they exist to keep assets reproducible and parity-auditable.
+- `Film stock`: selects the negative profile (sensitivities, dye densities, H–D curves, coupler metadata).
+- `Spectral upsampling`: chooses the RGB→SPD reconstruction method.
+- `Reference illuminant`: selects the illuminant used when building spectral tables and interpreting the reconstructed spectrum.
+  - Options: D65 / D55 / D50 / TH-KG3-L / T / K75P / Equal energy
+  - Notes: `TH-KG3-L` is a tungsten-halogen source filtered by a KG3 heat filter (used to approximate enlarger-style spectra).
 
----
+### Negative development interactions
 
-## Support
+- `DIR couplers`: models inter-layer development interactions; use this for characteristic “film crosstalk” behavior rather than post RGB channel mixing.
 
-When reporting issues, include:
+### Print
 
-- DaVinci Resolve version
-- Windows version
-- GPU model + NVIDIA driver version (if using CUDA)
-- Whether you are using Resolve color management / ACES, and your working space
-- Film-Juicer settings (film stock, paper, print bypass, input/output settings)
-- `juicer_trace.txt` output (with `JUICER_DIAGNOSTICS=2` or `3`) if possible
+- `Bypass print`: when enabled, skips enlarger + paper and scans the negative directly.
+- `Print paper`: selects the paper profile.
+- `Enlarger illuminant`: illuminant SPD used for print exposure.
+  - Options: D65 / D55 / D50 / TH-KG3-L / T / K75P / Equal energy
+- `Enlarger dichroics`: selects the dichroic filter set; this also controls the neutral baseline behavior of the Y/M/C wheels.
+- `Enlarger Y/M/C`: filtration shifts in enlarger “steps” around the neutral baseline (0 = neutral; positive increases filtration, negative decreases).
+- `Print exposure`: scalar on print exposure energy.
+- `Print preflash`: adds a base exposure to paper (toe lift / shadow behavior).
+- `Print exposure compensation`: keeps mid-gray behavior consistent when paper/illuminant/filtration changes.
+- `Print Dmin`: minimum-density factor of the print paper (makes “paper white” less white).
 
-If the film/paper list is empty or looks incomplete, verify `Juicer.ofx.bundle/Contents/Resources/` is present next to the plug-in binary.
+### Scanner / Output
 
----
+- `Scanner lens blur (px)`: Gaussian blur sigma in pixels.
+- `Scanner unsharp mask`: (sigma px, amount) applied after scanner blur.
+- `Scanner use LUT` + `Scanner LUT resolution`: trades accuracy vs speed for density→color mapping.
+- `Output color space`: target RGB primaries/matrix.
+- `Apply output CCTF`: apply display encoding (gamma/OETF).
+- `Output linear pass-through`: keep output linear for managed pipelines.
 
-## License and Third-Party Notices
+### Artifacts
 
-License terms for this repository depend on the presence of a top-level license file. If no `LICENSE` is present, treat the code as “all rights reserved” until licensing is clarified.
+- `Halation`: scattering in the film stage (physically earlier than “glow” post effects).
+- `Grain`: stochastic density modulation; key controls include `Grain Amount (EV)`, `Grain Size (px)`, `Grain Sharpness`, `Grain Chroma`, and `Grain Texture`.
+- `Gate weave / dust / scratches`: gate/transport artifacts.
+- `Glare`: veiling glare / flare behavior in the scanner/view stage.
 
-Third-party components and references:
+## Recommended Resolve Workflows
 
-- Modeling reference: [agx-emulsion] (Andrea Volpato)
-- OpenFX support code under `external/OFXS/` (consult upstream licensing)
-- Additional third-party code under `third_party/` (consult embedded notices)
+### Managed pipeline (RCM / ACES)
+
+Goal: keep Juicer operating on scene-linear values, and keep color space transforms in the managed pipeline.
+
+- Set `Input color space` to match the RGB values arriving at the OFX.
+- Keep `Decode input CCTF = off` if values are already linear.
+- Prefer `Output linear pass-through = on`.
+- Apply your timeline/output transforms outside Juicer (RCM/ACES handles it).
+
+### Display-referred pipeline (not managed)
+
+Goal: explicitly linearize on input and re-encode on output.
+
+- Set `Input color space = sRGB / Rec.709` and enable `Decode input CCTF`.
+- Choose `Output color space` and keep `Apply output CCTF = on` for display delivery.
+
+## Performance / Quality Trade-offs
+
+Primary cost drivers:
+
+- Spectral pipeline (especially when SPD reconstruction is enabled and when scanner LUTs are disabled or high-res).
+- Grain / halation / glare (stochastic and/or multi-pass blurs).
+
+Tuning guidance:
+
+- Start with artifacts off; dial the base negative/print/scanner behavior first.
+- Use `Scanner use LUT = on` for interactive work; increase LUT resolution for higher fidelity if needed.
+
+## Troubleshooting
+
+- “It looks wrong / too dark / too saturated”: first verify **input linearization** (input color space + decode toggle) and **output encoding** (linear pass-through vs output CCTF).
+- “The print look doesn’t change with Y/M/C”: disable `Bypass print`.
+- “Film stock / print paper menus are empty”: confirm `Juicer.ofx.bundle/Contents/Resources/` is present next to the plug-in binary.
+- “Resolve can’t load the plug-in”: ensure your GPU meets the CUDA target (SM75+/Turing or newer) and that you installed a CUDA-enabled build of the plug-in.
+- “Resolve fails to load due to missing CUDA runtime DLLs”: ensure the required `cudart64_*.dll` is available in Resolve’s DLL search path (commonly shipped alongside the plug-in binary in `Contents/Win64/`, or installed system-wide).
+
+## References
+
+- Upstream modeling reference: [agx-emulsion]
+- Parity/porting notes (developer-facing): `agx-documentation.md`
+- Contributing/build notes (developer-facing): `DEVELOPING.md`
 
 [agx-emulsion]: https://github.com/andreavolpato/agx-emulsion
