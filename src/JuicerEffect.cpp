@@ -570,6 +570,11 @@ namespace {
         double sizeMixScale = 19.0;
         double densityMinMaster = 0.08;
         double uniformityMaster = 0.97;
+        double sizeMixWeight = std::numeric_limits<double>::quiet_NaN();
+        double microCell = std::numeric_limits<double>::quiet_NaN();
+        double microSigma = std::numeric_limits<double>::quiet_NaN();
+        double particleScaleMaster = 1.48;
+        double particleScaleLayersMaster = 1.922;
         bool sublayersActive = true;
     };
 
@@ -577,15 +582,20 @@ namespace {
         GrainPresetDefaults d;
         switch (presetIndex) {
         case 0: // Fine
-            d.amountEV = -1.30;
-            d.sizePx = 0.46;
+            d.amountEV = -1.396;
+            d.sizePx = 0.615;
             d.sharpness = 0.50;
-            d.chroma = 0.10;
-            d.texture = 0.65;
-            d.particleAreaUm2 = 0.20;
-            d.sizeMixScale = 22.0;
-            d.densityMinMaster = 0.075;
-            d.uniformityMaster = 0.98;
+            d.chroma = 0.00;
+            d.texture = 0.63;
+            d.particleAreaUm2 = 0.25;
+            d.sizeMixScale = 31.3;
+            d.densityMinMaster = 0.08;
+            d.uniformityMaster = 0.97;
+            d.sizeMixWeight = 0.119;
+            d.microCell = 60.0;
+            d.microSigma = 181.2;
+            d.particleScaleMaster = 1.48;
+            d.particleScaleLayersMaster = 1.99;
             d.sublayersActive = true;
             break;
         case 2: // Coarse
@@ -791,9 +801,15 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     texture = sanitize(texture, preset.texture, 0.0, 1.0);
 
     double blurDyeCloudsBase = grain_lerp(1.40, 0.60, sharpness);
-    double sizeMixWeightBase = grain_lerp(0.072, 0.38, texture);
-    double microCellBase = grain_lerp(50.0, 70.0, texture);
-    double microSigmaBase = grain_lerp(140.0, 200.0, texture);
+    double sizeMixWeightBase = std::isfinite(preset.sizeMixWeight)
+        ? preset.sizeMixWeight
+        : grain_lerp(0.072, 0.38, texture);
+    double microCellBase = std::isfinite(preset.microCell)
+        ? preset.microCell
+        : grain_lerp(50.0, 70.0, texture);
+    double microSigmaBase = std::isfinite(preset.microSigma)
+        ? preset.microSigma
+        : grain_lerp(140.0, 200.0, texture);
 
     double particleArea = preset.particleAreaUm2;
     if (_grainAdvancedDirty.particleArea && _pGrainParticleAreaUm2) {
@@ -836,17 +852,17 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     grain.chromaSharedWeight = static_cast<float>(std::sqrt(std::max(0.0, 1.0 - chroma)));
     grain.chromaIndWeight = static_cast<float>(std::sqrt(std::max(0.0, chroma)));
 
-    double particleScaleMaster = 1.48;
+    double particleScaleMaster = preset.particleScaleMaster;
     if (_grainAdvancedDirty.particleScaleMaster && _pGrainParticleScaleMaster) {
         _pGrainParticleScaleMaster->getValue(particleScaleMaster);
     }
-    particleScaleMaster = sanitize(particleScaleMaster, 1.48, 0.0, 10.0);
+    particleScaleMaster = sanitize(particleScaleMaster, preset.particleScaleMaster, 0.0, 10.0);
 
-    double particleScaleLayersMaster = 1.922;
+    double particleScaleLayersMaster = preset.particleScaleLayersMaster;
     if (_grainAdvancedDirty.particleScaleLayersMaster && _pGrainParticleScaleLayersMaster) {
         _pGrainParticleScaleLayersMaster->getValue(particleScaleLayersMaster);
     }
-    particleScaleLayersMaster = sanitize(particleScaleLayersMaster, 1.922, 0.0, 10.0);
+    particleScaleLayersMaster = sanitize(particleScaleLayersMaster, preset.particleScaleLayersMaster, 0.0, 10.0);
 
     std::array<double, 3> scaleRatio = {};
     std::array<double, 3> scaleLayersRatio = {};
@@ -1032,16 +1048,22 @@ void JuicerEffect::resetGrainAdvancedControls() {
     texture = sanitize(texture, preset.texture, 0.0, 1.0);
 
     const double blurDyeClouds = grain_lerp(1.40, 0.60, sharpness);
-    const double sizeMixWeight = grain_lerp(0.072, 0.38, texture);
-    const double microCell = grain_lerp(50.0, 70.0, texture);
-    const double microSigma = grain_lerp(140.0, 200.0, texture);
+    const double sizeMixWeight = std::isfinite(preset.sizeMixWeight)
+        ? preset.sizeMixWeight
+        : grain_lerp(0.072, 0.38, texture);
+    const double microCell = std::isfinite(preset.microCell)
+        ? preset.microCell
+        : grain_lerp(50.0, 70.0, texture);
+    const double microSigma = std::isfinite(preset.microSigma)
+        ? preset.microSigma
+        : grain_lerp(140.0, 200.0, texture);
 
     const double particleArea = preset.particleAreaUm2;
     const double sizeMixScale = preset.sizeMixScale;
     const double densityMinMaster = preset.densityMinMaster;
     const double uniformityMaster = preset.uniformityMaster;
-    const double particleScaleMaster = 1.48;
-    const double particleScaleLayersMaster = 1.922;
+    const double particleScaleMaster = preset.particleScaleMaster;
+    const double particleScaleLayersMaster = preset.particleScaleLayersMaster;
     const double clumpTemporalMix = 0.30;
     const double clumpMorphPeriodSec = 8.0;
 
