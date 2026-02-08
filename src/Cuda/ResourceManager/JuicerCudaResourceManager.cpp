@@ -120,10 +120,30 @@ bool ensure_active_for_command(
     const SubmissionTransaction& transaction,
     std::string& outError,
     const char* commandName) {
-    if (transaction.active) {
+    ResourceManagerState& state = global_state();
+    StaleInput staleInput{};
+    staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
+    staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
+    staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
+    staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+    staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
+    staleInput.observedLeaseGeneration = transaction.active ? transaction.leaseGeneration : 0;
+    staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
+
+    const StaleDecision staleDecision = classify_stale_path(staleInput);
+    telemetry_trace_stale_decision(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        commandName ? commandName : "command",
+        staleInput,
+        staleDecision);
+    if (!staleDecision.hardStale && !staleDecision.hardMiss) {
         return true;
     }
-    outError = "submission transaction is not active";
+    telemetry_record_stale_tuple_hard_reject();
+    outError = std::string("stale transaction in command path (reason=") +
+        to_cstr(staleDecision.reason) + ")";
     telemetry_record_module_boundary_violation();
     telemetry_trace_module_boundary_violation(
         transaction.transactionId,
@@ -157,10 +177,25 @@ bool begin_submission(
     }
 
     outTransaction.snapshot = snapshot;
+    std::uint64_t registryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
+    std::uint64_t contextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+    if (registryGeneration == 0) {
+        registryGeneration = 1;
+    }
+    if (contextEpoch == 0) {
+        contextEpoch = 1;
+    }
+    outTransaction.snapshot.registryGeneration = registryGeneration;
+    outTransaction.snapshot.contextEpoch = contextEpoch;
     outTransaction.snapshot.keySchemaVersion = std::max<std::uint32_t>(1u, outTransaction.snapshot.keySchemaVersion);
     outTransaction.snapshot.traceSchemaVersion = std::max<std::uint32_t>(1u, outTransaction.snapshot.traceSchemaVersion);
     outTransaction.snapshot.keyDigests = normalize_key_digests(outTransaction.snapshot.keyDigests);
 
+    std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
+    if (leaseGeneration == 0) {
+        leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
+    }
+    outTransaction.leaseGeneration = leaseGeneration;
     outTransaction.active = true;
     outTransaction.committed = false;
 
@@ -178,6 +213,43 @@ bool acquire_plan(
     std::string& outError) {
     outError.clear();
     const std::uint64_t acquireId = telemetry_next_acquire_attempt_id();
+
+    {
+        ResourceManagerState& state = global_state();
+        StaleInput staleInput{};
+        staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
+        staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
+        staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
+        staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+        staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
+        staleInput.observedLeaseGeneration = transaction.active ? transaction.leaseGeneration : 0;
+        staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
+        const StaleDecision staleDecision = classify_stale_path(staleInput);
+        telemetry_trace_stale_decision(
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            "acquire",
+            staleInput,
+            staleDecision);
+        if (staleDecision.hardStale || staleDecision.hardMiss) {
+            telemetry_record_stale_tuple_hard_reject();
+            outError = std::string("stale transaction in acquire path (reason=") +
+                to_cstr(staleDecision.reason) + ")";
+            telemetry_record_acquire_status(AcquireStatus::Error);
+            telemetry_trace_acquire(
+                acquireId,
+                transaction.transactionId,
+                transaction.snapshot.snapshotId,
+                transaction.snapshot.traceSchemaVersion,
+                AcquireStatus::Error,
+                AcquireStatus::Error,
+                AcquireStatus::Error,
+                AcquireStatus::Error,
+                false);
+            return false;
+        }
+    }
 
     if (!transaction.active) {
         outError = "submission transaction is not active";
@@ -449,6 +521,31 @@ bool commit_submission(
     std::string& outError) {
     (void)cudaStreamOpaque;
     outError.clear();
+    {
+        ResourceManagerState& state = global_state();
+        StaleInput staleInput{};
+        staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
+        staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
+        staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
+        staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+        staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
+        staleInput.observedLeaseGeneration = transaction.active ? transaction.leaseGeneration : 0;
+        staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
+        const StaleDecision staleDecision = classify_stale_path(staleInput);
+        telemetry_trace_stale_decision(
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            "commit",
+            staleInput,
+            staleDecision);
+        if (staleDecision.hardStale || staleDecision.hardMiss) {
+            telemetry_record_stale_tuple_hard_reject();
+            outError = std::string("stale transaction in commit path (reason=") +
+                to_cstr(staleDecision.reason) + ")";
+            return false;
+        }
+    }
     if (!transaction.active) {
         outError = "submission transaction is not active";
         return false;
@@ -513,6 +610,26 @@ void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept {
     (void)reason;
+    ResourceManagerState& state = global_state();
+    StaleInput staleInput{};
+    staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
+    staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
+    staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
+    staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+    staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
+    staleInput.observedLeaseGeneration = transaction.leaseGeneration;
+    staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
+    const StaleDecision staleDecision = classify_stale_path(staleInput);
+    telemetry_trace_stale_decision(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        "release",
+        staleInput,
+        staleDecision);
+    if (staleDecision.hardStale || staleDecision.hardMiss) {
+        telemetry_record_stale_tuple_hard_reject();
+    }
     if (!transaction.active) {
         return;
     }

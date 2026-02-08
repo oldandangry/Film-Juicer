@@ -22,6 +22,7 @@ void telemetry_record_trace_schema_mismatch() noexcept;
 void telemetry_record_forbidden_invalidation_edge() noexcept;
 void telemetry_record_module_boundary_violation() noexcept;
 void telemetry_record_frame_snapshot_mismatch() noexcept;
+void telemetry_record_stale_tuple_hard_reject() noexcept;
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept;
 
 void telemetry_trace_schema_announcement(
@@ -72,6 +73,14 @@ void telemetry_trace_frame_snapshot_mismatch(
     std::uint64_t frameToken,
     std::uint64_t expectedSnapshotId,
     std::uint64_t observedSnapshotId) noexcept;
+
+void telemetry_trace_stale_decision(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const char* stage,
+    const StaleInput& input,
+    const StaleDecision& decision) noexcept;
 
 void telemetry_trace_acquire(
     std::uint64_t acquireId,

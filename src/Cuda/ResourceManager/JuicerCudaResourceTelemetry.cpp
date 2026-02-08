@@ -64,6 +64,10 @@ void telemetry_record_frame_snapshot_mismatch() noexcept {
     global_state().frameSnapshotMismatchEvents.fetch_add(1, std::memory_order_relaxed);
 }
 
+void telemetry_record_stale_tuple_hard_reject() noexcept {
+    global_state().staleTupleHardRejects.fetch_add(1, std::memory_order_relaxed);
+}
+
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept {
     ResourceManagerState& state = global_state();
     std::uint64_t id = state.nextAcquireAttemptId.fetch_add(1, std::memory_order_relaxed);
@@ -185,6 +189,31 @@ void telemetry_trace_frame_snapshot_mismatch(
         " observed_snapshot_id=" + std::to_string(observedSnapshotId) +
         " reason=mixed_snapshot_id_for_frame";
     JTRACE("MSSNP", msg);
+}
+
+void telemetry_trace_stale_decision(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const char* stage,
+    const StaleInput& input,
+    const StaleDecision& decision) noexcept {
+    const std::string msg =
+        std::string("transaction_id=") + std::to_string(transactionId) +
+        " snapshot_id=" + std::to_string(snapshotId) +
+        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        " stage=" + (stage ? stage : "unknown") +
+        " expected_registry_generation=" + std::to_string(input.expectedRegistryGeneration) +
+        " observed_registry_generation=" + std::to_string(input.observedRegistryGeneration) +
+        " expected_context_epoch=" + std::to_string(input.expectedContextEpoch) +
+        " observed_context_epoch=" + std::to_string(input.observedContextEpoch) +
+        " expected_lease_generation=" + std::to_string(input.expectedLeaseGeneration) +
+        " observed_lease_generation=" + std::to_string(input.observedLeaseGeneration) +
+        " key_schema_mismatch=" + std::to_string(input.keySchemaMismatch ? 1 : 0) +
+        " hard_stale=" + std::to_string(decision.hardStale ? 1 : 0) +
+        " hard_miss=" + std::to_string(decision.hardMiss ? 1 : 0) +
+        " reason=" + to_cstr(decision.reason);
+    JTRACE("MSSTL", msg);
 }
 
 void telemetry_trace_acquire(

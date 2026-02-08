@@ -12,6 +12,9 @@ namespace ResourceManager {
 struct ResourceManagerState {
     std::atomic<std::uint64_t> nextTransactionId{ 1 };
     std::atomic<std::uint64_t> nextAcquireAttemptId{ 1 };
+    std::atomic<std::uint64_t> nextLeaseGeneration{ 1 };
+    std::atomic<std::uint64_t> registryGeneration{ 1 };
+    std::atomic<std::uint64_t> contextEpoch{ 1 };
     std::atomic<std::uint64_t> beginSubmissionCalls{ 0 };
     std::atomic<std::uint64_t> acquirePlanCalls{ 0 };
     std::atomic<std::uint64_t> commitSubmissionCalls{ 0 };
@@ -25,6 +28,7 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> forbiddenInvalidationEdges{ 0 };
     std::atomic<std::uint64_t> moduleBoundaryViolations{ 0 };
     std::atomic<std::uint64_t> frameSnapshotMismatchEvents{ 0 };
+    std::atomic<std::uint64_t> staleTupleHardRejects{ 0 };
 };
 
 ResourceManagerState& global_state() noexcept;

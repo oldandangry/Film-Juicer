@@ -48,6 +48,8 @@ struct SubmissionSnapshot {
     FrameToken frameToken{};
     std::uint64_t snapshotId = 0;
     DeviceContextKey deviceContextKey{};
+    std::uint64_t registryGeneration = 1;
+    std::uint64_t contextEpoch = 1;
     KeyDigests keyDigests{};
     std::uint32_t keySchemaVersion = 1;
     std::uint32_t traceSchemaVersion = 1;
@@ -55,6 +57,7 @@ struct SubmissionSnapshot {
 
 struct SubmissionTransaction {
     std::uint64_t transactionId = 0;
+    std::uint64_t leaseGeneration = 0;
     SubmissionSnapshot snapshot{};
     bool active = false;
     bool committed = false;

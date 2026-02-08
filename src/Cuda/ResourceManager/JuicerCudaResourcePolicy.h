@@ -16,9 +16,33 @@ enum class AcquireStatus : std::uint8_t {
     Error = 4
 };
 
+enum class StaleReason : std::uint8_t {
+    None = 0,
+    RegistryGenerationMismatch = 1,
+    ContextEpochMismatch = 2,
+    LeaseGenerationMismatch = 3,
+    KeySchemaMismatch = 4
+};
+
 struct AcquireDecision {
     AcquireStatus status = AcquireStatus::Miss;
     bool shouldBuild = true;
+};
+
+struct StaleInput {
+    std::uint64_t expectedRegistryGeneration = 0;
+    std::uint64_t observedRegistryGeneration = 0;
+    std::uint64_t expectedContextEpoch = 0;
+    std::uint64_t observedContextEpoch = 0;
+    std::uint64_t expectedLeaseGeneration = 0;
+    std::uint64_t observedLeaseGeneration = 0;
+    bool keySchemaMismatch = false;
+};
+
+struct StaleDecision {
+    bool hardStale = false;
+    bool hardMiss = false;
+    StaleReason reason = StaleReason::None;
 };
 
 struct ShadowKeyDelta {
@@ -51,6 +75,8 @@ struct ReservationDecision {
 AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noexcept;
 ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept;
 const char* to_cstr(AcquireStatus status) noexcept;
+StaleDecision classify_stale_path(const StaleInput& input) noexcept;
+const char* to_cstr(StaleReason reason) noexcept;
 
 AcquireDecision default_acquire_decision() noexcept;
 PressureDecision default_pressure_decision() noexcept;

@@ -59,6 +59,48 @@ const char* to_cstr(AcquireStatus status) noexcept {
     }
 }
 
+StaleDecision classify_stale_path(const StaleInput& input) noexcept {
+    StaleDecision out{};
+    if (input.expectedRegistryGeneration != input.observedRegistryGeneration) {
+        out.hardStale = true;
+        out.reason = StaleReason::RegistryGenerationMismatch;
+        return out;
+    }
+    if (input.expectedContextEpoch != input.observedContextEpoch) {
+        out.hardStale = true;
+        out.reason = StaleReason::ContextEpochMismatch;
+        return out;
+    }
+    if (input.expectedLeaseGeneration != input.observedLeaseGeneration) {
+        out.hardStale = true;
+        out.reason = StaleReason::LeaseGenerationMismatch;
+        return out;
+    }
+    if (input.keySchemaMismatch) {
+        out.hardMiss = true;
+        out.reason = StaleReason::KeySchemaMismatch;
+        return out;
+    }
+    return out;
+}
+
+const char* to_cstr(StaleReason reason) noexcept {
+    switch (reason) {
+    case StaleReason::None:
+        return "None";
+    case StaleReason::RegistryGenerationMismatch:
+        return "RegistryGenerationMismatch";
+    case StaleReason::ContextEpochMismatch:
+        return "ContextEpochMismatch";
+    case StaleReason::LeaseGenerationMismatch:
+        return "LeaseGenerationMismatch";
+    case StaleReason::KeySchemaMismatch:
+        return "KeySchemaMismatch";
+    default:
+        return "Unknown";
+    }
+}
+
 AcquireDecision default_acquire_decision() noexcept {
     return AcquireDecision{};
 }
