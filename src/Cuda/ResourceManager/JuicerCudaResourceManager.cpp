@@ -116,10 +116,75 @@ AcquireStatus combine_status(
     return AcquireStatus::Hit;
 }
 
+void trace_lifecycle_stage_decision(
+    const SubmissionTransaction& transaction,
+    ContextLifecycleState observedState,
+    const char* stage,
+    bool accepted,
+    const char* reason) {
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("transaction_id=") + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " stage=" + (stage ? stage : "unknown")
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " observed_state=" + to_cstr(observedState)
+        + " accepted=" + std::to_string(accepted ? 1 : 0)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSLCY", msg);
+}
+
+bool lifecycle_state_allowed_for_stage(ContextLifecycleState state, bool allowNonActiveRelease) {
+    if (allowNonActiveRelease) {
+        return state != ContextLifecycleState::Unbound;
+    }
+    return state == ContextLifecycleState::Active;
+}
+
+bool validate_lifecycle_for_stage(const SubmissionTransaction& transaction,
+                                  const char* stage,
+                                  bool allowNonActiveRelease,
+                                  std::string* outError) {
+    ContextLifecycleState lifecycleState = ContextLifecycleState::Unbound;
+    if (!registry_get_lifecycle_state(transaction.snapshot.deviceContextKey, lifecycleState)) {
+        global_state().lifecycleStageRejects.fetch_add(1, std::memory_order_relaxed);
+        trace_lifecycle_stage_decision(transaction, lifecycleState, stage, false, "missing_registry_entry");
+        if (outError) {
+            *outError = "missing registry entry for lifecycle validation";
+        }
+        return false;
+    }
+    if (!lifecycle_state_allowed_for_stage(lifecycleState, allowNonActiveRelease)) {
+        global_state().lifecycleStageRejects.fetch_add(1, std::memory_order_relaxed);
+        trace_lifecycle_stage_decision(transaction, lifecycleState, stage, false, "lifecycle_state_not_allowed");
+        if (outError) {
+            *outError = std::string("lifecycle state not allowed for stage (state=")
+                + to_cstr(lifecycleState) + ")";
+        }
+        return false;
+    }
+    if (JTRACE_ENABLED(3)) {
+        trace_lifecycle_stage_decision(transaction, lifecycleState, stage, true, "stage_allowed");
+    }
+    return true;
+}
+
 bool ensure_active_for_command(
     const SubmissionTransaction& transaction,
     std::string& outError,
     const char* commandName) {
+    if (!validate_lifecycle_for_stage(transaction, commandName ? commandName : "command", false, &outError)) {
+        telemetry_record_module_boundary_violation();
+        telemetry_trace_module_boundary_violation(
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            commandName ? commandName : "command_requires_active_submission");
+        return false;
+    }
+
     ResourceManagerState& state = global_state();
     StaleInput staleInput{};
     staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
@@ -199,7 +264,12 @@ bool begin_submission(
     outTransaction.active = true;
     outTransaction.committed = false;
 
-    (void)registry_get_or_create(snapshot.deviceContextKey);
+    (void)registry_get_or_create(outTransaction.snapshot.deviceContextKey);
+    if (!validate_lifecycle_for_stage(outTransaction, "begin", false, &outError)) {
+        outTransaction.active = false;
+        outTransaction.committed = false;
+        return false;
+    }
     telemetry_trace_schema_announcement(
         outTransaction.transactionId,
         outTransaction.snapshot.snapshotId,
@@ -213,6 +283,21 @@ bool acquire_plan(
     std::string& outError) {
     outError.clear();
     const std::uint64_t acquireId = telemetry_next_acquire_attempt_id();
+
+    if (!validate_lifecycle_for_stage(transaction, "acquire", false, &outError)) {
+        telemetry_record_acquire_status(AcquireStatus::Error);
+        telemetry_trace_acquire(
+            acquireId,
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            AcquireStatus::Error,
+            AcquireStatus::Error,
+            AcquireStatus::Error,
+            AcquireStatus::Error,
+            false);
+        return false;
+    }
 
     {
         ResourceManagerState& state = global_state();
@@ -521,6 +606,9 @@ bool commit_submission(
     std::string& outError) {
     (void)cudaStreamOpaque;
     outError.clear();
+    if (!validate_lifecycle_for_stage(transaction, "commit", false, &outError)) {
+        return false;
+    }
     {
         ResourceManagerState& state = global_state();
         StaleInput staleInput{};
@@ -610,6 +698,7 @@ void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept {
     (void)reason;
+    (void)validate_lifecycle_for_stage(transaction, "release", true, nullptr);
     ResourceManagerState& state = global_state();
     StaleInput staleInput{};
     staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;

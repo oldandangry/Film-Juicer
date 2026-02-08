@@ -29,6 +29,9 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> moduleBoundaryViolations{ 0 };
     std::atomic<std::uint64_t> frameSnapshotMismatchEvents{ 0 };
     std::atomic<std::uint64_t> staleTupleHardRejects{ 0 };
+    std::atomic<std::uint64_t> lifecycleTransitionCalls{ 0 };
+    std::atomic<std::uint64_t> lifecycleTransitionRejects{ 0 };
+    std::atomic<std::uint64_t> lifecycleStageRejects{ 0 };
 };
 
 ResourceManagerState& global_state() noexcept;
