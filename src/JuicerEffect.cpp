@@ -637,15 +637,6 @@ namespace {
         return { {0.97, 0.97, 0.99} };
     }
 
-    static bool valid_ratio_values(const std::array<float, 3>& values) {
-        for (float v : values) {
-            if (!std::isfinite(v) || !(v > 0.0f)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     static void normalize_ratio(std::array<double, 3>& values) {
         double sum = 0.0;
         for (double v : values) {
@@ -664,57 +655,6 @@ namespace {
             v /= mean;
         }
     }
-}
-
-void JuicerEffect::getGrainRatioSets(std::array<double, 3>& outRgb,
-    std::array<double, 3>& outLayers,
-    std::array<double, 3>& outDensityMin,
-    std::array<double, 3>& outUniformity) const {
-    outRgb = default_particle_scale_ratio();
-    outLayers = default_particle_scale_layers_ratio();
-    outDensityMin = default_density_min_ratio();
-    outUniformity = default_uniformity_ratio();
-
-    if (!_state) {
-        normalize_ratio(outRgb);
-        normalize_ratio(outLayers);
-        normalize_ratio(outDensityMin);
-        normalize_ratio(outUniformity);
-        return;
-    }
-    const std::shared_ptr<const WorkingState> wsCur = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
-    if (!wsCur) {
-        normalize_ratio(outRgb);
-        normalize_ratio(outLayers);
-        normalize_ratio(outDensityMin);
-        normalize_ratio(outUniformity);
-        return;
-    };
-    if (valid_ratio_values(wsCur->grain.agxParticleScale)) {
-        for (int i = 0; i < 3; ++i) {
-            outRgb[i] = static_cast<double>(wsCur->grain.agxParticleScale[i]);
-        }
-    }
-    if (valid_ratio_values(wsCur->grain.agxParticleScaleLayers)) {
-        for (int i = 0; i < 3; ++i) {
-            outLayers[i] = static_cast<double>(wsCur->grain.agxParticleScaleLayers[i]);
-        }
-    }
-    if (valid_ratio_values(wsCur->grain.densityMin)) {
-        for (int i = 0; i < 3; ++i) {
-            outDensityMin[i] = static_cast<double>(wsCur->grain.densityMin[i]);
-        }
-    }
-    if (valid_ratio_values(wsCur->grain.uniformity)) {
-        for (int i = 0; i < 3; ++i) {
-            outUniformity[i] = static_cast<double>(wsCur->grain.uniformity[i]);
-        }
-    }
-
-    normalize_ratio(outRgb);
-    normalize_ratio(outLayers);
-    normalize_ratio(outDensityMin);
-    normalize_ratio(outUniformity);
 }
 
 Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
@@ -812,102 +752,69 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         : grain_lerp(140.0, 200.0, texture);
 
     double particleArea = preset.particleAreaUm2;
-    if (_grainAdvancedDirty.particleArea && _pGrainParticleAreaUm2) {
+    if (_pGrainParticleAreaUm2) {
         _pGrainParticleAreaUm2->getValue(particleArea);
     }
     particleArea = sanitize(particleArea, preset.particleAreaUm2, 0.0, 10.0);
     grain.agxParticleAreaUm2 = static_cast<float>(particleArea);
 
     double sizeMixScale = preset.sizeMixScale;
-    if (_grainAdvancedDirty.sizeMixScale && _pGrainSizeMixScale) {
+    if (_pGrainSizeMixScale) {
         _pGrainSizeMixScale->getValue(sizeMixScale);
     }
     sizeMixScale = sanitize(sizeMixScale, preset.sizeMixScale, 1.0, 50.0);
     grain.sizeMixScale = static_cast<float>(sizeMixScale);
 
     double sizeMixWeight = sizeMixWeightBase;
-    if (_grainAdvancedDirty.sizeMixWeight && _pGrainSizeMixWeight) {
+    if (_pGrainSizeMixWeight) {
         _pGrainSizeMixWeight->getValue(sizeMixWeight);
     }
     sizeMixWeight = sanitize(sizeMixWeight, sizeMixWeightBase, 0.0, 1.0);
     grain.sizeMixWeight = static_cast<float>(sizeMixWeight);
 
     double sizeMixWeightMid = 0.0;
-    if (_grainAdvancedDirty.sizeMixWeightMid && _pGrainSizeMixWeightMid) {
+    if (_pGrainSizeMixWeightMid) {
         _pGrainSizeMixWeightMid->getValue(sizeMixWeightMid);
     }
     sizeMixWeightMid = sanitize(sizeMixWeightMid, 0.0, 0.0, 1.0);
     grain.sizeMixWeightMid = static_cast<float>(sizeMixWeightMid);
 
     double blurDyeClouds = blurDyeCloudsBase;
-    if (_grainAdvancedDirty.blurDyeClouds && _pGrainBlurDyeCloudsUm) {
+    if (_pGrainBlurDyeCloudsUm) {
         _pGrainBlurDyeCloudsUm->getValue(blurDyeClouds);
     }
     blurDyeClouds = sanitize(blurDyeClouds, blurDyeCloudsBase, 0.0, 10.0);
     grain.blurDyeCloudsUm = static_cast<float>(blurDyeClouds);
 
-    const bool perChannelDirty = false;
     chroma = sanitize(chroma, chroma, 0.0, 1.0);
     grain.chroma = static_cast<float>(chroma);
     grain.chromaSharedWeight = static_cast<float>(std::sqrt(std::max(0.0, 1.0 - chroma)));
     grain.chromaIndWeight = static_cast<float>(std::sqrt(std::max(0.0, chroma)));
-
-    double particleScaleMaster = preset.particleScaleMaster;
-    if (_grainAdvancedDirty.particleScaleMaster && _pGrainParticleScaleMaster) {
-        _pGrainParticleScaleMaster->getValue(particleScaleMaster);
-    }
-    particleScaleMaster = sanitize(particleScaleMaster, preset.particleScaleMaster, 0.0, 10.0);
-
-    double particleScaleLayersMaster = preset.particleScaleLayersMaster;
-    if (_grainAdvancedDirty.particleScaleLayersMaster && _pGrainParticleScaleLayersMaster) {
-        _pGrainParticleScaleLayersMaster->getValue(particleScaleLayersMaster);
-    }
-    particleScaleLayersMaster = sanitize(particleScaleLayersMaster, preset.particleScaleLayersMaster, 0.0, 10.0);
-
-    std::array<double, 3> scaleRatio = {};
-    std::array<double, 3> scaleLayersRatio = {};
-    std::array<double, 3> densityMinRatio = {};
-    std::array<double, 3> uniformityRatio = {};
-    getGrainRatioSets(scaleRatio, scaleLayersRatio, densityMinRatio, uniformityRatio);
-
-    double densityMinMaster = preset.densityMinMaster;
-    if (_grainAdvancedDirty.densityMinMaster && _pGrainDensityMinMaster) {
-        _pGrainDensityMinMaster->getValue(densityMinMaster);
-    }
-    densityMinMaster = sanitize(densityMinMaster, preset.densityMinMaster, 0.0, 1.0);
-
-    double uniformityMaster = preset.uniformityMaster;
-    if (_grainAdvancedDirty.uniformityMaster && _pGrainUniformityMaster) {
-        _pGrainUniformityMaster->getValue(uniformityMaster);
-    }
-    uniformityMaster = sanitize(uniformityMaster, preset.uniformityMaster, 0.0, 1.0);
-
-    std::array<double, 3> particleScale = { {
-        particleScaleMaster * scaleRatio[0],
-        particleScaleMaster * scaleRatio[1],
-        particleScaleMaster * scaleRatio[2]
+    const std::array<double, 3> defaultParticleScale = { {
+        preset.particleScaleMaster,
+        preset.particleScaleMaster,
+        preset.particleScaleMaster
     } };
-    std::array<double, 3> particleScaleLayers = { {
-        particleScaleLayersMaster * scaleLayersRatio[0],
-        particleScaleLayersMaster * scaleLayersRatio[1],
-        particleScaleLayersMaster * scaleLayersRatio[2]
+    const std::array<double, 3> defaultParticleScaleLayers = { {
+        preset.particleScaleLayersMaster,
+        preset.particleScaleLayersMaster,
+        preset.particleScaleLayersMaster
     } };
-    std::array<double, 3> densityMin = { {
-        densityMinMaster * densityMinRatio[0],
-        densityMinMaster * densityMinRatio[1],
-        densityMinMaster * densityMinRatio[2]
+    const std::array<double, 3> defaultDensityMin = { {
+        preset.densityMinMaster,
+        preset.densityMinMaster,
+        preset.densityMinMaster
     } };
-    std::array<double, 3> uniformity = { {
-        uniformityMaster * uniformityRatio[0],
-        uniformityMaster * uniformityRatio[1],
-        uniformityMaster * uniformityRatio[2]
+    const std::array<double, 3> defaultUniformity = { {
+        preset.uniformityMaster,
+        preset.uniformityMaster,
+        preset.uniformityMaster
     } };
-
+    const std::array<double, 3> particleScale = read3(_pGrainParticleScale, defaultParticleScale, 0.0, 10.0);
+    const std::array<double, 3> particleScaleLayers = read3(_pGrainParticleScaleLayers, defaultParticleScaleLayers, 0.0, 10.0);
+    const std::array<double, 3> densityMin = read3(_pGrainDensityMin, defaultDensityMin, 0.0, 1.0);
+    const std::array<double, 3> uniformity = read3(_pGrainUniformity, defaultUniformity, 0.0, 1.0);
     for (int i = 0; i < 3; ++i) {
-        particleScale[i] = sanitize(particleScale[i], particleScaleMaster, 0.0, 10.0);
-        particleScaleLayers[i] = sanitize(particleScaleLayers[i], particleScaleLayersMaster, 0.0, 10.0);
-        densityMin[i] = sanitize(densityMin[i], densityMinMaster, 0.0, 1.0);
-        uniformity[i] = sanitize(uniformity[i], uniformityMaster, 0.0, 1.0);
         grain.agxParticleScale[i] = static_cast<float>(particleScale[i]);
         grain.agxParticleScaleLayers[i] = static_cast<float>(particleScaleLayers[i]);
         grain.densityMin[i] = static_cast<float>(densityMin[i]);
@@ -915,23 +822,21 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     }
 
     double clumpTemporalMix = 0.30;
-    if (_grainAdvancedDirty.clumpTemporalMix && _pGrainClumpTemporalMix) {
+    if (_pGrainClumpTemporalMix) {
         _pGrainClumpTemporalMix->getValue(clumpTemporalMix);
     }
     clumpTemporalMix = sanitize(clumpTemporalMix, 0.30, 0.0, 0.30);
     grain.clumpTemporalMix = static_cast<float>(clumpTemporalMix);
 
     double clumpMorphPeriodSec = 8.0;
-    if (_grainAdvancedDirty.clumpMorphPeriodSec && _pGrainClumpMorphPeriodSec) {
+    if (_pGrainClumpMorphPeriodSec) {
         _pGrainClumpMorphPeriodSec->getValue(clumpMorphPeriodSec);
     }
     clumpMorphPeriodSec = sanitize(clumpMorphPeriodSec, 8.0, 5.0, 60.0);
     grain.clumpMorphPeriodSec = static_cast<float>(clumpMorphPeriodSec);
 
     std::array<double, 2> microStructure = { {microCellBase, microSigmaBase} };
-    if (_grainAdvancedDirty.microStructure) {
-        microStructure = read2(_pGrainMicroStructure, microStructure, 0.0, 1000.0);
-    }
+    microStructure = read2(_pGrainMicroStructure, microStructure, 0.0, 1000.0);
     grain.microStructure[0] = static_cast<float>(microStructure[0]);
     grain.microStructure[1] = static_cast<float>(microStructure[1]);
 
@@ -986,6 +891,27 @@ void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
     if (hadState) {
         _state->suppressParamEvents = true;
     }
+
+    const double blurDyeClouds = grain_lerp(1.40, 0.60, preset.sharpness);
+    const double sizeMixWeight = std::isfinite(preset.sizeMixWeight)
+        ? preset.sizeMixWeight
+        : grain_lerp(0.072, 0.38, preset.texture);
+    const double microCell = std::isfinite(preset.microCell)
+        ? preset.microCell
+        : grain_lerp(50.0, 70.0, preset.texture);
+    const double microSigma = std::isfinite(preset.microSigma)
+        ? preset.microSigma
+        : grain_lerp(140.0, 200.0, preset.texture);
+
+    std::array<double, 3> scaleRatio = default_particle_scale_ratio();
+    std::array<double, 3> scaleLayersRatio = default_particle_scale_layers_ratio();
+    std::array<double, 3> densityMinRatio = default_density_min_ratio();
+    std::array<double, 3> uniformityRatio = default_uniformity_ratio();
+    normalize_ratio(scaleRatio);
+    normalize_ratio(scaleLayersRatio);
+    normalize_ratio(densityMinRatio);
+    normalize_ratio(uniformityRatio);
+
     if (_pGrainAmplitude) {
         _pGrainAmplitude->setValue(preset.amountEV);
     }
@@ -1004,10 +930,79 @@ void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
     if (_pGrainSublayersActive) {
         _pGrainSublayersActive->setValue(preset.sublayersActive);
     }
+
+    if (_pGrainParticleAreaUm2) {
+        _pGrainParticleAreaUm2->setValue(preset.particleAreaUm2);
+    }
+    if (_pGrainParticleScaleMaster) {
+        _pGrainParticleScaleMaster->setValue(preset.particleScaleMaster);
+        _grainParticleScaleMasterLast = preset.particleScaleMaster;
+    }
+    if (_pGrainParticleScale) {
+        _pGrainParticleScale->setValue(
+            std::clamp(preset.particleScaleMaster * scaleRatio[0], 0.0, 10.0),
+            std::clamp(preset.particleScaleMaster * scaleRatio[1], 0.0, 10.0),
+            std::clamp(preset.particleScaleMaster * scaleRatio[2], 0.0, 10.0));
+    }
+    if (_pGrainParticleScaleLayersMaster) {
+        _pGrainParticleScaleLayersMaster->setValue(preset.particleScaleLayersMaster);
+        _grainParticleScaleLayersMasterLast = preset.particleScaleLayersMaster;
+    }
+    if (_pGrainParticleScaleLayers) {
+        _pGrainParticleScaleLayers->setValue(
+            std::clamp(preset.particleScaleLayersMaster * scaleLayersRatio[0], 0.0, 10.0),
+            std::clamp(preset.particleScaleLayersMaster * scaleLayersRatio[1], 0.0, 10.0),
+            std::clamp(preset.particleScaleLayersMaster * scaleLayersRatio[2], 0.0, 10.0));
+    }
+    if (_pGrainDensityMinMaster) {
+        _pGrainDensityMinMaster->setValue(preset.densityMinMaster);
+        _grainDensityMinMasterLast = preset.densityMinMaster;
+    }
+    if (_pGrainDensityMin) {
+        _pGrainDensityMin->setValue(
+            std::clamp(preset.densityMinMaster * densityMinRatio[0], 0.0, 1.0),
+            std::clamp(preset.densityMinMaster * densityMinRatio[1], 0.0, 1.0),
+            std::clamp(preset.densityMinMaster * densityMinRatio[2], 0.0, 1.0));
+    }
+    if (_pGrainUniformityMaster) {
+        _pGrainUniformityMaster->setValue(preset.uniformityMaster);
+        _grainUniformityMasterLast = preset.uniformityMaster;
+    }
+    if (_pGrainUniformity) {
+        _pGrainUniformity->setValue(
+            std::clamp(preset.uniformityMaster * uniformityRatio[0], 0.0, 1.0),
+            std::clamp(preset.uniformityMaster * uniformityRatio[1], 0.0, 1.0),
+            std::clamp(preset.uniformityMaster * uniformityRatio[2], 0.0, 1.0));
+    }
+    if (_pGrainBlurDyeCloudsUm) {
+        _pGrainBlurDyeCloudsUm->setValue(std::clamp(blurDyeClouds, 0.0, 10.0));
+    }
+    if (_pGrainSizeMixWeight) {
+        _pGrainSizeMixWeight->setValue(std::clamp(sizeMixWeight, 0.0, 1.0));
+    }
+    if (_pGrainSizeMixWeightMid) {
+        _pGrainSizeMixWeightMid->setValue(0.0);
+    }
+    if (_pGrainSizeMixScale) {
+        _pGrainSizeMixScale->setValue(std::clamp(preset.sizeMixScale, 1.0, 50.0));
+    }
+    if (_pGrainMicroStructure) {
+        _pGrainMicroStructure->setValue(
+            std::clamp(microCell, 0.0, 1000.0),
+            std::clamp(microSigma, 0.0, 1000.0));
+    }
+    if (_pGrainClumpTemporalMix) {
+        _pGrainClumpTemporalMix->setValue(0.30);
+    }
+    if (_pGrainClumpMorphPeriodSec) {
+        _pGrainClumpMorphPeriodSec->setValue(8.0);
+    }
+
     if (hadState) {
         _state->suppressParamEvents = wasSuppressed;
     }
     updateGrainPresetLabel(false);
+    updateGrainChromaEnabled();
 }
 
 void JuicerEffect::resetGrainAdvancedControls() {
@@ -1022,18 +1017,6 @@ void JuicerEffect::resetGrainAdvancedControls() {
         if (!std::isfinite(value)) return fallback;
         return std::clamp(value, minValue, maxValue);
     };
-
-    double amountEV = preset.amountEV;
-    if (_pGrainAmplitude) {
-        _pGrainAmplitude->getValue(amountEV);
-    }
-    amountEV = sanitize(amountEV, preset.amountEV, -3.0, 3.0);
-
-    double sizePx = preset.sizePx;
-    if (_pGrainBlur) {
-        _pGrainBlur->getValue(sizePx);
-    }
-    sizePx = sanitize(sizePx, preset.sizePx, 0.20, 2.00);
 
     double sharpness = preset.sharpness;
     if (_pGrainSharpness) {
@@ -1067,11 +1050,14 @@ void JuicerEffect::resetGrainAdvancedControls() {
     const double clumpTemporalMix = 0.30;
     const double clumpMorphPeriodSec = 8.0;
 
-    std::array<double, 3> scaleRatio = {};
-    std::array<double, 3> scaleLayersRatio = {};
-    std::array<double, 3> densityMinRatio = {};
-    std::array<double, 3> uniformityRatio = {};
-    getGrainRatioSets(scaleRatio, scaleLayersRatio, densityMinRatio, uniformityRatio);
+    std::array<double, 3> scaleRatio = default_particle_scale_ratio();
+    std::array<double, 3> scaleLayersRatio = default_particle_scale_layers_ratio();
+    std::array<double, 3> densityMinRatio = default_density_min_ratio();
+    std::array<double, 3> uniformityRatio = default_uniformity_ratio();
+    normalize_ratio(scaleRatio);
+    normalize_ratio(scaleLayersRatio);
+    normalize_ratio(densityMinRatio);
+    normalize_ratio(uniformityRatio);
 
     const bool hadState = (_state != nullptr);
     const bool wasSuppressed = hadState ? _state->suppressParamEvents : false;
@@ -1147,8 +1133,6 @@ void JuicerEffect::resetGrainAdvancedControls() {
     if (hadState) {
         _state->suppressParamEvents = wasSuppressed;
     }
-
-    _grainAdvancedDirty = GrainAdvancedDirtyFlags{};
     updateGrainChromaEnabled();
 }
 
@@ -1843,6 +1827,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
             seed = 1;
         }
         _state->sessionSeed = seed;
+        _state->instanceToken = seed;
     }
 
     // Optional compatibility registry
@@ -2142,6 +2127,8 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         }
         presetIndex = std::clamp(presetIndex, 0, 2);
         applyGrainPresetDefaults(presetIndex);
+        onParamsPossiblyChanged(paramName.c_str());
+        return;
     }
     if (paramName == JuicerParams::kGrainResetAdvanced && userEdit) {
         resetGrainAdvancedControls();
@@ -2192,7 +2179,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     auto apply_ratio_master = [&](OFX::DoubleParam* masterParam,
         OFX::Double3DParam* advParam,
-        const std::array<double, 3>& ratio,
+        const std::array<double, 3>& fallbackRatio,
         double& masterCache,
         double lo,
         double hi) {
@@ -2205,9 +2192,24 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             return;
         }
         master = std::clamp(master, lo, hi);
-        double r = std::clamp(master * ratio[0], lo, hi);
-        double g = std::clamp(master * ratio[1], lo, hi);
-        double b = std::clamp(master * ratio[2], lo, hi);
+
+        double r = 0.0, g = 0.0, b = 0.0;
+        advParam->getValue(r, g, b);
+        r = sanitize_scalar(r, master, lo, hi);
+        g = sanitize_scalar(g, master, lo, hi);
+        b = sanitize_scalar(b, master, lo, hi);
+
+        std::array<double, 3> ratio = fallbackRatio;
+        const double mean = (r + g + b) / 3.0;
+        if (std::isfinite(mean) && mean > 0.0) {
+            ratio[0] = r / mean;
+            ratio[1] = g / mean;
+            ratio[2] = b / mean;
+        }
+
+        r = std::clamp(master * ratio[0], lo, hi);
+        g = std::clamp(master * ratio[1], lo, hi);
+        b = std::clamp(master * ratio[2], lo, hi);
         const bool wasSuppressed = _state->suppressParamEvents;
         _state->suppressParamEvents = true;
         advParam->setValue(r, g, b);
@@ -2216,59 +2218,28 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     };
 
     if (userEdit) {
-        if (paramName == JuicerParams::kGrainParticleAreaUm2) {
-            _grainAdvancedDirty.particleArea = true;
-        }
-        else if (paramName == JuicerParams::kGrainParticleScaleMaster) {
-            _grainAdvancedDirty.particleScaleMaster = true;
-        }
-        else if (paramName == JuicerParams::kGrainParticleScaleLayersMaster) {
-            _grainAdvancedDirty.particleScaleLayersMaster = true;
-        }
-        else if (paramName == JuicerParams::kGrainDensityMinMaster) {
-            _grainAdvancedDirty.densityMinMaster = true;
-        }
-        else if (paramName == JuicerParams::kGrainUniformityMaster) {
-            _grainAdvancedDirty.uniformityMaster = true;
-        }
-        else if (paramName == JuicerParams::kGrainParticleScale) {
-            _grainAdvancedDirty.particleScale = true;
-        }
-        else if (paramName == JuicerParams::kGrainParticleScaleLayers) {
-            _grainAdvancedDirty.particleScaleLayers = true;
-        }
-        else if (paramName == JuicerParams::kGrainDensityMin) {
-            _grainAdvancedDirty.densityMin = true;
-        }
-        else if (paramName == JuicerParams::kGrainUniformity) {
-            _grainAdvancedDirty.uniformity = true;
-        }
-        else if (paramName == JuicerParams::kGrainBlurDyeCloudsUm) {
-            _grainAdvancedDirty.blurDyeClouds = true;
-        }
-        else if (paramName == JuicerParams::kGrainSizeMixWeight) {
-            _grainAdvancedDirty.sizeMixWeight = true;
-        }
-        else if (paramName == JuicerParams::kGrainSizeMixWeightMid) {
-            _grainAdvancedDirty.sizeMixWeightMid = true;
-        }
-        else if (paramName == JuicerParams::kGrainSizeMixScale) {
-            _grainAdvancedDirty.sizeMixScale = true;
-        }
-        else if (paramName == JuicerParams::kGrainMicroStructure) {
-            _grainAdvancedDirty.microStructure = true;
-        }
-        else if (paramName == JuicerParams::kGrainClumpTemporalMix) {
-            _grainAdvancedDirty.clumpTemporalMix = true;
-        }
-        else if (paramName == JuicerParams::kGrainClumpMorphPeriodSec) {
-            _grainAdvancedDirty.clumpMorphPeriodSec = true;
-        }
-        else if (paramName == JuicerParams::kGrainAmplitude ||
-                 paramName == JuicerParams::kGrainBlur ||
-                 paramName == JuicerParams::kGrainSharpness ||
-                 paramName == JuicerParams::kGrainChroma ||
-                 paramName == JuicerParams::kGrainTexture) {
+        if (paramName == JuicerParams::kGrainAmplitude ||
+            paramName == JuicerParams::kGrainBlur ||
+            paramName == JuicerParams::kGrainSharpness ||
+            paramName == JuicerParams::kGrainChroma ||
+            paramName == JuicerParams::kGrainTexture ||
+            paramName == JuicerParams::kGrainSublayersActive ||
+            paramName == JuicerParams::kGrainParticleAreaUm2 ||
+            paramName == JuicerParams::kGrainParticleScaleMaster ||
+            paramName == JuicerParams::kGrainParticleScaleLayersMaster ||
+            paramName == JuicerParams::kGrainDensityMinMaster ||
+            paramName == JuicerParams::kGrainUniformityMaster ||
+            paramName == JuicerParams::kGrainParticleScale ||
+            paramName == JuicerParams::kGrainParticleScaleLayers ||
+            paramName == JuicerParams::kGrainDensityMin ||
+            paramName == JuicerParams::kGrainUniformity ||
+            paramName == JuicerParams::kGrainBlurDyeCloudsUm ||
+            paramName == JuicerParams::kGrainSizeMixWeight ||
+            paramName == JuicerParams::kGrainSizeMixWeightMid ||
+            paramName == JuicerParams::kGrainSizeMixScale ||
+            paramName == JuicerParams::kGrainMicroStructure ||
+            paramName == JuicerParams::kGrainClumpTemporalMix ||
+            paramName == JuicerParams::kGrainClumpMorphPeriodSec) {
             updateGrainPresetLabel(true);
         }
     }
@@ -2287,15 +2258,18 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     else if (paramName == JuicerParams::kHalationScatteringSizeUmMaster) {
         apply_master_delta(_pHalationScatteringSizeUmMaster, _pHalationScatteringSizeUm, _halationScatteringSizeUmMasterLast, 0.0, 1000.0);
     }
-    else if (paramName == JuicerParams::kGrainParticleScaleMaster ||
-             paramName == JuicerParams::kGrainParticleScaleLayersMaster ||
-             paramName == JuicerParams::kGrainDensityMinMaster ||
-             paramName == JuicerParams::kGrainUniformityMaster) {
-        std::array<double, 3> scaleRatio = {};
-        std::array<double, 3> scaleLayersRatio = {};
-        std::array<double, 3> densityMinRatio = {};
-        std::array<double, 3> uniformityRatio = {};
-        getGrainRatioSets(scaleRatio, scaleLayersRatio, densityMinRatio, uniformityRatio);
+    else if (userEdit && (paramName == JuicerParams::kGrainParticleScaleMaster ||
+        paramName == JuicerParams::kGrainParticleScaleLayersMaster ||
+        paramName == JuicerParams::kGrainDensityMinMaster ||
+        paramName == JuicerParams::kGrainUniformityMaster)) {
+        std::array<double, 3> scaleRatio = default_particle_scale_ratio();
+        std::array<double, 3> scaleLayersRatio = default_particle_scale_layers_ratio();
+        std::array<double, 3> densityMinRatio = default_density_min_ratio();
+        std::array<double, 3> uniformityRatio = default_uniformity_ratio();
+        normalize_ratio(scaleRatio);
+        normalize_ratio(scaleLayersRatio);
+        normalize_ratio(densityMinRatio);
+        normalize_ratio(uniformityRatio);
 
         if (paramName == JuicerParams::kGrainParticleScaleMaster) {
             apply_ratio_master(_pGrainParticleScaleMaster, _pGrainParticleScale, scaleRatio, _grainParticleScaleMasterLast, 0.0, 10.0);
@@ -2308,6 +2282,34 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         }
         else if (paramName == JuicerParams::kGrainUniformityMaster) {
             apply_ratio_master(_pGrainUniformityMaster, _pGrainUniformity, uniformityRatio, _grainUniformityMasterLast, 0.0, 1.0);
+        }
+    }
+
+    if (userEdit && paramName == JuicerParams::kGrainSharpness && _pGrainSharpness && _pGrainBlurDyeCloudsUm && _state) {
+        double sharpness = 0.5;
+        _pGrainSharpness->getValue(sharpness);
+        if (std::isfinite(sharpness)) {
+            sharpness = std::clamp(sharpness, 0.0, 1.0);
+            const double blurDyeClouds = std::clamp(grain_lerp(1.40, 0.60, sharpness), 0.0, 10.0);
+            const bool wasSuppressed = _state->suppressParamEvents;
+            _state->suppressParamEvents = true;
+            _pGrainBlurDyeCloudsUm->setValue(blurDyeClouds);
+            _state->suppressParamEvents = wasSuppressed;
+        }
+    }
+    if (userEdit && paramName == JuicerParams::kGrainTexture && _pGrainTexture && _pGrainSizeMixWeight && _pGrainMicroStructure && _state) {
+        double texture = 0.55;
+        _pGrainTexture->getValue(texture);
+        if (std::isfinite(texture)) {
+            texture = std::clamp(texture, 0.0, 1.0);
+            const double sizeMixWeight = std::clamp(grain_lerp(0.072, 0.38, texture), 0.0, 1.0);
+            const double microCell = std::clamp(grain_lerp(50.0, 70.0, texture), 0.0, 1000.0);
+            const double microSigma = std::clamp(grain_lerp(140.0, 200.0, texture), 0.0, 1000.0);
+            const bool wasSuppressed = _state->suppressParamEvents;
+            _state->suppressParamEvents = true;
+            _pGrainSizeMixWeight->setValue(sizeMixWeight);
+            _pGrainMicroStructure->setValue(microCell, microSigma);
+            _state->suppressParamEvents = wasSuppressed;
         }
     }
     onParamsPossiblyChanged(paramName.c_str());

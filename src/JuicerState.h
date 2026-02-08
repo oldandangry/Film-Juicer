@@ -218,6 +218,8 @@ struct InstanceState {
     std::string dataDir;
     bool baseLoaded = false;
     std::uint64_t sessionSeed = 0;
+    std::uint64_t instanceToken = 0;
+    std::atomic<std::uint64_t> submissionSnapshotIdNext{ 1 };
 
     CouplerDirtyFlags couplerDirty;
     IlluminantOverrideFlags illuminantOverride;

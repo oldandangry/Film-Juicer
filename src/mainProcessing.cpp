@@ -25,6 +25,9 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/JuicerCudaAutoExposure.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
 #include "GeneratedColorSpaces.h"
 #endif
 
@@ -1210,6 +1213,46 @@ void JuicerProcessor::processImagesCUDA() {
                 + " printIllumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
                 + " printPreflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
             JTRACE_VERBOSE("PRINTDBG", msg);
+        }
+    }
+
+    JuicerCuda::ResourceManager::SubmissionTransaction submissionTxn{};
+    struct SubmissionTxnScope {
+        JuicerCuda::ResourceManager::SubmissionTransaction* transaction = nullptr;
+        bool committed = false;
+
+        ~SubmissionTxnScope() {
+            if (transaction && !committed) {
+                JuicerCuda::ResourceManager::rollback_submission(*transaction, "scope_exit");
+            }
+        }
+    } submissionTxnScope{ &submissionTxn, false };
+    {
+        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
+        snapshot.instanceToken.value =
+            (_instanceState->instanceToken != 0) ? _instanceState->instanceToken : safe_session_seed(_instanceState);
+        snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
+        std::uint64_t nextSnapshotId =
+            _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
+        if (nextSnapshotId == 0) {
+            nextSnapshotId = _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
+        }
+        snapshot.snapshotId = nextSnapshotId;
+        snapshot.deviceContextKey.deviceId = deviceId;
+        snapshot.deviceContextKey.contextOpaque = nullptr;
+        snapshot.keyDigests =
+            JuicerCuda::ResourceManager::make_key_digests(_ws->coreHash, _ws->dirHash, _ws->fullHash);
+        snapshot.keySchemaVersion = 1;
+        snapshot.traceSchemaVersion = JuicerCuda::ResourceManager::kTraceSchemaVersion;
+
+        std::string submissionError;
+        if (!JuicerCuda::ResourceManager::begin_submission(submissionTxn, snapshot, submissionError)) {
+            JTRACE("CUDA", std::string("FATAL: begin_submission failed: ") + submissionError);
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (!JuicerCuda::ResourceManager::acquire_plan(submissionTxn, submissionError)) {
+            JTRACE("CUDA", std::string("FATAL: acquire_plan failed: ") + submissionError);
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
     }
 
@@ -2810,6 +2853,14 @@ void JuicerProcessor::processImagesCUDA() {
 
             JuicerCuda::record_use(*cudaResources, _pCudaStream);
         }
+        {
+            std::string commitError;
+            if (!JuicerCuda::ResourceManager::commit_submission(submissionTxn, _pCudaStream, commitError)) {
+                JTRACE("CUDA", std::string("FATAL: commit_submission failed: ") + commitError);
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+            submissionTxnScope.committed = true;
+        }
         return;
     }
 
@@ -3614,6 +3665,14 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             JuicerCuda::record_use(*cudaResources, _pCudaStream);
+        }
+        {
+            std::string commitError;
+            if (!JuicerCuda::ResourceManager::commit_submission(submissionTxn, _pCudaStream, commitError)) {
+                JTRACE("CUDA", std::string("FATAL: commit_submission failed: ") + commitError);
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+            submissionTxnScope.committed = true;
         }
         return;
     }
