@@ -40,6 +40,9 @@ bool registry_transition_lifecycle_state(
     ContextLifecycleState expectedState,
     ContextLifecycleState desiredState,
     const char* reason) noexcept;
+bool registry_freeze_drain_bump_resume(
+    const DeviceContextKey& key,
+    const char* reason) noexcept;
 void registry_retire(RegistryHandle handle, RegistryRetireReason reason) noexcept;
 
 } // namespace ResourceManager

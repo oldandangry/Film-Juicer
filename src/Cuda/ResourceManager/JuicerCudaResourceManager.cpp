@@ -644,6 +644,18 @@ bool commit_submission(
     return true;
 }
 
+bool command_freeze_drain_bump_resume(
+    const DeviceContextKey& key,
+    const char* reason,
+    std::string& outError) {
+    outError.clear();
+    if (!registry_freeze_drain_bump_resume(key, reason)) {
+        outError = "freeze-drain-bump-resume barrier rejected";
+        return false;
+    }
+    return true;
+}
+
 bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
