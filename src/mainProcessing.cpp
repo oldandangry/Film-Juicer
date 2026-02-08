@@ -1250,17 +1250,49 @@ void JuicerProcessor::processImagesCUDA() {
         snapshot.instanceToken.value =
             (_instanceState->instanceToken != 0) ? _instanceState->instanceToken : safe_session_seed(_instanceState);
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
-        std::uint64_t nextSnapshotId =
-            _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
-        if (nextSnapshotId == 0) {
-            nextSnapshotId = _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
-        }
-        snapshot.snapshotId = nextSnapshotId;
         snapshot.deviceContextKey = deviceContextKey;
         snapshot.keyDigests =
             JuicerCuda::ResourceManager::make_key_digests(_ws->coreHash, _ws->dirHash, _ws->fullHash);
         snapshot.keySchemaVersion = 1;
         snapshot.traceSchemaVersion = JuicerCuda::ResourceManager::kTraceSchemaVersion;
+        bool reusingSnapshotLatch = false;
+        {
+            std::lock_guard<std::mutex> latchLock(_instanceState->submissionSnapshotLatchMutex);
+            const auto& latched = _instanceState->submissionSnapshotLatch;
+            const bool digestsMatch =
+                latched.keyDigests.uploadCoreHash == snapshot.keyDigests.uploadCoreHash &&
+                latched.keyDigests.dirHash == snapshot.keyDigests.dirHash &&
+                latched.keyDigests.scannerHash == snapshot.keyDigests.scannerHash;
+            if (_instanceState->submissionSnapshotLatchValid &&
+                latched.instanceToken.value == snapshot.instanceToken.value &&
+                latched.frameToken.value == snapshot.frameToken.value &&
+                latched.deviceContextKey == snapshot.deviceContextKey &&
+                latched.keySchemaVersion == snapshot.keySchemaVersion &&
+                latched.traceSchemaVersion == snapshot.traceSchemaVersion &&
+                digestsMatch &&
+                latched.snapshotId != 0) {
+                snapshot = latched;
+                reusingSnapshotLatch = true;
+            }
+            else {
+                std::uint64_t nextSnapshotId =
+                    _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
+                if (nextSnapshotId == 0) {
+                    nextSnapshotId = _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
+                }
+                snapshot.snapshotId = nextSnapshotId;
+                _instanceState->submissionSnapshotLatch = snapshot;
+                _instanceState->submissionSnapshotLatchValid = true;
+            }
+        }
+        if (JTRACE_ENABLED(3)) {
+            const std::string msg = std::string("path=cuda action=")
+                + (reusingSnapshotLatch ? "reuse" : "new")
+                + " frame_token=" + std::to_string(snapshot.frameToken.value)
+                + " snapshot_id=" + std::to_string(snapshot.snapshotId)
+                + " instance_token=" + std::to_string(snapshot.instanceToken.value);
+            JTRACE_VERBOSE("MSSNP", msg);
+        }
 
         std::string submissionError;
         if (!JuicerCuda::ResourceManager::begin_submission(submissionTxn, snapshot, submissionError)) {

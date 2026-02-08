@@ -293,6 +293,11 @@ struct InstanceState {
         JuicerCuda::ResourceManager::DeviceContextKey,
         std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter>,
         JuicerCuda::ResourceManager::DeviceContextKeyHash> cudaByDevice;
+
+    // Snapshot latch: all submissions for the same frame token reuse one immutable snapshot payload.
+    std::mutex submissionSnapshotLatchMutex;
+    bool submissionSnapshotLatchValid = false;
+    JuicerCuda::ResourceManager::SubmissionSnapshot submissionSnapshotLatch{};
 #endif
 };
 

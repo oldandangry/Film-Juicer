@@ -55,6 +55,48 @@ ShadowHistoryState& shadow_history_state() noexcept {
     return state;
 }
 
+struct FrameSnapshotKey {
+    std::uint64_t instanceToken = 0;
+    DeviceContextKey deviceContextKey{};
+
+    bool operator==(const FrameSnapshotKey& other) const noexcept {
+        return instanceToken == other.instanceToken &&
+            deviceContextKey == other.deviceContextKey;
+    }
+};
+
+struct FrameSnapshotKeyHasher {
+    std::size_t operator()(const FrameSnapshotKey& key) const noexcept {
+        const std::size_t hInstance = std::hash<std::uint64_t>{}(key.instanceToken);
+        const std::size_t hContext = DeviceContextKeyHash{}(key.deviceContextKey);
+        return hInstance ^ (hContext + 0x9e3779b9u + (hInstance << 6u) + (hInstance >> 2u));
+    }
+};
+
+struct FrameSnapshotEntry {
+    bool valid = false;
+    std::uint64_t frameToken = 0;
+    KeyDigests digests{};
+    std::uint32_t keySchemaVersion = 1;
+    std::uint64_t snapshotId = 0;
+};
+
+struct FrameSnapshotState {
+    std::mutex mutex;
+    std::unordered_map<FrameSnapshotKey, FrameSnapshotEntry, FrameSnapshotKeyHasher> bySubmissionKey;
+};
+
+FrameSnapshotState& frame_snapshot_state() noexcept {
+    static FrameSnapshotState state{};
+    return state;
+}
+
+bool key_digests_equal(const KeyDigests& lhs, const KeyDigests& rhs) noexcept {
+    return lhs.uploadCoreHash == rhs.uploadCoreHash &&
+        lhs.dirHash == rhs.dirHash &&
+        lhs.scannerHash == rhs.scannerHash;
+}
+
 AcquireStatus combine_status(
     AcquireStatus upload,
     AcquireStatus dir,
@@ -196,6 +238,44 @@ bool acquire_plan(
             snapshot.traceSchemaVersion,
             rawDigests,
             snapshot.keyDigests);
+    }
+
+    std::uint64_t expectedSnapshotIdForFrame = 0;
+    bool frameSnapshotMismatch = false;
+    {
+        const FrameSnapshotKey frameKey{ snapshot.instanceToken.value, snapshot.deviceContextKey };
+        FrameSnapshotState& state = frame_snapshot_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        FrameSnapshotEntry& entry = state.bySubmissionKey[frameKey];
+        const bool sameFrameToken = entry.valid && entry.frameToken == snapshot.frameToken.value;
+        const bool sameSchema = entry.valid && entry.keySchemaVersion == snapshot.keySchemaVersion;
+        const bool sameDigests = entry.valid && key_digests_equal(entry.digests, snapshot.keyDigests);
+        if (sameFrameToken && sameSchema && sameDigests) {
+            if (entry.snapshotId == 0) {
+                entry.snapshotId = snapshot.snapshotId;
+            }
+            else if (entry.snapshotId != snapshot.snapshotId) {
+                frameSnapshotMismatch = true;
+                expectedSnapshotIdForFrame = entry.snapshotId;
+            }
+        }
+        else {
+            entry.valid = true;
+            entry.frameToken = snapshot.frameToken.value;
+            entry.digests = snapshot.keyDigests;
+            entry.keySchemaVersion = snapshot.keySchemaVersion;
+            entry.snapshotId = snapshot.snapshotId;
+        }
+    }
+    if (frameSnapshotMismatch) {
+        telemetry_record_frame_snapshot_mismatch();
+        telemetry_trace_frame_snapshot_mismatch(
+            transaction.transactionId,
+            snapshot.snapshotId,
+            snapshot.traceSchemaVersion,
+            snapshot.frameToken.value,
+            expectedSnapshotIdForFrame,
+            snapshot.snapshotId);
     }
 
     const ShadowHistoryKey key{ snapshot.instanceToken.value, snapshot.deviceContextKey };

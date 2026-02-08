@@ -24,6 +24,7 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> traceSchemaMismatchEvents{ 0 };
     std::atomic<std::uint64_t> forbiddenInvalidationEdges{ 0 };
     std::atomic<std::uint64_t> moduleBoundaryViolations{ 0 };
+    std::atomic<std::uint64_t> frameSnapshotMismatchEvents{ 0 };
 };
 
 ResourceManagerState& global_state() noexcept;

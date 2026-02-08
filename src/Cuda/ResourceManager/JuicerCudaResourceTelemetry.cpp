@@ -60,6 +60,10 @@ void telemetry_record_module_boundary_violation() noexcept {
     global_state().moduleBoundaryViolations.fetch_add(1, std::memory_order_relaxed);
 }
 
+void telemetry_record_frame_snapshot_mismatch() noexcept {
+    global_state().frameSnapshotMismatchEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept {
     ResourceManagerState& state = global_state();
     std::uint64_t id = state.nextAcquireAttemptId.fetch_add(1, std::memory_order_relaxed);
@@ -163,6 +167,24 @@ void telemetry_trace_module_boundary_violation(
         " trace_schema=" + std::to_string(traceSchemaVersion) +
         " reason=" + (reason ? reason : "unknown");
     JTRACE("MSCMD", msg);
+}
+
+void telemetry_trace_frame_snapshot_mismatch(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    std::uint64_t frameToken,
+    std::uint64_t expectedSnapshotId,
+    std::uint64_t observedSnapshotId) noexcept {
+    const std::string msg =
+        std::string("transaction_id=") + std::to_string(transactionId) +
+        " snapshot_id=" + std::to_string(snapshotId) +
+        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        " frame_token=" + std::to_string(frameToken) +
+        " expected_snapshot_id=" + std::to_string(expectedSnapshotId) +
+        " observed_snapshot_id=" + std::to_string(observedSnapshotId) +
+        " reason=mixed_snapshot_id_for_frame";
+    JTRACE("MSSNP", msg);
 }
 
 void telemetry_trace_acquire(
