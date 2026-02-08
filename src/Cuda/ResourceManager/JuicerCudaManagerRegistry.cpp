@@ -191,6 +191,10 @@ const char* to_cstr(ContextLifecycleState state) noexcept {
 }
 
 RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
+    MetadataMutationGuard mutationGuard("registry_get_or_create");
+    if (!mutationGuard.ok()) {
+        return RegistryHandle{};
+    }
     RegistryState& state = registry_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     auto it = state.byDeviceContext.find(key);
@@ -239,6 +243,10 @@ bool registry_transition_lifecycle_state(
     ContextLifecycleState expectedState,
     ContextLifecycleState desiredState,
     const char* reason) noexcept {
+    MetadataMutationGuard mutationGuard("registry_transition_lifecycle_state");
+    if (!mutationGuard.ok()) {
+        return false;
+    }
     RegistryState& state = registry_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     auto it = state.byDeviceContext.find(key);
@@ -255,6 +263,10 @@ bool registry_transition_lifecycle_state(
 bool registry_freeze_drain_bump_resume(
     const DeviceContextKey& key,
     const char* reason) noexcept {
+    MetadataMutationGuard mutationGuard("registry_freeze_drain_bump_resume");
+    if (!mutationGuard.ok()) {
+        return false;
+    }
     RegistryState& state = registry_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     auto it = state.byDeviceContext.find(key);
@@ -288,6 +300,10 @@ bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexce
 }
 
 void registry_retire(RegistryHandle handle, RegistryRetireReason reason) noexcept {
+    MetadataMutationGuard mutationGuard("registry_retire");
+    if (!mutationGuard.ok()) {
+        return;
+    }
     if (handle.value == 0) {
         return;
     }

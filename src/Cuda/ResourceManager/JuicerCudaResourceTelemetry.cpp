@@ -68,6 +68,22 @@ void telemetry_record_stale_tuple_hard_reject() noexcept {
     global_state().staleTupleHardRejects.fetch_add(1, std::memory_order_relaxed);
 }
 
+void telemetry_record_metadata_mutation_begin() noexcept {
+    global_state().metadataMutationBeginCalls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_record_metadata_mutation_end() noexcept {
+    global_state().metadataMutationEndCalls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_record_metadata_mutation_reject() noexcept {
+    global_state().metadataMutationRejects.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_record_metadata_mutation_order_violation() noexcept {
+    global_state().metadataMutationOrderViolations.fetch_add(1, std::memory_order_relaxed);
+}
+
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept {
     ResourceManagerState& state = global_state();
     std::uint64_t id = state.nextAcquireAttemptId.fetch_add(1, std::memory_order_relaxed);
@@ -214,6 +230,23 @@ void telemetry_trace_stale_decision(
         " hard_miss=" + std::to_string(decision.hardMiss ? 1 : 0) +
         " reason=" + to_cstr(decision.reason);
     JTRACE("MSSTL", msg);
+}
+
+void telemetry_trace_metadata_mutation(
+    const char* phase,
+    const char* stage,
+    std::uint64_t sequence,
+    bool accepted,
+    std::uint64_t expectedSequence,
+    const char* reason) noexcept {
+    const std::string msg =
+        std::string("phase=") + (phase ? phase : "unknown") +
+        " stage=" + (stage ? stage : "unknown") +
+        " sequence=" + std::to_string(sequence) +
+        " expected_sequence=" + std::to_string(expectedSequence) +
+        " accepted=" + std::to_string(accepted ? 1 : 0) +
+        " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSMUT", msg);
 }
 
 void telemetry_trace_acquire(

@@ -229,6 +229,11 @@ bool begin_submission(
     const SubmissionSnapshot& snapshot,
     std::string& outError) {
     outError.clear();
+    MetadataMutationGuard mutationGuard("begin_submission");
+    if (!mutationGuard.ok()) {
+        outError = "metadata mutation guard rejected begin_submission";
+        return false;
+    }
 
     if (outTransaction.active) {
         outError = "submission transaction already active";
@@ -282,6 +287,11 @@ bool acquire_plan(
     SubmissionTransaction& transaction,
     std::string& outError) {
     outError.clear();
+    MetadataMutationGuard mutationGuard("acquire_plan");
+    if (!mutationGuard.ok()) {
+        outError = "metadata mutation guard rejected acquire_plan";
+        return false;
+    }
     const std::uint64_t acquireId = telemetry_next_acquire_attempt_id();
 
     if (!validate_lifecycle_for_stage(transaction, "acquire", false, &outError)) {
@@ -606,6 +616,11 @@ bool commit_submission(
     std::string& outError) {
     (void)cudaStreamOpaque;
     outError.clear();
+    MetadataMutationGuard mutationGuard("commit_submission");
+    if (!mutationGuard.ok()) {
+        outError = "metadata mutation guard rejected commit_submission";
+        return false;
+    }
     if (!validate_lifecycle_for_stage(transaction, "commit", false, &outError)) {
         return false;
     }
@@ -649,6 +664,11 @@ bool command_freeze_drain_bump_resume(
     const char* reason,
     std::string& outError) {
     outError.clear();
+    MetadataMutationGuard mutationGuard("command_freeze_drain_bump_resume");
+    if (!mutationGuard.ok()) {
+        outError = "metadata mutation guard rejected command_freeze_drain_bump_resume";
+        return false;
+    }
     if (!registry_freeze_drain_bump_resume(key, reason)) {
         outError = "freeze-drain-bump-resume barrier rejected";
         return false;
@@ -710,6 +730,10 @@ void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept {
     (void)reason;
+    MetadataMutationGuard mutationGuard("rollback_submission");
+    if (!mutationGuard.ok()) {
+        return;
+    }
     (void)validate_lifecycle_for_stage(transaction, "release", true, nullptr);
     ResourceManagerState& state = global_state();
     StaleInput staleInput{};

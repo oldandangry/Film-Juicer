@@ -23,6 +23,10 @@ void telemetry_record_forbidden_invalidation_edge() noexcept;
 void telemetry_record_module_boundary_violation() noexcept;
 void telemetry_record_frame_snapshot_mismatch() noexcept;
 void telemetry_record_stale_tuple_hard_reject() noexcept;
+void telemetry_record_metadata_mutation_begin() noexcept;
+void telemetry_record_metadata_mutation_end() noexcept;
+void telemetry_record_metadata_mutation_reject() noexcept;
+void telemetry_record_metadata_mutation_order_violation() noexcept;
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept;
 
 void telemetry_trace_schema_announcement(
@@ -81,6 +85,14 @@ void telemetry_trace_stale_decision(
     const char* stage,
     const StaleInput& input,
     const StaleDecision& decision) noexcept;
+
+void telemetry_trace_metadata_mutation(
+    const char* phase,
+    const char* stage,
+    std::uint64_t sequence,
+    bool accepted,
+    std::uint64_t expectedSequence,
+    const char* reason) noexcept;
 
 void telemetry_trace_acquire(
     std::uint64_t acquireId,
