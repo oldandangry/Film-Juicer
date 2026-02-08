@@ -2,11 +2,14 @@
 
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
+#include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaManagerRegistry.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Cuda/ResourceManager/JuicerCudaResourcePolicy.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceState.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
+#include "Print.h"
+#include "WorkingState.h"
 
 #include <algorithm>
 #include <mutex>
@@ -19,18 +22,19 @@ namespace {
 
 struct ShadowHistoryKey {
     std::uint64_t instanceToken = 0;
-    int deviceId = -1;
+    DeviceContextKey deviceContextKey{};
 
     bool operator==(const ShadowHistoryKey& other) const noexcept {
-        return instanceToken == other.instanceToken && deviceId == other.deviceId;
+        return instanceToken == other.instanceToken &&
+            deviceContextKey == other.deviceContextKey;
     }
 };
 
 struct ShadowHistoryKeyHasher {
     std::size_t operator()(const ShadowHistoryKey& key) const noexcept {
-        const std::uint64_t mixed =
-            key.instanceToken ^ (static_cast<std::uint64_t>(static_cast<std::uint32_t>(key.deviceId)) << 1u);
-        return static_cast<std::size_t>(mixed);
+        const std::size_t hInstance = std::hash<std::uint64_t>{}(key.instanceToken);
+        const std::size_t hContext = DeviceContextKeyHash{}(key.deviceContextKey);
+        return hInstance ^ (hContext + 0x9e3779b9u + (hInstance << 6u) + (hInstance >> 2u));
     }
 };
 
@@ -70,7 +74,28 @@ AcquireStatus combine_status(
     return AcquireStatus::Hit;
 }
 
+bool ensure_active_for_command(
+    const SubmissionTransaction& transaction,
+    std::string& outError,
+    const char* commandName) {
+    if (transaction.active) {
+        return true;
+    }
+    outError = "submission transaction is not active";
+    telemetry_record_module_boundary_violation();
+    telemetry_trace_module_boundary_violation(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        commandName ? commandName : "command_requires_active_submission");
+    return false;
+}
+
 } // namespace
+
+bool query_submission_active(const SubmissionTransaction& transaction) noexcept {
+    return transaction.active;
+}
 
 bool begin_submission(
     SubmissionTransaction& outTransaction,
@@ -173,7 +198,7 @@ bool acquire_plan(
             snapshot.keyDigests);
     }
 
-    const ShadowHistoryKey key{ snapshot.instanceToken.value, snapshot.deviceContextKey.deviceId };
+    const ShadowHistoryKey key{ snapshot.instanceToken.value, snapshot.deviceContextKey };
     ShadowHistoryEntry previous{};
     bool hasPrevious = false;
     {
@@ -352,6 +377,56 @@ bool commit_submission(
     transaction.active = false;
     telemetry_record_commit_submission();
     return true;
+}
+
+bool command_ensure_uploaded(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_uploaded")) {
+        return false;
+    }
+    return JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
+}
+
+bool command_ensure_scan_lut(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_scan_lut")) {
+        return false;
+    }
+    return JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
+}
+
+bool command_ensure_scan_error_flag(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_scan_error_flag")) {
+        return false;
+    }
+    return JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, outError);
+}
+
+bool command_ensure_print_illuminant_filtered(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    const Print::Runtime& prt,
+    const Print::Params& params,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_print_illuminant_filtered")) {
+        return false;
+    }
+    return JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
 }
 
 void rollback_submission(

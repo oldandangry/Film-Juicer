@@ -1212,10 +1212,14 @@ void JuicerProcessor::processImagesCUDA() {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
+    JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
+    deviceContextKey.deviceId = deviceId;
+    deviceContextKey.contextOpaque = nullptr;
+
     JuicerCuda::Resources* cudaResources = nullptr;
     {
         std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
-        auto& slot = _instanceState->cudaByDevice[deviceId];
+        auto& slot = _instanceState->cudaByDevice[deviceContextKey];
         if (!slot) {
             slot.reset(JuicerCuda::create());
             if (!slot) {
@@ -1228,32 +1232,6 @@ void JuicerProcessor::processImagesCUDA() {
 
     if (_effect.abort()) {
         return;
-    }
-
-    std::string uploadError;
-    {
-        std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
-        if (!cudaResources) {
-            JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        if (!JuicerCuda::ensure_uploaded(*cudaResources, *_ws, _pCudaStream, uploadError)) {
-            JTRACE("CUDA", std::string("CUDA WorkingState upload failed: ") + uploadError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-        }
-        if (JTRACE_ENABLED(3)) {
-            std::lock_guard<std::mutex> resLock(cudaResources->m);
-            const std::uint64_t build = _ws ? _ws->buildCounter : 0;
-            std::string msg = std::string("cuda upload build=") + std::to_string(build)
-                + " uploaded=" + std::to_string(cudaResources->uploadedBuildCounter)
-                + " printIllumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
-                + " printPreflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
-            JTRACE_VERBOSE("PRINTDBG", msg);
-        }
     }
 
     JuicerCuda::ResourceManager::SubmissionTransaction submissionTxn{};
@@ -1278,8 +1256,7 @@ void JuicerProcessor::processImagesCUDA() {
             nextSnapshotId = _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
         }
         snapshot.snapshotId = nextSnapshotId;
-        snapshot.deviceContextKey.deviceId = deviceId;
-        snapshot.deviceContextKey.contextOpaque = nullptr;
+        snapshot.deviceContextKey = deviceContextKey;
         snapshot.keyDigests =
             JuicerCuda::ResourceManager::make_key_digests(_ws->coreHash, _ws->dirHash, _ws->fullHash);
         snapshot.keySchemaVersion = 1;
@@ -1293,6 +1270,37 @@ void JuicerProcessor::processImagesCUDA() {
         if (!JuicerCuda::ResourceManager::acquire_plan(submissionTxn, submissionError)) {
             JTRACE("CUDA", std::string("FATAL: acquire_plan failed: ") + submissionError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+    }
+
+    std::string uploadError;
+    {
+        std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
+        if (!cudaResources) {
+            JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (!JuicerCuda::ResourceManager::command_ensure_uploaded(
+                submissionTxn,
+                *cudaResources,
+                *_ws,
+                _pCudaStream,
+                uploadError)) {
+            JTRACE("CUDA", std::string("CUDA WorkingState upload failed: ") + uploadError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+        if (JTRACE_ENABLED(3)) {
+            std::lock_guard<std::mutex> resLock(cudaResources->m);
+            const std::uint64_t build = _ws ? _ws->buildCounter : 0;
+            std::string msg = std::string("cuda upload build=") + std::to_string(build)
+                + " uploaded=" + std::to_string(cudaResources->uploadedBuildCounter)
+                + " printIllumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
+                + " printPreflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
+            JTRACE_VERBOSE("PRINTDBG", msg);
         }
     }
 
@@ -2207,7 +2215,11 @@ void JuicerProcessor::processImagesCUDA() {
                                         JuicerCuda::PipelineRunParams& run,
                                         cudaStream_t stream) -> cudaEvent_t {
         std::string scanFlagError;
-        if (!JuicerCuda::ensure_scan_error_flag(*resources, _pCudaStream, scanFlagError)) {
+        if (!JuicerCuda::ResourceManager::command_ensure_scan_error_flag(
+                submissionTxn,
+                *resources,
+                _pCudaStream,
+                scanFlagError)) {
             JTRACE("CUDA", std::string("CUDA scan error flag allocation failed: ") + scanFlagError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2356,6 +2368,118 @@ void JuicerProcessor::processImagesCUDA() {
         submissionTxnScope.committed = true;
     };
 
+    auto setup_scan_stage_resources = [&](JuicerCuda::Resources* resources,
+                                          JuicerCuda::PipelineRunParams& run,
+                                          cudaStream_t stream,
+                                          bool negativeMedium) -> cudaEvent_t {
+        run.scanStage.scannerUseLut = _scannerSettings.useLut ? 1 : 0;
+        run.scanStage.scanLutLog2XYZ = nullptr;
+        run.scanStage.scanLutRes = 0;
+        if (run.scanStage.scannerUseLut) {
+            std::string lutError;
+            if (!JuicerCuda::ResourceManager::command_ensure_scan_lut(
+                    submissionTxn,
+                    *resources,
+                    *_ws,
+                    negativeMedium,
+                    _pCudaStream,
+                    lutError)) {
+                JTRACE("CUDA", std::string("CUDA ") + (negativeMedium ? "scan" : "print scan")
+                    + " LUT upload failed: " + lutError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
+            const JuicerCuda::Resources::DeviceSpectralLut& scanLut =
+                negativeMedium ? resources->scanNegativeLut : resources->scanPrintLut;
+            run.scanStage.scanLutLog2XYZ = scanLut.log2XYZ;
+            run.scanStage.scanLutRes = static_cast<int>(scanLut.res);
+            if (!run.scanStage.scanLutLog2XYZ || run.scanStage.scanLutRes <= 0) {
+                JTRACE("CUDA", std::string("FATAL: ") + (negativeMedium ? "scan" : "print scan")
+                    + " LUT missing after successful upload");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+        }
+
+        const JuicerCuda::Resources::DeviceScanMedium& scanMedium =
+            negativeMedium ? resources->scanNegative : resources->scanPrint;
+        run.scanStage.scanTables.epsC = scanMedium.tables.epsC;
+        run.scanStage.scanTables.epsM = scanMedium.tables.epsM;
+        run.scanStage.scanTables.epsY = scanMedium.tables.epsY;
+        run.scanStage.scanTables.Ax = scanMedium.tables.Ax;
+        run.scanStage.scanTables.Ay = scanMedium.tables.Ay;
+        run.scanStage.scanTables.Az = scanMedium.tables.Az;
+        run.scanStage.scanTables.baseMin = scanMedium.tables.baseMin;
+        run.scanStage.scanTables.K = scanMedium.tables.K;
+        run.scanStage.scanTables.hasBaseline = scanMedium.tables.hasBaseline;
+        run.scanStage.scanTables.invYn = scanMedium.tables.invYn;
+        run.scanStage.scanTables.mediumIsNegative = scanMedium.mediumIsNegative;
+        for (int i = 0; i < 3; ++i) {
+            run.scanStage.scanTables.min_cmy[i] = scanMedium.min_cmy[i];
+            run.scanStage.scanTables.inv_max_cmy[i] = scanMedium.inv_max_cmy[i];
+        }
+
+        return prepare_scan_error_stage(resources, run, stream);
+    };
+
+    auto setup_spatial_dir_stage = [&](JuicerCuda::Resources* resources,
+                                       JuicerCuda::PipelineRunParams& run,
+                                       int frameWidth,
+                                       int frameHeight,
+                                       bool useSpatialDir) -> bool {
+        run.filmDevelop.spatialDir.active = useSpatialDir ? 1 : 0;
+        run.filmDevelop.spatialDir.corrY = nullptr;
+        run.filmDevelop.spatialDir.corrM = nullptr;
+        run.filmDevelop.spatialDir.corrC = nullptr;
+        if (!useSpatialDir) {
+            return true;
+        }
+        if (_effect.abort()) {
+            JuicerCuda::record_use(*resources, _pCudaStream);
+            return false;
+        }
+
+        std::string dirError;
+        if (!JuicerCuda::ensure_spatial_dir_scratch(*resources, frameWidth, frameHeight, _pCudaStream, dirError)) {
+            JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+        if (!JuicerCuda::ensure_spatial_dir_kernel(*resources, resources->spatialDirKernel, _dirRT.spatialSigmaPixels, _pCudaStream, dirError)) {
+            JTRACE("CUDA", std::string("CUDA spatial DIR kernel upload failed: ") + dirError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+        }
+
+        run.filmDevelop.spatialDir.corrY = resources->spatialDirScratch.corrY;
+        run.filmDevelop.spatialDir.corrM = resources->spatialDirScratch.corrM;
+        run.filmDevelop.spatialDir.corrC = resources->spatialDirScratch.corrC;
+
+        const cudaError_t dirErr = juicer_cuda_build_spatial_dir(
+            &run,
+            resources->spatialDirScratch.corrY,
+            resources->spatialDirScratch.corrM,
+            resources->spatialDirScratch.corrC,
+            resources->spatialDirScratch.tmp,
+            resources->spatialDirKernel.weights,
+            resources->spatialDirKernel.radius,
+            _pCudaStream);
+        if (dirErr != cudaSuccess) {
+            const char* msg = cudaGetErrorString(dirErr);
+            JTRACE("CUDA", std::string("FATAL: spatial DIR build failed: ") + (msg ? msg : "(unknown)"));
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        return true;
+    };
+
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
         ScannerPreflightResult scannerPreflight{};
@@ -2374,7 +2498,6 @@ void JuicerProcessor::processImagesCUDA() {
             + std::to_string(scannerPreflight.staticKey.hash));
         const Scanner::ScannerMediumRuntime& negativeMediumRuntime = *scannerPreflight.mediumRuntime;
 
-        const bool scannerUseLut = _scannerSettings.useLut;
         const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
         const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
         const float unsharpAmount = _scannerOptions.unsharpAmount;
@@ -2497,91 +2620,9 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmExpose.mallettBasis = cudaResources->mallettBasis;
             run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
 
-            run.scanStage.scannerUseLut = scannerUseLut ? 1 : 0;
-            run.scanStage.scanLutLog2XYZ = nullptr;
-            run.scanStage.scanLutRes = 0;
-            if (run.scanStage.scannerUseLut) {
-                std::string lutError;
-                if (!JuicerCuda::ensure_scan_lut(*cudaResources, *_ws, true, _pCudaStream, lutError)) {
-                    JTRACE("CUDA", std::string("CUDA scan LUT upload failed: ") + lutError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                }
-                run.scanStage.scanLutLog2XYZ = cudaResources->scanNegativeLut.log2XYZ;
-                run.scanStage.scanLutRes = static_cast<int>(cudaResources->scanNegativeLut.res);
-                if (!run.scanStage.scanLutLog2XYZ || run.scanStage.scanLutRes <= 0) {
-                    JTRACE("CUDA", "FATAL: scan LUT missing after successful upload");
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-            }
-
-            // Negative scan tables payload
-            run.scanStage.scanTables.epsC = cudaResources->scanNegative.tables.epsC;
-            run.scanStage.scanTables.epsM = cudaResources->scanNegative.tables.epsM;
-            run.scanStage.scanTables.epsY = cudaResources->scanNegative.tables.epsY;
-            run.scanStage.scanTables.Ax = cudaResources->scanNegative.tables.Ax;
-            run.scanStage.scanTables.Ay = cudaResources->scanNegative.tables.Ay;
-            run.scanStage.scanTables.Az = cudaResources->scanNegative.tables.Az;
-            run.scanStage.scanTables.baseMin = cudaResources->scanNegative.tables.baseMin;
-            run.scanStage.scanTables.K = cudaResources->scanNegative.tables.K;
-            run.scanStage.scanTables.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
-            run.scanStage.scanTables.invYn = cudaResources->scanNegative.tables.invYn;
-            run.scanStage.scanTables.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
-            for (int i = 0; i < 3; ++i) {
-                run.scanStage.scanTables.min_cmy[i] = cudaResources->scanNegative.min_cmy[i];
-                run.scanStage.scanTables.inv_max_cmy[i] = cudaResources->scanNegative.inv_max_cmy[i];
-            }
-
-            cudaEvent_t scanEvent = prepare_scan_error_stage(cudaResources, run, stream);
-
-            run.filmDevelop.spatialDir.active = useSpatialDIR ? 1 : 0;
-            run.filmDevelop.spatialDir.corrY = nullptr;
-            run.filmDevelop.spatialDir.corrM = nullptr;
-            run.filmDevelop.spatialDir.corrC = nullptr;
-            if (useSpatialDIR) {
-                if (_effect.abort()) {
-                    JuicerCuda::record_use(*cudaResources, _pCudaStream);
-                    return;
-                }
-                std::string dirError;
-                if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
-                    JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                }
-                if (!JuicerCuda::ensure_spatial_dir_kernel(*cudaResources, cudaResources->spatialDirKernel, _dirRT.spatialSigmaPixels, _pCudaStream, dirError)) {
-                    JTRACE("CUDA", std::string("CUDA spatial DIR kernel upload failed: ") + dirError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                }
-
-                run.filmDevelop.spatialDir.corrY = cudaResources->spatialDirScratch.corrY;
-                run.filmDevelop.spatialDir.corrM = cudaResources->spatialDirScratch.corrM;
-                run.filmDevelop.spatialDir.corrC = cudaResources->spatialDirScratch.corrC;
-
-                cudaError_t dirErr = juicer_cuda_build_spatial_dir(
-                    &run,
-                    cudaResources->spatialDirScratch.corrY,
-                    cudaResources->spatialDirScratch.corrM,
-                    cudaResources->spatialDirScratch.corrC,
-                    cudaResources->spatialDirScratch.tmp,
-                    cudaResources->spatialDirKernel.weights,
-                    cudaResources->spatialDirKernel.radius,
-                    _pCudaStream);
-                if (dirErr != cudaSuccess) {
-                    const char* msg = cudaGetErrorString(dirErr);
-                    JTRACE("CUDA", std::string("FATAL: spatial DIR build failed: ") + (msg ? msg : "(unknown)"));
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
+            cudaEvent_t scanEvent = setup_scan_stage_resources(cudaResources, run, stream, true);
+            if (!setup_spatial_dir_stage(cudaResources, run, width, height, useSpatialDIR)) {
+                return;
             }
 
             const bool wantGlare = glareActive;
@@ -3053,7 +3094,14 @@ void JuicerProcessor::processImagesCUDA() {
 
             // Ensure the print illuminant filtered is available for current print params.
             std::string illumError;
-            if (!JuicerCuda::ensure_print_illuminant_filtered(*cudaResources, *_ws, *_prt, _printParams, _pCudaStream, illumError)) {
+            if (!JuicerCuda::ResourceManager::command_ensure_print_illuminant_filtered(
+                    submissionTxn,
+                    *cudaResources,
+                    *_ws,
+                    *_prt,
+                    _printParams,
+                    _pCudaStream,
+                    illumError)) {
                 JTRACE("CUDA", std::string("CUDA print illuminant upload failed: ") + illumError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3112,92 +3160,9 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmExpose.mallettBasis = cudaResources->mallettBasis;
             run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
 
-            // Scan LUT selection (print medium).
-            run.scanStage.scannerUseLut = _scannerSettings.useLut ? 1 : 0;
-            run.scanStage.scanLutLog2XYZ = nullptr;
-            run.scanStage.scanLutRes = 0;
-            if (run.scanStage.scannerUseLut) {
-                std::string lutError;
-                if (!JuicerCuda::ensure_scan_lut(*cudaResources, *_ws, false, _pCudaStream, lutError)) {
-                    JTRACE("CUDA", std::string("CUDA print scan LUT upload failed: ") + lutError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                }
-                run.scanStage.scanLutLog2XYZ = cudaResources->scanPrintLut.log2XYZ;
-                run.scanStage.scanLutRes = static_cast<int>(cudaResources->scanPrintLut.res);
-                if (!run.scanStage.scanLutLog2XYZ || run.scanStage.scanLutRes <= 0) {
-                    JTRACE("CUDA", "FATAL: print scan LUT missing after successful upload");
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-            }
-
-            // Print scan tables payload (for the scan stage).
-            run.scanStage.scanTables.epsC = cudaResources->scanPrint.tables.epsC;
-            run.scanStage.scanTables.epsM = cudaResources->scanPrint.tables.epsM;
-            run.scanStage.scanTables.epsY = cudaResources->scanPrint.tables.epsY;
-            run.scanStage.scanTables.Ax = cudaResources->scanPrint.tables.Ax;
-            run.scanStage.scanTables.Ay = cudaResources->scanPrint.tables.Ay;
-            run.scanStage.scanTables.Az = cudaResources->scanPrint.tables.Az;
-            run.scanStage.scanTables.baseMin = cudaResources->scanPrint.tables.baseMin;
-            run.scanStage.scanTables.K = cudaResources->scanPrint.tables.K;
-            run.scanStage.scanTables.hasBaseline = cudaResources->scanPrint.tables.hasBaseline;
-            run.scanStage.scanTables.invYn = cudaResources->scanPrint.tables.invYn;
-            run.scanStage.scanTables.mediumIsNegative = cudaResources->scanPrint.mediumIsNegative;
-            for (int i = 0; i < 3; ++i) {
-                run.scanStage.scanTables.min_cmy[i] = cudaResources->scanPrint.min_cmy[i];
-                run.scanStage.scanTables.inv_max_cmy[i] = cudaResources->scanPrint.inv_max_cmy[i];
-            }
-
-            cudaEvent_t scanEvent = prepare_scan_error_stage(cudaResources, run, stream);
-
-            run.filmDevelop.spatialDir.active = useSpatialDIR ? 1 : 0;
-            run.filmDevelop.spatialDir.corrY = nullptr;
-            run.filmDevelop.spatialDir.corrM = nullptr;
-            run.filmDevelop.spatialDir.corrC = nullptr;
-            if (useSpatialDIR) {
-                if (_effect.abort()) {
-                    JuicerCuda::record_use(*cudaResources, _pCudaStream);
-                    return;
-                }
-                std::string dirError;
-                if (!JuicerCuda::ensure_spatial_dir_scratch(*cudaResources, width, height, _pCudaStream, dirError)) {
-                    JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                }
-                if (!JuicerCuda::ensure_spatial_dir_kernel(*cudaResources, cudaResources->spatialDirKernel, _dirRT.spatialSigmaPixels, _pCudaStream, dirError)) {
-                    JTRACE("CUDA", std::string("CUDA spatial DIR kernel upload failed: ") + dirError);
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                }
-
-                run.filmDevelop.spatialDir.corrY = cudaResources->spatialDirScratch.corrY;
-                run.filmDevelop.spatialDir.corrM = cudaResources->spatialDirScratch.corrM;
-                run.filmDevelop.spatialDir.corrC = cudaResources->spatialDirScratch.corrC;
-
-                cudaError_t dirErr = juicer_cuda_build_spatial_dir(
-                    &run,
-                    cudaResources->spatialDirScratch.corrY,
-                    cudaResources->spatialDirScratch.corrM,
-                    cudaResources->spatialDirScratch.corrC,
-                    cudaResources->spatialDirScratch.tmp,
-                    cudaResources->spatialDirKernel.weights,
-                    cudaResources->spatialDirKernel.radius,
-                    _pCudaStream);
-                if (dirErr != cudaSuccess) {
-                    const char* msg = cudaGetErrorString(dirErr);
-                    JTRACE("CUDA", std::string("FATAL: spatial DIR build failed: ") + (msg ? msg : "(unknown)"));
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
+            cudaEvent_t scanEvent = setup_scan_stage_resources(cudaResources, run, stream, false);
+            if (!setup_spatial_dir_stage(cudaResources, run, width, height, useSpatialDIR)) {
+                return;
             }
 
             // Print pipeline payloads.

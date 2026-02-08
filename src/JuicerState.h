@@ -63,6 +63,8 @@ namespace JuicerAtomic {
 } // namespace JuicerAtomic
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
+
 namespace JuicerCuda {
     struct Resources;
     void destroy(Resources* resources) noexcept;
@@ -287,7 +289,10 @@ struct InstanceState {
     // This is kept on InstanceState so the CPU and CUDA render paths share the same invalidation
     // boundary (the atomic WorkingState swap).
     std::mutex cudaMutex;
-    std::unordered_map<int, std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter>> cudaByDevice;
+    std::unordered_map<
+        JuicerCuda::ResourceManager::DeviceContextKey,
+        std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter>,
+        JuicerCuda::ResourceManager::DeviceContextKeyHash> cudaByDevice;
 #endif
 };
 

@@ -5,6 +5,8 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
+#include <functional>
 
 namespace JuicerCuda {
 namespace ResourceManager {
@@ -20,6 +22,19 @@ struct FrameToken {
 struct DeviceContextKey {
     int deviceId = -1;
     void* contextOpaque = nullptr;
+
+    bool operator==(const DeviceContextKey& other) const noexcept {
+        return deviceId == other.deviceId && contextOpaque == other.contextOpaque;
+    }
+};
+
+struct DeviceContextKeyHash {
+    std::size_t operator()(const DeviceContextKey& key) const noexcept {
+        const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
+        const std::size_t hDevice = std::hash<int>{}(key.deviceId);
+        const std::size_t hContext = std::hash<std::uintptr_t>{}(contextBits);
+        return hDevice ^ (hContext + 0x9e3779b9u + (hDevice << 6u) + (hDevice >> 2u));
+    }
 };
 
 struct KeyDigests {
@@ -47,4 +62,3 @@ struct SubmissionTransaction {
 
 } // namespace ResourceManager
 } // namespace JuicerCuda
-
