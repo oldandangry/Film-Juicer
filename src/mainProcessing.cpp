@@ -15,6 +15,10 @@
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
+#include <cuda.h>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
@@ -135,6 +139,68 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 namespace {
     constexpr std::uint64_t kSeedPassGrain = 1;
     constexpr std::uint64_t kSeedPassGlare = 2;
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    using CuCtxGetCurrentFn = CUresult(CUDAAPI*)(CUcontext*);
+
+    struct CudaDriverDispatch {
+        CuCtxGetCurrentFn cuCtxGetCurrent = nullptr;
+        const char* loadError = nullptr;
+    };
+
+    const CudaDriverDispatch& cuda_driver_dispatch() {
+        static CudaDriverDispatch dispatch{};
+        static std::once_flag once;
+        std::call_once(once, []() {
+#if defined(_WIN32)
+            HMODULE module = GetModuleHandleA("nvcuda.dll");
+            if (!module) {
+                module = LoadLibraryA("nvcuda.dll");
+            }
+            if (!module) {
+                dispatch.loadError = "nvcuda.dll not available";
+                return;
+            }
+            dispatch.cuCtxGetCurrent =
+                reinterpret_cast<CuCtxGetCurrentFn>(GetProcAddress(module, "cuCtxGetCurrent"));
+            if (!dispatch.cuCtxGetCurrent) {
+                dispatch.loadError = "cuCtxGetCurrent symbol not found";
+                return;
+            }
+#else
+            dispatch.loadError = "dynamic cuCtxGetCurrent loader unsupported on this platform";
+            return;
+#endif
+        });
+        return dispatch;
+    }
+
+    bool query_current_cuda_context(void*& outContextOpaque, std::string& outError) {
+        outContextOpaque = nullptr;
+        outError.clear();
+
+        const CudaDriverDispatch& dispatch = cuda_driver_dispatch();
+        if (!dispatch.cuCtxGetCurrent) {
+            outError = dispatch.loadError ? dispatch.loadError : "driver dispatch unavailable";
+            return false;
+        }
+
+        CUcontext currentContext = nullptr;
+        const CUresult ctxResult = dispatch.cuCtxGetCurrent(&currentContext);
+        if (ctxResult != CUDA_SUCCESS) {
+            outError = std::string("cuCtxGetCurrent failed (code=")
+                + std::to_string(static_cast<int>(ctxResult)) + ")";
+            return false;
+        }
+        if (!currentContext) {
+            outError = "current CUDA context is null";
+            return false;
+        }
+
+        outContextOpaque = reinterpret_cast<void*>(currentContext);
+        return true;
+    }
+#endif
 
     std::int64_t frame_index_from_time(double time) {
         if (!std::isfinite(time)) {
@@ -1155,6 +1221,7 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
     int deviceId = -1;
+    void* contextOpaque = nullptr;
     {
         cudaPointerAttributes srcAttr{};
         cudaError_t attrErr = cudaPointerGetAttributes(&srcAttr, srcBase);
@@ -1191,6 +1258,12 @@ void JuicerProcessor::processImagesCUDA() {
             JTRACE("CUDA", std::string("FATAL: cudaSetDevice failed: ") + (msg ? msg : "(unknown)"));
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+
+        std::string contextError;
+        if (!query_current_cuda_context(contextOpaque, contextError)) {
+            JTRACE("CUDA", std::string("FATAL: failed to capture CUDA context identity: ") + contextError);
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
     }
 
     if (_effect.abort()) {
@@ -1214,7 +1287,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
     deviceContextKey.deviceId = deviceId;
-    deviceContextKey.contextOpaque = nullptr;
+    deviceContextKey.contextOpaque = contextOpaque;
 
     JuicerCuda::Resources* cudaResources = nullptr;
     {
