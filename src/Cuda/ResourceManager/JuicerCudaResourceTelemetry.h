@@ -5,6 +5,9 @@
 
 #include <cstdint>
 
+#include "Cuda/ResourceManager/JuicerCudaResourcePolicy.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
+
 namespace JuicerCuda {
 namespace ResourceManager {
 
@@ -14,7 +17,63 @@ void telemetry_record_begin_submission() noexcept;
 void telemetry_record_acquire_plan() noexcept;
 void telemetry_record_commit_submission() noexcept;
 void telemetry_record_rollback_submission() noexcept;
+void telemetry_record_acquire_status(AcquireStatus status) noexcept;
+void telemetry_record_trace_schema_mismatch() noexcept;
+void telemetry_record_forbidden_invalidation_edge() noexcept;
+void telemetry_record_module_boundary_violation() noexcept;
+std::uint64_t telemetry_next_acquire_attempt_id() noexcept;
+
+void telemetry_trace_schema_announcement(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion) noexcept;
+
+void telemetry_trace_schema_mismatch(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t observedTraceSchemaVersion) noexcept;
+
+void telemetry_trace_key_normalization(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const KeyDigests& before,
+    const KeyDigests& after) noexcept;
+
+void telemetry_trace_invalidation(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const char* lane,
+    const char* reason,
+    std::uint64_t previousHash,
+    std::uint64_t currentHash) noexcept;
+
+void telemetry_trace_dag_edge(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const char* fromNode,
+    const char* toNode,
+    bool allowed,
+    const char* reason) noexcept;
+
+void telemetry_trace_module_boundary_violation(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const char* reason) noexcept;
+
+void telemetry_trace_acquire(
+    std::uint64_t acquireId,
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    AcquireStatus finalStatus,
+    AcquireStatus uploadStatus,
+    AcquireStatus dirStatus,
+    AcquireStatus scannerStatus,
+    bool hadPreviousSnapshot) noexcept;
 
 } // namespace ResourceManager
 } // namespace JuicerCuda
-
