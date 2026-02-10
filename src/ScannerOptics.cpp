@@ -10,6 +10,7 @@
 
 #include "ofxsMultiThread.h"
 
+#include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Hash.h"
 #include "Logging.h"
 #include "OutputEncoding.h"
@@ -285,15 +286,21 @@ namespace {
         return std::exp(mu + sigma * normalSample);
     }
 
+    inline std::uint64_t scanner_lut_digest(const Scanner::ScannerStaticKey& staticKey) {
+        return JuicerCuda::ResourceManager::make_scan_lut_key_digest(
+            static_cast<std::uint32_t>(staticKey.medium),
+            staticKey.tablesHash,
+            staticKey.densityRangeHash,
+            staticKey.lutResolution);
+    }
+
     inline bool should_rebuild_lut(
         const ScannerOptics::Runtime& runtime,
-        const Scanner::ScannerStaticKey& staticKey,
-        bool staticKeyChanged)
+        const Scanner::ScannerStaticKey& staticKey)
     {
         if (!runtime.lut.valid) return true;
-        if (staticKeyChanged) return true;
-        const std::uint64_t expected =
-            Hash::hash_bytes(&staticKey.hash, sizeof(staticKey.hash));
+        const std::uint64_t expected = scanner_lut_digest(staticKey);
+        if (expected == 0) return true;
         if (runtime.lut.hash != expected) return true;
         return false;
     }
@@ -503,14 +510,20 @@ namespace ScannerOptics {
 
         // Prepare LUT if needed
         const bool useLut = ctx.settings.useLut;
-        if (useLut && should_rebuild_lut(runtime, ctx.scannerKey.staticKey, staticKeyChanged)) {
-            const std::uint32_t res = std::clamp(
-                ctx.scannerKey.staticKey.lutResolution, 17u, 128u);
+        if (useLut && should_rebuild_lut(runtime, ctx.scannerKey.staticKey)) {
+            const std::uint64_t lutDigest = scanner_lut_digest(ctx.scannerKey.staticKey);
+            if (lutDigest == 0) {
+                JTRACE("SCAN", "FATAL: scanner LUT digest invalid");
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
+            const std::uint32_t res = JuicerCuda::ResourceManager::normalize_scan_lut_resolution(
+                ctx.scannerKey.staticKey.lutResolution);
             runtime.lut.cpu.resize(size_t(res) * size_t(res) * size_t(res) * 3u);
             runtime.lut.res = res;
             {
                 std::ostringstream oss;
                 oss << "build LUT res=" << res
+                    << " lutKey=" << lutDigest
                     << " staticKey=" << ctx.scannerKey.staticKey.hash
                     << " colorHash=" << ctx.scannerKey.staticKey.colorRuntimeHash
                     << " tablesHash=" << ctx.scannerKey.staticKey.tablesHash
@@ -539,7 +552,7 @@ namespace ScannerOptics {
                     }
                 }
             }
-            runtime.lut.hash = Hash::hash_bytes(&ctx.scannerKey.staticKey.hash, sizeof(ctx.scannerKey.staticKey.hash));
+            runtime.lut.hash = lutDigest;
             runtime.lut.valid = true;
         }
         if (!useLut) {

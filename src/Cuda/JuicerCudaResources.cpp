@@ -4,6 +4,7 @@
 //
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 
 #include "FilmProcessing.h"
 #include "ColorTransforms.h"
@@ -2145,16 +2146,44 @@ namespace JuicerCuda {
 #else
         const Scanner::ScannerMediumRuntime& medium = negativeMedium ? ws.negativeMediumRuntime : ws.printMediumRuntime;
         const Scanner::ScannerStaticKey& staticKey = negativeMedium ? ws.negativeStaticKey : ws.printStaticKey;
+        const Scanner::ScannerMedium expectedMedium = negativeMedium
+            ? Scanner::ScannerMedium::Negative
+            : Scanner::ScannerMedium::Print;
 
         if (!medium.tables || medium.tables->K <= 0) {
             outError = "scan LUT build requested but medium tables are unavailable";
             return false;
         }
+        if (medium.medium != expectedMedium || staticKey.medium != expectedMedium) {
+            outError = "scan LUT build requested with mismatched medium identity";
+            return false;
+        }
 
-        const std::uint32_t res = std::clamp(staticKey.lutResolution, 17u, 128u);
-        const std::uint64_t expectedHash = Hash::hash_bytes(&staticKey.hash, sizeof(staticKey.hash));
+        if (medium.tables->tablesHash == 0) {
+            outError = "scan LUT build requested but medium tables hash is invalid";
+            return false;
+        }
+        if (medium.range.digest == 0) {
+            outError = "scan LUT build requested but medium density range hash is invalid";
+            return false;
+        }
+        if (staticKey.tablesHash != medium.tables->tablesHash) {
+            outError = "scan LUT build requested but static key tables hash mismatches medium tables hash";
+            return false;
+        }
+        if (staticKey.densityRangeHash != medium.range.digest) {
+            outError = "scan LUT build requested but static key density range hash mismatches medium density range hash";
+            return false;
+        }
+        const std::uint32_t res =
+            ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
+        const std::uint64_t expectedHash = ResourceManager::make_scan_lut_key_digest(
+            static_cast<std::uint32_t>(medium.medium),
+            medium.tables->tablesHash,
+            medium.range.digest,
+            res);
         if (expectedHash == 0) {
-            outError = "scan LUT staticKey hash invalid";
+            outError = "scan LUT key hash invalid";
             return false;
         }
 
