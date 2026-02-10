@@ -2546,9 +2546,9 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
         if (illumKey.empty()) {
             continue;
         }
-        if (load_enlarger_neutral_filters(jsonPathPrimary, paperKey, illumKey, negativeKey, ymc) ||
+        if (load_enlarger_neutral_filters(jsonPathPrimary, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control) ||
             (jsonPathPrimary != jsonPathFallback &&
-                load_enlarger_neutral_filters(jsonPathFallback, paperKey, illumKey, negativeKey, ymc))) {
+                load_enlarger_neutral_filters(jsonPathFallback, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control))) {
             neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
