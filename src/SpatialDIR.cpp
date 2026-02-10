@@ -94,6 +94,17 @@ namespace SpatialDIR {
             return;
         }
 
+        const bool verboseDiagnostics = JTRACE_ENABLED(3);
+        auto should_abort = [&]() -> bool {
+            return callbacks.abortCheck(callbacks.user);
+            };
+        auto trace_abort_fast = [&](const char* stage) {
+            if (!verboseDiagnostics) {
+                return;
+            }
+            JTRACE_VERBOSE("MSCPU", std::string("path=spatial_dir event=abort_fast stage=") + stage);
+            };
+
         // Per agx-emulsion parity: use same sensitivities everywhere (no separate "before balance" state).
         // Profiles contain pre-balanced sensitivities; spatial DIR and mid-gray must match pixel render.
         const Spectral::Curve& sensB_forExposure = ws.sensB;
@@ -101,7 +112,7 @@ namespace SpatialDIR {
         const Spectral::Curve& sensR_forExposure = ws.sensR;
 
         // DEBUG: Log WorkingState sensitivity curves before use
-        {
+        if (verboseDiagnostics) {
             const int idx_450 = 14, idx_520 = 28, idx_650 = 54;
             std::ostringstream oss;
             oss << "WS_SENS_PREUSE: B[450nm]=" << (sensB_forExposure.linear.size() > idx_450 ? sensB_forExposure.linear[idx_450] : -999.0f)
@@ -113,7 +124,7 @@ namespace SpatialDIR {
                 << " | B[650nm]=" << (sensB_forExposure.linear.size() > idx_650 ? sensB_forExposure.linear[idx_650] : -999.0f)
                 << " G[650nm]=" << (sensG_forExposure.linear.size() > idx_650 ? sensG_forExposure.linear[idx_650] : -999.0f)
                 << " R[650nm]=" << (sensR_forExposure.linear.size() > idx_650 ? sensR_forExposure.linear[idx_650] : -999.0f);
-            JTRACE("SPECTRAL", oss.str());
+            JTRACE_VERBOSE("SPECTRAL", oss.str());
         }
 
         // Pass A: sample exposures, convert to logE, compute DIR corrections per pixel.
@@ -124,9 +135,17 @@ namespace SpatialDIR {
         runnerCfg.enablePrint = false;
         const Pipeline::PipelineRunner runner(runnerCfg);
 
+        bool aborted = false;
         for (int yy = 0; yy < height; ++yy) {
-            if (callbacks.abortCheck(callbacks.user)) break;
+            if (should_abort()) {
+                aborted = true;
+                break;
+            }
             for (int xx = 0; xx < width; ++xx) {
+                if ((xx & 63) == 0 && should_abort()) {
+                    aborted = true;
+                    break;
+                }
                 const size_t idx = size_t(yy) * size_t(width) + size_t(xx);
                 float rgbIn[3] = { 0.0f, 0.0f, 0.0f };
                 if (!callbacks.fetchRGB(callbacks.user, xx, yy, rgbIn)) {
@@ -136,10 +155,10 @@ namespace SpatialDIR {
                 }
 
                 // SPD DEBUG: Log input RGB for center pixel
-                if (xx == center_xx && yy == center_yy) {
+                if (verboseDiagnostics && xx == center_xx && yy == center_yy) {
                     std::ostringstream oss;
                     oss << "INPUT_RGB tile_pixel(" << xx << "," << yy << "): R=" << rgbIn[0] << " G=" << rgbIn[1] << " B=" << rgbIn[2];
-                    JTRACE("SPECTRAL", oss.str());
+                    JTRACE_VERBOSE("SPECTRAL", oss.str());
                 }
 
                 Pipeline::DensityPixelInputs pxIn{};
@@ -162,12 +181,12 @@ namespace SpatialDIR {
                 work.filmRaw_R[idx] = pxOut.filmRaw.v[2];
 
                 // SPD DEBUG: Log film raw exposure (pre-log) for center pixel
-                if (xx == center_xx && yy == center_yy) {
+                if (verboseDiagnostics && xx == center_xx && yy == center_yy) {
                     std::ostringstream oss;
                     oss << "FILM_RAW tile_pixel(" << xx << "," << yy << "): B=" << pxOut.filmRaw.v[0]
                         << " G=" << pxOut.filmRaw.v[1]
                         << " R=" << pxOut.filmRaw.v[2];
-                    JTRACE("SPECTRAL", oss.str());
+                    JTRACE_VERBOSE("SPECTRAL", oss.str());
 
                     // Log sensitivity curve values at key wavelengths
                     const int idx_450 = 14;  // (450-380)/5 = 14
@@ -181,9 +200,9 @@ namespace SpatialDIR {
                             << " G[520nm]=" << sensG_forExposure.linear[idx_520] << " R[520nm]=" << sensR_forExposure.linear[idx_520];
                         oss3 << "SENS_CURVES tile_pixel(" << xx << "," << yy << "): B[650nm]=" << sensB_forExposure.linear[idx_650]
                             << " G[650nm]=" << sensG_forExposure.linear[idx_650] << " R[650nm]=" << sensR_forExposure.linear[idx_650];
-                        JTRACE("SPECTRAL", oss1.str());
-                        JTRACE("SPECTRAL", oss2.str());
-                        JTRACE("SPECTRAL", oss3.str());
+                        JTRACE_VERBOSE("SPECTRAL", oss1.str());
+                        JTRACE_VERBOSE("SPECTRAL", oss2.str());
+                        JTRACE_VERBOSE("SPECTRAL", oss3.str());
                     }
                 }
 
@@ -206,14 +225,42 @@ namespace SpatialDIR {
                 work.corrM[idx] = aCorr[1];
                 work.corrC[idx] = aCorr[2];
             }
+            if (aborted) {
+                break;
+            }
+        }
+
+        if (aborted || should_abort()) {
+            trace_abort_fast("pre_blur");
+            return;
         }
 
         // Blur corrections spatially (shared between preview + render path)
         kernelCache.clear();
         buildGaussianKernel(dirRT.spatialSigmaPixels, kernelCache);
+        if (should_abort()) {
+            trace_abort_fast("post_kernel");
+            return;
+        }
         blurChannelSeparable(work.corrY, work.tmp, work.corrYBlur, width, height, kernelCache);
+        if (should_abort()) {
+            trace_abort_fast("post_blur_y");
+            return;
+        }
         blurChannelSeparable(work.corrM, work.tmp, work.corrMBlur, width, height, kernelCache);
+        if (should_abort()) {
+            trace_abort_fast("post_blur_m");
+            return;
+        }
         blurChannelSeparable(work.corrC, work.tmp, work.corrCBlur, width, height, kernelCache);
+        if (should_abort()) {
+            trace_abort_fast("post_blur_c");
+            return;
+        }
+        if (should_abort()) {
+            trace_abort_fast("pre_clamp");
+            return;
+        }
 
         auto scrubClamp = [](std::vector<float>& v) {
             for (float& t : v) {
@@ -228,4 +275,3 @@ namespace SpatialDIR {
     }
 
 } // namespace SpatialDIR
-

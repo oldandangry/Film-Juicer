@@ -154,36 +154,71 @@ namespace {
             return accumulateY(mask, nullptr);
         }
 
-        std::lock_guard<std::mutex> lock(state->autoExposureMutex);
+        const size_t expectedMaskSize = static_cast<size_t>(width) * static_cast<size_t>(height);
+        auto needsMaskRebuild = [&](const InstanceState& s) -> bool {
+            const std::shared_ptr<const std::vector<double>>& weights = s.autoExposureMaskWeights;
+            return !s.autoExposureMaskValid
+                || s.autoExposureMaskWidth != width
+                || s.autoExposureMaskHeight != height
+                || !nearly_equal_double(s.autoExposureMaskSigma, sigma)
+                || !nearly_equal_double(s.autoExposureMaskRenderScaleX, renderScaleX)
+                || !nearly_equal_double(s.autoExposureMaskRenderScaleY, renderScaleY)
+                || s.autoExposureMaskClipToken != clipToken
+                || !weights
+                || weights->size() != expectedMaskSize;
+            };
 
-        bool rebuildMask = !state->autoExposureMaskValid
-            || state->autoExposureMaskWidth != width
-            || state->autoExposureMaskHeight != height
-            || !nearly_equal_double(state->autoExposureMaskSigma, sigma)
-            || !nearly_equal_double(state->autoExposureMaskRenderScaleX, renderScaleX)
-            || !nearly_equal_double(state->autoExposureMaskRenderScaleY, renderScaleY)
-            || state->autoExposureMaskClipToken != clipToken;
-
-        if (rebuildMask) {
-            const double sumMask = build_center_weight_mask(width, height, sigma, state->autoExposureMaskWeights);
-            state->autoExposureMaskWidth = width;
-            state->autoExposureMaskHeight = height;
-            state->autoExposureMaskSigma = sigma;
-            state->autoExposureMaskSum = sumMask;
-            state->autoExposureMaskRenderScaleX = renderScaleX;
-            state->autoExposureMaskRenderScaleY = renderScaleY;
-            state->autoExposureMaskClipToken = clipToken;
-            state->autoExposureMaskValid = sumMask > 0.0;
+        std::shared_ptr<const std::vector<double>> maskSnapshot;
+        bool maskValid = false;
+        bool rebuildMask = false;
+        {
+            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
+            rebuildMask = needsMaskRebuild(*state);
+            if (!rebuildMask) {
+                maskSnapshot = state->autoExposureMaskWeights;
+                maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
+                if (!maskValid) {
+                    state->autoExposureMaskSum = 0.0;
+                }
+            }
         }
 
-        if (!state->autoExposureMaskValid) {
-            state->autoExposureMaskSum = 0.0;
+        if (rebuildMask) {
+            auto rebuiltMask = std::make_shared<std::vector<double>>();
+            const double sumMask = build_center_weight_mask(width, height, sigma, *rebuiltMask);
+            const bool rebuiltValid = sumMask > 0.0;
+
+            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
+            if (needsMaskRebuild(*state)) {
+                state->autoExposureMaskWidth = width;
+                state->autoExposureMaskHeight = height;
+                state->autoExposureMaskSigma = sigma;
+                state->autoExposureMaskRenderScaleX = renderScaleX;
+                state->autoExposureMaskRenderScaleY = renderScaleY;
+                state->autoExposureMaskClipToken = clipToken;
+                state->autoExposureMaskWeights = rebuiltMask;
+                state->autoExposureMaskValid = rebuiltValid;
+                state->autoExposureMaskSum = rebuiltValid ? sumMask : 0.0;
+            }
+            maskSnapshot = state->autoExposureMaskWeights;
+            maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
+            if (!maskValid) {
+                state->autoExposureMaskSum = 0.0;
+            }
+        }
+
+        if (!maskValid || !maskSnapshot || maskSnapshot->size() != expectedMaskSize) {
             return 0.0;
         }
 
         double effectiveSumMask = 0.0;
-        const double measuredY = accumulateY(state->autoExposureMaskWeights, &effectiveSumMask);
-        state->autoExposureMaskSum = effectiveSumMask;
+        const double measuredY = accumulateY(*maskSnapshot, &effectiveSumMask);
+        {
+            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
+            if (state->autoExposureMaskWeights == maskSnapshot) {
+                state->autoExposureMaskSum = effectiveSumMask;
+            }
+        }
         return measuredY;
     }
 
