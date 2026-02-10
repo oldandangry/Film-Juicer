@@ -19,5 +19,7 @@ bool load_enlarger_neutral_filters(
     std::tuple<float, float, float>& outYMC, // filled with (Y,M,C)
     // Control path may perform first-load parsing and diagnostics reload checks.
     // RenderWorker path is lookup-only and will not run file checks/parses.
-    NeutralFilterThreadClass threadClass = NeutralFilterThreadClass::Control
+    NeutralFilterThreadClass threadClass = NeutralFilterThreadClass::Control,
+    // Optional: receives selected parsed DB version hash for the matched lookup.
+    std::string* outSelectedDbVersionHash = nullptr
 );

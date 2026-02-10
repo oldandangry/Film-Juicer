@@ -276,6 +276,7 @@ struct InstanceState {
     float printMidgrayMShiftSteps = 0.0f;
     float printMidgrayCShiftSteps = 0.0f;
     float printMidgrayExposureCompScale = 1.0f;
+    std::uint64_t printMidgrayNeutralFilterHash = Print::kDefaultNeutralFilterHash;
     float printMidgrayFactor = 1.0f;
 
     ScannerOptics::Runtime scannerRuntimeA;

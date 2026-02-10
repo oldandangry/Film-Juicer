@@ -2542,20 +2542,22 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
     const std::string jsonPathPrimary = data_dir_string("profiles", enlarger_neutral_filters_json_for_choice(P.enlDichroicSet));
     const std::string jsonPathFallback = data_dir_string("profiles", "enlarger_neutral_ymc_filters.json");
     std::tuple<float, float, float> ymc{};
+    std::string selectedDbVersionHash;
     for (const std::string& illumKey : illumKeys) {
         if (illumKey.empty()) {
             continue;
         }
-        if (load_enlarger_neutral_filters(jsonPathPrimary, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control) ||
+        if (load_enlarger_neutral_filters(jsonPathPrimary, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash) ||
             (jsonPathPrimary != jsonPathFallback &&
-                load_enlarger_neutral_filters(jsonPathFallback, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control))) {
+                load_enlarger_neutral_filters(jsonPathFallback, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash))) {
             neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
             loaded = true;
             JTRACE("PRINT", "Neutral filters loaded for " + std::string(illumKey)
                 + " Y/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM)
-                + "/" + std::to_string(neutralC));
+                + "/" + std::to_string(neutralC)
+                + " db_version_hash=" + (selectedDbVersionHash.empty() ? std::string("none") : selectedDbVersionHash));
             break;
         }
     }
@@ -2569,9 +2571,18 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
         throw std::runtime_error("Neutral filter database entry not found");
     }
 
+    std::uint64_t neutralFilterHash = Print::kDefaultNeutralFilterHash;
+    if (!selectedDbVersionHash.empty()) {
+        neutralFilterHash = Hash::hash_bytes(selectedDbVersionHash.data(), selectedDbVersionHash.size());
+        if (neutralFilterHash == 0) {
+            neutralFilterHash = Print::kDefaultNeutralFilterHash;
+        }
+    }
+
     _state->printRT.neutralY = neutralY;
     _state->printRT.neutralM = neutralM;
     _state->printRT.neutralC = neutralC;
+    _state->printRT.neutralFilterHash = neutralFilterHash;
     // Preserve user-entered enlarger offsets and exposure toggle; neutral baselines update independently.
 
 }

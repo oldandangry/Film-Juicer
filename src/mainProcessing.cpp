@@ -362,6 +362,8 @@ namespace {
         const float yKey = std::isfinite(printParams.yFilter) ? printParams.yFilter : 0.0f;
         const float mKey = std::isfinite(printParams.mFilter) ? printParams.mFilter : 0.0f;
         const float cKey = std::isfinite(printParams.cFilter) ? printParams.cFilter : 0.0f;
+        const std::uint64_t neutralFilterHash =
+            (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
         const float exposureCompScale = printParams.exposureCompensationEnabled
             ? printParams.exposureCompensationScale
             : 1.0f;
@@ -373,6 +375,7 @@ namespace {
                 instanceState->printMidgrayYShiftSteps == yKey &&
                 instanceState->printMidgrayMShiftSteps == mKey &&
                 instanceState->printMidgrayCShiftSteps == cKey &&
+                instanceState->printMidgrayNeutralFilterHash == neutralFilterHash &&
                 instanceState->printMidgrayExposureCompScale == exposureCompScale) {
                 return instanceState->printMidgrayFactor;
             }
@@ -395,6 +398,7 @@ namespace {
             instanceState->printMidgrayYShiftSteps = yKey;
             instanceState->printMidgrayMShiftSteps = mKey;
             instanceState->printMidgrayCShiftSteps = cKey;
+            instanceState->printMidgrayNeutralFilterHash = neutralFilterHash;
             instanceState->printMidgrayExposureCompScale = exposureCompScale;
             instanceState->printMidgrayFactor = kMid;
         }
@@ -3515,6 +3519,7 @@ void JuicerProcessor::processImagesCUDA() {
                     + " cFilter=" + std::to_string(_printParams.cFilter)
                     + " illumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
                     + " illumCoreHash=" + std::to_string(cudaResources->printIllumCoreHash)
+                    + " illumNeutralHash=" + std::to_string(cudaResources->printIllumNeutralFilterHash)
                     + " illumY/M/Csteps=" + std::to_string(cudaResources->printIllumYShiftSteps)
                     + "/" + std::to_string(cudaResources->printIllumMShiftSteps)
                     + "/" + std::to_string(cudaResources->printIllumCShiftSteps)

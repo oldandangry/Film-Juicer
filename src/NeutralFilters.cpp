@@ -263,8 +263,13 @@ bool load_enlarger_neutral_filters(
     const std::string& illuminantKey,
     const std::string& negativeKey,
     std::tuple<float, float, float>& outYMC,
-    NeutralFilterThreadClass threadClass)
+    NeutralFilterThreadClass threadClass,
+    std::string* outSelectedDbVersionHash)
 {
+    if (outSelectedDbVersionHash) {
+        outSelectedDbVersionHash->clear();
+    }
+
     if (paperKey.empty() || illuminantKey.empty() || negativeKey.empty()) {
         trace_neutral_filter_event("miss", "none", threadClass, "missing_lookup_key", &jsonPath);
         return false;
@@ -361,6 +366,9 @@ bool load_enlarger_neutral_filters(
         return false;
     }
 
+    if (outSelectedDbVersionHash) {
+        *outSelectedDbVersionHash = dbSnapshot->versionHash;
+    }
     trace_neutral_filter_event("hit", dbSnapshot->versionHash, threadClass, nullptr, &jsonPath);
     return true;
 }

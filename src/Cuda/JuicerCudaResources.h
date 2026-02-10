@@ -219,6 +219,7 @@ namespace JuicerCuda {
         float printIllumYShiftSteps = 0.0f;
         float printIllumMShiftSteps = 0.0f;
         float printIllumCShiftSteps = 0.0f;
+        std::uint64_t printIllumNeutralFilterHash = 0;
         int printIllumShapeK = 0;
         std::uint64_t printIllumBuildCounter = 0;
         std::uint64_t printIllumCoreHash = 0;

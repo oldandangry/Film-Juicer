@@ -1133,6 +1133,7 @@ namespace JuicerCuda {
         resources.printIllumYShiftSteps = 0.0f;
         resources.printIllumMShiftSteps = 0.0f;
         resources.printIllumCShiftSteps = 0.0f;
+        resources.printIllumNeutralFilterHash = 0;
         resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
         resources.printIllumCoreHash = 0;
@@ -1174,6 +1175,7 @@ namespace JuicerCuda {
         resources.printIllumYShiftSteps = 0.0f;
         resources.printIllumMShiftSteps = 0.0f;
         resources.printIllumCShiftSteps = 0.0f;
+        resources.printIllumNeutralFilterHash = 0;
         resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
         resources.printIllumCoreHash = 0;
@@ -3150,6 +3152,8 @@ namespace JuicerCuda {
         const float yAmount = compose_amount(prt.neutralY, yKey);
         const float mAmount = compose_amount(prt.neutralM, mKey);
         const float cAmount = compose_amount(prt.neutralC, cKey);
+        const std::uint64_t neutralFilterHash =
+            (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
 
         const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 
@@ -3167,7 +3171,8 @@ namespace JuicerCuda {
                 resources.printIllumCoreHash == ws.coreHash &&
                 resources.printIllumYShiftSteps == yKey &&
                 resources.printIllumMShiftSteps == mKey &&
-                resources.printIllumCShiftSteps == cKey;
+                resources.printIllumCShiftSteps == cKey &&
+                resources.printIllumNeutralFilterHash == neutralFilterHash;
             if (cached) {
                 return true;
             }
@@ -3204,7 +3209,8 @@ namespace JuicerCuda {
             resources.printIllumCoreHash == ws.coreHash &&
             resources.printIllumYShiftSteps == yKey &&
             resources.printIllumMShiftSteps == mKey &&
-            resources.printIllumCShiftSteps == cKey;
+            resources.printIllumCShiftSteps == cKey &&
+            resources.printIllumNeutralFilterHash == neutralFilterHash;
         if (cached) {
             return true;
         }
@@ -3249,6 +3255,7 @@ namespace JuicerCuda {
         resources.printIllumYShiftSteps = yKey;
         resources.printIllumMShiftSteps = mKey;
         resources.printIllumCShiftSteps = cKey;
+        resources.printIllumNeutralFilterHash = neutralFilterHash;
         resources.printIllumShapeK = K;
         resources.printIllumBuildCounter = ws.buildCounter;
         resources.printIllumCoreHash = ws.coreHash;
@@ -3791,6 +3798,7 @@ namespace JuicerCuda {
         hash_f32(prm.yFilter);
         hash_f32(prm.mFilter);
         hash_f32(prm.cFilter);
+        hash_u64((prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash);
         hash_bool(prm.exposureCompensationEnabled);
         hash_f32(prm.exposureCompensationScale);
         hash_f32(midgrayFactor);

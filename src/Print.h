@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <array>
+#include <cstdint>
 #include <cmath>
 #include <filesystem>
 #include <initializer_list>
@@ -40,6 +41,7 @@ namespace Print {
     constexpr float kDefaultNeutralY = 0.9f;
     constexpr float kDefaultNeutralM = 0.5f;
     constexpr float kDefaultNeutralC = 0.35f;
+    constexpr std::uint64_t kDefaultNeutralFilterHash = 1ull;
 
     struct DensityCurves {
         std::vector<std::pair<double, double>> cyan;
@@ -119,6 +121,7 @@ namespace Print {
         float neutralY = kDefaultNeutralY;
         float neutralM = kDefaultNeutralM;
         float neutralC = kDefaultNeutralC;
+        std::uint64_t neutralFilterHash = kDefaultNeutralFilterHash;
 
         bool hasMidNeutralDensity = false;
         std::array<float, 3> midNeutralDensity{ {
