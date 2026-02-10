@@ -51,6 +51,7 @@ struct ShadowKeyDelta {
     bool uploadCoreChanged = false;
     bool dirChanged = false;
     bool scannerChanged = false;
+    bool autoExposureChanged = false;
 };
 
 struct ResourcePlanEntry {
@@ -62,6 +63,7 @@ struct ResourcePlan {
     ResourcePlanEntry uploadCore{};
     ResourcePlanEntry dir{};
     ResourcePlanEntry scanner{};
+    ResourcePlanEntry autoExposure{};
 };
 
 struct PressureDecision {

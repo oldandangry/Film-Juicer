@@ -31,11 +31,13 @@ std::uint64_t normalize_key_float(double value, double scale) noexcept {
 KeyDigests make_key_digests(
     std::uint64_t uploadCoreHash,
     std::uint64_t dirHash,
-    std::uint64_t scannerHash) noexcept {
+    std::uint64_t scannerHash,
+    std::uint64_t autoExposureHash) noexcept {
     KeyDigests digests{};
     digests.uploadCoreHash = normalize_key_u64(uploadCoreHash);
     digests.dirHash = normalize_key_u64(dirHash);
     digests.scannerHash = normalize_key_u64(scannerHash);
+    digests.autoExposureHash = normalize_key_u64(autoExposureHash);
     return digests;
 }
 
@@ -43,7 +45,8 @@ KeyDigests normalize_key_digests(const KeyDigests& digests) noexcept {
     return make_key_digests(
         digests.uploadCoreHash,
         digests.dirHash,
-        digests.scannerHash);
+        digests.scannerHash,
+        digests.autoExposureHash);
 }
 
 } // namespace ResourceManager

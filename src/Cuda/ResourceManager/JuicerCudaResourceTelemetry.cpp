@@ -134,6 +134,8 @@ void telemetry_trace_key_normalization(
         " dir_after=" + std::to_string(after.dirHash) +
         " scanner_before=" + std::to_string(before.scannerHash) +
         " scanner_after=" + std::to_string(after.scannerHash) +
+        " auto_exposure_before=" + std::to_string(before.autoExposureHash) +
+        " auto_exposure_after=" + std::to_string(after.autoExposureHash) +
         " reason=canonical_normalization";
     JTRACE("MSNORM", msg);
 }
@@ -258,6 +260,7 @@ void telemetry_trace_acquire(
     AcquireStatus uploadStatus,
     AcquireStatus dirStatus,
     AcquireStatus scannerStatus,
+    AcquireStatus autoExposureStatus,
     bool hadPreviousSnapshot) noexcept {
     const std::string msg =
         std::string("acquire_id=") + std::to_string(acquireId) +
@@ -268,8 +271,36 @@ void telemetry_trace_acquire(
         " upload_status=" + to_cstr(uploadStatus) +
         " dir_status=" + to_cstr(dirStatus) +
         " scanner_status=" + to_cstr(scannerStatus) +
+        " auto_exposure_status=" + to_cstr(autoExposureStatus) +
         " had_previous=" + std::to_string(hadPreviousSnapshot ? 1 : 0);
     JTRACE("MSACQ", msg);
+}
+
+void telemetry_trace_auto_exposure_ownership(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const char* mode,
+    const char* eventName,
+    bool hit,
+    std::uint64_t keyHash,
+    int meterWidth,
+    int meterHeight,
+    bool hadPrevious,
+    const char* reason) noexcept {
+    const std::string msg =
+        std::string("transaction_id=") + std::to_string(transactionId) +
+        " snapshot_id=" + std::to_string(snapshotId) +
+        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        " mode=" + (mode ? mode : "unknown") +
+        " event=" + (eventName ? eventName : "unknown") +
+        " hit=" + std::to_string(hit ? 1 : 0) +
+        " key_hash=" + std::to_string(keyHash) +
+        " meter_w=" + std::to_string(meterWidth) +
+        " meter_h=" + std::to_string(meterHeight) +
+        " had_previous=" + std::to_string(hadPrevious ? 1 : 0) +
+        " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSAEX", msg);
 }
 
 } // namespace ResourceManager

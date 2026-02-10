@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstring>
+#include <cstddef>
 #include <cstdint>
 #include <cctype>
 #include <string>
@@ -323,6 +324,28 @@ namespace {
             passId
         };
         std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
+        if (h == 0) {
+            h = 1;
+        }
+        return h;
+    }
+
+    std::uint64_t make_auto_exposure_reusable_key_hash(
+        const OfxRectI& meterBounds,
+        const OfxRectI& srcBounds,
+        std::ptrdiff_t srcRowBytes,
+        int nComponents,
+        const Spectral::FilmRawConfig& filmRaw,
+        int meteringMethod) {
+        std::uint64_t h = Hash::kFnvOffset;
+        Hash::hash_bytes_update(h, &meterBounds, sizeof(meterBounds));
+        Hash::hash_bytes_update(h, &srcBounds, sizeof(srcBounds));
+        Hash::hash_bytes_update(h, &srcRowBytes, sizeof(srcRowBytes));
+        Hash::hash_bytes_update(h, &nComponents, sizeof(nComponents));
+        Hash::hash_bytes_update(h, &filmRaw.inputColorSpace, sizeof(filmRaw.inputColorSpace));
+        Hash::hash_bytes_update(h, &filmRaw.applyCctfDecoding, sizeof(filmRaw.applyCctfDecoding));
+        Hash::hash_bytes_update(h, &filmRaw.inputRGBToXYZ, sizeof(filmRaw.inputRGBToXYZ));
+        Hash::hash_bytes_update(h, &meteringMethod, sizeof(meteringMethod));
         if (h == 0) {
             h = 1;
         }
@@ -1451,6 +1474,14 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
+    const std::uint64_t autoExposureReusableKeyHash = make_auto_exposure_reusable_key_hash(
+        srcBounds,
+        srcBounds,
+        srcRowBytes,
+        _nComponents,
+        _ws->filmRaw,
+        _cameraMeteringMethod);
+
     JuicerCuda::ResourceManager::SubmissionTransaction submissionTxn{};
     struct SubmissionTxnScope {
         JuicerCuda::ResourceManager::SubmissionTransaction* transaction = nullptr;
@@ -1469,7 +1500,11 @@ void JuicerProcessor::processImagesCUDA() {
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
         snapshot.keyDigests =
-            JuicerCuda::ResourceManager::make_key_digests(_ws->coreHash, _ws->dirHash, _ws->fullHash);
+            JuicerCuda::ResourceManager::make_key_digests(
+                _ws->coreHash,
+                _ws->dirHash,
+                _ws->fullHash,
+                autoExposureReusableKeyHash);
         snapshot.keySchemaVersion = 1;
         snapshot.traceSchemaVersion = JuicerCuda::ResourceManager::kTraceSchemaVersion;
         bool reusingSnapshotLatch = false;
@@ -1479,7 +1514,8 @@ void JuicerProcessor::processImagesCUDA() {
             const bool digestsMatch =
                 latched.keyDigests.uploadCoreHash == snapshot.keyDigests.uploadCoreHash &&
                 latched.keyDigests.dirHash == snapshot.keyDigests.dirHash &&
-                latched.keyDigests.scannerHash == snapshot.keyDigests.scannerHash;
+                latched.keyDigests.scannerHash == snapshot.keyDigests.scannerHash &&
+                latched.keyDigests.autoExposureHash == snapshot.keyDigests.autoExposureHash;
             if (_instanceState->submissionSnapshotLatchValid &&
                 latched.instanceToken.value == snapshot.instanceToken.value &&
                 latched.frameToken.value == snapshot.frameToken.value &&
@@ -1694,6 +1730,7 @@ void JuicerProcessor::processImagesCUDA() {
                 *cudaResources,
                 meterWidth,
                 meterHeight,
+                autoExposureReusableKeyHash,
                 _pCudaStream,
                 aeError)) {
             JTRACE("CUDA", std::string("CUDA auto-exposure buffer allocation failed: ") + aeError);
@@ -1718,20 +1755,20 @@ void JuicerProcessor::processImagesCUDA() {
         state.autoEV = cudaResources->autoExposureAutoEV;
         state.valid = cudaResources->autoExposureValid;
 
-        std::uint64_t key = Hash::kFnvOffset;
+        std::uint64_t meterStateKey = Hash::kFnvOffset;
         const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : 0.0;
-        Hash::hash_bytes_update(key, &timeFrames, sizeof(timeFrames));
-        Hash::hash_bytes_update(key, &_clipToken, sizeof(_clipToken));
-        Hash::hash_bytes_update(key, &meterBounds, sizeof(meterBounds));
-        Hash::hash_bytes_update(key, &srcBounds, sizeof(srcBounds));
-        Hash::hash_bytes_update(key, &srcRowBytes, sizeof(srcRowBytes));
-        Hash::hash_bytes_update(key, &run.nComponents, sizeof(run.nComponents));
-        Hash::hash_bytes_update(key, &run.filmRaw.inputColorSpaceIndex, sizeof(run.filmRaw.inputColorSpaceIndex));
-        Hash::hash_bytes_update(key, &run.filmRaw.applyCctfDecoding, sizeof(run.filmRaw.applyCctfDecoding));
-        Hash::hash_bytes_update(key, &run.filmRaw.inputRGBToXYZ, sizeof(run.filmRaw.inputRGBToXYZ));
-        Hash::hash_bytes_update(key, &_cameraMeteringMethod, sizeof(_cameraMeteringMethod));
-        if (key == 0) {
-            key = 1;
+        Hash::hash_bytes_update(meterStateKey, &timeFrames, sizeof(timeFrames));
+        Hash::hash_bytes_update(meterStateKey, &_clipToken, sizeof(_clipToken));
+        Hash::hash_bytes_update(meterStateKey, &meterBounds, sizeof(meterBounds));
+        Hash::hash_bytes_update(meterStateKey, &srcBounds, sizeof(srcBounds));
+        Hash::hash_bytes_update(meterStateKey, &srcRowBytes, sizeof(srcRowBytes));
+        Hash::hash_bytes_update(meterStateKey, &run.nComponents, sizeof(run.nComponents));
+        Hash::hash_bytes_update(meterStateKey, &run.filmRaw.inputColorSpaceIndex, sizeof(run.filmRaw.inputColorSpaceIndex));
+        Hash::hash_bytes_update(meterStateKey, &run.filmRaw.applyCctfDecoding, sizeof(run.filmRaw.applyCctfDecoding));
+        Hash::hash_bytes_update(meterStateKey, &run.filmRaw.inputRGBToXYZ, sizeof(run.filmRaw.inputRGBToXYZ));
+        Hash::hash_bytes_update(meterStateKey, &_cameraMeteringMethod, sizeof(_cameraMeteringMethod));
+        if (meterStateKey == 0) {
+            meterStateKey = 1;
         }
 
         auto slider_equal = [](double a, double b) -> bool {
@@ -1741,7 +1778,7 @@ void JuicerProcessor::processImagesCUDA() {
             return std::abs(a - b) <= 1e-12;
         };
 
-        const bool needMeter = (cudaResources->autoExposureKeyHash != key);
+        const bool needMeter = (cudaResources->autoExposureKeyHash != meterStateKey);
         const bool needSliderUpdate = !slider_equal(cudaResources->autoExposureSliderEV, _cameraSliderEV);
         const char* errMsg = nullptr;
         if (needMeter) {
@@ -1798,7 +1835,7 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
             }
-            cudaResources->autoExposureKeyHash = key;
+            cudaResources->autoExposureKeyHash = meterStateKey;
             cudaResources->autoExposureSliderEV = _cameraSliderEV;
         }
         else if (needSliderUpdate) {

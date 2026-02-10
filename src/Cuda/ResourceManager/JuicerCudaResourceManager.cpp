@@ -55,6 +55,24 @@ ShadowHistoryState& shadow_history_state() noexcept {
     return state;
 }
 
+struct AutoExposureOwnershipEntry {
+    bool valid = false;
+    std::uint64_t keyHash = 0;
+    int meterWidth = 0;
+    int meterHeight = 0;
+    std::uint32_t keySchemaVersion = 1;
+};
+
+struct AutoExposureOwnershipState {
+    std::mutex mutex;
+    std::unordered_map<ShadowHistoryKey, AutoExposureOwnershipEntry, ShadowHistoryKeyHasher> bySubmissionKey;
+};
+
+AutoExposureOwnershipState& auto_exposure_ownership_state() noexcept {
+    static AutoExposureOwnershipState state{};
+    return state;
+}
+
 struct FrameSnapshotKey {
     std::uint64_t instanceToken = 0;
     DeviceContextKey deviceContextKey{};
@@ -94,23 +112,25 @@ FrameSnapshotState& frame_snapshot_state() noexcept {
 bool key_digests_equal(const KeyDigests& lhs, const KeyDigests& rhs) noexcept {
     return lhs.uploadCoreHash == rhs.uploadCoreHash &&
         lhs.dirHash == rhs.dirHash &&
-        lhs.scannerHash == rhs.scannerHash;
+        lhs.scannerHash == rhs.scannerHash &&
+        lhs.autoExposureHash == rhs.autoExposureHash;
 }
 
 AcquireStatus combine_status(
     AcquireStatus upload,
     AcquireStatus dir,
-    AcquireStatus scanner) noexcept {
-    if (upload == AcquireStatus::Error || dir == AcquireStatus::Error || scanner == AcquireStatus::Error) {
+    AcquireStatus scanner,
+    AcquireStatus autoExposure) noexcept {
+    if (upload == AcquireStatus::Error || dir == AcquireStatus::Error || scanner == AcquireStatus::Error || autoExposure == AcquireStatus::Error) {
         return AcquireStatus::Error;
     }
-    if (upload == AcquireStatus::Exhausted || dir == AcquireStatus::Exhausted || scanner == AcquireStatus::Exhausted) {
+    if (upload == AcquireStatus::Exhausted || dir == AcquireStatus::Exhausted || scanner == AcquireStatus::Exhausted || autoExposure == AcquireStatus::Exhausted) {
         return AcquireStatus::Exhausted;
     }
-    if (upload == AcquireStatus::Busy || dir == AcquireStatus::Busy || scanner == AcquireStatus::Busy) {
+    if (upload == AcquireStatus::Busy || dir == AcquireStatus::Busy || scanner == AcquireStatus::Busy || autoExposure == AcquireStatus::Busy) {
         return AcquireStatus::Busy;
     }
-    if (upload == AcquireStatus::Miss || dir == AcquireStatus::Miss || scanner == AcquireStatus::Miss) {
+    if (upload == AcquireStatus::Miss || dir == AcquireStatus::Miss || scanner == AcquireStatus::Miss || autoExposure == AcquireStatus::Miss) {
         return AcquireStatus::Miss;
     }
     return AcquireStatus::Hit;
@@ -305,6 +325,7 @@ bool acquire_plan(
             AcquireStatus::Error,
             AcquireStatus::Error,
             AcquireStatus::Error,
+            AcquireStatus::Error,
             false);
         return false;
     }
@@ -341,6 +362,7 @@ bool acquire_plan(
                 AcquireStatus::Error,
                 AcquireStatus::Error,
                 AcquireStatus::Error,
+                AcquireStatus::Error,
                 false);
             return false;
         }
@@ -354,6 +376,7 @@ bool acquire_plan(
             transaction.transactionId,
             transaction.snapshot.snapshotId,
             transaction.snapshot.traceSchemaVersion,
+            AcquireStatus::Error,
             AcquireStatus::Error,
             AcquireStatus::Error,
             AcquireStatus::Error,
@@ -380,6 +403,7 @@ bool acquire_plan(
             AcquireStatus::Error,
             AcquireStatus::Error,
             AcquireStatus::Error,
+            AcquireStatus::Error,
             false);
         return false;
     }
@@ -398,7 +422,8 @@ bool acquire_plan(
     snapshot.keyDigests = normalize_key_digests(snapshot.keyDigests);
     if (rawDigests.uploadCoreHash != snapshot.keyDigests.uploadCoreHash ||
         rawDigests.dirHash != snapshot.keyDigests.dirHash ||
-        rawDigests.scannerHash != snapshot.keyDigests.scannerHash) {
+        rawDigests.scannerHash != snapshot.keyDigests.scannerHash ||
+        rawDigests.autoExposureHash != snapshot.keyDigests.autoExposureHash) {
         telemetry_trace_key_normalization(
             transaction.transactionId,
             snapshot.snapshotId,
@@ -464,12 +489,14 @@ bool acquire_plan(
     delta.uploadCoreChanged = !hasPrevious || (previous.digests.uploadCoreHash != snapshot.keyDigests.uploadCoreHash);
     delta.dirChanged = !hasPrevious || (previous.digests.dirHash != snapshot.keyDigests.dirHash);
     delta.scannerChanged = !hasPrevious || (previous.digests.scannerHash != snapshot.keyDigests.scannerHash);
+    delta.autoExposureChanged = !hasPrevious || (previous.digests.autoExposureHash != snapshot.keyDigests.autoExposureHash);
 
     const ResourcePlan plan = build_shadow_resource_plan(delta);
 
     const std::uint64_t prevUpload = hasPrevious ? previous.digests.uploadCoreHash : 0;
     const std::uint64_t prevDir = hasPrevious ? previous.digests.dirHash : 0;
     const std::uint64_t prevScanner = hasPrevious ? previous.digests.scannerHash : 0;
+    const std::uint64_t prevAutoExposure = hasPrevious ? previous.digests.autoExposureHash : 0;
 
     if (plan.uploadCore.invalidated) {
         telemetry_trace_invalidation(
@@ -501,6 +528,16 @@ bool acquire_plan(
             prevScanner,
             snapshot.keyDigests.scannerHash);
     }
+    if (plan.autoExposure.invalidated) {
+        telemetry_trace_invalidation(
+            transaction.transactionId,
+            snapshot.snapshotId,
+            snapshot.traceSchemaVersion,
+            "AutoExposureKey",
+            delta.keySchemaChanged ? "key_schema_changed" : "auto_exposure_hash_changed",
+            prevAutoExposure,
+            snapshot.keyDigests.autoExposureHash);
+    }
 
     if (delta.keySchemaChanged || delta.uploadCoreChanged) {
         telemetry_trace_dag_edge(
@@ -529,6 +566,16 @@ bool acquire_plan(
             snapshot.traceSchemaVersion,
             "ScannerColorKey",
             "ScannerColorResources",
+            true,
+            "allowed_lane_invalidation");
+    }
+    if (delta.keySchemaChanged || delta.autoExposureChanged) {
+        telemetry_trace_dag_edge(
+            transaction.transactionId,
+            snapshot.snapshotId,
+            snapshot.traceSchemaVersion,
+            "AutoExposureKey",
+            "AutoExposureResources",
             true,
             "allowed_lane_invalidation");
     }
@@ -593,7 +640,8 @@ bool acquire_plan(
     const AcquireStatus finalStatus = combine_status(
         plan.uploadCore.acquire.status,
         plan.dir.acquire.status,
-        plan.scanner.acquire.status);
+        plan.scanner.acquire.status,
+        plan.autoExposure.acquire.status);
 
     telemetry_record_acquire_status(finalStatus);
     telemetry_trace_acquire(
@@ -605,6 +653,7 @@ bool acquire_plan(
         plan.uploadCore.acquire.status,
         plan.dir.acquire.status,
         plan.scanner.acquire.status,
+        plan.autoExposure.acquire.status,
         hasPrevious);
     telemetry_record_acquire_plan();
     return true;
@@ -855,12 +904,89 @@ bool command_ensure_auto_exposure_buffers(
     JuicerCuda::Resources& resources,
     int meterWidth,
     int meterHeight,
+    std::uint64_t autoExposureKeyHash,
     void* cudaStreamOpaque,
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_auto_exposure_buffers")) {
         return false;
     }
-    return JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError);
+    const std::uint64_t normalizedKeyHash = normalize_key_u64(autoExposureKeyHash);
+
+    const ShadowHistoryKey ownershipKey{
+        transaction.snapshot.instanceToken.value,
+        transaction.snapshot.deviceContextKey
+    };
+
+    bool hadPrevious = false;
+    bool metadataHit = false;
+    {
+        AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
+        std::lock_guard<std::mutex> lock(ownershipState.mutex);
+        auto it = ownershipState.bySubmissionKey.find(ownershipKey);
+        if (it != ownershipState.bySubmissionKey.end() && it->second.valid) {
+            hadPrevious = true;
+            const AutoExposureOwnershipEntry& previous = it->second;
+            metadataHit =
+                previous.keySchemaVersion == transaction.snapshot.keySchemaVersion &&
+                previous.keyHash == normalizedKeyHash &&
+                previous.meterWidth == meterWidth &&
+                previous.meterHeight == meterHeight;
+        }
+    }
+
+    telemetry_trace_auto_exposure_ownership(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        "LegacyOnly",
+        "acquire",
+        metadataHit,
+        normalizedKeyHash,
+        meterWidth,
+        meterHeight,
+        hadPrevious,
+        metadataHit ? "metadata_hit" : "metadata_miss");
+
+    if (!JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError)) {
+        telemetry_trace_auto_exposure_ownership(
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            "LegacyOnly",
+            "ensure_fail",
+            false,
+            normalizedKeyHash,
+            meterWidth,
+            meterHeight,
+            hadPrevious,
+            outError.empty() ? "ensure_failed" : outError.c_str());
+        return false;
+    }
+
+    {
+        AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
+        std::lock_guard<std::mutex> lock(ownershipState.mutex);
+        AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
+        entry.valid = true;
+        entry.keyHash = normalizedKeyHash;
+        entry.meterWidth = meterWidth;
+        entry.meterHeight = meterHeight;
+        entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
+    }
+
+    telemetry_trace_auto_exposure_ownership(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        "LegacyOnly",
+        "publish",
+        metadataHit,
+        normalizedKeyHash,
+        meterWidth,
+        meterHeight,
+        hadPrevious,
+        metadataHit ? "reuse" : "refresh");
+    return true;
 }
 
 void rollback_submission(

@@ -103,7 +103,21 @@ void telemetry_trace_acquire(
     AcquireStatus uploadStatus,
     AcquireStatus dirStatus,
     AcquireStatus scannerStatus,
+    AcquireStatus autoExposureStatus,
     bool hadPreviousSnapshot) noexcept;
+
+void telemetry_trace_auto_exposure_ownership(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion,
+    const char* mode,
+    const char* eventName,
+    bool hit,
+    std::uint64_t keyHash,
+    int meterWidth,
+    int meterHeight,
+    bool hadPrevious,
+    const char* reason) noexcept;
 
 } // namespace ResourceManager
 } // namespace JuicerCuda

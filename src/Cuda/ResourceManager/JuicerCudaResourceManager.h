@@ -126,6 +126,7 @@ bool command_ensure_auto_exposure_buffers(
     JuicerCuda::Resources& resources,
     int meterWidth,
     int meterHeight,
+    std::uint64_t autoExposureKeyHash,
     void* cudaStreamOpaque,
     std::string& outError);
 

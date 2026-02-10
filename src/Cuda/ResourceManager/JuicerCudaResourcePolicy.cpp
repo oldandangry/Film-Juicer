@@ -31,14 +31,17 @@ ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept {
     const bool uploadInvalidated = delta.keySchemaChanged || delta.uploadCoreChanged;
     const bool dirInvalidated = delta.keySchemaChanged || delta.dirChanged;
     const bool scannerInvalidated = delta.keySchemaChanged || delta.scannerChanged;
+    const bool autoExposureInvalidated = delta.keySchemaChanged || delta.autoExposureChanged;
 
     plan.uploadCore.invalidated = uploadInvalidated;
     plan.dir.invalidated = dirInvalidated;
     plan.scanner.invalidated = scannerInvalidated;
+    plan.autoExposure.invalidated = autoExposureInvalidated;
 
     plan.uploadCore.acquire = classify_shadow_acquire(delta.hasPrevious, uploadInvalidated);
     plan.dir.acquire = classify_shadow_acquire(delta.hasPrevious, dirInvalidated);
     plan.scanner.acquire = classify_shadow_acquire(delta.hasPrevious, scannerInvalidated);
+    plan.autoExposure.acquire = classify_shadow_acquire(delta.hasPrevious, autoExposureInvalidated);
     return plan;
 }
 

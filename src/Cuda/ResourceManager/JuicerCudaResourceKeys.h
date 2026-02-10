@@ -16,7 +16,8 @@ std::uint64_t normalize_key_float(double value, double scale) noexcept;
 KeyDigests make_key_digests(
     std::uint64_t uploadCoreHash,
     std::uint64_t dirHash,
-    std::uint64_t scannerHash) noexcept;
+    std::uint64_t scannerHash,
+    std::uint64_t autoExposureHash) noexcept;
 
 KeyDigests normalize_key_digests(const KeyDigests& digests) noexcept;
 

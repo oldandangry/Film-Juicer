@@ -41,6 +41,7 @@ struct KeyDigests {
     std::uint64_t uploadCoreHash = 0;
     std::uint64_t dirHash = 0;
     std::uint64_t scannerHash = 0;
+    std::uint64_t autoExposureHash = 0;
 };
 
 struct SubmissionSnapshot {
