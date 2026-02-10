@@ -12,7 +12,6 @@ namespace Spectral {
         PrecomputeStatus precomputeStatus;
         std::mutex precomputeMutex;
         int lastIllumChoice = -1;
-        std::atomic<DirRuntimeSnapshot> dirRuntimeSnapshot{ DirRuntimeSnapshot{} };
 
         SpectralShape shape;
         std::vector<float> epsYTable;
@@ -56,8 +55,5 @@ namespace Spectral {
     void mark_spectral_tables_dirty();
     void increment_illum_version();
     void increment_shape_version();
-
-    DirRuntimeSnapshot get_dir_runtime_snapshot();
-    void set_dir_runtime_snapshot(const DirRuntimeSnapshot& snap);
 
 } // namespace Spectral

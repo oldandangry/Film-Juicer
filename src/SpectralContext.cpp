@@ -23,20 +23,4 @@ namespace Spectral {
         context().precomputeStatus.shapeVersion.fetch_add(1, std::memory_order_acq_rel);
     }
 
-    DirRuntimeSnapshot get_dir_runtime_snapshot() {
-#ifdef JUICER_ENABLE_COUPLERS
-        return context().dirRuntimeSnapshot.load(std::memory_order_acquire);
-#else
-        return context().dirRuntimeSnapshot.load(std::memory_order_relaxed);
-#endif
-    }
-
-    void set_dir_runtime_snapshot(const DirRuntimeSnapshot& snap) {
-#ifdef JUICER_ENABLE_COUPLERS
-        context().dirRuntimeSnapshot.store(snap, std::memory_order_release);
-#else
-        (void)snap;
-#endif
-    }
-
 } // namespace Spectral

@@ -2341,23 +2341,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
 
-    Spectral::set_neg_params(target->negParams);
-
-    {
-        Spectral::DirRuntimeSnapshot snap;
-        snap.active = target->dirRT.active;
-        snap.highShift = target->dirRT.highShift;
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                snap.M[r][c] = target->dirRT.M[r][c];
-            }
-        }
-        snap.dMax[0] = target->dirRT.dMax[0];
-        snap.dMax[1] = target->dirRT.dMax[1];
-        snap.dMax[2] = target->dirRT.dMax[2];
-        Spectral::set_dir_runtime_snapshot(snap);
-    }
-
     target->printRT = std::move(printRuntimeCopy);
     target->printGlare = target->printRT ? target->printRT->glare : Profiles::ProfileGlare{};
     target->negativeScannerIlluminant = negativeScannerIlluminant;
@@ -2687,21 +2670,6 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
             target->dMax[i] = v;
             target->dirRT.dMax[i] = v;
         }
-    }
-
-    {
-        Spectral::DirRuntimeSnapshot snap;
-        snap.active = target->dirRT.active;
-        snap.highShift = target->dirRT.highShift;
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                snap.M[r][c] = target->dirRT.M[r][c];
-            }
-        }
-        snap.dMax[0] = target->dirRT.dMax[0];
-        snap.dMax[1] = target->dirRT.dMax[1];
-        snap.dMax[2] = target->dirRT.dMax[2];
-        Spectral::set_dir_runtime_snapshot(snap);
     }
 
     target->fullHash = hash_params(P);

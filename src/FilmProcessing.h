@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <vector>
 #include <array>
-#include <mutex>
 #include <limits>
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
@@ -49,19 +48,6 @@ namespace Spectral {
             { 1.0f, 1.0f, 1.0f },
             { 0.0f, 0.0f, 0.0f }
         };
-    }
-
-    inline std::mutex gNegParamsMutex;
-    inline NegativeCouplerParams gNegParams = make_default_neg_params();
-
-    inline void set_neg_params(const NegativeCouplerParams& params) {
-        std::lock_guard<std::mutex> lock(gNegParamsMutex);
-        gNegParams = params;
-    }
-
-    inline NegativeCouplerParams get_neg_params() {
-        std::lock_guard<std::mutex> lock(gNegParamsMutex);
-        return gNegParams;
     }
 
     // Simple H-D-like curve: monotonic, saturating, smooth
@@ -397,11 +383,6 @@ namespace Spectral {
         D[1] = std::max(0.0f, hd_curve(E[1], negParams.DmaxM, negParams.kG)); // M <- G
         D[2] = std::max(0.0f, hd_curve(E[2], negParams.DmaxC, negParams.kR)); // C <- R
     }
-    inline void exposures_to_dyes(const float E[3], float D[3]) {
-        const NegativeCouplerParams negParams = get_neg_params();
-        exposures_to_dyes_with_params(E, D, negParams);
-    }
-
     // =========================================================================
     // 4. BASELINE MANAGEMENT (~50 lines)
     // =========================================================================
@@ -485,17 +466,6 @@ namespace Spectral {
         D[0] = clamp_density(y);
         D[1] = clamp_density(m);
         D[2] = clamp_density(c);
-    }
-
-    inline void apply_masking_adjustments(float D[3]) {
-        const NegativeCouplerParams negParams = get_neg_params();
-        apply_masking_adjustments_with_params(negParams, D);
-    }
-
-    inline void applyMaskingCoupler(const float E[3], float D[3]) {
-        const NegativeCouplerParams negParams = get_neg_params();
-        exposures_to_dyes_with_params(E, D, negParams);
-        apply_masking_adjustments_with_params(negParams, D);
     }
 
 } // namespace Spectral
