@@ -121,6 +121,14 @@ bool command_ensure_halation_kernel(
     void* cudaStreamOpaque,
     std::string& outError);
 
+bool command_ensure_auto_exposure_buffers(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    int meterWidth,
+    int meterHeight,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
 void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept;

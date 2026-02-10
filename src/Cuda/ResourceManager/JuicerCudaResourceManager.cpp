@@ -850,6 +850,19 @@ bool command_ensure_halation_kernel(
     return JuicerCuda::ensure_halation_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
 }
 
+bool command_ensure_auto_exposure_buffers(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    int meterWidth,
+    int meterHeight,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_auto_exposure_buffers")) {
+        return false;
+    }
+    return JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError);
+}
+
 void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept {

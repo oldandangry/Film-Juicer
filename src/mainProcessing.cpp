@@ -1691,7 +1691,13 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         std::string aeError;
-        if (!JuicerCuda::ensure_auto_exposure_buffers(*cudaResources, meterWidth, meterHeight, _pCudaStream, aeError)) {
+        if (!JuicerCuda::ResourceManager::command_ensure_auto_exposure_buffers(
+                submissionTxn,
+                *cudaResources,
+                meterWidth,
+                meterHeight,
+                _pCudaStream,
+                aeError)) {
             JTRACE("CUDA", std::string("CUDA auto-exposure buffer allocation failed: ") + aeError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
