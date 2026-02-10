@@ -41,8 +41,11 @@ namespace Pipeline {
             std::vector<float>& density_out)
         {
             const int K = ws.tablesView.K;
-            density_out.assign(static_cast<size_t>(std::max(K, 0)), 0.0f);
-            if (K <= 0) return;
+            if (K <= 0) {
+                density_out.clear();
+                return;
+            }
+            density_out.resize(static_cast<size_t>(K));
 
             // Preserve the legacy gate used by the current render bridge.
             const bool hasBL = ws.hasBaseline && static_cast<int>(ws.baseMin.linear.size()) == K;
@@ -78,8 +81,11 @@ namespace Pipeline {
             std::vector<float>& illuminant_out)
         {
             const int K = Spectral::gShape.K;
-            illuminant_out.assign(static_cast<size_t>(std::max(K, 0)), 0.0f);
-            if (K <= 0) return;
+            if (K <= 0) {
+                illuminant_out.clear();
+                return;
+            }
+            illuminant_out.resize(static_cast<size_t>(K));
 
             const float yAmount = compose_dichroic_amount(rt.neutralY, yShiftSteps);
             const float mAmount = compose_dichroic_amount(rt.neutralM, mShiftSteps);

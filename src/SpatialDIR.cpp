@@ -12,6 +12,13 @@ namespace SpatialDIR {
 
     namespace {
 
+        inline void resize_noinit(std::vector<float>& v, size_t n) {
+            // Keep capacity stable and avoid redundant full clears; hot-path writes overwrite every used sample.
+            if (v.size() != n) {
+                v.resize(n);
+            }
+        }
+
         void blurChannelSeparable(
             const std::vector<float>& src,
             std::vector<float>& tmp,
@@ -20,7 +27,14 @@ namespace SpatialDIR {
             int height,
             const std::vector<float>& k)
         {
-            tmp.assign(size_t(width * height), 0.0f);
+            const size_t total = size_t(width) * size_t(height);
+            if (total == 0) {
+                tmp.clear();
+                dst.clear();
+                return;
+            }
+
+            resize_noinit(tmp, total);
             const int radius = int(k.size() / 2);
             const auto reflectIndex = [](int idx, int size) -> int {
                 if (size <= 1) {
@@ -48,7 +62,7 @@ namespace SpatialDIR {
                     trow[x] = acc;
                 }
             }
-            dst.assign(size_t(width * height), 0.0f);
+            resize_noinit(dst, total);
             for (int x = 0; x < width; ++x) {
                 for (int y = 0; y < height; ++y) {
                     float acc = 0.0f;
@@ -74,16 +88,16 @@ namespace SpatialDIR {
         std::vector<float>& kernelCache)
     {
         const size_t total = size_t(width) * size_t(height);
-        work.filmRaw_B.assign(total, 0.0f);
-        work.filmRaw_G.assign(total, 0.0f);
-        work.filmRaw_R.assign(total, 0.0f);
-        work.corrY.assign(total, 0.0f);
-        work.corrM.assign(total, 0.0f);
-        work.corrC.assign(total, 0.0f);
-        work.corrYBlur.assign(total, 0.0f);
-        work.corrMBlur.assign(total, 0.0f);
-        work.corrCBlur.assign(total, 0.0f);
-        work.tmp.assign(total, 0.0f);
+        resize_noinit(work.filmRaw_B, total);
+        resize_noinit(work.filmRaw_G, total);
+        resize_noinit(work.filmRaw_R, total);
+        resize_noinit(work.corrY, total);
+        resize_noinit(work.corrM, total);
+        resize_noinit(work.corrC, total);
+        resize_noinit(work.corrYBlur, total);
+        resize_noinit(work.corrMBlur, total);
+        resize_noinit(work.corrCBlur, total);
+        resize_noinit(work.tmp, total);
 
         if (!dirRT.active) {
             return;
@@ -97,6 +111,17 @@ namespace SpatialDIR {
         const bool verboseDiagnostics = JTRACE_ENABLED(3);
         auto should_abort = [&]() -> bool {
             return callbacks.abortCheck(callbacks.user);
+            };
+        auto clear_workspace_on_abort = [&]() {
+            std::fill(work.filmRaw_B.begin(), work.filmRaw_B.end(), 0.0f);
+            std::fill(work.filmRaw_G.begin(), work.filmRaw_G.end(), 0.0f);
+            std::fill(work.filmRaw_R.begin(), work.filmRaw_R.end(), 0.0f);
+            std::fill(work.corrY.begin(), work.corrY.end(), 0.0f);
+            std::fill(work.corrM.begin(), work.corrM.end(), 0.0f);
+            std::fill(work.corrC.begin(), work.corrC.end(), 0.0f);
+            std::fill(work.corrYBlur.begin(), work.corrYBlur.end(), 0.0f);
+            std::fill(work.corrMBlur.begin(), work.corrMBlur.end(), 0.0f);
+            std::fill(work.corrCBlur.begin(), work.corrCBlur.end(), 0.0f);
             };
         auto trace_abort_fast = [&](const char* stage) {
             if (!verboseDiagnostics) {
@@ -232,6 +257,7 @@ namespace SpatialDIR {
 
         if (aborted || should_abort()) {
             trace_abort_fast("pre_blur");
+            clear_workspace_on_abort();
             return;
         }
 
@@ -240,25 +266,30 @@ namespace SpatialDIR {
         buildGaussianKernel(dirRT.spatialSigmaPixels, kernelCache);
         if (should_abort()) {
             trace_abort_fast("post_kernel");
+            clear_workspace_on_abort();
             return;
         }
         blurChannelSeparable(work.corrY, work.tmp, work.corrYBlur, width, height, kernelCache);
         if (should_abort()) {
             trace_abort_fast("post_blur_y");
+            clear_workspace_on_abort();
             return;
         }
         blurChannelSeparable(work.corrM, work.tmp, work.corrMBlur, width, height, kernelCache);
         if (should_abort()) {
             trace_abort_fast("post_blur_m");
+            clear_workspace_on_abort();
             return;
         }
         blurChannelSeparable(work.corrC, work.tmp, work.corrCBlur, width, height, kernelCache);
         if (should_abort()) {
             trace_abort_fast("post_blur_c");
+            clear_workspace_on_abort();
             return;
         }
         if (should_abort()) {
             trace_abort_fast("pre_clamp");
+            clear_workspace_on_abort();
             return;
         }
 
