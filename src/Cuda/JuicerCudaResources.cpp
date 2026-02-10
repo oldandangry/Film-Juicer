@@ -29,6 +29,7 @@ extern const std::string gDataDir;
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -489,6 +490,13 @@ namespace JuicerCuda {
         resources.mallettBasisK = 0;
     }
 
+    enum class HostCacheLoadState : int {
+        Uninitialized = 0,
+        Loading = 1,
+        Ready = 2,
+        Failed = 3
+    };
+
     struct StbnCpuCache {
         std::vector<std::uint8_t> data;
         int width = 512;
@@ -496,6 +504,10 @@ namespace JuicerCuda {
         int frames = 256;
         bool loaded = false;
         bool valid = false;
+        HostCacheLoadState state = HostCacheLoadState::Uninitialized;
+        std::string failureReason;
+        std::mutex mutex;
+        std::condition_variable cv;
     };
 
     struct WangCpuCache {
@@ -507,6 +519,10 @@ namespace JuicerCuda {
         int colors = 0;
         bool loaded = false;
         bool valid = false;
+        HostCacheLoadState state = HostCacheLoadState::Uninitialized;
+        std::string failureReason;
+        std::mutex mutex;
+        std::condition_variable cv;
     };
 
     static StbnCpuCache& stbn_cache() {
@@ -522,13 +538,7 @@ namespace JuicerCuda {
     static std::atomic<bool> gStbnWarned{ false };
     static std::atomic<bool> gWangWarned{ false };
 
-    static bool load_stbn_cpu(StbnCpuCache& cache, std::string& outError) {
-        if (cache.loaded) {
-            return cache.valid;
-        }
-        cache.loaded = true;
-        cache.valid = false;
-
+    static bool load_stbn_cpu_uncached(const StbnCpuCache& cache, std::vector<std::uint8_t>& outData, std::string& outError) {
         if (gDataDir.empty()) {
             outError = "STBN load failed: data directory missing";
             return false;
@@ -557,15 +567,13 @@ namespace JuicerCuda {
             return false;
         }
 
-        cache.data.resize(expected);
+        outData.resize(expected);
         file.seekg(0, std::ios::beg);
-        if (!file.read(reinterpret_cast<char*>(cache.data.data()), size)) {
+        if (!file.read(reinterpret_cast<char*>(outData.data()), size)) {
             outError = std::string("STBN load failed: read error for ") + path.string();
-            cache.data.clear();
+            outData.clear();
             return false;
         }
-
-        cache.valid = true;
         return true;
     }
 
@@ -576,13 +584,16 @@ namespace JuicerCuda {
                 static_cast<std::size_t>(b));
     }
 
-    static bool load_wang_cpu(WangCpuCache& cache, std::string& outError) {
-        if (cache.loaded) {
-            return cache.valid;
-        }
-        cache.loaded = true;
-        cache.valid = false;
+    struct WangCpuLoadedData {
+        std::vector<std::uint8_t> tiles;
+        std::vector<std::uint8_t> lut;
+        int width = 0;
+        int height = 0;
+        int count = 0;
+        int colors = 0;
+    };
 
+    static bool load_wang_cpu_uncached(WangCpuLoadedData& outData, std::string& outError) {
         if (gDataDir.empty()) {
             outError = "Wang tiles load failed: data directory missing";
             return false;
@@ -617,20 +628,20 @@ namespace JuicerCuda {
             return false;
         }
 
-        cache.width = root.value("resolution", 0);
-        cache.height = cache.width;
-        cache.count = root.value("tiles", 0);
-        cache.colors = root.value("colors", 0);
-        if (cache.width <= 0 || cache.height <= 0 || cache.count <= 0 || cache.colors <= 0) {
+        const int width = root.value("resolution", 0);
+        const int height = width;
+        const int count = root.value("tiles", 0);
+        const int colors = root.value("colors", 0);
+        if (width <= 0 || height <= 0 || count <= 0 || colors <= 0) {
             outError = "Wang tiles load failed: invalid metadata in tiles.json";
             return false;
         }
 
-        const std::size_t lutSize = static_cast<std::size_t>(cache.colors) *
-            static_cast<std::size_t>(cache.colors) *
-            static_cast<std::size_t>(cache.colors) *
-            static_cast<std::size_t>(cache.colors);
-        cache.lut.assign(lutSize, 0);
+        const std::size_t lutSize = static_cast<std::size_t>(colors) *
+            static_cast<std::size_t>(colors) *
+            static_cast<std::size_t>(colors) *
+            static_cast<std::size_t>(colors);
+        outData.lut.assign(lutSize, 0);
 
         const auto& mapping = root["mapping"];
         if (!mapping.is_array()) {
@@ -649,12 +660,12 @@ namespace JuicerCuda {
             const int t = labels.value("T", 0);
             const int b = labels.value("B", 0);
             if (l < 0 || r < 0 || t < 0 || b < 0 ||
-                l >= cache.colors || r >= cache.colors || t >= cache.colors || b >= cache.colors) {
+                l >= colors || r >= colors || t >= colors || b >= colors) {
                 continue;
             }
-            const std::size_t lutIndex = wang_lut_index(l, r, t, b, cache.colors);
-            if (lutIndex < cache.lut.size() && idx >= 0 && idx < cache.count) {
-                cache.lut[lutIndex] = static_cast<std::uint8_t>(idx);
+            const std::size_t lutIndex = wang_lut_index(l, r, t, b, colors);
+            if (lutIndex < outData.lut.size() && idx >= 0 && idx < count) {
+                outData.lut[lutIndex] = static_cast<std::uint8_t>(idx);
             }
         }
 
@@ -668,23 +679,132 @@ namespace JuicerCuda {
             outError = std::string("Wang tiles load failed: empty file ") + binPath.string();
             return false;
         }
-        const std::size_t expected = static_cast<std::size_t>(cache.width) *
-            static_cast<std::size_t>(cache.height) *
-            static_cast<std::size_t>(cache.count);
+        const std::size_t expected = static_cast<std::size_t>(width) *
+            static_cast<std::size_t>(height) *
+            static_cast<std::size_t>(count);
         if (static_cast<std::size_t>(size) != expected) {
             outError = std::string("Wang tiles load failed: unexpected size for ") + binPath.string();
             return false;
         }
-        cache.tiles.resize(expected);
+        outData.tiles.resize(expected);
         bin.seekg(0, std::ios::beg);
-        if (!bin.read(reinterpret_cast<char*>(cache.tiles.data()), size)) {
+        if (!bin.read(reinterpret_cast<char*>(outData.tiles.data()), size)) {
             outError = std::string("Wang tiles load failed: read error for ") + binPath.string();
-            cache.tiles.clear();
+            outData.tiles.clear();
             return false;
         }
 
-        cache.valid = true;
+        outData.width = width;
+        outData.height = height;
+        outData.count = count;
+        outData.colors = colors;
         return true;
+    }
+
+    static bool load_stbn_cpu(StbnCpuCache& cache, std::string& outError) {
+        outError.clear();
+        {
+            std::unique_lock<std::mutex> lock(cache.mutex);
+            for (;;) {
+                if (cache.state == HostCacheLoadState::Ready) {
+                    cache.loaded = true;
+                    cache.valid = true;
+                    return true;
+                }
+                if (cache.state == HostCacheLoadState::Failed) {
+                    cache.loaded = true;
+                    cache.valid = false;
+                    outError = cache.failureReason;
+                    return false;
+                }
+                if (cache.state == HostCacheLoadState::Loading) {
+                    cache.cv.wait(lock);
+                    continue;
+                }
+                cache.state = HostCacheLoadState::Loading;
+                break;
+            }
+        }
+
+        std::vector<std::uint8_t> loadedData;
+        std::string loadError;
+        const bool ok = load_stbn_cpu_uncached(cache, loadedData, loadError);
+        {
+            std::lock_guard<std::mutex> lock(cache.mutex);
+            cache.loaded = true;
+            cache.valid = ok;
+            if (ok) {
+                cache.data = std::move(loadedData);
+                cache.failureReason.clear();
+                cache.state = HostCacheLoadState::Ready;
+            }
+            else {
+                cache.data.clear();
+                cache.failureReason = loadError.empty() ? "STBN load failed: unknown error" : loadError;
+                cache.state = HostCacheLoadState::Failed;
+                outError = cache.failureReason;
+            }
+        }
+        cache.cv.notify_all();
+        return ok;
+    }
+
+    static bool load_wang_cpu(WangCpuCache& cache, std::string& outError) {
+        outError.clear();
+        {
+            std::unique_lock<std::mutex> lock(cache.mutex);
+            for (;;) {
+                if (cache.state == HostCacheLoadState::Ready) {
+                    cache.loaded = true;
+                    cache.valid = true;
+                    return true;
+                }
+                if (cache.state == HostCacheLoadState::Failed) {
+                    cache.loaded = true;
+                    cache.valid = false;
+                    outError = cache.failureReason;
+                    return false;
+                }
+                if (cache.state == HostCacheLoadState::Loading) {
+                    cache.cv.wait(lock);
+                    continue;
+                }
+                cache.state = HostCacheLoadState::Loading;
+                break;
+            }
+        }
+
+        WangCpuLoadedData loadedData;
+        std::string loadError;
+        const bool ok = load_wang_cpu_uncached(loadedData, loadError);
+        {
+            std::lock_guard<std::mutex> lock(cache.mutex);
+            cache.loaded = true;
+            cache.valid = ok;
+            if (ok) {
+                cache.tiles = std::move(loadedData.tiles);
+                cache.lut = std::move(loadedData.lut);
+                cache.width = loadedData.width;
+                cache.height = loadedData.height;
+                cache.count = loadedData.count;
+                cache.colors = loadedData.colors;
+                cache.failureReason.clear();
+                cache.state = HostCacheLoadState::Ready;
+            }
+            else {
+                cache.tiles.clear();
+                cache.lut.clear();
+                cache.width = 0;
+                cache.height = 0;
+                cache.count = 0;
+                cache.colors = 0;
+                cache.failureReason = loadError.empty() ? "Wang tiles load failed: unknown error" : loadError;
+                cache.state = HostCacheLoadState::Failed;
+                outError = cache.failureReason;
+            }
+        }
+        cache.cv.notify_all();
+        return ok;
     }
 
     static void free_stbn(Resources& resources) noexcept {
