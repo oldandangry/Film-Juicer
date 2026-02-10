@@ -770,6 +770,86 @@ bool command_ensure_print_illuminant_filtered(
     return JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
 }
 
+bool command_ensure_optics_scratch(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    int width,
+    int height,
+    bool needBlurredScratch,
+    bool needAuxScratch,
+    bool needGrainScratch,
+    bool needGrainSharedScratch,
+    bool needGateMask,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_optics_scratch")) {
+        return false;
+    }
+    return JuicerCuda::ensure_optics_scratch(
+        resources,
+        width,
+        height,
+        needBlurredScratch,
+        needAuxScratch,
+        needGrainScratch,
+        needGrainSharedScratch,
+        needGateMask,
+        cudaStreamOpaque,
+        outError);
+}
+
+bool command_ensure_spatial_dir_scratch(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    int width,
+    int height,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_scratch")) {
+        return false;
+    }
+    return JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError);
+}
+
+bool command_ensure_spatial_dir_kernel(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+    float sigma,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_kernel")) {
+        return false;
+    }
+    return JuicerCuda::ensure_spatial_dir_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+}
+
+bool command_ensure_gaussian_kernel(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+    float sigma,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_gaussian_kernel")) {
+        return false;
+    }
+    return JuicerCuda::ensure_gaussian_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+}
+
+bool command_ensure_halation_kernel(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+    float sigma,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_halation_kernel")) {
+        return false;
+    }
+    return JuicerCuda::ensure_halation_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+}
+
 void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept {

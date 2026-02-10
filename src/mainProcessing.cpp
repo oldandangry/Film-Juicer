@@ -2712,8 +2712,14 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         std::string dirError;
-        if (!JuicerCuda::ensure_spatial_dir_scratch(*resources, frameWidth, frameHeight, _pCudaStream, dirError)) {
-            mark_context_loss_recovery("ensure_spatial_dir_scratch", cudaErrorUnknown, dirError);
+        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
+                submissionTxn,
+                *resources,
+                frameWidth,
+                frameHeight,
+                _pCudaStream,
+                dirError)) {
+            mark_context_loss_recovery("command_ensure_spatial_dir_scratch", cudaErrorUnknown, dirError);
             JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2721,8 +2727,14 @@ void JuicerProcessor::processImagesCUDA() {
             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
         }
-        if (!JuicerCuda::ensure_spatial_dir_kernel(*resources, resources->spatialDirKernel, _dirRT.spatialSigmaPixels, _pCudaStream, dirError)) {
-            mark_context_loss_recovery("ensure_spatial_dir_kernel", cudaErrorUnknown, dirError);
+        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
+                submissionTxn,
+                *resources,
+                resources->spatialDirKernel,
+                _dirRT.spatialSigmaPixels,
+                _pCudaStream,
+                dirError)) {
+            mark_context_loss_recovery("command_ensure_spatial_dir_kernel", cudaErrorUnknown, dirError);
             JTRACE("CUDA", std::string("CUDA spatial DIR kernel upload failed: ") + dirError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3009,7 +3021,18 @@ void JuicerProcessor::processImagesCUDA() {
                 const bool needBlurredScratch = wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 const bool needGrainScratch = wantGrainMix;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGrainShared, needGateMask, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
+                        submissionTxn,
+                        *cudaResources,
+                        width,
+                        height,
+                        needBlurredScratch,
+                        needAuxScratch,
+                        needGrainScratch,
+                        needGrainShared,
+                        needGateMask,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3064,7 +3087,13 @@ void JuicerProcessor::processImagesCUDA() {
                     run.grain.gateMaskWidth = cudaResources->scannerScratch.gateWidth;
                     run.grain.gateMaskHeight = cudaResources->scannerScratch.gateHeight;
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                        submissionTxn,
+                        *cudaResources,
+                        cudaResources->scannerLensBlurKernel,
+                        lensBlurSigmaPx,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA lens blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3072,7 +3101,13 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerUnsharpKernel, unsharpSigmaPx, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                        submissionTxn,
+                        *cudaResources,
+                        cudaResources->scannerUnsharpKernel,
+                        unsharpSigmaPx,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA unsharp kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3080,7 +3115,13 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerGlareKernel, wantGlare ? glareBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                        submissionTxn,
+                        *cudaResources,
+                        cudaResources->scannerGlareKernel,
+                        wantGlare ? glareBlurSigmaPx : 0.0f,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA glare kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3102,7 +3143,13 @@ void JuicerProcessor::processImagesCUDA() {
                     }
                 }
                 if (wantGrain) {
-                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernel, wantGrainBlur ? grainBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                    if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                            submissionTxn,
+                            *cudaResources,
+                            cudaResources->grainBlurKernel,
+                            wantGrainBlur ? grainBlurSigmaPx : 0.0f,
+                            _pCudaStream,
+                            opticsError)) {
                         JTRACE("CUDA", std::string("CUDA grain blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3115,7 +3162,13 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
                     if (wantGrainMix) {
-                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelMid, grainBlurSigmaMidPx, _pCudaStream, opticsError)) {
+                        if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                                submissionTxn,
+                                *cudaResources,
+                                cudaResources->grainBlurKernelMid,
+                                grainBlurSigmaMidPx,
+                                _pCudaStream,
+                                opticsError)) {
                             JTRACE("CUDA", std::string("CUDA grain mid blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3123,7 +3176,13 @@ void JuicerProcessor::processImagesCUDA() {
                             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                         }
-                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelCoarse, grainSetup.grainBlurSigmaCoarsePx, _pCudaStream, opticsError)) {
+                        if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                                submissionTxn,
+                                *cudaResources,
+                                cudaResources->grainBlurKernelCoarse,
+                                grainSetup.grainBlurSigmaCoarsePx,
+                                _pCudaStream,
+                                opticsError)) {
                             JTRACE("CUDA", std::string("CUDA grain coarse blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3141,7 +3200,13 @@ void JuicerProcessor::processImagesCUDA() {
                         for (int layer = 0; layer < 3; ++layer) {
                             for (int ch = 0; ch < 3; ++ch) {
                                 const float sigma = grainSetup.grainDyeSigmaPx[layer][ch];
-                                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainDyeKernel[layer][ch], sigma, _pCudaStream, opticsError)) {
+                                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                                        submissionTxn,
+                                        *cudaResources,
+                                        cudaResources->grainDyeKernel[layer][ch],
+                                        sigma,
+                                        _pCudaStream,
+                                        opticsError)) {
                                     JTRACE("CUDA", std::string("CUDA grain dye-cloud kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3170,7 +3235,13 @@ void JuicerProcessor::processImagesCUDA() {
                 if (wantHalation) {
                     for (int i = 0; i < 3; ++i) {
                         if (halationStrengthBGR[i] > 0.0f && halationSigmaPx[i] > 0.0f) {
-                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationKernel[i], halationSigmaPx[i], _pCudaStream, opticsError)) {
+                            if (!JuicerCuda::ResourceManager::command_ensure_halation_kernel(
+                                    submissionTxn,
+                                    *cudaResources,
+                                    cudaResources->halationKernel[i],
+                                    halationSigmaPx[i],
+                                    _pCudaStream,
+                                    opticsError)) {
                                 JTRACE("CUDA", std::string("CUDA halation kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3182,7 +3253,13 @@ void JuicerProcessor::processImagesCUDA() {
                             run.halationKernels.halationRadius[i] = cudaResources->halationKernel[i].radius;
                         }
                         if (halationScatterStrengthBGR[i] > 0.0f && halationScatterSigmaPx[i] > 0.0f) {
-                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationScatterKernel[i], halationScatterSigmaPx[i], _pCudaStream, opticsError)) {
+                            if (!JuicerCuda::ResourceManager::command_ensure_halation_kernel(
+                                    submissionTxn,
+                                    *cudaResources,
+                                    cudaResources->halationScatterKernel[i],
+                                    halationScatterSigmaPx[i],
+                                    _pCudaStream,
+                                    opticsError)) {
                                 JTRACE("CUDA", std::string("CUDA halation scatter kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3621,7 +3698,18 @@ void JuicerProcessor::processImagesCUDA() {
                 const bool needBlurredScratch = wantGlareBlur || wantGrainBlur || wantGrainSublayers;
                 const bool needAuxScratch = wantGrainSublayers;
                 const bool needGrainScratch = wantGrainMix;
-                if (!JuicerCuda::ensure_optics_scratch(*cudaResources, width, height, needBlurredScratch, needAuxScratch, needGrainScratch, needGrainShared, needGateMask, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
+                        submissionTxn,
+                        *cudaResources,
+                        width,
+                        height,
+                        needBlurredScratch,
+                        needAuxScratch,
+                        needGrainScratch,
+                        needGrainShared,
+                        needGateMask,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3676,7 +3764,13 @@ void JuicerProcessor::processImagesCUDA() {
                     run.grain.gateMaskWidth = cudaResources->scannerScratch.gateWidth;
                     run.grain.gateMaskHeight = cudaResources->scannerScratch.gateHeight;
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                        submissionTxn,
+                        *cudaResources,
+                        cudaResources->scannerLensBlurKernel,
+                        lensBlurSigmaPx,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA lens blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3684,7 +3778,13 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerUnsharpKernel, unsharpSigmaPx, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                        submissionTxn,
+                        *cudaResources,
+                        cudaResources->scannerUnsharpKernel,
+                        unsharpSigmaPx,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA unsharp kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3692,7 +3792,13 @@ void JuicerProcessor::processImagesCUDA() {
                     throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                 }
-                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->scannerGlareKernel, wantGlare ? glareBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                        submissionTxn,
+                        *cudaResources,
+                        cudaResources->scannerGlareKernel,
+                        wantGlare ? glareBlurSigmaPx : 0.0f,
+                        _pCudaStream,
+                        opticsError)) {
                     JTRACE("CUDA", std::string("CUDA glare kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3714,7 +3820,13 @@ void JuicerProcessor::processImagesCUDA() {
                     }
                 }
                 if (wantGrain) {
-                    if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernel, wantGrainBlur ? grainBlurSigmaPx : 0.0f, _pCudaStream, opticsError)) {
+                    if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                            submissionTxn,
+                            *cudaResources,
+                            cudaResources->grainBlurKernel,
+                            wantGrainBlur ? grainBlurSigmaPx : 0.0f,
+                            _pCudaStream,
+                            opticsError)) {
                         JTRACE("CUDA", std::string("CUDA grain blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3727,7 +3839,13 @@ void JuicerProcessor::processImagesCUDA() {
                         run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
                     }
                     if (wantGrainMix) {
-                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelMid, grainBlurSigmaMidPx, _pCudaStream, opticsError)) {
+                        if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                                submissionTxn,
+                                *cudaResources,
+                                cudaResources->grainBlurKernelMid,
+                                grainBlurSigmaMidPx,
+                                _pCudaStream,
+                                opticsError)) {
                             JTRACE("CUDA", std::string("CUDA grain mid blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3735,7 +3853,13 @@ void JuicerProcessor::processImagesCUDA() {
                             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                         }
-                        if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainBlurKernelCoarse, grainSetup.grainBlurSigmaCoarsePx, _pCudaStream, opticsError)) {
+                        if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                                submissionTxn,
+                                *cudaResources,
+                                cudaResources->grainBlurKernelCoarse,
+                                grainSetup.grainBlurSigmaCoarsePx,
+                                _pCudaStream,
+                                opticsError)) {
                             JTRACE("CUDA", std::string("CUDA grain coarse blur kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3753,7 +3877,13 @@ void JuicerProcessor::processImagesCUDA() {
                         for (int layer = 0; layer < 3; ++layer) {
                             for (int ch = 0; ch < 3; ++ch) {
                                 const float sigma = grainSetup.grainDyeSigmaPx[layer][ch];
-                                if (!JuicerCuda::ensure_gaussian_kernel(*cudaResources, cudaResources->grainDyeKernel[layer][ch], sigma, _pCudaStream, opticsError)) {
+                                if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                                        submissionTxn,
+                                        *cudaResources,
+                                        cudaResources->grainDyeKernel[layer][ch],
+                                        sigma,
+                                        _pCudaStream,
+                                        opticsError)) {
                                     JTRACE("CUDA", std::string("CUDA grain dye-cloud kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3782,7 +3912,13 @@ void JuicerProcessor::processImagesCUDA() {
                 if (wantHalation) {
                     for (int i = 0; i < 3; ++i) {
                         if (halationStrengthBGR[i] > 0.0f && halationSigmaPx[i] > 0.0f) {
-                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationKernel[i], halationSigmaPx[i], _pCudaStream, opticsError)) {
+                            if (!JuicerCuda::ResourceManager::command_ensure_halation_kernel(
+                                    submissionTxn,
+                                    *cudaResources,
+                                    cudaResources->halationKernel[i],
+                                    halationSigmaPx[i],
+                                    _pCudaStream,
+                                    opticsError)) {
                                 JTRACE("CUDA", std::string("CUDA halation kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3794,7 +3930,13 @@ void JuicerProcessor::processImagesCUDA() {
                             run.halationKernels.halationRadius[i] = cudaResources->halationKernel[i].radius;
                         }
                         if (halationScatterStrengthBGR[i] > 0.0f && halationScatterSigmaPx[i] > 0.0f) {
-                            if (!JuicerCuda::ensure_halation_kernel(*cudaResources, cudaResources->halationScatterKernel[i], halationScatterSigmaPx[i], _pCudaStream, opticsError)) {
+                            if (!JuicerCuda::ResourceManager::command_ensure_halation_kernel(
+                                    submissionTxn,
+                                    *cudaResources,
+                                    cudaResources->halationScatterKernel[i],
+                                    halationScatterSigmaPx[i],
+                                    _pCudaStream,
+                                    opticsError)) {
                                 JTRACE("CUDA", std::string("CUDA halation scatter kernel upload failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                                 throw OFX::Exception::Suite(kOfxStatErrFatal);

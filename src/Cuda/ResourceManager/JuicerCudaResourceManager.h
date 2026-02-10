@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
 
 struct WorkingState;
@@ -14,7 +15,6 @@ namespace Print {
 }
 
 namespace JuicerCuda {
-struct Resources;
 namespace ResourceManager {
 
 bool query_submission_active(const SubmissionTransaction& transaction) noexcept;
@@ -73,6 +73,51 @@ bool command_ensure_print_illuminant_filtered(
     const WorkingState& ws,
     const Print::Runtime& prt,
     const Print::Params& params,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
+bool command_ensure_optics_scratch(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    int width,
+    int height,
+    bool needBlurredScratch,
+    bool needAuxScratch,
+    bool needGrainScratch,
+    bool needGrainSharedScratch,
+    bool needGateMask,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
+bool command_ensure_spatial_dir_scratch(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    int width,
+    int height,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
+bool command_ensure_spatial_dir_kernel(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+    float sigma,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
+bool command_ensure_gaussian_kernel(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+    float sigma,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
+bool command_ensure_halation_kernel(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+    float sigma,
     void* cudaStreamOpaque,
     std::string& outError);
 
