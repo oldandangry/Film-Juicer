@@ -1136,7 +1136,6 @@ namespace JuicerCuda {
         resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
         resources.printIllumCoreHash = 0;
-        resources.printIllumRuntimePtr = nullptr;
 
         resources.printGammaC = 1.0f;
         resources.printGammaM = 1.0f;
@@ -1145,7 +1144,6 @@ namespace JuicerCuda {
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
         resources.printPreflashBuildCounter = 0;
-        resources.printPreflashRuntimePtr = nullptr;
         resources.printPreflashShapeK = 0;
     }
 
@@ -1179,7 +1177,6 @@ namespace JuicerCuda {
         resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
         resources.printIllumCoreHash = 0;
-        resources.printIllumRuntimePtr = nullptr;
 
         resources.printGammaC = 1.0f;
         resources.printGammaM = 1.0f;
@@ -1188,7 +1185,6 @@ namespace JuicerCuda {
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
         resources.printPreflashBuildCounter = 0;
-        resources.printPreflashRuntimePtr = nullptr;
         resources.printPreflashShapeK = 0;
         return true;
 #endif
@@ -1901,10 +1897,9 @@ namespace JuicerCuda {
                 resources.printGammaM = gamma_safe(p.gammaFactor[1]);
                 resources.printGammaY = gamma_safe(p.gammaFactor[2]);
 
-                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState/runtime.
+                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState build.
                 if (!resources.printPreflashValid ||
                     resources.printPreflashBuildCounter != ws.buildCounter ||
-                    resources.printPreflashRuntimePtr != prt ||
                     resources.printPreflashShapeK != Spectral::gShape.K) {
                     float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
                     int shapeK = 0;
@@ -1913,7 +1908,6 @@ namespace JuicerCuda {
                         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
                         resources.printPreflashValid = false;
                         resources.printPreflashBuildCounter = ws.buildCounter;
-                        resources.printPreflashRuntimePtr = nullptr;
                         resources.printPreflashShapeK = 0;
                     }
                     else {
@@ -1922,7 +1916,6 @@ namespace JuicerCuda {
                         resources.printPreflashRaw[2] = preflashRaw[2];
                         resources.printPreflashValid = true;
                         resources.printPreflashBuildCounter = ws.buildCounter;
-                        resources.printPreflashRuntimePtr = prt;
                         resources.printPreflashShapeK = shapeK;
                     }
                 }
@@ -3172,7 +3165,6 @@ namespace JuicerCuda {
                 resources.printIllumK == K &&
                 resources.printIllumShapeK == K &&
                 resources.printIllumCoreHash == ws.coreHash &&
-                resources.printIllumRuntimePtr == &prt &&
                 resources.printIllumYShiftSteps == yKey &&
                 resources.printIllumMShiftSteps == mKey &&
                 resources.printIllumCShiftSteps == cKey;
@@ -3210,7 +3202,6 @@ namespace JuicerCuda {
             resources.printIllumK == K &&
             resources.printIllumShapeK == K &&
             resources.printIllumCoreHash == ws.coreHash &&
-            resources.printIllumRuntimePtr == &prt &&
             resources.printIllumYShiftSteps == yKey &&
             resources.printIllumMShiftSteps == mKey &&
             resources.printIllumCShiftSteps == cKey;
@@ -3261,7 +3252,6 @@ namespace JuicerCuda {
         resources.printIllumShapeK = K;
         resources.printIllumBuildCounter = ws.buildCounter;
         resources.printIllumCoreHash = ws.coreHash;
-        resources.printIllumRuntimePtr = &prt;
         return true;
 #endif
     }

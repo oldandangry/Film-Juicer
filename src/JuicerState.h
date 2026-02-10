@@ -272,7 +272,6 @@ struct InstanceState {
     std::mutex printMidgrayMutex;
     bool printMidgrayValid = false;
     std::uint64_t printMidgrayBuildCounter = 0;
-    const Print::Runtime* printMidgrayRuntime = nullptr;
     float printMidgrayYShiftSteps = 0.0f;
     float printMidgrayMShiftSteps = 0.0f;
     float printMidgrayCShiftSteps = 0.0f;

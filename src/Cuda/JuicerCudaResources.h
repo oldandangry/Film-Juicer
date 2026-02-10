@@ -211,7 +211,6 @@ namespace JuicerCuda {
         float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
         bool printPreflashValid = false;
         std::uint64_t printPreflashBuildCounter = 0;
-        const void* printPreflashRuntimePtr = nullptr;
         int printPreflashShapeK = 0;
 
         // Cached enlarger illuminant filtered by dichroic Y/M/C for the current print params.
@@ -223,7 +222,6 @@ namespace JuicerCuda {
         int printIllumShapeK = 0;
         std::uint64_t printIllumBuildCounter = 0;
         std::uint64_t printIllumCoreHash = 0;
-        const void* printIllumRuntimePtr = nullptr;
 
         // Hanatos LUT (process-global on CPU, uploaded on demand).
         // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.

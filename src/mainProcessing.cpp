@@ -347,7 +347,6 @@ namespace {
             std::lock_guard<std::mutex> lock(instanceState->printMidgrayMutex);
             if (instanceState->printMidgrayValid &&
                 instanceState->printMidgrayBuildCounter == ws.buildCounter &&
-                instanceState->printMidgrayRuntime == &prt &&
                 instanceState->printMidgrayYShiftSteps == yKey &&
                 instanceState->printMidgrayMShiftSteps == mKey &&
                 instanceState->printMidgrayCShiftSteps == cKey &&
@@ -370,7 +369,6 @@ namespace {
             std::lock_guard<std::mutex> lock(instanceState->printMidgrayMutex);
             instanceState->printMidgrayValid = true;
             instanceState->printMidgrayBuildCounter = ws.buildCounter;
-            instanceState->printMidgrayRuntime = &prt;
             instanceState->printMidgrayYShiftSteps = yKey;
             instanceState->printMidgrayMShiftSteps = mKey;
             instanceState->printMidgrayCShiftSteps = cKey;
@@ -3470,24 +3468,20 @@ void JuicerProcessor::processImagesCUDA() {
             }
             if (JTRACE_ENABLED(3)) {
                 std::lock_guard<std::mutex> resLock(cudaResources->m);
-                const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(_prt);
-                const std::uintptr_t illumPtr = reinterpret_cast<std::uintptr_t>(cudaResources->printIllumRuntimePtr);
-                const std::uintptr_t preflashPtr = reinterpret_cast<std::uintptr_t>(cudaResources->printPreflashRuntimePtr);
                 std::string msg = std::string("cuda print payload build=") + std::to_string(_ws ? _ws->buildCounter : 0)
-                    + " printRT=" + std::to_string(prtPtr)
+                    + " coreHash=" + std::to_string(_ws ? _ws->coreHash : 0)
                     + " neutralY/M/C=" + std::to_string(_prt ? _prt->neutralY : 0.0f)
                     + "/" + std::to_string(_prt ? _prt->neutralM : 0.0f)
                     + "/" + std::to_string(_prt ? _prt->neutralC : 0.0f)
                     + " yFilter=" + std::to_string(_printParams.yFilter)
                     + " mFilter=" + std::to_string(_printParams.mFilter)
                     + " cFilter=" + std::to_string(_printParams.cFilter)
-                    + " illumPtr=" + std::to_string(illumPtr)
                     + " illumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
+                    + " illumCoreHash=" + std::to_string(cudaResources->printIllumCoreHash)
                     + " illumY/M/Csteps=" + std::to_string(cudaResources->printIllumYShiftSteps)
                     + "/" + std::to_string(cudaResources->printIllumMShiftSteps)
                     + "/" + std::to_string(cudaResources->printIllumCShiftSteps)
                     + " preflashValid=" + std::to_string(cudaResources->printPreflashValid ? 1 : 0)
-                    + " preflashPtr=" + std::to_string(preflashPtr)
                     + " preflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
                 JTRACE_VERBOSE("PRINTDBG", msg);
             }
