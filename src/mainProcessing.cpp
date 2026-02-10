@@ -1632,6 +1632,7 @@ void JuicerProcessor::processImagesCUDA() {
             stream);
         if (err != cudaSuccess) {
             const char* msg = cudaGetErrorString(err);
+            mark_context_loss_recovery("copy_alpha_memcpy2d", err, msg ? msg : "");
             JTRACE("CUDA", std::string("FATAL: cudaMemcpy2DAsync failed: ") + (msg ? msg : "(unknown)"));
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
@@ -2712,6 +2713,7 @@ void JuicerProcessor::processImagesCUDA() {
 
         std::string dirError;
         if (!JuicerCuda::ensure_spatial_dir_scratch(*resources, frameWidth, frameHeight, _pCudaStream, dirError)) {
+            mark_context_loss_recovery("ensure_spatial_dir_scratch", cudaErrorUnknown, dirError);
             JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2720,6 +2722,7 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
         }
         if (!JuicerCuda::ensure_spatial_dir_kernel(*resources, resources->spatialDirKernel, _dirRT.spatialSigmaPixels, _pCudaStream, dirError)) {
+            mark_context_loss_recovery("ensure_spatial_dir_kernel", cudaErrorUnknown, dirError);
             JTRACE("CUDA", std::string("CUDA spatial DIR kernel upload failed: ") + dirError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2743,6 +2746,7 @@ void JuicerProcessor::processImagesCUDA() {
             _pCudaStream);
         if (dirErr != cudaSuccess) {
             const char* msg = cudaGetErrorString(dirErr);
+            mark_context_loss_recovery("build_spatial_dir", dirErr, msg ? msg : "");
             JTRACE("CUDA", std::string("FATAL: spatial DIR build failed: ") + (msg ? msg : "(unknown)"));
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
@@ -3050,6 +3054,7 @@ void JuicerProcessor::processImagesCUDA() {
                             _pCudaStream);
                         if (gateErr != cudaSuccess) {
                             const char* msg = cudaGetErrorString(gateErr);
+                            mark_context_loss_recovery("build_gate_mask_negative", gateErr, msg ? msg : "");
                             JTRACE("CUDA", std::string("FATAL: gate defect mask build failed: ") + (msg ? msg : "(unknown)"));
                             throw OFX::Exception::Suite(kOfxStatErrFatal);
                         }
@@ -3219,6 +3224,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             if (err != cudaSuccess) {
                 const char* msg = cudaGetErrorString(err);
+                mark_context_loss_recovery("negative_pipeline_kernel_launch", err, msg ? msg : "");
                 JTRACE("CUDA", std::string("FATAL: negative pipeline kernel launch failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
@@ -3660,6 +3666,7 @@ void JuicerProcessor::processImagesCUDA() {
                             _pCudaStream);
                         if (gateErr != cudaSuccess) {
                             const char* msg = cudaGetErrorString(gateErr);
+                            mark_context_loss_recovery("build_gate_mask_print", gateErr, msg ? msg : "");
                             JTRACE("CUDA", std::string("FATAL: gate defect mask build failed: ") + (msg ? msg : "(unknown)"));
                             throw OFX::Exception::Suite(kOfxStatErrFatal);
                         }
@@ -3829,6 +3836,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             if (err != cudaSuccess) {
                 const char* msg = cudaGetErrorString(err);
+                mark_context_loss_recovery("print_pipeline_kernel_launch", err, msg ? msg : "");
                 JTRACE("CUDA", std::string("FATAL: print pipeline kernel launch failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
