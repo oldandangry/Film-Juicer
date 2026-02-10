@@ -1394,6 +1394,31 @@ namespace JuicerCuda {
 
     static bool sync_before_rebuild(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError);
 
+    // Callers must hold resources.m before invoking this helper.
+    static bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset = true) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)bindIfUnset;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        int cur = -1;
+        const cudaError_t devErr = cudaGetDevice(&cur);
+        if (devErr != cudaSuccess || cur < 0) {
+            outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+            return false;
+        }
+        if (bindIfUnset && resources.deviceId < 0) {
+            resources.deviceId = cur;
+        }
+        if (resources.deviceId != cur) {
+            outError = "CUDA device mismatch for cached resources";
+            return false;
+        }
+        return true;
+#endif
+    }
+
     bool ensure_uploaded(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
@@ -1404,20 +1429,8 @@ namespace JuicerCuda {
 #else
         std::unique_lock<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         if (!resources.stbnData) {
@@ -2033,17 +2046,7 @@ namespace JuicerCuda {
         Resources::DeviceSpectralLut* dst = negativeMedium ? &resources.scanNegativeLut : &resources.scanPrintLut;
         {
             std::lock_guard<std::mutex> lock(resources.m);
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
+            if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
             if (dst->log2XYZ && dst->res == res && dst->hash == expectedHash) {
@@ -2061,14 +2064,7 @@ namespace JuicerCuda {
         const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
         {
             std::lock_guard<std::mutex> lock(resources.m);
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
+            if (!validate_resource_owner_locked(resources, outError, false)) {
                 return false;
             }
             if (dst->log2XYZ && dst->res == res && dst->hash == expectedHash) {
@@ -2119,20 +2115,8 @@ namespace JuicerCuda {
         return false;
 #else
         std::lock_guard<std::mutex> lock(resources.m);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         if (!resources.scanErrorFlag) {
@@ -2185,20 +2169,8 @@ namespace JuicerCuda {
         }
 
         std::lock_guard<std::mutex> lock(resources.m);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         if (!resources.autoExposureExposureScale) {
@@ -2392,20 +2364,8 @@ namespace JuicerCuda {
         }
 
         std::lock_guard<std::mutex> lock(resources.m);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         const bool dimsMatch = (resources.scannerScratch.width == width && resources.scannerScratch.height == height);
@@ -2642,20 +2602,8 @@ namespace JuicerCuda {
         }
 
         std::lock_guard<std::mutex> lock(resources.m);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
@@ -2727,17 +2675,7 @@ namespace JuicerCuda {
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
+            if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
 
@@ -2777,20 +2715,8 @@ namespace JuicerCuda {
 
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
@@ -2861,17 +2787,7 @@ namespace JuicerCuda {
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
+            if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
 
@@ -2911,20 +2827,8 @@ namespace JuicerCuda {
 
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
@@ -2996,17 +2900,7 @@ namespace JuicerCuda {
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
+            if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
 
@@ -3046,20 +2940,8 @@ namespace JuicerCuda {
 
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
@@ -3161,17 +3043,7 @@ namespace JuicerCuda {
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
+            if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
 
@@ -3209,20 +3081,8 @@ namespace JuicerCuda {
 
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
-        {
-            int cur = -1;
-            const cudaError_t devErr = cudaGetDevice(&cur);
-            if (devErr != cudaSuccess || cur < 0) {
-                outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-                return false;
-            }
-            if (resources.deviceId < 0) {
-                resources.deviceId = cur;
-            }
-            if (resources.deviceId != cur) {
-                outError = "CUDA device mismatch for cached resources";
-                return false;
-            }
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
 
         const bool cached =
