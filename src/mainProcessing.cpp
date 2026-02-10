@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
+#include <cctype>
 #include <string>
 #include <atomic>
 #include <sstream>
+#include <functional>
 #include <mutex>
 #include <limits>
 
@@ -199,6 +201,102 @@ namespace {
 
         outContextOpaque = reinterpret_cast<void*>(currentContext);
         return true;
+    }
+
+    std::string ascii_lower_copy(const std::string& value) {
+        std::string out = value;
+        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return out;
+    }
+
+    bool text_has_context_loss_marker(const std::string& text) {
+        if (text.empty()) {
+            return false;
+        }
+        const std::string lower = ascii_lower_copy(text);
+        return lower.find("context is destroyed") != std::string::npos ||
+            lower.find("context destroyed") != std::string::npos ||
+            lower.find("cudaerrorcontextisdestroyed") != std::string::npos ||
+            lower.find("device lost") != std::string::npos ||
+            lower.find("driver shutting down") != std::string::npos ||
+            lower.find("context reset") != std::string::npos ||
+            lower.find("device unavailable") != std::string::npos ||
+            lower.find("cudaerrordeviceuninitialized") != std::string::npos;
+    }
+
+    bool is_cuda_context_loss_signal(cudaError_t error, const std::string& detail) {
+        if (text_has_context_loss_marker(detail)) {
+            return true;
+        }
+        if (error == cudaSuccess || error == cudaErrorNotReady) {
+            return false;
+        }
+        const char* errorName = cudaGetErrorName(error);
+        if (errorName && text_has_context_loss_marker(errorName)) {
+            return true;
+        }
+        const char* errorText = cudaGetErrorString(error);
+        if (errorText && text_has_context_loss_marker(errorText)) {
+            return true;
+        }
+        return false;
+    }
+
+    void recover_context_loss_slot(
+        InstanceState* instanceState,
+        const JuicerCuda::ResourceManager::DeviceContextKey& key,
+        const char* stage,
+        cudaError_t error,
+        const std::string& detail) {
+        if (!instanceState) {
+            return;
+        }
+        if (!is_cuda_context_loss_signal(error, detail)) {
+            return;
+        }
+
+        const char* stageName = (stage && *stage) ? stage : "unknown_stage";
+        std::string barrierError;
+        const bool barrierAccepted = JuicerCuda::ResourceManager::command_freeze_drain_bump_resume(
+            key,
+            stageName,
+            barrierError);
+
+        bool slotErased = false;
+        {
+            std::lock_guard<std::mutex> lock(instanceState->cudaMutex);
+            const auto it = instanceState->cudaByDevice.find(key);
+            if (it != instanceState->cudaByDevice.end()) {
+                instanceState->cudaByDevice.erase(it);
+                slotErased = true;
+            }
+        }
+
+        bool latchCleared = false;
+        {
+            std::lock_guard<std::mutex> lock(instanceState->submissionSnapshotLatchMutex);
+            if (instanceState->submissionSnapshotLatchValid &&
+                instanceState->submissionSnapshotLatch.deviceContextKey == key) {
+                instanceState->submissionSnapshotLatch = JuicerCuda::ResourceManager::SubmissionSnapshot{};
+                instanceState->submissionSnapshotLatchValid = false;
+                latchCleared = true;
+            }
+        }
+
+        const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
+        std::string msg = std::string("stage=") + stageName
+            + " device_id=" + std::to_string(key.deviceId)
+            + " context=" + std::to_string(contextBits)
+            + " error_code=" + std::to_string(static_cast<int>(error))
+            + " barrier_accepted=" + std::to_string(barrierAccepted ? 1 : 0)
+            + " slot_erased=" + std::to_string(slotErased ? 1 : 0)
+            + " latch_cleared=" + std::to_string(latchCleared ? 1 : 0);
+        if (!barrierError.empty()) {
+            msg += " barrier_error=" + barrierError;
+        }
+        JTRACE("MSLCY", msg);
     }
 #endif
 
@@ -1289,6 +1387,48 @@ void JuicerProcessor::processImagesCUDA() {
     deviceContextKey.deviceId = deviceId;
     deviceContextKey.contextOpaque = contextOpaque;
 
+    struct PendingContextLossRecovery {
+        bool pending = false;
+        cudaError_t error = cudaSuccess;
+        const char* stage = nullptr;
+        std::string detail;
+    } pendingContextLossRecovery{};
+
+    auto mark_context_loss_recovery = [&](const char* stage, cudaError_t error, const std::string& detail) {
+        if (pendingContextLossRecovery.pending) {
+            return;
+        }
+        if (!is_cuda_context_loss_signal(error, detail)) {
+            return;
+        }
+        pendingContextLossRecovery.pending = true;
+        pendingContextLossRecovery.error = error;
+        pendingContextLossRecovery.stage = stage;
+        pendingContextLossRecovery.detail = detail;
+    };
+
+    auto run_pending_context_loss_recovery = [&]() {
+        if (!pendingContextLossRecovery.pending) {
+            return;
+        }
+        recover_context_loss_slot(
+            _instanceState,
+            deviceContextKey,
+            pendingContextLossRecovery.stage,
+            pendingContextLossRecovery.error,
+            pendingContextLossRecovery.detail);
+        pendingContextLossRecovery = PendingContextLossRecovery{};
+    };
+
+    struct ContextLossRecoveryScope {
+        std::function<void()> onExit;
+        ~ContextLossRecoveryScope() {
+            if (onExit) {
+                onExit();
+            }
+        }
+    } contextLossRecoveryScope{ run_pending_context_loss_recovery };
+
     JuicerCuda::Resources* cudaResources = nullptr;
     {
         std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
@@ -1369,10 +1509,12 @@ void JuicerProcessor::processImagesCUDA() {
 
         std::string submissionError;
         if (!JuicerCuda::ResourceManager::begin_submission(submissionTxn, snapshot, submissionError)) {
+            mark_context_loss_recovery("begin_submission", cudaErrorUnknown, submissionError);
             JTRACE("CUDA", std::string("FATAL: begin_submission failed: ") + submissionError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
         if (!JuicerCuda::ResourceManager::acquire_plan(submissionTxn, submissionError)) {
+            mark_context_loss_recovery("acquire_plan", cudaErrorUnknown, submissionError);
             JTRACE("CUDA", std::string("FATAL: acquire_plan failed: ") + submissionError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
@@ -1391,6 +1533,7 @@ void JuicerProcessor::processImagesCUDA() {
                 *_ws,
                 _pCudaStream,
                 uploadError)) {
+            mark_context_loss_recovery("command_ensure_uploaded", cudaErrorUnknown, uploadError);
             JTRACE("CUDA", std::string("CUDA WorkingState upload failed: ") + uploadError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2325,6 +2468,7 @@ void JuicerProcessor::processImagesCUDA() {
                 *resources,
                 _pCudaStream,
                 scanFlagError)) {
+            mark_context_loss_recovery("command_ensure_scan_error_flag", cudaErrorUnknown, scanFlagError);
             JTRACE("CUDA", std::string("CUDA scan error flag allocation failed: ") + scanFlagError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2355,6 +2499,7 @@ void JuicerProcessor::processImagesCUDA() {
                     pollErr = cudaEventSynchronize(scanEvent);
                     if (pollErr != cudaSuccess) {
                         const char* msg = cudaGetErrorString(pollErr);
+                        mark_context_loss_recovery("scan_error_event_sync", pollErr, msg ? msg : "");
                         JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
                         throw OFX::Exception::Suite(kOfxStatErrFatal);
                     }
@@ -2370,6 +2515,7 @@ void JuicerProcessor::processImagesCUDA() {
                     const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
                     if (waitErr != cudaSuccess) {
                         const char* msg = cudaGetErrorString(waitErr);
+                        mark_context_loss_recovery("scan_error_stream_wait", waitErr, msg ? msg : "");
                         JTRACE("CUDA", std::string("CUDA scan error stream wait failed: ") + (msg ? msg : "(unknown)"));
                         throw OFX::Exception::Suite(kOfxStatErrFatal);
                     }
@@ -2379,6 +2525,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 const char* msg = cudaGetErrorString(pollErr);
+                mark_context_loss_recovery("scan_error_event_query", pollErr, msg ? msg : "");
                 JTRACE("CUDA", std::string("CUDA scan error event query failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
@@ -2387,6 +2534,7 @@ void JuicerProcessor::processImagesCUDA() {
         cudaError_t flagErr = cudaMemsetAsync(run.scanStage.scanErrorFlag, 0, sizeof(int), stream);
         if (flagErr != cudaSuccess) {
             const char* msg = cudaGetErrorString(flagErr);
+            mark_context_loss_recovery("scan_error_flag_memset", flagErr, msg ? msg : "");
             JTRACE("CUDA", std::string("CUDA scan error flag memset failed: ") + (msg ? msg : "(unknown)"));
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2409,6 +2557,7 @@ void JuicerProcessor::processImagesCUDA() {
             flagErr = cudaMemcpyAsync(resources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
             if (flagErr != cudaSuccess) {
                 const char* msg = cudaGetErrorString(flagErr);
+                mark_context_loss_recovery("scan_error_flag_readback", flagErr, msg ? msg : "");
                 JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2419,6 +2568,7 @@ void JuicerProcessor::processImagesCUDA() {
             cudaError_t evErr = cudaEventRecord(scanEvent, stream);
             if (evErr != cudaSuccess) {
                 const char* msg = cudaGetErrorString(evErr);
+                mark_context_loss_recovery("scan_error_event_record", evErr, msg ? msg : "");
                 JTRACE("CUDA", std::string("CUDA scan error event record failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
@@ -2433,6 +2583,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else if (pollErr != cudaErrorNotReady) {
                 const char* msg = cudaGetErrorString(pollErr);
+                mark_context_loss_recovery("scan_error_event_query", pollErr, msg ? msg : "");
                 JTRACE("CUDA", std::string("CUDA scan error event query failed: ") + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
@@ -2444,6 +2595,7 @@ void JuicerProcessor::processImagesCUDA() {
             flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
             if (flagErr != cudaSuccess) {
                 const char* msg = cudaGetErrorString(flagErr);
+                mark_context_loss_recovery("scan_error_flag_readback", flagErr, msg ? msg : "");
                 JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2454,6 +2606,7 @@ void JuicerProcessor::processImagesCUDA() {
             flagErr = cudaStreamSynchronize(stream);
             if (flagErr != cudaSuccess) {
                 const char* msg = cudaGetErrorString(flagErr);
+                mark_context_loss_recovery("scan_error_stream_sync", flagErr, msg ? msg : "");
                 JTRACE("CUDA", std::string("CUDA stream sync failed after ") + stage + " pipeline: " + (msg ? msg : "(unknown)"));
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
@@ -2467,6 +2620,7 @@ void JuicerProcessor::processImagesCUDA() {
     auto commit_submission_or_throw = [&]() {
         std::string commitError;
         if (!JuicerCuda::ResourceManager::commit_submission(submissionTxn, _pCudaStream, commitError)) {
+            mark_context_loss_recovery("commit_submission", cudaErrorUnknown, commitError);
             JTRACE("CUDA", std::string("FATAL: commit_submission failed: ") + commitError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
@@ -2489,6 +2643,10 @@ void JuicerProcessor::processImagesCUDA() {
                     negativeMedium,
                     _pCudaStream,
                     lutError)) {
+                mark_context_loss_recovery(
+                    negativeMedium ? "command_ensure_scan_lut_negative" : "command_ensure_scan_lut_print",
+                    cudaErrorUnknown,
+                    lutError);
                 JTRACE("CUDA", std::string("CUDA ") + (negativeMedium ? "scan" : "print scan")
                     + " LUT upload failed: " + lutError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
@@ -3207,6 +3365,7 @@ void JuicerProcessor::processImagesCUDA() {
                     _printParams,
                     _pCudaStream,
                     illumError)) {
+                mark_context_loss_recovery("command_ensure_print_illuminant_filtered", cudaErrorUnknown, illumError);
                 JTRACE("CUDA", std::string("CUDA print illuminant upload failed: ") + illumError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
