@@ -38,6 +38,14 @@ bool command_freeze_drain_bump_resume(
     const char* reason,
     std::string& outError);
 
+bool command_retire_context_reset(
+    const DeviceContextKey& key,
+    std::string& outError);
+
+bool command_retire_context_idle(
+    const DeviceContextKey& key,
+    std::string& outError);
+
 bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,

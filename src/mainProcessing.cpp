@@ -9,7 +9,6 @@
 #include <string>
 #include <atomic>
 #include <sstream>
-#include <functional>
 #include <mutex>
 #include <limits>
 
@@ -258,11 +257,10 @@ namespace {
         }
 
         const char* stageName = (stage && *stage) ? stage : "unknown_stage";
-        std::string barrierError;
-        const bool barrierAccepted = JuicerCuda::ResourceManager::command_freeze_drain_bump_resume(
+        std::string retireError;
+        const bool retireAccepted = JuicerCuda::ResourceManager::command_retire_context_reset(
             key,
-            stageName,
-            barrierError);
+            retireError);
 
         bool slotErased = false;
         {
@@ -290,11 +288,11 @@ namespace {
             + " device_id=" + std::to_string(key.deviceId)
             + " context=" + std::to_string(contextBits)
             + " error_code=" + std::to_string(static_cast<int>(error))
-            + " barrier_accepted=" + std::to_string(barrierAccepted ? 1 : 0)
+            + " retire_accepted=" + std::to_string(retireAccepted ? 1 : 0)
             + " slot_erased=" + std::to_string(slotErased ? 1 : 0)
             + " latch_cleared=" + std::to_string(latchCleared ? 1 : 0);
-        if (!barrierError.empty()) {
-            msg += " barrier_error=" + barrierError;
+        if (!retireError.empty()) {
+            msg += " retire_error=" + retireError;
         }
         JTRACE("MSLCY", msg);
     }
@@ -1420,14 +1418,22 @@ void JuicerProcessor::processImagesCUDA() {
         pendingContextLossRecovery = PendingContextLossRecovery{};
     };
 
+    auto run_pending_context_loss_recovery_noexcept = [&]() noexcept {
+        try {
+            run_pending_context_loss_recovery();
+        }
+        catch (...) {
+        }
+    };
+
     struct ContextLossRecoveryScope {
-        std::function<void()> onExit;
-        ~ContextLossRecoveryScope() {
+        decltype(run_pending_context_loss_recovery_noexcept)* onExit = nullptr;
+        ~ContextLossRecoveryScope() noexcept {
             if (onExit) {
-                onExit();
+                (*onExit)();
             }
         }
-    } contextLossRecoveryScope{ run_pending_context_loss_recovery };
+    } contextLossRecoveryScope{ &run_pending_context_loss_recovery_noexcept };
 
     JuicerCuda::Resources* cudaResources = nullptr;
     {

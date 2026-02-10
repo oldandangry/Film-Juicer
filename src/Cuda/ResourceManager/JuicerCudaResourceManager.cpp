@@ -676,6 +676,50 @@ bool command_freeze_drain_bump_resume(
     return true;
 }
 
+namespace {
+bool command_retire_context_with_reason(
+    const DeviceContextKey& key,
+    RegistryRetireReason reason,
+    const char* commandName,
+    std::string& outError) {
+    outError.clear();
+    MetadataMutationGuard mutationGuard(commandName ? commandName : "command_retire_context");
+    if (!mutationGuard.ok()) {
+        outError = std::string("metadata mutation guard rejected ")
+            + (commandName ? commandName : "command_retire_context");
+        return false;
+    }
+
+    RegistryHandle handle{};
+    if (!registry_get(key, handle) || handle.value == 0) {
+        return true;
+    }
+
+    registry_retire(handle, reason);
+    return true;
+}
+} // namespace
+
+bool command_retire_context_reset(
+    const DeviceContextKey& key,
+    std::string& outError) {
+    return command_retire_context_with_reason(
+        key,
+        RegistryRetireReason::ContextReset,
+        "command_retire_context_reset",
+        outError);
+}
+
+bool command_retire_context_idle(
+    const DeviceContextKey& key,
+    std::string& outError) {
+    return command_retire_context_with_reason(
+        key,
+        RegistryRetireReason::Idle,
+        "command_retire_context_idle",
+        outError);
+}
+
 bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,

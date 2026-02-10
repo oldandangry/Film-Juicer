@@ -35,6 +35,7 @@
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaAutoExposure.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #endif
 
 namespace {
@@ -1839,6 +1840,33 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 JuicerEffect::~JuicerEffect() {
     // Mirror destroyInstance() guards without touching C suites.
     JuicerRegistry::erase(this->getHandle());
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    if (_state) {
+        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
+        {
+            std::lock_guard<std::mutex> lock(_state->cudaMutex);
+            keys.reserve(_state->cudaByDevice.size());
+            for (const auto& entry : _state->cudaByDevice) {
+                keys.push_back(entry.first);
+            }
+        }
+        for (const auto& key : keys) {
+            std::string retireError;
+            const bool retireOk = JuicerCuda::ResourceManager::command_retire_context_idle(key, retireError);
+            if (!retireOk || !retireError.empty()) {
+                const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
+                std::string msg = std::string("teardown_retire_idle_failed device_id=")
+                    + std::to_string(key.deviceId)
+                    + " context=" + std::to_string(contextBits)
+                    + " accepted=" + std::to_string(retireOk ? 1 : 0);
+                if (!retireError.empty()) {
+                    msg += " error=" + retireError;
+                }
+                JTRACE("MSLCY", msg);
+            }
+        }
+    }
+#endif
     _state.reset();
 }
 
