@@ -1,6 +1,6 @@
 // Cuda/JuicerCudaResources.h
 //
-// Per-instance CUDA resource cache keyed by WorkingState.{coreHash,dirHash}.
+// Per-instance CUDA resource cache keyed by WorkingState.{uploadCoreHash,dirHash}.
 //
 // This module intentionally owns only GPU-side mirrors of CPU WorkingState data (curves/tables/etc).
 // The render path remains responsible for gating unsupported features (e.g. auto-exposure) until

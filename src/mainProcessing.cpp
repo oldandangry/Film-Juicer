@@ -592,6 +592,41 @@ static std::uint64_t hash_scanner_settings(const Scanner::Settings& settings, co
     return Hash::hash_bytes(combined, sizeof(combined));
 }
 
+static std::uint64_t hash_scanner_runtime_lane(
+    const WorkingState* ws,
+    const Scanner::Settings& settings,
+    const Scanner::Options& options,
+    std::uint32_t frameBoundsVersion) {
+    if (!ws) {
+        return 0;
+    }
+    const std::uint64_t settingsHash = hash_scanner_settings(settings, options);
+    if (settingsHash == 0) {
+        return 0;
+    }
+
+    const std::uint64_t negColorHash = ws->negativeStaticKey.colorRuntimeHash;
+    const std::uint64_t negLutRes = static_cast<std::uint64_t>(
+        std::clamp(ws->negativeStaticKey.lutResolution, 17u, 128u));
+    const bool printValid = ws->printScannerValid;
+    const std::uint64_t printColorHash = printValid ? ws->printStaticKey.colorRuntimeHash : 0;
+    const std::uint64_t printLutRes = printValid
+        ? static_cast<std::uint64_t>(std::clamp(ws->printStaticKey.lutResolution, 17u, 128u))
+        : 0;
+
+    const std::uint64_t fields[] = {
+        settingsHash,
+        static_cast<std::uint64_t>(frameBoundsVersion),
+        static_cast<std::uint64_t>(ws->negativeScannerValid ? 1 : 0),
+        negColorHash,
+        negLutRes,
+        static_cast<std::uint64_t>(printValid ? 1 : 0),
+        printColorHash,
+        printLutRes
+    };
+    return Hash::hash_bytes(fields, sizeof(fields));
+}
+
 struct ScannerPreflightResult {
     const Scanner::ScannerMediumRuntime* mediumRuntime = nullptr;
     const Scanner::ColorRuntime* colorRuntime = nullptr;
@@ -1503,11 +1538,18 @@ void JuicerProcessor::processImagesCUDA() {
             (_instanceState->instanceToken != 0) ? _instanceState->instanceToken : safe_session_seed(_instanceState);
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
+        const std::uint64_t uploadCoreHash =
+            (_ws->uploadCoreHash != 0) ? _ws->uploadCoreHash : _ws->coreHash;
+        const std::uint64_t scannerRuntimeHash = hash_scanner_runtime_lane(
+            _ws,
+            _scannerSettings,
+            _scannerOptions,
+            _frameBoundsVersion);
         snapshot.keyDigests =
             JuicerCuda::ResourceManager::make_key_digests(
-                _ws->coreHash,
+                uploadCoreHash,
                 _ws->dirHash,
-                _ws->fullHash,
+                scannerRuntimeHash,
                 autoExposureReusableKeyHash);
         snapshot.keySchemaVersion = 1;
         snapshot.traceSchemaVersion = JuicerCuda::ResourceManager::kTraceSchemaVersion;
@@ -3510,7 +3552,7 @@ void JuicerProcessor::processImagesCUDA() {
             if (JTRACE_ENABLED(3)) {
                 std::lock_guard<std::mutex> resLock(cudaResources->m);
                 std::string msg = std::string("cuda print payload build=") + std::to_string(_ws ? _ws->buildCounter : 0)
-                    + " coreHash=" + std::to_string(_ws ? _ws->coreHash : 0)
+                    + " uploadCoreHash=" + std::to_string(_ws ? ((_ws->uploadCoreHash != 0) ? _ws->uploadCoreHash : _ws->coreHash) : 0)
                     + " neutralY/M/C=" + std::to_string(_prt ? _prt->neutralY : 0.0f)
                     + "/" + std::to_string(_prt ? _prt->neutralM : 0.0f)
                     + "/" + std::to_string(_prt ? _prt->neutralC : 0.0f)

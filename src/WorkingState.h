@@ -109,6 +109,7 @@ struct WorkingState {
 
     // Versioning for atomic swap / debugging
     std::uint64_t fullHash = 0;
+    std::uint64_t uploadCoreHash = 0;
     std::uint64_t coreHash = 0;
     std::uint64_t dirHash = 0;
     std::uint64_t buildCounter = 0;

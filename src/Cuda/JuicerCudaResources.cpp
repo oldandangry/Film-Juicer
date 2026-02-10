@@ -1624,7 +1624,8 @@ namespace JuicerCuda {
             return false;
         }
 
-        const std::uint64_t wsCoreHash = ws.coreHash;
+        const std::uint64_t wsCoreHash =
+            (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
         const std::uint64_t wsDirHash = ws.dirHash;
         if (wsCoreHash == 0 || wsDirHash == 0) {
             outError = "WorkingState hash is 0";
@@ -3158,6 +3159,12 @@ namespace JuicerCuda {
             outError = "spectral shape invalid";
             return false;
         }
+        const std::uint64_t wsCoreHash =
+            (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+        if (wsCoreHash == 0) {
+            outError = "print illuminant filtered requested with invalid upload-core hash";
+            return false;
+        }
 
         // Normalize filter step keys for cache parity with ExposePrintStage.
         const float yKey = std::isfinite(prm.yFilter) ? prm.yFilter : 0.0f;
@@ -3197,7 +3204,7 @@ namespace JuicerCuda {
                 resources.printIllumFiltered &&
                 resources.printIllumK == K &&
                 resources.printIllumShapeK == K &&
-                resources.printIllumCoreHash == ws.coreHash &&
+                resources.printIllumCoreHash == wsCoreHash &&
                 resources.printIllumYShiftSteps == yKey &&
                 resources.printIllumMShiftSteps == mKey &&
                 resources.printIllumCShiftSteps == cKey &&
@@ -3235,7 +3242,7 @@ namespace JuicerCuda {
             resources.printIllumFiltered &&
             resources.printIllumK == K &&
             resources.printIllumShapeK == K &&
-            resources.printIllumCoreHash == ws.coreHash &&
+            resources.printIllumCoreHash == wsCoreHash &&
             resources.printIllumYShiftSteps == yKey &&
             resources.printIllumMShiftSteps == mKey &&
             resources.printIllumCShiftSteps == cKey &&
@@ -3287,7 +3294,7 @@ namespace JuicerCuda {
         resources.printIllumNeutralFilterHash = neutralFilterHash;
         resources.printIllumShapeK = K;
         resources.printIllumBuildCounter = ws.buildCounter;
-        resources.printIllumCoreHash = ws.coreHash;
+        resources.printIllumCoreHash = wsCoreHash;
         return true;
 #endif
     }

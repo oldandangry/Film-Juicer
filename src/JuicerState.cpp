@@ -837,6 +837,38 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     return h;
 }
 
+static uint64_t hash_params_upload_core(const ParamSnapshot& p) {
+    auto mix = [](uint64_t h, uint64_t v) {
+        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+        };
+    uint64_t h = 0;
+    h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
+    h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
+    h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
+    h = mix(h, static_cast<uint64_t>(p.refIll));
+    h = mix(h, static_cast<uint64_t>(p.enlIll));
+    h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
+    h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
+    if (p.cameraFilterOverride) {
+        auto mix_triplet = [&](const std::array<double, 3>& triplet) {
+            for (double v : triplet) {
+                if (std::isfinite(v)) {
+                    const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
+                    h = mix(h, static_cast<uint64_t>(scaled));
+                }
+            }
+            };
+        mix_triplet(p.cameraFilterUV);
+        mix_triplet(p.cameraFilterIR);
+    }
+    return h;
+}
+
 uint64_t hash_params_dir(const ParamSnapshot& p) {
     auto mix = [](uint64_t h, uint64_t v) {
         h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
@@ -2441,6 +2473,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printGlareCompensated = (printRuntimeOk && printProfile.glare.compensationRemovalFactor > 0.0f);
 
     target->fullHash = hash_params(P);
+    target->uploadCoreHash = hash_params_upload_core(P);
     target->coreHash = hash_params_core(P);
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -2673,6 +2706,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     }
 
     target->fullHash = hash_params(P);
+    target->uploadCoreHash = hash_params_upload_core(P);
     target->coreHash = hash_params_core(P);
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
