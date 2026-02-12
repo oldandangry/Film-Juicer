@@ -12,8 +12,24 @@
 #include "WorkingState.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include <cuda_runtime.h>
+#endif
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+extern "C" cudaError_t juicer_cuda_negative_pipeline(
+    const JuicerCuda::PipelineRunParams* hParams,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_print_pipeline(
+    const JuicerCuda::PipelineRunParams* hParams,
+    void* cudaStreamOpaque);
+#endif
 
 namespace JuicerCuda {
 namespace ResourceManager {
@@ -237,6 +253,225 @@ bool ensure_active_for_command(
         commandName ? commandName : "command_requires_active_submission");
     return false;
 }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+struct BaseGraphKey {
+    int width = 0;
+    int height = 0;
+    int nComponents = 0;
+    int renderMode = 0;
+};
+
+struct BaseGraphEntry {
+    BaseGraphKey key{};
+    void* graphOpaque = nullptr;
+    void* execOpaque = nullptr;
+    void* kernelNodeOpaque = nullptr;
+    void* kernelFuncOpaque = nullptr;
+    unsigned int gridX = 0;
+    unsigned int gridY = 0;
+    unsigned int gridZ = 0;
+    unsigned int blockX = 0;
+    unsigned int blockY = 0;
+    unsigned int blockZ = 0;
+    unsigned int sharedMemBytes = 0;
+    std::uint64_t lastUseTick = 0;
+};
+
+struct BaseGraphBucket {
+    std::uint64_t contextEpoch = 0;
+    std::uint64_t useTick = 0;
+    std::vector<BaseGraphEntry> entries;
+};
+
+struct BaseGraphCacheState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, BaseGraphBucket, DeviceContextKeyHash> byContext;
+};
+
+BaseGraphCacheState& base_graph_cache_state() noexcept {
+    static BaseGraphCacheState state{};
+    return state;
+}
+
+using BasePipelineLaunchFn = cudaError_t(*)(const JuicerCuda::PipelineRunParams*, void*);
+
+BasePipelineLaunchFn base_pipeline_launch_fn_for_mode(int renderModeKey) noexcept {
+    switch (renderModeKey) {
+    case 0:
+        return juicer_cuda_negative_pipeline;
+    case 1:
+        return juicer_cuda_print_pipeline;
+    default:
+        return nullptr;
+    }
+}
+
+bool base_graph_key_equal(const BaseGraphKey& a, const BaseGraphKey& b) noexcept {
+    return a.width == b.width &&
+        a.height == b.height &&
+        a.nComponents == b.nComponents &&
+        a.renderMode == b.renderMode;
+}
+
+void destroy_base_graph_entry(BaseGraphEntry& entry) noexcept {
+    if (entry.execOpaque) {
+        cudaGraphExecDestroy(reinterpret_cast<cudaGraphExec_t>(entry.execOpaque));
+        entry.execOpaque = nullptr;
+    }
+    if (entry.graphOpaque) {
+        cudaGraphDestroy(reinterpret_cast<cudaGraph_t>(entry.graphOpaque));
+        entry.graphOpaque = nullptr;
+    }
+    entry.kernelNodeOpaque = nullptr;
+    entry.kernelFuncOpaque = nullptr;
+    entry.gridX = 0;
+    entry.gridY = 0;
+    entry.gridZ = 0;
+    entry.blockX = 0;
+    entry.blockY = 0;
+    entry.blockZ = 0;
+    entry.sharedMemBytes = 0;
+    entry.lastUseTick = 0;
+}
+
+void clear_base_graph_bucket(BaseGraphBucket& bucket) noexcept {
+    for (auto& entry : bucket.entries) {
+        destroy_base_graph_entry(entry);
+    }
+    bucket.entries.clear();
+    bucket.useTick = 0;
+}
+
+void retire_base_graph_cache_for_context(const DeviceContextKey& key) noexcept {
+    BaseGraphCacheState& state = base_graph_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto it = state.byContext.find(key);
+    if (it == state.byContext.end()) {
+        return;
+    }
+    clear_base_graph_bucket(it->second);
+    state.byContext.erase(it);
+}
+
+BaseGraphEntry* find_base_graph_entry(
+    BaseGraphBucket& bucket,
+    const BaseGraphKey& key) noexcept {
+    for (auto& entry : bucket.entries) {
+        if (base_graph_key_equal(entry.key, key) &&
+            entry.execOpaque &&
+            entry.graphOpaque &&
+            entry.kernelNodeOpaque) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+BaseGraphEntry* build_base_graph_entry(
+    BaseGraphBucket& bucket,
+    const BaseGraphKey& key,
+    BasePipelineLaunchFn launchFn,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream) noexcept {
+    if (!launchFn) {
+        return nullptr;
+    }
+
+    constexpr std::size_t kBaseGraphCap = 4;
+    if (bucket.entries.size() >= kBaseGraphCap && !bucket.entries.empty()) {
+        std::size_t victim = 0;
+        std::uint64_t bestTick = bucket.entries[0].lastUseTick;
+        for (std::size_t i = 1; i < bucket.entries.size(); ++i) {
+            if (bucket.entries[i].lastUseTick < bestTick) {
+                bestTick = bucket.entries[i].lastUseTick;
+                victim = i;
+            }
+        }
+        destroy_base_graph_entry(bucket.entries[victim]);
+        bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(victim));
+    }
+
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    cudaGraphNode_t kernelNode = nullptr;
+
+    cudaError_t capErr = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+    if (capErr != cudaSuccess) {
+        return nullptr;
+    }
+
+    cudaError_t launchErr = launchFn(&run, reinterpret_cast<void*>(stream));
+    if (launchErr != cudaSuccess) {
+        cudaGraph_t abortGraph = nullptr;
+        cudaStreamEndCapture(stream, &abortGraph);
+        if (abortGraph) {
+            cudaGraphDestroy(abortGraph);
+        }
+        return nullptr;
+    }
+
+    capErr = cudaStreamEndCapture(stream, &graph);
+    if (capErr != cudaSuccess || !graph) {
+        if (graph) {
+            cudaGraphDestroy(graph);
+        }
+        return nullptr;
+    }
+
+    cudaError_t instErr = cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+    if (instErr != cudaSuccess || !exec) {
+        cudaGraphDestroy(graph);
+        return nullptr;
+    }
+
+    std::size_t nodeCount = 0;
+    cudaError_t nodeErr = cudaGraphGetNodes(graph, nullptr, &nodeCount);
+    if (nodeErr == cudaSuccess && nodeCount > 0) {
+        std::vector<cudaGraphNode_t> nodes(nodeCount);
+        nodeErr = cudaGraphGetNodes(graph, nodes.data(), &nodeCount);
+        if (nodeErr == cudaSuccess) {
+            for (cudaGraphNode_t node : nodes) {
+                cudaGraphNodeType nodeType = cudaGraphNodeTypeEmpty;
+                if (cudaGraphNodeGetType(node, &nodeType) == cudaSuccess && nodeType == cudaGraphNodeTypeKernel) {
+                    kernelNode = node;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!kernelNode) {
+        cudaGraphExecDestroy(exec);
+        cudaGraphDestroy(graph);
+        return nullptr;
+    }
+
+    cudaKernelNodeParams baseParams{};
+    if (cudaGraphKernelNodeGetParams(kernelNode, &baseParams) != cudaSuccess || !baseParams.func) {
+        cudaGraphExecDestroy(exec);
+        cudaGraphDestroy(graph);
+        return nullptr;
+    }
+
+    BaseGraphEntry entry{};
+    entry.key = key;
+    entry.graphOpaque = reinterpret_cast<void*>(graph);
+    entry.execOpaque = reinterpret_cast<void*>(exec);
+    entry.kernelNodeOpaque = reinterpret_cast<void*>(kernelNode);
+    entry.kernelFuncOpaque = baseParams.func;
+    entry.gridX = baseParams.gridDim.x;
+    entry.gridY = baseParams.gridDim.y;
+    entry.gridZ = baseParams.gridDim.z;
+    entry.blockX = baseParams.blockDim.x;
+    entry.blockY = baseParams.blockDim.y;
+    entry.blockZ = baseParams.blockDim.z;
+    entry.sharedMemBytes = baseParams.sharedMemBytes;
+    entry.lastUseTick = bucket.useTick;
+    bucket.entries.push_back(entry);
+    return &bucket.entries.back();
+}
+#endif
 
 } // namespace
 
@@ -739,6 +974,10 @@ bool command_retire_context_with_reason(
         return false;
     }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    retire_base_graph_cache_for_context(key);
+#endif
+
     RegistryHandle handle{};
     if (!registry_get(key, handle) || handle.value == 0) {
         return true;
@@ -987,6 +1226,108 @@ bool command_ensure_auto_exposure_buffers(
         hadPrevious,
         metadataHit ? "reuse" : "refresh");
     return true;
+}
+
+bool command_launch_base_pipeline_graph(
+    SubmissionTransaction& transaction,
+    JuicerCuda::PipelineRunParams& run,
+    int renderModeKey,
+    void* cudaStreamOpaque,
+    int& outCudaErrorCode,
+    std::string& outError) {
+    outError.clear();
+
+    if (!ensure_active_for_command(transaction, outError, "command_launch_base_pipeline_graph")) {
+        return false;
+    }
+
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+    (void)run;
+    (void)renderModeKey;
+    (void)cudaStreamOpaque;
+    outCudaErrorCode = 0;
+    outError = "CUDA is not enabled";
+    return false;
+#else
+    outCudaErrorCode = static_cast<int>(cudaErrorUnknown);
+    BasePipelineLaunchFn launchFn = base_pipeline_launch_fn_for_mode(renderModeKey);
+    if (!launchFn) {
+        outCudaErrorCode = static_cast<int>(cudaErrorInvalidValue);
+        return true;
+    }
+
+    const cudaStream_t stream = cudaStreamOpaque
+        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+        : nullptr;
+
+    BaseGraphKey key{};
+    key.width = run.width;
+    key.height = run.height;
+    key.nComponents = run.nComponents;
+    key.renderMode = renderModeKey;
+
+    BaseGraphCacheState& cacheState = base_graph_cache_state();
+    std::lock_guard<std::mutex> lock(cacheState.mutex);
+
+    BaseGraphBucket& bucket = cacheState.byContext[transaction.snapshot.deviceContextKey];
+    std::uint64_t activeEpoch = transaction.snapshot.contextEpoch;
+    if (activeEpoch == 0) {
+        activeEpoch = 1;
+    }
+    if (bucket.contextEpoch != activeEpoch) {
+        clear_base_graph_bucket(bucket);
+        bucket.contextEpoch = activeEpoch;
+    }
+
+    bucket.useTick++;
+    if (bucket.useTick == 0) {
+        bucket.useTick = 1;
+    }
+    const std::uint64_t useTick = bucket.useTick;
+
+    BaseGraphEntry* found = find_base_graph_entry(bucket, key);
+    if (!found) {
+        found = build_base_graph_entry(bucket, key, launchFn, run, stream);
+    }
+
+    if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
+        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        return true;
+    }
+
+    found->lastUseTick = useTick;
+
+    cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(found->execOpaque);
+    cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(found->kernelNodeOpaque);
+
+    cudaKernelNodeParams nodeParams{};
+    nodeParams.func = found->kernelFuncOpaque;
+    nodeParams.gridDim = dim3(found->gridX, found->gridY, found->gridZ);
+    nodeParams.blockDim = dim3(found->blockX, found->blockY, found->blockZ);
+    nodeParams.sharedMemBytes = found->sharedMemBytes;
+    void* kernelArgs[] = { &run };
+    nodeParams.kernelParams = kernelArgs;
+    nodeParams.extra = nullptr;
+    cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
+    if (setErr != cudaSuccess) {
+        destroy_base_graph_entry(*found);
+        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        return true;
+    }
+
+    cudaError_t runErr = cudaGraphLaunch(exec, stream);
+    if (runErr == cudaSuccess) {
+        runErr = cudaGetLastError();
+    }
+    if (runErr != cudaSuccess) {
+        destroy_base_graph_entry(*found);
+        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        return true;
+    }
+
+    outCudaErrorCode = static_cast<int>(cudaSuccess);
+    return true;
+#endif
 }
 
 void rollback_submission(

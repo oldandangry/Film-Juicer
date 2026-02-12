@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
 
@@ -128,6 +129,14 @@ bool command_ensure_auto_exposure_buffers(
     int meterHeight,
     std::uint64_t autoExposureKeyHash,
     void* cudaStreamOpaque,
+    std::string& outError);
+
+bool command_launch_base_pipeline_graph(
+    SubmissionTransaction& transaction,
+    JuicerCuda::PipelineRunParams& run,
+    int renderModeKey,
+    void* cudaStreamOpaque,
+    int& outCudaErrorCode,
     std::string& outError);
 
 void rollback_submission(

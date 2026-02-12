@@ -2341,216 +2341,26 @@ void JuicerProcessor::processImagesCUDA() {
         return result;
     };
 
-    using BasePipelineLaunchFn = cudaError_t(*)(const JuicerCuda::PipelineRunParams*, void*);
-
-    auto destroy_base_graph_entry = [](JuicerCuda::Resources::BaseGraphEntry& entry) {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (entry.execOpaque) {
-            cudaGraphExecDestroy(reinterpret_cast<cudaGraphExec_t>(entry.execOpaque));
-            entry.execOpaque = nullptr;
-        }
-        if (entry.graphOpaque) {
-            cudaGraphDestroy(reinterpret_cast<cudaGraph_t>(entry.graphOpaque));
-            entry.graphOpaque = nullptr;
-        }
-        entry.kernelNodeOpaque = nullptr;
-        entry.kernelFuncOpaque = nullptr;
-        entry.gridX = 0;
-        entry.gridY = 0;
-        entry.gridZ = 0;
-        entry.blockX = 0;
-        entry.blockY = 0;
-        entry.blockZ = 0;
-        entry.sharedMemBytes = 0;
+    auto launch_base_pipeline_graph = [&](int renderModeKey,
+                                          JuicerCuda::PipelineRunParams& run) -> cudaError_t {
+        std::string graphError;
+        int graphErrCode = static_cast<int>(cudaErrorUnknown);
+        if (!JuicerCuda::ResourceManager::command_launch_base_pipeline_graph(
+                submissionTxn,
+                run,
+                renderModeKey,
+                _pCudaStream,
+                graphErrCode,
+                graphError)) {
+            mark_context_loss_recovery("command_launch_base_pipeline_graph", cudaErrorUnknown, graphError);
+            JTRACE("CUDA", std::string("CUDA base graph launch command failed: ") + graphError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
 #else
-        (void)entry;
+            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
-    };
-
-    auto launch_base_pipeline_graph = [&](JuicerCuda::Resources& resources,
-                                         int renderModeKey,
-                                         BasePipelineLaunchFn launchFn,
-                                         JuicerCuda::PipelineRunParams& run,
-                                         cudaStream_t stream) -> cudaError_t {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)renderModeKey;
-        (void)launchFn;
-        (void)run;
-        (void)stream;
-        return cudaErrorNotSupported;
-#else
-        if (!launchFn) {
-            return cudaErrorInvalidValue;
         }
-
-        // Base graphs are capped to avoid unbounded growth if the host requests many sizes.
-        constexpr std::size_t kBaseGraphCap = 4;
-
-        JuicerCuda::Resources::BaseGraphKey key{};
-        key.width = run.width;
-        key.height = run.height;
-        key.nComponents = run.nComponents;
-        key.renderMode = renderModeKey;
-
-        auto key_equal = [](const JuicerCuda::Resources::BaseGraphKey& a, const JuicerCuda::Resources::BaseGraphKey& b) {
-            return a.width == b.width &&
-                a.height == b.height &&
-                a.nComponents == b.nComponents &&
-                a.renderMode == b.renderMode;
-        };
-
-        resources.baseGraphTick++;
-        const std::uint64_t useTick = resources.baseGraphTick;
-
-        JuicerCuda::Resources::BaseGraphEntry* found = nullptr;
-        for (auto& entry : resources.baseGraphs) {
-            if (key_equal(entry.key, key) && entry.execOpaque && entry.graphOpaque && entry.kernelNodeOpaque) {
-                found = &entry;
-                break;
-            }
-        }
-
-        auto evict_one_lru = [&]() {
-            if (resources.baseGraphs.empty()) {
-                return;
-            }
-            std::size_t victim = 0;
-            std::uint64_t best = resources.baseGraphs[0].lastUseTick;
-            for (std::size_t i = 1; i < resources.baseGraphs.size(); ++i) {
-                const std::uint64_t t = resources.baseGraphs[i].lastUseTick;
-                if (t < best) {
-                    best = t;
-                    victim = i;
-                }
-            }
-            destroy_base_graph_entry(resources.baseGraphs[victim]);
-            resources.baseGraphs.erase(resources.baseGraphs.begin() + static_cast<std::ptrdiff_t>(victim));
-        };
-
-        auto build_graph = [&]() -> JuicerCuda::Resources::BaseGraphEntry* {
-            if (resources.baseGraphs.size() >= kBaseGraphCap) {
-                evict_one_lru();
-            }
-
-            cudaGraph_t graph = nullptr;
-            cudaGraphExec_t exec = nullptr;
-            cudaGraphNode_t kernelNode = nullptr;
-
-            cudaError_t capErr = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
-            if (capErr != cudaSuccess) {
-                return nullptr;
-            }
-
-            // Capture only the steady-state base kernel launch for this key.
-            cudaError_t launchErr = launchFn(&run, reinterpret_cast<void*>(stream));
-            if (launchErr != cudaSuccess) {
-                cudaGraph_t abortGraph = nullptr;
-                cudaStreamEndCapture(stream, &abortGraph);
-                if (abortGraph) {
-                    cudaGraphDestroy(abortGraph);
-                }
-                return nullptr;
-            }
-
-            capErr = cudaStreamEndCapture(stream, &graph);
-            if (capErr != cudaSuccess || !graph) {
-                return nullptr;
-            }
-
-            cudaError_t instErr = cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
-            if (instErr != cudaSuccess || !exec) {
-                cudaGraphDestroy(graph);
-                return nullptr;
-            }
-
-            std::size_t nodeCount = 0;
-            cudaError_t nodeErr = cudaGraphGetNodes(graph, nullptr, &nodeCount);
-            if (nodeErr == cudaSuccess && nodeCount > 0) {
-                std::vector<cudaGraphNode_t> nodes;
-                nodes.resize(nodeCount);
-                nodeErr = cudaGraphGetNodes(graph, nodes.data(), &nodeCount);
-                if (nodeErr == cudaSuccess) {
-                    for (cudaGraphNode_t n : nodes) {
-                        cudaGraphNodeType t = cudaGraphNodeTypeEmpty;
-                        if (cudaGraphNodeGetType(n, &t) == cudaSuccess && t == cudaGraphNodeTypeKernel) {
-                            kernelNode = n;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (!kernelNode) {
-                cudaGraphExecDestroy(exec);
-                cudaGraphDestroy(graph);
-                return nullptr;
-            }
-
-            cudaKernelNodeParams baseParams{};
-            if (cudaGraphKernelNodeGetParams(kernelNode, &baseParams) != cudaSuccess || !baseParams.func) {
-                cudaGraphExecDestroy(exec);
-                cudaGraphDestroy(graph);
-                return nullptr;
-            }
-
-            JuicerCuda::Resources::BaseGraphEntry entry{};
-            entry.key = key;
-            entry.graphOpaque = reinterpret_cast<void*>(graph);
-            entry.execOpaque = reinterpret_cast<void*>(exec);
-            entry.kernelNodeOpaque = reinterpret_cast<void*>(kernelNode);
-            entry.kernelFuncOpaque = baseParams.func;
-            entry.gridX = baseParams.gridDim.x;
-            entry.gridY = baseParams.gridDim.y;
-            entry.gridZ = baseParams.gridDim.z;
-            entry.blockX = baseParams.blockDim.x;
-            entry.blockY = baseParams.blockDim.y;
-            entry.blockZ = baseParams.blockDim.z;
-            entry.sharedMemBytes = baseParams.sharedMemBytes;
-            entry.lastUseTick = useTick;
-            resources.baseGraphs.push_back(entry);
-            return &resources.baseGraphs.back();
-        };
-
-        if (!found) {
-            found = build_graph();
-        }
-
-        if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
-            // Capture failed or graph missing; fall back to normal dispatch.
-            return launchFn(&run, reinterpret_cast<void*>(stream));
-        }
-
-        found->lastUseTick = useTick;
-
-        cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(found->execOpaque);
-        cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(found->kernelNodeOpaque);
-
-        cudaKernelNodeParams nodeParams{};
-        nodeParams.func = found->kernelFuncOpaque;
-        nodeParams.gridDim = dim3(found->gridX, found->gridY, found->gridZ);
-        nodeParams.blockDim = dim3(found->blockX, found->blockY, found->blockZ);
-        nodeParams.sharedMemBytes = found->sharedMemBytes;
-        void* kernelArgs[] = { &run };
-        nodeParams.kernelParams = kernelArgs;
-        nodeParams.extra = nullptr;
-        cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
-        if (setErr != cudaSuccess) {
-            destroy_base_graph_entry(*found);
-            return launchFn(&run, reinterpret_cast<void*>(stream));
-        }
-
-        cudaError_t runErr = cudaGraphLaunch(exec, stream);
-        if (runErr == cudaSuccess) {
-            runErr = cudaGetLastError();
-        }
-        if (runErr != cudaSuccess) {
-            destroy_base_graph_entry(*found);
-            return launchFn(&run, reinterpret_cast<void*>(stream));
-        }
-
-        return cudaSuccess;
-#endif
+        return static_cast<cudaError_t>(graphErrCode);
     };
 
     auto prepare_scan_error_stage = [&](JuicerCuda::Resources* resources,
@@ -3097,11 +2907,8 @@ void JuicerProcessor::processImagesCUDA() {
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
                 err = launch_base_pipeline_graph(
-                    *cudaResources,
                     static_cast<int>(renderMode),
-                    juicer_cuda_negative_pipeline,
-                    run,
-                    stream);
+                    run);
             }
             else {
                 std::string opticsError;
@@ -3771,11 +3578,8 @@ void JuicerProcessor::processImagesCUDA() {
             cudaError_t err = cudaSuccess;
             if (!wantOptics) {
                 err = launch_base_pipeline_graph(
-                    *cudaResources,
                     static_cast<int>(renderMode),
-                    juicer_cuda_print_pipeline,
-                    run,
-                    stream);
+                    run);
             }
             else {
                 std::string opticsError;

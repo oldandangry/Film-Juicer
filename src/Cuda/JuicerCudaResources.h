@@ -262,32 +262,6 @@ namespace JuicerCuda {
         std::uint64_t autoExposureKeyHash = 0;
         double autoExposureSliderEV = std::numeric_limits<double>::quiet_NaN();
 
-        // CUDA Graph caches (Tier 1): base path graphs to reduce CPU submission overhead.
-        // Stored as opaque CUDA handles to keep headers CUDA-free.
-        struct BaseGraphKey {
-            int width = 0;
-            int height = 0;
-            int nComponents = 0;
-            int renderMode = 0; // 0=NegativeOnly, 1=Print
-        };
-        struct BaseGraphEntry {
-            BaseGraphKey key{};
-            void* graphOpaque = nullptr; // cudaGraph_t
-            void* execOpaque = nullptr; // cudaGraphExec_t
-            void* kernelNodeOpaque = nullptr; // cudaGraphNode_t (single kernel node)
-            void* kernelFuncOpaque = nullptr; // cudaKernelNodeParams::func
-            unsigned int gridX = 0;
-            unsigned int gridY = 0;
-            unsigned int gridZ = 0;
-            unsigned int blockX = 0;
-            unsigned int blockY = 0;
-            unsigned int blockZ = 0;
-            unsigned int sharedMemBytes = 0;
-            std::uint64_t lastUseTick = 0;
-        };
-        std::vector<BaseGraphEntry> baseGraphs;
-        std::uint64_t baseGraphTick = 0;
-
         Resources() = default;
         Resources(const Resources&) = delete;
         Resources& operator=(const Resources&) = delete;
