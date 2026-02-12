@@ -33,6 +33,9 @@ KeyDigests make_key_digests(
     std::uint64_t scannerHash,
     std::uint64_t autoExposureHash) noexcept;
 
+std::uint64_t key_digest_for_kind(const KeyDigests& digests, ResourceKind kind) noexcept;
+void set_key_digest_for_kind(KeyDigests& digests, ResourceKind kind, std::uint64_t hashValue) noexcept;
+
 KeyDigests normalize_key_digests(const KeyDigests& digests) noexcept;
 
 } // namespace ResourceManager

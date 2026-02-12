@@ -48,6 +48,10 @@ void telemetry_record_acquire_status(AcquireStatus status) noexcept {
     }
 }
 
+void telemetry_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus status) noexcept {
+    state_record_acquire_status_for_kind(kind, status);
+}
+
 void telemetry_record_trace_schema_mismatch() noexcept {
     global_state().traceSchemaMismatchEvents.fetch_add(1, std::memory_order_relaxed);
 }
@@ -257,22 +261,22 @@ void telemetry_trace_acquire(
     std::uint64_t snapshotId,
     std::uint32_t traceSchemaVersion,
     AcquireStatus finalStatus,
-    AcquireStatus uploadStatus,
-    AcquireStatus dirStatus,
-    AcquireStatus scannerStatus,
-    AcquireStatus autoExposureStatus,
+    const ResourcePlan& plan,
     bool hadPreviousSnapshot) noexcept {
-    const std::string msg =
+    std::string msg =
         std::string("acquire_id=") + std::to_string(acquireId) +
         " transaction_id=" + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
         " final_status=" + to_cstr(finalStatus) +
-        " upload_status=" + to_cstr(uploadStatus) +
-        " dir_status=" + to_cstr(dirStatus) +
-        " scanner_status=" + to_cstr(scannerStatus) +
-        " auto_exposure_status=" + to_cstr(autoExposureStatus) +
         " had_previous=" + std::to_string(hadPreviousSnapshot ? 1 : 0);
+    for (ResourceKind kind : kResourceKindOrder) {
+        const ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
+        const ResourceKindContractEntry& contract = resource_kind_contract_entry(kind);
+        msg += std::string(" ") + contract.acquireStatusField + "=" + to_cstr(entry.acquire.status);
+        msg += std::string(" ") + contract.invalidationLane + "_invalidated=" +
+            std::to_string(entry.invalidated ? 1 : 0);
+    }
     JTRACE("MSACQ", msg);
 }
 

@@ -132,24 +132,66 @@ bool key_digests_equal(const KeyDigests& lhs, const KeyDigests& rhs) noexcept {
         lhs.autoExposureHash == rhs.autoExposureHash;
 }
 
-AcquireStatus combine_status(
-    AcquireStatus upload,
-    AcquireStatus dir,
-    AcquireStatus scanner,
-    AcquireStatus autoExposure) noexcept {
-    if (upload == AcquireStatus::Error || dir == AcquireStatus::Error || scanner == AcquireStatus::Error || autoExposure == AcquireStatus::Error) {
-        return AcquireStatus::Error;
+ResourcePlan make_uniform_resource_plan(AcquireStatus status) noexcept {
+    ResourcePlan plan{};
+    for (ResourceKind kind : kResourceKindOrder) {
+        ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
+        entry.acquire.status = status;
+        entry.acquire.shouldBuild = (status == AcquireStatus::Miss);
+        entry.invalidated = false;
     }
-    if (upload == AcquireStatus::Exhausted || dir == AcquireStatus::Exhausted || scanner == AcquireStatus::Exhausted || autoExposure == AcquireStatus::Exhausted) {
+    return plan;
+}
+
+AcquireStatus combine_status(const ResourcePlan& plan) noexcept {
+    bool sawMiss = false;
+    bool sawBusy = false;
+    bool sawExhausted = false;
+    for (ResourceKind kind : kResourceKindOrder) {
+        const AcquireStatus status = resource_plan_entry(plan, kind).acquire.status;
+        if (status == AcquireStatus::Error) {
+            return AcquireStatus::Error;
+        }
+        if (status == AcquireStatus::Exhausted) {
+            sawExhausted = true;
+        }
+        else if (status == AcquireStatus::Busy) {
+            sawBusy = true;
+        }
+        else if (status == AcquireStatus::Miss) {
+            sawMiss = true;
+        }
+    }
+    if (sawExhausted) {
         return AcquireStatus::Exhausted;
     }
-    if (upload == AcquireStatus::Busy || dir == AcquireStatus::Busy || scanner == AcquireStatus::Busy || autoExposure == AcquireStatus::Busy) {
+    if (sawBusy) {
         return AcquireStatus::Busy;
     }
-    if (upload == AcquireStatus::Miss || dir == AcquireStatus::Miss || scanner == AcquireStatus::Miss || autoExposure == AcquireStatus::Miss) {
+    if (sawMiss) {
         return AcquireStatus::Miss;
     }
     return AcquireStatus::Hit;
+}
+
+bool validate_resource_kind_onboarding_contract(std::string& outError) noexcept {
+    if (!resource_kind_contract_is_valid()) {
+        outError = "resource kind onboarding contract invalid";
+        return false;
+    }
+    for (ResourceKind kind : kResourceKindOrder) {
+        const ResourceKindContractEntry& entry = resource_kind_contract_entry(kind);
+        if (entry.kind != kind ||
+            entry.keyField == nullptr ||
+            entry.invalidationLane == nullptr ||
+            entry.resourceNode == nullptr ||
+            entry.acquireStatusField == nullptr ||
+            entry.telemetryTag == nullptr) {
+            outError = "resource kind onboarding entry missing required fields";
+            return false;
+        }
+    }
+    return true;
 }
 
 void trace_lifecycle_stage_decision(
@@ -550,17 +592,18 @@ bool acquire_plan(
     const std::uint64_t acquireId = telemetry_next_acquire_attempt_id();
 
     if (!validate_lifecycle_for_stage(transaction, "acquire", false, &outError)) {
+        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
         telemetry_record_acquire_status(AcquireStatus::Error);
+        for (ResourceKind kind : kResourceKindOrder) {
+            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
+        }
         telemetry_trace_acquire(
             acquireId,
             transaction.transactionId,
             transaction.snapshot.snapshotId,
             transaction.snapshot.traceSchemaVersion,
             AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
+            errorPlan,
             false);
         return false;
     }
@@ -584,44 +627,47 @@ bool acquire_plan(
             staleInput,
             staleDecision);
         if (staleDecision.hardStale || staleDecision.hardMiss) {
+            const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
             telemetry_record_stale_tuple_hard_reject();
             outError = std::string("stale transaction in acquire path (reason=") +
                 to_cstr(staleDecision.reason) + ")";
             telemetry_record_acquire_status(AcquireStatus::Error);
+            for (ResourceKind kind : kResourceKindOrder) {
+                telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
+            }
             telemetry_trace_acquire(
                 acquireId,
                 transaction.transactionId,
                 transaction.snapshot.snapshotId,
                 transaction.snapshot.traceSchemaVersion,
                 AcquireStatus::Error,
-                AcquireStatus::Error,
-                AcquireStatus::Error,
-                AcquireStatus::Error,
-                AcquireStatus::Error,
+                errorPlan,
                 false);
             return false;
         }
     }
 
     if (!transaction.active) {
+        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
         outError = "submission transaction is not active";
         telemetry_record_acquire_status(AcquireStatus::Error);
+        for (ResourceKind kind : kResourceKindOrder) {
+            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
+        }
         telemetry_trace_acquire(
             acquireId,
             transaction.transactionId,
             transaction.snapshot.snapshotId,
             transaction.snapshot.traceSchemaVersion,
             AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
+            errorPlan,
             false);
         return false;
     }
 
     SubmissionSnapshot& snapshot = transaction.snapshot;
     if (snapshot.traceSchemaVersion != kTraceSchemaVersion) {
+        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
         outError = "trace schema mismatch";
         telemetry_record_trace_schema_mismatch();
         telemetry_trace_schema_mismatch(
@@ -629,16 +675,16 @@ bool acquire_plan(
             snapshot.snapshotId,
             snapshot.traceSchemaVersion);
         telemetry_record_acquire_status(AcquireStatus::Error);
+        for (ResourceKind kind : kResourceKindOrder) {
+            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
+        }
         telemetry_trace_acquire(
             acquireId,
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
             AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
-            AcquireStatus::Error,
+            errorPlan,
             false);
         return false;
     }
@@ -728,127 +774,107 @@ bool acquire_plan(
 
     const ResourcePlan plan = build_shadow_resource_plan(delta);
 
-    const std::uint64_t prevUpload = hasPrevious ? previous.digests.uploadCoreHash : 0;
-    const std::uint64_t prevDir = hasPrevious ? previous.digests.dirHash : 0;
-    const std::uint64_t prevScanner = hasPrevious ? previous.digests.scannerHash : 0;
-    const std::uint64_t prevAutoExposure = hasPrevious ? previous.digests.autoExposureHash : 0;
-
-    if (plan.uploadCore.invalidated) {
-        telemetry_trace_invalidation(
+    if (!validate_resource_kind_onboarding_contract(outError)) {
+        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
+        telemetry_record_module_boundary_violation();
+        telemetry_trace_module_boundary_violation(
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
-            "UploadCoreKey",
-            delta.keySchemaChanged ? "key_schema_changed" : "upload_hash_changed",
-            prevUpload,
-            snapshot.keyDigests.uploadCoreHash);
-    }
-    if (plan.dir.invalidated) {
-        telemetry_trace_invalidation(
+            "resource_kind_onboarding_contract_invalid");
+        telemetry_record_acquire_status(AcquireStatus::Error);
+        for (ResourceKind kind : kResourceKindOrder) {
+            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
+        }
+        telemetry_trace_acquire(
+            acquireId,
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
-            "DirKey",
-            delta.keySchemaChanged ? "key_schema_changed" : "dir_hash_changed",
-            prevDir,
-            snapshot.keyDigests.dirHash);
-    }
-    if (plan.scanner.invalidated) {
-        telemetry_trace_invalidation(
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            "ScannerColorKey",
-            delta.keySchemaChanged ? "key_schema_changed" : "scanner_hash_changed",
-            prevScanner,
-            snapshot.keyDigests.scannerHash);
-    }
-    if (plan.autoExposure.invalidated) {
-        telemetry_trace_invalidation(
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            "AutoExposureKey",
-            delta.keySchemaChanged ? "key_schema_changed" : "auto_exposure_hash_changed",
-            prevAutoExposure,
-            snapshot.keyDigests.autoExposureHash);
+            AcquireStatus::Error,
+            errorPlan,
+            hasPrevious);
+        return false;
     }
 
-    if (delta.keySchemaChanged || delta.uploadCoreChanged) {
-        telemetry_trace_dag_edge(
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            "UploadCoreKey",
-            "UploadCoreResources",
-            true,
-            "allowed_lane_invalidation");
-    }
-    if (delta.keySchemaChanged || delta.dirChanged) {
-        telemetry_trace_dag_edge(
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            "DirKey",
-            "DirResources",
-            true,
-            "allowed_lane_invalidation");
-    }
-    if (delta.keySchemaChanged || delta.scannerChanged) {
-        telemetry_trace_dag_edge(
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            "ScannerColorKey",
-            "ScannerColorResources",
-            true,
-            "allowed_lane_invalidation");
-    }
-    if (delta.keySchemaChanged || delta.autoExposureChanged) {
-        telemetry_trace_dag_edge(
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            "AutoExposureKey",
-            "AutoExposureResources",
-            true,
-            "allowed_lane_invalidation");
+    for (ResourceKind kind : kResourceKindOrder) {
+        const ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
+        const ResourceKindContractEntry& contract = resource_kind_contract_entry(kind);
+        const bool laneChanged = shadow_key_changed_for_kind(delta, kind);
+        const std::uint64_t previousHash = hasPrevious ? key_digest_for_kind(previous.digests, kind) : 0;
+        const std::uint64_t currentHash = key_digest_for_kind(snapshot.keyDigests, kind);
+
+        if (entry.invalidated) {
+            telemetry_trace_invalidation(
+                transaction.transactionId,
+                snapshot.snapshotId,
+                snapshot.traceSchemaVersion,
+                contract.invalidationLane,
+                delta.keySchemaChanged ? "key_schema_changed" : (laneChanged ? "lane_hash_changed" : "policy_invalidated"),
+                previousHash,
+                currentHash);
+        }
+
+        if (delta.keySchemaChanged || laneChanged) {
+            telemetry_trace_dag_edge(
+                transaction.transactionId,
+                snapshot.snapshotId,
+                snapshot.traceSchemaVersion,
+                contract.invalidationLane,
+                contract.resourceNode,
+                true,
+                "allowed_lane_invalidation");
+        }
+
+        telemetry_record_acquire_status_for_kind(kind, entry.acquire.status);
     }
 
     bool forbiddenEdgeDetected = false;
-    if (delta.scannerChanged && !delta.uploadCoreChanged && !delta.keySchemaChanged && plan.uploadCore.invalidated) {
+    const ResourceKindContractEntry& scannerContract = resource_kind_contract_entry(ResourceKind::Scanner);
+    const ResourceKindContractEntry& dirContract = resource_kind_contract_entry(ResourceKind::Dir);
+    const ResourceKindContractEntry& uploadContract = resource_kind_contract_entry(ResourceKind::UploadCore);
+    if (delta.scannerChanged &&
+        !delta.uploadCoreChanged &&
+        !delta.keySchemaChanged &&
+        resource_plan_entry(plan, ResourceKind::UploadCore).invalidated) {
         forbiddenEdgeDetected = true;
         telemetry_record_forbidden_invalidation_edge();
         telemetry_trace_dag_edge(
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
-            "ScannerColorKey",
-            "UploadCoreResources",
+            scannerContract.invalidationLane,
+            uploadContract.resourceNode,
             false,
             "forbidden_edge_scanner_to_upload");
     }
-    if (delta.scannerChanged && !delta.dirChanged && !delta.keySchemaChanged && plan.dir.invalidated) {
+    if (delta.scannerChanged &&
+        !delta.dirChanged &&
+        !delta.keySchemaChanged &&
+        resource_plan_entry(plan, ResourceKind::Dir).invalidated) {
         forbiddenEdgeDetected = true;
         telemetry_record_forbidden_invalidation_edge();
         telemetry_trace_dag_edge(
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
-            "ScannerColorKey",
-            "DirResources",
+            scannerContract.invalidationLane,
+            dirContract.resourceNode,
             false,
             "forbidden_edge_scanner_to_dir");
     }
-    if (delta.dirChanged && !delta.uploadCoreChanged && !delta.keySchemaChanged && plan.uploadCore.invalidated) {
+    if (delta.dirChanged &&
+        !delta.uploadCoreChanged &&
+        !delta.keySchemaChanged &&
+        resource_plan_entry(plan, ResourceKind::UploadCore).invalidated) {
         forbiddenEdgeDetected = true;
         telemetry_record_forbidden_invalidation_edge();
         telemetry_trace_dag_edge(
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
-            "DirKey",
-            "UploadCoreResources",
+            dirContract.invalidationLane,
+            uploadContract.resourceNode,
             false,
             "forbidden_edge_dir_to_upload");
     }
@@ -872,11 +898,7 @@ bool acquire_plan(
         entry.snapshotId = snapshot.snapshotId;
     }
 
-    const AcquireStatus finalStatus = combine_status(
-        plan.uploadCore.acquire.status,
-        plan.dir.acquire.status,
-        plan.scanner.acquire.status,
-        plan.autoExposure.acquire.status);
+    const AcquireStatus finalStatus = combine_status(plan);
 
     telemetry_record_acquire_status(finalStatus);
     telemetry_trace_acquire(
@@ -885,10 +907,7 @@ bool acquire_plan(
         snapshot.snapshotId,
         snapshot.traceSchemaVersion,
         finalStatus,
-        plan.uploadCore.acquire.status,
-        plan.dir.acquire.status,
-        plan.scanner.acquire.status,
-        plan.autoExposure.acquire.status,
+        plan,
         hasPrevious);
     telemetry_record_acquire_plan();
     return true;

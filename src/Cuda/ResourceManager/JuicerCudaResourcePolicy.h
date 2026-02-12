@@ -5,6 +5,8 @@
 
 #include <cstdint>
 
+#include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
+
 namespace JuicerCuda {
 namespace ResourceManager {
 
@@ -76,6 +78,9 @@ struct ReservationDecision {
 
 AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noexcept;
 ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept;
+bool shadow_key_changed_for_kind(const ShadowKeyDelta& delta, ResourceKind kind) noexcept;
+ResourcePlanEntry& resource_plan_entry(ResourcePlan& plan, ResourceKind kind) noexcept;
+const ResourcePlanEntry& resource_plan_entry(const ResourcePlan& plan, ResourceKind kind) noexcept;
 const char* to_cstr(AcquireStatus status) noexcept;
 StaleDecision classify_stale_path(const StaleInput& input) noexcept;
 const char* to_cstr(StaleReason reason) noexcept;

@@ -27,6 +27,29 @@ ResourceManagerState& global_state() noexcept {
     return state;
 }
 
+void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus status) noexcept {
+    ResourceManagerState& state = global_state();
+    ResourceKindAcquireCounters& counters = state.acquireStatusByKind[resource_kind_index(kind)];
+    switch (status) {
+    case AcquireStatus::Hit:
+        counters.hit.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case AcquireStatus::Miss:
+        counters.miss.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case AcquireStatus::Busy:
+        counters.busy.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case AcquireStatus::Exhausted:
+        counters.exhausted.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case AcquireStatus::Error:
+    default:
+        counters.error.fetch_add(1, std::memory_order_relaxed);
+        break;
+    }
+}
+
 bool metadata_mutation_begin(const char* stage, MetadataMutationScope& outScope) noexcept {
     if (outScope.active) {
         telemetry_record_metadata_mutation_reject();

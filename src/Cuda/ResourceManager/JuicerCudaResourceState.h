@@ -3,11 +3,23 @@
 // Phase-0 state scaffolding.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 
+#include "Cuda/ResourceManager/JuicerCudaResourcePolicy.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
+
 namespace JuicerCuda {
 namespace ResourceManager {
+
+struct ResourceKindAcquireCounters {
+    std::atomic<std::uint64_t> hit{ 0 };
+    std::atomic<std::uint64_t> miss{ 0 };
+    std::atomic<std::uint64_t> busy{ 0 };
+    std::atomic<std::uint64_t> exhausted{ 0 };
+    std::atomic<std::uint64_t> error{ 0 };
+};
 
 struct ResourceManagerState {
     std::atomic<std::uint64_t> nextTransactionId{ 1 };
@@ -39,9 +51,11 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> metadataMutationEndCalls{ 0 };
     std::atomic<std::uint64_t> metadataMutationRejects{ 0 };
     std::atomic<std::uint64_t> metadataMutationOrderViolations{ 0 };
+    std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };
 
 ResourceManagerState& global_state() noexcept;
+void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus status) noexcept;
 
 struct MetadataMutationScope {
     std::uint64_t sequence = 0;

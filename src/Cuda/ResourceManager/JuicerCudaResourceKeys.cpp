@@ -74,12 +74,47 @@ KeyDigests make_key_digests(
     return digests;
 }
 
+std::uint64_t key_digest_for_kind(const KeyDigests& digests, ResourceKind kind) noexcept {
+    switch (kind) {
+    case ResourceKind::UploadCore:
+        return digests.uploadCoreHash;
+    case ResourceKind::Dir:
+        return digests.dirHash;
+    case ResourceKind::Scanner:
+        return digests.scannerHash;
+    case ResourceKind::AutoExposure:
+        return digests.autoExposureHash;
+    default:
+        return 1;
+    }
+}
+
+void set_key_digest_for_kind(KeyDigests& digests, ResourceKind kind, std::uint64_t hashValue) noexcept {
+    const std::uint64_t normalized = normalize_key_u64(hashValue);
+    switch (kind) {
+    case ResourceKind::UploadCore:
+        digests.uploadCoreHash = normalized;
+        return;
+    case ResourceKind::Dir:
+        digests.dirHash = normalized;
+        return;
+    case ResourceKind::Scanner:
+        digests.scannerHash = normalized;
+        return;
+    case ResourceKind::AutoExposure:
+        digests.autoExposureHash = normalized;
+        return;
+    default:
+        return;
+    }
+}
+
 KeyDigests normalize_key_digests(const KeyDigests& digests) noexcept {
-    return make_key_digests(
-        digests.uploadCoreHash,
-        digests.dirHash,
-        digests.scannerHash,
-        digests.autoExposureHash);
+    KeyDigests out = digests;
+    for (ResourceKind kind : kResourceKindOrder) {
+        set_key_digest_for_kind(out, kind, key_digest_for_kind(out, kind));
+    }
+    return out;
 }
 
 } // namespace ResourceManager

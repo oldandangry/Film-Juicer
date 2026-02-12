@@ -18,6 +18,7 @@ void telemetry_record_acquire_plan() noexcept;
 void telemetry_record_commit_submission() noexcept;
 void telemetry_record_rollback_submission() noexcept;
 void telemetry_record_acquire_status(AcquireStatus status) noexcept;
+void telemetry_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus status) noexcept;
 void telemetry_record_trace_schema_mismatch() noexcept;
 void telemetry_record_forbidden_invalidation_edge() noexcept;
 void telemetry_record_module_boundary_violation() noexcept;
@@ -100,10 +101,7 @@ void telemetry_trace_acquire(
     std::uint64_t snapshotId,
     std::uint32_t traceSchemaVersion,
     AcquireStatus finalStatus,
-    AcquireStatus uploadStatus,
-    AcquireStatus dirStatus,
-    AcquireStatus scannerStatus,
-    AcquireStatus autoExposureStatus,
+    const ResourcePlan& plan,
     bool hadPreviousSnapshot) noexcept;
 
 void telemetry_trace_auto_exposure_ownership(

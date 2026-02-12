@@ -28,21 +28,57 @@ AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noex
 
 ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept {
     ResourcePlan plan{};
-    const bool uploadInvalidated = delta.keySchemaChanged || delta.uploadCoreChanged;
-    const bool dirInvalidated = delta.keySchemaChanged || delta.dirChanged;
-    const bool scannerInvalidated = delta.keySchemaChanged || delta.scannerChanged;
-    const bool autoExposureInvalidated = delta.keySchemaChanged || delta.autoExposureChanged;
-
-    plan.uploadCore.invalidated = uploadInvalidated;
-    plan.dir.invalidated = dirInvalidated;
-    plan.scanner.invalidated = scannerInvalidated;
-    plan.autoExposure.invalidated = autoExposureInvalidated;
-
-    plan.uploadCore.acquire = classify_shadow_acquire(delta.hasPrevious, uploadInvalidated);
-    plan.dir.acquire = classify_shadow_acquire(delta.hasPrevious, dirInvalidated);
-    plan.scanner.acquire = classify_shadow_acquire(delta.hasPrevious, scannerInvalidated);
-    plan.autoExposure.acquire = classify_shadow_acquire(delta.hasPrevious, autoExposureInvalidated);
+    for (ResourceKind kind : kResourceKindOrder) {
+        ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
+        entry.invalidated = delta.keySchemaChanged || shadow_key_changed_for_kind(delta, kind);
+        entry.acquire = classify_shadow_acquire(delta.hasPrevious, entry.invalidated);
+    }
     return plan;
+}
+
+bool shadow_key_changed_for_kind(const ShadowKeyDelta& delta, ResourceKind kind) noexcept {
+    switch (kind) {
+    case ResourceKind::UploadCore:
+        return delta.uploadCoreChanged;
+    case ResourceKind::Dir:
+        return delta.dirChanged;
+    case ResourceKind::Scanner:
+        return delta.scannerChanged;
+    case ResourceKind::AutoExposure:
+        return delta.autoExposureChanged;
+    default:
+        return true;
+    }
+}
+
+ResourcePlanEntry& resource_plan_entry(ResourcePlan& plan, ResourceKind kind) noexcept {
+    switch (kind) {
+    case ResourceKind::UploadCore:
+        return plan.uploadCore;
+    case ResourceKind::Dir:
+        return plan.dir;
+    case ResourceKind::Scanner:
+        return plan.scanner;
+    case ResourceKind::AutoExposure:
+        return plan.autoExposure;
+    default:
+        return plan.uploadCore;
+    }
+}
+
+const ResourcePlanEntry& resource_plan_entry(const ResourcePlan& plan, ResourceKind kind) noexcept {
+    switch (kind) {
+    case ResourceKind::UploadCore:
+        return plan.uploadCore;
+    case ResourceKind::Dir:
+        return plan.dir;
+    case ResourceKind::Scanner:
+        return plan.scanner;
+    case ResourceKind::AutoExposure:
+        return plan.autoExposure;
+    default:
+        return plan.uploadCore;
+    }
 }
 
 const char* to_cstr(AcquireStatus status) noexcept {
