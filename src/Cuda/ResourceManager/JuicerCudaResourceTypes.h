@@ -180,6 +180,21 @@ inline const char* to_cstr(ResourceKind kind) noexcept {
     }
 }
 
+// Trace schema contract: single source of truth for submission traces.
+// Bump only when required trace fields/tags or their required semantics change.
+constexpr std::uint32_t kTraceSchemaVersion = 1u;
+
+constexpr std::uint32_t sanitize_trace_schema_version(std::uint32_t value) noexcept {
+    return (value == 0u) ? kTraceSchemaVersion : value;
+}
+
+constexpr bool trace_schema_matches_contract(std::uint32_t value) noexcept {
+    return sanitize_trace_schema_version(value) == kTraceSchemaVersion;
+}
+
+static_assert(kTraceSchemaVersion >= 1u,
+    "trace schema version must be a positive non-zero value");
+
 struct SubmissionSnapshot {
     InstanceToken instanceToken{};
     FrameToken frameToken{};
@@ -189,7 +204,7 @@ struct SubmissionSnapshot {
     std::uint64_t contextEpoch = 1;
     KeyDigests keyDigests{};
     std::uint32_t keySchemaVersion = 1;
-    std::uint32_t traceSchemaVersion = 1;
+    std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
 };
 
 struct SubmissionTransaction {

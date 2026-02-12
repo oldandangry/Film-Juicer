@@ -11,8 +11,6 @@
 namespace JuicerCuda {
 namespace ResourceManager {
 
-constexpr std::uint32_t kTraceSchemaVersion = 1;
-
 void telemetry_record_begin_submission() noexcept;
 void telemetry_record_acquire_plan() noexcept;
 void telemetry_record_commit_submission() noexcept;

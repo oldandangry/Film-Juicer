@@ -10,11 +10,10 @@ namespace ResourceManager {
 ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw) {
     ResourceManagerConfigEffective out{};
     out.keySchemaVersion = std::max<std::uint32_t>(1u, raw.keySchemaVersion);
-    out.traceSchemaVersion = std::max<std::uint32_t>(1u, raw.traceSchemaVersion);
+    out.traceSchemaVersion = sanitize_trace_schema_version(raw.traceSchemaVersion);
     out.allowShadowMode = raw.allowShadowMode;
     return out;
 }
 
 } // namespace ResourceManager
 } // namespace JuicerCuda
-

@@ -555,7 +555,7 @@ bool begin_submission(
     outTransaction.snapshot.registryGeneration = registryGeneration;
     outTransaction.snapshot.contextEpoch = contextEpoch;
     outTransaction.snapshot.keySchemaVersion = std::max<std::uint32_t>(1u, outTransaction.snapshot.keySchemaVersion);
-    outTransaction.snapshot.traceSchemaVersion = std::max<std::uint32_t>(1u, outTransaction.snapshot.traceSchemaVersion);
+    outTransaction.snapshot.traceSchemaVersion = sanitize_trace_schema_version(outTransaction.snapshot.traceSchemaVersion);
     outTransaction.snapshot.keyDigests = normalize_key_digests(outTransaction.snapshot.keyDigests);
 
     std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -666,7 +666,7 @@ bool acquire_plan(
     }
 
     SubmissionSnapshot& snapshot = transaction.snapshot;
-    if (snapshot.traceSchemaVersion != kTraceSchemaVersion) {
+    if (!trace_schema_matches_contract(snapshot.traceSchemaVersion)) {
         const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
         outError = "trace schema mismatch";
         telemetry_record_trace_schema_mismatch();
