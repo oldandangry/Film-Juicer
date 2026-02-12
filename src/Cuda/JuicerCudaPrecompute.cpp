@@ -4,6 +4,7 @@
 #include "SpectralContext.h"
 #include "ScanStage.h"
 #include "Print.h"
+#include "PrintPreflashShared.h"
 
 #include <algorithm>
 #include <cmath>
@@ -98,77 +99,7 @@ void build_hanatos_integrated_lut_cpu(const Spectral::SpectralContext& ctx, cons
 }
 
 bool build_print_preflash_raw(const WorkingState& ws, const Print::Runtime& prt, float outRaw[3], int& outShapeK) {
-    const int shapeK = Spectral::gShape.K;
-    outShapeK = shapeK;
-    if (shapeK <= 0 || !outRaw) {
-        return false;
-    }
-
-    const Print::Profile& p = prt.profile;
-
-    auto blend = [](float curveVal, float normalizedAmount) -> float {
-        const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
-        return 1.0f - (1.0f - curveVal) * a;
-    };
-    auto compose_amount = [](float neutralAmount, float deltaSteps) -> float {
-        const float neutral = std::isfinite(neutralAmount)
-            ? std::clamp(neutralAmount, 0.0f, 1.0f)
-            : 0.0f;
-        float ds = std::isfinite(deltaSteps) ? deltaSteps : 0.0f;
-        ds = std::clamp(ds, -Print::kEnlargerSteps, Print::kEnlargerSteps);
-        const float totalSteps = neutral * Print::kEnlargerSteps + ds;
-        return totalSteps / Print::kEnlargerSteps;
-    };
-
-    const float yAmount = compose_amount(prt.neutralY, 0.0f);
-    const float mAmount = compose_amount(prt.neutralM, 0.0f);
-    const float cAmount = compose_amount(prt.neutralC, 0.0f);
-
-    const bool hasBL = ws.hasBaseline &&
-        static_cast<int>(ws.baseMin.linear.size()) == shapeK &&
-        static_cast<int>(ws.tablesView.baseMin.size()) == shapeK;
-
-    if (static_cast<int>(p.sensC_log.linear.size()) < shapeK ||
-        static_cast<int>(p.sensM_log.linear.size()) < shapeK ||
-        static_cast<int>(p.sensY_log.linear.size()) < shapeK) {
-        return false;
-    }
-
-    double accumC = 0.0;
-    double accumM = 0.0;
-    double accumY = 0.0;
-    for (int i = 0; i < shapeK; ++i) {
-        const float Ee = (prt.illumEnlarger.linear.size() > static_cast<size_t>(i))
-            ? prt.illumEnlarger.linear[static_cast<size_t>(i)]
-            : 1.0f;
-        const float fY = blend(
-            (prt.filterY.linear.size() > static_cast<size_t>(i)) ? prt.filterY.linear[static_cast<size_t>(i)] : 1.0f,
-            yAmount);
-        const float fM = blend(
-            (prt.filterM.linear.size() > static_cast<size_t>(i)) ? prt.filterM.linear[static_cast<size_t>(i)] : 1.0f,
-            mAmount);
-        const float fC = blend(
-            (prt.filterC.linear.size() > static_cast<size_t>(i)) ? prt.filterC.linear[static_cast<size_t>(i)] : 1.0f,
-            cAmount);
-        const float illumFiltered = Ee * (fY * fM * fC);
-
-        const float baseDensity = hasBL ? ws.tablesView.baseMin[static_cast<size_t>(i)] : 0.0f;
-        const double transmitted = std::pow(10.0, -static_cast<double>(baseDensity)) * static_cast<double>(illumFiltered);
-        const float out = static_cast<float>(transmitted);
-        const float light = std::isnan(out) ? 0.0f : out;
-        const float sC = p.sensC_log.linear[static_cast<size_t>(i)];
-        const float sM = p.sensM_log.linear[static_cast<size_t>(i)];
-        const float sY = p.sensY_log.linear[static_cast<size_t>(i)];
-        const double e64 = static_cast<double>(light);
-        if (!std::isnan(sC)) accumC += e64 * static_cast<double>(sC);
-        if (!std::isnan(sM)) accumM += e64 * static_cast<double>(sM);
-        if (!std::isnan(sY)) accumY += e64 * static_cast<double>(sY);
-    }
-
-    outRaw[0] = static_cast<float>(accumC);
-    outRaw[1] = static_cast<float>(accumM);
-    outRaw[2] = static_cast<float>(accumY);
-    return true;
+    return PrintPreflashShared::compute_raw(ws, prt, outRaw, outShapeK);
 }
 
 } // namespace Precompute

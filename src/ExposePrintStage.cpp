@@ -10,6 +10,7 @@
 #include "ExposeFilmStage.h"
 #include "Logging.h"
 #include "Print.h"
+#include "PrintPreflashShared.h"
 #include "SpectralData.h"
 #include "SpectralProcessing.h"
 #include "WorkingState.h"
@@ -216,31 +217,13 @@ namespace Pipeline {
             raw[2] = static_cast<float>(accumY); // Y
         }
 
-        void compute_preflash_raw(
+        bool compute_preflash_raw(
             const WorkingState& ws,
             const Print::Runtime& rt,
-            PrintPipelineScratch& scratch,
             float rawOut[3])
         {
-            rawOut[0] = rawOut[1] = rawOut[2] = 0.0f;
-            const int K = Spectral::gShape.K;
-            if (K <= 0) return;
-            if (ws.tablesView.K <= 0) return;
-
-            // agx-emulsion parity: preflash is computed via density_to_light(density_base, preflash_illuminant),
-            // then contracted against print paper sensitivity (no clamp).
-            const float Dbase[3] = { 0.0f, 0.0f, 0.0f };
-            density_to_filtered_light_agx(
-                ws, rt,
-                /*yShiftSteps=*/0.0f,
-                /*mShiftSteps=*/0.0f,
-                /*cShiftSteps=*/0.0f,
-                Dbase,
-                scratch.Tpreflash,
-                scratch.Ee_viewed,
-                scratch.Ee_preflash);
-
-            raw_exposures_from_filtered_light(rt.profile, scratch.Ee_preflash, rawOut);
+            int shapeK = 0;
+            return PrintPreflashShared::compute_raw(ws, rt, rawOut, shapeK);
         }
 
         void ensure_cached_preflash_raw(
@@ -265,7 +248,15 @@ namespace Pipeline {
                 return;
             }
 
-            compute_preflash_raw(ws, rt, scratch, scratch.preflashRaw);
+            if (!compute_preflash_raw(ws, rt, scratch.preflashRaw)) {
+                scratch.preflashRawValid = false;
+                scratch.preflashRuntime = nullptr;
+                scratch.preflashWsBuildCounter = 0;
+                scratch.preflashShapeK = 0;
+                scratch.preflashRaw[0] = scratch.preflashRaw[1] = scratch.preflashRaw[2] = 0.0f;
+                return;
+            }
+
             scratch.preflashRawValid = true;
             scratch.preflashRuntime = &rt;
             scratch.preflashWsBuildCounter = ws.buildCounter;
