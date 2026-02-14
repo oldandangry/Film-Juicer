@@ -144,6 +144,12 @@ enum class PressureLane : std::uint8_t {
     Upload = 1
 };
 
+enum class BuilderReservationTier : std::uint8_t {
+    Scratch = 0,
+    Lut = 1,
+    Graph = 2
+};
+
 const char* to_cstr(ScratchWorkClass workClass) noexcept {
     switch (workClass) {
     case ScratchWorkClass::Optics:
@@ -161,6 +167,19 @@ const char* to_cstr(PressureLane lane) noexcept {
         return "builder";
     case PressureLane::Upload:
         return "upload";
+    default:
+        return "unknown";
+    }
+}
+
+const char* to_cstr(BuilderReservationTier tier) noexcept {
+    switch (tier) {
+    case BuilderReservationTier::Scratch:
+        return "scratch";
+    case BuilderReservationTier::Lut:
+        return "lut";
+    case BuilderReservationTier::Graph:
+        return "graph";
     default:
         return "unknown";
     }
@@ -253,6 +272,31 @@ UploadReservationState& upload_reservation_state() noexcept {
     return state;
 }
 
+struct BuilderReservationContextState {
+    std::uint64_t inFlightScratchBytes = 0;
+    std::uint64_t inFlightLutBytes = 0;
+    std::uint64_t inFlightGraphBytes = 0;
+    struct FairnessEntry {
+        std::uint32_t sharedTokens = 0;
+        std::uint32_t criticalTokens = 0;
+        std::uint64_t lastRefillMs = 0;
+    };
+    std::unordered_map<std::uint64_t, FairnessEntry> fairnessByInstance;
+};
+
+struct BuilderReservationState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, BuilderReservationContextState, DeviceContextKeyHash> byContext;
+    std::uint64_t totalScratchInFlightBytes = 0;
+    std::uint64_t totalLutInFlightBytes = 0;
+    std::uint64_t totalGraphInFlightBytes = 0;
+};
+
+BuilderReservationState& builder_reservation_state() noexcept {
+    static BuilderReservationState state{};
+    return state;
+}
+
 struct PressureContextState {
     bool valid = false;
     std::uint64_t lastSampleMs = 0;
@@ -338,6 +382,13 @@ struct UploadReservationClaim {
     bool acquired = false;
 };
 
+struct BuilderReservationClaim {
+    DeviceContextKey contextKey{};
+    BuilderReservationTier tier = BuilderReservationTier::Scratch;
+    std::uint64_t bytes = 0;
+    bool acquired = false;
+};
+
 constexpr std::uint32_t kMaxTempScratchSets = 1;
 constexpr std::size_t kMaxTempScratchBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
 constexpr int kScratchWaitStepMs = 1;
@@ -358,12 +409,19 @@ constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
 constexpr const char* kReservationDeferredPrefix = "reservation_deferred:";
 constexpr std::uint64_t kTransientReservationCapDefaultBytes = 512ull * 1024ull * 1024ull;
 constexpr std::uint64_t kTransientReservationThresholdDefaultBytes = 64ull * 1024ull * 1024ull;
+constexpr std::uint64_t kScratchBuilderReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
+constexpr std::uint64_t kLutBuilderReservationCapDefaultBytes = 128ull * 1024ull * 1024ull;
+constexpr std::uint64_t kGraphBuilderReservationCapDefaultBytes = 128ull * 1024ull * 1024ull;
+constexpr std::uint64_t kBuilderReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
 constexpr std::uint64_t kUploadReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
 constexpr std::uint64_t kUploadReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
 constexpr std::uint64_t kStbnUploadDefaultBytes = 512ull * 512ull * 256ull;
 constexpr std::uint64_t kWangTilesUploadDefaultBytes = 256ull * 256ull * 16ull;
 constexpr std::uint64_t kWangLutUploadDefaultBytes = 8ull * 8ull * 8ull * 8ull;
 constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024ull;
+constexpr int kBuilderReservationWaitStepMs = 1;
+constexpr int kBuilderReservationWaitMaxMs = 8;
+constexpr std::uint64_t kBuilderFairnessTickMs = 4;
 constexpr int kUploadReservationWaitStepMs = 1;
 constexpr int kUploadReservationWaitMaxMs = 8;
 constexpr std::uint64_t kUploadFairnessTickMs = 4;
@@ -983,6 +1041,101 @@ std::uint64_t transient_reservation_threshold_bytes(const ResourceManagerConfigE
     return std::min<std::uint64_t>(kTransientReservationThresholdDefaultBytes, capBytes);
 }
 
+std::uint64_t builder_reservation_cap_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    BuilderReservationTier tier) noexcept {
+    std::uint32_t configCapMb = 0;
+    std::uint64_t defaultCapBytes = kScratchBuilderReservationCapDefaultBytes;
+    switch (tier) {
+    case BuilderReservationTier::Scratch:
+        configCapMb = cfg.scratchBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kScratchBuilderReservationCapDefaultBytes;
+        break;
+    case BuilderReservationTier::Lut:
+        configCapMb = cfg.lutBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kLutBuilderReservationCapDefaultBytes;
+        break;
+    case BuilderReservationTier::Graph:
+        configCapMb = cfg.graphBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kGraphBuilderReservationCapDefaultBytes;
+        break;
+    default:
+        configCapMb = cfg.scratchBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kScratchBuilderReservationCapDefaultBytes;
+        break;
+    }
+
+    std::uint64_t capBytes = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(configCapMb), kBytesPerMiB, capBytes)) {
+        capBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    if (capBytes == 0) {
+        capBytes = defaultCapBytes;
+    }
+    return std::max<std::uint64_t>(kBuilderReservationThresholdDefaultBytes, capBytes);
+}
+
+std::uint64_t builder_reservation_threshold_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    BuilderReservationTier tier) noexcept {
+    const std::uint64_t capBytes = builder_reservation_cap_bytes(cfg, tier);
+    if (capBytes == 0) {
+        return 0;
+    }
+    return std::min<std::uint64_t>(kBuilderReservationThresholdDefaultBytes, capBytes);
+}
+
+std::uint64_t& builder_context_bytes_for_tier(
+    BuilderReservationContextState& contextState,
+    BuilderReservationTier tier) noexcept {
+    switch (tier) {
+    case BuilderReservationTier::Scratch:
+        return contextState.inFlightScratchBytes;
+    case BuilderReservationTier::Lut:
+        return contextState.inFlightLutBytes;
+    case BuilderReservationTier::Graph:
+        return contextState.inFlightGraphBytes;
+    default:
+        return contextState.inFlightScratchBytes;
+    }
+}
+
+std::uint64_t& builder_total_bytes_for_tier(
+    BuilderReservationState& state,
+    BuilderReservationTier tier) noexcept {
+    switch (tier) {
+    case BuilderReservationTier::Scratch:
+        return state.totalScratchInFlightBytes;
+    case BuilderReservationTier::Lut:
+        return state.totalLutInFlightBytes;
+    case BuilderReservationTier::Graph:
+        return state.totalGraphInFlightBytes;
+    default:
+        return state.totalScratchInFlightBytes;
+    }
+}
+
+std::atomic<std::uint64_t>& builder_global_gauge_for_tier(
+    ResourceManagerState& state,
+    BuilderReservationTier tier) noexcept {
+    switch (tier) {
+    case BuilderReservationTier::Scratch:
+        return state.scratchBuilderBytesInFlight;
+    case BuilderReservationTier::Lut:
+        return state.lutBuilderBytesInFlight;
+    case BuilderReservationTier::Graph:
+        return state.graphBuilderBytesInFlight;
+    default:
+        return state.scratchBuilderBytesInFlight;
+    }
+}
+
+bool builder_context_has_inflight(const BuilderReservationContextState& contextState) noexcept {
+    return contextState.inFlightScratchBytes > 0 ||
+        contextState.inFlightLutBytes > 0 ||
+        contextState.inFlightGraphBytes > 0;
+}
+
 std::uint64_t upload_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
     std::uint64_t configCapBytes = 0;
     if (!mul_u64_checked(
@@ -1180,6 +1333,32 @@ void refill_upload_fairness_tokens(
 
     const std::uint64_t elapsedMs = (nowMs > entry.lastRefillMs) ? (nowMs - entry.lastRefillMs) : 0;
     if (elapsedMs < kUploadFairnessTickMs) {
+        return;
+    }
+
+    entry.sharedTokens = sharedPerTick;
+    entry.criticalTokens = criticalPerTick;
+    entry.lastRefillMs = nowMs;
+}
+
+void refill_builder_fairness_tokens(
+    BuilderReservationContextState::FairnessEntry& entry,
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t nowMs) noexcept {
+    const std::uint32_t sharedPerTick = std::max<std::uint32_t>(1u, cfg.builderFairnessTokensPerTick);
+    const std::uint32_t criticalPerTick = std::min<std::uint32_t>(
+        std::max<std::uint32_t>(1u, cfg.criticalBuilderReservedTokens),
+        sharedPerTick);
+
+    if (entry.lastRefillMs == 0) {
+        entry.sharedTokens = sharedPerTick;
+        entry.criticalTokens = criticalPerTick;
+        entry.lastRefillMs = nowMs;
+        return;
+    }
+
+    const std::uint64_t elapsedMs = (nowMs > entry.lastRefillMs) ? (nowMs - entry.lastRefillMs) : 0;
+    if (elapsedMs < kBuilderFairnessTickMs) {
         return;
     }
 
@@ -1658,6 +1837,68 @@ private:
     ScratchPolicyClaim _claim{};
 };
 
+void release_builder_reservation_claim(BuilderReservationClaim& claim) noexcept {
+    if (!claim.acquired) {
+        return;
+    }
+
+    BuilderReservationState& state = builder_reservation_state();
+    ResourceManagerState& managerState = global_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+
+    std::uint64_t& tierTotalBytes = builder_total_bytes_for_tier(state, claim.tier);
+    auto contextIt = state.byContext.find(claim.contextKey);
+    if (contextIt == state.byContext.end()) {
+        if (tierTotalBytes >= claim.bytes) {
+            tierTotalBytes -= claim.bytes;
+        }
+        else {
+            tierTotalBytes = 0;
+        }
+        builder_global_gauge_for_tier(managerState, claim.tier).store(tierTotalBytes, std::memory_order_relaxed);
+        claim = BuilderReservationClaim{};
+        return;
+    }
+
+    BuilderReservationContextState& contextState = contextIt->second;
+    std::uint64_t& contextTierBytes = builder_context_bytes_for_tier(contextState, claim.tier);
+    if (contextTierBytes >= claim.bytes) {
+        contextTierBytes -= claim.bytes;
+    }
+    else {
+        contextTierBytes = 0;
+    }
+    if (tierTotalBytes >= claim.bytes) {
+        tierTotalBytes -= claim.bytes;
+    }
+    else {
+        tierTotalBytes = 0;
+    }
+
+    if (!builder_context_has_inflight(contextState)) {
+        state.byContext.erase(contextIt);
+    }
+    builder_global_gauge_for_tier(managerState, claim.tier).store(tierTotalBytes, std::memory_order_relaxed);
+    claim = BuilderReservationClaim{};
+}
+
+class BuilderReservationGuard {
+public:
+    explicit BuilderReservationGuard(BuilderReservationClaim&& claim) noexcept
+        : _claim(std::move(claim)) {
+    }
+
+    ~BuilderReservationGuard() noexcept {
+        release_builder_reservation_claim(_claim);
+    }
+
+    BuilderReservationGuard(const BuilderReservationGuard&) = delete;
+    BuilderReservationGuard& operator=(const BuilderReservationGuard&) = delete;
+
+private:
+    BuilderReservationClaim _claim{};
+};
+
 void release_upload_reservation_claim(UploadReservationClaim& claim) noexcept {
     if (!claim.acquired) {
         return;
@@ -1847,6 +2088,52 @@ void trace_upload_reservation_decision(
         + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSUPL", msg);
+}
+
+void trace_builder_reservation_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    BuilderReservationTier tier,
+    std::uint64_t requestBytes,
+    std::uint64_t bytesInFlight,
+    std::uint64_t capBytes,
+    std::uint64_t thresholdBytes,
+    const ReservationDecision& decision,
+    bool criticalCurrentFrame,
+    std::uint64_t instanceToken,
+    std::uint32_t sharedTokens,
+    std::uint32_t criticalTokens,
+    int waitMs,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=builder_reservation")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " kind=" + to_cstr(ReservationKind::BuilderWork)
+        + " tier=" + to_cstr(tier)
+        + " instance_token=" + std::to_string(static_cast<unsigned long long>(instanceToken))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
+        + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
+        + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
+        + " shared_tokens=" + std::to_string(static_cast<unsigned long long>(sharedTokens))
+        + " critical_tokens=" + std::to_string(static_cast<unsigned long long>(criticalTokens))
+        + " granted=" + std::to_string(decision.granted ? 1 : 0)
+        + " should_wait=" + std::to_string(decision.shouldWait ? 1 : 0)
+        + " wait_ms=" + std::to_string(waitMs)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSBPR", msg);
 }
 
 void trace_budget_reclaim_retry(
@@ -2772,6 +3059,330 @@ bool acquire_scratch_policy_claim_with_wait(
 
         std::this_thread::sleep_for(std::chrono::milliseconds(kScratchWaitStepMs));
         waitedMs += kScratchWaitStepMs;
+    }
+}
+
+bool try_acquire_builder_reservation_claim(
+    const SubmissionTransaction& transaction,
+    BuilderReservationTier tier,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    BuilderReservationClaim& outClaim,
+    ReservationAttemptInfo& outReservation) noexcept {
+    outClaim = BuilderReservationClaim{};
+    outReservation = ReservationAttemptInfo{};
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    BuilderReservationState& state = builder_reservation_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    outReservation.instanceToken = transaction.snapshot.instanceToken.value;
+
+    outReservation.considered = true;
+    std::uint64_t& tierTotalBytes = builder_total_bytes_for_tier(state, tier);
+    outReservation.bytesInFlight = tierTotalBytes;
+    outReservation.capBytes = builder_reservation_cap_bytes(cfg, tier);
+    outReservation.thresholdBytes = builder_reservation_threshold_bytes(cfg, tier);
+
+    ReservationDecision reservationDecision{};
+    if (requestBytes < outReservation.thresholdBytes) {
+        reservationDecision.granted = true;
+        reservationDecision.reason = "below_threshold";
+    }
+    else {
+        ReservationInput reservationInput{};
+        reservationInput.kind = ReservationKind::BuilderWork;
+        reservationInput.requestBytes = requestBytes;
+        reservationInput.bytesInFlight = tierTotalBytes;
+        reservationInput.capBytes = outReservation.capBytes;
+        reservationInput.criticalCurrentFrame = criticalCurrentFrame;
+        reservationDecision = classify_reservation(reservationInput);
+    }
+    outReservation.decision = reservationDecision;
+
+    if (!reservationDecision.granted) {
+        return false;
+    }
+
+    BuilderReservationContextState& contextState =
+        state.byContext[transaction.snapshot.deviceContextKey];
+    BuilderReservationContextState::FairnessEntry& fairness =
+        contextState.fairnessByInstance[outReservation.instanceToken];
+    refill_builder_fairness_tokens(fairness, cfg, monotonic_time_ms());
+
+    bool fairnessGranted = false;
+    if (criticalCurrentFrame && fairness.criticalTokens > 0) {
+        --fairness.criticalTokens;
+        fairnessGranted = true;
+    }
+    else if (fairness.sharedTokens > 0) {
+        --fairness.sharedTokens;
+        fairnessGranted = true;
+    }
+    outReservation.sharedTokens = fairness.sharedTokens;
+    outReservation.criticalTokens = fairness.criticalTokens;
+    if (!fairnessGranted) {
+        ReservationDecision fairnessDecision{};
+        fairnessDecision.granted = false;
+        fairnessDecision.shouldWait = true;
+        fairnessDecision.waitMs = static_cast<std::uint32_t>(kBuilderReservationWaitStepMs);
+        fairnessDecision.reason = "fairness_tokens_exhausted";
+        outReservation.decision = fairnessDecision;
+        return false;
+    }
+
+    std::uint64_t& contextTierBytes = builder_context_bytes_for_tier(contextState, tier);
+    std::uint64_t nextContextBytes = 0;
+    if (add_u64_checked(contextTierBytes, requestBytes, nextContextBytes)) {
+        contextTierBytes = nextContextBytes;
+    }
+    else {
+        contextTierBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t nextTotalBytes = 0;
+    if (add_u64_checked(tierTotalBytes, requestBytes, nextTotalBytes)) {
+        tierTotalBytes = nextTotalBytes;
+    }
+    else {
+        tierTotalBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    builder_global_gauge_for_tier(global_state(), tier).store(tierTotalBytes, std::memory_order_relaxed);
+    outClaim.contextKey = transaction.snapshot.deviceContextKey;
+    outClaim.tier = tier;
+    outClaim.bytes = requestBytes;
+    outClaim.acquired = true;
+    return true;
+}
+
+bool acquire_builder_reservation_with_wait(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    BuilderReservationTier tier,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    BuilderReservationClaim& outClaim,
+    std::string& outError) {
+    outClaim = BuilderReservationClaim{};
+    outError.clear();
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    ResourceManagerState& state = global_state();
+    state.builderReservationRequests.fetch_add(1, std::memory_order_relaxed);
+
+    ReservationAttemptInfo reservation{};
+    int waitedMs = 0;
+    while (true) {
+        if (try_acquire_builder_reservation_claim(
+                transaction,
+                tier,
+                requestBytes,
+                criticalCurrentFrame,
+                outClaim,
+                reservation)) {
+            state.builderReservationGranted.fetch_add(1, std::memory_order_relaxed);
+            if (waitedMs > 0) {
+                state.builderFairnessWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                if (criticalCurrentFrame) {
+                    const std::uint64_t waitedMsU64 =
+                        static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                    state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                    state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    trace_lane_wait_event(
+                        transaction,
+                        commandName,
+                        PressureLane::Builder,
+                        criticalCurrentFrame,
+                        waitedMs,
+                        "admit_after_wait",
+                        reservation.decision.reason ? reservation.decision.reason : "waited");
+                }
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "admit_after_wait");
+            }
+            else if (reservation.decision.reason &&
+                     std::string_view(reservation.decision.reason) == "critical_last_resort") {
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "critical_last_resort");
+            }
+            else if (JTRACE_ENABLED(3)) {
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "admitted");
+            }
+            return true;
+        }
+
+        const ReservationDecision& decision = reservation.decision;
+        const bool fairnessDeferred =
+            (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
+        if (fairnessDeferred) {
+            state.builderFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (!decision.shouldWait) {
+            state.builderReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Builder,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "denied",
+                    decision.reason ? decision.reason : "reservation_denied");
+            }
+            trace_builder_reservation_decision(
+                transaction,
+                commandName,
+                tier,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
+                waitedMs,
+                "denied");
+            outError = std::string(kReservationDeferredPrefix)
+                + " command=" + (commandName ? commandName : "unknown")
+                + " kind=" + to_cstr(ReservationKind::BuilderWork)
+                + " tier=" + to_cstr(tier)
+                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " wait_ms=" + std::to_string(waitedMs)
+                + " wait_budget_ms=" + std::to_string(kBuilderReservationWaitMaxMs)
+                + " reason=" + (decision.reason ? decision.reason : "unspecified");
+            return false;
+        }
+
+        if (waitedMs >= kBuilderReservationWaitMaxMs) {
+            state.builderReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                state.builderReservationBypass.fetch_add(1, std::memory_order_relaxed);
+                if (fairnessDeferred) {
+                    state.builderFairnessTokenBypass.fetch_add(1, std::memory_order_relaxed);
+                }
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Builder,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    fairnessDeferred ? "bypass_after_starvation" : "deferred_bypass",
+                    decision.reason ? decision.reason : "wait_budget_reached");
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "deferred_bypass_wait_budget");
+                return true;
+            }
+            trace_builder_reservation_decision(
+                transaction,
+                commandName,
+                tier,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
+                waitedMs,
+                "deferred_wait_budget");
+            outError = std::string(kReservationDeferredPrefix)
+                + " command=" + (commandName ? commandName : "unknown")
+                + " kind=" + to_cstr(ReservationKind::BuilderWork)
+                + " tier=" + to_cstr(tier)
+                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " wait_ms=" + std::to_string(waitedMs)
+                + " wait_budget_ms=" + std::to_string(kBuilderReservationWaitMaxMs)
+                + " reason=" + (decision.reason ? decision.reason : "wait_budget_reached");
+            return false;
+        }
+
+        const int sleepMs = std::max<int>(
+            1,
+            std::min<int>(
+                static_cast<int>(decision.waitMs > 0 ? decision.waitMs : 1),
+                kBuilderReservationWaitStepMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        waitedMs += sleepMs;
     }
 }
 
@@ -4254,6 +4865,18 @@ bool command_ensure_scan_lut(
         return false;
     }
     UploadReservationGuard uploadGuard(std::move(uploadClaim));
+    BuilderReservationClaim builderClaim{};
+    if (!acquire_builder_reservation_with_wait(
+            transaction,
+            "command_ensure_scan_lut",
+            BuilderReservationTier::Lut,
+            uploadRequestBytes,
+            true,
+            builderClaim,
+            outError)) {
+        return false;
+    }
+    BuilderReservationGuard builderGuard(std::move(builderClaim));
     const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
@@ -4390,6 +5013,19 @@ bool command_ensure_optics_scratch(
             return false;
         }
     }
+
+    BuilderReservationClaim builderClaim{};
+    if (!acquire_builder_reservation_with_wait(
+            transaction,
+            "command_ensure_optics_scratch",
+            BuilderReservationTier::Scratch,
+            static_cast<std::uint64_t>(growthBytes),
+            true,
+            builderClaim,
+            outError)) {
+        return false;
+    }
+    BuilderReservationGuard builderGuard(std::move(builderClaim));
 
     ScratchPolicyClaim scratchClaim{};
     if (!acquire_scratch_policy_claim_with_wait(
@@ -4620,6 +5256,19 @@ bool command_ensure_spatial_dir_scratch(
             return false;
         }
     }
+
+    BuilderReservationClaim builderClaim{};
+    if (!acquire_builder_reservation_with_wait(
+            transaction,
+            "command_ensure_spatial_dir_scratch",
+            BuilderReservationTier::Scratch,
+            static_cast<std::uint64_t>(growthBytes),
+            true,
+            builderClaim,
+            outError)) {
+        return false;
+    }
+    BuilderReservationGuard builderGuard(std::move(builderClaim));
 
     ScratchPolicyClaim scratchClaim{};
     if (!acquire_scratch_policy_claim_with_wait(
@@ -5079,6 +5728,82 @@ bool command_launch_base_pipeline_graph(
             outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
             return true;
         }
+
+        BuilderReservationClaim builderClaim{};
+        ReservationAttemptInfo builderReservation{};
+        managerState.builderReservationRequests.fetch_add(1, std::memory_order_relaxed);
+        if (!try_acquire_builder_reservation_claim(
+                transaction,
+                BuilderReservationTier::Graph,
+                requestBytes,
+                kGraphAdmissionCriticalCurrentFrame,
+                builderClaim,
+                builderReservation)) {
+            const ReservationDecision& decision = builderReservation.decision;
+            const bool fairnessDeferred =
+                (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
+            if (decision.shouldWait) {
+                managerState.builderReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+                if (fairnessDeferred) {
+                    managerState.builderFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+                }
+                trace_builder_reservation_decision(
+                    transaction,
+                    "command_launch_base_pipeline_graph",
+                    BuilderReservationTier::Graph,
+                    requestBytes,
+                    builderReservation.bytesInFlight,
+                    builderReservation.capBytes,
+                    builderReservation.thresholdBytes,
+                    decision,
+                    kGraphAdmissionCriticalCurrentFrame,
+                    builderReservation.instanceToken,
+                    builderReservation.sharedTokens,
+                    builderReservation.criticalTokens,
+                    0,
+                    "deferred_nonresident");
+            }
+            else {
+                managerState.builderReservationDenied.fetch_add(1, std::memory_order_relaxed);
+                trace_builder_reservation_decision(
+                    transaction,
+                    "command_launch_base_pipeline_graph",
+                    BuilderReservationTier::Graph,
+                    requestBytes,
+                    builderReservation.bytesInFlight,
+                    builderReservation.capBytes,
+                    builderReservation.thresholdBytes,
+                    decision,
+                    kGraphAdmissionCriticalCurrentFrame,
+                    builderReservation.instanceToken,
+                    builderReservation.sharedTokens,
+                    builderReservation.criticalTokens,
+                    0,
+                    "denied_nonresident");
+            }
+            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            return true;
+        }
+        managerState.builderReservationGranted.fetch_add(1, std::memory_order_relaxed);
+        if (JTRACE_ENABLED(3)) {
+            trace_builder_reservation_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                BuilderReservationTier::Graph,
+                requestBytes,
+                builderReservation.bytesInFlight,
+                builderReservation.capBytes,
+                builderReservation.thresholdBytes,
+                builderReservation.decision,
+                kGraphAdmissionCriticalCurrentFrame,
+                builderReservation.instanceToken,
+                builderReservation.sharedTokens,
+                builderReservation.criticalTokens,
+                0,
+                "admitted");
+        }
+        BuilderReservationGuard builderGuard(std::move(builderClaim));
 
         bucket.probationHitsByDigest.erase(keyDigest);
         found = build_base_graph_entry(bucket, key, launchFn, run, stream);

@@ -164,6 +164,8 @@ const char* to_cstr(ReservationKind kind) noexcept {
         return "TransientNonManager";
     case ReservationKind::UploadCopy:
         return "UploadCopy";
+    case ReservationKind::BuilderWork:
+        return "BuilderWork";
     default:
         return "Unknown";
     }

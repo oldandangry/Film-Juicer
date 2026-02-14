@@ -35,7 +35,8 @@ enum class PressureState : std::uint8_t {
 
 enum class ReservationKind : std::uint8_t {
     TransientNonManager = 0,
-    UploadCopy = 1
+    UploadCopy = 1,
+    BuilderWork = 2
 };
 
 enum class HeadroomSource : std::uint8_t {

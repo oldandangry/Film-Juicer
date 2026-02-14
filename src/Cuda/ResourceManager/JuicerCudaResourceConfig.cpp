@@ -16,6 +16,15 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMinPressureSampleMs = 10u;
     constexpr std::uint32_t kMaxPressureSampleMs = 5000u;
     constexpr std::uint32_t kMaxReclaimRetryAttempts = 3u;
+    constexpr std::uint32_t kMinScratchBuilderBytesInFlightLimitMB = 128u;
+    constexpr std::uint32_t kMaxScratchBuilderBytesInFlightLimitMB = 512u;
+    constexpr std::uint32_t kMinLutBuilderBytesInFlightLimitMB = 64u;
+    constexpr std::uint32_t kMaxLutBuilderBytesInFlightLimitMB = 256u;
+    constexpr std::uint32_t kMinGraphBuilderBytesInFlightLimitMB = 64u;
+    constexpr std::uint32_t kMaxGraphBuilderBytesInFlightLimitMB = 256u;
+    constexpr std::uint32_t kMinBuilderFairnessTokensPerTick = 1u;
+    constexpr std::uint32_t kMaxBuilderFairnessTokensPerTick = 2u;
+    constexpr std::uint32_t kMinCriticalBuilderReservedTokens = 1u;
     constexpr std::uint32_t kMinUploadBytesInFlightLimitMB = 128u;
     constexpr std::uint32_t kMaxUploadBytesInFlightLimitMB = 512u;
     constexpr std::uint32_t kMinUploadFairnessTokensPerTick = 1u;
@@ -50,6 +59,26 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         kMaxPressureSampleMs);
     out.reclaimRetryMaxAttempts = std::min(raw.reclaimRetryMaxAttempts, kMaxReclaimRetryAttempts);
     out.fragmentationRecoveryEnabled = raw.fragmentationRecoveryEnabled;
+    out.scratchBuilderBytesInFlightLimitMB = std::clamp(
+        raw.scratchBuilderBytesInFlightLimitMB,
+        kMinScratchBuilderBytesInFlightLimitMB,
+        kMaxScratchBuilderBytesInFlightLimitMB);
+    out.lutBuilderBytesInFlightLimitMB = std::clamp(
+        raw.lutBuilderBytesInFlightLimitMB,
+        kMinLutBuilderBytesInFlightLimitMB,
+        kMaxLutBuilderBytesInFlightLimitMB);
+    out.graphBuilderBytesInFlightLimitMB = std::clamp(
+        raw.graphBuilderBytesInFlightLimitMB,
+        kMinGraphBuilderBytesInFlightLimitMB,
+        kMaxGraphBuilderBytesInFlightLimitMB);
+    out.builderFairnessTokensPerTick = std::clamp(
+        raw.builderFairnessTokensPerTick,
+        kMinBuilderFairnessTokensPerTick,
+        kMaxBuilderFairnessTokensPerTick);
+    out.criticalBuilderReservedTokens = std::clamp(
+        raw.criticalBuilderReservedTokens,
+        kMinCriticalBuilderReservedTokens,
+        out.builderFairnessTokensPerTick);
     out.uploadBytesInFlightLimitMB = std::clamp(
         raw.uploadBytesInFlightLimitMB,
         kMinUploadBytesInFlightLimitMB,

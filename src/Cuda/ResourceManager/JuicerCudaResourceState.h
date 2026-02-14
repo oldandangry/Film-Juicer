@@ -87,6 +87,17 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> transientReservationGranted{ 0 };
     std::atomic<std::uint64_t> transientReservationDeferred{ 0 };
     std::atomic<std::uint64_t> transientReservationDenied{ 0 };
+    std::atomic<std::uint64_t> builderReservationRequests{ 0 };
+    std::atomic<std::uint64_t> builderReservationGranted{ 0 };
+    std::atomic<std::uint64_t> builderReservationDeferred{ 0 };
+    std::atomic<std::uint64_t> builderReservationDenied{ 0 };
+    std::atomic<std::uint64_t> builderFairnessTokenDeferred{ 0 };
+    std::atomic<std::uint64_t> builderReservationBypass{ 0 };
+    std::atomic<std::uint64_t> builderFairnessTokenBypass{ 0 };
+    std::atomic<std::uint64_t> builderFairnessWaitEvents{ 0 };
+    std::atomic<std::uint64_t> scratchBuilderBytesInFlight{ 0 };
+    std::atomic<std::uint64_t> lutBuilderBytesInFlight{ 0 };
+    std::atomic<std::uint64_t> graphBuilderBytesInFlight{ 0 };
     std::atomic<std::uint64_t> uploadReservationRequests{ 0 };
     std::atomic<std::uint64_t> uploadReservationGranted{ 0 };
     std::atomic<std::uint64_t> uploadReservationDeferred{ 0 };
