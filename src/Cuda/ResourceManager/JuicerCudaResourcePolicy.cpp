@@ -2,6 +2,7 @@
 
 #include "Cuda/ResourceManager/JuicerCudaResourcePolicy.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace JuicerCuda {
@@ -168,6 +169,19 @@ const char* to_cstr(ReservationKind kind) noexcept {
     }
 }
 
+const char* to_cstr(CacheAdmissionClass value) noexcept {
+    switch (value) {
+    case CacheAdmissionClass::Normal:
+        return "Normal";
+    case CacheAdmissionClass::Probation:
+        return "Probation";
+    case CacheAdmissionClass::TooLargeToCache:
+        return "TooLargeToCache";
+    default:
+        return "Unknown";
+    }
+}
+
 PressureDecision classify_pressure(const PressureInput& input) noexcept {
     PressureDecision out{};
     out.effectiveReserveBytes = input.reserveBytes;
@@ -245,6 +259,86 @@ ReservationDecision classify_reservation(const ReservationInput& input) noexcept
     return out;
 }
 
+CacheAdmissionDecision classify_cache_admission(const CacheAdmissionInput& input) noexcept {
+    CacheAdmissionDecision out{};
+    out.reason = "normal";
+
+    if (input.requestBytes == 0) {
+        out.reason = "empty_request";
+        return out;
+    }
+
+    const std::uint64_t hardMaxBytes = input.maxCacheableEntryBytes;
+    std::uint64_t pctMaxBytes = 0;
+    if (input.cacheTargetBytes > 0 && input.maxCacheableEntryPctOfTarget > 0) {
+        const std::uint64_t pct = static_cast<std::uint64_t>(input.maxCacheableEntryPctOfTarget);
+        const std::uint64_t maxU64 = std::numeric_limits<std::uint64_t>::max();
+        const std::uint64_t numerator =
+            (input.cacheTargetBytes > (maxU64 / pct))
+            ? maxU64
+            : (input.cacheTargetBytes * pct);
+        pctMaxBytes = numerator / 100ull;
+    }
+
+    std::uint64_t maxDurableBytes = std::numeric_limits<std::uint64_t>::max();
+    if (hardMaxBytes > 0 && pctMaxBytes > 0) {
+        maxDurableBytes = std::min<std::uint64_t>(hardMaxBytes, pctMaxBytes);
+    }
+    else if (hardMaxBytes > 0) {
+        maxDurableBytes = hardMaxBytes;
+    }
+    else if (pctMaxBytes > 0) {
+        maxDurableBytes = pctMaxBytes;
+    }
+    out.maxDurableBytes = maxDurableBytes;
+
+    const bool tooLarge =
+        (maxDurableBytes != std::numeric_limits<std::uint64_t>::max()) &&
+        (input.requestBytes > maxDurableBytes);
+    if (tooLarge) {
+        out.admissionClass = CacheAdmissionClass::TooLargeToCache;
+        if (input.criticalCurrentFrame) {
+            out.allowDurableAdmission = true;
+            out.reason = "too_large_critical_override";
+        }
+        else {
+            out.allowDurableAdmission = false;
+            out.reason = "too_large_noncritical";
+        }
+        return out;
+    }
+
+    const std::uint64_t probationThreshold = input.largeEntryProbationThresholdBytes;
+    if (probationThreshold > 0 && input.requestBytes > probationThreshold) {
+        out.admissionClass = CacheAdmissionClass::Probation;
+        out.probationApplied = true;
+        const std::uint32_t requiredHits = std::max<std::uint32_t>(1u, input.largeEntryProbationHitsRequired);
+        out.probationHitsRequired = requiredHits;
+        const std::uint32_t observed =
+            (input.observedProbationHits < std::numeric_limits<std::uint32_t>::max())
+            ? (input.observedProbationHits + 1u)
+            : std::numeric_limits<std::uint32_t>::max();
+
+        if (input.criticalCurrentFrame) {
+            out.allowDurableAdmission = true;
+            out.reason = "probation_critical_override";
+            return out;
+        }
+
+        if (observed < requiredHits) {
+            out.allowDurableAdmission = false;
+            out.reason = "probation_defer";
+            return out;
+        }
+
+        out.allowDurableAdmission = true;
+        out.reason = "probation_admit";
+        return out;
+    }
+
+    return out;
+}
+
 AcquireDecision default_acquire_decision() noexcept {
     return AcquireDecision{};
 }
@@ -255,6 +349,10 @@ PressureDecision default_pressure_decision() noexcept {
 
 ReservationDecision default_reservation_decision() noexcept {
     return ReservationDecision{};
+}
+
+CacheAdmissionDecision default_cache_admission_decision() noexcept {
+    return CacheAdmissionDecision{};
 }
 
 } // namespace ResourceManager

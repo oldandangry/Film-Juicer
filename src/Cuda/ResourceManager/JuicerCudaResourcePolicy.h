@@ -38,6 +38,12 @@ enum class ReservationKind : std::uint8_t {
     UploadCopy = 1
 };
 
+enum class CacheAdmissionClass : std::uint8_t {
+    Normal = 0,
+    Probation = 1,
+    TooLargeToCache = 2
+};
+
 struct AcquireDecision {
     AcquireStatus status = AcquireStatus::Miss;
     bool shouldBuild = true;
@@ -111,6 +117,26 @@ struct ReservationDecision {
     const char* reason = "granted";
 };
 
+struct CacheAdmissionInput {
+    std::uint64_t requestBytes = 0;
+    std::uint64_t cacheTargetBytes = 0;
+    std::uint64_t maxCacheableEntryBytes = 0;
+    std::uint32_t maxCacheableEntryPctOfTarget = 0;
+    std::uint64_t largeEntryProbationThresholdBytes = 0;
+    std::uint32_t largeEntryProbationHitsRequired = 2;
+    std::uint32_t observedProbationHits = 0;
+    bool criticalCurrentFrame = false;
+};
+
+struct CacheAdmissionDecision {
+    CacheAdmissionClass admissionClass = CacheAdmissionClass::Normal;
+    bool allowDurableAdmission = true;
+    bool probationApplied = false;
+    std::uint32_t probationHitsRequired = 0;
+    std::uint64_t maxDurableBytes = 0;
+    const char* reason = "normal";
+};
+
 AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noexcept;
 ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept;
 bool shadow_key_changed_for_kind(const ShadowKeyDelta& delta, ResourceKind kind) noexcept;
@@ -121,12 +147,15 @@ StaleDecision classify_stale_path(const StaleInput& input) noexcept;
 const char* to_cstr(StaleReason reason) noexcept;
 const char* to_cstr(PressureState state) noexcept;
 const char* to_cstr(ReservationKind kind) noexcept;
+const char* to_cstr(CacheAdmissionClass value) noexcept;
 PressureDecision classify_pressure(const PressureInput& input) noexcept;
 ReservationDecision classify_reservation(const ReservationInput& input) noexcept;
+CacheAdmissionDecision classify_cache_admission(const CacheAdmissionInput& input) noexcept;
 
 AcquireDecision default_acquire_decision() noexcept;
 PressureDecision default_pressure_decision() noexcept;
 ReservationDecision default_reservation_decision() noexcept;
+CacheAdmissionDecision default_cache_admission_decision() noexcept;
 
 } // namespace ResourceManager
 } // namespace JuicerCuda

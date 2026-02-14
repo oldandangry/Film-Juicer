@@ -23,6 +23,10 @@ struct ResourceManagerConfigRaw {
     std::uint32_t uploadBytesInFlightLimitMB = 256;
     std::uint32_t uploadFairnessTokensPerTick = 1;
     std::uint32_t criticalUploadReservedTokens = 1;
+    std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
+    std::uint32_t maxCacheableEntryPctOfTarget = 20;
+    std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint32_t largeEntryProbationHitsRequired = 2;
     std::uint64_t tierTargetImmutableBp = 2500;
     std::uint64_t tierTargetLutBp = 2500;
     std::uint64_t tierTargetScratchBp = 3000;
@@ -42,6 +46,10 @@ struct ResourceManagerConfigEffective {
     std::uint32_t uploadBytesInFlightLimitMB = 256;
     std::uint32_t uploadFairnessTokensPerTick = 1;
     std::uint32_t criticalUploadReservedTokens = 1;
+    std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
+    std::uint32_t maxCacheableEntryPctOfTarget = 20;
+    std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint32_t largeEntryProbationHitsRequired = 2;
     std::uint64_t tierTargetImmutableBp = 2500;
     std::uint64_t tierTargetLutBp = 2500;
     std::uint64_t tierTargetScratchBp = 3000;

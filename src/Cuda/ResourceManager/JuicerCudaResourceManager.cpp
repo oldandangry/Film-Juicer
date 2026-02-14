@@ -1954,6 +1954,71 @@ void trace_copy_compute_guard(
     JTRACE("MSCOPY", msg);
 }
 
+void trace_cache_admission_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const CacheAdmissionDecision& decision,
+    bool criticalCurrentFrame,
+    std::uint64_t requestBytes,
+    std::uint32_t observedProbationHits,
+    std::uint64_t entryDigest,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=cache_admission")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " class=" + to_cstr(decision.admissionClass)
+        + " allow_durable=" + std::to_string(decision.allowDurableAdmission ? 1 : 0)
+        + " probation_applied=" + std::to_string(decision.probationApplied ? 1 : 0)
+        + " probation_hits_required=" + std::to_string(decision.probationHitsRequired)
+        + " observed_probation_hits=" + std::to_string(observedProbationHits)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " max_durable_bytes=" + std::to_string(static_cast<unsigned long long>(decision.maxDurableBytes))
+        + " entry_digest=" + std::to_string(static_cast<unsigned long long>(entryDigest))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSADM", msg);
+}
+
+void trace_probation_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t entryDigest,
+    std::uint32_t observedProbationHits,
+    std::uint32_t requiredProbationHits,
+    bool admitted,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=probation")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " entry_digest=" + std::to_string(static_cast<unsigned long long>(entryDigest))
+        + " observed_probation_hits=" + std::to_string(observedProbationHits)
+        + " required_probation_hits=" + std::to_string(requiredProbationHits)
+        + " admitted=" + std::to_string(admitted ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSPRB", msg);
+}
+
 void trace_reap_pass(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -2947,6 +3012,7 @@ struct BaseGraphBucketState {
     std::uint64_t contextEpoch = 0;
     std::uint64_t useTick = 0;
     std::vector<BaseGraphEntry> entries;
+    std::unordered_map<std::uint64_t, std::uint32_t> probationHitsByDigest;
 };
 
 struct BaseGraphCacheState {
@@ -2977,6 +3043,53 @@ bool base_graph_key_equal(const BaseGraphKey& a, const BaseGraphKey& b) noexcept
         a.height == b.height &&
         a.nComponents == b.nComponents &&
         a.renderMode == b.renderMode;
+}
+
+std::uint64_t base_graph_key_digest(const BaseGraphKey& key) noexcept {
+    std::uint64_t digest = 1469598103934665603ull;
+    auto fold = [&digest](std::uint64_t value) noexcept {
+        digest ^= value + 0x9e3779b97f4a7c15ull + (digest << 6u) + (digest >> 2u);
+    };
+    fold(static_cast<std::uint64_t>(std::max(0, key.width)));
+    fold(static_cast<std::uint64_t>(std::max(0, key.height)));
+    fold(static_cast<std::uint64_t>(std::max(0, key.nComponents)));
+    fold(static_cast<std::uint64_t>(std::max(0, key.renderMode)));
+    return digest;
+}
+
+std::uint64_t estimate_base_graph_request_bytes(const BaseGraphKey& key) noexcept {
+    const std::uint64_t w = static_cast<std::uint64_t>(std::max(0, key.width));
+    const std::uint64_t h = static_cast<std::uint64_t>(std::max(0, key.height));
+    const std::uint64_t n = static_cast<std::uint64_t>(std::max(0, key.nComponents));
+    std::uint64_t pixels = 0;
+    if (!mul_u64_checked(w, h, pixels)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+
+    constexpr std::uint64_t kBaseGraphMetadataBytes = 2ull * 1024ull * 1024ull;
+    constexpr std::uint64_t kPerMegapixelMetadataBytes = 64ull * 1024ull;
+    constexpr std::uint64_t kPerComponentMetadataBytes = 128ull * 1024ull;
+    constexpr std::uint64_t kMegapixelDivisor = 1024ull * 1024ull;
+
+    std::uint64_t bytes = kBaseGraphMetadataBytes;
+    std::uint64_t mpBytes = 0;
+    if (!mul_u64_checked(pixels / kMegapixelDivisor, kPerMegapixelMetadataBytes, mpBytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t nextBytes = 0;
+    if (!add_u64_checked(bytes, mpBytes, nextBytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    bytes = nextBytes;
+
+    std::uint64_t componentBytes = 0;
+    if (!mul_u64_checked(n, kPerComponentMetadataBytes, componentBytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    if (!add_u64_checked(bytes, componentBytes, nextBytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return nextBytes;
 }
 
 void destroy_base_graph_entry(BaseGraphEntry& entry) noexcept {
@@ -3018,6 +3131,7 @@ void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
         destroy_base_graph_entry(entry);
     }
     bucket.entries.clear();
+    bucket.probationHitsByDigest.clear();
     bucket.useTick = 0;
 }
 
@@ -4343,6 +4457,10 @@ bool command_launch_base_pipeline_graph(
     key.height = run.height;
     key.nComponents = run.nComponents;
     key.renderMode = renderModeKey;
+    const std::uint64_t keyDigest = base_graph_key_digest(key);
+    const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    constexpr bool kGraphAdmissionCriticalCurrentFrame = false;
 
     std::shared_ptr<BaseGraphBucketState> bucketPtr =
         get_or_create_base_graph_bucket(transaction.snapshot.deviceContextKey);
@@ -4370,7 +4488,81 @@ bool command_launch_base_pipeline_graph(
 
     BaseGraphEntry* found = find_base_graph_entry(bucket, key);
     if (!found) {
+        std::uint32_t observedProbationHits = 0;
+        auto probationIt = bucket.probationHitsByDigest.find(keyDigest);
+        if (probationIt != bucket.probationHitsByDigest.end()) {
+            observedProbationHits = probationIt->second;
+        }
+
+        CacheAdmissionInput admissionInput{};
+        admissionInput.requestBytes = requestBytes;
+        admissionInput.cacheTargetBytes = cfg.managerSoftTargetBytes;
+        admissionInput.maxCacheableEntryBytes = cfg.maxCacheableEntryBytes;
+        admissionInput.maxCacheableEntryPctOfTarget = cfg.maxCacheableEntryPctOfTarget;
+        admissionInput.largeEntryProbationThresholdBytes = cfg.largeEntryProbationThresholdBytes;
+        admissionInput.largeEntryProbationHitsRequired = cfg.largeEntryProbationHitsRequired;
+        admissionInput.observedProbationHits = observedProbationHits;
+        admissionInput.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
+        const CacheAdmissionDecision admissionDecision = classify_cache_admission(admissionInput);
+        trace_cache_admission_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            admissionDecision,
+            kGraphAdmissionCriticalCurrentFrame,
+            requestBytes,
+            observedProbationHits,
+            keyDigest,
+            "graph_miss");
+
+        ResourceManagerState& managerState = global_state();
+        if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
+            managerState.cacheAdmissionTooLargeEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (admissionDecision.probationApplied) {
+            const std::uint32_t nextObservedHits =
+                (observedProbationHits < std::numeric_limits<std::uint32_t>::max())
+                ? (observedProbationHits + 1u)
+                : std::numeric_limits<std::uint32_t>::max();
+            trace_probation_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                keyDigest,
+                nextObservedHits,
+                admissionDecision.probationHitsRequired,
+                admissionDecision.allowDurableAdmission,
+                admissionDecision.reason);
+            if (admissionDecision.allowDurableAdmission) {
+                managerState.cacheAdmissionProbationAdmitEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                managerState.cacheAdmissionProbationDeferredEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        if (admissionDecision.reason &&
+            std::string_view(admissionDecision.reason).find("critical_override") != std::string_view::npos) {
+            managerState.cacheAdmissionCriticalOverrideEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (!admissionDecision.allowDurableAdmission) {
+            if (admissionDecision.probationApplied) {
+                std::uint32_t& probationHits = bucket.probationHitsByDigest[keyDigest];
+                if (probationHits < std::numeric_limits<std::uint32_t>::max()) {
+                    ++probationHits;
+                }
+            }
+            else {
+                bucket.probationHitsByDigest.erase(keyDigest);
+            }
+            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            return true;
+        }
+
+        bucket.probationHitsByDigest.erase(keyDigest);
         found = build_base_graph_entry(bucket, key, launchFn, run, stream);
+    }
+    else {
+        bucket.probationHitsByDigest.erase(keyDigest);
     }
 
     if (!found || !found->execOpaque || !found->kernelNodeOpaque) {

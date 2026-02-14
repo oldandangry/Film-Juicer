@@ -93,6 +93,11 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> uploadEmergencyShedDenials{ 0 };
     std::atomic<std::uint64_t> builderEmergencyShedDenials{ 0 };
     std::atomic<std::uint64_t> copyComputeGuardShedEvents{ 0 };
+    std::atomic<std::uint64_t> cacheAdmissionTooLargeEvents{ 0 };
+    std::atomic<std::uint64_t> cacheAdmissionProbationDeferredEvents{ 0 };
+    std::atomic<std::uint64_t> cacheAdmissionProbationAdmitEvents{ 0 };
+    std::atomic<std::uint64_t> cacheAdmissionCriticalOverrideEvents{ 0 };
+    std::atomic<std::uint64_t> graphNonResidentServeEvents{ 0 };
     std::atomic<std::uint64_t> uploadBytesInFlight{ 0 };
     std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };

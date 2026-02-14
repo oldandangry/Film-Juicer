@@ -21,6 +21,14 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMinUploadFairnessTokensPerTick = 1u;
     constexpr std::uint32_t kMaxUploadFairnessTokensPerTick = 2u;
     constexpr std::uint32_t kMinCriticalUploadReservedTokens = 1u;
+    constexpr std::uint64_t kMiB = 1024ull * 1024ull;
+    constexpr std::uint64_t kMinMaxCacheableEntryBytes = 32ull * kMiB;
+    constexpr std::uint64_t kMaxMaxCacheableEntryBytes = 1024ull * kMiB;
+    constexpr std::uint32_t kMinMaxCacheableEntryPctOfTarget = 5u;
+    constexpr std::uint32_t kMaxMaxCacheableEntryPctOfTarget = 50u;
+    constexpr std::uint64_t kMinLargeEntryProbationThresholdBytes = 16ull * kMiB;
+    constexpr std::uint32_t kMinLargeEntryProbationHitsRequired = 1u;
+    constexpr std::uint32_t kMaxLargeEntryProbationHitsRequired = 4u;
 
     ResourceManagerConfigEffective out{};
     out.keySchemaVersion = std::max<std::uint32_t>(1u, raw.keySchemaVersion);
@@ -53,6 +61,22 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.criticalUploadReservedTokens,
         kMinCriticalUploadReservedTokens,
         out.uploadFairnessTokensPerTick);
+    out.maxCacheableEntryBytes = std::clamp(
+        raw.maxCacheableEntryBytes,
+        kMinMaxCacheableEntryBytes,
+        kMaxMaxCacheableEntryBytes);
+    out.maxCacheableEntryPctOfTarget = std::clamp(
+        raw.maxCacheableEntryPctOfTarget,
+        kMinMaxCacheableEntryPctOfTarget,
+        kMaxMaxCacheableEntryPctOfTarget);
+    out.largeEntryProbationThresholdBytes = std::clamp(
+        raw.largeEntryProbationThresholdBytes,
+        kMinLargeEntryProbationThresholdBytes,
+        out.maxCacheableEntryBytes);
+    out.largeEntryProbationHitsRequired = std::clamp(
+        raw.largeEntryProbationHitsRequired,
+        kMinLargeEntryProbationHitsRequired,
+        kMaxLargeEntryProbationHitsRequired);
 
     std::uint64_t immutableBp = std::min<std::uint64_t>(raw.tierTargetImmutableBp, kBasisPointsDenom);
     std::uint64_t lutBp = std::min<std::uint64_t>(raw.tierTargetLutBp, kBasisPointsDenom);
