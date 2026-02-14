@@ -1094,6 +1094,71 @@ namespace JuicerCuda {
         s.gateMaskHash = 0;
     }
 
+    static bool retire_optics_scratch_locked(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)s;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        const size_t planeN = static_cast<size_t>(std::max(0, s.width)) * static_cast<size_t>(std::max(0, s.height));
+        const size_t planeBytes = planeN * sizeof(float);
+        if (s.rgbR) {
+            if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.rgbR = nullptr;
+        }
+        if (s.rgbG) {
+            if (!retire_ptr_locked(resources, s.rgbG, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.rgbG = nullptr;
+        }
+        if (s.rgbB) {
+            if (!retire_ptr_locked(resources, s.rgbB, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.rgbB = nullptr;
+        }
+        if (s.blurred) {
+            if (!retire_ptr_locked(resources, s.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.blurred = nullptr;
+        }
+        if (s.aux) {
+            if (!retire_ptr_locked(resources, s.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.aux = nullptr;
+        }
+        if (s.grainTmp) {
+            if (!retire_ptr_locked(resources, s.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.grainTmp = nullptr;
+        }
+        if (s.grainTmpShared) {
+            if (!retire_ptr_locked(resources, s.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.grainTmpShared = nullptr;
+        }
+        if (s.grainTmpMid) {
+            if (!retire_ptr_locked(resources, s.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.grainTmpMid = nullptr;
+        }
+        if (s.grainTmpCoarse) {
+            if (!retire_ptr_locked(resources, s.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.grainTmpCoarse = nullptr;
+        }
+
+        const size_t gateN = static_cast<size_t>(std::max(0, s.gateWidth)) * static_cast<size_t>(std::max(0, s.gateHeight));
+        const size_t gateBytes = gateN * sizeof(float);
+        if (s.gateMask) {
+            if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.gateMask = nullptr;
+        }
+
+        s.tmp = nullptr;
+        s.width = 0;
+        s.height = 0;
+        s.gateWidth = 0;
+        s.gateHeight = 0;
+        s.gateMaskHash = 0;
+        return true;
+#endif
+    }
+
     static void free_spatial_dir_scratch(Resources::DeviceSpatialDirScratch& s) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (s.corrY) { cudaFree(s.corrY); s.corrY = nullptr; }
@@ -1103,6 +1168,36 @@ namespace JuicerCuda {
         s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
+    }
+
+    static bool retire_spatial_dir_scratch_locked(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)s;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        const size_t n = static_cast<size_t>(std::max(0, s.width)) * static_cast<size_t>(std::max(0, s.height));
+        const size_t bytes = n * sizeof(float);
+        if (s.corrY) {
+            if (!retire_ptr_locked(resources, s.corrY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.corrY = nullptr;
+        }
+        if (s.corrM) {
+            if (!retire_ptr_locked(resources, s.corrM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.corrM = nullptr;
+        }
+        if (s.corrC) {
+            if (!retire_ptr_locked(resources, s.corrC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            s.corrC = nullptr;
+        }
+        s.tmp = nullptr;
+        s.width = 0;
+        s.height = 0;
+        return true;
+#endif
     }
 
     static void free_shared_tmp_plane(Resources& resources) noexcept {
@@ -1778,12 +1873,13 @@ namespace JuicerCuda {
                 }
             }
             else {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
                 if (dst.tables.baseMin) {
-                    cudaFree(dst.tables.baseMin);
+                    const size_t bytes = static_cast<size_t>(std::max(0, K)) * sizeof(float);
+                    if (!retire_ptr_locked(resources, dst.tables.baseMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) {
+                        return false;
+                    }
                     dst.tables.baseMin = nullptr;
                 }
-#endif
             }
 
             dst.tables.hasBaseline = t->hasBaseline ? 1 : 0;
@@ -2349,7 +2445,10 @@ namespace JuicerCuda {
             }
             if (needWeightsX) {
                 if (resources.autoExposureScratch.weightsX) {
-                    cudaFree(resources.autoExposureScratch.weightsX);
+                    const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.weightsXCapacity)) * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.weightsX, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure weightsX", outError)) {
+                        return false;
+                    }
                     resources.autoExposureScratch.weightsX = nullptr;
                 }
                 const size_t bytes = static_cast<size_t>(meterWidth) * sizeof(float);
@@ -2363,7 +2462,10 @@ namespace JuicerCuda {
             }
             if (needWeightsY) {
                 if (resources.autoExposureScratch.weightsY) {
-                    cudaFree(resources.autoExposureScratch.weightsY);
+                    const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.weightsYCapacity)) * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.weightsY, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure weightsY", outError)) {
+                        return false;
+                    }
                     resources.autoExposureScratch.weightsY = nullptr;
                 }
                 const size_t bytes = static_cast<size_t>(meterHeight) * sizeof(float);
@@ -2385,12 +2487,17 @@ namespace JuicerCuda {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "auto-exposure", outError)) {
                     return false;
                 }
+                const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.partialCapacity)) * sizeof(JuicerCudaAutoExposurePartial);
                 if (resources.autoExposureScratch.partialsA) {
-                    cudaFree(resources.autoExposureScratch.partialsA);
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.partialsA, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure partialsA", outError)) {
+                        return false;
+                    }
                     resources.autoExposureScratch.partialsA = nullptr;
                 }
                 if (resources.autoExposureScratch.partialsB) {
-                    cudaFree(resources.autoExposureScratch.partialsB);
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.partialsB, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure partialsB", outError)) {
+                        return false;
+                    }
                     resources.autoExposureScratch.partialsB = nullptr;
                 }
                 resources.autoExposureScratch.partialCapacity = 0;
@@ -2444,7 +2551,11 @@ namespace JuicerCuda {
             if (!sync_before_rebuild(resources, cudaStreamOpaque, label ? label : "shared tmp", outError)) {
                 return false;
             }
-            cudaFree(resources.sharedTmpPlane);
+            const size_t oldN = static_cast<size_t>(std::max(0, resources.sharedTmpWidth)) * static_cast<size_t>(std::max(0, resources.sharedTmpHeight));
+            const size_t oldBytes = oldN * sizeof(float);
+            if (!retire_ptr_locked(resources, resources.sharedTmpPlane, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label ? label : "shared tmp", outError)) {
+                return false;
+            }
             resources.sharedTmpPlane = nullptr;
         }
         resources.sharedTmpWidth = 0;
@@ -2500,8 +2611,13 @@ namespace JuicerCuda {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
+                if (!retire_optics_scratch_locked(resources, resources.scannerScratch, cudaStreamOpaque, "optics scratch", outError)) {
+                    return false;
+                }
             }
-            free_optics_scratch(resources.scannerScratch);
+            else {
+                free_optics_scratch(resources.scannerScratch);
+            }
 
             const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
             const size_t bytes = n * sizeof(float);
@@ -2553,7 +2669,11 @@ namespace JuicerCuda {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "unsharp scratch free", outError)) {
                     return false;
                 }
-                cudaFree(resources.scannerScratch.blurred);
+                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
+                const size_t oldBytes = oldN * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.scannerScratch.blurred, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unsharp scratch", outError)) {
+                    return false;
+                }
                 resources.scannerScratch.blurred = nullptr;
             }
         }
@@ -2577,7 +2697,11 @@ namespace JuicerCuda {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain scratch free", outError)) {
                     return false;
                 }
-                cudaFree(resources.scannerScratch.aux);
+                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
+                const size_t oldBytes = oldN * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.scannerScratch.aux, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain scratch", outError)) {
+                    return false;
+                }
                 resources.scannerScratch.aux = nullptr;
             }
         }
@@ -2625,21 +2749,33 @@ namespace JuicerCuda {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix scratch free", outError)) {
                     return false;
                 }
-                cudaFree(resources.scannerScratch.grainTmp);
+                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
+                const size_t oldBytes = oldN * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError)) {
+                    return false;
+                }
                 resources.scannerScratch.grainTmp = nullptr;
             }
             if (resources.scannerScratch.grainTmpMid) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix mid scratch free", outError)) {
                     return false;
                 }
-                cudaFree(resources.scannerScratch.grainTmpMid);
+                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
+                const size_t oldBytes = oldN * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpMid, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix mid scratch", outError)) {
+                    return false;
+                }
                 resources.scannerScratch.grainTmpMid = nullptr;
             }
             if (resources.scannerScratch.grainTmpCoarse) {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix coarse scratch free", outError)) {
                     return false;
                 }
-                cudaFree(resources.scannerScratch.grainTmpCoarse);
+                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
+                const size_t oldBytes = oldN * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpCoarse, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix coarse scratch", outError)) {
+                    return false;
+                }
                 resources.scannerScratch.grainTmpCoarse = nullptr;
             }
         }
@@ -2663,7 +2799,11 @@ namespace JuicerCuda {
                 if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain shared scratch free", outError)) {
                     return false;
                 }
-                cudaFree(resources.scannerScratch.grainTmpShared);
+                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
+                const size_t oldBytes = oldN * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpShared, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain shared scratch", outError)) {
+                    return false;
+                }
                 resources.scannerScratch.grainTmpShared = nullptr;
             }
         }
@@ -2678,7 +2818,11 @@ namespace JuicerCuda {
                     return false;
                 }
                 if (resources.scannerScratch.gateMask) {
-                    cudaFree(resources.scannerScratch.gateMask);
+                    const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.gateWidth)) * static_cast<size_t>(std::max(0, resources.scannerScratch.gateHeight));
+                    const size_t oldBytes = oldN * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError)) {
+                        return false;
+                    }
                     resources.scannerScratch.gateMask = nullptr;
                 }
                 const size_t n = static_cast<size_t>(gateWidth) * static_cast<size_t>(gateHeight);
@@ -2697,7 +2841,11 @@ namespace JuicerCuda {
             if (!sync_before_rebuild(resources, cudaStreamOpaque, "gate defect mask free", outError)) {
                 return false;
             }
-            cudaFree(resources.scannerScratch.gateMask);
+            const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.gateWidth)) * static_cast<size_t>(std::max(0, resources.scannerScratch.gateHeight));
+            const size_t oldBytes = oldN * sizeof(float);
+            if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError)) {
+                return false;
+            }
             resources.scannerScratch.gateMask = nullptr;
             resources.scannerScratch.gateWidth = 0;
             resources.scannerScratch.gateHeight = 0;
@@ -2741,7 +2889,9 @@ namespace JuicerCuda {
             if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR scratch", outError)) {
                 return false;
             }
-            free_spatial_dir_scratch(scratch);
+            if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
+                return false;
+            }
         }
 
         const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
