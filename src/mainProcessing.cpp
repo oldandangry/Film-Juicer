@@ -719,6 +719,34 @@ static std::uint64_t hash_scanner_runtime_lane(
     return Hash::hash_bytes(fields, sizeof(fields));
 }
 
+static std::uint64_t make_gate_mask_hash(
+    std::uint64_t sessionSeed,
+    int originX,
+    int originY,
+    int width,
+    int height,
+    float pixelSizeUm,
+    float gateDustAmount,
+    float gateScratchAmount) {
+    const std::uint64_t originXBits = static_cast<std::uint64_t>(originX);
+    const std::uint64_t originYBits = static_cast<std::uint64_t>(originY);
+    const std::uint64_t widthBits = static_cast<std::uint64_t>(width);
+    const std::uint64_t heightBits = static_cast<std::uint64_t>(height);
+    std::uint64_t h = Hash::kFnvOffset;
+    Hash::hash_bytes_update(h, &sessionSeed, sizeof(sessionSeed));
+    Hash::hash_bytes_update(h, &originXBits, sizeof(originXBits));
+    Hash::hash_bytes_update(h, &originYBits, sizeof(originYBits));
+    Hash::hash_bytes_update(h, &widthBits, sizeof(widthBits));
+    Hash::hash_bytes_update(h, &heightBits, sizeof(heightBits));
+    Hash::hash_bytes_update(h, &pixelSizeUm, sizeof(pixelSizeUm));
+    Hash::hash_bytes_update(h, &gateDustAmount, sizeof(gateDustAmount));
+    Hash::hash_bytes_update(h, &gateScratchAmount, sizeof(gateScratchAmount));
+    if (h == 0) {
+        h = 1;
+    }
+    return h;
+}
+
 struct ScannerPreflightResult {
     const Scanner::ScannerMediumRuntime* mediumRuntime = nullptr;
     const Scanner::ColorRuntime* colorRuntime = nullptr;
@@ -3067,29 +3095,15 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
                 }
                 if (needGateMask && cudaResources->scannerScratch.gateMask) {
-                    struct GateMaskHashFields {
-                        std::uint64_t sessionSeed = 0;
-                        std::uint64_t originX = 0;
-                        std::uint64_t originY = 0;
-                        std::uint64_t width = 0;
-                        std::uint64_t height = 0;
-                        float pixelSizeUm = 0.0f;
-                        float gateDustAmount = 0.0f;
-                        float gateScratchAmount = 0.0f;
-                    };
-                    GateMaskHashFields fields{};
-                    fields.sessionSeed = run.grain.stbnSessionSeed;
-                    fields.originX = static_cast<std::uint64_t>(run.grain.originX);
-                    fields.originY = static_cast<std::uint64_t>(run.grain.originY);
-                    fields.width = static_cast<std::uint64_t>(width);
-                    fields.height = static_cast<std::uint64_t>(height);
-                    fields.pixelSizeUm = run.grain.pixelSizeUm;
-                    fields.gateDustAmount = run.grain.gateDustAmount;
-                    fields.gateScratchAmount = run.grain.gateScratchAmount;
-                    std::uint64_t gateHash = Hash::hash_bytes(&fields, sizeof(fields));
-                    if (gateHash == 0) {
-                        gateHash = 1;
-                    }
+                    const std::uint64_t gateHash = make_gate_mask_hash(
+                        run.grain.stbnSessionSeed,
+                        run.grain.originX,
+                        run.grain.originY,
+                        width,
+                        height,
+                        run.grain.pixelSizeUm,
+                        run.grain.gateDustAmount,
+                        run.grain.gateScratchAmount);
                     if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
                         if (_effect.abort()) {
                             JuicerCuda::record_use(*cudaResources, _pCudaStream);
@@ -3744,29 +3758,15 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
                 }
                 if (needGateMask && cudaResources->scannerScratch.gateMask) {
-                    struct GateMaskHashFields {
-                        std::uint64_t sessionSeed = 0;
-                        std::uint64_t originX = 0;
-                        std::uint64_t originY = 0;
-                        std::uint64_t width = 0;
-                        std::uint64_t height = 0;
-                        float pixelSizeUm = 0.0f;
-                        float gateDustAmount = 0.0f;
-                        float gateScratchAmount = 0.0f;
-                    };
-                    GateMaskHashFields fields{};
-                    fields.sessionSeed = run.grain.stbnSessionSeed;
-                    fields.originX = static_cast<std::uint64_t>(run.grain.originX);
-                    fields.originY = static_cast<std::uint64_t>(run.grain.originY);
-                    fields.width = static_cast<std::uint64_t>(width);
-                    fields.height = static_cast<std::uint64_t>(height);
-                    fields.pixelSizeUm = run.grain.pixelSizeUm;
-                    fields.gateDustAmount = run.grain.gateDustAmount;
-                    fields.gateScratchAmount = run.grain.gateScratchAmount;
-                    std::uint64_t gateHash = Hash::hash_bytes(&fields, sizeof(fields));
-                    if (gateHash == 0) {
-                        gateHash = 1;
-                    }
+                    const std::uint64_t gateHash = make_gate_mask_hash(
+                        run.grain.stbnSessionSeed,
+                        run.grain.originX,
+                        run.grain.originY,
+                        width,
+                        height,
+                        run.grain.pixelSizeUm,
+                        run.grain.gateDustAmount,
+                        run.grain.gateScratchAmount);
                     if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
                         if (_effect.abort()) {
                             JuicerCuda::record_use(*cudaResources, _pCudaStream);
