@@ -16,6 +16,11 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMinPressureSampleMs = 10u;
     constexpr std::uint32_t kMaxPressureSampleMs = 5000u;
     constexpr std::uint32_t kMaxReclaimRetryAttempts = 3u;
+    constexpr std::uint32_t kMinUploadBytesInFlightLimitMB = 128u;
+    constexpr std::uint32_t kMaxUploadBytesInFlightLimitMB = 512u;
+    constexpr std::uint32_t kMinUploadFairnessTokensPerTick = 1u;
+    constexpr std::uint32_t kMaxUploadFairnessTokensPerTick = 2u;
+    constexpr std::uint32_t kMinCriticalUploadReservedTokens = 1u;
 
     ResourceManagerConfigEffective out{};
     out.keySchemaVersion = std::max<std::uint32_t>(1u, raw.keySchemaVersion);
@@ -36,6 +41,18 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         kMinPressureSampleMs,
         kMaxPressureSampleMs);
     out.reclaimRetryMaxAttempts = std::min(raw.reclaimRetryMaxAttempts, kMaxReclaimRetryAttempts);
+    out.uploadBytesInFlightLimitMB = std::clamp(
+        raw.uploadBytesInFlightLimitMB,
+        kMinUploadBytesInFlightLimitMB,
+        kMaxUploadBytesInFlightLimitMB);
+    out.uploadFairnessTokensPerTick = std::clamp(
+        raw.uploadFairnessTokensPerTick,
+        kMinUploadFairnessTokensPerTick,
+        kMaxUploadFairnessTokensPerTick);
+    out.criticalUploadReservedTokens = std::clamp(
+        raw.criticalUploadReservedTokens,
+        kMinCriticalUploadReservedTokens,
+        out.uploadFairnessTokensPerTick);
 
     std::uint64_t immutableBp = std::min<std::uint64_t>(raw.tierTargetImmutableBp, kBasisPointsDenom);
     std::uint64_t lutBp = std::min<std::uint64_t>(raw.tierTargetLutBp, kBasisPointsDenom);

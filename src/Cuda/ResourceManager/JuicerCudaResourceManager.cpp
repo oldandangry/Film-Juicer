@@ -218,6 +218,12 @@ ScratchPolicyState& scratch_policy_state() noexcept {
 
 struct UploadReservationContextState {
     std::uint64_t inFlightBytes = 0;
+    struct FairnessEntry {
+        std::uint32_t sharedTokens = 0;
+        std::uint32_t criticalTokens = 0;
+        std::uint64_t lastRefillMs = 0;
+    };
+    std::unordered_map<std::uint64_t, FairnessEntry> fairnessByInstance;
 };
 
 struct UploadReservationState {
@@ -293,6 +299,9 @@ struct ReservationAttemptInfo {
     std::uint64_t bytesInFlight = 0;
     std::uint64_t capBytes = 0;
     std::uint64_t thresholdBytes = 0;
+    std::uint64_t instanceToken = 0;
+    std::uint32_t sharedTokens = 0;
+    std::uint32_t criticalTokens = 0;
     bool considered = false;
 };
 
@@ -327,8 +336,10 @@ constexpr std::uint64_t kUploadReservationThresholdDefaultBytes = 16ull * 1024ul
 constexpr std::uint64_t kStbnUploadDefaultBytes = 512ull * 512ull * 256ull;
 constexpr std::uint64_t kWangTilesUploadDefaultBytes = 256ull * 256ull * 16ull;
 constexpr std::uint64_t kWangLutUploadDefaultBytes = 8ull * 8ull * 8ull * 8ull;
+constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024ull;
 constexpr int kUploadReservationWaitStepMs = 1;
 constexpr int kUploadReservationWaitMaxMs = 8;
+constexpr std::uint64_t kUploadFairnessTickMs = 4;
 
 const ResourceManagerConfigEffective& manager_effective_config() noexcept {
     static const ResourceManagerConfigEffective cfg = sanitize_config(ResourceManagerConfigRaw{});
@@ -938,13 +949,22 @@ std::uint64_t transient_reservation_threshold_bytes(const ResourceManagerConfigE
 }
 
 std::uint64_t upload_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    std::uint64_t configCapBytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(cfg.uploadBytesInFlightLimitMB),
+            kBytesPerMiB,
+            configCapBytes)) {
+        configCapBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    if (configCapBytes == 0) {
+        configCapBytes = kUploadReservationCapDefaultBytes;
+    }
     if (cfg.managerSoftTargetBytes == 0) {
-        return kUploadReservationCapDefaultBytes;
+        return std::max<std::uint64_t>(kUploadReservationThresholdDefaultBytes, configCapBytes);
     }
     const std::uint64_t quarterTarget = cfg.managerSoftTargetBytes / 4ull;
-    return std::max<std::uint64_t>(
-        kUploadReservationThresholdDefaultBytes,
-        std::min<std::uint64_t>(kUploadReservationCapDefaultBytes, quarterTarget));
+    const std::uint64_t boundedCap = std::min<std::uint64_t>(configCapBytes, quarterTarget);
+    return std::max<std::uint64_t>(kUploadReservationThresholdDefaultBytes, boundedCap);
 }
 
 std::uint64_t upload_reservation_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
@@ -1105,6 +1125,32 @@ std::uint64_t estimate_upload_core_request_bytes(
         estimateBytes = kUploadReservationThresholdDefaultBytes;
     }
     return estimateBytes;
+}
+
+void refill_upload_fairness_tokens(
+    UploadReservationContextState::FairnessEntry& entry,
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t nowMs) noexcept {
+    const std::uint32_t sharedPerTick = std::max<std::uint32_t>(1u, cfg.uploadFairnessTokensPerTick);
+    const std::uint32_t criticalPerTick = std::min<std::uint32_t>(
+        std::max<std::uint32_t>(1u, cfg.criticalUploadReservedTokens),
+        sharedPerTick);
+
+    if (entry.lastRefillMs == 0) {
+        entry.sharedTokens = sharedPerTick;
+        entry.criticalTokens = criticalPerTick;
+        entry.lastRefillMs = nowMs;
+        return;
+    }
+
+    const std::uint64_t elapsedMs = (nowMs > entry.lastRefillMs) ? (nowMs - entry.lastRefillMs) : 0;
+    if (elapsedMs < kUploadFairnessTickMs) {
+        return;
+    }
+
+    entry.sharedTokens = sharedPerTick;
+    entry.criticalTokens = criticalPerTick;
+    entry.lastRefillMs = nowMs;
 }
 
 std::uint64_t estimate_scan_lut_upload_bytes(
@@ -1659,6 +1705,9 @@ void trace_upload_reservation_decision(
     std::uint64_t thresholdBytes,
     const ReservationDecision& decision,
     bool criticalCurrentFrame,
+    std::uint64_t instanceToken,
+    std::uint32_t sharedTokens,
+    std::uint32_t criticalTokens,
     int waitMs,
     const char* reason) {
     if (!JTRACE_ENABLED(2)) {
@@ -1673,12 +1722,15 @@ void trace_upload_reservation_decision(
         + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
         + " command=" + (commandName ? commandName : "unknown")
         + " kind=" + to_cstr(ReservationKind::UploadCopy)
+        + " instance_token=" + std::to_string(static_cast<unsigned long long>(instanceToken))
         + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
         + " context=" + std::to_string(contextBits)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
         + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
         + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
+        + " shared_tokens=" + std::to_string(static_cast<unsigned long long>(sharedTokens))
+        + " critical_tokens=" + std::to_string(static_cast<unsigned long long>(criticalTokens))
         + " granted=" + std::to_string(decision.granted ? 1 : 0)
         + " should_wait=" + std::to_string(decision.shouldWait ? 1 : 0)
         + " wait_ms=" + std::to_string(waitMs)
@@ -2263,6 +2315,7 @@ bool try_acquire_upload_reservation_claim(
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     UploadReservationState& state = upload_reservation_state();
     std::lock_guard<std::mutex> lock(state.mutex);
+    outReservation.instanceToken = transaction.snapshot.instanceToken.value;
 
     outReservation.considered = true;
     outReservation.bytesInFlight = state.totalInFlightBytes;
@@ -2291,6 +2344,31 @@ bool try_acquire_upload_reservation_claim(
 
     UploadReservationContextState& contextState =
         state.byContext[transaction.snapshot.deviceContextKey];
+    UploadReservationContextState::FairnessEntry& fairness =
+        contextState.fairnessByInstance[outReservation.instanceToken];
+    refill_upload_fairness_tokens(fairness, cfg, monotonic_time_ms());
+
+    bool fairnessGranted = false;
+    if (criticalCurrentFrame && fairness.criticalTokens > 0) {
+        --fairness.criticalTokens;
+        fairnessGranted = true;
+    }
+    else if (fairness.sharedTokens > 0) {
+        --fairness.sharedTokens;
+        fairnessGranted = true;
+    }
+    outReservation.sharedTokens = fairness.sharedTokens;
+    outReservation.criticalTokens = fairness.criticalTokens;
+    if (!fairnessGranted) {
+        ReservationDecision fairnessDecision{};
+        fairnessDecision.granted = false;
+        fairnessDecision.shouldWait = true;
+        fairnessDecision.waitMs = static_cast<std::uint32_t>(kUploadReservationWaitStepMs);
+        fairnessDecision.reason = "fairness_tokens_exhausted";
+        outReservation.decision = fairnessDecision;
+        return false;
+    }
+
     std::uint64_t nextContextBytes = 0;
     if (add_u64_checked(contextState.inFlightBytes, requestBytes, nextContextBytes)) {
         contextState.inFlightBytes = nextContextBytes;
@@ -2340,6 +2418,7 @@ bool acquire_upload_reservation_with_wait(
                 reservation)) {
             state.uploadReservationGranted.fetch_add(1, std::memory_order_relaxed);
             if (waitedMs > 0) {
+                state.uploadFairnessWaitEvents.fetch_add(1, std::memory_order_relaxed);
                 trace_upload_reservation_decision(
                     transaction,
                     commandName,
@@ -2349,6 +2428,9 @@ bool acquire_upload_reservation_with_wait(
                     reservation.thresholdBytes,
                     reservation.decision,
                     criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
                     waitedMs,
                     "admit_after_wait");
             }
@@ -2363,6 +2445,9 @@ bool acquire_upload_reservation_with_wait(
                     reservation.thresholdBytes,
                     reservation.decision,
                     criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
                     waitedMs,
                     "critical_last_resort");
             }
@@ -2370,6 +2455,11 @@ bool acquire_upload_reservation_with_wait(
         }
 
         const ReservationDecision& decision = reservation.decision;
+        const bool fairnessDeferred =
+            (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
+        if (fairnessDeferred) {
+            state.uploadFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+        }
         if (!decision.shouldWait) {
             state.uploadReservationDenied.fetch_add(1, std::memory_order_relaxed);
             trace_upload_reservation_decision(
@@ -2381,6 +2471,9 @@ bool acquire_upload_reservation_with_wait(
                 reservation.thresholdBytes,
                 decision,
                 criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
                 waitedMs,
                 "denied");
             outError = std::string(kReservationDeferredPrefix)
@@ -2400,6 +2493,9 @@ bool acquire_upload_reservation_with_wait(
         if (waitedMs >= kUploadReservationWaitMaxMs) {
             state.uploadReservationDeferred.fetch_add(1, std::memory_order_relaxed);
             state.uploadReservationBypass.fetch_add(1, std::memory_order_relaxed);
+            if (fairnessDeferred) {
+                state.uploadFairnessTokenBypass.fetch_add(1, std::memory_order_relaxed);
+            }
             trace_upload_reservation_decision(
                 transaction,
                 commandName,
@@ -2409,6 +2505,9 @@ bool acquire_upload_reservation_with_wait(
                 reservation.thresholdBytes,
                 decision,
                 criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
                 waitedMs,
                 "deferred_bypass_wait_budget");
             return true;

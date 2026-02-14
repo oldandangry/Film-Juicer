@@ -82,6 +82,9 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> uploadReservationDeferred{ 0 };
     std::atomic<std::uint64_t> uploadReservationDenied{ 0 };
     std::atomic<std::uint64_t> uploadReservationBypass{ 0 };
+    std::atomic<std::uint64_t> uploadFairnessTokenDeferred{ 0 };
+    std::atomic<std::uint64_t> uploadFairnessTokenBypass{ 0 };
+    std::atomic<std::uint64_t> uploadFairnessWaitEvents{ 0 };
     std::atomic<std::uint64_t> uploadBytesInFlight{ 0 };
     std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };
