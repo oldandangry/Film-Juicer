@@ -69,6 +69,78 @@ namespace {
         return diff <= scale * 1e-9;
     }
 
+    constexpr std::uint64_t kAutoExposureMaskCacheMaxBytes = 96ull * 1024ull * 1024ull;
+    static std::atomic<std::uint64_t> gAutoExposureMaskCacheResidentBytes{ 0 };
+
+    inline std::uint64_t mask_bytes_for_dimensions(int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return 0;
+        }
+        const std::uint64_t w = static_cast<std::uint64_t>(width);
+        const std::uint64_t h = static_cast<std::uint64_t>(height);
+        if (w > (std::numeric_limits<std::uint64_t>::max() / h)) {
+            return 0;
+        }
+        const std::uint64_t samples = w * h;
+        const std::uint64_t sampleBytes = static_cast<std::uint64_t>(sizeof(double));
+        if (samples > (std::numeric_limits<std::uint64_t>::max() / sampleBytes)) {
+            return 0;
+        }
+        return samples * sampleBytes;
+    }
+
+    inline void update_auto_exposure_mask_resident_bytes(
+        std::uint64_t previousBytes,
+        std::uint64_t nextBytes) {
+
+        if (nextBytes > previousBytes) {
+            gAutoExposureMaskCacheResidentBytes.fetch_add(nextBytes - previousBytes, std::memory_order_relaxed);
+        }
+        else if (previousBytes > nextBytes) {
+            const std::uint64_t delta = previousBytes - nextBytes;
+            std::uint64_t observed = gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed);
+            while (true) {
+                const std::uint64_t updated = (observed > delta) ? (observed - delta) : 0;
+                if (gAutoExposureMaskCacheResidentBytes.compare_exchange_weak(
+                    observed,
+                    updated,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed)) {
+                    break;
+                }
+            }
+        }
+    }
+
+    inline void trace_auto_exposure_mask_cache_event(
+        const InstanceState* state,
+        const char* event,
+        int width,
+        int height,
+        std::uint64_t requestedBytes,
+        std::uint64_t cachedBytes,
+        std::uint64_t previousCachedBytes,
+        const char* reason) {
+
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        std::string msg = std::string("event=") + (event ? event : "unknown")
+            + " instance_token=" + std::to_string(state ? state->instanceToken : 0)
+            + " width=" + std::to_string(width)
+            + " height=" + std::to_string(height)
+            + " requested_bytes=" + std::to_string(requestedBytes)
+            + " previous_cached_bytes=" + std::to_string(previousCachedBytes)
+            + " cached_bytes=" + std::to_string(cachedBytes)
+            + " resident_bytes=" + std::to_string(gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed))
+            + " cap_bytes=" + std::to_string(kAutoExposureMaskCacheMaxBytes);
+        if (reason && reason[0] != '\0') {
+            msg += " reason=";
+            msg += reason;
+        }
+        JTRACE_LEVEL(2, "MSAEM", msg);
+    }
+
     static double build_center_weight_mask(int width, int height, double sigma, std::vector<double>& outMask) {
         outMask.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
         if (!(std::isfinite(sigma)) || sigma <= 0.0) {
@@ -115,7 +187,7 @@ namespace {
             return 0.0;
         }
 
-        auto accumulateY = [&](const std::vector<double>& mask, double* outSumMask) {
+        auto accumulateYFromMask = [&](const std::vector<double>& mask, double* outSumMask) {
             double sumY = 0.0;
             double sumMask = 0.0;
             for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
@@ -145,12 +217,122 @@ namespace {
                 return 0.0;
             }
             return sumY / sumMask;
-            };
+        };
+
+        auto accumulateYUncached = [&](double* outSumMask) {
+            if (!(std::isfinite(sigma)) || sigma <= 0.0) {
+                if (outSumMask) {
+                    *outSumMask = 0.0;
+                }
+                return 0.0;
+            }
+
+            const double maxDim = static_cast<double>(std::max(width, height));
+            const double invMax = (maxDim > 0.0) ? (1.0 / maxDim) : 0.0;
+            const double sigmaDenom = 2.0 * sigma * sigma;
+            if (!(std::isfinite(sigmaDenom)) || sigmaDenom <= 0.0) {
+                if (outSumMask) {
+                    *outSumMask = 0.0;
+                }
+                return 0.0;
+            }
+
+            double sumY = 0.0;
+            double sumMask = 0.0;
+            for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
+                const int localY = yy - bounds.y1;
+                const double ny = static_cast<double>(localY) / static_cast<double>(height) - 0.5;
+                const double normY = ny * static_cast<double>(height) * invMax;
+                for (int xx = bounds.x1; xx < bounds.x2; ++xx) {
+                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
+                    if (!pix) {
+                        continue;
+                    }
+                    const int localX = xx - bounds.x1;
+                    const double nx = static_cast<double>(localX) / static_cast<double>(width) - 0.5;
+                    const double normX = nx * static_cast<double>(width) * invMax;
+                    const double r2 = normX * normX + normY * normY;
+                    const double w = std::exp(-r2 / sigmaDenom);
+                    float linear[3];
+                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+                    float XYZ[3];
+                    rgbToXYZ.mul(linear, XYZ);
+                    const double Y = static_cast<double>(XYZ[1]);
+                    if (!std::isfinite(Y)) {
+                        continue;
+                    }
+                    sumY += Y * w;
+                    sumMask += w;
+                }
+            }
+            if (outSumMask) {
+                *outSumMask = sumMask;
+            }
+            if (sumMask <= 0.0) {
+                return 0.0;
+            }
+            return sumY / sumMask;
+        };
 
         if (!state) {
-            std::vector<double> mask;
-            build_center_weight_mask(width, height, sigma, mask);
-            return accumulateY(mask, nullptr);
+            return accumulateYUncached(nullptr);
+        }
+
+        const std::uint64_t requestedMaskBytes = mask_bytes_for_dimensions(width, height);
+        const bool cacheEligible = (requestedMaskBytes > 0) && (requestedMaskBytes <= kAutoExposureMaskCacheMaxBytes);
+
+        if (!cacheEligible) {
+            bool emitBypassTrace = false;
+            std::uint64_t previousCachedBytes = 0;
+            {
+                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
+                previousCachedBytes = state->autoExposureMaskCachedBytes;
+                const bool wasBypass = state->autoExposureMaskPolicyBypass;
+                const std::uint64_t previousRequestedBytes = state->autoExposureMaskLastRequestedBytes;
+
+                if (previousCachedBytes > 0) {
+                    update_auto_exposure_mask_resident_bytes(previousCachedBytes, 0);
+                }
+                state->autoExposureMaskWeights.reset();
+                state->autoExposureMaskCachedBytes = 0;
+                state->autoExposureMaskValid = false;
+                state->autoExposureMaskWidth = width;
+                state->autoExposureMaskHeight = height;
+                state->autoExposureMaskSigma = sigma;
+                state->autoExposureMaskRenderScaleX = renderScaleX;
+                state->autoExposureMaskRenderScaleY = renderScaleY;
+                state->autoExposureMaskClipToken = clipToken;
+                state->autoExposureMaskSum = 0.0;
+                state->autoExposureMaskPolicyBypass = true;
+                state->autoExposureMaskLastRequestedBytes = requestedMaskBytes;
+
+                emitBypassTrace = (previousCachedBytes > 0)
+                    || !wasBypass
+                    || (previousRequestedBytes != requestedMaskBytes);
+            }
+
+            if (emitBypassTrace) {
+                trace_auto_exposure_mask_cache_event(
+                    state,
+                    "cache_bypass",
+                    width,
+                    height,
+                    requestedMaskBytes,
+                    0,
+                    previousCachedBytes,
+                    (requestedMaskBytes == 0) ? "overflow_or_invalid" : "over_cap");
+            }
+
+            double effectiveSumMask = 0.0;
+            const double measuredY = accumulateYUncached(&effectiveSumMask);
+            {
+                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
+                if (state->autoExposureMaskPolicyBypass &&
+                    state->autoExposureMaskLastRequestedBytes == requestedMaskBytes) {
+                    state->autoExposureMaskSum = effectiveSumMask;
+                }
+            }
+            return measuredY;
         }
 
         const size_t expectedMaskSize = static_cast<size_t>(width) * static_cast<size_t>(height);
@@ -165,7 +347,7 @@ namespace {
                 || s.autoExposureMaskClipToken != clipToken
                 || !weights
                 || weights->size() != expectedMaskSize;
-            };
+        };
 
         std::shared_ptr<const std::vector<double>> maskSnapshot;
         bool maskValid = false;
@@ -186,23 +368,44 @@ namespace {
             auto rebuiltMask = std::make_shared<std::vector<double>>();
             const double sumMask = build_center_weight_mask(width, height, sigma, *rebuiltMask);
             const bool rebuiltValid = sumMask > 0.0;
-
-            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-            if (needsMaskRebuild(*state)) {
-                state->autoExposureMaskWidth = width;
-                state->autoExposureMaskHeight = height;
-                state->autoExposureMaskSigma = sigma;
-                state->autoExposureMaskRenderScaleX = renderScaleX;
-                state->autoExposureMaskRenderScaleY = renderScaleY;
-                state->autoExposureMaskClipToken = clipToken;
-                state->autoExposureMaskWeights = rebuiltMask;
-                state->autoExposureMaskValid = rebuiltValid;
-                state->autoExposureMaskSum = rebuiltValid ? sumMask : 0.0;
+            bool emitStoreTrace = false;
+            std::uint64_t previousCachedBytes = 0;
+            {
+                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
+                if (needsMaskRebuild(*state)) {
+                    previousCachedBytes = state->autoExposureMaskCachedBytes;
+                    update_auto_exposure_mask_resident_bytes(previousCachedBytes, requestedMaskBytes);
+                    state->autoExposureMaskWidth = width;
+                    state->autoExposureMaskHeight = height;
+                    state->autoExposureMaskSigma = sigma;
+                    state->autoExposureMaskRenderScaleX = renderScaleX;
+                    state->autoExposureMaskRenderScaleY = renderScaleY;
+                    state->autoExposureMaskClipToken = clipToken;
+                    state->autoExposureMaskWeights = rebuiltMask;
+                    state->autoExposureMaskCachedBytes = requestedMaskBytes;
+                    state->autoExposureMaskValid = rebuiltValid;
+                    state->autoExposureMaskSum = rebuiltValid ? sumMask : 0.0;
+                    emitStoreTrace = (previousCachedBytes != requestedMaskBytes) || state->autoExposureMaskPolicyBypass;
+                    state->autoExposureMaskPolicyBypass = false;
+                    state->autoExposureMaskLastRequestedBytes = requestedMaskBytes;
+                }
+                maskSnapshot = state->autoExposureMaskWeights;
+                maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
+                if (!maskValid) {
+                    state->autoExposureMaskSum = 0.0;
+                }
             }
-            maskSnapshot = state->autoExposureMaskWeights;
-            maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
-            if (!maskValid) {
-                state->autoExposureMaskSum = 0.0;
+
+            if (emitStoreTrace) {
+                trace_auto_exposure_mask_cache_event(
+                    state,
+                    "cache_store",
+                    width,
+                    height,
+                    requestedMaskBytes,
+                    requestedMaskBytes,
+                    previousCachedBytes,
+                    rebuiltValid ? "rebuilt" : "rebuilt_invalid");
             }
         }
 
@@ -211,7 +414,7 @@ namespace {
         }
 
         double effectiveSumMask = 0.0;
-        const double measuredY = accumulateY(*maskSnapshot, &effectiveSumMask);
+        const double measuredY = accumulateYFromMask(*maskSnapshot, &effectiveSumMask);
         {
             std::lock_guard<std::mutex> lock(state->autoExposureMutex);
             if (state->autoExposureMaskWeights == maskSnapshot) {
@@ -1802,6 +2005,29 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 JuicerEffect::~JuicerEffect() {
     // Mirror destroyInstance() guards without touching C suites.
     JuicerRegistry::erase(this->getHandle());
+
+    std::uint64_t releasedMaskBytes = 0;
+    if (_state) {
+        std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
+        releasedMaskBytes = _state->autoExposureMaskCachedBytes;
+        _state->autoExposureMaskWeights.reset();
+        _state->autoExposureMaskCachedBytes = 0;
+        _state->autoExposureMaskValid = false;
+        _state->autoExposureMaskSum = 0.0;
+    }
+    if (releasedMaskBytes > 0) {
+        update_auto_exposure_mask_resident_bytes(releasedMaskBytes, 0);
+        trace_auto_exposure_mask_cache_event(
+            _state.get(),
+            "cache_release",
+            0,
+            0,
+            0,
+            0,
+            releasedMaskBytes,
+            "instance_destroy");
+    }
+
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (_state) {
         std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;

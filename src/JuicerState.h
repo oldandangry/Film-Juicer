@@ -266,6 +266,9 @@ struct InstanceState {
     double autoExposureMaskRenderScaleY = 0.0;
     std::uintptr_t autoExposureMaskClipToken = 0;
     std::shared_ptr<const std::vector<double>> autoExposureMaskWeights;
+    std::uint64_t autoExposureMaskCachedBytes = 0;
+    bool autoExposureMaskPolicyBypass = false;
+    std::uint64_t autoExposureMaskLastRequestedBytes = 0;
 
     // Print mid-gray (kMidSpectral) cache: avoids recomputing the mid-gray probe for every render call.
     // Keyed by WorkingState.buildCounter and the small set of print parameters that affect the probe.
