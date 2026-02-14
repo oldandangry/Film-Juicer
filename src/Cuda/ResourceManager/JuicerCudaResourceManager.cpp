@@ -199,18 +199,57 @@ struct ScratchContextState {
     std::unordered_map<ScratchBucketKey, ScratchBucketEntry, ScratchBucketKeyHash> buckets;
     std::vector<ScratchQuarantineEntry> largeFrameQuarantine;
     std::size_t largeFrameQuarantineBytes = 0;
+    std::size_t totalInFlightBytes = 0;
     std::uint64_t nextQuarantineSequence = 1;
 };
 
 struct ScratchPolicyState {
     std::mutex mutex;
     std::unordered_map<DeviceContextKey, ScratchContextState, DeviceContextKeyHash> byContext;
+    std::uint64_t totalInFlightBytes = 0;
 };
 
 ScratchPolicyState& scratch_policy_state() noexcept {
     static ScratchPolicyState state{};
     return state;
 }
+
+struct PressureContextState {
+    bool valid = false;
+    std::uint64_t lastSampleMs = 0;
+    PressureDecision lastDecision{};
+    PressureState lastState = PressureState::Normal;
+    bool reserveCrossed = false;
+};
+
+struct PressurePolicyState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, PressureContextState, DeviceContextKeyHash> byContext;
+};
+
+PressurePolicyState& pressure_policy_state() noexcept {
+    static PressurePolicyState state{};
+    return state;
+}
+
+struct ManagerMemorySnapshot {
+    std::uint64_t activeBytes = 0;
+    std::uint64_t reclaimableBytes = 0;
+    std::uint64_t retirePendingBytes = 0;
+    std::uint64_t transientNonManagerBytes = 0;
+    bool overflow = false;
+};
+
+struct PressureCheckpoint {
+    PressureInput input{};
+    PressureDecision decision{};
+    PressureState previousState = PressureState::Normal;
+    bool sampled = false;
+    bool transition = false;
+    bool reserveCrossing = false;
+    bool reserveCrossedNow = false;
+    ManagerMemorySnapshot memory{};
+};
 
 struct ScratchPolicyClaim {
     DeviceContextKey contextKey{};
@@ -236,6 +275,10 @@ constexpr std::uint32_t kMaxTempScratchSets = 1;
 constexpr std::size_t kMaxTempScratchBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
 constexpr int kScratchWaitStepMs = 1;
 constexpr int kScratchWaitMaxMs = 4;
+constexpr int kScratchWaitMaxMediumMs = 16;
+constexpr int kScratchWaitMaxLargeMs = 64;
+constexpr std::size_t kScratchWaitMediumRequestBytes = static_cast<std::size_t>(256ull * 1024ull * 1024ull);
+constexpr std::size_t kScratchWaitLargeRequestBytes = static_cast<std::size_t>(768ull * 1024ull * 1024ull);
 constexpr int kScratchBucketStepBasePx = 64;
 constexpr int kScratchBucketStepLargePx = 128;
 constexpr int kScratchBucketStepXLargePx = 256;
@@ -343,6 +386,23 @@ inline ScratchBucketKey make_scratch_bucket_key(
     return key;
 }
 
+inline std::size_t effective_temp_scratch_bytes_cap(std::size_t requestBytes) noexcept {
+    return std::max<std::size_t>(kMaxTempScratchBytes, requestBytes);
+}
+
+inline int scratch_wait_budget_ms(const ScratchBucketKey& key, std::size_t requestBytes) noexcept {
+    if (requestBytes == 0) {
+        return 0;
+    }
+    if (key.largeFrame || requestBytes >= kScratchWaitLargeRequestBytes) {
+        return kScratchWaitMaxLargeMs;
+    }
+    if (requestBytes >= kScratchWaitMediumRequestBytes) {
+        return kScratchWaitMaxMediumMs;
+    }
+    return kScratchWaitMaxMs;
+}
+
 inline std::size_t plane_bytes_for_extent(int width, int height) noexcept {
     if (width <= 0 || height <= 0) {
         return 0;
@@ -369,6 +429,482 @@ inline bool add_bytes_checked(std::size_t value, std::size_t add, std::size_t& o
     }
     out = value + add;
     return true;
+}
+
+inline bool add_u64_checked(std::uint64_t value, std::uint64_t add, std::uint64_t& out) noexcept {
+    if (add == 0) {
+        out = value;
+        return true;
+    }
+    if (value > (std::numeric_limits<std::uint64_t>::max() - add)) {
+        return false;
+    }
+    out = value + add;
+    return true;
+}
+
+inline bool mul_u64_checked(std::uint64_t a, std::uint64_t b, std::uint64_t& out) noexcept {
+    if (a == 0 || b == 0) {
+        out = 0;
+        return true;
+    }
+    if (a > (std::numeric_limits<std::uint64_t>::max() / b)) {
+        return false;
+    }
+    out = a * b;
+    return true;
+}
+
+inline std::uint64_t non_negative_u64(int value) noexcept {
+    return value > 0 ? static_cast<std::uint64_t>(value) : 0ull;
+}
+
+void add_snapshot_bytes(ManagerMemorySnapshot& snapshot, std::uint64_t bytes) noexcept {
+    std::uint64_t next = 0;
+    if (!add_u64_checked(snapshot.activeBytes, bytes, next)) {
+        snapshot.activeBytes = std::numeric_limits<std::uint64_t>::max();
+        snapshot.overflow = true;
+        return;
+    }
+    snapshot.activeBytes = next;
+}
+
+std::uint64_t bytes_for_count_u64(std::uint64_t count, std::size_t elementBytes, bool& overflow) noexcept {
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(count, static_cast<std::uint64_t>(elementBytes), bytes)) {
+        overflow = true;
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return bytes;
+}
+
+std::uint64_t bytes_for_plane_extent_u64(int width, int height, bool& overflow) noexcept {
+    const std::uint64_t w = non_negative_u64(width);
+    const std::uint64_t h = non_negative_u64(height);
+    std::uint64_t count = 0;
+    if (!mul_u64_checked(w, h, count)) {
+        overflow = true;
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return bytes_for_count_u64(count, sizeof(float), overflow);
+}
+
+void add_curve_bytes(const JuicerCuda::DeviceCurve& curve, ManagerMemorySnapshot& snapshot) noexcept {
+    const std::uint64_t n = non_negative_u64(curve.n);
+    if (n == 0) {
+        return;
+    }
+    bool overflow = false;
+    const std::uint64_t bytes = bytes_for_count_u64(n, sizeof(float), overflow);
+    if (overflow) {
+        snapshot.overflow = true;
+    }
+    if (curve.x) {
+        add_snapshot_bytes(snapshot, bytes);
+    }
+    if (curve.y) {
+        add_snapshot_bytes(snapshot, bytes);
+    }
+}
+
+void add_spectral_tables_bytes(
+    const JuicerCuda::Resources::DeviceSpectralTables& tables,
+    ManagerMemorySnapshot& snapshot) noexcept {
+    const std::uint64_t k = non_negative_u64(tables.K);
+    if (k == 0) {
+        return;
+    }
+    bool overflow = false;
+    const std::uint64_t bytes = bytes_for_count_u64(k, sizeof(float), overflow);
+    if (overflow) {
+        snapshot.overflow = true;
+    }
+    if (tables.epsC) add_snapshot_bytes(snapshot, bytes);
+    if (tables.epsM) add_snapshot_bytes(snapshot, bytes);
+    if (tables.epsY) add_snapshot_bytes(snapshot, bytes);
+    if (tables.Ax) add_snapshot_bytes(snapshot, bytes);
+    if (tables.Ay) add_snapshot_bytes(snapshot, bytes);
+    if (tables.Az) add_snapshot_bytes(snapshot, bytes);
+    if (tables.baseMin) add_snapshot_bytes(snapshot, bytes);
+}
+
+void add_scan_medium_bytes(
+    const JuicerCuda::Resources::DeviceScanMedium& medium,
+    ManagerMemorySnapshot& snapshot) noexcept {
+    add_spectral_tables_bytes(medium.tables, snapshot);
+}
+
+void add_scan_lut_bytes(
+    const JuicerCuda::Resources::DeviceSpectralLut& lut,
+    ManagerMemorySnapshot& snapshot) noexcept {
+    if (!lut.log2XYZ || lut.res == 0u) {
+        return;
+    }
+    const std::uint64_t res = static_cast<std::uint64_t>(lut.res);
+    std::uint64_t count = 0;
+    if (!mul_u64_checked(res, res, count) || !mul_u64_checked(count, res, count) || !mul_u64_checked(count, 3ull, count)) {
+        snapshot.overflow = true;
+        add_snapshot_bytes(snapshot, std::numeric_limits<std::uint64_t>::max());
+        return;
+    }
+    bool overflow = false;
+    const std::uint64_t bytes = bytes_for_count_u64(count, sizeof(double), overflow);
+    if (overflow) {
+        snapshot.overflow = true;
+    }
+    add_snapshot_bytes(snapshot, bytes);
+}
+
+void add_kernel_bytes(
+    const JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+    ManagerMemorySnapshot& snapshot) noexcept {
+    if (!kernel.weights || kernel.capacity <= 0) {
+        return;
+    }
+    const std::uint64_t count = non_negative_u64(kernel.capacity);
+    bool overflow = false;
+    const std::uint64_t bytes = bytes_for_count_u64(count, sizeof(float), overflow);
+    if (overflow) {
+        snapshot.overflow = true;
+    }
+    add_snapshot_bytes(snapshot, bytes);
+}
+
+void add_optics_scratch_bytes(
+    const JuicerCuda::Resources::DeviceOpticsScratch& scratch,
+    ManagerMemorySnapshot& snapshot) noexcept {
+    bool overflow = false;
+    const std::uint64_t planeBytes = bytes_for_plane_extent_u64(scratch.width, scratch.height, overflow);
+    if (overflow) {
+        snapshot.overflow = true;
+    }
+    if (scratch.rgbR) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.rgbG) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.rgbB) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.blurred) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.aux) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.grainTmp) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.grainTmpShared) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.grainTmpMid) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.grainTmpCoarse) add_snapshot_bytes(snapshot, planeBytes);
+
+    overflow = false;
+    const std::uint64_t gateBytes = bytes_for_plane_extent_u64(scratch.gateWidth, scratch.gateHeight, overflow);
+    if (overflow) {
+        snapshot.overflow = true;
+    }
+    if (scratch.gateMask) {
+        add_snapshot_bytes(snapshot, gateBytes);
+    }
+}
+
+void add_spatial_dir_scratch_bytes(
+    const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch,
+    ManagerMemorySnapshot& snapshot) noexcept {
+    bool overflow = false;
+    const std::uint64_t planeBytes = bytes_for_plane_extent_u64(scratch.width, scratch.height, overflow);
+    if (overflow) {
+        snapshot.overflow = true;
+    }
+    if (scratch.corrY) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.corrM) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.corrC) add_snapshot_bytes(snapshot, planeBytes);
+}
+
+void add_resources_active_bytes_locked(
+    const JuicerCuda::Resources& resources,
+    ManagerMemorySnapshot& snapshot) noexcept {
+    add_curve_bytes(resources.densB, snapshot);
+    add_curve_bytes(resources.densG, snapshot);
+    add_curve_bytes(resources.densR, snapshot);
+    add_curve_bytes(resources.dirDensB, snapshot);
+    add_curve_bytes(resources.dirDensG, snapshot);
+    add_curve_bytes(resources.dirDensR, snapshot);
+    add_curve_bytes(resources.sensB, snapshot);
+    add_curve_bytes(resources.sensG, snapshot);
+    add_curve_bytes(resources.sensR, snapshot);
+
+    const std::uint64_t layerN = non_negative_u64(resources.densityCurvesLayersN);
+    if (layerN > 0) {
+        bool overflow = false;
+        const std::uint64_t layerBytes = bytes_for_count_u64(layerN, sizeof(float), overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                if (resources.densityCurvesLayers[layer][ch]) {
+                    add_snapshot_bytes(snapshot, layerBytes);
+                }
+            }
+        }
+    }
+
+    {
+        const std::uint64_t k = non_negative_u64(resources.tablesK);
+        if (k > 0) {
+            bool overflow = false;
+            const std::uint64_t bytes = bytes_for_count_u64(k, sizeof(float), overflow);
+            if (overflow) {
+                snapshot.overflow = true;
+            }
+            if (resources.tablesAx) add_snapshot_bytes(snapshot, bytes);
+            if (resources.tablesAy) add_snapshot_bytes(snapshot, bytes);
+            if (resources.tablesAz) add_snapshot_bytes(snapshot, bytes);
+            if (resources.tablesIllum) add_snapshot_bytes(snapshot, bytes);
+        }
+    }
+
+    if (resources.mallettBasis && resources.mallettBasisK > 0) {
+        std::uint64_t count = non_negative_u64(resources.mallettBasisK);
+        if (!mul_u64_checked(count, 3ull, count)) {
+            snapshot.overflow = true;
+            count = std::numeric_limits<std::uint64_t>::max();
+        }
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(count, sizeof(float), overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+
+    add_scan_medium_bytes(resources.scanNegative, snapshot);
+    add_scan_medium_bytes(resources.scanPrint, snapshot);
+    add_scan_lut_bytes(resources.scanNegativeLut, snapshot);
+    add_scan_lut_bytes(resources.scanPrintLut, snapshot);
+
+    {
+        bool overflow = false;
+        const std::uint64_t sharedTmpBytes = bytes_for_plane_extent_u64(resources.sharedTmpWidth, resources.sharedTmpHeight, overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        if (resources.sharedTmpPlane) {
+            add_snapshot_bytes(snapshot, sharedTmpBytes);
+        }
+    }
+
+    add_optics_scratch_bytes(resources.scannerScratch, snapshot);
+    add_spatial_dir_scratch_bytes(resources.spatialDirScratch, snapshot);
+
+    add_kernel_bytes(resources.scannerLensBlurKernel, snapshot);
+    add_kernel_bytes(resources.scannerUnsharpKernel, snapshot);
+    add_kernel_bytes(resources.scannerGlareKernel, snapshot);
+    add_kernel_bytes(resources.grainBlurKernel, snapshot);
+    add_kernel_bytes(resources.grainBlurKernelMid, snapshot);
+    add_kernel_bytes(resources.grainBlurKernelCoarse, snapshot);
+    add_kernel_bytes(resources.spatialDirKernel, snapshot);
+    for (int layer = 0; layer < 3; ++layer) {
+        for (int ch = 0; ch < 3; ++ch) {
+            add_kernel_bytes(resources.grainDyeKernel[layer][ch], snapshot);
+        }
+    }
+    for (int ch = 0; ch < 3; ++ch) {
+        add_kernel_bytes(resources.halationKernel[ch], snapshot);
+        add_kernel_bytes(resources.halationScatterKernel[ch], snapshot);
+    }
+
+    if (resources.stbnData) {
+        std::uint64_t count = non_negative_u64(resources.stbnWidth);
+        std::uint64_t tmp = 0;
+        if (!mul_u64_checked(count, non_negative_u64(resources.stbnHeight), tmp) ||
+            !mul_u64_checked(tmp, non_negative_u64(resources.stbnFrames), tmp)) {
+            snapshot.overflow = true;
+            tmp = std::numeric_limits<std::uint64_t>::max();
+        }
+        add_snapshot_bytes(snapshot, tmp);
+    }
+    if (resources.wangTilesData) {
+        std::uint64_t count = non_negative_u64(resources.wangWidth);
+        std::uint64_t tmp = 0;
+        if (!mul_u64_checked(count, non_negative_u64(resources.wangHeight), tmp) ||
+            !mul_u64_checked(tmp, non_negative_u64(resources.wangCount), tmp)) {
+            snapshot.overflow = true;
+            tmp = std::numeric_limits<std::uint64_t>::max();
+        }
+        add_snapshot_bytes(snapshot, tmp);
+    }
+    if (resources.wangLutData) {
+        std::uint64_t count = non_negative_u64(resources.wangColors);
+        std::uint64_t tmp = count;
+        if (!mul_u64_checked(tmp, count, tmp) ||
+            !mul_u64_checked(tmp, count, tmp) ||
+            !mul_u64_checked(tmp, count, tmp)) {
+            snapshot.overflow = true;
+            tmp = std::numeric_limits<std::uint64_t>::max();
+        }
+        add_snapshot_bytes(snapshot, tmp);
+    }
+
+    add_curve_bytes(resources.printDcC, snapshot);
+    add_curve_bytes(resources.printDcM, snapshot);
+    add_curve_bytes(resources.printDcY, snapshot);
+    add_curve_bytes(resources.printSensC, snapshot);
+    add_curve_bytes(resources.printSensM, snapshot);
+    add_curve_bytes(resources.printSensY, snapshot);
+
+    if (resources.printIllumFiltered && resources.printIllumK > 0) {
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(non_negative_u64(resources.printIllumK), sizeof(float), overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+
+    if (resources.hanatosLut && resources.hanatosN > 0) {
+        std::uint64_t n = non_negative_u64(resources.hanatosN);
+        std::uint64_t count = 0;
+        if (!mul_u64_checked(n, n, count) ||
+            !mul_u64_checked(count, static_cast<std::uint64_t>(81u), count)) {
+            snapshot.overflow = true;
+            count = std::numeric_limits<std::uint64_t>::max();
+        }
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(count, sizeof(float), overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+    if (resources.hanatosLutIntegrated && resources.hanatosNIntegrated > 0) {
+        std::uint64_t n = non_negative_u64(resources.hanatosNIntegrated);
+        std::uint64_t count = 0;
+        if (!mul_u64_checked(n, n, count) || !mul_u64_checked(count, 4ull, count)) {
+            snapshot.overflow = true;
+            count = std::numeric_limits<std::uint64_t>::max();
+        }
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(count, sizeof(float), overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+
+    if (resources.scanErrorFlag) {
+        add_snapshot_bytes(snapshot, sizeof(int));
+    }
+    if (resources.scanErrorHost) {
+        add_snapshot_bytes(snapshot, sizeof(int));
+    }
+
+    if (resources.autoExposureExposureScale) add_snapshot_bytes(snapshot, sizeof(float));
+    if (resources.autoExposureAutoEV) add_snapshot_bytes(snapshot, sizeof(double));
+    if (resources.autoExposureValid) add_snapshot_bytes(snapshot, sizeof(int));
+
+    if (resources.autoExposureScratch.maxYBits) {
+        add_snapshot_bytes(snapshot, sizeof(unsigned int));
+    }
+    if (resources.autoExposureScratch.histogram) {
+        add_snapshot_bytes(snapshot, static_cast<std::uint64_t>(2048u) * sizeof(unsigned int));
+    }
+    if (resources.autoExposureScratch.weightsX && resources.autoExposureScratch.weightsXCapacity > 0) {
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.weightsXCapacity),
+            sizeof(float),
+            overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+    if (resources.autoExposureScratch.weightsY && resources.autoExposureScratch.weightsYCapacity > 0) {
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.weightsYCapacity),
+            sizeof(float),
+            overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+    if (resources.autoExposureScratch.partialsA && resources.autoExposureScratch.partialCapacity > 0) {
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.partialCapacity),
+            sizeof(JuicerCudaAutoExposurePartial),
+            overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+    if (resources.autoExposureScratch.partialsB && resources.autoExposureScratch.partialCapacity > 0) {
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.partialCapacity),
+            sizeof(JuicerCudaAutoExposurePartial),
+            overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
+}
+
+ManagerMemorySnapshot snapshot_manager_memory(JuicerCuda::Resources& resources) noexcept {
+    ManagerMemorySnapshot snapshot{};
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        add_resources_active_bytes_locked(resources, snapshot);
+        snapshot.retirePendingBytes = static_cast<std::uint64_t>(
+            std::min<std::size_t>(
+                resources.retireBytes,
+                static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+    }
+    snapshot.reclaimableBytes = snapshot.retirePendingBytes;
+    snapshot.transientNonManagerBytes =
+        global_state().transientNonManagerBytes.load(std::memory_order_relaxed);
+    return snapshot;
+}
+
+void publish_manager_memory_snapshot(const ManagerMemorySnapshot& snapshot) noexcept {
+    ResourceManagerState& state = global_state();
+    state.managerActiveBytes.store(snapshot.activeBytes, std::memory_order_relaxed);
+    state.managerReclaimableBytes.store(snapshot.reclaimableBytes, std::memory_order_relaxed);
+    state.managerRetirePendingBytes.store(snapshot.retirePendingBytes, std::memory_order_relaxed);
+    state.transientNonManagerBytes.store(snapshot.transientNonManagerBytes, std::memory_order_relaxed);
+}
+
+inline bool pressure_policy_enabled(const ResourceManagerConfigEffective& cfg) noexcept {
+    return cfg.managerSoftTargetBytes > 0;
+}
+
+inline bool should_collect_manager_memory_snapshots(const ResourceManagerConfigEffective& cfg) noexcept {
+    return pressure_policy_enabled(cfg) || JTRACE_ENABLED(3);
+}
+
+void maybe_publish_manager_memory_snapshot(
+    JuicerCuda::Resources& resources,
+    bool enabled) noexcept {
+    if (!enabled) {
+        return;
+    }
+    publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+}
+
+std::uint64_t pressure_total_bytes(const PressureInput& input) noexcept {
+    std::uint64_t total = input.managerResidentBytes;
+    std::uint64_t next = 0;
+    if (!add_u64_checked(total, input.retirePendingBytes, next)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    total = next;
+    if (!add_u64_checked(total, input.transientNonManagerBytes, next)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return next;
+}
+
+bool reserve_crossed(const PressureInput& input) noexcept {
+    if (input.softTargetBytes == 0) {
+        return false;
+    }
+    return pressure_total_bytes(input) > input.softTargetBytes;
 }
 
 std::size_t estimate_optics_growth_bytes(
@@ -583,6 +1119,7 @@ void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
 
     ScratchContextState& contextState = contextIt->second;
     auto bucketIt = contextState.buckets.find(claim.bucketKey);
+    std::size_t releasedBytes = 0;
     if (bucketIt != contextState.buckets.end()) {
         ScratchBucketEntry& bucketEntry = bucketIt->second;
         if (bucketEntry.inFlightSets > 0) {
@@ -590,11 +1127,26 @@ void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
         }
         if (bucketEntry.inFlightBytes >= claim.bytes) {
             bucketEntry.inFlightBytes -= claim.bytes;
+            releasedBytes = claim.bytes;
         }
         else {
+            releasedBytes = bucketEntry.inFlightBytes;
             bucketEntry.inFlightBytes = 0;
         }
     }
+    if (contextState.totalInFlightBytes >= releasedBytes) {
+        contextState.totalInFlightBytes -= releasedBytes;
+    }
+    else {
+        contextState.totalInFlightBytes = 0;
+    }
+    if (state.totalInFlightBytes >= static_cast<std::uint64_t>(releasedBytes)) {
+        state.totalInFlightBytes -= static_cast<std::uint64_t>(releasedBytes);
+    }
+    else {
+        state.totalInFlightBytes = 0;
+    }
+    global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
 
     const std::uint64_t nowMs = monotonic_time_ms();
     trim_large_frame_quarantine_decay_locked(contextState, nowMs);
@@ -637,12 +1189,17 @@ void trace_scratch_policy_decision(
     std::size_t requestBytes,
     const ScratchPolicySnapshot& snapshot,
     int waitMs) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
     const std::uintptr_t contextBits =
         reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const std::uint64_t churnDenom = snapshot.bucketAllocGrowth + snapshot.bucketReuse;
     const std::uint64_t churnRatioMilli = (churnDenom == 0)
         ? 0
         : (snapshot.bucketAllocGrowth * 1000ull) / churnDenom;
+    const std::size_t effectiveTempCap = effective_temp_scratch_bytes_cap(requestBytes);
 
     const std::string msg = std::string("event=scratch_policy")
         + " transaction_id=" + std::to_string(transaction.transactionId)
@@ -671,6 +1228,7 @@ void trace_scratch_policy_decision(
         + " wait_ms=" + std::to_string(waitMs)
         + " max_temp_sets=" + std::to_string(kMaxTempScratchSets)
         + " max_temp_bytes=" + std::to_string(static_cast<unsigned long long>(kMaxTempScratchBytes))
+        + " effective_max_temp_bytes=" + std::to_string(static_cast<unsigned long long>(effectiveTempCap))
         + " quarantine_max_bytes=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxBytes))
         + " quarantine_max_entries=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxEntries));
     JTRACE("MSACQ", msg);
@@ -683,6 +1241,10 @@ void trace_budget_reclaim_retry(
     std::size_t reclaimedBytes,
     bool success,
     const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
     const std::uintptr_t contextBits =
         reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const std::string msg = std::string("event=reclaim_retry")
@@ -697,6 +1259,298 @@ void trace_budget_reclaim_retry(
         + " success=" + std::to_string(success ? 1 : 0)
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSEVICT", msg);
+}
+
+void trace_pressure_checkpoint(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const PressureCheckpoint& checkpoint,
+    std::size_t pendingGrowthBytes,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=pressure_checkpoint")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " state=" + to_cstr(checkpoint.decision.state)
+        + " prev_state=" + to_cstr(checkpoint.previousState)
+        + " transition=" + std::to_string(checkpoint.transition ? 1 : 0)
+        + " reserve_crossing=" + std::to_string(checkpoint.reserveCrossing ? 1 : 0)
+        + " reserve_crossed=" + std::to_string(checkpoint.reserveCrossedNow ? 1 : 0)
+        + " sampled=" + std::to_string(checkpoint.sampled ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.softTargetBytes))
+        + " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.reserveBytes))
+        + " manager_resident_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.managerResidentBytes))
+        + " retire_pending_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.retirePendingBytes))
+        + " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.transientNonManagerBytes))
+        + " pressure_total_bytes=" + std::to_string(static_cast<unsigned long long>(pressure_total_bytes(checkpoint.input)))
+        + " active_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.memory.activeBytes))
+        + " reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.memory.reclaimableBytes))
+        + " pending_growth_bytes=" + std::to_string(static_cast<unsigned long long>(pendingGrowthBytes))
+        + " allow_opportunistic=" + std::to_string(checkpoint.decision.allowOpportunistic ? 1 : 0)
+        + " request_reclaim_pass=" + std::to_string(checkpoint.decision.requestReclaimPass ? 1 : 0)
+        + " should_shed_non_critical=" + std::to_string(checkpoint.decision.shouldShedNonCritical ? 1 : 0)
+        + " effective_reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.decision.effectiveReserveBytes))
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSPRS", msg);
+}
+
+void trace_transient_non_manager_sample(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const PressureCheckpoint& checkpoint,
+    std::size_t pendingGrowthBytes,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=transient_non_manager_sample")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.transientNonManagerBytes))
+        + " pending_growth_bytes=" + std::to_string(static_cast<unsigned long long>(pendingGrowthBytes))
+        + " pressure_total_bytes=" + std::to_string(static_cast<unsigned long long>(pressure_total_bytes(checkpoint.input)))
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSTRN", msg);
+}
+
+void trace_emergency_shed_action(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureState state,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    bool allowed,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=emergency_shed")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " state=" + to_cstr(state)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " allowed=" + std::to_string(allowed ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSEMS", msg);
+}
+
+void trace_reap_pass(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::size_t reclaimedBytes,
+    bool success,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=reap_pass")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " reclaimed_bytes=" + std::to_string(static_cast<unsigned long long>(reclaimedBytes))
+        + " success=" + std::to_string(success ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSREAP", msg);
+}
+
+PressureCheckpoint evaluate_pressure_checkpoint(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    std::size_t pendingGrowthBytes,
+    bool forceSample,
+    const char* commandName) {
+    PressureCheckpoint checkpoint{};
+    checkpoint.memory = snapshot_manager_memory(resources);
+    publish_manager_memory_snapshot(checkpoint.memory);
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    checkpoint.input.softTargetBytes = cfg.managerSoftTargetBytes;
+    checkpoint.input.reserveBytes = cfg.managerReserveBytes;
+    checkpoint.input.retirePendingBytes = checkpoint.memory.retirePendingBytes;
+    checkpoint.input.transientNonManagerBytes = checkpoint.memory.transientNonManagerBytes;
+
+    std::uint64_t predictedResident = checkpoint.memory.activeBytes;
+    std::uint64_t nextResident = 0;
+    if (add_u64_checked(predictedResident, static_cast<std::uint64_t>(pendingGrowthBytes), nextResident)) {
+        predictedResident = nextResident;
+    }
+    else {
+        predictedResident = std::numeric_limits<std::uint64_t>::max();
+        checkpoint.memory.overflow = true;
+    }
+    checkpoint.input.managerResidentBytes = predictedResident;
+
+    const PressureDecision computedDecision = classify_pressure(checkpoint.input);
+    checkpoint.decision = computedDecision;
+    checkpoint.reserveCrossedNow = reserve_crossed(checkpoint.input);
+
+    const std::uint64_t nowMs = monotonic_time_ms();
+    PressurePolicyState& policyState = pressure_policy_state();
+    {
+        std::lock_guard<std::mutex> lock(policyState.mutex);
+        PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
+        bool sampleDue = forceSample || !contextState.valid;
+        if (!sampleDue) {
+            const std::uint64_t elapsedMs = (nowMs > contextState.lastSampleMs) ? (nowMs - contextState.lastSampleMs) : 0;
+            sampleDue = elapsedMs >= static_cast<std::uint64_t>(std::max<std::uint32_t>(1u, cfg.pressureSampleIntervalMs));
+        }
+
+        if (sampleDue) {
+            checkpoint.sampled = true;
+            checkpoint.previousState = contextState.valid ? contextState.lastState : computedDecision.state;
+            checkpoint.transition = contextState.valid && (contextState.lastState != computedDecision.state);
+            checkpoint.reserveCrossing = contextState.valid && (contextState.reserveCrossed != checkpoint.reserveCrossedNow);
+            contextState.valid = true;
+            contextState.lastSampleMs = nowMs;
+            contextState.lastDecision = computedDecision;
+            contextState.lastState = computedDecision.state;
+            contextState.reserveCrossed = checkpoint.reserveCrossedNow;
+
+            if (checkpoint.transition) {
+                global_state().pressureStateTransitions.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (checkpoint.reserveCrossing) {
+                global_state().reserveCrossingEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        else if (contextState.valid) {
+            checkpoint.decision = contextState.lastDecision;
+            checkpoint.previousState = contextState.lastState;
+            checkpoint.reserveCrossedNow = contextState.reserveCrossed;
+        }
+    }
+
+    if (checkpoint.sampled || checkpoint.transition || checkpoint.reserveCrossing) {
+        trace_pressure_checkpoint(
+            transaction,
+            commandName,
+            checkpoint,
+            pendingGrowthBytes,
+            checkpoint.transition ? "state_transition" : (checkpoint.reserveCrossing ? "reserve_crossing" : "sample"));
+        trace_transient_non_manager_sample(
+            transaction,
+            commandName,
+            checkpoint,
+            pendingGrowthBytes,
+            checkpoint.sampled ? "sampled" : "cached");
+    }
+
+    return checkpoint;
+}
+
+bool run_reap_pass_for_pressure(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    const char* reason,
+    std::string& outError) {
+    std::size_t reclaimedBytes = 0;
+    std::string reclaimError;
+    if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
+        outError = reclaimError.empty() ? "reap pass failed" : reclaimError;
+        trace_reap_pass(
+            transaction,
+            commandName,
+            reclaimedBytes,
+            false,
+            outError.c_str());
+        return false;
+    }
+
+    if (reclaimedBytes > 0) {
+        global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
+        global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+    }
+    trace_reap_pass(
+        transaction,
+        commandName,
+        reclaimedBytes,
+        true,
+        reason);
+    publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+    return true;
+}
+
+bool enforce_pressure_gate(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    bool& outRequestReclaimPass,
+    std::string& outError) {
+    outRequestReclaimPass = false;
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    if (!pressure_policy_enabled(cfg)) {
+        return true;
+    }
+
+    PressureCheckpoint checkpoint = evaluate_pressure_checkpoint(
+        transaction,
+        resources,
+        requestBytes,
+        requestBytes > 0,
+        commandName);
+    outRequestReclaimPass = checkpoint.decision.requestReclaimPass && (requestBytes > 0);
+
+    const bool nonCritical = !criticalCurrentFrame;
+    if (nonCritical &&
+        (checkpoint.decision.state == PressureState::Critical ||
+         checkpoint.decision.state == PressureState::Emergency)) {
+        trace_emergency_shed_action(
+            transaction,
+            commandName,
+            checkpoint.decision.state,
+            requestBytes,
+            criticalCurrentFrame,
+            false,
+            "deny_non_critical_growth");
+        outError = std::string("pressure_shed_noncritical: state=")
+            + to_cstr(checkpoint.decision.state);
+        return false;
+    }
+
+    if (checkpoint.decision.state == PressureState::Emergency) {
+        trace_emergency_shed_action(
+            transaction,
+            commandName,
+            checkpoint.decision.state,
+            requestBytes,
+            criticalCurrentFrame,
+            true,
+            criticalCurrentFrame ? "allow_critical_progress" : "allowed");
+    }
+    return true;
 }
 
 bool try_acquire_scratch_policy_claim(
@@ -719,13 +1573,15 @@ bool try_acquire_scratch_policy_claim(
     if (requestBytes == 0) {
         bucketEntry.reuseEvents += 1;
         global_state().scratchReuseEvents.fetch_add(1, std::memory_order_relaxed);
+        global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
         snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
         return true;
     }
 
+    const std::size_t effectiveCapBytes = effective_temp_scratch_bytes_cap(requestBytes);
     const bool setsOk = bucketEntry.inFlightSets < kMaxTempScratchSets;
     const bool bytesOk = requestBytes <=
-        (kMaxTempScratchBytes - std::min(bucketEntry.inFlightBytes, kMaxTempScratchBytes));
+        (effectiveCapBytes - std::min(bucketEntry.inFlightBytes, effectiveCapBytes));
     if (!setsOk || !bytesOk) {
         bucketEntry.exhaustedCount += 1;
         global_state().scratchBucketExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
@@ -748,8 +1604,27 @@ bool try_acquire_scratch_policy_claim(
     bucketEntry.inFlightSets += 1;
     bucketEntry.inFlightBytes += requestBytes;
     bucketEntry.allocGrowthEvents += 1;
+    {
+        std::size_t nextContextBytes = 0;
+        if (add_bytes_checked(contextState.totalInFlightBytes, requestBytes, nextContextBytes)) {
+            contextState.totalInFlightBytes = nextContextBytes;
+        }
+        else {
+            contextState.totalInFlightBytes = std::numeric_limits<std::size_t>::max();
+        }
+    }
+    {
+        std::uint64_t nextGlobalBytes = 0;
+        if (add_u64_checked(state.totalInFlightBytes, static_cast<std::uint64_t>(requestBytes), nextGlobalBytes)) {
+            state.totalInFlightBytes = nextGlobalBytes;
+        }
+        else {
+            state.totalInFlightBytes = std::numeric_limits<std::uint64_t>::max();
+        }
+    }
     global_state().scratchAllocGrowthEvents.fetch_add(1, std::memory_order_relaxed);
     bucketEntry.starvationLatched = false;
+    global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
 
     outClaim.contextKey = contextKey;
     outClaim.bucketKey = bucketKey;
@@ -773,6 +1648,7 @@ bool acquire_scratch_policy_claim_with_wait(
     outError.clear();
 
     const ScratchBucketKey bucketKey = make_scratch_bucket_key(width, height, workClass);
+    const int waitBudgetMs = scratch_wait_budget_ms(bucketKey, requestBytes);
     ScratchPolicySnapshot snapshot{};
     int waitedMs = 0;
     while (true) {
@@ -804,7 +1680,7 @@ bool acquire_scratch_policy_claim_with_wait(
             return true;
         }
 
-        if (waitedMs >= kScratchWaitMaxMs) {
+        if (waitedMs >= waitBudgetMs) {
             global_state().scratchPolicyExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
             trace_scratch_policy_decision(
                 transaction,
@@ -823,7 +1699,8 @@ bool acquire_scratch_policy_claim_with_wait(
                 + " in_flight_sets=" + std::to_string(snapshot.inFlightSets)
                 + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted)
                 + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts)
-                + " wait_ms=" + std::to_string(waitedMs);
+                + " wait_ms=" + std::to_string(waitedMs)
+                + " wait_budget_ms=" + std::to_string(waitBudgetMs);
             return false;
         }
 
@@ -1775,7 +2652,11 @@ bool command_ensure_uploaded(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_uploaded")) {
         return false;
     }
-    return JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
 }
 
 bool command_ensure_scan_lut(
@@ -1788,7 +2669,11 @@ bool command_ensure_scan_lut(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_scan_lut")) {
         return false;
     }
-    return JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
 }
 
 bool command_ensure_scan_error_flag(
@@ -1799,7 +2684,11 @@ bool command_ensure_scan_error_flag(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_scan_error_flag")) {
         return false;
     }
-    return JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, outError);
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
 }
 
 bool command_ensure_print_illuminant_filtered(
@@ -1813,7 +2702,12 @@ bool command_ensure_print_illuminant_filtered(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_print_illuminant_filtered")) {
         return false;
     }
-    return JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok =
+        JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
 }
 
 bool command_ensure_optics_scratch(
@@ -1831,6 +2725,9 @@ bool command_ensure_optics_scratch(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_optics_scratch")) {
         return false;
     }
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(cfg);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::size_t growthBytes = estimate_optics_growth_bytes(
         resources,
         width,
@@ -1843,6 +2740,30 @@ bool command_ensure_optics_scratch(
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
         outError = "scratch growth byte estimation overflow";
         return false;
+    }
+
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            "command_ensure_optics_scratch",
+            growthBytes,
+            true,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                "command_ensure_optics_scratch",
+                "pressure_pre_growth",
+                reclaimError)) {
+            outError = reclaimError.empty() ? "pressure pre-growth reclaim failed" : reclaimError;
+            return false;
+        }
     }
 
     ScratchPolicyClaim scratchClaim{};
@@ -1859,10 +2780,10 @@ bool command_ensure_optics_scratch(
     }
     ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
 
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
     std::uint32_t attempts = 0;
     while (true) {
         outError.clear();
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         if (JuicerCuda::ensure_optics_scratch(
                 resources,
                 width,
@@ -1874,11 +2795,13 @@ bool command_ensure_optics_scratch(
                 needGateMask,
                 cudaStreamOpaque,
                 outError)) {
+            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
                 global_state().budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
             }
             return true;
         }
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (!is_allocator_oom_error(outError) || attempts >= cfg.reclaimRetryMaxAttempts) {
             if (is_allocator_oom_error(outError)) {
@@ -1892,6 +2815,12 @@ bool command_ensure_optics_scratch(
         std::size_t reclaimedBytes = 0;
         std::string reclaimError;
         if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
+            trace_reap_pass(
+                transaction,
+                "command_ensure_optics_scratch",
+                reclaimedBytes,
+                false,
+                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
             trace_budget_reclaim_retry(
                 transaction,
                 "command_ensure_optics_scratch",
@@ -1910,6 +2839,12 @@ bool command_ensure_optics_scratch(
             global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
             global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
         }
+        trace_reap_pass(
+            transaction,
+            "command_ensure_optics_scratch",
+            reclaimedBytes,
+            true,
+            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
         trace_budget_reclaim_retry(
             transaction,
             "command_ensure_optics_scratch",
@@ -1917,6 +2852,7 @@ bool command_ensure_optics_scratch(
             reclaimedBytes,
             true,
             (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (reclaimedBytes == 0) {
             global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
@@ -1935,10 +2871,37 @@ bool command_ensure_spatial_dir_scratch(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_scratch")) {
         return false;
     }
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(cfg);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::size_t growthBytes = estimate_spatial_dir_growth_bytes(resources, width, height);
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
         outError = "spatial dir scratch growth byte estimation overflow";
         return false;
+    }
+
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            "command_ensure_spatial_dir_scratch",
+            growthBytes,
+            true,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                "command_ensure_spatial_dir_scratch",
+                "pressure_pre_growth",
+                reclaimError)) {
+            outError = reclaimError.empty() ? "pressure pre-growth reclaim failed" : reclaimError;
+            return false;
+        }
     }
 
     ScratchPolicyClaim scratchClaim{};
@@ -1955,16 +2918,18 @@ bool command_ensure_spatial_dir_scratch(
     }
     ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
 
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
     std::uint32_t attempts = 0;
     while (true) {
         outError.clear();
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         if (JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError)) {
+            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
                 global_state().budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
             }
             return true;
         }
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (!is_allocator_oom_error(outError) || attempts >= cfg.reclaimRetryMaxAttempts) {
             if (is_allocator_oom_error(outError)) {
@@ -1978,6 +2943,12 @@ bool command_ensure_spatial_dir_scratch(
         std::size_t reclaimedBytes = 0;
         std::string reclaimError;
         if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
+            trace_reap_pass(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                reclaimedBytes,
+                false,
+                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
             trace_budget_reclaim_retry(
                 transaction,
                 "command_ensure_spatial_dir_scratch",
@@ -1996,6 +2967,12 @@ bool command_ensure_spatial_dir_scratch(
             global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
             global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
         }
+        trace_reap_pass(
+            transaction,
+            "command_ensure_spatial_dir_scratch",
+            reclaimedBytes,
+            true,
+            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
         trace_budget_reclaim_retry(
             transaction,
             "command_ensure_spatial_dir_scratch",
@@ -2003,6 +2980,7 @@ bool command_ensure_spatial_dir_scratch(
             reclaimedBytes,
             true,
             (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (reclaimedBytes == 0) {
             global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
@@ -2021,7 +2999,11 @@ bool command_ensure_spatial_dir_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_kernel")) {
         return false;
     }
-    return JuicerCuda::ensure_spatial_dir_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = JuicerCuda::ensure_spatial_dir_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
 }
 
 bool command_ensure_gaussian_kernel(
@@ -2034,7 +3016,11 @@ bool command_ensure_gaussian_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_gaussian_kernel")) {
         return false;
     }
-    return JuicerCuda::ensure_gaussian_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = JuicerCuda::ensure_gaussian_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
 }
 
 bool command_ensure_halation_kernel(
@@ -2047,7 +3033,11 @@ bool command_ensure_halation_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_halation_kernel")) {
         return false;
     }
-    return JuicerCuda::ensure_halation_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = JuicerCuda::ensure_halation_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
 }
 
 bool command_ensure_auto_exposure_buffers(
@@ -2061,6 +3051,8 @@ bool command_ensure_auto_exposure_buffers(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_auto_exposure_buffers")) {
         return false;
     }
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::uint64_t normalizedKeyHash = normalize_key_u64(autoExposureKeyHash);
 
     const ShadowHistoryKey ownershipKey{
@@ -2099,6 +3091,7 @@ bool command_ensure_auto_exposure_buffers(
         metadataHit ? "metadata_hit" : "metadata_miss");
 
     if (!JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError)) {
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         telemetry_trace_auto_exposure_ownership(
             transaction.transactionId,
             transaction.snapshot.snapshotId,
@@ -2113,6 +3106,7 @@ bool command_ensure_auto_exposure_buffers(
             outError.empty() ? "ensure_failed" : outError.c_str());
         return false;
     }
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
     {
         AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();

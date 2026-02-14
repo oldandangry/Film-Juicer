@@ -2900,6 +2900,7 @@ void JuicerProcessor::processImagesCUDA() {
                         throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                     }
+                    mark_context_loss_recovery("command_ensure_optics_scratch", cudaErrorUnknown, opticsError);
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3576,6 +3577,7 @@ void JuicerProcessor::processImagesCUDA() {
                         throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
                     }
+                    mark_context_loss_recovery("command_ensure_optics_scratch", cudaErrorUnknown, opticsError);
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
