@@ -22,6 +22,12 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMinPressureStateMaxTransitionsPerMin = 1u;
     constexpr std::uint32_t kMaxPressureStateMaxTransitionsPerMin = 120u;
     constexpr std::uint32_t kMaxReclaimRetryAttempts = 3u;
+    constexpr std::uint32_t kMinTierErrorWindowMs = 100u;
+    constexpr std::uint32_t kMaxTierErrorWindowMs = 10000u;
+    constexpr std::uint32_t kMinTierErrorThreshold = 1u;
+    constexpr std::uint32_t kMaxTierErrorThreshold = 16u;
+    constexpr std::uint32_t kMinTierCircuitOpenMs = 100u;
+    constexpr std::uint32_t kMaxTierCircuitOpenMs = 10000u;
     constexpr std::uint32_t kMinHostAssetIdleTrimMs = 1000u;
     constexpr std::uint32_t kMaxHostAssetIdleTrimMs = 60000u;
     constexpr std::uint32_t kMinScratchBuilderBytesInFlightLimitMB = 128u;
@@ -92,6 +98,18 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         kMinPressureStateMaxTransitionsPerMin,
         kMaxPressureStateMaxTransitionsPerMin);
     out.reclaimRetryMaxAttempts = std::min(raw.reclaimRetryMaxAttempts, kMaxReclaimRetryAttempts);
+    out.tierErrorWindowMs = std::clamp(
+        raw.tierErrorWindowMs,
+        kMinTierErrorWindowMs,
+        kMaxTierErrorWindowMs);
+    out.tierErrorThreshold = std::clamp(
+        raw.tierErrorThreshold,
+        kMinTierErrorThreshold,
+        kMaxTierErrorThreshold);
+    out.tierCircuitOpenMs = std::clamp(
+        raw.tierCircuitOpenMs,
+        kMinTierCircuitOpenMs,
+        kMaxTierCircuitOpenMs);
     out.fragmentationRecoveryEnabled = raw.fragmentationRecoveryEnabled;
     out.hostAssetCacheMaxBytes = std::clamp(
         raw.hostAssetCacheMaxBytes,

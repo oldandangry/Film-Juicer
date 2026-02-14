@@ -125,6 +125,10 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> cacheAdmissionProbationAdmitEvents{ 0 };
     std::atomic<std::uint64_t> cacheAdmissionCriticalOverrideEvents{ 0 };
     std::atomic<std::uint64_t> graphNonResidentServeEvents{ 0 };
+    std::atomic<std::uint64_t> tierCircuitOpenEvents{ 0 };
+    std::atomic<std::uint64_t> tierCircuitHalfOpenEvents{ 0 };
+    std::atomic<std::uint64_t> tierCircuitCloseEvents{ 0 };
+    std::atomic<std::uint64_t> tierCircuitBlockedEvents{ 0 };
     std::atomic<std::uint64_t> uploadBytesInFlight{ 0 };
     std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };

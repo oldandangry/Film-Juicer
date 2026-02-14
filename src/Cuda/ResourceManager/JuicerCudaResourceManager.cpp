@@ -13,6 +13,7 @@
 #include "WorkingState.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -150,6 +151,12 @@ enum class BuilderReservationTier : std::uint8_t {
     Graph = 2
 };
 
+enum class TierCircuitState : std::uint8_t {
+    Closed = 0,
+    Open = 1,
+    HalfOpen = 2
+};
+
 const char* to_cstr(ScratchWorkClass workClass) noexcept {
     switch (workClass) {
     case ScratchWorkClass::Optics:
@@ -180,6 +187,34 @@ const char* to_cstr(BuilderReservationTier tier) noexcept {
         return "lut";
     case BuilderReservationTier::Graph:
         return "graph";
+    default:
+        return "unknown";
+    }
+}
+
+const char* to_cstr(ResourceTier tier) noexcept {
+    switch (tier) {
+    case ResourceTier::Immutable:
+        return "immutable";
+    case ResourceTier::Lut:
+        return "lut";
+    case ResourceTier::Scratch:
+        return "scratch";
+    case ResourceTier::Graph:
+        return "graph";
+    default:
+        return "unknown";
+    }
+}
+
+const char* to_cstr(TierCircuitState state) noexcept {
+    switch (state) {
+    case TierCircuitState::Closed:
+        return "closed";
+    case TierCircuitState::Open:
+        return "open";
+    case TierCircuitState::HalfOpen:
+        return "half_open";
     default:
         return "unknown";
     }
@@ -320,6 +355,28 @@ PressurePolicyState& pressure_policy_state() noexcept {
     return state;
 }
 
+struct TierCircuitTierState {
+    TierCircuitState state = TierCircuitState::Closed;
+    std::uint64_t windowStartMs = 0;
+    std::uint32_t windowErrors = 0;
+    std::uint64_t openedAtMs = 0;
+    bool probeInFlight = false;
+};
+
+struct TierCircuitContextState {
+    std::array<TierCircuitTierState, 4> tiers{};
+};
+
+struct TierCircuitPolicyState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, TierCircuitContextState, DeviceContextKeyHash> byContext;
+};
+
+TierCircuitPolicyState& tier_circuit_policy_state() noexcept {
+    static TierCircuitPolicyState state{};
+    return state;
+}
+
 struct ManagerMemorySnapshot {
     std::uint64_t activeBytes = 0;
     std::uint64_t reclaimableBytes = 0;
@@ -396,6 +453,13 @@ struct BuilderReservationClaim {
     bool acquired = false;
 };
 
+struct TierCircuitAttempt {
+    DeviceContextKey contextKey{};
+    ResourceTier tier = ResourceTier::Immutable;
+    bool started = false;
+    bool probe = false;
+};
+
 constexpr std::uint32_t kMaxTempScratchSets = 1;
 constexpr std::size_t kMaxTempScratchBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
 constexpr int kScratchWaitStepMs = 1;
@@ -438,6 +502,31 @@ const ResourceManagerConfigEffective& manager_effective_config() noexcept {
     return cfg;
 }
 
+constexpr std::size_t tier_circuit_index(ResourceTier tier) noexcept {
+    switch (tier) {
+    case ResourceTier::Immutable:
+        return 0u;
+    case ResourceTier::Lut:
+        return 1u;
+    case ResourceTier::Scratch:
+        return 2u;
+    case ResourceTier::Graph:
+        return 3u;
+    default:
+        return 0u;
+    }
+}
+
+inline bool tier_circuit_blocks_admission(ResourceTier tier) noexcept {
+    return tier == ResourceTier::Graph;
+}
+
+inline bool tier_circuit_policy_enabled(const ResourceManagerConfigEffective& cfg) noexcept {
+    return cfg.tierErrorWindowMs > 0 &&
+        cfg.tierErrorThreshold > 0 &&
+        cfg.tierCircuitOpenMs > 0;
+}
+
 bool contains_ascii_case_insensitive(const std::string& haystack, const char* needle) noexcept {
     if (!needle || !*needle) {
         return true;
@@ -472,6 +561,25 @@ bool is_allocator_oom_error(const std::string& error) noexcept {
     }
     return contains_ascii_case_insensitive(error, "out of memory") ||
         contains_ascii_case_insensitive(error, "memory allocation");
+}
+
+bool tier_circuit_should_count_failure(const std::string& error) noexcept {
+    if (error.empty()) {
+        return true;
+    }
+    if (error.rfind(kScratchExhaustedPrefix, 0) == 0) {
+        return false;
+    }
+    if (error.rfind(kReservationDeferredPrefix, 0) == 0) {
+        return false;
+    }
+    if (error.rfind("pressure_shed_noncritical:", 0) == 0) {
+        return false;
+    }
+    if (error.rfind("pressure_copy_compute_guard:", 0) == 0) {
+        return false;
+    }
+    return true;
 }
 
 inline std::uint64_t monotonic_time_ms() noexcept {
@@ -2179,6 +2287,49 @@ void trace_builder_reservation_decision(
     JTRACE("MSBPR", msg);
 }
 
+void trace_tier_circuit_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    ResourceTier tier,
+    TierCircuitState previousState,
+    TierCircuitState state,
+    bool transition,
+    bool allowed,
+    bool probe,
+    std::uint32_t windowErrors,
+    std::uint32_t threshold,
+    std::uint32_t windowMs,
+    std::uint32_t openMs,
+    std::uint64_t openRemainingMs,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=tier_circuit")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " tier=" + to_cstr(tier)
+        + " prev_state=" + to_cstr(previousState)
+        + " state=" + to_cstr(state)
+        + " transition=" + std::to_string(transition ? 1 : 0)
+        + " allowed=" + std::to_string(allowed ? 1 : 0)
+        + " probe=" + std::to_string(probe ? 1 : 0)
+        + " window_errors=" + std::to_string(windowErrors)
+        + " threshold=" + std::to_string(threshold)
+        + " window_ms=" + std::to_string(windowMs)
+        + " open_ms=" + std::to_string(openMs)
+        + " open_remaining_ms=" + std::to_string(static_cast<unsigned long long>(openRemainingMs))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSCB", msg);
+}
+
 void trace_budget_reclaim_retry(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -2912,6 +3063,319 @@ bool enforce_pressure_gate(
                 : "upload_allowed_below_shed_threshold");
     }
     return true;
+}
+
+bool tier_circuit_begin_attempt(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    ResourceTier tier,
+    bool blocksAdmission,
+    TierCircuitAttempt& outAttempt,
+    std::string& outError) {
+    outAttempt = TierCircuitAttempt{};
+    outError.clear();
+
+    outAttempt.contextKey = transaction.snapshot.deviceContextKey;
+    outAttempt.tier = tier;
+    outAttempt.started = true;
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    if (!tier_circuit_policy_enabled(cfg)) {
+        return true;
+    }
+
+    const std::uint32_t threshold = std::max<std::uint32_t>(1u, cfg.tierErrorThreshold);
+    const std::uint32_t windowMs = std::max<std::uint32_t>(1u, cfg.tierErrorWindowMs);
+    const std::uint32_t openMs = std::max<std::uint32_t>(1u, cfg.tierCircuitOpenMs);
+    const std::uint64_t nowMs = monotonic_time_ms();
+
+    TierCircuitPolicyState& state = tier_circuit_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    TierCircuitContextState& contextState = state.byContext[transaction.snapshot.deviceContextKey];
+    TierCircuitTierState& tierState = contextState.tiers[tier_circuit_index(tier)];
+
+    if (tierState.state == TierCircuitState::Open) {
+        const std::uint64_t elapsedMs = (nowMs > tierState.openedAtMs) ? (nowMs - tierState.openedAtMs) : 0;
+        if (elapsedMs >= static_cast<std::uint64_t>(openMs)) {
+            const TierCircuitState previousState = tierState.state;
+            tierState.state = TierCircuitState::HalfOpen;
+            tierState.probeInFlight = false;
+            global_state().tierCircuitHalfOpenEvents.fetch_add(1, std::memory_order_relaxed);
+            trace_tier_circuit_event(
+                transaction,
+                commandName,
+                tier,
+                previousState,
+                tierState.state,
+                true,
+                true,
+                false,
+                tierState.windowErrors,
+                threshold,
+                windowMs,
+                openMs,
+                0,
+                "open_elapsed_half_open");
+        }
+    }
+
+    if (tierState.state == TierCircuitState::Open && blocksAdmission) {
+        const std::uint64_t elapsedMs = (nowMs > tierState.openedAtMs) ? (nowMs - tierState.openedAtMs) : 0;
+        const std::uint64_t openRemainingMs = (elapsedMs >= static_cast<std::uint64_t>(openMs))
+            ? 0
+            : (static_cast<std::uint64_t>(openMs) - elapsedMs);
+        global_state().tierCircuitBlockedEvents.fetch_add(1, std::memory_order_relaxed);
+        trace_tier_circuit_event(
+            transaction,
+            commandName,
+            tier,
+            tierState.state,
+            tierState.state,
+            false,
+            false,
+            false,
+            tierState.windowErrors,
+            threshold,
+            windowMs,
+            openMs,
+            openRemainingMs,
+            "open_blocked");
+        outError = std::string("tier_circuit_open: tier=") + to_cstr(tier);
+        return false;
+    }
+
+    if (tierState.state == TierCircuitState::HalfOpen) {
+        if (tierState.probeInFlight && blocksAdmission) {
+            global_state().tierCircuitBlockedEvents.fetch_add(1, std::memory_order_relaxed);
+            trace_tier_circuit_event(
+                transaction,
+                commandName,
+                tier,
+                tierState.state,
+                tierState.state,
+                false,
+                false,
+                false,
+                tierState.windowErrors,
+                threshold,
+                windowMs,
+                openMs,
+                0,
+                "half_open_probe_in_flight");
+            outError = std::string("tier_circuit_half_open_busy: tier=") + to_cstr(tier);
+            return false;
+        }
+        if (!tierState.probeInFlight) {
+            tierState.probeInFlight = true;
+            outAttempt.probe = true;
+            trace_tier_circuit_event(
+                transaction,
+                commandName,
+                tier,
+                tierState.state,
+                tierState.state,
+                false,
+                true,
+                true,
+                tierState.windowErrors,
+                threshold,
+                windowMs,
+                openMs,
+                0,
+                "half_open_probe_start");
+        }
+    }
+
+    return true;
+}
+
+void tier_circuit_cancel_attempt(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const TierCircuitAttempt& attempt,
+    const char* reason) {
+    if (!attempt.started) {
+        return;
+    }
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    if (!tier_circuit_policy_enabled(cfg)) {
+        return;
+    }
+
+    const std::uint32_t threshold = std::max<std::uint32_t>(1u, cfg.tierErrorThreshold);
+    const std::uint32_t windowMs = std::max<std::uint32_t>(1u, cfg.tierErrorWindowMs);
+    const std::uint32_t openMs = std::max<std::uint32_t>(1u, cfg.tierCircuitOpenMs);
+
+    TierCircuitPolicyState& state = tier_circuit_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto contextIt = state.byContext.find(attempt.contextKey);
+    if (contextIt == state.byContext.end()) {
+        return;
+    }
+    TierCircuitTierState& tierState = contextIt->second.tiers[tier_circuit_index(attempt.tier)];
+    if (tierState.state == TierCircuitState::HalfOpen && tierState.probeInFlight) {
+        tierState.probeInFlight = false;
+        trace_tier_circuit_event(
+            transaction,
+            commandName,
+            attempt.tier,
+            tierState.state,
+            tierState.state,
+            false,
+            true,
+            false,
+            tierState.windowErrors,
+            threshold,
+            windowMs,
+            openMs,
+            0,
+            reason ? reason : "attempt_cancelled");
+    }
+}
+
+void tier_circuit_record_outcome(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const TierCircuitAttempt& attempt,
+    bool success,
+    const char* reason) {
+    if (!attempt.started) {
+        return;
+    }
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    if (!tier_circuit_policy_enabled(cfg)) {
+        return;
+    }
+
+    const std::uint32_t threshold = std::max<std::uint32_t>(1u, cfg.tierErrorThreshold);
+    const std::uint32_t windowMs = std::max<std::uint32_t>(1u, cfg.tierErrorWindowMs);
+    const std::uint32_t openMs = std::max<std::uint32_t>(1u, cfg.tierCircuitOpenMs);
+    const std::uint64_t nowMs = monotonic_time_ms();
+
+    TierCircuitPolicyState& state = tier_circuit_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto contextIt = state.byContext.find(attempt.contextKey);
+    if (contextIt == state.byContext.end()) {
+        return;
+    }
+
+    TierCircuitTierState& tierState = contextIt->second.tiers[tier_circuit_index(attempt.tier)];
+    auto reset_window_if_stale = [&]() {
+        if (tierState.windowStartMs == 0 ||
+            nowMs < tierState.windowStartMs ||
+            (nowMs - tierState.windowStartMs) >= static_cast<std::uint64_t>(windowMs)) {
+            tierState.windowStartMs = nowMs;
+            tierState.windowErrors = 0;
+        }
+    };
+
+    if (success) {
+        if (tierState.state == TierCircuitState::HalfOpen) {
+            const TierCircuitState previousState = tierState.state;
+            tierState.state = TierCircuitState::Closed;
+            tierState.windowStartMs = 0;
+            tierState.windowErrors = 0;
+            tierState.openedAtMs = 0;
+            tierState.probeInFlight = false;
+            global_state().tierCircuitCloseEvents.fetch_add(1, std::memory_order_relaxed);
+            trace_tier_circuit_event(
+                transaction,
+                commandName,
+                attempt.tier,
+                previousState,
+                tierState.state,
+                true,
+                true,
+                attempt.probe,
+                tierState.windowErrors,
+                threshold,
+                windowMs,
+                openMs,
+                0,
+                reason ? reason : "half_open_probe_success");
+            return;
+        }
+
+        if (tierState.state == TierCircuitState::Closed &&
+            tierState.windowStartMs > 0 &&
+            (nowMs > tierState.windowStartMs) &&
+            (nowMs - tierState.windowStartMs) >= static_cast<std::uint64_t>(windowMs)) {
+            tierState.windowStartMs = 0;
+            tierState.windowErrors = 0;
+        }
+        return;
+    }
+
+    if (tierState.state == TierCircuitState::HalfOpen) {
+        const TierCircuitState previousState = tierState.state;
+        tierState.state = TierCircuitState::Open;
+        tierState.windowStartMs = nowMs;
+        tierState.windowErrors = threshold;
+        tierState.openedAtMs = nowMs;
+        tierState.probeInFlight = false;
+        global_state().tierCircuitOpenEvents.fetch_add(1, std::memory_order_relaxed);
+        trace_tier_circuit_event(
+            transaction,
+            commandName,
+            attempt.tier,
+            previousState,
+            tierState.state,
+            true,
+            true,
+            attempt.probe,
+            tierState.windowErrors,
+            threshold,
+            windowMs,
+            openMs,
+            0,
+            reason ? reason : "half_open_probe_failed");
+        return;
+    }
+
+    if (tierState.state == TierCircuitState::Closed) {
+        reset_window_if_stale();
+        if (tierState.windowErrors < std::numeric_limits<std::uint32_t>::max()) {
+            ++tierState.windowErrors;
+        }
+        if (tierState.windowErrors >= threshold) {
+            const TierCircuitState previousState = tierState.state;
+            tierState.state = TierCircuitState::Open;
+            tierState.openedAtMs = nowMs;
+            tierState.probeInFlight = false;
+            global_state().tierCircuitOpenEvents.fetch_add(1, std::memory_order_relaxed);
+            trace_tier_circuit_event(
+                transaction,
+                commandName,
+                attempt.tier,
+                previousState,
+                tierState.state,
+                true,
+                true,
+                attempt.probe,
+                tierState.windowErrors,
+                threshold,
+                windowMs,
+                openMs,
+                0,
+                reason ? reason : "error_threshold_reached");
+        }
+        return;
+    }
+
+    if (tierState.state == TierCircuitState::Open) {
+        reset_window_if_stale();
+        if (tierState.windowErrors < std::numeric_limits<std::uint32_t>::max()) {
+            ++tierState.windowErrors;
+        }
+        tierState.openedAtMs = nowMs;
+    }
+}
+
+void tier_circuit_retire_context(const DeviceContextKey& key) noexcept {
+    TierCircuitPolicyState& state = tier_circuit_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.byContext.erase(key);
 }
 
 bool try_acquire_scratch_policy_claim(
@@ -4848,6 +5312,7 @@ bool command_retire_context_with_reason(
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     retire_base_graph_cache_for_context(key);
 #endif
+    tier_circuit_retire_context(key);
 
     RegistryHandle handle{};
     if (!registry_get(key, handle) || handle.value == 0) {
@@ -4931,7 +5396,42 @@ bool command_ensure_uploaded(
         return false;
     }
     UploadReservationGuard uploadGuard(std::move(uploadClaim));
+    TierCircuitAttempt circuitAttempt{};
+    std::string circuitError;
+    if (!tier_circuit_begin_attempt(
+            transaction,
+            "command_ensure_uploaded",
+            ResourceTier::Immutable,
+            tier_circuit_blocks_admission(ResourceTier::Immutable),
+            circuitAttempt,
+            circuitError)) {
+        outError = circuitError;
+        return false;
+    }
     const bool ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
+    if (ok) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_ensure_uploaded",
+            circuitAttempt,
+            true,
+            "ensure_success");
+    }
+    else if (tier_circuit_should_count_failure(outError)) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_ensure_uploaded",
+            circuitAttempt,
+            false,
+            outError.c_str());
+    }
+    else {
+        tier_circuit_cancel_attempt(
+            transaction,
+            "command_ensure_uploaded",
+            circuitAttempt,
+            "ignored_policy_failure");
+    }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
@@ -5001,7 +5501,42 @@ bool command_ensure_scan_lut(
         return false;
     }
     BuilderReservationGuard builderGuard(std::move(builderClaim));
+    TierCircuitAttempt circuitAttempt{};
+    std::string circuitError;
+    if (!tier_circuit_begin_attempt(
+            transaction,
+            "command_ensure_scan_lut",
+            ResourceTier::Lut,
+            tier_circuit_blocks_admission(ResourceTier::Lut),
+            circuitAttempt,
+            circuitError)) {
+        outError = circuitError;
+        return false;
+    }
     const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
+    if (ok) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_ensure_scan_lut",
+            circuitAttempt,
+            true,
+            "ensure_success");
+    }
+    else if (tier_circuit_should_count_failure(outError)) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_ensure_scan_lut",
+            circuitAttempt,
+            false,
+            outError.c_str());
+    }
+    else {
+        tier_circuit_cancel_attempt(
+            transaction,
+            "command_ensure_scan_lut",
+            circuitAttempt,
+            "ignored_policy_failure");
+    }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
@@ -5075,8 +5610,43 @@ bool command_ensure_print_illuminant_filtered(
         return false;
     }
     UploadReservationGuard uploadGuard(std::move(uploadClaim));
+    TierCircuitAttempt circuitAttempt{};
+    std::string circuitError;
+    if (!tier_circuit_begin_attempt(
+            transaction,
+            "command_ensure_print_illuminant_filtered",
+            ResourceTier::Immutable,
+            tier_circuit_blocks_admission(ResourceTier::Immutable),
+            circuitAttempt,
+            circuitError)) {
+        outError = circuitError;
+        return false;
+    }
     const bool ok =
         JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
+    if (ok) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_ensure_print_illuminant_filtered",
+            circuitAttempt,
+            true,
+            "ensure_success");
+    }
+    else if (tier_circuit_should_count_failure(outError)) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_ensure_print_illuminant_filtered",
+            circuitAttempt,
+            false,
+            outError.c_str());
+    }
+    else {
+        tier_circuit_cancel_attempt(
+            transaction,
+            "command_ensure_print_illuminant_filtered",
+            circuitAttempt,
+            "ignored_policy_failure");
+    }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
@@ -5196,6 +5766,19 @@ bool command_ensure_optics_scratch(
 
     while (true) {
         outError.clear();
+        TierCircuitAttempt circuitAttempt{};
+        std::string circuitError;
+        if (!tier_circuit_begin_attempt(
+                transaction,
+                "command_ensure_optics_scratch",
+                ResourceTier::Scratch,
+                tier_circuit_blocks_admission(ResourceTier::Scratch),
+                circuitAttempt,
+                circuitError)) {
+            outError = circuitError;
+            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
+            return false;
+        }
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         if (JuicerCuda::ensure_optics_scratch(
                 resources,
@@ -5208,12 +5791,33 @@ bool command_ensure_optics_scratch(
                 needGateMask,
                 cudaStreamOpaque,
                 outError)) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_ensure_optics_scratch",
+                circuitAttempt,
+                true,
+                "ensure_success");
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
                 managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
             }
             finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
+        }
+        if (tier_circuit_should_count_failure(outError)) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_ensure_optics_scratch",
+                circuitAttempt,
+                false,
+                outError.c_str());
+        }
+        else {
+            tier_circuit_cancel_attempt(
+                transaction,
+                "command_ensure_optics_scratch",
+                circuitAttempt,
+                "ignored_policy_failure");
         }
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
@@ -5439,14 +6043,48 @@ bool command_ensure_spatial_dir_scratch(
 
     while (true) {
         outError.clear();
+        TierCircuitAttempt circuitAttempt{};
+        std::string circuitError;
+        if (!tier_circuit_begin_attempt(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                ResourceTier::Scratch,
+                tier_circuit_blocks_admission(ResourceTier::Scratch),
+                circuitAttempt,
+                circuitError)) {
+            outError = circuitError;
+            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
+            return false;
+        }
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         if (JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError)) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                circuitAttempt,
+                true,
+                "ensure_success");
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
                 managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
             }
             finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
+        }
+        if (tier_circuit_should_count_failure(outError)) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                circuitAttempt,
+                false,
+                outError.c_str());
+        }
+        else {
+            tier_circuit_cancel_attempt(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                circuitAttempt,
+                "ignored_policy_failure");
         }
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
@@ -5782,6 +6420,8 @@ bool command_launch_base_pipeline_graph(
     const std::uint64_t useTick = bucket.useTick;
 
     BaseGraphEntry* found = find_base_graph_entry(bucket, key);
+    TierCircuitAttempt graphCircuitAttempt{};
+    bool graphCircuitAttemptActive = false;
     if (!found) {
         std::uint32_t observedProbationHits = 0;
         auto probationIt = bucket.probationHitsByDigest.find(keyDigest);
@@ -5853,6 +6493,20 @@ bool command_launch_base_pipeline_graph(
             return true;
         }
 
+        std::string circuitError;
+        if (!tier_circuit_begin_attempt(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                ResourceTier::Graph,
+                tier_circuit_blocks_admission(ResourceTier::Graph),
+                graphCircuitAttempt,
+                circuitError)) {
+            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            return true;
+        }
+        graphCircuitAttemptActive = true;
+
         BuilderReservationClaim builderClaim{};
         ReservationAttemptInfo builderReservation{};
         managerState.builderReservationRequests.fetch_add(1, std::memory_order_relaxed);
@@ -5905,6 +6559,14 @@ bool command_launch_base_pipeline_graph(
                     0,
                     "denied_nonresident");
             }
+            if (graphCircuitAttemptActive) {
+                tier_circuit_cancel_attempt(
+                    transaction,
+                    "command_launch_base_pipeline_graph",
+                    graphCircuitAttempt,
+                    "nonresident_builder_gate");
+                graphCircuitAttemptActive = false;
+            }
             managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
             outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
             return true;
@@ -5937,6 +6599,15 @@ bool command_launch_base_pipeline_graph(
     }
 
     if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
+        if (graphCircuitAttemptActive) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                graphCircuitAttempt,
+                false,
+                "durable_build_failed");
+            graphCircuitAttemptActive = false;
+        }
         outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
         return true;
     }
@@ -5957,6 +6628,15 @@ bool command_launch_base_pipeline_graph(
     cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
     if (setErr != cudaSuccess) {
         destroy_base_graph_entry(*found);
+        if (graphCircuitAttemptActive) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                graphCircuitAttempt,
+                false,
+                "kernel_param_update_failed");
+            graphCircuitAttemptActive = false;
+        }
         outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
         return true;
     }
@@ -5967,10 +6647,28 @@ bool command_launch_base_pipeline_graph(
     }
     if (runErr != cudaSuccess) {
         destroy_base_graph_entry(*found);
+        if (graphCircuitAttemptActive) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                graphCircuitAttempt,
+                false,
+                "graph_launch_failed");
+            graphCircuitAttemptActive = false;
+        }
         outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
         return true;
     }
 
+    if (graphCircuitAttemptActive) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            graphCircuitAttempt,
+            true,
+            "durable_build_success");
+        graphCircuitAttemptActive = false;
+    }
     outCudaErrorCode = static_cast<int>(cudaSuccess);
     return true;
 #endif

@@ -25,6 +25,9 @@ struct ResourceManagerConfigRaw {
     std::uint32_t pressureStateMinDwellMs = 250;
     std::uint32_t pressureStateMaxTransitionsPerMin = 12;
     std::uint32_t reclaimRetryMaxAttempts = 1;
+    std::uint32_t tierErrorWindowMs = 1000;
+    std::uint32_t tierErrorThreshold = 3;
+    std::uint32_t tierCircuitOpenMs = 2000;
     bool fragmentationRecoveryEnabled = true;
     std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
     std::uint32_t hostAssetIdleTrimMs = 5000;
@@ -62,6 +65,9 @@ struct ResourceManagerConfigEffective {
     std::uint32_t pressureStateMinDwellMs = 250;
     std::uint32_t pressureStateMaxTransitionsPerMin = 12;
     std::uint32_t reclaimRetryMaxAttempts = 1;
+    std::uint32_t tierErrorWindowMs = 1000;
+    std::uint32_t tierErrorThreshold = 3;
+    std::uint32_t tierCircuitOpenMs = 2000;
     bool fragmentationRecoveryEnabled = true;
     std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
     std::uint32_t hostAssetIdleTrimMs = 5000;
