@@ -271,41 +271,8 @@ namespace JuicerCuda {
     Resources* create() noexcept;
     void destroy(Resources* resources) noexcept;
 
-    // Uploads WorkingState curves when buildCounter changes; returns false on failure with outError filled.
-    bool ensure_uploaded(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
-
-    // Builds + uploads scan-stage log2(XYZ) LUT on demand (Mitchell cubic sampler parity with CPU).
-    bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
-
-    // Ensures the scan error flag device buffer is allocated.
-    bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
-
-    // Allocates scratch + state buffers used by CUDA auto-exposure metering.
-    bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
-
-    // Allocates scratch buffers used by scanner optics (blur/unsharp/glare/grain) when active.
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
-
-    // Allocates scratch buffers used by spatial DIR diffusion (corr planes + temp).
-    bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);
-
-    // Builds and uploads spatial DIR Gaussian kernel (truncate=3.0, radius cap=75).
-    bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
-
-    // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=4.0, radius clamp=75) for optics.
-    bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
-
-    // Builds and uploads a SciPy-compatible Gaussian kernel (truncate=7.0, radius clamp=75) for halation.
-    bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
-
-    // Print pipeline: builds + uploads the enlarger illuminant filtered by the current print params (Y/M/C filters).
-    bool ensure_print_illuminant_filtered(
-        Resources& resources,
-        const WorkingState& ws,
-        const Print::Runtime& prt,
-        const Print::Params& prm,
-        void* cudaStreamOpaque,
-        std::string& outError);
+    // Runtime serving acquisition/rebuild calls are intentionally manager-only via
+    // ResourceManager::command_* wrappers.
 
     // Optional debug validation of primitives (kept here to avoid a separate JUICER_TESTS harness).
     bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);

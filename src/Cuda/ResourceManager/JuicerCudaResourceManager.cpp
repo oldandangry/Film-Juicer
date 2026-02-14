@@ -42,6 +42,26 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
 #endif
 
 namespace JuicerCuda {
+
+// Internal resource-acquire helpers are intentionally consumed only by command wrappers
+// in this module; they are not part of the public JuicerCudaResources API surface.
+bool ensure_uploaded(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
+bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
+bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
+bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
+bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
+bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);
+bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
+bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
+bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
+bool ensure_print_illuminant_filtered(
+    Resources& resources,
+    const WorkingState& ws,
+    const Print::Runtime& prt,
+    const Print::Params& prm,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
 namespace ResourceManager {
 
 namespace {
