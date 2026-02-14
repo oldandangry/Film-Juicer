@@ -77,6 +77,12 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> transientReservationGranted{ 0 };
     std::atomic<std::uint64_t> transientReservationDeferred{ 0 };
     std::atomic<std::uint64_t> transientReservationDenied{ 0 };
+    std::atomic<std::uint64_t> uploadReservationRequests{ 0 };
+    std::atomic<std::uint64_t> uploadReservationGranted{ 0 };
+    std::atomic<std::uint64_t> uploadReservationDeferred{ 0 };
+    std::atomic<std::uint64_t> uploadReservationDenied{ 0 };
+    std::atomic<std::uint64_t> uploadReservationBypass{ 0 };
+    std::atomic<std::uint64_t> uploadBytesInFlight{ 0 };
     std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };
 

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -215,6 +216,21 @@ ScratchPolicyState& scratch_policy_state() noexcept {
     return state;
 }
 
+struct UploadReservationContextState {
+    std::uint64_t inFlightBytes = 0;
+};
+
+struct UploadReservationState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, UploadReservationContextState, DeviceContextKeyHash> byContext;
+    std::uint64_t totalInFlightBytes = 0;
+};
+
+UploadReservationState& upload_reservation_state() noexcept {
+    static UploadReservationState state{};
+    return state;
+}
+
 struct PressureContextState {
     bool valid = false;
     std::uint64_t lastSampleMs = 0;
@@ -280,6 +296,12 @@ struct ReservationAttemptInfo {
     bool considered = false;
 };
 
+struct UploadReservationClaim {
+    DeviceContextKey contextKey{};
+    std::uint64_t bytes = 0;
+    bool acquired = false;
+};
+
 constexpr std::uint32_t kMaxTempScratchSets = 1;
 constexpr std::size_t kMaxTempScratchBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
 constexpr int kScratchWaitStepMs = 1;
@@ -300,6 +322,13 @@ constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
 constexpr const char* kReservationDeferredPrefix = "reservation_deferred:";
 constexpr std::uint64_t kTransientReservationCapDefaultBytes = 512ull * 1024ull * 1024ull;
 constexpr std::uint64_t kTransientReservationThresholdDefaultBytes = 64ull * 1024ull * 1024ull;
+constexpr std::uint64_t kUploadReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
+constexpr std::uint64_t kUploadReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
+constexpr std::uint64_t kStbnUploadDefaultBytes = 512ull * 512ull * 256ull;
+constexpr std::uint64_t kWangTilesUploadDefaultBytes = 256ull * 256ull * 16ull;
+constexpr std::uint64_t kWangLutUploadDefaultBytes = 8ull * 8ull * 8ull * 8ull;
+constexpr int kUploadReservationWaitStepMs = 1;
+constexpr int kUploadReservationWaitMaxMs = 8;
 
 const ResourceManagerConfigEffective& manager_effective_config() noexcept {
     static const ResourceManagerConfigEffective cfg = sanitize_config(ResourceManagerConfigRaw{});
@@ -908,6 +937,268 @@ std::uint64_t transient_reservation_threshold_bytes(const ResourceManagerConfigE
     return std::min<std::uint64_t>(kTransientReservationThresholdDefaultBytes, capBytes);
 }
 
+std::uint64_t upload_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    if (cfg.managerSoftTargetBytes == 0) {
+        return kUploadReservationCapDefaultBytes;
+    }
+    const std::uint64_t quarterTarget = cfg.managerSoftTargetBytes / 4ull;
+    return std::max<std::uint64_t>(
+        kUploadReservationThresholdDefaultBytes,
+        std::min<std::uint64_t>(kUploadReservationCapDefaultBytes, quarterTarget));
+}
+
+std::uint64_t upload_reservation_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    const std::uint64_t capBytes = upload_reservation_cap_bytes(cfg);
+    if (capBytes == 0) {
+        return 0;
+    }
+    return std::min<std::uint64_t>(kUploadReservationThresholdDefaultBytes, capBytes);
+}
+
+void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& overflow) noexcept {
+    if (overflow) {
+        return;
+    }
+    std::uint64_t next = 0;
+    if (!add_u64_checked(total, bytes, next)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    total = next;
+}
+
+template <typename T>
+void add_vector_upload_estimate_bytes(
+    const std::vector<T>& values,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (values.empty() || overflow) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(values.size()),
+            static_cast<std::uint64_t>(sizeof(T)),
+            bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_curve_upload_estimate_bytes(
+    const Spectral::Curve& curve,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const std::size_t n = std::min(curve.lambda_nm.size(), curve.linear.size());
+    if (n == 0 || overflow) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(2u * sizeof(float)), bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_scan_medium_upload_estimate_bytes(
+    const Scanner::ScannerMediumRuntime& medium,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const Spectral::SpectralTables* t = medium.tables;
+    if (!t) {
+        return;
+    }
+    add_vector_upload_estimate_bytes(t->epsC, total, overflow);
+    add_vector_upload_estimate_bytes(t->epsM, total, overflow);
+    add_vector_upload_estimate_bytes(t->epsY, total, overflow);
+    add_vector_upload_estimate_bytes(t->Ax, total, overflow);
+    add_vector_upload_estimate_bytes(t->Ay, total, overflow);
+    add_vector_upload_estimate_bytes(t->Az, total, overflow);
+    if (t->hasBaseline) {
+        add_vector_upload_estimate_bytes(t->baseMin, total, overflow);
+    }
+}
+
+std::uint64_t estimate_upload_core_request_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws) noexcept {
+    const std::uint64_t wsCoreHash =
+        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    const std::uint64_t wsDirHash = ws.dirHash;
+    if (wsCoreHash == 0 || wsDirHash == 0) {
+        return kUploadReservationThresholdDefaultBytes;
+    }
+
+    bool coreUpToDate = false;
+    bool dirUpToDate = false;
+    bool needStbnUpload = false;
+    bool needWangUpload = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
+        dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
+        needStbnUpload = (resources.stbnData == nullptr);
+        needWangUpload = (resources.wangTilesData == nullptr) || (resources.wangLutData == nullptr);
+    }
+
+    std::uint64_t estimateBytes = 0;
+    bool overflow = false;
+    if (needStbnUpload) {
+        add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimateBytes, overflow);
+    }
+    if (needWangUpload) {
+        add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimateBytes, overflow);
+        add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimateBytes, overflow);
+    }
+
+    if (coreUpToDate && dirUpToDate) {
+        return estimateBytes;
+    }
+
+    if (coreUpToDate && !dirUpToDate) {
+        add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
+        return estimateBytes;
+    }
+
+    add_curve_upload_estimate_bytes(ws.densB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.densG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.densR, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensR, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Ax, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Ay, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Az, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.illum, estimateBytes, overflow);
+
+    for (int layer = 0; layer < 3; ++layer) {
+        for (int ch = 0; ch < 3; ++ch) {
+            add_vector_upload_estimate_bytes(ws.densityCurvesLayers[layer][ch], estimateBytes, overflow);
+        }
+    }
+
+    add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimateBytes, overflow);
+    add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimateBytes, overflow);
+
+    if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
+        const Print::Profile& p = ws.printRT->profile;
+        add_curve_upload_estimate_bytes(p.dcC, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(p.dcM, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(p.dcY, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensC_log.linear, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensM_log.linear, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensY_log.linear, estimateBytes, overflow);
+    }
+
+    // Keep a deterministic floor so large rebuilds always enter upload reservation admission.
+    if (estimateBytes < kUploadReservationThresholdDefaultBytes) {
+        estimateBytes = kUploadReservationThresholdDefaultBytes;
+    }
+    return estimateBytes;
+}
+
+std::uint64_t estimate_scan_lut_upload_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium) noexcept {
+    const Scanner::ScannerStaticKey& staticKey = negativeMedium ? ws.negativeStaticKey : ws.printStaticKey;
+    const std::uint32_t res =
+        ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
+    std::uint64_t voxelCount = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(res), static_cast<std::uint64_t>(res), voxelCount)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    if (!mul_u64_checked(voxelCount, static_cast<std::uint64_t>(res), voxelCount)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t values = 0;
+    if (!mul_u64_checked(voxelCount, 3ull, values)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(values, static_cast<std::uint64_t>(sizeof(double)), bytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+
+    const Scanner::ScannerMediumRuntime& medium = negativeMedium ? ws.negativeMediumRuntime : ws.printMediumRuntime;
+    if (!medium.tables || medium.tables->tablesHash == 0 || medium.range.digest == 0) {
+        return 0;
+    }
+    const std::uint64_t expectedHash = ResourceManager::make_scan_lut_key_digest(
+        static_cast<std::uint32_t>(medium.medium),
+        medium.tables->tablesHash,
+        medium.range.digest,
+        res);
+    if (expectedHash == 0) {
+        return 0;
+    }
+
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        const JuicerCuda::Resources::DeviceSpectralLut& dst =
+            negativeMedium ? resources.scanNegativeLut : resources.scanPrintLut;
+        cached = dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
+    }
+    return cached ? 0 : bytes;
+}
+
+std::uint64_t estimate_print_illuminant_upload_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    const Print::Runtime& prt,
+    const Print::Params& params) noexcept {
+    const int k = Spectral::gShape.K;
+    if (k <= 0) {
+        return 0;
+    }
+    const std::uint64_t wsCoreHash =
+        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    if (wsCoreHash == 0) {
+        return 0;
+    }
+    const float yKey = std::isfinite(params.yFilter) ? params.yFilter : 0.0f;
+    const float mKey = std::isfinite(params.mFilter) ? params.mFilter : 0.0f;
+    const float cKey = std::isfinite(params.cFilter) ? params.cFilter : 0.0f;
+    const std::uint64_t neutralFilterHash =
+        (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        cached =
+            resources.printIllumFiltered &&
+            resources.printIllumK == k &&
+            resources.printIllumShapeK == k &&
+            resources.printIllumCoreHash == wsCoreHash &&
+            resources.printIllumYShiftSteps == yKey &&
+            resources.printIllumMShiftSteps == mKey &&
+            resources.printIllumCShiftSteps == cKey &&
+            resources.printIllumNeutralFilterHash == neutralFilterHash;
+    }
+    if (cached) {
+        return 0;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(k),
+            static_cast<std::uint64_t>(sizeof(float)),
+            bytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return bytes;
+}
+
 void maybe_publish_manager_memory_snapshot(
     JuicerCuda::Resources& resources,
     bool enabled) noexcept {
@@ -1212,6 +1503,63 @@ private:
     ScratchPolicyClaim _claim{};
 };
 
+void release_upload_reservation_claim(UploadReservationClaim& claim) noexcept {
+    if (!claim.acquired) {
+        return;
+    }
+
+    UploadReservationState& state = upload_reservation_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto contextIt = state.byContext.find(claim.contextKey);
+    if (contextIt == state.byContext.end()) {
+        if (state.totalInFlightBytes >= claim.bytes) {
+            state.totalInFlightBytes -= claim.bytes;
+        }
+        else {
+            state.totalInFlightBytes = 0;
+        }
+        claim = UploadReservationClaim{};
+        global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
+        return;
+    }
+
+    UploadReservationContextState& contextState = contextIt->second;
+    if (contextState.inFlightBytes >= claim.bytes) {
+        contextState.inFlightBytes -= claim.bytes;
+    }
+    else {
+        contextState.inFlightBytes = 0;
+    }
+    if (state.totalInFlightBytes >= claim.bytes) {
+        state.totalInFlightBytes -= claim.bytes;
+    }
+    else {
+        state.totalInFlightBytes = 0;
+    }
+    if (contextState.inFlightBytes == 0) {
+        state.byContext.erase(contextIt);
+    }
+    global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
+    claim = UploadReservationClaim{};
+}
+
+class UploadReservationGuard {
+public:
+    explicit UploadReservationGuard(UploadReservationClaim&& claim) noexcept
+        : _claim(std::move(claim)) {
+    }
+
+    ~UploadReservationGuard() noexcept {
+        release_upload_reservation_claim(_claim);
+    }
+
+    UploadReservationGuard(const UploadReservationGuard&) = delete;
+    UploadReservationGuard& operator=(const UploadReservationGuard&) = delete;
+
+private:
+    UploadReservationClaim _claim{};
+};
+
 void trace_scratch_policy_decision(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -1300,6 +1648,44 @@ void trace_transient_reservation_decision(
         + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSTRS", msg);
+}
+
+void trace_upload_reservation_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t requestBytes,
+    std::uint64_t bytesInFlight,
+    std::uint64_t capBytes,
+    std::uint64_t thresholdBytes,
+    const ReservationDecision& decision,
+    bool criticalCurrentFrame,
+    int waitMs,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=upload_reservation")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " kind=" + to_cstr(ReservationKind::UploadCopy)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
+        + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
+        + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
+        + " granted=" + std::to_string(decision.granted ? 1 : 0)
+        + " should_wait=" + std::to_string(decision.shouldWait ? 1 : 0)
+        + " wait_ms=" + std::to_string(waitMs)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSUPL", msg);
 }
 
 void trace_budget_reclaim_retry(
@@ -1858,6 +2244,183 @@ bool acquire_scratch_policy_claim_with_wait(
 
         std::this_thread::sleep_for(std::chrono::milliseconds(kScratchWaitStepMs));
         waitedMs += kScratchWaitStepMs;
+    }
+}
+
+bool try_acquire_upload_reservation_claim(
+    const SubmissionTransaction& transaction,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    UploadReservationClaim& outClaim,
+    ReservationAttemptInfo& outReservation) noexcept {
+    outClaim = UploadReservationClaim{};
+    outReservation = ReservationAttemptInfo{};
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    UploadReservationState& state = upload_reservation_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+
+    outReservation.considered = true;
+    outReservation.bytesInFlight = state.totalInFlightBytes;
+    outReservation.capBytes = upload_reservation_cap_bytes(cfg);
+    outReservation.thresholdBytes = upload_reservation_threshold_bytes(cfg);
+
+    ReservationDecision reservationDecision{};
+    if (requestBytes < outReservation.thresholdBytes) {
+        reservationDecision.granted = true;
+        reservationDecision.reason = "below_threshold";
+    }
+    else {
+        ReservationInput reservationInput{};
+        reservationInput.kind = ReservationKind::UploadCopy;
+        reservationInput.requestBytes = requestBytes;
+        reservationInput.bytesInFlight = state.totalInFlightBytes;
+        reservationInput.capBytes = outReservation.capBytes;
+        reservationInput.criticalCurrentFrame = criticalCurrentFrame;
+        reservationDecision = classify_reservation(reservationInput);
+    }
+    outReservation.decision = reservationDecision;
+
+    if (!reservationDecision.granted) {
+        return false;
+    }
+
+    UploadReservationContextState& contextState =
+        state.byContext[transaction.snapshot.deviceContextKey];
+    std::uint64_t nextContextBytes = 0;
+    if (add_u64_checked(contextState.inFlightBytes, requestBytes, nextContextBytes)) {
+        contextState.inFlightBytes = nextContextBytes;
+    }
+    else {
+        contextState.inFlightBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t nextTotalBytes = 0;
+    if (add_u64_checked(state.totalInFlightBytes, requestBytes, nextTotalBytes)) {
+        state.totalInFlightBytes = nextTotalBytes;
+    }
+    else {
+        state.totalInFlightBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
+    outClaim.contextKey = transaction.snapshot.deviceContextKey;
+    outClaim.bytes = requestBytes;
+    outClaim.acquired = true;
+    return true;
+}
+
+bool acquire_upload_reservation_with_wait(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    UploadReservationClaim& outClaim,
+    std::string& outError) {
+    outClaim = UploadReservationClaim{};
+    outError.clear();
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    ResourceManagerState& state = global_state();
+    state.uploadReservationRequests.fetch_add(1, std::memory_order_relaxed);
+
+    ReservationAttemptInfo reservation{};
+    int waitedMs = 0;
+    while (true) {
+        if (try_acquire_upload_reservation_claim(
+                transaction,
+                requestBytes,
+                criticalCurrentFrame,
+                outClaim,
+                reservation)) {
+            state.uploadReservationGranted.fetch_add(1, std::memory_order_relaxed);
+            if (waitedMs > 0) {
+                trace_upload_reservation_decision(
+                    transaction,
+                    commandName,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "admit_after_wait");
+            }
+            else if (reservation.decision.reason &&
+                     std::string_view(reservation.decision.reason) == "critical_last_resort") {
+                trace_upload_reservation_decision(
+                    transaction,
+                    commandName,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "critical_last_resort");
+            }
+            return true;
+        }
+
+        const ReservationDecision& decision = reservation.decision;
+        if (!decision.shouldWait) {
+            state.uploadReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            trace_upload_reservation_decision(
+                transaction,
+                commandName,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                waitedMs,
+                "denied");
+            outError = std::string(kReservationDeferredPrefix)
+                + " command=" + (commandName ? commandName : "unknown")
+                + " kind=" + to_cstr(ReservationKind::UploadCopy)
+                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " wait_ms=" + std::to_string(waitedMs)
+                + " wait_budget_ms=" + std::to_string(kUploadReservationWaitMaxMs)
+                + " reason=" + (decision.reason ? decision.reason : "unspecified");
+            return false;
+        }
+
+        if (waitedMs >= kUploadReservationWaitMaxMs) {
+            state.uploadReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+            state.uploadReservationBypass.fetch_add(1, std::memory_order_relaxed);
+            trace_upload_reservation_decision(
+                transaction,
+                commandName,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                waitedMs,
+                "deferred_bypass_wait_budget");
+            return true;
+        }
+
+        const int sleepMs = std::max<int>(
+            1,
+            std::min<int>(
+                static_cast<int>(decision.waitMs > 0 ? decision.waitMs : 1),
+                kUploadReservationWaitStepMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        waitedMs += sleepMs;
     }
 }
 
@@ -2811,6 +3374,23 @@ bool command_ensure_uploaded(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_uploaded")) {
         return false;
     }
+    const std::uint64_t uploadRequestBytes =
+        estimate_upload_core_request_bytes(resources, ws);
+    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+        outError = "upload reservation request byte estimation overflow (core)";
+        return false;
+    }
+    UploadReservationClaim uploadClaim{};
+    if (!acquire_upload_reservation_with_wait(
+            transaction,
+            "command_ensure_uploaded",
+            uploadRequestBytes,
+            true,
+            uploadClaim,
+            outError)) {
+        return false;
+    }
+    UploadReservationGuard uploadGuard(std::move(uploadClaim));
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const bool ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
@@ -2828,6 +3408,23 @@ bool command_ensure_scan_lut(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_scan_lut")) {
         return false;
     }
+    const std::uint64_t uploadRequestBytes =
+        estimate_scan_lut_upload_bytes(resources, ws, negativeMedium);
+    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+        outError = "upload reservation request byte estimation overflow (scan LUT)";
+        return false;
+    }
+    UploadReservationClaim uploadClaim{};
+    if (!acquire_upload_reservation_with_wait(
+            transaction,
+            "command_ensure_scan_lut",
+            uploadRequestBytes,
+            true,
+            uploadClaim,
+            outError)) {
+        return false;
+    }
+    UploadReservationGuard uploadGuard(std::move(uploadClaim));
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
@@ -2861,6 +3458,23 @@ bool command_ensure_print_illuminant_filtered(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_print_illuminant_filtered")) {
         return false;
     }
+    const std::uint64_t uploadRequestBytes =
+        estimate_print_illuminant_upload_bytes(resources, ws, prt, params);
+    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+        outError = "upload reservation request byte estimation overflow (print illuminant)";
+        return false;
+    }
+    UploadReservationClaim uploadClaim{};
+    if (!acquire_upload_reservation_with_wait(
+            transaction,
+            "command_ensure_print_illuminant_filtered",
+            uploadRequestBytes,
+            true,
+            uploadClaim,
+            outError)) {
+        return false;
+    }
+    UploadReservationGuard uploadGuard(std::move(uploadClaim));
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const bool ok =
