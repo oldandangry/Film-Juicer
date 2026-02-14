@@ -385,6 +385,19 @@ struct ManagerMemorySnapshot {
     bool overflow = false;
 };
 
+struct TierBudgetSnapshot {
+    std::array<std::uint64_t, 4> activeBytes{};
+    std::array<std::uint64_t, 4> reclaimableBytes{};
+    std::array<std::uint64_t, 4> targetBytes{};
+    std::array<std::uint64_t, 4> overTargetBytes{};
+    std::uint64_t totalActiveBytes = 0;
+    std::uint64_t totalReclaimableBytes = 0;
+    bool anyOverTarget = false;
+    ResourceTier dominantOverTargetTier = ResourceTier::Immutable;
+    std::uint64_t dominantOverTargetBytes = 0;
+    bool overflow = false;
+};
+
 struct HeadroomTelemetry {
     std::uint64_t effectiveHeadroomBytes = 0;
     std::uint64_t driverFreeBytes = 0;
@@ -490,6 +503,7 @@ constexpr std::uint64_t kStbnUploadDefaultBytes = 512ull * 512ull * 256ull;
 constexpr std::uint64_t kWangTilesUploadDefaultBytes = 256ull * 256ull * 16ull;
 constexpr std::uint64_t kWangLutUploadDefaultBytes = 8ull * 8ull * 8ull * 8ull;
 constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024ull;
+constexpr std::uint64_t kBasisPointsDenominator = 10000ull;
 constexpr int kBuilderReservationWaitStepMs = 1;
 constexpr int kBuilderReservationWaitMaxMs = 8;
 constexpr std::uint64_t kBuilderFairnessTickMs = 4;
@@ -526,6 +540,9 @@ inline bool tier_circuit_policy_enabled(const ResourceManagerConfigEffective& cf
         cfg.tierErrorThreshold > 0 &&
         cfg.tierCircuitOpenMs > 0;
 }
+
+std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept;
+std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey& key) noexcept;
 
 bool contains_ascii_case_insensitive(const std::string& haystack, const char* needle) noexcept {
     if (!needle || !*needle) {
@@ -705,6 +722,51 @@ inline bool mul_u64_checked(std::uint64_t a, std::uint64_t b, std::uint64_t& out
     }
     out = a * b;
     return true;
+}
+
+inline std::uint64_t& tier_bytes_at(
+    std::array<std::uint64_t, 4>& values,
+    ResourceTier tier) noexcept {
+    return values[tier_circuit_index(tier)];
+}
+
+inline const std::uint64_t& tier_bytes_at(
+    const std::array<std::uint64_t, 4>& values,
+    ResourceTier tier) noexcept {
+    return values[tier_circuit_index(tier)];
+}
+
+std::uint64_t tier_target_basis_points(
+    const ResourceManagerConfigEffective& cfg,
+    ResourceTier tier) noexcept {
+    switch (tier) {
+    case ResourceTier::Immutable:
+        return cfg.tierTargetImmutableBp;
+    case ResourceTier::Lut:
+        return cfg.tierTargetLutBp;
+    case ResourceTier::Scratch:
+        return cfg.tierTargetScratchBp;
+    case ResourceTier::Graph:
+        return cfg.tierTargetGraphBp;
+    default:
+        return 0;
+    }
+}
+
+std::uint64_t tier_target_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    ResourceTier tier) noexcept {
+    if (cfg.managerSoftTargetBytes == 0) {
+        return 0;
+    }
+    const std::uint64_t bp = std::min<std::uint64_t>(
+        tier_target_basis_points(cfg, tier),
+        kBasisPointsDenominator);
+    std::uint64_t weighted = 0;
+    if (!mul_u64_checked(cfg.managerSoftTargetBytes, bp, weighted)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return weighted / kBasisPointsDenominator;
 }
 
 inline std::size_t saturating_u64_to_size_t(std::uint64_t value) noexcept {
@@ -1103,6 +1165,163 @@ void add_resources_active_bytes_locked(
             snapshot.overflow = true;
         }
         add_snapshot_bytes(snapshot, bytes);
+    }
+}
+
+void add_scratch_tier_bytes_locked(
+    const JuicerCuda::Resources& resources,
+    ManagerMemorySnapshot& scratchSnapshot) noexcept {
+    bool overflow = false;
+    const std::uint64_t sharedTmpBytes =
+        bytes_for_plane_extent_u64(resources.sharedTmpWidth, resources.sharedTmpHeight, overflow);
+    if (overflow) {
+        scratchSnapshot.overflow = true;
+    }
+    if (resources.sharedTmpPlane) {
+        add_snapshot_bytes(scratchSnapshot, sharedTmpBytes);
+    }
+
+    add_optics_scratch_bytes(resources.scannerScratch, scratchSnapshot);
+    add_spatial_dir_scratch_bytes(resources.spatialDirScratch, scratchSnapshot);
+
+    if (resources.scanErrorFlag) {
+        add_snapshot_bytes(scratchSnapshot, sizeof(int));
+    }
+    if (resources.scanErrorHost) {
+        add_snapshot_bytes(scratchSnapshot, sizeof(int));
+    }
+
+    if (resources.autoExposureExposureScale) add_snapshot_bytes(scratchSnapshot, sizeof(float));
+    if (resources.autoExposureAutoEV) add_snapshot_bytes(scratchSnapshot, sizeof(double));
+    if (resources.autoExposureValid) add_snapshot_bytes(scratchSnapshot, sizeof(int));
+
+    if (resources.autoExposureScratch.maxYBits) {
+        add_snapshot_bytes(scratchSnapshot, sizeof(unsigned int));
+    }
+    if (resources.autoExposureScratch.histogram) {
+        add_snapshot_bytes(scratchSnapshot, static_cast<std::uint64_t>(2048u) * sizeof(unsigned int));
+    }
+    if (resources.autoExposureScratch.weightsX && resources.autoExposureScratch.weightsXCapacity > 0) {
+        bool localOverflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.weightsXCapacity),
+            sizeof(float),
+            localOverflow);
+        if (localOverflow) {
+            scratchSnapshot.overflow = true;
+        }
+        add_snapshot_bytes(scratchSnapshot, bytes);
+    }
+    if (resources.autoExposureScratch.weightsY && resources.autoExposureScratch.weightsYCapacity > 0) {
+        bool localOverflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.weightsYCapacity),
+            sizeof(float),
+            localOverflow);
+        if (localOverflow) {
+            scratchSnapshot.overflow = true;
+        }
+        add_snapshot_bytes(scratchSnapshot, bytes);
+    }
+    if (resources.autoExposureScratch.partialsA && resources.autoExposureScratch.partialCapacity > 0) {
+        bool localOverflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.partialCapacity),
+            sizeof(JuicerCudaAutoExposurePartial),
+            localOverflow);
+        if (localOverflow) {
+            scratchSnapshot.overflow = true;
+        }
+        add_snapshot_bytes(scratchSnapshot, bytes);
+    }
+    if (resources.autoExposureScratch.partialsB && resources.autoExposureScratch.partialCapacity > 0) {
+        bool localOverflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.autoExposureScratch.partialCapacity),
+            sizeof(JuicerCudaAutoExposurePartial),
+            localOverflow);
+        if (localOverflow) {
+            scratchSnapshot.overflow = true;
+        }
+        add_snapshot_bytes(scratchSnapshot, bytes);
+    }
+}
+
+void fill_tier_budget_snapshot(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const ResourceManagerConfigEffective& cfg,
+    const ManagerMemorySnapshot& managerMemory,
+    TierBudgetSnapshot& out) noexcept {
+    out = TierBudgetSnapshot{};
+
+    ManagerMemorySnapshot lutSnapshot{};
+    ManagerMemorySnapshot scratchSnapshot{};
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        add_scan_lut_bytes(resources.scanNegativeLut, lutSnapshot);
+        add_scan_lut_bytes(resources.scanPrintLut, lutSnapshot);
+        add_scratch_tier_bytes_locked(resources, scratchSnapshot);
+    }
+
+    const std::uint64_t graphActiveBytes =
+        estimate_graph_cache_active_bytes_for_context(transaction.snapshot.deviceContextKey);
+    const std::uint64_t managerActiveBytesNoGraph =
+        (managerMemory.activeBytes >= graphActiveBytes)
+        ? (managerMemory.activeBytes - graphActiveBytes)
+        : 0;
+    const std::uint64_t lutActiveBytes = std::min(lutSnapshot.activeBytes, managerActiveBytesNoGraph);
+    const std::uint64_t remainingAfterLut = managerActiveBytesNoGraph - lutActiveBytes;
+    const std::uint64_t scratchActiveBytes = std::min(scratchSnapshot.activeBytes, remainingAfterLut);
+    const std::uint64_t immutableActiveBytes = remainingAfterLut - scratchActiveBytes;
+
+    tier_bytes_at(out.activeBytes, ResourceTier::Immutable) = immutableActiveBytes;
+    tier_bytes_at(out.activeBytes, ResourceTier::Lut) = lutActiveBytes;
+    tier_bytes_at(out.activeBytes, ResourceTier::Scratch) = scratchActiveBytes;
+    tier_bytes_at(out.activeBytes, ResourceTier::Graph) = graphActiveBytes;
+
+    const std::uint64_t immutableReclaimableBytes =
+        (managerMemory.reclaimableBytes >= graphActiveBytes)
+        ? (managerMemory.reclaimableBytes - graphActiveBytes)
+        : 0;
+    tier_bytes_at(out.reclaimableBytes, ResourceTier::Immutable) = immutableReclaimableBytes;
+    tier_bytes_at(out.reclaimableBytes, ResourceTier::Lut) = 0;
+    tier_bytes_at(out.reclaimableBytes, ResourceTier::Scratch) = 0;
+    tier_bytes_at(out.reclaimableBytes, ResourceTier::Graph) = graphActiveBytes;
+
+    out.totalActiveBytes = managerActiveBytesNoGraph;
+    if (!add_u64_checked(out.totalActiveBytes, graphActiveBytes, out.totalActiveBytes)) {
+        out.totalActiveBytes = std::numeric_limits<std::uint64_t>::max();
+        out.overflow = true;
+    }
+    out.totalReclaimableBytes = immutableReclaimableBytes;
+    if (!add_u64_checked(
+            out.totalReclaimableBytes,
+            tier_bytes_at(out.reclaimableBytes, ResourceTier::Graph),
+            out.totalReclaimableBytes)) {
+        out.totalReclaimableBytes = std::numeric_limits<std::uint64_t>::max();
+        out.overflow = true;
+    }
+
+    constexpr ResourceTier kTierOrder[4] = {
+        ResourceTier::Immutable,
+        ResourceTier::Lut,
+        ResourceTier::Scratch,
+        ResourceTier::Graph
+    };
+    for (ResourceTier tier : kTierOrder) {
+        const std::uint64_t targetBytes = tier_target_bytes(cfg, tier);
+        tier_bytes_at(out.targetBytes, tier) = targetBytes;
+        const std::uint64_t activeBytes = tier_bytes_at(out.activeBytes, tier);
+        if (activeBytes > targetBytes) {
+            const std::uint64_t overBytes = activeBytes - targetBytes;
+            tier_bytes_at(out.overTargetBytes, tier) = overBytes;
+            out.anyOverTarget = true;
+            if (overBytes > out.dominantOverTargetBytes) {
+                out.dominantOverTargetBytes = overBytes;
+                out.dominantOverTargetTier = tier;
+            }
+        }
     }
 }
 
@@ -2330,6 +2549,81 @@ void trace_tier_circuit_event(
     JTRACE("MSCB", msg);
 }
 
+void trace_tier_budget_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureLane lane,
+    PressureState pressureState,
+    const TierBudgetSnapshot& tierBudget,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    bool requestReclaimPass,
+    std::uint64_t scratchTrimmedEntries,
+    std::uint64_t graphEvictedEntries,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=tier_budget")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " lane=" + to_cstr(lane)
+        + " state=" + to_cstr(pressureState)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " request_reclaim_pass=" + std::to_string(requestReclaimPass ? 1 : 0)
+        + " any_over_target=" + std::to_string(tierBudget.anyOverTarget ? 1 : 0)
+        + " dominant_tier=" + to_cstr(tierBudget.dominantOverTargetTier)
+        + " dominant_over_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tierBudget.dominantOverTargetBytes))
+        + " immutable_active_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Immutable)))
+        + " immutable_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Immutable)))
+        + " immutable_over_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Immutable)))
+        + " immutable_reclaimable_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Immutable)))
+        + " lut_active_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Lut)))
+        + " lut_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Lut)))
+        + " lut_over_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Lut)))
+        + " lut_reclaimable_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Lut)))
+        + " scratch_active_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Scratch)))
+        + " scratch_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Scratch)))
+        + " scratch_over_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Scratch)))
+        + " scratch_reclaimable_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Scratch)))
+        + " graph_active_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.activeBytes, ResourceTier::Graph)))
+        + " graph_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.targetBytes, ResourceTier::Graph)))
+        + " graph_over_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Graph)))
+        + " graph_reclaimable_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tier_bytes_at(tierBudget.reclaimableBytes, ResourceTier::Graph)))
+        + " total_active_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.totalActiveBytes))
+        + " total_reclaimable_bytes=" + std::to_string(
+            static_cast<unsigned long long>(tierBudget.totalReclaimableBytes))
+        + " scratch_trimmed_entries=" + std::to_string(static_cast<unsigned long long>(scratchTrimmedEntries))
+        + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(graphEvictedEntries))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSTGT", msg);
+}
+
 void trace_budget_reclaim_retry(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -2700,6 +2994,26 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     const char* commandName) {
     PressureCheckpoint checkpoint{};
     checkpoint.memory = snapshot_manager_memory(resources);
+
+    const std::uint64_t graphActiveBytes =
+        estimate_graph_cache_active_bytes_for_context(transaction.snapshot.deviceContextKey);
+    std::uint64_t nextActiveBytes = 0;
+    if (add_u64_checked(checkpoint.memory.activeBytes, graphActiveBytes, nextActiveBytes)) {
+        checkpoint.memory.activeBytes = nextActiveBytes;
+    }
+    else {
+        checkpoint.memory.activeBytes = std::numeric_limits<std::uint64_t>::max();
+        checkpoint.memory.overflow = true;
+    }
+    std::uint64_t nextReclaimableBytes = 0;
+    if (add_u64_checked(checkpoint.memory.reclaimableBytes, graphActiveBytes, nextReclaimableBytes)) {
+        checkpoint.memory.reclaimableBytes = nextReclaimableBytes;
+    }
+    else {
+        checkpoint.memory.reclaimableBytes = std::numeric_limits<std::uint64_t>::max();
+        checkpoint.memory.overflow = true;
+    }
+
     publish_manager_memory_snapshot(checkpoint.memory);
 
     const HeadroomTelemetry headroom = sample_headroom_telemetry();
@@ -2957,6 +3271,58 @@ bool run_reap_pass_for_pressure(
     return true;
 }
 
+void run_tier_target_pretrim(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    PressureLane lane,
+    PressureState pressureState,
+    const TierBudgetSnapshot& tierBudget,
+    bool& outDidWork,
+    std::uint64_t& outScratchTrimmedEntries,
+    std::uint64_t& outGraphEvictedEntries) noexcept {
+    (void)resources;
+    outDidWork = false;
+    outScratchTrimmedEntries = 0;
+    outGraphEvictedEntries = 0;
+
+    const bool constrainedOrWorse =
+        pressureState == PressureState::Constrained ||
+        pressureState == PressureState::Critical ||
+        pressureState == PressureState::Emergency;
+    const bool allowProactiveTrim = constrainedOrWorse || lane == PressureLane::Builder;
+
+    const std::uint64_t graphOverTarget =
+        tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Graph);
+    const std::uint64_t scratchOverTarget =
+        tier_bytes_at(tierBudget.overTargetBytes, ResourceTier::Scratch);
+
+    if (graphOverTarget > 0 && allowProactiveTrim) {
+        outGraphEvictedEntries =
+            evict_noncritical_graph_entries_for_context(transaction.snapshot.deviceContextKey);
+    }
+    if (scratchOverTarget > 0 && allowProactiveTrim) {
+        outScratchTrimmedEntries =
+            trim_large_frame_quarantine_for_context(transaction.snapshot.deviceContextKey);
+    }
+
+    outDidWork = (outGraphEvictedEntries > 0) || (outScratchTrimmedEntries > 0);
+    if (outDidWork && JTRACE_ENABLED(3)) {
+        trace_tier_budget_event(
+            transaction,
+            commandName,
+            lane,
+            pressureState,
+            tierBudget,
+            0,
+            false,
+            false,
+            outScratchTrimmedEntries,
+            outGraphEvictedEntries,
+            "tier_target_pretrim");
+    }
+}
+
 bool enforce_pressure_gate(
     const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -2976,6 +3342,8 @@ bool enforce_pressure_gate(
     const bool uploadCapSaturated = uploadCapEnabled && (uploadBytesInFlight >= uploadCapBytes);
     const bool nonCritical = !criticalCurrentFrame;
     PressureState pressureState = PressureState::Normal;
+    TierBudgetSnapshot tierBudget{};
+    bool tierBudgetValid = false;
     const bool pressureEnabled = pressure_policy_enabled(cfg);
     if (pressureEnabled) {
         PressureCheckpoint checkpoint = evaluate_pressure_checkpoint(
@@ -2986,12 +3354,72 @@ bool enforce_pressure_gate(
             commandName);
         outRequestReclaimPass = checkpoint.decision.requestReclaimPass && (requestBytes > 0);
         pressureState = checkpoint.decision.state;
+
+        fill_tier_budget_snapshot(
+            transaction,
+            resources,
+            cfg,
+            checkpoint.memory,
+            tierBudget);
+        tierBudgetValid = true;
+        if (requestBytes > 0 && tierBudget.anyOverTarget) {
+            outRequestReclaimPass = true;
+        }
+
+        std::uint64_t scratchTrimmedEntries = 0;
+        std::uint64_t graphEvictedEntries = 0;
+        bool didTierPretrim = false;
+        run_tier_target_pretrim(
+            transaction,
+            resources,
+            commandName,
+            lane,
+            pressureState,
+            tierBudget,
+            didTierPretrim,
+            scratchTrimmedEntries,
+            graphEvictedEntries);
+        if (didTierPretrim) {
+            outRequestReclaimPass = outRequestReclaimPass || (requestBytes > 0);
+        }
+
+        if (tierBudget.anyOverTarget || didTierPretrim || JTRACE_ENABLED(3)) {
+            trace_tier_budget_event(
+                transaction,
+                commandName,
+                lane,
+                pressureState,
+                tierBudget,
+                requestBytes,
+                criticalCurrentFrame,
+                outRequestReclaimPass,
+                scratchTrimmedEntries,
+                graphEvictedEntries,
+                didTierPretrim ? "tier_target_pretrim" : "tier_target_observation");
+        }
+    }
+    else if (JTRACE_ENABLED(3)) {
+        trace_tier_budget_event(
+            transaction,
+            commandName,
+            lane,
+            pressureState,
+            tierBudget,
+            requestBytes,
+            criticalCurrentFrame,
+            outRequestReclaimPass,
+            0,
+            0,
+            "tier_budget_policy_disabled");
     }
 
     if (nonCritical &&
         (pressureState == PressureState::Critical ||
          pressureState == PressureState::Emergency)) {
         const char* denyReason = "deny_non_critical_growth";
+        if (tierBudgetValid && tierBudget.anyOverTarget) {
+            denyReason = "deny_non_critical_growth_tier_over_target";
+        }
         if (pressureState == PressureState::Emergency) {
             if (lane == PressureLane::Upload) {
                 global_state().uploadEmergencyShedDenials.fetch_add(1, std::memory_order_relaxed);
@@ -4567,6 +4995,38 @@ void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
     bucket.useTick = 0;
 }
 
+std::uint64_t estimate_base_graph_bucket_active_bytes_locked(
+    const BaseGraphBucketState& bucket) noexcept {
+    std::uint64_t totalBytes = 0;
+    for (const BaseGraphEntry& entry : bucket.entries) {
+        const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
+        std::uint64_t nextBytes = 0;
+        if (!add_u64_checked(totalBytes, entryBytes, nextBytes)) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        totalBytes = nextBytes;
+    }
+    return totalBytes;
+}
+
+std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept {
+    BaseGraphCacheState& state = base_graph_cache_state();
+    std::shared_ptr<BaseGraphBucketState> bucket;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byContext.find(key);
+        if (it == state.byContext.end()) {
+            return 0;
+        }
+        bucket = it->second;
+    }
+    if (!bucket) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(bucket->mutex);
+    return estimate_base_graph_bucket_active_bytes_locked(*bucket);
+}
+
 std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey& key) noexcept {
     BaseGraphCacheState& state = base_graph_cache_state();
     std::shared_ptr<BaseGraphBucketState> bucket;
@@ -4726,6 +5186,10 @@ BaseGraphEntry* build_base_graph_entry(
     return &bucket.entries.back();
 }
 #else
+std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey&) noexcept {
+    return 0;
+}
+
 std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey&) noexcept {
     return 0;
 }
