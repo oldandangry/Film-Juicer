@@ -34,7 +34,6 @@
 #include "mainProcessing.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-#include "Cuda/JuicerCudaAutoExposure.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #endif
 
@@ -1394,100 +1393,28 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         if (cameraAutoEnabled) {
             double Yexp = 0.0;
             bool haveY = false;
-            if (args.isEnabledCudaRender) {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-                const OfxRectI imgBounds = srcImg->getBounds();
-                const OFX::PixelComponentEnum comps = srcImg->getPixelComponents();
-                const int nComponents =
-                    (comps == OFX::ePixelComponentRGBA) ? 4 :
-                    (comps == OFX::ePixelComponentRGB) ? 3 :
-                    (comps == OFX::ePixelComponentAlpha) ? 1 : 0;
-                if (!(nComponents == 3 || nComponents == 4)) {
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-                }
-                const std::ptrdiff_t rowBytes = srcImg->getRowBytes();
-                if (rowBytes <= 0) {
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-                }
-                const void* srcDevice = srcImg->getPixelData();
-                if (!srcDevice) {
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-                }
-
-                const char* errMsg = nullptr;
-                const int rc = (meteringMethod == static_cast<int>(MeteringMethod::Median))
-                    ? juicer_cuda_measure_median_Y(
-                        srcDevice,
-                        static_cast<std::size_t>(rowBytes),
-                        imgBounds.x1,
-                        imgBounds.y1,
-                        imgBounds.x2,
-                        imgBounds.y2,
-                        meterBounds.x1,
-                        meterBounds.y1,
-                        meterBounds.x2,
-                        meterBounds.y2,
-                        nComponents,
-                        inputColorSpaceIndex,
-                        applyInputCctfDecoding ? 1 : 0,
-                        inputRgbToXYZ.m,
-                        &Yexp,
-                        args.pCudaStream,
-                        &errMsg)
-                    : juicer_cuda_measure_center_weighted_Y(
-                        srcDevice,
-                        static_cast<std::size_t>(rowBytes),
-                        imgBounds.x1,
-                        imgBounds.y1,
-                        imgBounds.x2,
-                        imgBounds.y2,
-                        meterBounds.x1,
-                        meterBounds.y1,
-                        meterBounds.x2,
-                        meterBounds.y2,
-                        nComponents,
-                        inputColorSpaceIndex,
-                        applyInputCctfDecoding ? 1 : 0,
-                        inputRgbToXYZ.m,
-                        &Yexp,
-                        args.pCudaStream,
-                        &errMsg);
-                if (rc == 0) {
-                    haveY = true;
-                } else {
-                    JTRACE("CUDA", std::string("CUDA auto-exposure metering failed: ") + (errMsg ? errMsg : "(unknown)"));
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                    throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-                }
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-            } else {
-                if (meteringMethod == static_cast<int>(MeteringMethod::Median)) {
-                    Yexp = measure_median_Y_DWG(
-                        srcImg,
-                        meterBounds,
-                        inputColorSpace,
-                        inputRgbToXYZ,
-                        applyInputCctfDecoding);
-                } else {
-                    Yexp = measure_center_weighted_Y_DWG_cached(
-                        srcImg,
-                        meterBounds,
-                        sigma,
-                        _state.get(),
-                        renderScaleX,
-                        renderScaleY,
-                        clipToken,
-                        inputColorSpace,
-                        inputRgbToXYZ,
-                        applyInputCctfDecoding);
-                }
-                haveY = true;
+            if (meteringMethod == static_cast<int>(MeteringMethod::Median)) {
+                Yexp = measure_median_Y_DWG(
+                    srcImg,
+                    meterBounds,
+                    inputColorSpace,
+                    inputRgbToXYZ,
+                    applyInputCctfDecoding);
             }
+            else {
+                Yexp = measure_center_weighted_Y_DWG_cached(
+                    srcImg,
+                    meterBounds,
+                    sigma,
+                    _state.get(),
+                    renderScaleX,
+                    renderScaleY,
+                    clipToken,
+                    inputColorSpace,
+                    inputRgbToXYZ,
+                    applyInputCctfDecoding);
+            }
+            haveY = true;
 
             if (haveY) {
                 if (Yexp > 0.0 && kCameraMeterTargetY > 0.0) {
