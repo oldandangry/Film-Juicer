@@ -2545,19 +2545,72 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
         return;
     }
 
-    std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>(*src);
-    WorkingState* target = next.get();
+    auto copy_immutable_for_coupler_overlay = [](const WorkingState& in, WorkingState& out) {
+        out.densB = in.densB;
+        out.densG = in.densG;
+        out.densR = in.densR;
+        out.densityCurvesLayers = in.densityCurvesLayers;
+        out.hasDensityCurvesLayers = in.hasDensityCurvesLayers;
+        out.grain = in.grain;
+        out.halation = in.halation;
+        out.negativeGlare = in.negativeGlare;
+        out.printGlare = in.printGlare;
+        out.sensB = in.sensB;
+        out.sensG = in.sensG;
+        out.sensR = in.sensR;
+        out.negSensB = in.negSensB;
+        out.negSensG = in.negSensG;
+        out.negSensR = in.negSensR;
+        out.baseMin = in.baseMin;
+        out.baseMid = in.baseMid;
+        out.hasBaseline = in.hasBaseline;
+        out.baselineMixReference = in.baselineMixReference;
+        out.printBaselineMixReference = in.printBaselineMixReference;
+        out.gammaFactorB = in.gammaFactorB;
+        out.gammaFactorG = in.gammaFactorG;
+        out.gammaFactorR = in.gammaFactorR;
+        out.tablesView = in.tablesView;
+        out.tablesPrint = in.tablesPrint;
+        out.tablesRef = in.tablesRef;
+        out.tablesScan = in.tablesScan;
+        out.negativeScannerIlluminant = in.negativeScannerIlluminant;
+        out.negativeDensityRange = in.negativeDensityRange;
+        out.negativeStaticKey = in.negativeStaticKey;
+        out.negativeColorRuntime = in.negativeColorRuntime;
+        out.negativeMediumRuntime = in.negativeMediumRuntime;
+        out.printScannerIlluminant = in.printScannerIlluminant;
+        out.printDensityRange = in.printDensityRange;
+        out.printStaticKey = in.printStaticKey;
+        out.printColorRuntime = in.printColorRuntime;
+        out.printMediumRuntime = in.printMediumRuntime;
+        out.negativeScannerValid = in.negativeScannerValid;
+        out.printScannerValid = in.printScannerValid;
+        out.printGlareCompensated = in.printGlareCompensated;
+        for (int i = 0; i < 9; ++i) {
+            out.spdSInv[i] = in.spdSInv[i];
+        }
+        out.spdReady = in.spdReady;
+        out.filmRaw = in.filmRaw;
+        out.printRT = in.printRT;
+        out.negParams = in.negParams;
 
-    target->negativeMediumRuntime.tables = (target->tablesScan.K > 0) ? &target->tablesScan : nullptr;
-    target->negativeMediumRuntime.color = &target->negativeColorRuntime;
-    if (target->printScannerValid) {
-        target->printMediumRuntime.tables = (target->tablesPrint.K > 0) ? &target->tablesPrint : nullptr;
-        target->printMediumRuntime.color = &target->printColorRuntime;
-    }
-    else {
-        target->printMediumRuntime.tables = nullptr;
-        target->printMediumRuntime.color = nullptr;
-    }
+        out.negativeMediumRuntime.tables = (out.tablesScan.K > 0) ? &out.tablesScan : nullptr;
+        out.negativeMediumRuntime.color = &out.negativeColorRuntime;
+        out.negativeMediumRuntime.staticKey = out.negativeStaticKey;
+        if (out.printScannerValid) {
+            out.printMediumRuntime.tables = (out.tablesPrint.K > 0) ? &out.tablesPrint : nullptr;
+            out.printMediumRuntime.color = &out.printColorRuntime;
+        }
+        else {
+            out.printMediumRuntime.tables = nullptr;
+            out.printMediumRuntime.color = nullptr;
+        }
+        out.printMediumRuntime.staticKey = out.printStaticKey;
+    };
+
+    std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
+    WorkingState* target = next.get();
+    copy_immutable_for_coupler_overlay(*src, *target);
 
     const Profiles::DirCouplersProfile& dirCfg = S.base.dirCouplers;
 
@@ -2685,6 +2738,9 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     target->dMax[0] = dirRT.dMax[0];
     target->dMax[1] = dirRT.dMax[1];
     target->dMax[2] = dirRT.dMax[2];
+    target->negParams.DmaxY = target->dMax[0];
+    target->negParams.DmaxM = target->dMax[1];
+    target->negParams.DmaxC = target->dMax[2];
 
     {
         for (int r = 0; r < 3; ++r) {
