@@ -2340,6 +2340,12 @@ bool begin_submission(
         outTransaction.committed = false;
         return false;
     }
+    if (!registry_note_submission_begin(outTransaction.snapshot.deviceContextKey)) {
+        outError = "registry submission-begin tracking rejected";
+        outTransaction.active = false;
+        outTransaction.committed = false;
+        return false;
+    }
     telemetry_trace_schema_announcement(
         outTransaction.transactionId,
         outTransaction.snapshot.snapshotId,
@@ -2724,6 +2730,7 @@ bool commit_submission(
         outError = "submission transaction is not active";
         return false;
     }
+    (void)registry_note_submission_end(transaction.snapshot.deviceContextKey);
     transaction.committed = true;
     transaction.active = false;
     telemetry_record_commit_submission();
@@ -3432,6 +3439,7 @@ void rollback_submission(
     if (!transaction.active) {
         return;
     }
+    (void)registry_note_submission_end(transaction.snapshot.deviceContextKey);
     transaction.committed = false;
     transaction.active = false;
     telemetry_record_rollback_submission();

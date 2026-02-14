@@ -67,6 +67,8 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> reserveCrossingEvents{ 0 };
     std::atomic<std::uint64_t> retireReapPasses{ 0 };
     std::atomic<std::uint64_t> retireReapBytes{ 0 };
+    std::atomic<std::uint64_t> registryLiveManagers{ 0 };
+    std::atomic<std::uint64_t> registryReapEvents{ 0 };
     std::atomic<std::uint64_t> managerActiveBytes{ 0 };
     std::atomic<std::uint64_t> managerReclaimableBytes{ 0 };
     std::atomic<std::uint64_t> managerRetirePendingBytes{ 0 };

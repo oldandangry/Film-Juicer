@@ -14,6 +14,8 @@ struct ResourceManagerConfigRaw {
     std::uint32_t keySchemaVersion = 1;
     std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
     bool allowShadowMode = true;
+    std::uint32_t maxLiveManagersPerProcess = 16;
+    std::uint32_t managerIdleReapMs = 3000;
     std::uint64_t managerSoftTargetBytes = 0;
     std::uint64_t managerReserveBytes = 0;
     std::uint32_t pressureSampleIntervalMs = 250;
@@ -28,6 +30,8 @@ struct ResourceManagerConfigEffective {
     std::uint32_t keySchemaVersion = 1;
     std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
     bool allowShadowMode = true;
+    std::uint32_t maxLiveManagersPerProcess = 16;
+    std::uint32_t managerIdleReapMs = 3000;
     std::uint64_t managerSoftTargetBytes = 0;
     std::uint64_t managerReserveBytes = 0;
     std::uint32_t pressureSampleIntervalMs = 250;

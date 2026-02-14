@@ -9,6 +9,10 @@ namespace ResourceManager {
 
 ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw) {
     constexpr std::uint64_t kBasisPointsDenom = 10000ull;
+    constexpr std::uint32_t kMinLiveManagers = 8u;
+    constexpr std::uint32_t kMaxLiveManagers = 32u;
+    constexpr std::uint32_t kMinIdleReapMs = 2000u;
+    constexpr std::uint32_t kMaxIdleReapMs = 5000u;
     constexpr std::uint32_t kMinPressureSampleMs = 10u;
     constexpr std::uint32_t kMaxPressureSampleMs = 5000u;
     constexpr std::uint32_t kMaxReclaimRetryAttempts = 3u;
@@ -17,6 +21,14 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     out.keySchemaVersion = std::max<std::uint32_t>(1u, raw.keySchemaVersion);
     out.traceSchemaVersion = sanitize_trace_schema_version(raw.traceSchemaVersion);
     out.allowShadowMode = raw.allowShadowMode;
+    out.maxLiveManagersPerProcess = std::clamp(
+        raw.maxLiveManagersPerProcess,
+        kMinLiveManagers,
+        kMaxLiveManagers);
+    out.managerIdleReapMs = std::clamp(
+        raw.managerIdleReapMs,
+        kMinIdleReapMs,
+        kMaxIdleReapMs);
     out.managerSoftTargetBytes = raw.managerSoftTargetBytes;
     out.managerReserveBytes = std::min(raw.managerReserveBytes, out.managerSoftTargetBytes);
     out.pressureSampleIntervalMs = std::clamp(
