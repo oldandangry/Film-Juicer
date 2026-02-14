@@ -70,6 +70,8 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> fragmentationRecoveryGraphEvictedEntries{ 0 };
     std::atomic<std::uint64_t> pressureStateTransitions{ 0 };
     std::atomic<std::uint64_t> reserveCrossingEvents{ 0 };
+    std::atomic<std::uint64_t> headroomSourceSwitches{ 0 };
+    std::atomic<std::uint64_t> allocFailAboveHeadroomEvents{ 0 };
     std::atomic<std::uint64_t> retireReapPasses{ 0 };
     std::atomic<std::uint64_t> retireReapBytes{ 0 };
     std::atomic<std::uint64_t> registryLiveManagers{ 0 };
@@ -78,6 +80,9 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> managerReclaimableBytes{ 0 };
     std::atomic<std::uint64_t> managerRetirePendingBytes{ 0 };
     std::atomic<std::uint64_t> transientNonManagerBytes{ 0 };
+    std::atomic<std::uint64_t> allocatorEffectiveHeadroomBytes{ 0 };
+    std::atomic<std::uint64_t> allocatorPoolReservedBytes{ 0 };
+    std::atomic<std::uint64_t> allocatorPoolUsedBytes{ 0 };
     std::atomic<std::uint64_t> transientReservationRequests{ 0 };
     std::atomic<std::uint64_t> transientReservationGranted{ 0 };
     std::atomic<std::uint64_t> transientReservationDeferred{ 0 };

@@ -259,6 +259,8 @@ struct PressureContextState {
     PressureDecision lastDecision{};
     PressureState lastState = PressureState::Normal;
     bool reserveCrossed = false;
+    bool headroomSourceValid = false;
+    HeadroomSource lastHeadroomSource = HeadroomSource::FreeVramOnly;
 };
 
 struct PressurePolicyState {
@@ -277,6 +279,15 @@ struct ManagerMemorySnapshot {
     std::uint64_t retirePendingBytes = 0;
     std::uint64_t transientNonManagerBytes = 0;
     bool overflow = false;
+};
+
+struct HeadroomTelemetry {
+    std::uint64_t effectiveHeadroomBytes = 0;
+    std::uint64_t driverFreeBytes = 0;
+    std::uint64_t allocatorPoolReservedBytes = 0;
+    std::uint64_t allocatorPoolUsedBytes = 0;
+    HeadroomSource source = HeadroomSource::FreeVramOnly;
+    bool poolTelemetryAvailable = false;
 };
 
 struct PressureCheckpoint {
@@ -1278,6 +1289,62 @@ void maybe_publish_manager_memory_snapshot(
     publish_manager_memory_snapshot(snapshot_manager_memory(resources));
 }
 
+HeadroomTelemetry sample_headroom_telemetry() noexcept {
+    HeadroomTelemetry out{};
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    std::size_t freeBytes = 0;
+    std::size_t totalBytes = 0;
+    if (cudaMemGetInfo(&freeBytes, &totalBytes) == cudaSuccess) {
+        (void)totalBytes;
+        out.driverFreeBytes = static_cast<std::uint64_t>(
+            std::min<std::size_t>(freeBytes, static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+        out.effectiveHeadroomBytes = out.driverFreeBytes;
+    }
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+    int currentDevice = 0;
+    if (cudaGetDevice(&currentDevice) == cudaSuccess) {
+        cudaMemPool_t defaultPool = nullptr;
+        if (cudaDeviceGetDefaultMemPool(&defaultPool, currentDevice) == cudaSuccess && defaultPool != nullptr) {
+            std::size_t poolReservedBytes = 0;
+            std::size_t poolUsedBytes = 0;
+            const cudaError_t reservedErr = cudaMemPoolGetAttribute(
+                defaultPool,
+                cudaMemPoolAttrReservedMemCurrent,
+                &poolReservedBytes);
+            const cudaError_t usedErr = cudaMemPoolGetAttribute(
+                defaultPool,
+                cudaMemPoolAttrUsedMemCurrent,
+                &poolUsedBytes);
+            if (reservedErr == cudaSuccess && usedErr == cudaSuccess) {
+                out.poolTelemetryAvailable = true;
+                out.source = HeadroomSource::AllocatorPool;
+                out.allocatorPoolReservedBytes = static_cast<std::uint64_t>(
+                    std::min<std::size_t>(
+                        poolReservedBytes,
+                        static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+                out.allocatorPoolUsedBytes = static_cast<std::uint64_t>(
+                    std::min<std::size_t>(
+                        poolUsedBytes,
+                        static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+                if (out.allocatorPoolUsedBytes > out.allocatorPoolReservedBytes) {
+                    out.allocatorPoolUsedBytes = out.allocatorPoolReservedBytes;
+                }
+
+                const std::uint64_t poolFreeBytes =
+                    out.allocatorPoolReservedBytes - out.allocatorPoolUsedBytes;
+                std::uint64_t combinedHeadroom = out.driverFreeBytes;
+                if (!add_u64_checked(combinedHeadroom, poolFreeBytes, combinedHeadroom)) {
+                    combinedHeadroom = std::numeric_limits<std::uint64_t>::max();
+                }
+                out.effectiveHeadroomBytes = combinedHeadroom;
+            }
+        }
+    }
+#endif
+#endif
+    return out;
+}
+
 std::uint64_t pressure_total_bytes(const PressureInput& input) noexcept {
     std::uint64_t total = input.managerResidentBytes;
     std::uint64_t next = 0;
@@ -1847,8 +1914,50 @@ void trace_pressure_checkpoint(
         + " request_reclaim_pass=" + std::to_string(checkpoint.decision.requestReclaimPass ? 1 : 0)
         + " should_shed_non_critical=" + std::to_string(checkpoint.decision.shouldShedNonCritical ? 1 : 0)
         + " effective_reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.decision.effectiveReserveBytes))
+        + " effective_headroom_bytes=" + std::to_string(
+            static_cast<unsigned long long>(checkpoint.decision.effectiveHeadroomBytes))
+        + " headroom_source=" + to_cstr(checkpoint.decision.headroomSource)
+        + " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes))
+        + " allocator_pool_reserved_bytes=" + std::to_string(
+            static_cast<unsigned long long>(checkpoint.input.allocatorPoolReservedBytes))
+        + " allocator_pool_used_bytes=" + std::to_string(
+            static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes))
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSPRS", msg);
+}
+
+void trace_headroom_sample(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const PressureCheckpoint& checkpoint,
+    std::size_t requestBytes,
+    bool sourceSwitch,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=headroom")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " effective_headroom_bytes=" + std::to_string(
+            static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes))
+        + " headroom_source=" + to_cstr(checkpoint.input.headroomSource)
+        + " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes))
+        + " allocator_pool_reserved_bytes=" + std::to_string(
+            static_cast<unsigned long long>(checkpoint.input.allocatorPoolReservedBytes))
+        + " allocator_pool_used_bytes=" + std::to_string(
+            static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes))
+        + " source_switch=" + std::to_string(sourceSwitch ? 1 : 0)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSHDR", msg);
 }
 
 void trace_transient_non_manager_sample(
@@ -2108,11 +2217,28 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     checkpoint.memory = snapshot_manager_memory(resources);
     publish_manager_memory_snapshot(checkpoint.memory);
 
+    const HeadroomTelemetry headroom = sample_headroom_telemetry();
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    ResourceManagerState& managerState = global_state();
     checkpoint.input.softTargetBytes = cfg.managerSoftTargetBytes;
     checkpoint.input.reserveBytes = cfg.managerReserveBytes;
     checkpoint.input.retirePendingBytes = checkpoint.memory.retirePendingBytes;
     checkpoint.input.transientNonManagerBytes = checkpoint.memory.transientNonManagerBytes;
+    checkpoint.input.effectiveHeadroomBytes = headroom.effectiveHeadroomBytes;
+    checkpoint.input.driverFreeBytes = headroom.driverFreeBytes;
+    checkpoint.input.allocatorPoolReservedBytes = headroom.allocatorPoolReservedBytes;
+    checkpoint.input.allocatorPoolUsedBytes = headroom.allocatorPoolUsedBytes;
+    checkpoint.input.headroomSource = headroom.source;
+
+    managerState.allocatorEffectiveHeadroomBytes.store(
+        checkpoint.input.effectiveHeadroomBytes,
+        std::memory_order_relaxed);
+    managerState.allocatorPoolReservedBytes.store(
+        checkpoint.input.allocatorPoolReservedBytes,
+        std::memory_order_relaxed);
+    managerState.allocatorPoolUsedBytes.store(
+        checkpoint.input.allocatorPoolUsedBytes,
+        std::memory_order_relaxed);
 
     std::uint64_t predictedResident = checkpoint.memory.activeBytes;
     std::uint64_t nextResident = 0;
@@ -2128,6 +2254,7 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     const PressureDecision computedDecision = classify_pressure(checkpoint.input);
     checkpoint.decision = computedDecision;
     checkpoint.reserveCrossedNow = reserve_crossed(checkpoint.input);
+    bool headroomSourceSwitch = false;
 
     const std::uint64_t nowMs = monotonic_time_ms();
     PressurePolicyState& policyState = pressure_policy_state();
@@ -2135,6 +2262,11 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         std::lock_guard<std::mutex> lock(policyState.mutex);
         PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
         bool sampleDue = forceSample || !contextState.valid;
+        if (!sampleDue && contextState.headroomSourceValid &&
+            contextState.lastHeadroomSource != checkpoint.input.headroomSource) {
+            sampleDue = true;
+            headroomSourceSwitch = true;
+        }
         if (!sampleDue) {
             const std::uint64_t elapsedMs = (nowMs > contextState.lastSampleMs) ? (nowMs - contextState.lastSampleMs) : 0;
             sampleDue = elapsedMs >= static_cast<std::uint64_t>(std::max<std::uint32_t>(1u, cfg.pressureSampleIntervalMs));
@@ -2145,17 +2277,26 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             checkpoint.previousState = contextState.valid ? contextState.lastState : computedDecision.state;
             checkpoint.transition = contextState.valid && (contextState.lastState != computedDecision.state);
             checkpoint.reserveCrossing = contextState.valid && (contextState.reserveCrossed != checkpoint.reserveCrossedNow);
+            if (contextState.headroomSourceValid &&
+                contextState.lastHeadroomSource != checkpoint.input.headroomSource) {
+                headroomSourceSwitch = true;
+            }
             contextState.valid = true;
             contextState.lastSampleMs = nowMs;
             contextState.lastDecision = computedDecision;
             contextState.lastState = computedDecision.state;
             contextState.reserveCrossed = checkpoint.reserveCrossedNow;
+            contextState.headroomSourceValid = true;
+            contextState.lastHeadroomSource = checkpoint.input.headroomSource;
 
             if (checkpoint.transition) {
-                global_state().pressureStateTransitions.fetch_add(1, std::memory_order_relaxed);
+                managerState.pressureStateTransitions.fetch_add(1, std::memory_order_relaxed);
             }
             if (checkpoint.reserveCrossing) {
-                global_state().reserveCrossingEvents.fetch_add(1, std::memory_order_relaxed);
+                managerState.reserveCrossingEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (headroomSourceSwitch) {
+                managerState.headroomSourceSwitches.fetch_add(1, std::memory_order_relaxed);
             }
         }
         else if (contextState.valid) {
@@ -2165,7 +2306,7 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         }
     }
 
-    if (checkpoint.sampled || checkpoint.transition || checkpoint.reserveCrossing) {
+    if (checkpoint.sampled || checkpoint.transition || checkpoint.reserveCrossing || headroomSourceSwitch) {
         trace_pressure_checkpoint(
             transaction,
             commandName,
@@ -2178,9 +2319,47 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             checkpoint,
             pendingGrowthBytes,
             checkpoint.sampled ? "sampled" : "cached");
+        trace_headroom_sample(
+            transaction,
+            commandName,
+            checkpoint,
+            pendingGrowthBytes,
+            headroomSourceSwitch,
+            headroomSourceSwitch ? "source_switch" : (checkpoint.sampled ? "sampled" : "cached"));
     }
 
     return checkpoint;
+}
+
+void record_allocator_oom_headroom_observation(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::size_t requestBytes) {
+    const HeadroomTelemetry headroom = sample_headroom_telemetry();
+    ResourceManagerState& managerState = global_state();
+    managerState.allocatorEffectiveHeadroomBytes.store(headroom.effectiveHeadroomBytes, std::memory_order_relaxed);
+    managerState.allocatorPoolReservedBytes.store(headroom.allocatorPoolReservedBytes, std::memory_order_relaxed);
+    managerState.allocatorPoolUsedBytes.store(headroom.allocatorPoolUsedBytes, std::memory_order_relaxed);
+
+    const bool aboveHeadroom =
+        (requestBytes > 0) && (headroom.effectiveHeadroomBytes >= static_cast<std::uint64_t>(requestBytes));
+    if (aboveHeadroom) {
+        managerState.allocFailAboveHeadroomEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    PressureCheckpoint checkpoint{};
+    checkpoint.input.effectiveHeadroomBytes = headroom.effectiveHeadroomBytes;
+    checkpoint.input.driverFreeBytes = headroom.driverFreeBytes;
+    checkpoint.input.allocatorPoolReservedBytes = headroom.allocatorPoolReservedBytes;
+    checkpoint.input.allocatorPoolUsedBytes = headroom.allocatorPoolUsedBytes;
+    checkpoint.input.headroomSource = headroom.source;
+    trace_headroom_sample(
+        transaction,
+        commandName,
+        checkpoint,
+        requestBytes,
+        false,
+        aboveHeadroom ? "alloc_fail_above_headroom" : "alloc_fail_below_headroom");
 }
 
 bool run_reap_pass_for_pressure(
@@ -4297,6 +4476,10 @@ bool command_ensure_optics_scratch(
                     if (!recoveryError.empty()) {
                         outError += " | fragmentation_recovery_failed: " + recoveryError;
                     }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        "command_ensure_optics_scratch",
+                        growthBytes);
                     managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
                     return false;
                 }
@@ -4304,6 +4487,10 @@ bool command_ensure_optics_scratch(
                 fragmentationRecoveryPendingOutcome = true;
                 continue;
             }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                "command_ensure_optics_scratch",
+                growthBytes);
             managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
             finalizeFragmentationOutcome(false, "allocator_oom_final");
             return false;
@@ -4368,6 +4555,10 @@ bool command_ensure_optics_scratch(
                     if (!recoveryError.empty()) {
                         outError += " | fragmentation_recovery_failed: " + recoveryError;
                     }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        "command_ensure_optics_scratch",
+                        growthBytes);
                     managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
                     return false;
                 }
@@ -4375,6 +4566,10 @@ bool command_ensure_optics_scratch(
                 fragmentationRecoveryPendingOutcome = true;
                 continue;
             }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                "command_ensure_optics_scratch",
+                growthBytes);
             managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
             finalizeFragmentationOutcome(false, "reap_no_progress");
             return false;
@@ -4501,6 +4696,10 @@ bool command_ensure_spatial_dir_scratch(
                     if (!recoveryError.empty()) {
                         outError += " | fragmentation_recovery_failed: " + recoveryError;
                     }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        "command_ensure_spatial_dir_scratch",
+                        growthBytes);
                     managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
                     return false;
                 }
@@ -4508,6 +4707,10 @@ bool command_ensure_spatial_dir_scratch(
                 fragmentationRecoveryPendingOutcome = true;
                 continue;
             }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                growthBytes);
             managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
             finalizeFragmentationOutcome(false, "allocator_oom_final");
             return false;
@@ -4572,6 +4775,10 @@ bool command_ensure_spatial_dir_scratch(
                     if (!recoveryError.empty()) {
                         outError += " | fragmentation_recovery_failed: " + recoveryError;
                     }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        "command_ensure_spatial_dir_scratch",
+                        growthBytes);
                     managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
                     return false;
                 }
@@ -4579,6 +4786,10 @@ bool command_ensure_spatial_dir_scratch(
                 fragmentationRecoveryPendingOutcome = true;
                 continue;
             }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                growthBytes);
             managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
             finalizeFragmentationOutcome(false, "reap_no_progress");
             return false;

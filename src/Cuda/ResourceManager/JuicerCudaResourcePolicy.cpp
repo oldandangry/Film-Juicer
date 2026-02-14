@@ -169,6 +169,17 @@ const char* to_cstr(ReservationKind kind) noexcept {
     }
 }
 
+const char* to_cstr(HeadroomSource source) noexcept {
+    switch (source) {
+    case HeadroomSource::FreeVramOnly:
+        return "free_vram_only";
+    case HeadroomSource::AllocatorPool:
+        return "allocator_pool";
+    default:
+        return "unknown";
+    }
+}
+
 const char* to_cstr(CacheAdmissionClass value) noexcept {
     switch (value) {
     case CacheAdmissionClass::Normal:
@@ -182,9 +193,30 @@ const char* to_cstr(CacheAdmissionClass value) noexcept {
     }
 }
 
+int pressure_state_rank(PressureState state) noexcept {
+    switch (state) {
+    case PressureState::Normal:
+        return 0;
+    case PressureState::Constrained:
+        return 1;
+    case PressureState::Critical:
+        return 2;
+    case PressureState::Emergency:
+        return 3;
+    default:
+        return 0;
+    }
+}
+
+PressureState max_pressure_state(PressureState a, PressureState b) noexcept {
+    return (pressure_state_rank(a) >= pressure_state_rank(b)) ? a : b;
+}
+
 PressureDecision classify_pressure(const PressureInput& input) noexcept {
     PressureDecision out{};
     out.effectiveReserveBytes = input.reserveBytes;
+    out.effectiveHeadroomBytes = input.effectiveHeadroomBytes;
+    out.headroomSource = input.headroomSource;
 
     if (input.softTargetBytes == 0) {
         out.state = PressureState::Normal;
@@ -198,29 +230,54 @@ PressureDecision classify_pressure(const PressureInput& input) noexcept {
     const std::uint64_t criticalThreshold = input.softTargetBytes + (input.reserveBytes / 2u);
     const std::uint64_t emergencyThreshold = input.softTargetBytes + input.reserveBytes;
 
+    PressureState budgetState = PressureState::Normal;
     if (pressureBytes >= emergencyThreshold && emergencyThreshold > 0) {
-        out.state = PressureState::Emergency;
+        budgetState = PressureState::Emergency;
+    }
+    else if (pressureBytes >= criticalThreshold && criticalThreshold > 0) {
+        budgetState = PressureState::Critical;
+    }
+    else if (pressureBytes >= constrainedThreshold) {
+        budgetState = PressureState::Constrained;
+    }
+
+    PressureState headroomState = PressureState::Normal;
+    if (input.reserveBytes > 0) {
+        const std::uint64_t emergencyHeadroomThreshold = input.reserveBytes / 2u;
+        const std::uint64_t criticalHeadroomThreshold = input.reserveBytes;
+        const std::uint64_t constrainedHeadroomThreshold = input.reserveBytes + (input.reserveBytes / 2u);
+        if (input.effectiveHeadroomBytes <= emergencyHeadroomThreshold) {
+            headroomState = PressureState::Emergency;
+        }
+        else if (input.effectiveHeadroomBytes <= criticalHeadroomThreshold) {
+            headroomState = PressureState::Critical;
+        }
+        else if (input.effectiveHeadroomBytes <= constrainedHeadroomThreshold) {
+            headroomState = PressureState::Constrained;
+        }
+    }
+
+    out.state = max_pressure_state(budgetState, headroomState);
+    switch (out.state) {
+    case PressureState::Emergency:
         out.allowOpportunistic = false;
         out.requestReclaimPass = true;
         out.shouldShedNonCritical = true;
-        return out;
-    }
-    if (pressureBytes >= criticalThreshold && criticalThreshold > 0) {
-        out.state = PressureState::Critical;
+        break;
+    case PressureState::Critical:
         out.allowOpportunistic = false;
         out.requestReclaimPass = true;
         out.shouldShedNonCritical = false;
-        return out;
-    }
-    if (pressureBytes >= constrainedThreshold) {
-        out.state = PressureState::Constrained;
+        break;
+    case PressureState::Constrained:
         out.allowOpportunistic = true;
         out.requestReclaimPass = true;
         out.shouldShedNonCritical = false;
-        return out;
+        break;
+    case PressureState::Normal:
+    default:
+        break;
     }
-
-    out.state = PressureState::Normal;
     return out;
 }
 

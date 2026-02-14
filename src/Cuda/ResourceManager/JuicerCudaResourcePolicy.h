@@ -38,6 +38,11 @@ enum class ReservationKind : std::uint8_t {
     UploadCopy = 1
 };
 
+enum class HeadroomSource : std::uint8_t {
+    FreeVramOnly = 0,
+    AllocatorPool = 1
+};
+
 enum class CacheAdmissionClass : std::uint8_t {
     Normal = 0,
     Probation = 1,
@@ -92,6 +97,11 @@ struct PressureInput {
     std::uint64_t managerResidentBytes = 0;
     std::uint64_t retirePendingBytes = 0;
     std::uint64_t transientNonManagerBytes = 0;
+    std::uint64_t effectiveHeadroomBytes = 0;
+    std::uint64_t driverFreeBytes = 0;
+    std::uint64_t allocatorPoolReservedBytes = 0;
+    std::uint64_t allocatorPoolUsedBytes = 0;
+    HeadroomSource headroomSource = HeadroomSource::FreeVramOnly;
 };
 
 struct PressureDecision {
@@ -100,6 +110,8 @@ struct PressureDecision {
     bool requestReclaimPass = false;
     bool shouldShedNonCritical = false;
     std::uint64_t effectiveReserveBytes = 0;
+    std::uint64_t effectiveHeadroomBytes = 0;
+    HeadroomSource headroomSource = HeadroomSource::FreeVramOnly;
 };
 
 struct ReservationInput {
@@ -147,6 +159,7 @@ StaleDecision classify_stale_path(const StaleInput& input) noexcept;
 const char* to_cstr(StaleReason reason) noexcept;
 const char* to_cstr(PressureState state) noexcept;
 const char* to_cstr(ReservationKind kind) noexcept;
+const char* to_cstr(HeadroomSource source) noexcept;
 const char* to_cstr(CacheAdmissionClass value) noexcept;
 PressureDecision classify_pressure(const PressureInput& input) noexcept;
 ReservationDecision classify_reservation(const ReservationInput& input) noexcept;
