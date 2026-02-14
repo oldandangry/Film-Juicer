@@ -111,6 +111,7 @@ namespace Pipeline {
 
         void ensure_cached_enlarger_illuminant_filtered(
             const Print::Runtime& rt,
+            std::uint64_t wsBuildCounter,
             float yShiftSteps,
             float mShiftSteps,
             float cShiftSteps,
@@ -119,7 +120,8 @@ namespace Pipeline {
             const int shapeK = Spectral::gShape.K;
             if (shapeK <= 0) {
                 scratch.enlargerIlluminantFilteredValid = false;
-                scratch.enlargerIlluminantRuntime = nullptr;
+                scratch.enlargerIlluminantWsBuildCounter = 0;
+                scratch.enlargerIlluminantNeutralFilterHash = 0;
                 scratch.enlargerIlluminantShapeK = 0;
                 scratch.Ee_expose.clear();
                 return;
@@ -130,9 +132,12 @@ namespace Pipeline {
             const float yKey = std::isfinite(yShiftSteps) ? yShiftSteps : 0.0f;
             const float mKey = std::isfinite(mShiftSteps) ? mShiftSteps : 0.0f;
             const float cKey = std::isfinite(cShiftSteps) ? cShiftSteps : 0.0f;
+            const std::uint64_t neutralFilterHash =
+                (rt.neutralFilterHash != 0) ? rt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
 
             if (scratch.enlargerIlluminantFilteredValid &&
-                scratch.enlargerIlluminantRuntime == &rt &&
+                scratch.enlargerIlluminantWsBuildCounter == wsBuildCounter &&
+                scratch.enlargerIlluminantNeutralFilterHash == neutralFilterHash &&
                 scratch.enlargerIlluminantYShiftSteps == yKey &&
                 scratch.enlargerIlluminantMShiftSteps == mKey &&
                 scratch.enlargerIlluminantCShiftSteps == cKey &&
@@ -142,7 +147,8 @@ namespace Pipeline {
 
             build_enlarger_illuminant_filtered(rt, yKey, mKey, cKey, scratch.Ee_expose);
             scratch.enlargerIlluminantFilteredValid = true;
-            scratch.enlargerIlluminantRuntime = &rt;
+            scratch.enlargerIlluminantWsBuildCounter = wsBuildCounter;
+            scratch.enlargerIlluminantNeutralFilterHash = neutralFilterHash;
             scratch.enlargerIlluminantYShiftSteps = yKey;
             scratch.enlargerIlluminantMShiftSteps = mKey;
             scratch.enlargerIlluminantCShiftSteps = cKey;
@@ -232,34 +238,36 @@ namespace Pipeline {
             PrintPipelineScratch& scratch)
         {
             const int shapeK = Spectral::gShape.K;
+            const std::uint64_t neutralFilterHash =
+                (rt.neutralFilterHash != 0) ? rt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
             if (shapeK <= 0 || ws.tablesView.K <= 0) {
                 scratch.preflashRawValid = false;
-                scratch.preflashRuntime = nullptr;
                 scratch.preflashWsBuildCounter = 0;
+                scratch.preflashNeutralFilterHash = 0;
                 scratch.preflashShapeK = 0;
                 scratch.preflashRaw[0] = scratch.preflashRaw[1] = scratch.preflashRaw[2] = 0.0f;
                 return;
             }
 
             if (scratch.preflashRawValid &&
-                scratch.preflashRuntime == &rt &&
                 scratch.preflashWsBuildCounter == ws.buildCounter &&
+                scratch.preflashNeutralFilterHash == neutralFilterHash &&
                 scratch.preflashShapeK == shapeK) {
                 return;
             }
 
             if (!compute_preflash_raw(ws, rt, scratch.preflashRaw)) {
                 scratch.preflashRawValid = false;
-                scratch.preflashRuntime = nullptr;
                 scratch.preflashWsBuildCounter = 0;
+                scratch.preflashNeutralFilterHash = 0;
                 scratch.preflashShapeK = 0;
                 scratch.preflashRaw[0] = scratch.preflashRaw[1] = scratch.preflashRaw[2] = 0.0f;
                 return;
             }
 
             scratch.preflashRawValid = true;
-            scratch.preflashRuntime = &rt;
             scratch.preflashWsBuildCounter = ws.buildCounter;
+            scratch.preflashNeutralFilterHash = neutralFilterHash;
             scratch.preflashShapeK = shapeK;
         }
 
@@ -296,6 +304,7 @@ namespace Pipeline {
 
         ensure_cached_enlarger_illuminant_filtered(
             prt,
+            ws.buildCounter,
             prm.yFilter,
             prm.mFilter,
             prm.cFilter,

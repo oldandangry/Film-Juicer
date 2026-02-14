@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -320,7 +321,8 @@ struct BaseGraphEntry {
     std::uint64_t lastUseTick = 0;
 };
 
-struct BaseGraphBucket {
+struct BaseGraphBucketState {
+    std::mutex mutex;
     std::uint64_t contextEpoch = 0;
     std::uint64_t useTick = 0;
     std::vector<BaseGraphEntry> entries;
@@ -328,7 +330,7 @@ struct BaseGraphBucket {
 
 struct BaseGraphCacheState {
     std::mutex mutex;
-    std::unordered_map<DeviceContextKey, BaseGraphBucket, DeviceContextKeyHash> byContext;
+    std::unordered_map<DeviceContextKey, std::shared_ptr<BaseGraphBucketState>, DeviceContextKeyHash> byContext;
 };
 
 BaseGraphCacheState& base_graph_cache_state() noexcept {
@@ -377,7 +379,20 @@ void destroy_base_graph_entry(BaseGraphEntry& entry) noexcept {
     entry.lastUseTick = 0;
 }
 
-void clear_base_graph_bucket(BaseGraphBucket& bucket) noexcept {
+std::shared_ptr<BaseGraphBucketState> get_or_create_base_graph_bucket(
+    const DeviceContextKey& key) noexcept {
+    BaseGraphCacheState& state = base_graph_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto it = state.byContext.find(key);
+    if (it != state.byContext.end() && it->second) {
+        return it->second;
+    }
+    auto bucket = std::make_shared<BaseGraphBucketState>();
+    state.byContext[key] = bucket;
+    return bucket;
+}
+
+void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
     for (auto& entry : bucket.entries) {
         destroy_base_graph_entry(entry);
     }
@@ -387,17 +402,24 @@ void clear_base_graph_bucket(BaseGraphBucket& bucket) noexcept {
 
 void retire_base_graph_cache_for_context(const DeviceContextKey& key) noexcept {
     BaseGraphCacheState& state = base_graph_cache_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byContext.find(key);
-    if (it == state.byContext.end()) {
-        return;
+    std::shared_ptr<BaseGraphBucketState> bucket;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byContext.find(key);
+        if (it == state.byContext.end()) {
+            return;
+        }
+        bucket = it->second;
+        state.byContext.erase(it);
     }
-    clear_base_graph_bucket(it->second);
-    state.byContext.erase(it);
+    if (bucket) {
+        std::lock_guard<std::mutex> lock(bucket->mutex);
+        clear_base_graph_bucket(*bucket);
+    }
 }
 
 BaseGraphEntry* find_base_graph_entry(
-    BaseGraphBucket& bucket,
+    BaseGraphBucketState& bucket,
     const BaseGraphKey& key) noexcept {
     for (auto& entry : bucket.entries) {
         if (base_graph_key_equal(entry.key, key) &&
@@ -411,7 +433,7 @@ BaseGraphEntry* find_base_graph_entry(
 }
 
 BaseGraphEntry* build_base_graph_entry(
-    BaseGraphBucket& bucket,
+    BaseGraphBucketState& bucket,
     const BaseGraphKey& key,
     BasePipelineLaunchFn launchFn,
     JuicerCuda::PipelineRunParams& run,
@@ -544,6 +566,17 @@ bool begin_submission(
     }
 
     outTransaction.snapshot = snapshot;
+    const std::uint32_t requestedTraceSchemaVersion = outTransaction.snapshot.traceSchemaVersion;
+    if (!trace_schema_matches_contract(requestedTraceSchemaVersion)) {
+        outError = "trace schema mismatch";
+        telemetry_record_trace_schema_mismatch();
+        telemetry_trace_schema_mismatch(
+            outTransaction.transactionId,
+            outTransaction.snapshot.snapshotId,
+            requestedTraceSchemaVersion);
+        return false;
+    }
+
     std::uint64_t registryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
     std::uint64_t contextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
     if (registryGeneration == 0) {
@@ -1285,10 +1318,15 @@ bool command_launch_base_pipeline_graph(
     key.nComponents = run.nComponents;
     key.renderMode = renderModeKey;
 
-    BaseGraphCacheState& cacheState = base_graph_cache_state();
-    std::lock_guard<std::mutex> lock(cacheState.mutex);
-
-    BaseGraphBucket& bucket = cacheState.byContext[transaction.snapshot.deviceContextKey];
+    std::shared_ptr<BaseGraphBucketState> bucketPtr =
+        get_or_create_base_graph_bucket(transaction.snapshot.deviceContextKey);
+    if (!bucketPtr) {
+        outCudaErrorCode = static_cast<int>(cudaErrorUnknown);
+        outError = "base graph bucket unavailable";
+        return false;
+    }
+    std::lock_guard<std::mutex> bucketLock(bucketPtr->mutex);
+    BaseGraphBucketState& bucket = *bucketPtr;
     std::uint64_t activeEpoch = transaction.snapshot.contextEpoch;
     if (activeEpoch == 0) {
         activeEpoch = 1;

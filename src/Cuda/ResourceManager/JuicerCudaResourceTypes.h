@@ -72,9 +72,13 @@ struct ResourceKindContractEntry {
 
 constexpr std::size_t kResourceKindCount = static_cast<std::size_t>(ResourceKind::Count);
 
+constexpr bool resource_kind_is_valid(ResourceKind kind) noexcept {
+    return static_cast<std::size_t>(kind) < kResourceKindCount;
+}
+
 constexpr std::size_t resource_kind_index(ResourceKind kind) noexcept {
     const std::size_t idx = static_cast<std::size_t>(kind);
-    return (idx < kResourceKindCount) ? idx : 0;
+    return (idx < kResourceKindCount) ? idx : kResourceKindCount;
 }
 
 constexpr std::array<ResourceKind, 4> kResourceKindOrder = {

@@ -76,15 +76,16 @@ namespace Pipeline {
 
         // Cached per-render spectral constants (avoid rebuilding 81-sample tables per pixel).
         bool enlargerIlluminantFilteredValid = false;
-        const Print::Runtime* enlargerIlluminantRuntime = nullptr;
+        std::uint64_t enlargerIlluminantWsBuildCounter = 0;
+        std::uint64_t enlargerIlluminantNeutralFilterHash = 0;
         float enlargerIlluminantYShiftSteps = 0.0f;
         float enlargerIlluminantMShiftSteps = 0.0f;
         float enlargerIlluminantCShiftSteps = 0.0f;
         int enlargerIlluminantShapeK = 0;
 
         bool preflashRawValid = false;
-        const Print::Runtime* preflashRuntime = nullptr;
         std::uint64_t preflashWsBuildCounter = 0;
+        std::uint64_t preflashNeutralFilterHash = 0;
         int preflashShapeK = 0;
         float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
     };

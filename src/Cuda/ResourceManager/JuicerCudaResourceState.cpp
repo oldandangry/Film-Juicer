@@ -29,7 +29,12 @@ ResourceManagerState& global_state() noexcept {
 
 void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus status) noexcept {
     ResourceManagerState& state = global_state();
-    ResourceKindAcquireCounters& counters = state.acquireStatusByKind[resource_kind_index(kind)];
+    const std::size_t kindIndex = resource_kind_index(kind);
+    if (kindIndex >= kResourceKindCount) {
+        telemetry_record_module_boundary_violation();
+        return;
+    }
+    ResourceKindAcquireCounters& counters = state.acquireStatusByKind[kindIndex];
     switch (status) {
     case AcquireStatus::Hit:
         counters.hit.fetch_add(1, std::memory_order_relaxed);
