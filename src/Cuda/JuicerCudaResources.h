@@ -36,9 +36,6 @@ namespace JuicerCuda {
 
     struct Resources {
         std::mutex m;
-        // Serializes per-frame submission (ensure_* + kernel launches + record_use) to keep lastUseEvent
-        // ordering correct across streams without blocking the CPU.
-        std::mutex submitMutex;
         int deviceId = -1;
         std::uint64_t uploadedBuildCounter = 0;
         std::uint64_t uploadedCoreHash = 0;

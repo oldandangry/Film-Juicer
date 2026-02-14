@@ -1607,35 +1607,32 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
     std::string uploadError;
-    {
-        std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
-        if (!cudaResources) {
-            JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        if (!JuicerCuda::ResourceManager::command_ensure_uploaded(
-                submissionTxn,
-                *cudaResources,
-                *_ws,
-                _pCudaStream,
-                uploadError)) {
-            mark_context_loss_recovery("command_ensure_uploaded", cudaErrorUnknown, uploadError);
-            JTRACE("CUDA", std::string("CUDA WorkingState upload failed: ") + uploadError);
+    if (!cudaResources) {
+        JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (!JuicerCuda::ResourceManager::command_ensure_uploaded(
+            submissionTxn,
+            *cudaResources,
+            *_ws,
+            _pCudaStream,
+            uploadError)) {
+        mark_context_loss_recovery("command_ensure_uploaded", cudaErrorUnknown, uploadError);
+        JTRACE("CUDA", std::string("CUDA WorkingState upload failed: ") + uploadError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
 #else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
 #endif
-        }
-        if (JTRACE_ENABLED(3)) {
-            std::lock_guard<std::mutex> resLock(cudaResources->m);
-            const std::uint64_t build = _ws ? _ws->buildCounter : 0;
-            std::string msg = std::string("cuda upload build=") + std::to_string(build)
-                + " uploaded=" + std::to_string(cudaResources->uploadedBuildCounter)
-                + " printIllumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
-                + " printPreflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
-            JTRACE_VERBOSE("PRINTDBG", msg);
-        }
+    }
+    if (JTRACE_ENABLED(3)) {
+        std::lock_guard<std::mutex> resLock(cudaResources->m);
+        const std::uint64_t build = _ws ? _ws->buildCounter : 0;
+        std::string msg = std::string("cuda upload build=") + std::to_string(build)
+            + " uploaded=" + std::to_string(cudaResources->uploadedBuildCounter)
+            + " printIllumBuild=" + std::to_string(cudaResources->printIllumBuildCounter)
+            + " printPreflashBuild=" + std::to_string(cudaResources->printPreflashBuildCounter);
+        JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
     if (_effect.abort()) {
@@ -1648,7 +1645,6 @@ void JuicerProcessor::processImagesCUDA() {
 #if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
     if (JTRACE_ENABLED(3)) {
         std::string validateError;
-        std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
         if (!cudaResources) {
             JTRACE("CUDA", "FATAL: CUDA resources missing for validation");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2760,10 +2756,7 @@ void JuicerProcessor::processImagesCUDA() {
 
         const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
 
-        // Per-resource submission (ensure_* + kernel launch + record_use) is serialized to keep
-        // lastUseEvent ordering correct across streams without blocking the CPU.
         {
-            std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
             if (!cudaResources) {
                 JTRACE("CUDA", "FATAL: CUDA resources missing for negative pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3322,10 +3315,7 @@ void JuicerProcessor::processImagesCUDA() {
 
         const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
 
-        // Per-resource submission (ensure_* + kernel launch + record_use) is serialized to keep
-        // lastUseEvent ordering correct across streams without blocking the CPU.
         {
-            std::lock_guard<std::mutex> submitLock(cudaResources->submitMutex);
             if (!cudaResources) {
                 JTRACE("CUDA", "FATAL: CUDA resources missing for print pipeline");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
