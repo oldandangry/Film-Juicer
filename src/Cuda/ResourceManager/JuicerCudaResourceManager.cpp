@@ -139,12 +139,28 @@ enum class ScratchWorkClass : std::uint8_t {
     SpatialDir = 1
 };
 
+enum class PressureLane : std::uint8_t {
+    Builder = 0,
+    Upload = 1
+};
+
 const char* to_cstr(ScratchWorkClass workClass) noexcept {
     switch (workClass) {
     case ScratchWorkClass::Optics:
         return "optics";
     case ScratchWorkClass::SpatialDir:
         return "spatial_dir";
+    default:
+        return "unknown";
+    }
+}
+
+const char* to_cstr(PressureLane lane) noexcept {
+    switch (lane) {
+    case PressureLane::Builder:
+        return "builder";
+    case PressureLane::Upload:
+        return "upload";
     default:
         return "unknown";
     }
@@ -505,6 +521,14 @@ inline bool mul_u64_checked(std::uint64_t a, std::uint64_t b, std::uint64_t& out
     }
     out = a * b;
     return true;
+}
+
+inline std::size_t saturating_u64_to_size_t(std::uint64_t value) noexcept {
+    const std::uint64_t maxSizeT = static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max());
+    if (value >= maxSizeT) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return static_cast<std::size_t>(value);
 }
 
 inline std::uint64_t non_negative_u64(int value) noexcept {
@@ -1838,10 +1862,13 @@ void trace_transient_non_manager_sample(
 void trace_emergency_shed_action(
     const SubmissionTransaction& transaction,
     const char* commandName,
+    PressureLane lane,
     PressureState state,
     std::size_t requestBytes,
     bool criticalCurrentFrame,
     bool allowed,
+    std::uint64_t uploadBytesInFlight,
+    std::uint64_t uploadCapBytes,
     const char* reason) {
     if (!JTRACE_ENABLED(2)) {
         return;
@@ -1854,14 +1881,77 @@ void trace_emergency_shed_action(
         + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
         + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
         + " command=" + (commandName ? commandName : "unknown")
+        + " lane=" + to_cstr(lane)
         + " state=" + to_cstr(state)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " allowed=" + std::to_string(allowed ? 1 : 0)
+        + " upload_bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(uploadBytesInFlight))
+        + " upload_cap_bytes=" + std::to_string(static_cast<unsigned long long>(uploadCapBytes))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSEMS", msg);
+}
+
+void trace_lane_wait_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureLane lane,
+    bool criticalCurrentFrame,
+    int waitMs,
+    const char* outcome,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=lane_wait")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " lane=" + to_cstr(lane)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " wait_ms=" + std::to_string(waitMs)
+        + " outcome=" + (outcome ? outcome : "unknown")
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSFAIR", msg);
+}
+
+void trace_copy_compute_guard(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureState state,
+    std::uint64_t uploadBytesInFlight,
+    std::uint64_t uploadCapBytes,
+    bool criticalCurrentFrame,
+    bool allowed,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=copy_compute_guard")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " state=" + to_cstr(state)
+        + " upload_bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(uploadBytesInFlight))
+        + " upload_cap_bytes=" + std::to_string(static_cast<unsigned long long>(uploadCapBytes))
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " allowed=" + std::to_string(allowed ? 1 : 0)
         + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
         + " context=" + std::to_string(contextBits)
         + " reason=" + (reason ? reason : "unspecified");
-    JTRACE("MSEMS", msg);
+    JTRACE("MSCOPY", msg);
 }
 
 void trace_reap_pass(
@@ -2011,50 +2101,106 @@ bool enforce_pressure_gate(
     const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const char* commandName,
+    PressureLane lane,
     std::size_t requestBytes,
     bool criticalCurrentFrame,
     bool& outRequestReclaimPass,
     std::string& outError) {
     outRequestReclaimPass = false;
+    outError.clear();
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    if (!pressure_policy_enabled(cfg)) {
-        return true;
+    const std::uint64_t uploadCapBytes = upload_reservation_cap_bytes(cfg);
+    const std::uint64_t uploadBytesInFlight =
+        global_state().uploadBytesInFlight.load(std::memory_order_relaxed);
+    const bool uploadCapEnabled = (uploadCapBytes > 0);
+    const bool uploadCapSaturated = uploadCapEnabled && (uploadBytesInFlight >= uploadCapBytes);
+    const bool nonCritical = !criticalCurrentFrame;
+    PressureState pressureState = PressureState::Normal;
+    const bool pressureEnabled = pressure_policy_enabled(cfg);
+    if (pressureEnabled) {
+        PressureCheckpoint checkpoint = evaluate_pressure_checkpoint(
+            transaction,
+            resources,
+            requestBytes,
+            requestBytes > 0,
+            commandName);
+        outRequestReclaimPass = checkpoint.decision.requestReclaimPass && (requestBytes > 0);
+        pressureState = checkpoint.decision.state;
     }
 
-    PressureCheckpoint checkpoint = evaluate_pressure_checkpoint(
-        transaction,
-        resources,
-        requestBytes,
-        requestBytes > 0,
-        commandName);
-    outRequestReclaimPass = checkpoint.decision.requestReclaimPass && (requestBytes > 0);
-
-    const bool nonCritical = !criticalCurrentFrame;
     if (nonCritical &&
-        (checkpoint.decision.state == PressureState::Critical ||
-         checkpoint.decision.state == PressureState::Emergency)) {
+        (pressureState == PressureState::Critical ||
+         pressureState == PressureState::Emergency)) {
+        const char* denyReason = "deny_non_critical_growth";
+        if (pressureState == PressureState::Emergency) {
+            if (lane == PressureLane::Upload) {
+                global_state().uploadEmergencyShedDenials.fetch_add(1, std::memory_order_relaxed);
+                denyReason = "emergency_shed_upload_precedence";
+            }
+            else {
+                global_state().builderEmergencyShedDenials.fetch_add(1, std::memory_order_relaxed);
+                denyReason = "emergency_shed_builder_precedence";
+            }
+        }
         trace_emergency_shed_action(
             transaction,
             commandName,
-            checkpoint.decision.state,
+            lane,
+            pressureState,
             requestBytes,
             criticalCurrentFrame,
             false,
-            "deny_non_critical_growth");
-        outError = std::string("pressure_shed_noncritical: state=")
-            + to_cstr(checkpoint.decision.state);
+            uploadBytesInFlight,
+            uploadCapBytes,
+            denyReason);
+        outError = std::string("pressure_shed_noncritical: lane=")
+            + to_cstr(lane)
+            + " state="
+            + to_cstr(pressureState);
         return false;
     }
 
-    if (checkpoint.decision.state == PressureState::Emergency) {
+    if (lane == PressureLane::Upload && nonCritical && uploadCapSaturated) {
+        global_state().copyComputeGuardShedEvents.fetch_add(1, std::memory_order_relaxed);
+        trace_copy_compute_guard(
+            transaction,
+            commandName,
+            pressureState,
+            uploadBytesInFlight,
+            uploadCapBytes,
+            criticalCurrentFrame,
+            false,
+            "upload_cap_saturated_noncritical");
+        outError = "pressure_copy_compute_guard: upload_cap_saturated_noncritical";
+        return false;
+    }
+
+    if (pressureState == PressureState::Emergency) {
         trace_emergency_shed_action(
             transaction,
             commandName,
-            checkpoint.decision.state,
+            lane,
+            pressureState,
             requestBytes,
             criticalCurrentFrame,
             true,
-            criticalCurrentFrame ? "allow_critical_progress" : "allowed");
+            uploadBytesInFlight,
+            uploadCapBytes,
+            criticalCurrentFrame ? "allow_critical_progress" : "allow_noncritical_progress");
+    }
+
+    if (lane == PressureLane::Upload && uploadCapSaturated) {
+        trace_copy_compute_guard(
+            transaction,
+            commandName,
+            pressureState,
+            uploadBytesInFlight,
+            uploadCapBytes,
+            criticalCurrentFrame,
+            true,
+            criticalCurrentFrame
+                ? "critical_upload_allowed_despite_saturation"
+                : "upload_allowed_below_shed_threshold");
     }
     return true;
 }
@@ -2216,6 +2362,7 @@ bool acquire_scratch_policy_claim_with_wait(
     std::string& outError) {
     outClaim = ScratchPolicyClaim{};
     outError.clear();
+    ResourceManagerState& state = global_state();
 
     const ScratchBucketKey bucketKey = make_scratch_bucket_key(width, height, workClass);
     const int waitBudgetMs = scratch_wait_budget_ms(bucketKey, requestBytes);
@@ -2234,7 +2381,21 @@ bool acquire_scratch_policy_claim_with_wait(
                 snapshot,
                 reservation)) {
             if (waitedMs > 0) {
-                global_state().scratchPolicyWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.scratchPolicyWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                if (criticalCurrentFrame) {
+                    const std::uint64_t waitedMsU64 =
+                        static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                    state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                    state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    trace_lane_wait_event(
+                        transaction,
+                        commandName,
+                        PressureLane::Builder,
+                        criticalCurrentFrame,
+                        waitedMs,
+                        "admit_after_wait",
+                        "scratch_policy_wait");
+                }
                 trace_scratch_policy_decision(
                     transaction,
                     commandName,
@@ -2256,7 +2417,24 @@ bool acquire_scratch_policy_claim_with_wait(
         }
 
         if (waitedMs >= waitBudgetMs) {
-            global_state().scratchPolicyExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+            state.scratchPolicyExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Builder,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "starved",
+                    (reservation.considered && reservation.decision.reason)
+                        ? reservation.decision.reason
+                        : "scratch_exhausted");
+            }
             trace_scratch_policy_decision(
                 transaction,
                 commandName,
@@ -2419,6 +2597,20 @@ bool acquire_upload_reservation_with_wait(
             state.uploadReservationGranted.fetch_add(1, std::memory_order_relaxed);
             if (waitedMs > 0) {
                 state.uploadFairnessWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                if (criticalCurrentFrame) {
+                    const std::uint64_t waitedMsU64 =
+                        static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                    state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                    state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    trace_lane_wait_event(
+                        transaction,
+                        commandName,
+                        PressureLane::Upload,
+                        criticalCurrentFrame,
+                        waitedMs,
+                        "admit_after_wait",
+                        reservation.decision.reason ? reservation.decision.reason : "waited");
+                }
                 trace_upload_reservation_decision(
                     transaction,
                     commandName,
@@ -2462,6 +2654,21 @@ bool acquire_upload_reservation_with_wait(
         }
         if (!decision.shouldWait) {
             state.uploadReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Upload,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "denied",
+                    decision.reason ? decision.reason : "reservation_denied");
+            }
             trace_upload_reservation_decision(
                 transaction,
                 commandName,
@@ -2495,6 +2702,23 @@ bool acquire_upload_reservation_with_wait(
             state.uploadReservationBypass.fetch_add(1, std::memory_order_relaxed);
             if (fairnessDeferred) {
                 state.uploadFairnessTokenBypass.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                if (fairnessDeferred) {
+                    state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                }
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Upload,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    fairnessDeferred ? "bypass_after_starvation" : "deferred_bypass",
+                    decision.reason ? decision.reason : "wait_budget_reached");
             }
             trace_upload_reservation_decision(
                 transaction,
@@ -3479,6 +3703,32 @@ bool command_ensure_uploaded(
         outError = "upload reservation request byte estimation overflow (core)";
         return false;
     }
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            "command_ensure_uploaded",
+            PressureLane::Upload,
+            saturating_u64_to_size_t(uploadRequestBytes),
+            true,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                "command_ensure_uploaded",
+                "pressure_pre_upload",
+                reclaimError)) {
+            outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
+            return false;
+        }
+    }
     UploadReservationClaim uploadClaim{};
     if (!acquire_upload_reservation_with_wait(
             transaction,
@@ -3490,8 +3740,6 @@ bool command_ensure_uploaded(
         return false;
     }
     UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const bool ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
@@ -3513,6 +3761,32 @@ bool command_ensure_scan_lut(
         outError = "upload reservation request byte estimation overflow (scan LUT)";
         return false;
     }
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            "command_ensure_scan_lut",
+            PressureLane::Upload,
+            saturating_u64_to_size_t(uploadRequestBytes),
+            true,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                "command_ensure_scan_lut",
+                "pressure_pre_upload",
+                reclaimError)) {
+            outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
+            return false;
+        }
+    }
     UploadReservationClaim uploadClaim{};
     if (!acquire_upload_reservation_with_wait(
             transaction,
@@ -3524,8 +3798,6 @@ bool command_ensure_scan_lut(
         return false;
     }
     UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
@@ -3563,6 +3835,32 @@ bool command_ensure_print_illuminant_filtered(
         outError = "upload reservation request byte estimation overflow (print illuminant)";
         return false;
     }
+    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            "command_ensure_print_illuminant_filtered",
+            PressureLane::Upload,
+            saturating_u64_to_size_t(uploadRequestBytes),
+            true,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                "command_ensure_print_illuminant_filtered",
+                "pressure_pre_upload",
+                reclaimError)) {
+            outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
+            return false;
+        }
+    }
     UploadReservationClaim uploadClaim{};
     if (!acquire_upload_reservation_with_wait(
             transaction,
@@ -3574,8 +3872,6 @@ bool command_ensure_print_illuminant_filtered(
         return false;
     }
     UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const bool ok =
         JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
@@ -3619,6 +3915,7 @@ bool command_ensure_optics_scratch(
             transaction,
             resources,
             "command_ensure_optics_scratch",
+            PressureLane::Builder,
             growthBytes,
             true,
             requestPreReclaim,
@@ -3758,6 +4055,7 @@ bool command_ensure_spatial_dir_scratch(
             transaction,
             resources,
             "command_ensure_spatial_dir_scratch",
+            PressureLane::Builder,
             growthBytes,
             true,
             requestPreReclaim,
