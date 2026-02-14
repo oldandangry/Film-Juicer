@@ -1813,25 +1813,6 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
     return info;
 }
 
-namespace JuicerRegistry {
-    static std::mutex MTX;
-    static std::unordered_map<OfxImageEffectHandle, InstanceState*> MAP;
-
-    inline void set(OfxImageEffectHandle h, InstanceState* s) {
-        std::lock_guard<std::mutex> lk(MTX);
-        MAP[h] = s;
-    }
-    inline InstanceState* get(OfxImageEffectHandle h) {
-        std::lock_guard<std::mutex> lk(MTX);
-        auto it = MAP.find(h);
-        return (it == MAP.end()) ? nullptr : it->second;
-    }
-    inline void erase(OfxImageEffectHandle h) {
-        std::lock_guard<std::mutex> lk(MTX);
-        MAP.erase(h);
-    }
-} // namespace JuicerRegistry
-
 JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     : OFX::ImageEffect(handle)
 {
@@ -1996,16 +1977,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _state->instanceToken = seed;
     }
 
-    // Optional compatibility registry
-    JuicerRegistry::set(handle, _state.get());
-
     // Defer heavy bootstrap until first param change
 }
 
 JuicerEffect::~JuicerEffect() {
-    // Mirror destroyInstance() guards without touching C suites.
-    JuicerRegistry::erase(this->getHandle());
-
     std::uint64_t releasedMaskBytes = 0;
     if (_state) {
         std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
@@ -3064,8 +3039,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         _state->pending.fullHash = fullHash;
         _state->pending.coreHash = coreHash;
         _state->pending.dirHash = dirHash;
-        std::uint64_t next = _state->pending.seq + 1;
-        _state->pending.seq = (next == 0) ? 1 : next;
     }
 
 #ifdef JUICER_ENABLE_COUPLERS
