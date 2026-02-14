@@ -63,6 +63,11 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> budgetReclaimRetryAttempts{ 0 };
     std::atomic<std::uint64_t> budgetReclaimRetrySuccess{ 0 };
     std::atomic<std::uint64_t> budgetAllocatorOomEvents{ 0 };
+    std::atomic<std::uint64_t> fragmentationRecoveryAttempts{ 0 };
+    std::atomic<std::uint64_t> fragmentationRecoverySuccess{ 0 };
+    std::atomic<std::uint64_t> fragmentationRecoveryFailures{ 0 };
+    std::atomic<std::uint64_t> fragmentationRecoveryQuarantineTrimmedEntries{ 0 };
+    std::atomic<std::uint64_t> fragmentationRecoveryGraphEvictedEntries{ 0 };
     std::atomic<std::uint64_t> pressureStateTransitions{ 0 };
     std::atomic<std::uint64_t> reserveCrossingEvents{ 0 };
     std::atomic<std::uint64_t> retireReapPasses{ 0 };

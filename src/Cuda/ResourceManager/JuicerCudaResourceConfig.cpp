@@ -49,6 +49,7 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         kMinPressureSampleMs,
         kMaxPressureSampleMs);
     out.reclaimRetryMaxAttempts = std::min(raw.reclaimRetryMaxAttempts, kMaxReclaimRetryAttempts);
+    out.fragmentationRecoveryEnabled = raw.fragmentationRecoveryEnabled;
     out.uploadBytesInFlightLimitMB = std::clamp(
         raw.uploadBytesInFlightLimitMB,
         kMinUploadBytesInFlightLimitMB,

@@ -1478,6 +1478,24 @@ void trim_large_frame_quarantine_caps_locked(
     }
 }
 
+std::uint64_t trim_large_frame_quarantine_for_context(
+    const DeviceContextKey& contextKey) noexcept {
+    ScratchPolicyState& state = scratch_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto contextIt = state.byContext.find(contextKey);
+    if (contextIt == state.byContext.end()) {
+        return 0;
+    }
+    ScratchContextState& contextState = contextIt->second;
+    const std::uint64_t removedEntries = static_cast<std::uint64_t>(contextState.largeFrameQuarantine.size());
+    if (removedEntries == 0) {
+        return 0;
+    }
+    contextState.largeFrameQuarantine.clear();
+    contextState.largeFrameQuarantineBytes = 0;
+    return removedEntries;
+}
+
 void snapshot_bucket_state_locked(
     const ScratchContextState& contextState,
     const ScratchBucketEntry& bucketEntry,
@@ -2042,6 +2060,42 @@ void trace_reap_pass(
         + " context=" + std::to_string(contextBits)
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSREAP", msg);
+}
+
+void trace_fragmentation_recovery(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint32_t attempt,
+    std::size_t requestBytes,
+    std::size_t reapedBytes,
+    std::uint64_t quarantineTrimmedEntries,
+    std::uint64_t graphEvictedEntries,
+    bool success,
+    const char* stage,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=fragmentation_recovery")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " attempt=" + std::to_string(static_cast<unsigned long long>(attempt))
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " reaped_bytes=" + std::to_string(static_cast<unsigned long long>(reapedBytes))
+        + " quarantine_trimmed_entries=" + std::to_string(
+            static_cast<unsigned long long>(quarantineTrimmedEntries))
+        + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(graphEvictedEntries))
+        + " success=" + std::to_string(success ? 1 : 0)
+        + " stage=" + (stage ? stage : "unknown")
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSFRAG", msg);
 }
 
 PressureCheckpoint evaluate_pressure_checkpoint(
@@ -3135,6 +3189,29 @@ void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
     bucket.useTick = 0;
 }
 
+std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey& key) noexcept {
+    BaseGraphCacheState& state = base_graph_cache_state();
+    std::shared_ptr<BaseGraphBucketState> bucket;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byContext.find(key);
+        if (it == state.byContext.end()) {
+            return 0;
+        }
+        bucket = it->second;
+    }
+    if (!bucket) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(bucket->mutex);
+    const std::uint64_t evictedEntries = static_cast<std::uint64_t>(bucket->entries.size());
+    if (evictedEntries == 0) {
+        return 0;
+    }
+    clear_base_graph_bucket(*bucket);
+    return evictedEntries;
+}
+
 void retire_base_graph_cache_for_context(const DeviceContextKey& key) noexcept {
     BaseGraphCacheState& state = base_graph_cache_state();
     std::shared_ptr<BaseGraphBucketState> bucket;
@@ -3270,7 +3347,93 @@ BaseGraphEntry* build_base_graph_entry(
     bucket.entries.push_back(entry);
     return &bucket.entries.back();
 }
+#else
+std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey&) noexcept {
+    return 0;
+}
 #endif
+
+bool run_fragmentation_recovery_once(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::size_t requestBytes,
+    std::uint32_t attempt,
+    bool captureMemorySnapshots,
+    std::string& outError) {
+    outError.clear();
+    ResourceManagerState& managerState = global_state();
+    managerState.fragmentationRecoveryAttempts.fetch_add(1, std::memory_order_relaxed);
+
+    std::size_t reapedBytes = 0;
+    std::string reapError;
+    if (!JuicerCuda::reap_retired_allocations(resources, reapedBytes, reapError)) {
+        trace_reap_pass(
+            transaction,
+            commandName,
+            reapedBytes,
+            false,
+            reapError.empty() ? "fragmentation_recovery_reap_failed" : reapError.c_str());
+        trace_fragmentation_recovery(
+            transaction,
+            commandName,
+            attempt,
+            requestBytes,
+            reapedBytes,
+            0,
+            0,
+            false,
+            "attempt",
+            reapError.empty() ? "reap_failed" : reapError.c_str());
+        managerState.fragmentationRecoveryFailures.fetch_add(1, std::memory_order_relaxed);
+        outError = reapError.empty() ? "fragmentation recovery reap failed" : reapError;
+        return false;
+    }
+
+    if (reapedBytes > 0) {
+        managerState.retireReapPasses.fetch_add(1, std::memory_order_relaxed);
+        managerState.retireReapBytes.fetch_add(reapedBytes, std::memory_order_relaxed);
+    }
+    trace_reap_pass(
+        transaction,
+        commandName,
+        reapedBytes,
+        true,
+        (reapedBytes > 0) ? "fragmentation_recovery_reap" : "fragmentation_recovery_reap_no_progress");
+
+    const std::uint64_t quarantineTrimmedEntries =
+        trim_large_frame_quarantine_for_context(transaction.snapshot.deviceContextKey);
+    const std::uint64_t graphEvictedEntries =
+        evict_noncritical_graph_entries_for_context(transaction.snapshot.deviceContextKey);
+
+    if (quarantineTrimmedEntries > 0) {
+        managerState.fragmentationRecoveryQuarantineTrimmedEntries.fetch_add(
+            quarantineTrimmedEntries,
+            std::memory_order_relaxed);
+    }
+    if (graphEvictedEntries > 0) {
+        managerState.fragmentationRecoveryGraphEvictedEntries.fetch_add(
+            graphEvictedEntries,
+            std::memory_order_relaxed);
+    }
+
+    if (captureMemorySnapshots) {
+        maybe_publish_manager_memory_snapshot(resources, true);
+    }
+
+    trace_fragmentation_recovery(
+        transaction,
+        commandName,
+        attempt,
+        requestBytes,
+        reapedBytes,
+        quarantineTrimmedEntries,
+        graphEvictedEntries,
+        true,
+        "attempt",
+        "retry_once");
+    return true;
+}
 
 } // namespace
 
@@ -4064,7 +4227,34 @@ bool command_ensure_optics_scratch(
     }
     ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
 
+    ResourceManagerState& managerState = global_state();
     std::uint32_t attempts = 0;
+    bool fragmentationRecoveryTriggered = false;
+    bool fragmentationRecoveryPendingOutcome = false;
+    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
+        if (!fragmentationRecoveryPendingOutcome) {
+            return;
+        }
+        if (success) {
+            managerState.fragmentationRecoverySuccess.fetch_add(1, std::memory_order_relaxed);
+        }
+        else {
+            managerState.fragmentationRecoveryFailures.fetch_add(1, std::memory_order_relaxed);
+        }
+        trace_fragmentation_recovery(
+            transaction,
+            "command_ensure_optics_scratch",
+            attempts,
+            growthBytes,
+            0,
+            0,
+            0,
+            success,
+            "outcome",
+            reason);
+        fragmentationRecoveryPendingOutcome = false;
+    };
+
     while (true) {
         outError.clear();
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
@@ -4081,21 +4271,46 @@ bool command_ensure_optics_scratch(
                 outError)) {
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
-                global_state().budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
+                managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
             }
+            finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
         }
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
-        if (!is_allocator_oom_error(outError) || attempts >= cfg.reclaimRetryMaxAttempts) {
-            if (is_allocator_oom_error(outError)) {
-                global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+        const bool allocatorOom = is_allocator_oom_error(outError);
+        if (!allocatorOom) {
+            finalizeFragmentationOutcome(false, "non_allocator_error");
+            return false;
+        }
+        if (attempts >= cfg.reclaimRetryMaxAttempts) {
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        "command_ensure_optics_scratch",
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
             }
+            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            finalizeFragmentationOutcome(false, "allocator_oom_final");
             return false;
         }
 
         ++attempts;
-        global_state().budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
+        managerState.budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
         std::size_t reclaimedBytes = 0;
         std::string reclaimError;
         if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
@@ -4115,13 +4330,14 @@ bool command_ensure_optics_scratch(
             if (!reclaimError.empty()) {
                 outError += " | reclaim_retry_failed: " + reclaimError;
             }
-            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            finalizeFragmentationOutcome(false, "reap_retry_failed");
             return false;
         }
 
         if (reclaimedBytes > 0) {
-            global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
-            global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+            managerState.retireReapPasses.fetch_add(1, std::memory_order_relaxed);
+            managerState.retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
         }
         trace_reap_pass(
             transaction,
@@ -4139,7 +4355,28 @@ bool command_ensure_optics_scratch(
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (reclaimedBytes == 0) {
-            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        "command_ensure_optics_scratch",
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
+            }
+            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            finalizeFragmentationOutcome(false, "reap_no_progress");
             return false;
         }
     }
@@ -4204,28 +4441,80 @@ bool command_ensure_spatial_dir_scratch(
     }
     ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
 
+    ResourceManagerState& managerState = global_state();
     std::uint32_t attempts = 0;
+    bool fragmentationRecoveryTriggered = false;
+    bool fragmentationRecoveryPendingOutcome = false;
+    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
+        if (!fragmentationRecoveryPendingOutcome) {
+            return;
+        }
+        if (success) {
+            managerState.fragmentationRecoverySuccess.fetch_add(1, std::memory_order_relaxed);
+        }
+        else {
+            managerState.fragmentationRecoveryFailures.fetch_add(1, std::memory_order_relaxed);
+        }
+        trace_fragmentation_recovery(
+            transaction,
+            "command_ensure_spatial_dir_scratch",
+            attempts,
+            growthBytes,
+            0,
+            0,
+            0,
+            success,
+            "outcome",
+            reason);
+        fragmentationRecoveryPendingOutcome = false;
+    };
+
     while (true) {
         outError.clear();
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         if (JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError)) {
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
-                global_state().budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
+                managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
             }
+            finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
         }
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
-        if (!is_allocator_oom_error(outError) || attempts >= cfg.reclaimRetryMaxAttempts) {
-            if (is_allocator_oom_error(outError)) {
-                global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+        const bool allocatorOom = is_allocator_oom_error(outError);
+        if (!allocatorOom) {
+            finalizeFragmentationOutcome(false, "non_allocator_error");
+            return false;
+        }
+        if (attempts >= cfg.reclaimRetryMaxAttempts) {
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        "command_ensure_spatial_dir_scratch",
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
             }
+            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            finalizeFragmentationOutcome(false, "allocator_oom_final");
             return false;
         }
 
         ++attempts;
-        global_state().budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
+        managerState.budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
         std::size_t reclaimedBytes = 0;
         std::string reclaimError;
         if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
@@ -4245,13 +4534,14 @@ bool command_ensure_spatial_dir_scratch(
             if (!reclaimError.empty()) {
                 outError += " | reclaim_retry_failed: " + reclaimError;
             }
-            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            finalizeFragmentationOutcome(false, "reap_retry_failed");
             return false;
         }
 
         if (reclaimedBytes > 0) {
-            global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
-            global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+            managerState.retireReapPasses.fetch_add(1, std::memory_order_relaxed);
+            managerState.retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
         }
         trace_reap_pass(
             transaction,
@@ -4269,7 +4559,28 @@ bool command_ensure_spatial_dir_scratch(
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (reclaimedBytes == 0) {
-            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        "command_ensure_spatial_dir_scratch",
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
+            }
+            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            finalizeFragmentationOutcome(false, "reap_no_progress");
             return false;
         }
     }

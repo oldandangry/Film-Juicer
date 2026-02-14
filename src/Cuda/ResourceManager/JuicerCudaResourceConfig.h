@@ -20,6 +20,7 @@ struct ResourceManagerConfigRaw {
     std::uint64_t managerReserveBytes = 0;
     std::uint32_t pressureSampleIntervalMs = 250;
     std::uint32_t reclaimRetryMaxAttempts = 1;
+    bool fragmentationRecoveryEnabled = true;
     std::uint32_t uploadBytesInFlightLimitMB = 256;
     std::uint32_t uploadFairnessTokensPerTick = 1;
     std::uint32_t criticalUploadReservedTokens = 1;
@@ -43,6 +44,7 @@ struct ResourceManagerConfigEffective {
     std::uint64_t managerReserveBytes = 0;
     std::uint32_t pressureSampleIntervalMs = 250;
     std::uint32_t reclaimRetryMaxAttempts = 1;
+    bool fragmentationRecoveryEnabled = true;
     std::uint32_t uploadBytesInFlightLimitMB = 256;
     std::uint32_t uploadFairnessTokensPerTick = 1;
     std::uint32_t criticalUploadReservedTokens = 1;
