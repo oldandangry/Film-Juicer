@@ -1335,8 +1335,6 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    const bool isInteractive = (_renderInteractiveStatus || _renderQualityDraft);
-
     if (!(_nComponents == 1 || _nComponents == 3 || _nComponents == 4)) {
         OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
     }
@@ -2395,33 +2393,16 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
             else if (pollErr == cudaErrorNotReady) {
-                if (!isInteractive) {
-                    pollErr = cudaEventSynchronize(scanEvent);
-                    if (pollErr != cudaSuccess) {
-                        const char* msg = cudaGetErrorString(pollErr);
-                        mark_context_loss_recovery("scan_error_event_sync", pollErr, msg ? msg : "");
-                        JTRACE("CUDA", std::string("CUDA scan error event sync failed: ") + (msg ? msg : "(unknown)"));
-                        throw OFX::Exception::Suite(kOfxStatErrFatal);
-                    }
-                    resources->scanErrorPending = 0;
-                    if (*resources->scanErrorHost != 0) {
-                        JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
-                        throw OFX::Exception::Suite(kOfxStatErrFatal);
-                    }
+                // Do not block the CPU in steady-state: order this stream after the pending readback
+                // and reuse the staging/event on this submission.
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
+                if (waitErr != cudaSuccess) {
+                    const char* msg = cudaGetErrorString(waitErr);
+                    mark_context_loss_recovery("scan_error_stream_wait", waitErr, msg ? msg : "");
+                    JTRACE("CUDA", std::string("CUDA scan error stream wait failed: ") + (msg ? msg : "(unknown)"));
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
-                else {
-                    // Interactive renders: do not block the CPU. Ensure safe reuse of the
-                    // event/host staging by ordering this stream after the pending readback.
-                    const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
-                    if (waitErr != cudaSuccess) {
-                        const char* msg = cudaGetErrorString(waitErr);
-                        mark_context_loss_recovery("scan_error_stream_wait", waitErr, msg ? msg : "");
-                        JTRACE("CUDA", std::string("CUDA scan error stream wait failed: ") + (msg ? msg : "(unknown)"));
-                        throw OFX::Exception::Suite(kOfxStatErrFatal);
-                    }
-                    // Drop the pending check for interactive renders; we'll reuse the event for this render.
-                    resources->scanErrorPending = 0;
-                }
+                resources->scanErrorPending = 0;
             }
             else {
                 const char* msg = cudaGetErrorString(pollErr);
@@ -2488,31 +2469,10 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
         }
-        else if (!isInteractive) {
-            // If the pinned host staging/event path isn't available, the legacy fallback requires a
-            // stream sync to read back the flag. Avoid that in interactive/draft renders.
-            int scanError = 0;
-            flagErr = cudaMemcpyAsync(&scanError, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
-            if (flagErr != cudaSuccess) {
-                const char* msg = cudaGetErrorString(flagErr);
-                mark_context_loss_recovery("scan_error_flag_readback", flagErr, msg ? msg : "");
-                JTRACE("CUDA", std::string("CUDA scan error flag readback failed: ") + (msg ? msg : "(unknown)"));
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-            }
-            flagErr = cudaStreamSynchronize(stream);
-            if (flagErr != cudaSuccess) {
-                const char* msg = cudaGetErrorString(flagErr);
-                mark_context_loss_recovery("scan_error_stream_sync", flagErr, msg ? msg : "");
-                JTRACE("CUDA", std::string("CUDA stream sync failed after ") + stage + " pipeline: " + (msg ? msg : "(unknown)"));
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-            }
-            if (scanError != 0) {
-                JTRACE("CUDA", std::string("FATAL: ") + stage + " pipeline scan produced non-finite RGB");
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
+        else {
+            static std::atomic<bool> sScanErrorReadbackUnavailableWarned{ false };
+            if (!sScanErrorReadbackUnavailableWarned.exchange(true)) {
+                JTRACE("CUDA", "scan error host/event staging unavailable; skipping asynchronous scan-error readback validation");
             }
         }
     };

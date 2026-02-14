@@ -320,48 +320,19 @@ namespace JuicerCuda {
 
         void* retireEventOpaque = nullptr;
         if (!acquire_retire_event_locked(resources, retireEventOpaque, outError)) {
-            // Fallback: block and free immediately. This should be rare.
-            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-            const cudaError_t syncErr = cudaStreamSynchronize(stream);
-            if (syncErr != cudaSuccess) {
-                outError = std::string("cudaStreamSynchronize fallback before ") + label + " free failed: " +
-                    (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-                return false;
+            if (outError.empty()) {
+                outError = std::string("retire fence acquisition failed for ") + (label ? label : "resource");
             }
-            if (kind == Resources::RetireKind::DeviceFree) {
-                cudaFree(ptr);
-            }
-            else if (kind == Resources::RetireKind::HostPinnedFree) {
-                cudaFreeHost(ptr);
-            }
-            else if (kind == Resources::RetireKind::EventDestroy) {
-                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(ptr));
-            }
-            return true;
+            return false;
         }
 
         if (!record_retire_fence_locked(resources, retireEventOpaque, cudaStreamOpaque, label, outError)) {
-            // If we can't record the retire fence, destroy the event and fall back to a blocking free.
+            // If we can't record the retire fence, fail closed instead of falling back to a blocking sync.
             cudaEventDestroy(reinterpret_cast<cudaEvent_t>(retireEventOpaque));
-            retireEventOpaque = nullptr;
-
-            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-            const cudaError_t syncErr = cudaStreamSynchronize(stream);
-            if (syncErr != cudaSuccess) {
-                outError = std::string("cudaStreamSynchronize fallback before ") + label + " free failed: " +
-                    (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-                return false;
+            if (outError.empty()) {
+                outError = std::string("retire fence record failed for ") + (label ? label : "resource");
             }
-            if (kind == Resources::RetireKind::DeviceFree) {
-                cudaFree(ptr);
-            }
-            else if (kind == Resources::RetireKind::HostPinnedFree) {
-                cudaFreeHost(ptr);
-            }
-            else if (kind == Resources::RetireKind::EventDestroy) {
-                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(ptr));
-            }
-            return true;
+            return false;
         }
 
         Resources::RetireEntry e{};
@@ -1582,8 +1553,6 @@ namespace JuicerCuda {
         delete resources;
     }
 
-    static bool sync_before_rebuild(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError);
-
     // Callers must hold resources.m before invoking this helper.
     static bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset = true) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
@@ -2180,34 +2149,6 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool sync_before_rebuild(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (resources.lastUseEventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-            const cudaError_t evErr = cudaEventSynchronize(ev);
-            if (evErr != cudaSuccess) {
-                outError = std::string("cudaEventSynchronize before ") + label + " rebuild failed: " + (cudaGetErrorString(evErr) ? cudaGetErrorString(evErr) : "(unknown)");
-                return false;
-            }
-        }
-        else {
-            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-            const cudaError_t syncErr = cudaStreamSynchronize(stream);
-            if (syncErr != cudaSuccess) {
-                outError = std::string("cudaStreamSynchronize before ") + label + " rebuild failed: " + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
-                return false;
-            }
-        }
-        return true;
-#endif
-    }
-
     bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
@@ -2436,13 +2377,6 @@ namespace JuicerCuda {
         const bool needWeightsX = resources.autoExposureScratch.weightsXCapacity < meterWidth || !resources.autoExposureScratch.weightsX;
         const bool needWeightsY = resources.autoExposureScratch.weightsYCapacity < meterHeight || !resources.autoExposureScratch.weightsY;
         if (needWeightsX || needWeightsY) {
-            const bool needSync = (needWeightsX && resources.autoExposureScratch.weightsX) ||
-                (needWeightsY && resources.autoExposureScratch.weightsY);
-            if (needSync) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "auto-exposure weights", outError)) {
-                    return false;
-                }
-            }
             if (needWeightsX) {
                 if (resources.autoExposureScratch.weightsX) {
                     const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.weightsXCapacity)) * sizeof(float);
@@ -2484,9 +2418,6 @@ namespace JuicerCuda {
 
         if (resources.autoExposureScratch.partialCapacity < neededPartials) {
             if (resources.autoExposureScratch.partialsA || resources.autoExposureScratch.partialsB) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "auto-exposure", outError)) {
-                    return false;
-                }
                 const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.partialCapacity)) * sizeof(JuicerCudaAutoExposurePartial);
                 if (resources.autoExposureScratch.partialsA) {
                     if (!retire_ptr_locked(resources, resources.autoExposureScratch.partialsA, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure partialsA", outError)) {
@@ -2548,9 +2479,6 @@ namespace JuicerCuda {
         }
 
         if (resources.sharedTmpPlane) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, label ? label : "shared tmp", outError)) {
-                return false;
-            }
             const size_t oldN = static_cast<size_t>(std::max(0, resources.sharedTmpWidth)) * static_cast<size_t>(std::max(0, resources.sharedTmpHeight));
             const size_t oldBytes = oldN * sizeof(float);
             if (!retire_ptr_locked(resources, resources.sharedTmpPlane, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label ? label : "shared tmp", outError)) {
@@ -2608,9 +2536,6 @@ namespace JuicerCuda {
                 resources.scannerScratch.blurred || resources.scannerScratch.aux || resources.scannerScratch.grainTmp ||
                 resources.scannerScratch.grainTmpShared || resources.scannerScratch.grainTmpMid ||
                 resources.scannerScratch.grainTmpCoarse || resources.scannerScratch.gateMask) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "optics scratch", outError)) {
-                    return false;
-                }
                 if (!retire_optics_scratch_locked(resources, resources.scannerScratch, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
@@ -2652,9 +2577,6 @@ namespace JuicerCuda {
 
         if (needBlurredScratch) {
             if (!resources.scannerScratch.blurred) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "unsharp scratch", outError)) {
-                    return false;
-                }
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
                 const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.blurred), bytes);
@@ -2666,9 +2588,6 @@ namespace JuicerCuda {
         }
         else {
             if (resources.scannerScratch.blurred) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "unsharp scratch free", outError)) {
-                    return false;
-                }
                 const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
                 const size_t oldBytes = oldN * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.scannerScratch.blurred, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unsharp scratch", outError)) {
@@ -2680,9 +2599,6 @@ namespace JuicerCuda {
 
         if (needAuxScratch) {
             if (!resources.scannerScratch.aux) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain scratch", outError)) {
-                    return false;
-                }
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
                 const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.aux), bytes);
@@ -2694,9 +2610,6 @@ namespace JuicerCuda {
         }
         else {
             if (resources.scannerScratch.aux) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain scratch free", outError)) {
-                    return false;
-                }
                 const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
                 const size_t oldBytes = oldN * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.scannerScratch.aux, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain scratch", outError)) {
@@ -2708,9 +2621,6 @@ namespace JuicerCuda {
 
         if (needGrainScratch) {
             if (!resources.scannerScratch.grainTmp) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix scratch", outError)) {
-                    return false;
-                }
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
                 const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmp), bytes);
@@ -2720,9 +2630,6 @@ namespace JuicerCuda {
                 }
             }
             if (!resources.scannerScratch.grainTmpMid) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix mid scratch", outError)) {
-                    return false;
-                }
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
                 const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpMid), bytes);
@@ -2732,9 +2639,6 @@ namespace JuicerCuda {
                 }
             }
             if (!resources.scannerScratch.grainTmpCoarse) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix coarse scratch", outError)) {
-                    return false;
-                }
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
                 const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpCoarse), bytes);
@@ -2746,9 +2650,6 @@ namespace JuicerCuda {
         }
         else {
             if (resources.scannerScratch.grainTmp) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix scratch free", outError)) {
-                    return false;
-                }
                 const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
                 const size_t oldBytes = oldN * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError)) {
@@ -2757,9 +2658,6 @@ namespace JuicerCuda {
                 resources.scannerScratch.grainTmp = nullptr;
             }
             if (resources.scannerScratch.grainTmpMid) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix mid scratch free", outError)) {
-                    return false;
-                }
                 const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
                 const size_t oldBytes = oldN * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpMid, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix mid scratch", outError)) {
@@ -2768,9 +2666,6 @@ namespace JuicerCuda {
                 resources.scannerScratch.grainTmpMid = nullptr;
             }
             if (resources.scannerScratch.grainTmpCoarse) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain mix coarse scratch free", outError)) {
-                    return false;
-                }
                 const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
                 const size_t oldBytes = oldN * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpCoarse, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix coarse scratch", outError)) {
@@ -2782,9 +2677,6 @@ namespace JuicerCuda {
 
         if (needGrainSharedScratch) {
             if (!resources.scannerScratch.grainTmpShared) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain shared scratch", outError)) {
-                    return false;
-                }
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
                 const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpShared), bytes);
@@ -2796,9 +2688,6 @@ namespace JuicerCuda {
         }
         else {
             if (resources.scannerScratch.grainTmpShared) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "grain shared scratch free", outError)) {
-                    return false;
-                }
                 const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
                 const size_t oldBytes = oldN * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpShared, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain shared scratch", outError)) {
@@ -2814,9 +2703,6 @@ namespace JuicerCuda {
             const bool gateDimsMatch = (resources.scannerScratch.gateWidth == gateWidth &&
                 resources.scannerScratch.gateHeight == gateHeight);
             if (!resources.scannerScratch.gateMask || !gateDimsMatch) {
-                if (!sync_before_rebuild(resources, cudaStreamOpaque, "gate defect mask", outError)) {
-                    return false;
-                }
                 if (resources.scannerScratch.gateMask) {
                     const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.gateWidth)) * static_cast<size_t>(std::max(0, resources.scannerScratch.gateHeight));
                     const size_t oldBytes = oldN * sizeof(float);
@@ -2838,9 +2724,6 @@ namespace JuicerCuda {
             }
         }
         else if (resources.scannerScratch.gateMask) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, "gate defect mask free", outError)) {
-                return false;
-            }
             const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.gateWidth)) * static_cast<size_t>(std::max(0, resources.scannerScratch.gateHeight));
             const size_t oldBytes = oldN * sizeof(float);
             if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError)) {
@@ -2886,9 +2769,6 @@ namespace JuicerCuda {
         }
 
         if (scratch.corrY || scratch.corrM || scratch.corrC) {
-            if (!sync_before_rebuild(resources, cudaStreamOpaque, "spatial DIR scratch", outError)) {
-                return false;
-            }
             if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
                 return false;
             }
