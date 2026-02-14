@@ -4,7 +4,9 @@
 //
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceState.h"
 
 #include "FilmProcessing.h"
 #include "ColorTransforms.h"
@@ -29,8 +31,10 @@ extern const std::string gDataDir;
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -474,6 +478,8 @@ namespace JuicerCuda {
         int width = 512;
         int height = 512;
         int frames = 256;
+        std::uint32_t activeUsers = 0;
+        std::uint64_t lastTouchedMs = 0;
         bool loaded = false;
         bool valid = false;
         HostCacheLoadState state = HostCacheLoadState::Uninitialized;
@@ -489,6 +495,8 @@ namespace JuicerCuda {
         int height = 0;
         int count = 0;
         int colors = 0;
+        std::uint32_t activeUsers = 0;
+        std::uint64_t lastTouchedMs = 0;
         bool loaded = false;
         bool valid = false;
         HostCacheLoadState state = HostCacheLoadState::Uninitialized;
@@ -509,6 +517,352 @@ namespace JuicerCuda {
 
     static std::atomic<bool> gStbnWarned{ false };
     static std::atomic<bool> gWangWarned{ false };
+
+    enum class HostAssetCacheId : int {
+        None = 0,
+        Stbn = 1,
+        Wang = 2
+    };
+
+    struct HostAssetCachePolicyState {
+        std::mutex mutex;
+        std::uint64_t nextTrimSequence = 1;
+    };
+
+    static HostAssetCachePolicyState& host_asset_cache_policy_state() {
+        static HostAssetCachePolicyState state;
+        return state;
+    }
+
+    static const ResourceManager::ResourceManagerConfigEffective& host_asset_cache_config() {
+        static const ResourceManager::ResourceManagerConfigEffective cfg =
+            ResourceManager::sanitize_config(ResourceManager::ResourceManagerConfigRaw{});
+        return cfg;
+    }
+
+    static std::uint64_t host_asset_now_ms() {
+        using Clock = std::chrono::steady_clock;
+        const auto now = Clock::now().time_since_epoch();
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
+    }
+
+    static std::size_t stbn_cache_bytes_locked(const StbnCpuCache& cache) {
+        return cache.data.size();
+    }
+
+    static std::size_t wang_cache_bytes_locked(const WangCpuCache& cache) {
+        return cache.tiles.size() + cache.lut.size();
+    }
+
+    static void publish_host_asset_cache_bytes(std::size_t bytes) {
+        ResourceManager::global_state().hostAssetCacheBytes.store(
+            static_cast<std::uint64_t>(bytes), std::memory_order_relaxed);
+    }
+
+    static bool host_cache_trim_eligible(const StbnCpuCache& cache) {
+        return cache.state == HostCacheLoadState::Ready &&
+            cache.activeUsers == 0 &&
+            !cache.data.empty();
+    }
+
+    static bool host_cache_trim_eligible(const WangCpuCache& cache) {
+        return cache.state == HostCacheLoadState::Ready &&
+            cache.activeUsers == 0 &&
+            (!cache.tiles.empty() || !cache.lut.empty());
+    }
+
+    static HostAssetCacheId pick_oldest_host_cache_candidate_locked(
+        const StbnCpuCache& stbn,
+        const WangCpuCache& wang) {
+        const bool stbnEligible = host_cache_trim_eligible(stbn);
+        const bool wangEligible = host_cache_trim_eligible(wang);
+        if (!stbnEligible && !wangEligible) {
+            return HostAssetCacheId::None;
+        }
+        if (stbnEligible && !wangEligible) {
+            return HostAssetCacheId::Stbn;
+        }
+        if (!stbnEligible && wangEligible) {
+            return HostAssetCacheId::Wang;
+        }
+        if (stbn.lastTouchedMs == wang.lastTouchedMs) {
+            return HostAssetCacheId::Stbn;
+        }
+        return (stbn.lastTouchedMs < wang.lastTouchedMs) ?
+            HostAssetCacheId::Stbn :
+            HostAssetCacheId::Wang;
+    }
+
+    static std::size_t trim_host_cache_locked(
+        StbnCpuCache& stbn,
+        WangCpuCache& wang,
+        HostAssetCacheId which,
+        std::uint64_t nowMs) {
+        if (which == HostAssetCacheId::Stbn) {
+            if (!host_cache_trim_eligible(stbn)) {
+                return 0;
+            }
+            const std::size_t bytes = stbn.data.size();
+            stbn.data.clear();
+            stbn.data.shrink_to_fit();
+            stbn.loaded = false;
+            stbn.valid = false;
+            stbn.state = HostCacheLoadState::Uninitialized;
+            stbn.failureReason.clear();
+            stbn.lastTouchedMs = nowMs;
+            return bytes;
+        }
+        if (which == HostAssetCacheId::Wang) {
+            if (!host_cache_trim_eligible(wang)) {
+                return 0;
+            }
+            const std::size_t bytes = wang.tiles.size() + wang.lut.size();
+            wang.tiles.clear();
+            wang.tiles.shrink_to_fit();
+            wang.lut.clear();
+            wang.lut.shrink_to_fit();
+            wang.width = 0;
+            wang.height = 0;
+            wang.count = 0;
+            wang.colors = 0;
+            wang.loaded = false;
+            wang.valid = false;
+            wang.state = HostCacheLoadState::Uninitialized;
+            wang.failureReason.clear();
+            wang.lastTouchedMs = nowMs;
+            return bytes;
+        }
+        return 0;
+    }
+
+    static bool is_idle_trim_candidate(
+        const StbnCpuCache& stbn,
+        const WangCpuCache& wang,
+        HostAssetCacheId which,
+        std::uint64_t nowMs,
+        std::uint32_t idleTrimMs) {
+        if (which == HostAssetCacheId::Stbn) {
+            if (!host_cache_trim_eligible(stbn)) {
+                return false;
+            }
+            const std::uint64_t ageMs = (nowMs >= stbn.lastTouchedMs) ? (nowMs - stbn.lastTouchedMs) : 0;
+            return ageMs >= static_cast<std::uint64_t>(idleTrimMs);
+        }
+        if (which == HostAssetCacheId::Wang) {
+            if (!host_cache_trim_eligible(wang)) {
+                return false;
+            }
+            const std::uint64_t ageMs = (nowMs >= wang.lastTouchedMs) ? (nowMs - wang.lastTouchedMs) : 0;
+            return ageMs >= static_cast<std::uint64_t>(idleTrimMs);
+        }
+        return false;
+    }
+
+    static const char* host_asset_cache_name(HostAssetCacheId which) {
+        switch (which) {
+        case HostAssetCacheId::Stbn:
+            return "stbn";
+        case HostAssetCacheId::Wang:
+            return "wang";
+        default:
+            return "none";
+        }
+    }
+
+    static void trace_host_asset_trim(
+        const char* stage,
+        const char* reason,
+        HostAssetCacheId which,
+        std::size_t trimmedBytes,
+        std::size_t totalBytes,
+        std::uint64_t sequence) {
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        std::ostringstream oss;
+        oss << "stage=" << (stage ? stage : "unknown")
+            << " reason=" << (reason ? reason : "unknown")
+            << " cache=" << host_asset_cache_name(which)
+            << " trimmed_bytes=" << trimmedBytes
+            << " total_bytes=" << totalBytes
+            << " trim_sequence=" << sequence;
+        JTRACE("MSHST", oss.str());
+    }
+
+    static void trace_host_asset_cap(
+        const char* stage,
+        std::size_t totalBytes,
+        std::size_t capBytes,
+        std::size_t trimBudgetBytes,
+        std::size_t trimmedBytes) {
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        std::ostringstream oss;
+        oss << "stage=" << (stage ? stage : "unknown")
+            << " total_bytes=" << totalBytes
+            << " cap_bytes=" << capBytes
+            << " trim_budget_bytes=" << trimBudgetBytes
+            << " trimmed_bytes=" << trimmedBytes;
+        JTRACE("MSHCP", oss.str());
+    }
+
+    static void trace_host_asset_event(
+        const char* cacheName,
+        const char* op,
+        std::size_t bytes,
+        const char* detail = nullptr) {
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        std::ostringstream oss;
+        oss << "cache=" << (cacheName ? cacheName : "unknown")
+            << " op=" << (op ? op : "unknown")
+            << " bytes=" << bytes;
+        if (detail && *detail) {
+            oss << " detail=" << detail;
+        }
+        JTRACE("MSHST", oss.str());
+    }
+
+    static void enforce_host_asset_cache_policy(const char* stage) {
+        const ResourceManager::ResourceManagerConfigEffective& cfg = host_asset_cache_config();
+        const std::uint64_t nowMs = host_asset_now_ms();
+        const std::size_t capBytes = static_cast<std::size_t>(cfg.hostAssetCacheMaxBytes);
+        const std::size_t trimBatchBytes = static_cast<std::size_t>(cfg.hostAssetTrimBatchBytes);
+
+        HostAssetCachePolicyState& policy = host_asset_cache_policy_state();
+        std::lock_guard<std::mutex> policyLock(policy.mutex);
+        StbnCpuCache& stbn = stbn_cache();
+        WangCpuCache& wang = wang_cache();
+        std::scoped_lock<std::mutex, std::mutex> cachesLock(stbn.mutex, wang.mutex);
+
+        std::size_t totalBytes = stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang);
+        publish_host_asset_cache_bytes(totalBytes);
+
+        std::size_t trimmedBytesTotal = 0;
+        const std::uint64_t trimSequence = policy.nextTrimSequence++;
+
+        HostAssetCacheId idleCandidate = pick_oldest_host_cache_candidate_locked(stbn, wang);
+        while (idleCandidate != HostAssetCacheId::None &&
+               trimmedBytesTotal < trimBatchBytes &&
+               is_idle_trim_candidate(stbn, wang, idleCandidate, nowMs, cfg.hostAssetIdleTrimMs)) {
+            const std::size_t trimmed = trim_host_cache_locked(stbn, wang, idleCandidate, nowMs);
+            if (trimmed == 0) {
+                break;
+            }
+            trimmedBytesTotal += trimmed;
+            totalBytes = stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang);
+            trace_host_asset_trim(stage, "idle_trim", idleCandidate, trimmed, totalBytes, trimSequence);
+            idleCandidate = pick_oldest_host_cache_candidate_locked(stbn, wang);
+        }
+
+        if (totalBytes > capBytes) {
+            ResourceManager::global_state().hostAssetCacheCapHits.fetch_add(1, std::memory_order_relaxed);
+            std::size_t capTrimmed = 0;
+            for (;;) {
+                if (totalBytes <= capBytes) {
+                    break;
+                }
+                if (trimmedBytesTotal >= trimBatchBytes && capTrimmed > 0) {
+                    break;
+                }
+                const HostAssetCacheId candidate = pick_oldest_host_cache_candidate_locked(stbn, wang);
+                if (candidate == HostAssetCacheId::None) {
+                    break;
+                }
+                const std::size_t trimmed = trim_host_cache_locked(stbn, wang, candidate, nowMs);
+                if (trimmed == 0) {
+                    break;
+                }
+                trimmedBytesTotal += trimmed;
+                capTrimmed += trimmed;
+                totalBytes = stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang);
+                trace_host_asset_trim(stage, "cap_trim", candidate, trimmed, totalBytes, trimSequence);
+            }
+            trace_host_asset_cap(stage, totalBytes, capBytes, trimBatchBytes, capTrimmed);
+        }
+
+        if (trimmedBytesTotal > 0) {
+            ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
+            managerState.hostAssetCacheTrimEvents.fetch_add(1, std::memory_order_relaxed);
+            managerState.hostAssetCacheTrimBytes.fetch_add(
+                static_cast<std::uint64_t>(trimmedBytesTotal), std::memory_order_relaxed);
+        }
+
+        publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
+    }
+
+    struct StbnCpuView {
+        const std::uint8_t* data = nullptr;
+        std::size_t bytes = 0;
+        int width = 0;
+        int height = 0;
+        int frames = 0;
+    };
+
+    struct WangCpuView {
+        const std::uint8_t* tiles = nullptr;
+        const std::uint8_t* lut = nullptr;
+        std::size_t tileBytes = 0;
+        std::size_t lutBytes = 0;
+        int width = 0;
+        int height = 0;
+        int count = 0;
+        int colors = 0;
+    };
+
+    static bool acquire_stbn_cpu_view(StbnCpuCache& cache, StbnCpuView& outView, std::string& outError) {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        if (cache.state != HostCacheLoadState::Ready || cache.data.empty()) {
+            outError = "STBN cache is not ready";
+            return false;
+        }
+        cache.activeUsers += 1;
+        cache.lastTouchedMs = host_asset_now_ms();
+        outView.data = cache.data.data();
+        outView.bytes = cache.data.size();
+        outView.width = cache.width;
+        outView.height = cache.height;
+        outView.frames = cache.frames;
+        return true;
+    }
+
+    static void release_stbn_cpu_view(StbnCpuCache& cache) {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        if (cache.activeUsers > 0) {
+            cache.activeUsers -= 1;
+        }
+        cache.lastTouchedMs = host_asset_now_ms();
+    }
+
+    static bool acquire_wang_cpu_view(WangCpuCache& cache, WangCpuView& outView, std::string& outError) {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        if (cache.state != HostCacheLoadState::Ready || cache.tiles.empty() || cache.lut.empty()) {
+            outError = "Wang cache is not ready";
+            return false;
+        }
+        cache.activeUsers += 1;
+        cache.lastTouchedMs = host_asset_now_ms();
+        outView.tiles = cache.tiles.data();
+        outView.lut = cache.lut.data();
+        outView.tileBytes = cache.tiles.size();
+        outView.lutBytes = cache.lut.size();
+        outView.width = cache.width;
+        outView.height = cache.height;
+        outView.count = cache.count;
+        outView.colors = cache.colors;
+        return true;
+    }
+
+    static void release_wang_cpu_view(WangCpuCache& cache) {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        if (cache.activeUsers > 0) {
+            cache.activeUsers -= 1;
+        }
+        cache.lastTouchedMs = host_asset_now_ms();
+    }
 
     static bool load_stbn_cpu_uncached(const StbnCpuCache& cache, std::vector<std::uint8_t>& outData, std::string& outError) {
         if (gDataDir.empty()) {
@@ -681,12 +1035,15 @@ namespace JuicerCuda {
                 if (cache.state == HostCacheLoadState::Ready) {
                     cache.loaded = true;
                     cache.valid = true;
+                    cache.lastTouchedMs = host_asset_now_ms();
+                    trace_host_asset_event("stbn", "hit", cache.data.size());
                     return true;
                 }
                 if (cache.state == HostCacheLoadState::Failed) {
                     cache.loaded = true;
                     cache.valid = false;
                     outError = cache.failureReason;
+                    trace_host_asset_event("stbn", "failed_cached", 0, cache.failureReason.c_str());
                     return false;
                 }
                 if (cache.state == HostCacheLoadState::Loading) {
@@ -709,12 +1066,15 @@ namespace JuicerCuda {
                 cache.data = std::move(loadedData);
                 cache.failureReason.clear();
                 cache.state = HostCacheLoadState::Ready;
+                cache.lastTouchedMs = host_asset_now_ms();
+                trace_host_asset_event("stbn", "load", cache.data.size());
             }
             else {
                 cache.data.clear();
                 cache.failureReason = loadError.empty() ? "STBN load failed: unknown error" : loadError;
                 cache.state = HostCacheLoadState::Failed;
                 outError = cache.failureReason;
+                trace_host_asset_event("stbn", "failed_load", 0, cache.failureReason.c_str());
             }
         }
         cache.cv.notify_all();
@@ -729,12 +1089,15 @@ namespace JuicerCuda {
                 if (cache.state == HostCacheLoadState::Ready) {
                     cache.loaded = true;
                     cache.valid = true;
+                    cache.lastTouchedMs = host_asset_now_ms();
+                    trace_host_asset_event("wang", "hit", cache.tiles.size() + cache.lut.size());
                     return true;
                 }
                 if (cache.state == HostCacheLoadState::Failed) {
                     cache.loaded = true;
                     cache.valid = false;
                     outError = cache.failureReason;
+                    trace_host_asset_event("wang", "failed_cached", 0, cache.failureReason.c_str());
                     return false;
                 }
                 if (cache.state == HostCacheLoadState::Loading) {
@@ -762,6 +1125,8 @@ namespace JuicerCuda {
                 cache.colors = loadedData.colors;
                 cache.failureReason.clear();
                 cache.state = HostCacheLoadState::Ready;
+                cache.lastTouchedMs = host_asset_now_ms();
+                trace_host_asset_event("wang", "load", cache.tiles.size() + cache.lut.size());
             }
             else {
                 cache.tiles.clear();
@@ -773,6 +1138,7 @@ namespace JuicerCuda {
                 cache.failureReason = loadError.empty() ? "Wang tiles load failed: unknown error" : loadError;
                 cache.state = HostCacheLoadState::Failed;
                 outError = cache.failureReason;
+                trace_host_asset_event("wang", "failed_load", 0, cache.failureReason.c_str());
             }
         }
         cache.cv.notify_all();
@@ -1591,28 +1957,41 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+        enforce_host_asset_cache_policy("ensure_uploaded_pre");
 
         if (!resources.stbnData) {
             std::string stbnError;
             StbnCpuCache& cache = stbn_cache();
             if (load_stbn_cpu(cache, stbnError)) {
-                const std::size_t bytes = cache.data.size();
-                if (bytes > 0) {
-                    const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&resources.stbnData), bytes);
-                    if (allocErr == cudaSuccess) {
-                        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-                        const cudaError_t copyErr = cudaMemcpyAsync(resources.stbnData, cache.data.data(), bytes, cudaMemcpyHostToDevice, stream);
-                        if (copyErr != cudaSuccess) {
-                            stbnError = std::string("cudaMemcpyAsync(STBN) failed: ") + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
-                            free_stbn(resources);
-                        } else {
-                            resources.stbnWidth = cache.width;
-                            resources.stbnHeight = cache.height;
-                            resources.stbnFrames = cache.frames;
+                StbnCpuView view{};
+                if (acquire_stbn_cpu_view(cache, view, stbnError)) {
+                    struct StbnViewGuard {
+                        StbnCpuCache* cache = nullptr;
+                        ~StbnViewGuard() {
+                            if (cache) {
+                                release_stbn_cpu_view(*cache);
+                            }
                         }
-                    } else {
-                        stbnError = std::string("cudaMalloc(STBN) failed: ") + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
-                        free_stbn(resources);
+                    } guard{ &cache };
+                    if (view.bytes > 0) {
+                        const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&resources.stbnData), view.bytes);
+                        if (allocErr == cudaSuccess) {
+                            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+                            const cudaError_t copyErr = cudaMemcpyAsync(resources.stbnData, view.data, view.bytes, cudaMemcpyHostToDevice, stream);
+                            if (copyErr != cudaSuccess) {
+                                stbnError = std::string("cudaMemcpyAsync(STBN) failed: ") + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
+                                free_stbn(resources);
+                            }
+                            else {
+                                resources.stbnWidth = view.width;
+                                resources.stbnHeight = view.height;
+                                resources.stbnFrames = view.frames;
+                            }
+                        }
+                        else {
+                            stbnError = std::string("cudaMalloc(STBN) failed: ") + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+                            free_stbn(resources);
+                        }
                     }
                 }
             }
@@ -1628,29 +2007,40 @@ namespace JuicerCuda {
             std::string wangError;
             WangCpuCache& cache = wang_cache();
             if (load_wang_cpu(cache, wangError)) {
-                const std::size_t tileBytes = cache.tiles.size();
-                const std::size_t lutBytes = cache.lut.size();
-                if (tileBytes > 0 && lutBytes > 0) {
-                    const cudaError_t allocTiles = cudaMalloc(reinterpret_cast<void**>(&resources.wangTilesData), tileBytes);
-                    const cudaError_t allocLut = cudaMalloc(reinterpret_cast<void**>(&resources.wangLutData), lutBytes);
-                    if (allocTiles == cudaSuccess && allocLut == cudaSuccess) {
-                        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-                        const cudaError_t copyTiles = cudaMemcpyAsync(resources.wangTilesData, cache.tiles.data(), tileBytes, cudaMemcpyHostToDevice, stream);
-                        const cudaError_t copyLut = cudaMemcpyAsync(resources.wangLutData, cache.lut.data(), lutBytes, cudaMemcpyHostToDevice, stream);
-                        if (copyTiles != cudaSuccess || copyLut != cudaSuccess) {
-                            wangError = std::string("cudaMemcpyAsync(Wang) failed: ") +
-                                (cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) ? cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) : "(unknown)");
-                            free_wang(resources);
-                        } else {
-                            resources.wangWidth = cache.width;
-                            resources.wangHeight = cache.height;
-                            resources.wangCount = cache.count;
-                            resources.wangColors = cache.colors;
+                WangCpuView view{};
+                if (acquire_wang_cpu_view(cache, view, wangError)) {
+                    struct WangViewGuard {
+                        WangCpuCache* cache = nullptr;
+                        ~WangViewGuard() {
+                            if (cache) {
+                                release_wang_cpu_view(*cache);
+                            }
                         }
-                    } else {
-                        wangError = std::string("cudaMalloc(Wang) failed: ") +
-                            (cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) ? cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) : "(unknown)");
-                        free_wang(resources);
+                    } guard{ &cache };
+                    if (view.tileBytes > 0 && view.lutBytes > 0) {
+                        const cudaError_t allocTiles = cudaMalloc(reinterpret_cast<void**>(&resources.wangTilesData), view.tileBytes);
+                        const cudaError_t allocLut = cudaMalloc(reinterpret_cast<void**>(&resources.wangLutData), view.lutBytes);
+                        if (allocTiles == cudaSuccess && allocLut == cudaSuccess) {
+                            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+                            const cudaError_t copyTiles = cudaMemcpyAsync(resources.wangTilesData, view.tiles, view.tileBytes, cudaMemcpyHostToDevice, stream);
+                            const cudaError_t copyLut = cudaMemcpyAsync(resources.wangLutData, view.lut, view.lutBytes, cudaMemcpyHostToDevice, stream);
+                            if (copyTiles != cudaSuccess || copyLut != cudaSuccess) {
+                                wangError = std::string("cudaMemcpyAsync(Wang) failed: ") +
+                                    (cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) ? cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) : "(unknown)");
+                                free_wang(resources);
+                            }
+                            else {
+                                resources.wangWidth = view.width;
+                                resources.wangHeight = view.height;
+                                resources.wangCount = view.count;
+                                resources.wangColors = view.colors;
+                            }
+                        }
+                        else {
+                            wangError = std::string("cudaMalloc(Wang) failed: ") +
+                                (cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) ? cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) : "(unknown)");
+                            free_wang(resources);
+                        }
                     }
                 }
             }
@@ -1658,6 +2048,7 @@ namespace JuicerCuda {
                 JTRACE("CUDA", wangError);
             }
         }
+        enforce_host_asset_cache_policy("ensure_uploaded_post");
 
         if (ws.buildCounter == 0) {
             outError = "WorkingState buildCounter is 0";

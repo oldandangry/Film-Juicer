@@ -302,6 +302,9 @@ struct PressureContextState {
     std::uint64_t lastSampleMs = 0;
     PressureDecision lastDecision{};
     PressureState lastState = PressureState::Normal;
+    std::uint64_t lastStateChangeMs = 0;
+    std::uint64_t transitionWindowStartMs = 0;
+    std::uint32_t transitionsInWindow = 0;
     bool reserveCrossed = false;
     bool headroomSourceValid = false;
     HeadroomSource lastHeadroomSource = HeadroomSource::FreeVramOnly;
@@ -338,10 +341,14 @@ struct PressureCheckpoint {
     PressureInput input{};
     PressureDecision decision{};
     PressureState previousState = PressureState::Normal;
+    PressureState desiredState = PressureState::Normal;
     bool sampled = false;
     bool transition = false;
+    bool transitionDeferredByDwell = false;
+    bool transitionDeferredByRate = false;
     bool reserveCrossing = false;
     bool reserveCrossedNow = false;
+    std::uint32_t pollIntervalMs = 0;
     ManagerMemorySnapshot memory{};
 };
 
@@ -1544,6 +1551,42 @@ bool reserve_crossed(const PressureInput& input) noexcept {
     return pressure_total_bytes(input) > input.softTargetBytes;
 }
 
+int pressure_state_rank(PressureState state) noexcept {
+    switch (state) {
+    case PressureState::Normal:
+        return 0;
+    case PressureState::Constrained:
+        return 1;
+    case PressureState::Critical:
+        return 2;
+    case PressureState::Emergency:
+        return 3;
+    default:
+        return 0;
+    }
+}
+
+std::uint32_t pressure_poll_interval_ms_for_state(
+    const ResourceManagerConfigEffective& cfg,
+    PressureState state) noexcept {
+    const std::uint32_t fallback = std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMs);
+    const std::uint32_t normal = std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMsNormal);
+    const std::uint32_t critical = std::max<std::uint32_t>(
+        1u,
+        std::min<std::uint32_t>(cfg.pressurePollIntervalMsCritical, normal));
+    switch (state) {
+    case PressureState::Normal:
+        return normal;
+    case PressureState::Constrained:
+        return std::max<std::uint32_t>(critical, (normal + critical) / 2u);
+    case PressureState::Critical:
+    case PressureState::Emergency:
+        return critical;
+    default:
+        return fallback;
+    }
+}
+
 std::size_t estimate_optics_growth_bytes(
     JuicerCuda::Resources& resources,
     int width,
@@ -2182,10 +2225,14 @@ void trace_pressure_checkpoint(
         + " command=" + (commandName ? commandName : "unknown")
         + " state=" + to_cstr(checkpoint.decision.state)
         + " prev_state=" + to_cstr(checkpoint.previousState)
+        + " desired_state=" + to_cstr(checkpoint.desiredState)
         + " transition=" + std::to_string(checkpoint.transition ? 1 : 0)
+        + " transition_deferred_dwell=" + std::to_string(checkpoint.transitionDeferredByDwell ? 1 : 0)
+        + " transition_deferred_rate=" + std::to_string(checkpoint.transitionDeferredByRate ? 1 : 0)
         + " reserve_crossing=" + std::to_string(checkpoint.reserveCrossing ? 1 : 0)
         + " reserve_crossed=" + std::to_string(checkpoint.reserveCrossedNow ? 1 : 0)
         + " sampled=" + std::to_string(checkpoint.sampled ? 1 : 0)
+        + " poll_interval_ms=" + std::to_string(checkpoint.pollIntervalMs)
         + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
         + " context=" + std::to_string(contextBits)
         + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.softTargetBytes))
@@ -2540,6 +2587,7 @@ PressureCheckpoint evaluate_pressure_checkpoint(
 
     const PressureDecision computedDecision = classify_pressure(checkpoint.input);
     checkpoint.decision = computedDecision;
+    checkpoint.desiredState = computedDecision.state;
     checkpoint.reserveCrossedNow = reserve_crossed(checkpoint.input);
     bool headroomSourceSwitch = false;
 
@@ -2548,6 +2596,11 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     {
         std::lock_guard<std::mutex> lock(policyState.mutex);
         PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
+        const PressureState cadenceState = contextState.valid
+            ? contextState.lastState
+            : computedDecision.state;
+        checkpoint.pollIntervalMs = pressure_poll_interval_ms_for_state(cfg, cadenceState);
+
         bool sampleDue = forceSample || !contextState.valid;
         if (!sampleDue && contextState.headroomSourceValid &&
             contextState.lastHeadroomSource != checkpoint.input.headroomSource) {
@@ -2555,23 +2608,80 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             headroomSourceSwitch = true;
         }
         if (!sampleDue) {
-            const std::uint64_t elapsedMs = (nowMs > contextState.lastSampleMs) ? (nowMs - contextState.lastSampleMs) : 0;
-            sampleDue = elapsedMs >= static_cast<std::uint64_t>(std::max<std::uint32_t>(1u, cfg.pressureSampleIntervalMs));
+            const std::uint64_t elapsedMs =
+                (nowMs > contextState.lastSampleMs) ? (nowMs - contextState.lastSampleMs) : 0;
+            sampleDue = elapsedMs >= static_cast<std::uint64_t>(checkpoint.pollIntervalMs);
         }
 
         if (sampleDue) {
             checkpoint.sampled = true;
             checkpoint.previousState = contextState.valid ? contextState.lastState : computedDecision.state;
-            checkpoint.transition = contextState.valid && (contextState.lastState != computedDecision.state);
-            checkpoint.reserveCrossing = contextState.valid && (contextState.reserveCrossed != checkpoint.reserveCrossedNow);
+            checkpoint.desiredState = computedDecision.state;
+
+            if (contextState.transitionWindowStartMs == 0 ||
+                nowMs < contextState.transitionWindowStartMs ||
+                (nowMs - contextState.transitionWindowStartMs) >= 60000ull) {
+                contextState.transitionWindowStartMs = nowMs;
+                contextState.transitionsInWindow = 0;
+            }
+
+            PressureDecision effectiveDecision = computedDecision;
+            const bool transitionRequested =
+                contextState.valid && (contextState.lastState != computedDecision.state);
+            bool transitionAllowed = true;
+            if (transitionRequested) {
+                const bool escalation =
+                    pressure_state_rank(computedDecision.state) >
+                    pressure_state_rank(contextState.lastState);
+                if (!escalation) {
+                    const std::uint64_t stateAgeMs = (contextState.lastStateChangeMs == 0 || nowMs < contextState.lastStateChangeMs)
+                        ? std::numeric_limits<std::uint64_t>::max()
+                        : (nowMs - contextState.lastStateChangeMs);
+                    const bool dwellOk =
+                        stateAgeMs >= static_cast<std::uint64_t>(cfg.pressureStateMinDwellMs);
+                    const bool rateOk =
+                        contextState.transitionsInWindow < cfg.pressureStateMaxTransitionsPerMin;
+                    checkpoint.transitionDeferredByDwell = !dwellOk;
+                    checkpoint.transitionDeferredByRate = !rateOk;
+                    transitionAllowed = dwellOk && rateOk;
+                }
+            }
+
+            checkpoint.transition = transitionRequested && transitionAllowed;
+            if (transitionRequested && !transitionAllowed) {
+                effectiveDecision = contextState.lastDecision;
+                checkpoint.decision = effectiveDecision;
+                checkpoint.reserveCrossedNow = contextState.reserveCrossed;
+                if (checkpoint.transitionDeferredByDwell) {
+                    managerState.pressureTransitionDwellDefers.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (checkpoint.transitionDeferredByRate) {
+                    managerState.pressureTransitionRateDefers.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            else {
+                checkpoint.decision = effectiveDecision;
+            }
+
+            checkpoint.reserveCrossing = contextState.valid &&
+                (contextState.reserveCrossed != checkpoint.reserveCrossedNow);
             if (contextState.headroomSourceValid &&
                 contextState.lastHeadroomSource != checkpoint.input.headroomSource) {
                 headroomSourceSwitch = true;
             }
             contextState.valid = true;
             contextState.lastSampleMs = nowMs;
-            contextState.lastDecision = computedDecision;
-            contextState.lastState = computedDecision.state;
+            contextState.lastDecision = checkpoint.decision;
+            contextState.lastState = checkpoint.decision.state;
+            if (!contextState.lastStateChangeMs) {
+                contextState.lastStateChangeMs = nowMs;
+            }
+            if (checkpoint.transition) {
+                contextState.lastStateChangeMs = nowMs;
+                if (contextState.transitionsInWindow < std::numeric_limits<std::uint32_t>::max()) {
+                    ++contextState.transitionsInWindow;
+                }
+            }
             contextState.reserveCrossed = checkpoint.reserveCrossedNow;
             contextState.headroomSourceValid = true;
             contextState.lastHeadroomSource = checkpoint.input.headroomSource;
@@ -2589,17 +2699,31 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         else if (contextState.valid) {
             checkpoint.decision = contextState.lastDecision;
             checkpoint.previousState = contextState.lastState;
+            checkpoint.desiredState = computedDecision.state;
             checkpoint.reserveCrossedNow = contextState.reserveCrossed;
         }
     }
 
     if (checkpoint.sampled || checkpoint.transition || checkpoint.reserveCrossing || headroomSourceSwitch) {
+        const char* pressureReason = "sample";
+        if (checkpoint.transitionDeferredByRate) {
+            pressureReason = "state_transition_rate_deferred";
+        }
+        else if (checkpoint.transitionDeferredByDwell) {
+            pressureReason = "state_transition_dwell_deferred";
+        }
+        else if (checkpoint.transition) {
+            pressureReason = "state_transition";
+        }
+        else if (checkpoint.reserveCrossing) {
+            pressureReason = "reserve_crossing";
+        }
         trace_pressure_checkpoint(
             transaction,
             commandName,
             checkpoint,
             pendingGrowthBytes,
-            checkpoint.transition ? "state_transition" : (checkpoint.reserveCrossing ? "reserve_crossing" : "sample"));
+            pressureReason);
         trace_transient_non_manager_sample(
             transaction,
             commandName,

@@ -15,7 +15,15 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMaxIdleReapMs = 5000u;
     constexpr std::uint32_t kMinPressureSampleMs = 10u;
     constexpr std::uint32_t kMaxPressureSampleMs = 5000u;
+    constexpr std::uint32_t kMinPressurePollIntervalMs = 10u;
+    constexpr std::uint32_t kMaxPressurePollIntervalMs = 5000u;
+    constexpr std::uint32_t kMinPressureStateMinDwellMs = 50u;
+    constexpr std::uint32_t kMaxPressureStateMinDwellMs = 2000u;
+    constexpr std::uint32_t kMinPressureStateMaxTransitionsPerMin = 1u;
+    constexpr std::uint32_t kMaxPressureStateMaxTransitionsPerMin = 120u;
     constexpr std::uint32_t kMaxReclaimRetryAttempts = 3u;
+    constexpr std::uint32_t kMinHostAssetIdleTrimMs = 1000u;
+    constexpr std::uint32_t kMaxHostAssetIdleTrimMs = 60000u;
     constexpr std::uint32_t kMinScratchBuilderBytesInFlightLimitMB = 128u;
     constexpr std::uint32_t kMaxScratchBuilderBytesInFlightLimitMB = 512u;
     constexpr std::uint32_t kMinLutBuilderBytesInFlightLimitMB = 64u;
@@ -38,6 +46,9 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMinLargeEntryProbationThresholdBytes = 16ull * kMiB;
     constexpr std::uint32_t kMinLargeEntryProbationHitsRequired = 1u;
     constexpr std::uint32_t kMaxLargeEntryProbationHitsRequired = 4u;
+    constexpr std::uint64_t kMinHostAssetCacheMaxBytes = 64ull * kMiB;
+    constexpr std::uint64_t kMaxHostAssetCacheMaxBytes = 1024ull * kMiB;
+    constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
 
     ResourceManagerConfigEffective out{};
     out.keySchemaVersion = std::max<std::uint32_t>(1u, raw.keySchemaVersion);
@@ -57,8 +68,43 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.pressureSampleIntervalMs,
         kMinPressureSampleMs,
         kMaxPressureSampleMs);
+    out.pressurePollIntervalMs = std::clamp(
+        raw.pressurePollIntervalMs,
+        kMinPressurePollIntervalMs,
+        kMaxPressurePollIntervalMs);
+    out.pressurePollIntervalMsNormal = std::clamp(
+        raw.pressurePollIntervalMsNormal,
+        kMinPressurePollIntervalMs,
+        kMaxPressurePollIntervalMs);
+    out.pressurePollIntervalMsCritical = std::clamp(
+        raw.pressurePollIntervalMsCritical,
+        kMinPressurePollIntervalMs,
+        kMaxPressurePollIntervalMs);
+    out.pressurePollIntervalMsCritical = std::min(
+        out.pressurePollIntervalMsCritical,
+        out.pressurePollIntervalMsNormal);
+    out.pressureStateMinDwellMs = std::clamp(
+        raw.pressureStateMinDwellMs,
+        kMinPressureStateMinDwellMs,
+        kMaxPressureStateMinDwellMs);
+    out.pressureStateMaxTransitionsPerMin = std::clamp(
+        raw.pressureStateMaxTransitionsPerMin,
+        kMinPressureStateMaxTransitionsPerMin,
+        kMaxPressureStateMaxTransitionsPerMin);
     out.reclaimRetryMaxAttempts = std::min(raw.reclaimRetryMaxAttempts, kMaxReclaimRetryAttempts);
     out.fragmentationRecoveryEnabled = raw.fragmentationRecoveryEnabled;
+    out.hostAssetCacheMaxBytes = std::clamp(
+        raw.hostAssetCacheMaxBytes,
+        kMinHostAssetCacheMaxBytes,
+        kMaxHostAssetCacheMaxBytes);
+    out.hostAssetIdleTrimMs = std::clamp(
+        raw.hostAssetIdleTrimMs,
+        kMinHostAssetIdleTrimMs,
+        kMaxHostAssetIdleTrimMs);
+    out.hostAssetTrimBatchBytes = std::clamp(
+        raw.hostAssetTrimBatchBytes,
+        kMinHostAssetTrimBatchBytes,
+        out.hostAssetCacheMaxBytes);
     out.scratchBuilderBytesInFlightLimitMB = std::clamp(
         raw.scratchBuilderBytesInFlightLimitMB,
         kMinScratchBuilderBytesInFlightLimitMB,

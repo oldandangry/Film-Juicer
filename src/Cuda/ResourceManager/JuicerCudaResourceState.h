@@ -69,6 +69,8 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> fragmentationRecoveryQuarantineTrimmedEntries{ 0 };
     std::atomic<std::uint64_t> fragmentationRecoveryGraphEvictedEntries{ 0 };
     std::atomic<std::uint64_t> pressureStateTransitions{ 0 };
+    std::atomic<std::uint64_t> pressureTransitionDwellDefers{ 0 };
+    std::atomic<std::uint64_t> pressureTransitionRateDefers{ 0 };
     std::atomic<std::uint64_t> reserveCrossingEvents{ 0 };
     std::atomic<std::uint64_t> headroomSourceSwitches{ 0 };
     std::atomic<std::uint64_t> allocFailAboveHeadroomEvents{ 0 };
@@ -79,6 +81,10 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> managerActiveBytes{ 0 };
     std::atomic<std::uint64_t> managerReclaimableBytes{ 0 };
     std::atomic<std::uint64_t> managerRetirePendingBytes{ 0 };
+    std::atomic<std::uint64_t> hostAssetCacheBytes{ 0 };
+    std::atomic<std::uint64_t> hostAssetCacheTrimEvents{ 0 };
+    std::atomic<std::uint64_t> hostAssetCacheTrimBytes{ 0 };
+    std::atomic<std::uint64_t> hostAssetCacheCapHits{ 0 };
     std::atomic<std::uint64_t> transientNonManagerBytes{ 0 };
     std::atomic<std::uint64_t> allocatorEffectiveHeadroomBytes{ 0 };
     std::atomic<std::uint64_t> allocatorPoolReservedBytes{ 0 };
