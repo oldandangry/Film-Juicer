@@ -50,6 +50,9 @@ struct ResourceManagerConfigRaw {
     std::uint32_t criticalUploadReservedTokens = 1;
     std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
     std::uint32_t maxCacheableEntryPctOfTarget = 20;
+    std::uint64_t graphLargeEntryThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint64_t graphLargeEntryQuarantineMaxBytes = 512ull * 1024ull * 1024ull;
+    std::uint32_t graphLargeEntryQuarantineMaxEntries = 2;
     std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
     std::uint32_t largeEntryProbationHitsRequired = 2;
     std::uint64_t tierTargetImmutableBp = 2500;
@@ -98,6 +101,9 @@ struct ResourceManagerConfigEffective {
     std::uint32_t criticalUploadReservedTokens = 1;
     std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
     std::uint32_t maxCacheableEntryPctOfTarget = 20;
+    std::uint64_t graphLargeEntryThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint64_t graphLargeEntryQuarantineMaxBytes = 512ull * 1024ull * 1024ull;
+    std::uint32_t graphLargeEntryQuarantineMaxEntries = 2;
     std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
     std::uint32_t largeEntryProbationHitsRequired = 2;
     std::uint64_t tierTargetImmutableBp = 2500;

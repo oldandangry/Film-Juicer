@@ -513,6 +513,10 @@ constexpr std::uint64_t kLargeFrameThresholdPixels = static_cast<std::uint64_t>(
 constexpr std::size_t kLargeFrameQuarantineMaxBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
 constexpr std::size_t kLargeFrameQuarantineMaxEntries = 2;
 constexpr std::uint64_t kLargeFrameQuarantineDecayMs = 2000;
+constexpr std::uint64_t kGraphLargeEntryDecayMs = 2000;
+constexpr std::uint64_t kGraphLargeEntryThresholdDefaultBytes = 128ull * 1024ull * 1024ull;
+constexpr std::uint64_t kGraphLargeEntryQuarantineMaxBytesDefault = 512ull * 1024ull * 1024ull;
+constexpr std::uint32_t kGraphLargeEntryQuarantineMaxEntriesDefault = 2;
 constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
 constexpr const char* kReservationDeferredPrefix = "reservation_deferred:";
 constexpr std::uint64_t kTransientReservationCapDefaultBytes = 512ull * 1024ull * 1024ull;
@@ -1966,6 +1970,45 @@ std::uint64_t active_burst_cap_bytes(
     return std::min<std::uint64_t>(cfg.maxActiveBurstBytes, pctCapBytes);
 }
 
+std::uint64_t graph_large_entry_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    std::uint64_t thresholdBytes = std::max<std::uint64_t>(
+        1ull,
+        cfg.graphLargeEntryThresholdBytes > 0
+            ? cfg.graphLargeEntryThresholdBytes
+            : kGraphLargeEntryThresholdDefaultBytes);
+    if (cfg.managerSoftTargetBytes > 0) {
+        const std::uint64_t pctThresholdBytes = cfg.managerSoftTargetBytes / 10ull;
+        if (pctThresholdBytes > 0) {
+            thresholdBytes = std::min<std::uint64_t>(thresholdBytes, pctThresholdBytes);
+        }
+    }
+    return std::max<std::uint64_t>(1ull, thresholdBytes);
+}
+
+std::uint64_t graph_large_entry_quarantine_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    std::uint64_t capBytes = cfg.graphLargeEntryQuarantineMaxBytes > 0
+        ? cfg.graphLargeEntryQuarantineMaxBytes
+        : kGraphLargeEntryQuarantineMaxBytesDefault;
+    if (cfg.managerSoftTargetBytes > 0) {
+        std::uint64_t weighted = 0;
+        if (mul_u64_checked(cfg.managerSoftTargetBytes, 15ull, weighted)) {
+            const std::uint64_t pctCapBytes = weighted / 100ull;
+            if (pctCapBytes > 0) {
+                capBytes = std::min<std::uint64_t>(capBytes, pctCapBytes);
+            }
+        }
+    }
+    return capBytes;
+}
+
+std::uint32_t graph_large_entry_quarantine_cap_entries(const ResourceManagerConfigEffective& cfg) noexcept {
+    return std::max<std::uint32_t>(
+        1u,
+        cfg.graphLargeEntryQuarantineMaxEntries > 0
+            ? cfg.graphLargeEntryQuarantineMaxEntries
+            : kGraphLargeEntryQuarantineMaxEntriesDefault);
+}
+
 int pressure_state_rank(PressureState state) noexcept {
     switch (state) {
     case PressureState::Normal:
@@ -3124,6 +3167,44 @@ void trace_probation_decision(
         + " context=" + std::to_string(contextBits)
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSPRB", msg);
+}
+
+void trace_graph_large_entry_quarantine(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t thresholdBytes,
+    std::uint64_t capBytes,
+    std::uint32_t capEntries,
+    std::uint64_t residentBytes,
+    std::uint32_t residentEntries,
+    std::uint64_t decayEvictedEntries,
+    std::uint64_t capTrimEvictedEntries,
+    bool capHit,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=graph_large_quarantine")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
+        + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
+        + " cap_entries=" + std::to_string(capEntries)
+        + " resident_bytes=" + std::to_string(static_cast<unsigned long long>(residentBytes))
+        + " resident_entries=" + std::to_string(residentEntries)
+        + " decay_evicted_entries=" + std::to_string(static_cast<unsigned long long>(decayEvictedEntries))
+        + " cap_trim_evicted_entries=" + std::to_string(
+            static_cast<unsigned long long>(capTrimEvictedEntries))
+        + " cap_hit=" + std::to_string(capHit ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSADM", msg);
 }
 
 void trace_reap_pass(
@@ -5314,6 +5395,7 @@ struct BaseGraphEntry {
     unsigned int blockZ = 0;
     unsigned int sharedMemBytes = 0;
     std::uint64_t lastUseTick = 0;
+    std::uint64_t lastUseMs = 0;
 };
 
 struct BaseGraphBucketState {
@@ -5322,6 +5404,8 @@ struct BaseGraphBucketState {
     std::uint64_t useTick = 0;
     std::vector<BaseGraphEntry> entries;
     std::unordered_map<std::uint64_t, std::uint32_t> probationHitsByDigest;
+    std::uint64_t largeEntryResidentBytes = 0;
+    std::uint32_t largeEntryResidentEntries = 0;
 };
 
 struct BaseGraphCacheState {
@@ -5364,6 +5448,52 @@ std::uint64_t base_graph_key_digest(const BaseGraphKey& key) noexcept {
     fold(static_cast<std::uint64_t>(std::max(0, key.nComponents)));
     fold(static_cast<std::uint64_t>(std::max(0, key.renderMode)));
     return digest;
+}
+
+inline bool base_graph_entry_live(const BaseGraphEntry& entry) noexcept {
+    return entry.execOpaque != nullptr &&
+        entry.graphOpaque != nullptr &&
+        entry.kernelNodeOpaque != nullptr;
+}
+
+void add_graph_large_entry_resident_bytes_global(std::uint64_t bytes) noexcept {
+    if (bytes == 0) {
+        return;
+    }
+    global_state().graphLargeEntryResidentBytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+
+void sub_graph_large_entry_resident_bytes_global(std::uint64_t bytes) noexcept {
+    if (bytes == 0) {
+        return;
+    }
+
+    std::atomic<std::uint64_t>& gauge = global_state().graphLargeEntryResidentBytes;
+    std::uint64_t current = gauge.load(std::memory_order_relaxed);
+    while (true) {
+        const std::uint64_t next = (current >= bytes) ? (current - bytes) : 0;
+        if (gauge.compare_exchange_weak(
+                current,
+                next,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return;
+        }
+    }
+}
+
+void publish_graph_large_entry_resident_snapshot_locked(
+    BaseGraphBucketState& bucket,
+    std::uint64_t residentBytes,
+    std::uint32_t residentEntries) noexcept {
+    if (residentBytes > bucket.largeEntryResidentBytes) {
+        add_graph_large_entry_resident_bytes_global(residentBytes - bucket.largeEntryResidentBytes);
+    }
+    else if (bucket.largeEntryResidentBytes > residentBytes) {
+        sub_graph_large_entry_resident_bytes_global(bucket.largeEntryResidentBytes - residentBytes);
+    }
+    bucket.largeEntryResidentBytes = residentBytes;
+    bucket.largeEntryResidentEntries = residentEntries;
 }
 
 std::uint64_t estimate_base_graph_request_bytes(const BaseGraphKey& key) noexcept {
@@ -5420,6 +5550,7 @@ void destroy_base_graph_entry(BaseGraphEntry& entry) noexcept {
     entry.blockZ = 0;
     entry.sharedMemBytes = 0;
     entry.lastUseTick = 0;
+    entry.lastUseMs = 0;
 }
 
 std::shared_ptr<BaseGraphBucketState> get_or_create_base_graph_bucket(
@@ -5436,6 +5567,7 @@ std::shared_ptr<BaseGraphBucketState> get_or_create_base_graph_bucket(
 }
 
 void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
+    publish_graph_large_entry_resident_snapshot_locked(bucket, 0, 0);
     for (auto& entry : bucket.entries) {
         destroy_base_graph_entry(entry);
     }
@@ -5448,6 +5580,9 @@ std::uint64_t estimate_base_graph_bucket_active_bytes_locked(
     const BaseGraphBucketState& bucket) noexcept {
     std::uint64_t totalBytes = 0;
     for (const BaseGraphEntry& entry : bucket.entries) {
+        if (!base_graph_entry_live(entry)) {
+            continue;
+        }
         const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
         std::uint64_t nextBytes = 0;
         if (!add_u64_checked(totalBytes, entryBytes, nextBytes)) {
@@ -5456,6 +5591,141 @@ std::uint64_t estimate_base_graph_bucket_active_bytes_locked(
         totalBytes = nextBytes;
     }
     return totalBytes;
+}
+
+std::uint64_t estimate_base_graph_bucket_large_entry_bytes_locked(
+    const BaseGraphBucketState& bucket,
+    std::uint64_t thresholdBytes,
+    std::uint32_t& outEntries) noexcept {
+    outEntries = 0;
+    if (thresholdBytes == 0) {
+        return 0;
+    }
+
+    std::uint64_t totalBytes = 0;
+    for (const BaseGraphEntry& entry : bucket.entries) {
+        if (!base_graph_entry_live(entry)) {
+            continue;
+        }
+        const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
+        if (entryBytes < thresholdBytes) {
+            continue;
+        }
+        std::uint64_t nextBytes = 0;
+        if (!add_u64_checked(totalBytes, entryBytes, nextBytes)) {
+            totalBytes = std::numeric_limits<std::uint64_t>::max();
+        }
+        else {
+            totalBytes = nextBytes;
+        }
+        if (outEntries < std::numeric_limits<std::uint32_t>::max()) {
+            ++outEntries;
+        }
+    }
+    return totalBytes;
+}
+
+std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
+    BaseGraphBucketState& bucket,
+    std::uint64_t thresholdBytes,
+    std::uint64_t capBytes,
+    std::uint32_t capEntries,
+    std::uint64_t nowMs,
+    std::uint64_t& outDecayEvictedEntries,
+    std::uint64_t& outCapTrimEvictedEntries,
+    bool& outCapHit,
+    std::uint32_t& outResidentEntries) noexcept {
+    outDecayEvictedEntries = 0;
+    outCapTrimEvictedEntries = 0;
+    outCapHit = false;
+    outResidentEntries = 0;
+
+    if (thresholdBytes == 0) {
+        publish_graph_large_entry_resident_snapshot_locked(bucket, 0, 0);
+        return 0;
+    }
+
+    std::size_t index = 0;
+    while (index < bucket.entries.size()) {
+        BaseGraphEntry& entry = bucket.entries[index];
+        if (!base_graph_entry_live(entry)) {
+            ++index;
+            continue;
+        }
+        const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
+        if (entryBytes < thresholdBytes) {
+            ++index;
+            continue;
+        }
+        const std::uint64_t ageMs = (nowMs > entry.lastUseMs) ? (nowMs - entry.lastUseMs) : 0;
+        if (ageMs < kGraphLargeEntryDecayMs) {
+            ++index;
+            continue;
+        }
+        destroy_base_graph_entry(entry);
+        bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(index));
+        ++outDecayEvictedEntries;
+    }
+
+    auto recompute_large_snapshot = [&](std::size_t* outOldestIndex) noexcept -> std::uint64_t {
+        if (outOldestIndex) {
+            *outOldestIndex = std::numeric_limits<std::size_t>::max();
+        }
+        outResidentEntries = 0;
+        std::uint64_t residentBytes = 0;
+        std::uint64_t oldestUseMs = std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t oldestUseTick = std::numeric_limits<std::uint64_t>::max();
+
+        for (std::size_t i = 0; i < bucket.entries.size(); ++i) {
+            const BaseGraphEntry& entry = bucket.entries[i];
+            if (!base_graph_entry_live(entry)) {
+                continue;
+            }
+            const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
+            if (entryBytes < thresholdBytes) {
+                continue;
+            }
+
+            std::uint64_t nextBytes = 0;
+            if (!add_u64_checked(residentBytes, entryBytes, nextBytes)) {
+                residentBytes = std::numeric_limits<std::uint64_t>::max();
+            }
+            else {
+                residentBytes = nextBytes;
+            }
+
+            if (outResidentEntries < std::numeric_limits<std::uint32_t>::max()) {
+                ++outResidentEntries;
+            }
+
+            const bool older = (entry.lastUseMs < oldestUseMs) ||
+                ((entry.lastUseMs == oldestUseMs) && (entry.lastUseTick < oldestUseTick));
+            if (older) {
+                oldestUseMs = entry.lastUseMs;
+                oldestUseTick = entry.lastUseTick;
+                if (outOldestIndex) {
+                    *outOldestIndex = i;
+                }
+            }
+        }
+        return residentBytes;
+    };
+
+    std::size_t oldestIndex = std::numeric_limits<std::size_t>::max();
+    std::uint64_t residentBytes = recompute_large_snapshot(&oldestIndex);
+    const std::uint32_t allowedEntries = std::max<std::uint32_t>(1u, capEntries);
+    while (oldestIndex != std::numeric_limits<std::size_t>::max() &&
+           (outResidentEntries > allowedEntries || residentBytes > capBytes)) {
+        outCapHit = true;
+        BaseGraphEntry& victim = bucket.entries[oldestIndex];
+        destroy_base_graph_entry(victim);
+        bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(oldestIndex));
+        ++outCapTrimEvictedEntries;
+        residentBytes = recompute_large_snapshot(&oldestIndex);
+    }
+
+    publish_graph_large_entry_resident_snapshot_locked(bucket, residentBytes, outResidentEntries);
+    return residentBytes;
 }
 
 std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept {
@@ -5521,10 +5791,7 @@ BaseGraphEntry* find_base_graph_entry(
     BaseGraphBucketState& bucket,
     const BaseGraphKey& key) noexcept {
     for (auto& entry : bucket.entries) {
-        if (base_graph_key_equal(entry.key, key) &&
-            entry.execOpaque &&
-            entry.graphOpaque &&
-            entry.kernelNodeOpaque) {
+        if (base_graph_key_equal(entry.key, key) && base_graph_entry_live(entry)) {
             return &entry;
         }
     }
@@ -5631,6 +5898,7 @@ BaseGraphEntry* build_base_graph_entry(
     entry.blockZ = baseParams.blockDim.z;
     entry.sharedMemBytes = baseParams.sharedMemBytes;
     entry.lastUseTick = bucket.useTick;
+    entry.lastUseMs = monotonic_time_ms();
     bucket.entries.push_back(entry);
     return &bucket.entries.back();
 }
@@ -7308,6 +7576,10 @@ bool command_launch_base_pipeline_graph(
     const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     constexpr bool kGraphAdmissionCriticalCurrentFrame = false;
+    ResourceManagerState& managerState = global_state();
+    const std::uint64_t graphLargeThresholdBytes = graph_large_entry_threshold_bytes(cfg);
+    const std::uint64_t graphLargeCapBytes = graph_large_entry_quarantine_cap_bytes(cfg);
+    const std::uint32_t graphLargeCapEntries = graph_large_entry_quarantine_cap_entries(cfg);
 
     std::shared_ptr<BaseGraphBucketState> bucketPtr =
         get_or_create_base_graph_bucket(transaction.snapshot.deviceContextKey);
@@ -7332,6 +7604,50 @@ bool command_launch_base_pipeline_graph(
         bucket.useTick = 1;
     }
     const std::uint64_t useTick = bucket.useTick;
+    auto applyGraphLargeEntryPolicy = [&](const char* reason) {
+        std::uint64_t decayEvictedEntries = 0;
+        std::uint64_t capTrimEvictedEntries = 0;
+        bool capHit = false;
+        std::uint32_t residentEntries = 0;
+        const std::uint64_t residentBytes = trim_graph_large_entry_decay_and_caps_locked(
+            bucket,
+            graphLargeThresholdBytes,
+            graphLargeCapBytes,
+            graphLargeCapEntries,
+            monotonic_time_ms(),
+            decayEvictedEntries,
+            capTrimEvictedEntries,
+            capHit,
+            residentEntries);
+        if (decayEvictedEntries > 0) {
+            managerState.graphLargeEntryDecayEvents.fetch_add(
+                decayEvictedEntries,
+                std::memory_order_relaxed);
+        }
+        if (capTrimEvictedEntries > 0) {
+            managerState.graphLargeEntryTrimEvents.fetch_add(
+                capTrimEvictedEntries,
+                std::memory_order_relaxed);
+        }
+        if (capHit) {
+            managerState.graphLargeEntryCapHits.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
+            trace_graph_large_entry_quarantine(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                graphLargeThresholdBytes,
+                graphLargeCapBytes,
+                graphLargeCapEntries,
+                residentBytes,
+                residentEntries,
+                decayEvictedEntries,
+                capTrimEvictedEntries,
+                capHit,
+                reason ? reason : "policy");
+        }
+    };
+    applyGraphLargeEntryPolicy("pre_admission");
 
     BaseGraphEntry* found = find_base_graph_entry(bucket, key);
     TierCircuitAttempt graphCircuitAttempt{};
@@ -7362,8 +7678,6 @@ bool command_launch_base_pipeline_graph(
             observedProbationHits,
             keyDigest,
             "graph_miss");
-
-        ResourceManagerState& managerState = global_state();
         if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
             managerState.cacheAdmissionTooLargeEvents.fetch_add(1, std::memory_order_relaxed);
         }
@@ -7507,6 +7821,10 @@ bool command_launch_base_pipeline_graph(
 
         bucket.probationHitsByDigest.erase(keyDigest);
         found = build_base_graph_entry(bucket, key, launchFn, run, stream);
+        if (found) {
+            applyGraphLargeEntryPolicy("post_build");
+            found = find_base_graph_entry(bucket, key);
+        }
     }
     else {
         bucket.probationHitsByDigest.erase(keyDigest);
@@ -7527,6 +7845,7 @@ bool command_launch_base_pipeline_graph(
     }
 
     found->lastUseTick = useTick;
+    found->lastUseMs = monotonic_time_ms();
 
     cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(found->execOpaque);
     cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(found->kernelNodeOpaque);
@@ -7542,6 +7861,7 @@ bool command_launch_base_pipeline_graph(
     cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
     if (setErr != cudaSuccess) {
         destroy_base_graph_entry(*found);
+        applyGraphLargeEntryPolicy("kernel_param_update_failed");
         if (graphCircuitAttemptActive) {
             tier_circuit_record_outcome(
                 transaction,
@@ -7561,6 +7881,7 @@ bool command_launch_base_pipeline_graph(
     }
     if (runErr != cudaSuccess) {
         destroy_base_graph_entry(*found);
+        applyGraphLargeEntryPolicy("graph_launch_failed");
         if (graphCircuitAttemptActive) {
             tier_circuit_record_outcome(
                 transaction,

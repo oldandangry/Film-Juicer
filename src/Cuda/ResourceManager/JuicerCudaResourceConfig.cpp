@@ -59,6 +59,12 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMaxMaxCacheableEntryBytes = 1024ull * kMiB;
     constexpr std::uint32_t kMinMaxCacheableEntryPctOfTarget = 5u;
     constexpr std::uint32_t kMaxMaxCacheableEntryPctOfTarget = 50u;
+    constexpr std::uint64_t kMinGraphLargeEntryThresholdBytes = 16ull * kMiB;
+    constexpr std::uint64_t kMaxGraphLargeEntryThresholdBytes = 2048ull * kMiB;
+    constexpr std::uint64_t kMinGraphLargeEntryQuarantineMaxBytes = 32ull * kMiB;
+    constexpr std::uint64_t kMaxGraphLargeEntryQuarantineMaxBytes = 2048ull * kMiB;
+    constexpr std::uint32_t kMinGraphLargeEntryQuarantineMaxEntries = 1u;
+    constexpr std::uint32_t kMaxGraphLargeEntryQuarantineMaxEntries = 16u;
     constexpr std::uint64_t kMinLargeEntryProbationThresholdBytes = 16ull * kMiB;
     constexpr std::uint32_t kMinLargeEntryProbationHitsRequired = 1u;
     constexpr std::uint32_t kMaxLargeEntryProbationHitsRequired = 4u;
@@ -199,6 +205,21 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.maxCacheableEntryPctOfTarget,
         kMinMaxCacheableEntryPctOfTarget,
         kMaxMaxCacheableEntryPctOfTarget);
+    out.graphLargeEntryThresholdBytes = std::clamp(
+        raw.graphLargeEntryThresholdBytes,
+        kMinGraphLargeEntryThresholdBytes,
+        kMaxGraphLargeEntryThresholdBytes);
+    out.graphLargeEntryQuarantineMaxBytes = std::clamp(
+        raw.graphLargeEntryQuarantineMaxBytes,
+        kMinGraphLargeEntryQuarantineMaxBytes,
+        kMaxGraphLargeEntryQuarantineMaxBytes);
+    out.graphLargeEntryQuarantineMaxEntries = std::clamp(
+        raw.graphLargeEntryQuarantineMaxEntries,
+        kMinGraphLargeEntryQuarantineMaxEntries,
+        kMaxGraphLargeEntryQuarantineMaxEntries);
+    out.graphLargeEntryQuarantineMaxBytes = std::max<std::uint64_t>(
+        out.graphLargeEntryQuarantineMaxBytes,
+        out.graphLargeEntryThresholdBytes);
     out.largeEntryProbationThresholdBytes = std::clamp(
         raw.largeEntryProbationThresholdBytes,
         kMinLargeEntryProbationThresholdBytes,

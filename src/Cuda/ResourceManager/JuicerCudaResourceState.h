@@ -132,6 +132,10 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> cacheAdmissionProbationAdmitEvents{ 0 };
     std::atomic<std::uint64_t> cacheAdmissionCriticalOverrideEvents{ 0 };
     std::atomic<std::uint64_t> graphNonResidentServeEvents{ 0 };
+    std::atomic<std::uint64_t> graphLargeEntryDecayEvents{ 0 };
+    std::atomic<std::uint64_t> graphLargeEntryTrimEvents{ 0 };
+    std::atomic<std::uint64_t> graphLargeEntryCapHits{ 0 };
+    std::atomic<std::uint64_t> graphLargeEntryResidentBytes{ 0 };
     std::atomic<std::uint64_t> tierCircuitOpenEvents{ 0 };
     std::atomic<std::uint64_t> tierCircuitHalfOpenEvents{ 0 };
     std::atomic<std::uint64_t> tierCircuitCloseEvents{ 0 };
