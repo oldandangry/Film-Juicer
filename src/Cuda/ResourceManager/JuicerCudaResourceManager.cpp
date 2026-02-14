@@ -12,10 +12,14 @@
 #include "WorkingState.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -124,6 +128,328 @@ struct FrameSnapshotState {
 FrameSnapshotState& frame_snapshot_state() noexcept {
     static FrameSnapshotState state{};
     return state;
+}
+
+struct ScratchPolicyEntry {
+    std::size_t inFlightBytes = 0;
+    std::uint32_t inFlightSets = 0;
+};
+
+struct ScratchPolicyState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, ScratchPolicyEntry, DeviceContextKeyHash> byContext;
+};
+
+ScratchPolicyState& scratch_policy_state() noexcept {
+    static ScratchPolicyState state{};
+    return state;
+}
+
+struct ScratchPolicyClaim {
+    DeviceContextKey key{};
+    std::size_t bytes = 0;
+    bool acquired = false;
+};
+
+constexpr std::uint32_t kMaxTempScratchSets = 1;
+constexpr std::size_t kMaxTempScratchBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
+constexpr int kScratchWaitStepMs = 1;
+constexpr int kScratchWaitMaxMs = 4;
+constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
+
+inline std::size_t plane_bytes_for_extent(int width, int height) noexcept {
+    if (width <= 0 || height <= 0) {
+        return 0;
+    }
+    const std::size_t w = static_cast<std::size_t>(width);
+    const std::size_t h = static_cast<std::size_t>(height);
+    if (h > (std::numeric_limits<std::size_t>::max() / w)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t n = w * h;
+    if (n > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return n * sizeof(float);
+}
+
+inline bool add_bytes_checked(std::size_t value, std::size_t add, std::size_t& out) noexcept {
+    if (add == 0) {
+        out = value;
+        return true;
+    }
+    if (value > (std::numeric_limits<std::size_t>::max() - add)) {
+        return false;
+    }
+    out = value + add;
+    return true;
+}
+
+std::size_t estimate_optics_growth_bytes(
+    JuicerCuda::Resources& resources,
+    int width,
+    int height,
+    bool needBlurredScratch,
+    bool needAuxScratch,
+    bool needGrainScratch,
+    bool needGrainSharedScratch,
+    bool needGateMask) noexcept {
+    const std::size_t planeBytes = plane_bytes_for_extent(width, height);
+    if (planeBytes == 0 || planeBytes == std::numeric_limits<std::size_t>::max()) {
+        return planeBytes;
+    }
+
+    std::lock_guard<std::mutex> lock(resources.m);
+    const auto& scratch = resources.scannerScratch;
+    const bool dimsMatch = (scratch.width == width && scratch.height == height);
+    const bool haveBase = scratch.rgbR && scratch.rgbG && scratch.rgbB;
+    const bool fullRebuild = !dimsMatch || !haveBase;
+
+    std::size_t estimate = 0;
+    auto addPlane = [&](std::size_t multiplier = 1) {
+        for (std::size_t i = 0; i < multiplier; ++i) {
+            std::size_t next = 0;
+            if (!add_bytes_checked(estimate, planeBytes, next)) {
+                estimate = std::numeric_limits<std::size_t>::max();
+                return;
+            }
+            estimate = next;
+        }
+    };
+
+    if (fullRebuild) {
+        addPlane(3); // rgbR/rgbG/rgbB
+    }
+
+    const bool sharedTmpMatch = resources.sharedTmpPlane &&
+        resources.sharedTmpWidth == width &&
+        resources.sharedTmpHeight == height;
+    if (!sharedTmpMatch) {
+        addPlane(); // shared tmp plane
+    }
+
+    if (needBlurredScratch && (fullRebuild || !scratch.blurred)) {
+        addPlane();
+    }
+    if (needAuxScratch && (fullRebuild || !scratch.aux)) {
+        addPlane();
+    }
+    if (needGrainScratch) {
+        if (fullRebuild || !scratch.grainTmp) {
+            addPlane();
+        }
+        if (fullRebuild || !scratch.grainTmpMid) {
+            addPlane();
+        }
+        if (fullRebuild || !scratch.grainTmpCoarse) {
+            addPlane();
+        }
+    }
+    if (needGrainSharedScratch && (fullRebuild || !scratch.grainTmpShared)) {
+        addPlane();
+    }
+    if (needGateMask) {
+        const bool gateDimsMatch = (scratch.gateWidth == width && scratch.gateHeight == height);
+        if (fullRebuild || !scratch.gateMask || !gateDimsMatch) {
+            addPlane();
+        }
+    }
+
+    return estimate;
+}
+
+std::size_t estimate_spatial_dir_growth_bytes(
+    JuicerCuda::Resources& resources,
+    int width,
+    int height) noexcept {
+    const std::size_t planeBytes = plane_bytes_for_extent(width, height);
+    if (planeBytes == 0 || planeBytes == std::numeric_limits<std::size_t>::max()) {
+        return planeBytes;
+    }
+
+    std::lock_guard<std::mutex> lock(resources.m);
+    const auto& scratch = resources.spatialDirScratch;
+    const bool haveBase = (scratch.width == width && scratch.height == height && scratch.corrY && scratch.corrM && scratch.corrC);
+    const bool sharedTmpMatch = resources.sharedTmpPlane &&
+        resources.sharedTmpWidth == width &&
+        resources.sharedTmpHeight == height;
+
+    std::size_t estimate = 0;
+    if (!haveBase) {
+        std::size_t next = 0;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        estimate = next;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        estimate = next;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        estimate = next;
+    }
+    if (!sharedTmpMatch) {
+        std::size_t next = 0;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        estimate = next;
+    }
+    return estimate;
+}
+
+void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
+    if (!claim.acquired) {
+        return;
+    }
+    ScratchPolicyState& state = scratch_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto it = state.byContext.find(claim.key);
+    if (it != state.byContext.end()) {
+        ScratchPolicyEntry& entry = it->second;
+        if (entry.inFlightSets > 0) {
+            --entry.inFlightSets;
+        }
+        if (entry.inFlightBytes >= claim.bytes) {
+            entry.inFlightBytes -= claim.bytes;
+        }
+        else {
+            entry.inFlightBytes = 0;
+        }
+        if (entry.inFlightSets == 0 && entry.inFlightBytes == 0) {
+            state.byContext.erase(it);
+        }
+    }
+    claim = ScratchPolicyClaim{};
+}
+
+class ScratchPolicyGuard {
+public:
+    explicit ScratchPolicyGuard(ScratchPolicyClaim&& claim) noexcept
+        : _claim(std::move(claim)) {
+    }
+
+    ~ScratchPolicyGuard() noexcept {
+        release_scratch_policy_claim(_claim);
+    }
+
+    ScratchPolicyGuard(const ScratchPolicyGuard&) = delete;
+    ScratchPolicyGuard& operator=(const ScratchPolicyGuard&) = delete;
+
+private:
+    ScratchPolicyClaim _claim{};
+};
+
+void trace_scratch_policy_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const char* result,
+    std::size_t requestBytes,
+    std::size_t inFlightBytes,
+    std::uint32_t inFlightSets,
+    int waitMs) {
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=scratch_policy")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " result=" + (result ? result : "unknown")
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(inFlightBytes))
+        + " in_flight_sets=" + std::to_string(inFlightSets)
+        + " wait_ms=" + std::to_string(waitMs)
+        + " max_temp_sets=" + std::to_string(kMaxTempScratchSets)
+        + " max_temp_bytes=" + std::to_string(static_cast<unsigned long long>(kMaxTempScratchBytes));
+    JTRACE("MSACQ", msg);
+}
+
+bool try_acquire_scratch_policy_claim(
+    const DeviceContextKey& key,
+    std::size_t requestBytes,
+    ScratchPolicyClaim& outClaim,
+    std::size_t& outInFlightBytes,
+    std::uint32_t& outInFlightSets) noexcept {
+    ScratchPolicyState& state = scratch_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    ScratchPolicyEntry& entry = state.byContext[key];
+
+    const bool setsOk = entry.inFlightSets < kMaxTempScratchSets;
+    const bool bytesOk = requestBytes <= (kMaxTempScratchBytes - std::min(entry.inFlightBytes, kMaxTempScratchBytes));
+    if (!setsOk || !bytesOk) {
+        outInFlightBytes = entry.inFlightBytes;
+        outInFlightSets = entry.inFlightSets;
+        return false;
+    }
+
+    entry.inFlightSets += 1;
+    entry.inFlightBytes += requestBytes;
+    outInFlightBytes = entry.inFlightBytes;
+    outInFlightSets = entry.inFlightSets;
+    outClaim.key = key;
+    outClaim.bytes = requestBytes;
+    outClaim.acquired = true;
+    return true;
+}
+
+bool acquire_scratch_policy_claim_with_wait(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::size_t requestBytes,
+    ScratchPolicyClaim& outClaim,
+    std::string& outError) {
+    outClaim = ScratchPolicyClaim{};
+    outError.clear();
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    std::size_t inFlightBytes = 0;
+    std::uint32_t inFlightSets = 0;
+    int waitedMs = 0;
+    while (true) {
+        if (try_acquire_scratch_policy_claim(transaction.snapshot.deviceContextKey, requestBytes, outClaim, inFlightBytes, inFlightSets)) {
+            if (waitedMs > 0) {
+                global_state().scratchPolicyWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_scratch_policy_decision(
+                    transaction,
+                    commandName,
+                    "admit_after_wait",
+                    requestBytes,
+                    inFlightBytes,
+                    inFlightSets,
+                    waitedMs);
+            }
+            return true;
+        }
+
+        if (waitedMs >= kScratchWaitMaxMs) {
+            global_state().scratchPolicyExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+            trace_scratch_policy_decision(
+                transaction,
+                commandName,
+                "exhausted",
+                requestBytes,
+                inFlightBytes,
+                inFlightSets,
+                waitedMs);
+            outError = std::string(kScratchExhaustedPrefix)
+                + " command=" + (commandName ? commandName : "unknown")
+                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(inFlightBytes))
+                + " in_flight_sets=" + std::to_string(inFlightSets)
+                + " wait_ms=" + std::to_string(waitedMs);
+            return false;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(kScratchWaitStepMs));
+        waitedMs += kScratchWaitStepMs;
+    }
 }
 
 bool key_digests_equal(const KeyDigests& lhs, const KeyDigests& rhs) noexcept {
@@ -1125,6 +1451,31 @@ bool command_ensure_optics_scratch(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_optics_scratch")) {
         return false;
     }
+    const std::size_t growthBytes = estimate_optics_growth_bytes(
+        resources,
+        width,
+        height,
+        needBlurredScratch,
+        needAuxScratch,
+        needGrainScratch,
+        needGrainSharedScratch,
+        needGateMask);
+    if (growthBytes == std::numeric_limits<std::size_t>::max()) {
+        outError = "scratch growth byte estimation overflow";
+        return false;
+    }
+
+    ScratchPolicyClaim scratchClaim{};
+    if (!acquire_scratch_policy_claim_with_wait(
+            transaction,
+            "command_ensure_optics_scratch",
+            growthBytes,
+            scratchClaim,
+            outError)) {
+        return false;
+    }
+    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
+
     return JuicerCuda::ensure_optics_scratch(
         resources,
         width,
@@ -1148,6 +1499,23 @@ bool command_ensure_spatial_dir_scratch(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_scratch")) {
         return false;
     }
+    const std::size_t growthBytes = estimate_spatial_dir_growth_bytes(resources, width, height);
+    if (growthBytes == std::numeric_limits<std::size_t>::max()) {
+        outError = "spatial dir scratch growth byte estimation overflow";
+        return false;
+    }
+
+    ScratchPolicyClaim scratchClaim{};
+    if (!acquire_scratch_policy_claim_with_wait(
+            transaction,
+            "command_ensure_spatial_dir_scratch",
+            growthBytes,
+            scratchClaim,
+            outError)) {
+        return false;
+    }
+    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
+
     return JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError);
 }
 
@@ -1385,6 +1753,10 @@ bool command_launch_base_pipeline_graph(
     outCudaErrorCode = static_cast<int>(cudaSuccess);
     return true;
 #endif
+}
+
+bool error_is_scratch_exhausted(const std::string& error) noexcept {
+    return error.rfind(kScratchExhaustedPrefix, 0) == 0;
 }
 
 void rollback_submission(

@@ -139,6 +139,8 @@ bool command_launch_base_pipeline_graph(
     int& outCudaErrorCode,
     std::string& outError);
 
+bool error_is_scratch_exhausted(const std::string& error) noexcept;
+
 void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept;

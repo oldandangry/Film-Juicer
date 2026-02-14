@@ -2487,6 +2487,10 @@ void JuicerProcessor::processImagesCUDA() {
         submissionTxnScope.committed = true;
     };
 
+    auto is_scratch_contention_exhausted = [](const std::string& error) -> bool {
+        return JuicerCuda::ResourceManager::error_is_scratch_exhausted(error);
+    };
+
     auto setup_scan_stage_resources = [&](JuicerCuda::Resources* resources,
                                           JuicerCuda::PipelineRunParams& run,
                                           cudaStream_t stream,
@@ -2572,6 +2576,14 @@ void JuicerProcessor::processImagesCUDA() {
                 frameHeight,
                 _pCudaStream,
                 dirError)) {
+            if (is_scratch_contention_exhausted(dirError)) {
+                JTRACE("CUDA", std::string("CUDA spatial DIR scratch deferred by contention policy: ") + dirError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+            }
             mark_context_loss_recovery("command_ensure_spatial_dir_scratch", cudaErrorUnknown, dirError);
             JTRACE("CUDA", std::string("CUDA spatial DIR scratch allocation failed: ") + dirError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
@@ -2880,6 +2892,14 @@ void JuicerProcessor::processImagesCUDA() {
                         needGateMask,
                         _pCudaStream,
                         opticsError)) {
+                    if (is_scratch_contention_exhausted(opticsError)) {
+                        JTRACE("CUDA", std::string("CUDA optics scratch deferred by contention policy: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                    }
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -3548,6 +3568,14 @@ void JuicerProcessor::processImagesCUDA() {
                         needGateMask,
                         _pCudaStream,
                         opticsError)) {
+                    if (is_scratch_contention_exhausted(opticsError)) {
+                        JTRACE("CUDA", std::string("CUDA optics scratch deferred by contention policy: ") + opticsError);
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+                        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+                    }
                     JTRACE("CUDA", std::string("CUDA optics scratch allocation failed: ") + opticsError);
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
                     throw OFX::Exception::Suite(kOfxStatErrFatal);

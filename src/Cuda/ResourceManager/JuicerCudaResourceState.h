@@ -51,6 +51,8 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> metadataMutationEndCalls{ 0 };
     std::atomic<std::uint64_t> metadataMutationRejects{ 0 };
     std::atomic<std::uint64_t> metadataMutationOrderViolations{ 0 };
+    std::atomic<std::uint64_t> scratchPolicyWaitEvents{ 0 };
+    std::atomic<std::uint64_t> scratchPolicyExhaustedEvents{ 0 };
     std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };
 
