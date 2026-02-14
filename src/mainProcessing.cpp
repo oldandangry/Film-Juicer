@@ -315,6 +315,96 @@ namespace {
         return 1;
     }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    struct DiagnosticsHookPolicy {
+        bool diagnosticsMode = false;
+        bool validatePrimitives = false;
+        bool runtimeSelfCheck = false;
+    };
+
+    bool parse_env_toggle(const char* name, bool fallback) {
+        return JuicerLogging::parse_env_int(name, fallback ? 1 : 0) != 0;
+    }
+
+    const DiagnosticsHookPolicy& diagnostics_hook_policy() {
+        static const DiagnosticsHookPolicy policy = []() {
+            DiagnosticsHookPolicy out{};
+            out.diagnosticsMode = parse_env_toggle("JUICER_DIAGNOSTICS_MODE", false);
+            out.validatePrimitives = parse_env_toggle("JUICER_DIAGNOSTICS_VALIDATE", true);
+            out.runtimeSelfCheck = parse_env_toggle("JUICER_DIAGNOSTICS_SELF_CHECK", true);
+            return out;
+        }();
+        return policy;
+    }
+
+    void trace_validation_hook_state_once(
+        bool compiled,
+        bool modeEnabled,
+        bool toggleEnabled,
+        bool verboseEnabled,
+        bool active) {
+        static std::once_flag once;
+        std::call_once(once, [&]() {
+            if (!JTRACE_ENABLED(2)) {
+                return;
+            }
+            const char* reason = "active";
+            if (!compiled) {
+                reason = "compile_disabled";
+            }
+            else if (!modeEnabled) {
+                reason = "diagnostics_mode_disabled";
+            }
+            else if (!toggleEnabled) {
+                reason = "validation_toggle_disabled";
+            }
+            else if (!verboseEnabled) {
+                reason = "diagnostics_level_below_verbose";
+            }
+            const std::string msg = std::string("event=diagnostics_hook")
+                + " hook=validation"
+                + " mode=" + (modeEnabled ? "diagnostics" : "serving")
+                + " compiled=" + std::to_string(compiled ? 1 : 0)
+                + " toggle_enabled=" + std::to_string(toggleEnabled ? 1 : 0)
+                + " verbose_enabled=" + std::to_string(verboseEnabled ? 1 : 0)
+                + " active=" + std::to_string(active ? 1 : 0)
+                + " reason=" + reason;
+            JTRACE("MSDBG", msg);
+        });
+    }
+
+    void trace_self_check_hook_state_once(
+        bool compiled,
+        bool modeEnabled,
+        bool toggleEnabled,
+        bool active) {
+        static std::once_flag once;
+        std::call_once(once, [&]() {
+            if (!JTRACE_ENABLED(2)) {
+                return;
+            }
+            const char* reason = "active";
+            if (!compiled) {
+                reason = "compile_disabled";
+            }
+            else if (!modeEnabled) {
+                reason = "diagnostics_mode_disabled";
+            }
+            else if (!toggleEnabled) {
+                reason = "self_check_toggle_disabled";
+            }
+            const std::string msg = std::string("event=diagnostics_hook")
+                + " hook=self_check"
+                + " mode=" + (modeEnabled ? "diagnostics" : "serving")
+                + " compiled=" + std::to_string(compiled ? 1 : 0)
+                + " toggle_enabled=" + std::to_string(toggleEnabled ? 1 : 0)
+                + " active=" + std::to_string(active ? 1 : 0)
+                + " reason=" + reason;
+            JTRACE("MSDBG", msg);
+        });
+    }
+#endif
+
     std::uint64_t make_seed_base(std::uintptr_t clipToken,
                                  std::int64_t frameIndex,
                                  std::uint64_t sessionSeed,
@@ -1676,52 +1766,79 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
 #if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
-    if (JTRACE_ENABLED(3)) {
-        std::string validateError;
-        if (!cudaResources) {
-            JTRACE("CUDA", "FATAL: CUDA resources missing for validation");
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        if (!JuicerCuda::validate_density_primitives(*cudaResources, *_ws, _pCudaStream, validateError)) {
-            JTRACE("CUDA", std::string("FATAL: CUDA primitive validation failed: ") + validateError);
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-
-        if (_ws && _printReady && _prt && !_printParams.bypass) {
-            const float kMidSpectral = compute_print_midgray_factor_cached(
-                _instanceState,
-                *_ws,
-                *_prt,
-                _printParams,
-                _dirRT);
-            if (!JuicerCuda::validate_print_primitives(*cudaResources, *_ws, *_prt, _printParams, kMidSpectral, _pCudaStream, validateError)) {
-                JTRACE("CUDA", std::string("FATAL: CUDA print validation failed: ") + validateError);
+    {
+        const DiagnosticsHookPolicy& diagnosticsPolicy = diagnostics_hook_policy();
+        const bool validationHookActive =
+            diagnosticsPolicy.diagnosticsMode &&
+            diagnosticsPolicy.validatePrimitives &&
+            JTRACE_ENABLED(3);
+        trace_validation_hook_state_once(
+            true,
+            diagnosticsPolicy.diagnosticsMode,
+            diagnosticsPolicy.validatePrimitives,
+            JTRACE_ENABLED(3),
+            validationHookActive);
+        if (validationHookActive) {
+            std::string validateError;
+            if (!cudaResources) {
+                JTRACE("CUDA", "FATAL: CUDA resources missing for validation");
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
-        }
+            if (!JuicerCuda::validate_density_primitives(*cudaResources, *_ws, _pCudaStream, validateError)) {
+                JTRACE("CUDA", std::string("FATAL: CUDA primitive validation failed: ") + validateError);
+                throw OFX::Exception::Suite(kOfxStatErrFatal);
+            }
 
-        JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            if (_ws && _printReady && _prt && !_printParams.bypass) {
+                const float kMidSpectral = compute_print_midgray_factor_cached(
+                    _instanceState,
+                    *_ws,
+                    *_prt,
+                    _printParams,
+                    _dirRT);
+                if (!JuicerCuda::validate_print_primitives(*cudaResources, *_ws, *_prt, _printParams, kMidSpectral, _pCudaStream, validateError)) {
+                    JTRACE("CUDA", std::string("FATAL: CUDA print validation failed: ") + validateError);
+                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                }
+            }
+
+            JuicerCuda::record_use(*cudaResources, _pCudaStream);
+        }
     }
 #endif
 
 #if defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
-    // Runtime CUDA self-check.
-    // This is intentionally a host-runtime probe (not JUICER_TESTS), and is designed to be easy
-    // to remove later: disable JUICER_CUDA_SELF_CHECK or delete Cuda/JuicerCudaSelfCheck.*.
-    static std::once_flag sSelfCheckOnce;
-    static bool sSelfCheckOk = true;
-    static const char* sSelfCheckErr = nullptr;
-    std::call_once(sSelfCheckOnce, [&]() {
-        const bool ok = juicer_cuda_runtime_self_check(_pCudaStream, &sSelfCheckErr);
-        sSelfCheckOk = ok;
-        if (!ok) {
-            JTRACE("CUDA", std::string("CUDA self-check failed; forcing CPU fallback. Error: ") + (sSelfCheckErr ? sSelfCheckErr : "(unknown)"));
-        } else {
-            JTRACE("CUDA", "CUDA self-check passed");
+    {
+        const DiagnosticsHookPolicy& diagnosticsPolicy = diagnostics_hook_policy();
+        const bool selfCheckHookActive =
+            diagnosticsPolicy.diagnosticsMode &&
+            diagnosticsPolicy.runtimeSelfCheck;
+        trace_self_check_hook_state_once(
+            true,
+            diagnosticsPolicy.diagnosticsMode,
+            diagnosticsPolicy.runtimeSelfCheck,
+            selfCheckHookActive);
+        if (selfCheckHookActive) {
+            // Runtime CUDA self-check.
+            // This is intentionally a host-runtime probe (not JUICER_TESTS), and is designed to be easy
+            // to remove later: disable JUICER_CUDA_SELF_CHECK or delete Cuda/JuicerCudaSelfCheck.*.
+            static std::once_flag sSelfCheckOnce;
+            static bool sSelfCheckOk = true;
+            static const char* sSelfCheckErr = nullptr;
+            std::call_once(sSelfCheckOnce, [&]() {
+                const bool ok = juicer_cuda_runtime_self_check(_pCudaStream, &sSelfCheckErr);
+                sSelfCheckOk = ok;
+                if (!ok) {
+                    JTRACE("CUDA", std::string("CUDA self-check failed; forcing CPU fallback. Error: ") + (sSelfCheckErr ? sSelfCheckErr : "(unknown)"));
+                }
+                else {
+                    JTRACE("CUDA", "CUDA self-check passed");
+                }
+            });
+            if (!sSelfCheckOk) {
+                OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+            }
         }
-    });
-    if (!sSelfCheckOk) {
-        OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
     }
 #endif
 
