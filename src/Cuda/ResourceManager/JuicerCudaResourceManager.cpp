@@ -341,6 +341,13 @@ struct PressureContextState {
     std::uint64_t transitionWindowStartMs = 0;
     std::uint32_t transitionsInWindow = 0;
     bool reserveCrossed = false;
+    bool effectiveReserveValid = false;
+    std::uint64_t effectiveReserveBytes = 0;
+    bool opportunisticFrozen = false;
+    bool burstActive = false;
+    bool burstCapHitLatched = false;
+    std::uint64_t burstWindowStartMs = 0;
+    std::uint64_t burstPeakOverTargetBytes = 0;
     bool headroomSourceValid = false;
     HeadroomSource lastHeadroomSource = HeadroomSource::FreeVramOnly;
 };
@@ -418,8 +425,25 @@ struct PressureCheckpoint {
     bool transitionDeferredByRate = false;
     bool reserveCrossing = false;
     bool reserveCrossedNow = false;
+    bool freezeTransitionEnter = false;
+    bool freezeTransitionExit = false;
+    std::uint64_t reserveTargetBytes = 0;
+    std::uint64_t reserveBeforeBytes = 0;
+    bool reserveUpdated = false;
     std::uint32_t pollIntervalMs = 0;
     ManagerMemorySnapshot memory{};
+};
+
+struct ActiveBurstDecision {
+    bool considered = false;
+    bool active = false;
+    bool allowed = false;
+    bool entered = false;
+    bool exited = false;
+    bool capHit = false;
+    std::uint64_t overTargetBytes = 0;
+    std::uint64_t capBytes = 0;
+    std::uint64_t elapsedMs = 0;
 };
 
 struct ScratchPolicyClaim {
@@ -1878,6 +1902,70 @@ bool reserve_crossed(const PressureInput& input) noexcept {
     return pressure_total_bytes(input) > input.softTargetBytes;
 }
 
+std::uint64_t compute_effective_reserve_target_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t transientBytes) noexcept {
+    std::uint64_t targetBytes = cfg.managerReserveBytes;
+    std::uint64_t transientBoundBytes = transientBytes;
+    if (!add_u64_checked(transientBoundBytes, cfg.reserveSafetyMarginBytes, transientBoundBytes)) {
+        transientBoundBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    targetBytes = std::max<std::uint64_t>(targetBytes, transientBoundBytes);
+    if (cfg.managerSoftTargetBytes > 0) {
+        targetBytes = std::min<std::uint64_t>(targetBytes, cfg.managerSoftTargetBytes);
+    }
+    return targetBytes;
+}
+
+std::uint64_t step_effective_reserve_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t currentBytes,
+    std::uint64_t targetBytes) noexcept {
+    if (currentBytes == targetBytes) {
+        return currentBytes;
+    }
+
+    const std::uint64_t stepUp = std::max<std::uint64_t>(1u, cfg.reserveAdaptUpStepBytes);
+    const std::uint64_t stepDown = std::max<std::uint64_t>(1u, cfg.reserveAdaptDownStepBytes);
+    if (targetBytes > currentBytes) {
+        const std::uint64_t delta = targetBytes - currentBytes;
+        const std::uint64_t step = std::min<std::uint64_t>(stepUp, delta);
+        std::uint64_t next = currentBytes;
+        if (!add_u64_checked(next, step, next)) {
+            next = targetBytes;
+        }
+        return next;
+    }
+
+    const std::uint64_t delta = currentBytes - targetBytes;
+    const std::uint64_t step = std::min<std::uint64_t>(stepDown, delta);
+    return currentBytes - step;
+}
+
+std::uint64_t active_burst_cap_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t softTargetBytes) noexcept {
+    std::uint64_t pctCapBytes = 0;
+    if (softTargetBytes > 0 && cfg.maxActiveBurstPctOfTarget > 0) {
+        std::uint64_t weighted = 0;
+        if (!mul_u64_checked(
+                softTargetBytes,
+                static_cast<std::uint64_t>(cfg.maxActiveBurstPctOfTarget),
+                weighted)) {
+            weighted = std::numeric_limits<std::uint64_t>::max();
+        }
+        pctCapBytes = weighted / 100ull;
+    }
+
+    if (cfg.maxActiveBurstBytes == 0) {
+        return pctCapBytes;
+    }
+    if (pctCapBytes == 0) {
+        return cfg.maxActiveBurstBytes;
+    }
+    return std::min<std::uint64_t>(cfg.maxActiveBurstBytes, pctCapBytes);
+}
+
 int pressure_state_rank(PressureState state) noexcept {
     switch (state) {
     case PressureState::Normal:
@@ -2624,6 +2712,115 @@ void trace_tier_budget_event(
     JTRACE("MSTGT", msg);
 }
 
+void trace_effective_reserve_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t reserveBaseBytes,
+    std::uint64_t reserveBeforeBytes,
+    std::uint64_t reserveTargetBytes,
+    std::uint64_t reserveAfterBytes,
+    std::uint64_t transientNonManagerBytes,
+    bool updated,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    const std::string msg = std::string("event=effective_reserve")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " reserve_base_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBaseBytes))
+        + " reserve_before_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBeforeBytes))
+        + " reserve_target_bytes=" + std::to_string(static_cast<unsigned long long>(reserveTargetBytes))
+        + " reserve_after_bytes=" + std::to_string(static_cast<unsigned long long>(reserveAfterBytes))
+        + " transient_non_manager_bytes=" + std::to_string(
+            static_cast<unsigned long long>(transientNonManagerBytes))
+        + " reserve_safety_margin_bytes=" + std::to_string(
+            static_cast<unsigned long long>(cfg.reserveSafetyMarginBytes))
+        + " reserve_step_up_bytes=" + std::to_string(
+            static_cast<unsigned long long>(cfg.reserveAdaptUpStepBytes))
+        + " reserve_step_down_bytes=" + std::to_string(
+            static_cast<unsigned long long>(cfg.reserveAdaptDownStepBytes))
+        + " updated=" + std::to_string(updated ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSRSV", msg);
+}
+
+void trace_opportunistic_freeze_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureState pressureState,
+    std::uint64_t effectiveHeadroomBytes,
+    std::uint64_t effectiveReserveBytes,
+    bool frozen,
+    bool allowed,
+    bool criticalCurrentFrame,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=opportunistic_freeze")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " state=" + to_cstr(pressureState)
+        + " effective_headroom_bytes=" + std::to_string(
+            static_cast<unsigned long long>(effectiveHeadroomBytes))
+        + " effective_reserve_bytes=" + std::to_string(
+            static_cast<unsigned long long>(effectiveReserveBytes))
+        + " frozen=" + std::to_string(frozen ? 1 : 0)
+        + " allowed=" + std::to_string(allowed ? 1 : 0)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSFRZ", msg);
+}
+
+void trace_active_burst_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const ActiveBurstDecision& burst,
+    bool criticalCurrentFrame,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=active_burst")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " considered=" + std::to_string(burst.considered ? 1 : 0)
+        + " active=" + std::to_string(burst.active ? 1 : 0)
+        + " allowed=" + std::to_string(burst.allowed ? 1 : 0)
+        + " entered=" + std::to_string(burst.entered ? 1 : 0)
+        + " exited=" + std::to_string(burst.exited ? 1 : 0)
+        + " cap_hit=" + std::to_string(burst.capHit ? 1 : 0)
+        + " over_target_bytes=" + std::to_string(static_cast<unsigned long long>(burst.overTargetBytes))
+        + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(burst.capBytes))
+        + " elapsed_ms=" + std::to_string(static_cast<unsigned long long>(burst.elapsedMs))
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSBURST", msg);
+}
+
 void trace_budget_reclaim_retry(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -2690,8 +2887,12 @@ void trace_pressure_checkpoint(
         + " reclaimable_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.memory.reclaimableBytes))
         + " pending_growth_bytes=" + std::to_string(static_cast<unsigned long long>(pendingGrowthBytes))
         + " allow_opportunistic=" + std::to_string(checkpoint.decision.allowOpportunistic ? 1 : 0)
+        + " freeze_opportunistic=" + std::to_string(checkpoint.decision.freezeOpportunistic ? 1 : 0)
         + " request_reclaim_pass=" + std::to_string(checkpoint.decision.requestReclaimPass ? 1 : 0)
         + " should_shed_non_critical=" + std::to_string(checkpoint.decision.shouldShedNonCritical ? 1 : 0)
+        + " reserve_before_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.reserveBeforeBytes))
+        + " reserve_target_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.reserveTargetBytes))
+        + " reserve_updated=" + std::to_string(checkpoint.reserveUpdated ? 1 : 0)
         + " effective_reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.decision.effectiveReserveBytes))
         + " effective_headroom_bytes=" + std::to_string(
             static_cast<unsigned long long>(checkpoint.decision.effectiveHeadroomBytes))
@@ -3049,11 +3250,7 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         checkpoint.memory.overflow = true;
     }
     checkpoint.input.managerResidentBytes = predictedResident;
-
-    const PressureDecision computedDecision = classify_pressure(checkpoint.input);
-    checkpoint.decision = computedDecision;
-    checkpoint.desiredState = computedDecision.state;
-    checkpoint.reserveCrossedNow = reserve_crossed(checkpoint.input);
+    checkpoint.input.freezeOpportunisticBelowReserve = cfg.freezeOpportunisticBelowReserve;
     bool headroomSourceSwitch = false;
 
     const std::uint64_t nowMs = monotonic_time_ms();
@@ -3063,7 +3260,7 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
         const PressureState cadenceState = contextState.valid
             ? contextState.lastState
-            : computedDecision.state;
+            : PressureState::Normal;
         checkpoint.pollIntervalMs = pressure_poll_interval_ms_for_state(cfg, cadenceState);
 
         bool sampleDue = forceSample || !contextState.valid;
@@ -3077,6 +3274,33 @@ PressureCheckpoint evaluate_pressure_checkpoint(
                 (nowMs > contextState.lastSampleMs) ? (nowMs - contextState.lastSampleMs) : 0;
             sampleDue = elapsedMs >= static_cast<std::uint64_t>(checkpoint.pollIntervalMs);
         }
+
+        checkpoint.reserveBeforeBytes = contextState.effectiveReserveValid
+            ? contextState.effectiveReserveBytes
+            : cfg.managerReserveBytes;
+        checkpoint.reserveTargetBytes = compute_effective_reserve_target_bytes(
+            cfg,
+            checkpoint.input.transientNonManagerBytes);
+        if (sampleDue || !contextState.effectiveReserveValid) {
+            std::uint64_t nextReserve = step_effective_reserve_bytes(
+                cfg,
+                checkpoint.reserveBeforeBytes,
+                checkpoint.reserveTargetBytes);
+            if (cfg.managerSoftTargetBytes > 0) {
+                nextReserve = std::min<std::uint64_t>(nextReserve, cfg.managerSoftTargetBytes);
+            }
+            checkpoint.reserveUpdated = nextReserve != checkpoint.reserveBeforeBytes;
+            contextState.effectiveReserveBytes = nextReserve;
+            contextState.effectiveReserveValid = true;
+        }
+
+        checkpoint.input.effectiveReserveBytes = contextState.effectiveReserveValid
+            ? contextState.effectiveReserveBytes
+            : cfg.managerReserveBytes;
+        const PressureDecision computedDecision = classify_pressure(checkpoint.input);
+        checkpoint.decision = computedDecision;
+        checkpoint.desiredState = computedDecision.state;
+        checkpoint.reserveCrossedNow = reserve_crossed(checkpoint.input);
 
         if (sampleDue) {
             checkpoint.sampled = true;
@@ -3114,9 +3338,9 @@ PressureCheckpoint evaluate_pressure_checkpoint(
 
             checkpoint.transition = transitionRequested && transitionAllowed;
             if (transitionRequested && !transitionAllowed) {
-                effectiveDecision = contextState.lastDecision;
+                effectiveDecision = computedDecision;
+                effectiveDecision.state = contextState.lastState;
                 checkpoint.decision = effectiveDecision;
-                checkpoint.reserveCrossedNow = contextState.reserveCrossed;
                 if (checkpoint.transitionDeferredByDwell) {
                     managerState.pressureTransitionDwellDefers.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -3134,10 +3358,14 @@ PressureCheckpoint evaluate_pressure_checkpoint(
                 contextState.lastHeadroomSource != checkpoint.input.headroomSource) {
                 headroomSourceSwitch = true;
             }
+            const bool freezeNow = checkpoint.decision.freezeOpportunistic;
+            checkpoint.freezeTransitionEnter = !contextState.opportunisticFrozen && freezeNow;
+            checkpoint.freezeTransitionExit = contextState.opportunisticFrozen && !freezeNow;
             contextState.valid = true;
             contextState.lastSampleMs = nowMs;
             contextState.lastDecision = checkpoint.decision;
             contextState.lastState = checkpoint.decision.state;
+            contextState.opportunisticFrozen = freezeNow;
             if (!contextState.lastStateChangeMs) {
                 contextState.lastStateChangeMs = nowMs;
             }
@@ -3157,6 +3385,15 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             if (checkpoint.reserveCrossing) {
                 managerState.reserveCrossingEvents.fetch_add(1, std::memory_order_relaxed);
             }
+            if (checkpoint.reserveUpdated) {
+                managerState.reserveAdaptationEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (checkpoint.freezeTransitionEnter) {
+                managerState.opportunisticFreezeEnterEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (checkpoint.freezeTransitionExit) {
+                managerState.opportunisticFreezeExitEvents.fetch_add(1, std::memory_order_relaxed);
+            }
             if (headroomSourceSwitch) {
                 managerState.headroomSourceSwitches.fetch_add(1, std::memory_order_relaxed);
             }
@@ -3166,10 +3403,19 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             checkpoint.previousState = contextState.lastState;
             checkpoint.desiredState = computedDecision.state;
             checkpoint.reserveCrossedNow = contextState.reserveCrossed;
+            checkpoint.input.effectiveReserveBytes = contextState.effectiveReserveValid
+                ? contextState.effectiveReserveBytes
+                : cfg.managerReserveBytes;
         }
     }
 
-    if (checkpoint.sampled || checkpoint.transition || checkpoint.reserveCrossing || headroomSourceSwitch) {
+    if (checkpoint.sampled ||
+        checkpoint.transition ||
+        checkpoint.reserveCrossing ||
+        checkpoint.reserveUpdated ||
+        checkpoint.freezeTransitionEnter ||
+        checkpoint.freezeTransitionExit ||
+        headroomSourceSwitch) {
         const char* pressureReason = "sample";
         if (checkpoint.transitionDeferredByRate) {
             pressureReason = "state_transition_rate_deferred";
@@ -3179,6 +3425,15 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         }
         else if (checkpoint.transition) {
             pressureReason = "state_transition";
+        }
+        else if (checkpoint.freezeTransitionEnter) {
+            pressureReason = "freeze_enter";
+        }
+        else if (checkpoint.freezeTransitionExit) {
+            pressureReason = "freeze_exit";
+        }
+        else if (checkpoint.reserveUpdated) {
+            pressureReason = "reserve_updated";
         }
         else if (checkpoint.reserveCrossing) {
             pressureReason = "reserve_crossing";
@@ -3202,6 +3457,34 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             pendingGrowthBytes,
             headroomSourceSwitch,
             headroomSourceSwitch ? "source_switch" : (checkpoint.sampled ? "sampled" : "cached"));
+
+        if (checkpoint.sampled || checkpoint.reserveUpdated || JTRACE_ENABLED(3)) {
+            trace_effective_reserve_event(
+                transaction,
+                commandName,
+                checkpoint.input.reserveBytes,
+                checkpoint.reserveBeforeBytes,
+                checkpoint.reserveTargetBytes,
+                checkpoint.input.effectiveReserveBytes,
+                checkpoint.input.transientNonManagerBytes,
+                checkpoint.reserveUpdated,
+                checkpoint.reserveUpdated ? "reserve_update" : "reserve_sample");
+        }
+        if (checkpoint.freezeTransitionEnter || checkpoint.freezeTransitionExit || JTRACE_ENABLED(3)) {
+            const bool freezeActive = checkpoint.decision.freezeOpportunistic;
+            trace_opportunistic_freeze_event(
+                transaction,
+                commandName,
+                checkpoint.decision.state,
+                checkpoint.input.effectiveHeadroomBytes,
+                checkpoint.decision.effectiveReserveBytes,
+                freezeActive,
+                !freezeActive,
+                false,
+                checkpoint.freezeTransitionEnter
+                    ? "freeze_enter"
+                    : (checkpoint.freezeTransitionExit ? "freeze_exit" : "freeze_sample"));
+        }
     }
 
     return checkpoint;
@@ -3323,6 +3606,92 @@ void run_tier_target_pretrim(
     }
 }
 
+void evaluate_active_burst_window(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    const PressureCheckpoint& checkpoint,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    ActiveBurstDecision& outDecision) noexcept {
+    outDecision = ActiveBurstDecision{};
+
+    const std::uint64_t softTargetBytes = checkpoint.input.softTargetBytes;
+    if (requestBytes == 0 || softTargetBytes == 0) {
+        return;
+    }
+
+    const std::uint64_t residentBytes = checkpoint.input.managerResidentBytes;
+    if (residentBytes <= softTargetBytes) {
+        PressurePolicyState& policyState = pressure_policy_state();
+        std::lock_guard<std::mutex> lock(policyState.mutex);
+        auto contextIt = policyState.byContext.find(transaction.snapshot.deviceContextKey);
+        if (contextIt != policyState.byContext.end()) {
+            PressureContextState& contextState = contextIt->second;
+            if (contextState.burstActive) {
+                contextState.burstActive = false;
+                contextState.burstCapHitLatched = false;
+                contextState.burstWindowStartMs = 0;
+                contextState.burstPeakOverTargetBytes = 0;
+                outDecision.exited = true;
+            }
+        }
+        return;
+    }
+
+    outDecision.considered = true;
+    outDecision.overTargetBytes = residentBytes - softTargetBytes;
+    outDecision.capBytes = active_burst_cap_bytes(cfg, softTargetBytes);
+
+    PressurePolicyState& policyState = pressure_policy_state();
+    const std::uint64_t nowMs = monotonic_time_ms();
+    std::lock_guard<std::mutex> lock(policyState.mutex);
+    PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
+
+    if (!cfg.allowActiveFrameBurst || !criticalCurrentFrame) {
+        if (contextState.burstActive) {
+            contextState.burstActive = false;
+            contextState.burstCapHitLatched = false;
+            contextState.burstWindowStartMs = 0;
+            contextState.burstPeakOverTargetBytes = 0;
+            outDecision.exited = true;
+        }
+        return;
+    }
+
+    if (!contextState.burstActive) {
+        contextState.burstActive = true;
+        contextState.burstCapHitLatched = false;
+        contextState.burstWindowStartMs = nowMs;
+        contextState.burstPeakOverTargetBytes = outDecision.overTargetBytes;
+        outDecision.entered = true;
+    }
+    else {
+        contextState.burstPeakOverTargetBytes = std::max<std::uint64_t>(
+            contextState.burstPeakOverTargetBytes,
+            outDecision.overTargetBytes);
+    }
+
+    const std::uint64_t elapsedMs = (nowMs > contextState.burstWindowStartMs)
+        ? (nowMs - contextState.burstWindowStartMs)
+        : 0;
+    outDecision.elapsedMs = elapsedMs;
+    outDecision.active = contextState.burstActive;
+    outDecision.allowed = true;
+    if (outDecision.capBytes == 0) {
+        outDecision.allowed = false;
+    }
+    if (cfg.maxActiveBurstMs == 0 || elapsedMs > static_cast<std::uint64_t>(cfg.maxActiveBurstMs)) {
+        outDecision.allowed = false;
+    }
+    if (contextState.burstPeakOverTargetBytes > outDecision.capBytes) {
+        outDecision.allowed = false;
+    }
+    if (!outDecision.allowed && !contextState.burstCapHitLatched) {
+        contextState.burstCapHitLatched = true;
+        outDecision.capHit = true;
+    }
+}
+
 bool enforce_pressure_gate(
     const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -3345,15 +3714,70 @@ bool enforce_pressure_gate(
     TierBudgetSnapshot tierBudget{};
     bool tierBudgetValid = false;
     const bool pressureEnabled = pressure_policy_enabled(cfg);
+    PressureCheckpoint checkpoint{};
+    bool checkpointValid = false;
+    bool freezeBelowReserve = false;
+    ActiveBurstDecision burstDecision{};
     if (pressureEnabled) {
-        PressureCheckpoint checkpoint = evaluate_pressure_checkpoint(
+        checkpoint = evaluate_pressure_checkpoint(
             transaction,
             resources,
             requestBytes,
             requestBytes > 0,
             commandName);
+        checkpointValid = true;
         outRequestReclaimPass = checkpoint.decision.requestReclaimPass && (requestBytes > 0);
         pressureState = checkpoint.decision.state;
+        freezeBelowReserve = checkpoint.decision.freezeOpportunistic;
+
+        evaluate_active_burst_window(
+            transaction,
+            cfg,
+            checkpoint,
+            requestBytes,
+            criticalCurrentFrame,
+            burstDecision);
+        if (burstDecision.entered) {
+            global_state().activeBurstEnterEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (burstDecision.exited) {
+            global_state().activeBurstExitEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (burstDecision.capHit) {
+            global_state().activeBurstCapHitEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (burstDecision.considered && !burstDecision.allowed && requestBytes > 0) {
+            outRequestReclaimPass = true;
+        }
+        if (burstDecision.capHit && requestBytes > 0) {
+            outRequestReclaimPass = true;
+        }
+        if (burstDecision.entered || burstDecision.exited || burstDecision.capHit || JTRACE_ENABLED(3)) {
+            trace_active_burst_event(
+                transaction,
+                commandName,
+                burstDecision,
+                criticalCurrentFrame,
+                burstDecision.capHit
+                    ? "burst_cap_hit"
+                    : (burstDecision.entered
+                        ? "burst_enter"
+                        : (burstDecision.exited ? "burst_exit" : "burst_sample")));
+        }
+        if (checkpoint.freezeTransitionEnter || checkpoint.freezeTransitionExit || JTRACE_ENABLED(3)) {
+            trace_opportunistic_freeze_event(
+                transaction,
+                commandName,
+                checkpoint.decision.state,
+                checkpoint.input.effectiveHeadroomBytes,
+                checkpoint.decision.effectiveReserveBytes,
+                freezeBelowReserve,
+                !freezeBelowReserve,
+                criticalCurrentFrame,
+                checkpoint.freezeTransitionEnter
+                    ? "freeze_enter"
+                    : (checkpoint.freezeTransitionExit ? "freeze_exit" : "freeze_sample"));
+        }
 
         fill_tier_budget_snapshot(
             transaction,
@@ -3411,6 +3835,25 @@ bool enforce_pressure_gate(
             0,
             0,
             "tier_budget_policy_disabled");
+    }
+
+    if (nonCritical && pressureEnabled && freezeBelowReserve && requestBytes > 0) {
+        global_state().opportunisticFreezeDenyEvents.fetch_add(1, std::memory_order_relaxed);
+        trace_opportunistic_freeze_event(
+            transaction,
+            commandName,
+            pressureState,
+            checkpointValid ? checkpoint.input.effectiveHeadroomBytes : 0,
+            checkpointValid ? checkpoint.decision.effectiveReserveBytes : 0,
+            true,
+            false,
+            criticalCurrentFrame,
+            "below_effective_reserve_noncritical");
+        outError = std::string("pressure_shed_noncritical: lane=")
+            + to_cstr(lane)
+            + " state="
+            + to_cstr(pressureState);
+        return false;
     }
 
     if (nonCritical &&
@@ -3802,6 +4245,12 @@ void tier_circuit_record_outcome(
 
 void tier_circuit_retire_context(const DeviceContextKey& key) noexcept {
     TierCircuitPolicyState& state = tier_circuit_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.byContext.erase(key);
+}
+
+void pressure_policy_retire_context(const DeviceContextKey& key) noexcept {
+    PressurePolicyState& state = pressure_policy_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.byContext.erase(key);
 }
@@ -5777,6 +6226,7 @@ bool command_retire_context_with_reason(
     retire_base_graph_cache_for_context(key);
 #endif
     tier_circuit_retire_context(key);
+    pressure_policy_retire_context(key);
 
     RegistryHandle handle{};
     if (!registry_get(key, handle) || handle.value == 0) {

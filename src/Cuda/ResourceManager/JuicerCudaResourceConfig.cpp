@@ -15,6 +15,17 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMaxIdleReapMs = 5000u;
     constexpr std::uint32_t kMinPressureSampleMs = 10u;
     constexpr std::uint32_t kMaxPressureSampleMs = 5000u;
+    constexpr std::uint64_t kMiB = 1024ull * 1024ull;
+    constexpr std::uint64_t kMinReserveSafetyMarginBytes = 32ull * kMiB;
+    constexpr std::uint64_t kMaxReserveSafetyMarginBytes = 1024ull * kMiB;
+    constexpr std::uint64_t kMinReserveAdaptStepBytes = 8ull * kMiB;
+    constexpr std::uint64_t kMaxReserveAdaptStepBytes = 512ull * kMiB;
+    constexpr std::uint64_t kMinMaxActiveBurstBytes = 32ull * kMiB;
+    constexpr std::uint64_t kMaxMaxActiveBurstBytes = 1024ull * kMiB;
+    constexpr std::uint32_t kMinMaxActiveBurstPctOfTarget = 5u;
+    constexpr std::uint32_t kMaxMaxActiveBurstPctOfTarget = 50u;
+    constexpr std::uint32_t kMinMaxActiveBurstMs = 50u;
+    constexpr std::uint32_t kMaxMaxActiveBurstMs = 5000u;
     constexpr std::uint32_t kMinPressurePollIntervalMs = 10u;
     constexpr std::uint32_t kMaxPressurePollIntervalMs = 5000u;
     constexpr std::uint32_t kMinPressureStateMinDwellMs = 50u;
@@ -44,7 +55,6 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMinUploadFairnessTokensPerTick = 1u;
     constexpr std::uint32_t kMaxUploadFairnessTokensPerTick = 2u;
     constexpr std::uint32_t kMinCriticalUploadReservedTokens = 1u;
-    constexpr std::uint64_t kMiB = 1024ull * 1024ull;
     constexpr std::uint64_t kMinMaxCacheableEntryBytes = 32ull * kMiB;
     constexpr std::uint64_t kMaxMaxCacheableEntryBytes = 1024ull * kMiB;
     constexpr std::uint32_t kMinMaxCacheableEntryPctOfTarget = 5u;
@@ -70,6 +80,32 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         kMaxIdleReapMs);
     out.managerSoftTargetBytes = raw.managerSoftTargetBytes;
     out.managerReserveBytes = std::min(raw.managerReserveBytes, out.managerSoftTargetBytes);
+    out.reserveSafetyMarginBytes = std::clamp(
+        raw.reserveSafetyMarginBytes,
+        kMinReserveSafetyMarginBytes,
+        kMaxReserveSafetyMarginBytes);
+    out.reserveAdaptUpStepBytes = std::clamp(
+        raw.reserveAdaptUpStepBytes,
+        kMinReserveAdaptStepBytes,
+        kMaxReserveAdaptStepBytes);
+    out.reserveAdaptDownStepBytes = std::clamp(
+        raw.reserveAdaptDownStepBytes,
+        kMinReserveAdaptStepBytes,
+        kMaxReserveAdaptStepBytes);
+    out.freezeOpportunisticBelowReserve = raw.freezeOpportunisticBelowReserve;
+    out.allowActiveFrameBurst = raw.allowActiveFrameBurst;
+    out.maxActiveBurstBytes = std::clamp(
+        raw.maxActiveBurstBytes,
+        kMinMaxActiveBurstBytes,
+        kMaxMaxActiveBurstBytes);
+    out.maxActiveBurstPctOfTarget = std::clamp(
+        raw.maxActiveBurstPctOfTarget,
+        kMinMaxActiveBurstPctOfTarget,
+        kMaxMaxActiveBurstPctOfTarget);
+    out.maxActiveBurstMs = std::clamp(
+        raw.maxActiveBurstMs,
+        kMinMaxActiveBurstMs,
+        kMaxMaxActiveBurstMs);
     out.pressureSampleIntervalMs = std::clamp(
         raw.pressureSampleIntervalMs,
         kMinPressureSampleMs,

@@ -72,6 +72,13 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> pressureTransitionDwellDefers{ 0 };
     std::atomic<std::uint64_t> pressureTransitionRateDefers{ 0 };
     std::atomic<std::uint64_t> reserveCrossingEvents{ 0 };
+    std::atomic<std::uint64_t> reserveAdaptationEvents{ 0 };
+    std::atomic<std::uint64_t> opportunisticFreezeEnterEvents{ 0 };
+    std::atomic<std::uint64_t> opportunisticFreezeExitEvents{ 0 };
+    std::atomic<std::uint64_t> opportunisticFreezeDenyEvents{ 0 };
+    std::atomic<std::uint64_t> activeBurstEnterEvents{ 0 };
+    std::atomic<std::uint64_t> activeBurstExitEvents{ 0 };
+    std::atomic<std::uint64_t> activeBurstCapHitEvents{ 0 };
     std::atomic<std::uint64_t> headroomSourceSwitches{ 0 };
     std::atomic<std::uint64_t> allocFailAboveHeadroomEvents{ 0 };
     std::atomic<std::uint64_t> retireReapPasses{ 0 };

@@ -216,7 +216,9 @@ PressureState max_pressure_state(PressureState a, PressureState b) noexcept {
 
 PressureDecision classify_pressure(const PressureInput& input) noexcept {
     PressureDecision out{};
-    out.effectiveReserveBytes = input.reserveBytes;
+    const std::uint64_t effectiveReserveBytes =
+        (input.effectiveReserveBytes > 0) ? input.effectiveReserveBytes : input.reserveBytes;
+    out.effectiveReserveBytes = effectiveReserveBytes;
     out.effectiveHeadroomBytes = input.effectiveHeadroomBytes;
     out.headroomSource = input.headroomSource;
 
@@ -229,8 +231,8 @@ PressureDecision classify_pressure(const PressureInput& input) noexcept {
         input.managerResidentBytes + input.retirePendingBytes + input.transientNonManagerBytes;
 
     const std::uint64_t constrainedThreshold = input.softTargetBytes;
-    const std::uint64_t criticalThreshold = input.softTargetBytes + (input.reserveBytes / 2u);
-    const std::uint64_t emergencyThreshold = input.softTargetBytes + input.reserveBytes;
+    const std::uint64_t criticalThreshold = input.softTargetBytes + (effectiveReserveBytes / 2u);
+    const std::uint64_t emergencyThreshold = input.softTargetBytes + effectiveReserveBytes;
 
     PressureState budgetState = PressureState::Normal;
     if (pressureBytes >= emergencyThreshold && emergencyThreshold > 0) {
@@ -244,10 +246,11 @@ PressureDecision classify_pressure(const PressureInput& input) noexcept {
     }
 
     PressureState headroomState = PressureState::Normal;
-    if (input.reserveBytes > 0) {
-        const std::uint64_t emergencyHeadroomThreshold = input.reserveBytes / 2u;
-        const std::uint64_t criticalHeadroomThreshold = input.reserveBytes;
-        const std::uint64_t constrainedHeadroomThreshold = input.reserveBytes + (input.reserveBytes / 2u);
+    if (effectiveReserveBytes > 0) {
+        const std::uint64_t emergencyHeadroomThreshold = effectiveReserveBytes / 2u;
+        const std::uint64_t criticalHeadroomThreshold = effectiveReserveBytes;
+        const std::uint64_t constrainedHeadroomThreshold =
+            effectiveReserveBytes + (effectiveReserveBytes / 2u);
         if (input.effectiveHeadroomBytes <= emergencyHeadroomThreshold) {
             headroomState = PressureState::Emergency;
         }
@@ -279,6 +282,17 @@ PressureDecision classify_pressure(const PressureInput& input) noexcept {
     case PressureState::Normal:
     default:
         break;
+    }
+
+    const bool belowEffectiveReserve = (effectiveReserveBytes > 0) &&
+        (input.effectiveHeadroomBytes <= effectiveReserveBytes);
+    if (input.freezeOpportunisticBelowReserve && belowEffectiveReserve) {
+        out.allowOpportunistic = false;
+        out.freezeOpportunistic = true;
+        out.requestReclaimPass = true;
+        if (pressure_state_rank(out.state) < pressure_state_rank(PressureState::Constrained)) {
+            out.state = PressureState::Constrained;
+        }
     }
     return out;
 }

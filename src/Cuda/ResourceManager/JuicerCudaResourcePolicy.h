@@ -95,6 +95,8 @@ struct ResourcePlan {
 struct PressureInput {
     std::uint64_t softTargetBytes = 0;
     std::uint64_t reserveBytes = 0;
+    std::uint64_t effectiveReserveBytes = 0;
+    bool freezeOpportunisticBelowReserve = true;
     std::uint64_t managerResidentBytes = 0;
     std::uint64_t retirePendingBytes = 0;
     std::uint64_t transientNonManagerBytes = 0;
@@ -108,6 +110,7 @@ struct PressureInput {
 struct PressureDecision {
     PressureState state = PressureState::Normal;
     bool allowOpportunistic = true;
+    bool freezeOpportunistic = false;
     bool requestReclaimPass = false;
     bool shouldShedNonCritical = false;
     std::uint64_t effectiveReserveBytes = 0;
