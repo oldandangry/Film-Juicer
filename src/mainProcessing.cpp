@@ -12,6 +12,8 @@
 #include <sstream>
 #include <mutex>
 #include <limits>
+#include <chrono>
+#include <thread>
 
 #include "GaussianSciPy.h"
 
@@ -1179,11 +1181,13 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         InstanceState* state = nullptr;
         ScannerOptics::Runtime* runtime = nullptr;
         std::atomic<bool>* inUse = nullptr;
+        const char* slotName = "none";
 
         explicit ScannerRuntimeLease(InstanceState* s) : state(s) {}
 
         ScannerOptics::Runtime* acquire() {
             if (!state) {
+                slotName = "none";
                 return nullptr;
             }
             bool expected = false;
@@ -1191,6 +1195,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
                     expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
                 inUse = &state->scannerRuntimeAInUse;
                 runtime = &state->scannerRuntimeA;
+                slotName = "A";
                 return runtime;
             }
             expected = false;
@@ -1198,8 +1203,10 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
                     expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
                 inUse = &state->scannerRuntimeBInUse;
                 runtime = &state->scannerRuntimeB;
+                slotName = "B";
                 return runtime;
             }
+            slotName = "none";
             return nullptr;
         }
 
@@ -1211,11 +1218,39 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     };
 
     ScannerRuntimeLease runtimeLease(_instanceState);
-    ScannerOptics::Runtime fallbackRuntime;
     ScannerOptics::Runtime* opticsRuntime = runtimeLease.acquire();
-    if (!opticsRuntime) {
-        opticsRuntime = &fallbackRuntime;
+    constexpr std::uint32_t kScannerRuntimeLeaseMaxWaitUs = 16000u;
+    constexpr std::uint32_t kScannerRuntimeLeasePollSleepUs = 50u;
+    bool waitedForLease = false;
+    const auto leaseWaitStart = std::chrono::steady_clock::now();
+    while (!opticsRuntime) {
+        waitedForLease = true;
+        if (_effect.abort()) {
+            JTRACE_VERBOSE("MSSRL", "event=runtime_lease outcome=abort");
+            return;
+        }
+        const auto elapsedUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - leaseWaitStart).count());
+        if (elapsedUs >= kScannerRuntimeLeaseMaxWaitUs) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(kScannerRuntimeLeasePollSleepUs));
+        opticsRuntime = runtimeLease.acquire();
     }
+    const std::uint64_t leaseWaitUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - leaseWaitStart).count());
+    if (!opticsRuntime) {
+        const std::string msg = std::string("event=runtime_lease outcome=timeout")
+            + " wait_us=" + std::to_string(leaseWaitUs)
+            + " wait_budget_us=" + std::to_string(static_cast<unsigned long long>(kScannerRuntimeLeaseMaxWaitUs));
+        JTRACE("MSSRL", msg);
+        JTRACE("SCAN", "FATAL: scanner runtime lease unavailable after bounded wait");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    JTRACE_VERBOSE("MSSRL", std::string("event=runtime_lease outcome=")
+        + (waitedForLease ? "wait_acquired" : "acquired")
+        + " wait_us=" + std::to_string(leaseWaitUs)
+        + " slot=" + runtimeLease.slotName);
 
     const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
     const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
