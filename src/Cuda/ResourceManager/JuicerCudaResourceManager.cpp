@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -271,6 +272,14 @@ struct ScratchPolicySnapshot {
     ScratchBucketKey bucketKey{};
 };
 
+struct ReservationAttemptInfo {
+    ReservationDecision decision{};
+    std::uint64_t bytesInFlight = 0;
+    std::uint64_t capBytes = 0;
+    std::uint64_t thresholdBytes = 0;
+    bool considered = false;
+};
+
 constexpr std::uint32_t kMaxTempScratchSets = 1;
 constexpr std::size_t kMaxTempScratchBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
 constexpr int kScratchWaitStepMs = 1;
@@ -288,6 +297,9 @@ constexpr std::size_t kLargeFrameQuarantineMaxBytes = static_cast<std::size_t>(1
 constexpr std::size_t kLargeFrameQuarantineMaxEntries = 2;
 constexpr std::uint64_t kLargeFrameQuarantineDecayMs = 2000;
 constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
+constexpr const char* kReservationDeferredPrefix = "reservation_deferred:";
+constexpr std::uint64_t kTransientReservationCapDefaultBytes = 512ull * 1024ull * 1024ull;
+constexpr std::uint64_t kTransientReservationThresholdDefaultBytes = 64ull * 1024ull * 1024ull;
 
 const ResourceManagerConfigEffective& manager_effective_config() noexcept {
     static const ResourceManagerConfigEffective cfg = sanitize_config(ResourceManagerConfigRaw{});
@@ -878,6 +890,24 @@ inline bool should_collect_manager_memory_snapshots(const ResourceManagerConfigE
     return pressure_policy_enabled(cfg) || JTRACE_ENABLED(3);
 }
 
+std::uint64_t transient_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    if (cfg.managerSoftTargetBytes == 0) {
+        return kTransientReservationCapDefaultBytes;
+    }
+    const std::uint64_t quarterTarget = cfg.managerSoftTargetBytes / 4ull;
+    return std::max<std::uint64_t>(
+        kTransientReservationThresholdDefaultBytes,
+        std::min<std::uint64_t>(kTransientReservationCapDefaultBytes, quarterTarget));
+}
+
+std::uint64_t transient_reservation_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    const std::uint64_t capBytes = transient_reservation_cap_bytes(cfg);
+    if (capBytes == 0) {
+        return 0;
+    }
+    return std::min<std::uint64_t>(kTransientReservationThresholdDefaultBytes, capBytes);
+}
+
 void maybe_publish_manager_memory_snapshot(
     JuicerCuda::Resources& resources,
     bool enabled) noexcept {
@@ -1234,6 +1264,44 @@ void trace_scratch_policy_decision(
     JTRACE("MSACQ", msg);
 }
 
+void trace_transient_reservation_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::size_t requestBytes,
+    std::uint64_t bytesInFlight,
+    std::uint64_t capBytes,
+    std::uint64_t thresholdBytes,
+    const ReservationDecision& decision,
+    bool criticalCurrentFrame,
+    int waitMs,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=transient_reservation")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " kind=" + to_cstr(ReservationKind::TransientNonManager)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
+        + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
+        + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
+        + " granted=" + std::to_string(decision.granted ? 1 : 0)
+        + " should_wait=" + std::to_string(decision.shouldWait ? 1 : 0)
+        + " wait_ms=" + std::to_string(waitMs)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSTRS", msg);
+}
+
 void trace_budget_reclaim_retry(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -1554,11 +1622,16 @@ bool enforce_pressure_gate(
 }
 
 bool try_acquire_scratch_policy_claim(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
     const DeviceContextKey& contextKey,
     const ScratchBucketKey& bucketKey,
     std::size_t requestBytes,
+    bool criticalCurrentFrame,
     ScratchPolicyClaim& outClaim,
-    ScratchPolicySnapshot& outSnapshot) noexcept {
+    ScratchPolicySnapshot& outSnapshot,
+    ReservationAttemptInfo& outReservation) noexcept {
+    outReservation = ReservationAttemptInfo{};
     ScratchPolicyState& state = scratch_policy_state();
     std::lock_guard<std::mutex> lock(state.mutex);
 
@@ -1576,6 +1649,50 @@ bool try_acquire_scratch_policy_claim(
         global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
         snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
         return true;
+    }
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    outReservation.considered = true;
+    outReservation.bytesInFlight = state.totalInFlightBytes;
+    outReservation.capBytes = transient_reservation_cap_bytes(cfg);
+    outReservation.thresholdBytes = transient_reservation_threshold_bytes(cfg);
+
+    ReservationDecision reservationDecision{};
+    if (static_cast<std::uint64_t>(requestBytes) < outReservation.thresholdBytes) {
+        reservationDecision.granted = true;
+        reservationDecision.reason = "below_threshold";
+    }
+    else {
+        ReservationInput reservationInput{};
+        reservationInput.kind = ReservationKind::TransientNonManager;
+        reservationInput.requestBytes = static_cast<std::uint64_t>(requestBytes);
+        reservationInput.bytesInFlight = state.totalInFlightBytes;
+        reservationInput.capBytes = outReservation.capBytes;
+        reservationInput.criticalCurrentFrame = criticalCurrentFrame;
+        reservationDecision = classify_reservation(reservationInput);
+    }
+    outReservation.decision = reservationDecision;
+    global_state().transientReservationRequests.fetch_add(1, std::memory_order_relaxed);
+    if (!reservationDecision.granted) {
+        if (reservationDecision.shouldWait) {
+            global_state().transientReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+        }
+        else {
+            global_state().transientReservationDenied.fetch_add(1, std::memory_order_relaxed);
+        }
+        trace_transient_reservation_decision(
+            transaction,
+            commandName,
+            requestBytes,
+            outReservation.bytesInFlight,
+            outReservation.capBytes,
+            outReservation.thresholdBytes,
+            reservationDecision,
+            criticalCurrentFrame,
+            static_cast<int>(reservationDecision.waitMs),
+            reservationDecision.shouldWait ? "deferred" : "denied");
+        snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
+        return false;
     }
 
     const std::size_t effectiveCapBytes = effective_temp_scratch_bytes_cap(requestBytes);
@@ -1625,6 +1742,20 @@ bool try_acquire_scratch_policy_claim(
     global_state().scratchAllocGrowthEvents.fetch_add(1, std::memory_order_relaxed);
     bucketEntry.starvationLatched = false;
     global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
+    global_state().transientReservationGranted.fetch_add(1, std::memory_order_relaxed);
+    if (reservationDecision.reason && std::string_view(reservationDecision.reason) == "critical_last_resort") {
+        trace_transient_reservation_decision(
+            transaction,
+            commandName,
+            requestBytes,
+            outReservation.bytesInFlight,
+            outReservation.capBytes,
+            outReservation.thresholdBytes,
+            reservationDecision,
+            criticalCurrentFrame,
+            0,
+            "critical_last_resort");
+    }
 
     outClaim.contextKey = contextKey;
     outClaim.bucketKey = bucketKey;
@@ -1642,6 +1773,7 @@ bool acquire_scratch_policy_claim_with_wait(
     int width,
     int height,
     std::size_t requestBytes,
+    bool criticalCurrentFrame,
     ScratchPolicyClaim& outClaim,
     std::string& outError) {
     outClaim = ScratchPolicyClaim{};
@@ -1650,14 +1782,19 @@ bool acquire_scratch_policy_claim_with_wait(
     const ScratchBucketKey bucketKey = make_scratch_bucket_key(width, height, workClass);
     const int waitBudgetMs = scratch_wait_budget_ms(bucketKey, requestBytes);
     ScratchPolicySnapshot snapshot{};
+    ReservationAttemptInfo reservation{};
     int waitedMs = 0;
     while (true) {
         if (try_acquire_scratch_policy_claim(
+                transaction,
+                commandName,
                 transaction.snapshot.deviceContextKey,
                 bucketKey,
                 requestBytes,
+                criticalCurrentFrame,
                 outClaim,
-                snapshot)) {
+                snapshot,
+                reservation)) {
             if (waitedMs > 0) {
                 global_state().scratchPolicyWaitEvents.fetch_add(1, std::memory_order_relaxed);
                 trace_scratch_policy_decision(
@@ -1689,18 +1826,33 @@ bool acquire_scratch_policy_claim_with_wait(
                 requestBytes,
                 snapshot,
                 waitedMs);
-            outError = std::string(kScratchExhaustedPrefix)
-                + " command=" + (commandName ? commandName : "unknown")
-                + " work_class=" + to_cstr(workClass)
-                + " bucket_w=" + std::to_string(bucketKey.widthBucket)
-                + " bucket_h=" + std::to_string(bucketKey.heightBucket)
-                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
-                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes))
-                + " in_flight_sets=" + std::to_string(snapshot.inFlightSets)
-                + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted)
-                + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts)
-                + " wait_ms=" + std::to_string(waitedMs)
-                + " wait_budget_ms=" + std::to_string(waitBudgetMs);
+            if (reservation.considered && !reservation.decision.granted) {
+                outError = std::string(kReservationDeferredPrefix)
+                    + " command=" + (commandName ? commandName : "unknown")
+                    + " work_class=" + to_cstr(workClass)
+                    + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                    + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                    + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                    + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                    + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                    + " wait_ms=" + std::to_string(waitedMs)
+                    + " wait_budget_ms=" + std::to_string(waitBudgetMs)
+                    + " reason=" + (reservation.decision.reason ? reservation.decision.reason : "unspecified");
+            }
+            else {
+                outError = std::string(kScratchExhaustedPrefix)
+                    + " command=" + (commandName ? commandName : "unknown")
+                    + " work_class=" + to_cstr(workClass)
+                    + " bucket_w=" + std::to_string(bucketKey.widthBucket)
+                    + " bucket_h=" + std::to_string(bucketKey.heightBucket)
+                    + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                    + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes))
+                    + " in_flight_sets=" + std::to_string(snapshot.inFlightSets)
+                    + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted)
+                    + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts)
+                    + " wait_ms=" + std::to_string(waitedMs)
+                    + " wait_budget_ms=" + std::to_string(waitBudgetMs);
+            }
             return false;
         }
 
@@ -2774,6 +2926,7 @@ bool command_ensure_optics_scratch(
             width,
             height,
             growthBytes,
+            true,
             scratchClaim,
             outError)) {
         return false;
@@ -2912,6 +3065,7 @@ bool command_ensure_spatial_dir_scratch(
             width,
             height,
             growthBytes,
+            true,
             scratchClaim,
             outError)) {
         return false;
@@ -3242,7 +3396,8 @@ bool command_launch_base_pipeline_graph(
 }
 
 bool error_is_scratch_exhausted(const std::string& error) noexcept {
-    return error.rfind(kScratchExhaustedPrefix, 0) == 0;
+    return error.rfind(kScratchExhaustedPrefix, 0) == 0 ||
+        error.rfind(kReservationDeferredPrefix, 0) == 0;
 }
 
 void rollback_submission(

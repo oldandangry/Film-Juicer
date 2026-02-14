@@ -2,6 +2,8 @@
 
 #include "Cuda/ResourceManager/JuicerCudaResourcePolicy.h"
 
+#include <limits>
+
 namespace JuicerCuda {
 namespace ResourceManager {
 
@@ -219,7 +221,13 @@ ReservationDecision classify_reservation(const ReservationInput& input) noexcept
         return out;
     }
 
-    const std::uint64_t nextBytes = input.bytesInFlight + input.requestBytes;
+    std::uint64_t nextBytes = input.bytesInFlight;
+    if (input.requestBytes > (std::numeric_limits<std::uint64_t>::max() - input.bytesInFlight)) {
+        nextBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    else {
+        nextBytes = input.bytesInFlight + input.requestBytes;
+    }
     if (nextBytes <= input.capBytes) {
         return out;
     }

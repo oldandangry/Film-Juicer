@@ -71,6 +71,10 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> managerReclaimableBytes{ 0 };
     std::atomic<std::uint64_t> managerRetirePendingBytes{ 0 };
     std::atomic<std::uint64_t> transientNonManagerBytes{ 0 };
+    std::atomic<std::uint64_t> transientReservationRequests{ 0 };
+    std::atomic<std::uint64_t> transientReservationGranted{ 0 };
+    std::atomic<std::uint64_t> transientReservationDeferred{ 0 };
+    std::atomic<std::uint64_t> transientReservationDenied{ 0 };
     std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };
 
