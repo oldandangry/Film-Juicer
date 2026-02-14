@@ -6,6 +6,7 @@
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceState.h"
 
 #include "FilmProcessing.h"
@@ -28,6 +29,10 @@ extern const std::string gDataDir;
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
+#include <cuda.h>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #endif
 
 #include <algorithm>
@@ -152,6 +157,232 @@ extern "C" cudaError_t juicer_cuda_probe_print_pipeline(
 #endif
 
 namespace JuicerCuda {
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    struct DeferredDestroyEntry {
+        Resources* resources = nullptr;
+        int ownerDeviceId = -1;
+        void* ownerContextOpaque = nullptr;
+    };
+
+    static std::mutex& deferred_destroy_mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::vector<DeferredDestroyEntry>& deferred_destroy_queue() {
+        static std::vector<DeferredDestroyEntry> queue;
+        return queue;
+    }
+
+#if defined(_WIN32)
+    using CuCtxGetCurrentFn = CUresult(CUDAAPI*)(CUcontext*);
+
+    struct CudaDriverDispatch {
+        CuCtxGetCurrentFn cuCtxGetCurrent = nullptr;
+        const char* loadError = nullptr;
+    };
+
+    static const CudaDriverDispatch& cuda_driver_dispatch_for_teardown() {
+        static CudaDriverDispatch dispatch{};
+        static std::once_flag once;
+        std::call_once(once, []() {
+            HMODULE module = GetModuleHandleA("nvcuda.dll");
+            if (!module) {
+                module = LoadLibraryA("nvcuda.dll");
+            }
+            if (!module) {
+                dispatch.loadError = "nvcuda.dll not available";
+                return;
+            }
+            dispatch.cuCtxGetCurrent =
+                reinterpret_cast<CuCtxGetCurrentFn>(GetProcAddress(module, "cuCtxGetCurrent"));
+            if (!dispatch.cuCtxGetCurrent) {
+                dispatch.loadError = "cuCtxGetCurrent symbol not found";
+            }
+        });
+        return dispatch;
+    }
+#endif
+
+    static bool query_current_cuda_context(void*& outContextOpaque, std::string& outError) {
+        outContextOpaque = nullptr;
+        outError.clear();
+#if defined(_WIN32)
+        const CudaDriverDispatch& dispatch = cuda_driver_dispatch_for_teardown();
+        if (!dispatch.cuCtxGetCurrent) {
+            outError = dispatch.loadError ? dispatch.loadError : "driver dispatch unavailable";
+            return false;
+        }
+        CUcontext currentContext = nullptr;
+        const CUresult result = dispatch.cuCtxGetCurrent(&currentContext);
+        if (result != CUDA_SUCCESS) {
+            outError = std::string("cuCtxGetCurrent failed (code=")
+                + std::to_string(static_cast<int>(result)) + ")";
+            return false;
+        }
+        if (!currentContext) {
+            outError = "current CUDA context is null";
+            return false;
+        }
+        outContextOpaque = reinterpret_cast<void*>(currentContext);
+        return true;
+#else
+        outError = "cuCtxGetCurrent loader unsupported on this platform";
+        return false;
+#endif
+    }
+
+    static bool query_current_cuda_device(int& outDeviceId, std::string& outError) {
+        outDeviceId = -1;
+        outError.clear();
+        const cudaError_t err = cudaGetDevice(&outDeviceId);
+        if (err != cudaSuccess || outDeviceId < 0) {
+            outError = std::string("cudaGetDevice failed: ")
+                + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            outDeviceId = -1;
+            return false;
+        }
+        return true;
+    }
+
+    static bool owner_matches_current(
+        int ownerDeviceId,
+        void* ownerContextOpaque,
+        int currentDeviceId,
+        bool currentDeviceValid,
+        void* currentContextOpaque,
+        bool currentContextValid,
+        bool& outDeviceMatch,
+        bool& outContextMatch) {
+        outDeviceMatch = (ownerDeviceId < 0) ||
+            (currentDeviceValid && currentDeviceId == ownerDeviceId);
+        outContextMatch = (ownerContextOpaque == nullptr) ||
+            (currentContextValid && currentContextOpaque == ownerContextOpaque);
+        return outDeviceMatch && outContextMatch;
+    }
+
+    static void trace_teardown_event(
+        const char* stage,
+        const char* outcome,
+        int ownerDeviceId,
+        void* ownerContextOpaque,
+        int currentDeviceId,
+        void* currentContextOpaque,
+        bool deviceMatch,
+        bool contextMatch,
+        bool switchAttempted,
+        bool switchSucceeded,
+        bool managerRetireAttempted,
+        bool managerRetireAccepted,
+        std::size_t deferredQueueDepth,
+        const std::string& detail) {
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        const std::uintptr_t ownerContextBits =
+            reinterpret_cast<std::uintptr_t>(ownerContextOpaque);
+        const std::uintptr_t currentContextBits =
+            reinterpret_cast<std::uintptr_t>(currentContextOpaque);
+        std::ostringstream oss;
+        oss << "stage=" << (stage ? stage : "unknown")
+            << " outcome=" << (outcome ? outcome : "unknown")
+            << " owner_device=" << ownerDeviceId
+            << " current_device=" << currentDeviceId
+            << " owner_context=" << ownerContextBits
+            << " current_context=" << currentContextBits
+            << " device_match=" << (deviceMatch ? 1 : 0)
+            << " context_match=" << (contextMatch ? 1 : 0)
+            << " switch_attempted=" << (switchAttempted ? 1 : 0)
+            << " switch_succeeded=" << (switchSucceeded ? 1 : 0)
+            << " retire_attempted=" << (managerRetireAttempted ? 1 : 0)
+            << " retire_accepted=" << (managerRetireAccepted ? 1 : 0)
+            << " deferred_queue_depth=" << static_cast<unsigned long long>(deferredQueueDepth);
+        if (!detail.empty()) {
+            oss << " detail=" << detail;
+        }
+        JTRACE("MSTDN", oss.str());
+    }
+
+    static void reap_deferred_destroy_queue(const char* stage) {
+        std::vector<DeferredDestroyEntry> readyEntries;
+        std::size_t remainingDepth = 0;
+        int currentDeviceId = -1;
+        std::string deviceError;
+        const bool currentDeviceValid = query_current_cuda_device(currentDeviceId, deviceError);
+        void* currentContextOpaque = nullptr;
+        std::string contextError;
+        const bool currentContextValid = query_current_cuda_context(currentContextOpaque, contextError);
+
+        {
+            std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
+            auto& queue = deferred_destroy_queue();
+            if (queue.empty()) {
+                return;
+            }
+            for (std::size_t i = 0; i < queue.size();) {
+                bool deviceMatch = false;
+                bool contextMatch = false;
+                if (owner_matches_current(
+                        queue[i].ownerDeviceId,
+                        queue[i].ownerContextOpaque,
+                        currentDeviceId,
+                        currentDeviceValid,
+                        currentContextOpaque,
+                        currentContextValid,
+                        deviceMatch,
+                        contextMatch)) {
+                    readyEntries.push_back(queue[i]);
+                    queue[i] = queue.back();
+                    queue.pop_back();
+                    continue;
+                }
+                ++i;
+            }
+            remainingDepth = queue.size();
+        }
+
+        for (const DeferredDestroyEntry& entry : readyEntries) {
+            bool deviceMatch = false;
+            bool contextMatch = false;
+            (void)owner_matches_current(
+                entry.ownerDeviceId,
+                entry.ownerContextOpaque,
+                currentDeviceId,
+                currentDeviceValid,
+                currentContextOpaque,
+                currentContextValid,
+                deviceMatch,
+                contextMatch);
+            std::string detail;
+            if (!deviceError.empty()) {
+                detail = deviceError;
+            }
+            if (!contextError.empty()) {
+                if (!detail.empty()) {
+                    detail += "; ";
+                }
+                detail += contextError;
+            }
+            trace_teardown_event(
+                stage,
+                "deferred_reap",
+                entry.ownerDeviceId,
+                entry.ownerContextOpaque,
+                currentDeviceId,
+                currentContextOpaque,
+                deviceMatch,
+                contextMatch,
+                false,
+                false,
+                false,
+                false,
+                remainingDepth,
+                detail);
+            delete entry.resources;
+        }
+    }
+#endif
 
     static void reap_retire_queue_locked(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1901,11 +2132,19 @@ namespace JuicerCuda {
 
     Resources* create() noexcept {
         try {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+            reap_deferred_destroy_queue("create");
+#endif
             Resources* r = new Resources();
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
             int dev = -1;
             if (cudaGetDevice(&dev) == cudaSuccess) {
                 r->deviceId = dev;
+            }
+            void* contextOpaque = nullptr;
+            std::string contextError;
+            if (query_current_cuda_context(contextOpaque, contextError)) {
+                r->ownerContextOpaque = contextOpaque;
             }
 #endif
             return r;
@@ -1916,7 +2155,187 @@ namespace JuicerCuda {
     }
 
     void destroy(Resources* resources) noexcept {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         delete resources;
+#else
+        if (!resources) {
+            return;
+        }
+
+        reap_deferred_destroy_queue("destroy_pre");
+
+        const int ownerDeviceId = resources->deviceId;
+        void* ownerContextOpaque = resources->ownerContextOpaque;
+        int currentDeviceId = -1;
+        std::string currentDeviceError;
+        const bool currentDeviceValid = query_current_cuda_device(currentDeviceId, currentDeviceError);
+        void* currentContextOpaque = nullptr;
+        std::string currentContextError;
+        const bool currentContextValid = query_current_cuda_context(currentContextOpaque, currentContextError);
+
+        bool deviceMatch = false;
+        bool contextMatch = false;
+        bool ownerMatch = owner_matches_current(
+            ownerDeviceId,
+            ownerContextOpaque,
+            currentDeviceId,
+            currentDeviceValid,
+            currentContextOpaque,
+            currentContextValid,
+            deviceMatch,
+            contextMatch);
+
+        bool switchAttempted = false;
+        bool switchSucceeded = false;
+        int restoreDeviceId = currentDeviceId;
+        bool restoreDevice = false;
+
+        if (!ownerMatch && ownerDeviceId >= 0 &&
+            (!currentDeviceValid || currentDeviceId != ownerDeviceId)) {
+            switchAttempted = true;
+            const cudaError_t setErr = cudaSetDevice(ownerDeviceId);
+            if (setErr == cudaSuccess) {
+                switchSucceeded = true;
+                restoreDevice = currentDeviceValid && currentDeviceId != ownerDeviceId;
+
+                int switchedDeviceId = -1;
+                std::string switchedDeviceError;
+                const bool switchedDeviceValid = query_current_cuda_device(switchedDeviceId, switchedDeviceError);
+
+                void* switchedContextOpaque = nullptr;
+                std::string switchedContextError;
+                const bool switchedContextValid =
+                    query_current_cuda_context(switchedContextOpaque, switchedContextError);
+
+                ownerMatch = owner_matches_current(
+                    ownerDeviceId,
+                    ownerContextOpaque,
+                    switchedDeviceId,
+                    switchedDeviceValid,
+                    switchedContextOpaque,
+                    switchedContextValid,
+                    deviceMatch,
+                    contextMatch);
+
+                if (switchedDeviceValid) {
+                    currentDeviceId = switchedDeviceId;
+                }
+                if (switchedContextValid) {
+                    currentContextOpaque = switchedContextOpaque;
+                }
+                if (!switchedDeviceError.empty()) {
+                    currentDeviceError = switchedDeviceError;
+                }
+                if (!switchedContextError.empty()) {
+                    currentContextError = switchedContextError;
+                }
+            }
+            else {
+                currentContextError = std::string("cudaSetDevice failed: ")
+                    + (cudaGetErrorString(setErr) ? cudaGetErrorString(setErr) : "(unknown)");
+            }
+        }
+
+        if (ownerMatch) {
+            std::size_t deferredQueueDepth = 0;
+            {
+                std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
+                deferredQueueDepth = deferred_destroy_queue().size();
+            }
+            std::string detail;
+            if (!currentDeviceError.empty()) {
+                detail = currentDeviceError;
+            }
+            if (!currentContextError.empty()) {
+                if (!detail.empty()) {
+                    detail += "; ";
+                }
+                detail += currentContextError;
+            }
+            trace_teardown_event(
+                "destroy",
+                "direct_free",
+                ownerDeviceId,
+                ownerContextOpaque,
+                currentDeviceId,
+                currentContextOpaque,
+                deviceMatch,
+                contextMatch,
+                switchAttempted,
+                switchSucceeded,
+                false,
+                false,
+                deferredQueueDepth,
+                detail);
+            delete resources;
+
+            if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
+                (void)cudaSetDevice(restoreDeviceId);
+            }
+            reap_deferred_destroy_queue("destroy_post");
+            return;
+        }
+
+        if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
+            (void)cudaSetDevice(restoreDeviceId);
+        }
+
+        bool managerRetireAttempted = false;
+        bool managerRetireAccepted = false;
+        std::string managerRetireError;
+        if (ownerDeviceId >= 0 && ownerContextOpaque) {
+            managerRetireAttempted = true;
+            ResourceManager::DeviceContextKey ownerKey{};
+            ownerKey.deviceId = ownerDeviceId;
+            ownerKey.contextOpaque = ownerContextOpaque;
+            managerRetireAccepted =
+                ResourceManager::command_retire_context_idle(ownerKey, managerRetireError);
+        }
+
+        std::size_t deferredQueueDepth = 0;
+        {
+            std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
+            auto& queue = deferred_destroy_queue();
+            DeferredDestroyEntry entry{};
+            entry.resources = resources;
+            entry.ownerDeviceId = ownerDeviceId;
+            entry.ownerContextOpaque = ownerContextOpaque;
+            queue.push_back(entry);
+            deferredQueueDepth = queue.size();
+        }
+
+        std::string detail;
+        if (!currentDeviceError.empty()) {
+            detail = currentDeviceError;
+        }
+        if (!currentContextError.empty()) {
+            if (!detail.empty()) {
+                detail += "; ";
+            }
+            detail += currentContextError;
+        }
+        if (!managerRetireError.empty()) {
+            if (!detail.empty()) {
+                detail += "; ";
+            }
+            detail += managerRetireError;
+        }
+        trace_teardown_event(
+            "destroy",
+            "deferred_enqueue",
+            ownerDeviceId,
+            ownerContextOpaque,
+            currentDeviceId,
+            currentContextOpaque,
+            deviceMatch,
+            contextMatch,
+            switchAttempted,
+            switchSucceeded,
+            managerRetireAttempted,
+            managerRetireAccepted,
+            deferredQueueDepth,
+            detail);
+#endif
     }
 
     // Callers must hold resources.m before invoking this helper.

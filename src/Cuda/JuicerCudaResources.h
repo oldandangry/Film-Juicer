@@ -37,6 +37,8 @@ namespace JuicerCuda {
     struct Resources {
         std::mutex m;
         int deviceId = -1;
+        // CUcontext identity captured from the render slot key; used by teardown safety checks.
+        void* ownerContextOpaque = nullptr;
         std::uint64_t uploadedBuildCounter = 0;
         std::uint64_t uploadedCoreHash = 0;
         std::uint64_t uploadedDirHash = 0;

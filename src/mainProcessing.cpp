@@ -1629,6 +1629,12 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
         }
+        if (slot->deviceId < 0) {
+            slot->deviceId = deviceContextKey.deviceId;
+        }
+        if (!slot->ownerContextOpaque) {
+            slot->ownerContextOpaque = deviceContextKey.contextOpaque;
+        }
         cudaResources = slot.get();
     }
 
