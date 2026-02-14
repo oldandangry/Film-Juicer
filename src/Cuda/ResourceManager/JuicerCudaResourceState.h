@@ -53,6 +53,13 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> metadataMutationOrderViolations{ 0 };
     std::atomic<std::uint64_t> scratchPolicyWaitEvents{ 0 };
     std::atomic<std::uint64_t> scratchPolicyExhaustedEvents{ 0 };
+    std::atomic<std::uint64_t> scratchBucketAcquireAttempts{ 0 };
+    std::atomic<std::uint64_t> scratchBucketExhaustedEvents{ 0 };
+    std::atomic<std::uint64_t> scratchBucketStarvationEvents{ 0 };
+    std::atomic<std::uint64_t> scratchAllocGrowthEvents{ 0 };
+    std::atomic<std::uint64_t> scratchReuseEvents{ 0 };
+    std::atomic<std::uint64_t> scratchLargeQuarantineTrimEvents{ 0 };
+    std::atomic<std::uint64_t> scratchLargeQuarantineDecayEvents{ 0 };
     std::array<ResourceKindAcquireCounters, kResourceKindCount> acquireStatusByKind{};
 };
 

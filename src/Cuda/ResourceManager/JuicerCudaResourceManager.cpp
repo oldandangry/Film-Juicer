@@ -130,14 +130,79 @@ FrameSnapshotState& frame_snapshot_state() noexcept {
     return state;
 }
 
-struct ScratchPolicyEntry {
+enum class ScratchWorkClass : std::uint8_t {
+    Optics = 0,
+    SpatialDir = 1
+};
+
+const char* to_cstr(ScratchWorkClass workClass) noexcept {
+    switch (workClass) {
+    case ScratchWorkClass::Optics:
+        return "optics";
+    case ScratchWorkClass::SpatialDir:
+        return "spatial_dir";
+    default:
+        return "unknown";
+    }
+}
+
+struct ScratchBucketKey {
+    std::uint32_t widthBucket = 0;
+    std::uint32_t heightBucket = 0;
+    std::uint16_t bucketStepPx = 0;
+    ScratchWorkClass workClass = ScratchWorkClass::Optics;
+    bool largeFrame = false;
+
+    bool operator==(const ScratchBucketKey& other) const noexcept {
+        return widthBucket == other.widthBucket &&
+            heightBucket == other.heightBucket &&
+            bucketStepPx == other.bucketStepPx &&
+            workClass == other.workClass &&
+            largeFrame == other.largeFrame;
+    }
+};
+
+struct ScratchBucketKeyHash {
+    std::size_t operator()(const ScratchBucketKey& key) const noexcept {
+        const std::size_t hW = std::hash<std::uint32_t>{}(key.widthBucket);
+        const std::size_t hH = std::hash<std::uint32_t>{}(key.heightBucket);
+        const std::size_t hStep = std::hash<std::uint16_t>{}(key.bucketStepPx);
+        const std::size_t hWork = std::hash<std::uint8_t>{}(static_cast<std::uint8_t>(key.workClass));
+        const std::size_t hLarge = std::hash<bool>{}(key.largeFrame);
+        return (((hW ^ (hH + 0x9e3779b9u + (hW << 6u) + (hW >> 2u)))
+            ^ (hStep + 0x9e3779b9u + (hW << 6u) + (hW >> 2u)))
+            ^ (hWork + 0x9e3779b9u + (hW << 6u) + (hW >> 2u)))
+            ^ (hLarge + 0x9e3779b9u + (hW << 6u) + (hW >> 2u));
+    }
+};
+
+struct ScratchBucketEntry {
     std::size_t inFlightBytes = 0;
     std::uint32_t inFlightSets = 0;
+    std::uint64_t attemptCount = 0;
+    std::uint64_t exhaustedCount = 0;
+    std::uint64_t allocGrowthEvents = 0;
+    std::uint64_t reuseEvents = 0;
+    bool starvationLatched = false;
+};
+
+struct ScratchQuarantineEntry {
+    ScratchBucketKey key{};
+    std::size_t bytes = 0;
+    std::uint64_t touchedMs = 0;
+    std::uint64_t sequence = 0;
+};
+
+struct ScratchContextState {
+    std::unordered_map<ScratchBucketKey, ScratchBucketEntry, ScratchBucketKeyHash> buckets;
+    std::vector<ScratchQuarantineEntry> largeFrameQuarantine;
+    std::size_t largeFrameQuarantineBytes = 0;
+    std::uint64_t nextQuarantineSequence = 1;
 };
 
 struct ScratchPolicyState {
     std::mutex mutex;
-    std::unordered_map<DeviceContextKey, ScratchPolicyEntry, DeviceContextKeyHash> byContext;
+    std::unordered_map<DeviceContextKey, ScratchContextState, DeviceContextKeyHash> byContext;
 };
 
 ScratchPolicyState& scratch_policy_state() noexcept {
@@ -146,16 +211,94 @@ ScratchPolicyState& scratch_policy_state() noexcept {
 }
 
 struct ScratchPolicyClaim {
-    DeviceContextKey key{};
+    DeviceContextKey contextKey{};
+    ScratchBucketKey bucketKey{};
     std::size_t bytes = 0;
     bool acquired = false;
+};
+
+struct ScratchPolicySnapshot {
+    std::size_t inFlightBytes = 0;
+    std::uint32_t inFlightSets = 0;
+    std::size_t quarantineBytes = 0;
+    std::uint32_t quarantineEntries = 0;
+    std::uint64_t bucketAttempts = 0;
+    std::uint64_t bucketExhausted = 0;
+    std::uint64_t bucketAllocGrowth = 0;
+    std::uint64_t bucketReuse = 0;
+    bool starvationLatched = false;
+    ScratchBucketKey bucketKey{};
 };
 
 constexpr std::uint32_t kMaxTempScratchSets = 1;
 constexpr std::size_t kMaxTempScratchBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
 constexpr int kScratchWaitStepMs = 1;
 constexpr int kScratchWaitMaxMs = 4;
+constexpr int kScratchBucketStepBasePx = 64;
+constexpr int kScratchBucketStepLargePx = 128;
+constexpr int kScratchBucketStepXLargePx = 256;
+constexpr int kScratchBucketMinPx = 128;
+constexpr std::uint64_t kLargeFrameThresholdPixels = static_cast<std::uint64_t>(7680ull * 4320ull);
+constexpr std::size_t kLargeFrameQuarantineMaxBytes = static_cast<std::size_t>(1024ull * 1024ull * 1024ull);
+constexpr std::size_t kLargeFrameQuarantineMaxEntries = 2;
+constexpr std::uint64_t kLargeFrameQuarantineDecayMs = 2000;
 constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
+
+inline std::uint64_t monotonic_time_ms() noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+inline std::uint64_t area_pixels_for_extent(int width, int height) noexcept {
+    if (width <= 0 || height <= 0) {
+        return 0;
+    }
+    const std::uint64_t w = static_cast<std::uint64_t>(width);
+    const std::uint64_t h = static_cast<std::uint64_t>(height);
+    if (w != 0 && h > (std::numeric_limits<std::uint64_t>::max() / w)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return w * h;
+}
+
+inline bool is_large_frame_extent(int width, int height) noexcept {
+    const std::uint64_t area = area_pixels_for_extent(width, height);
+    const int maxDim = std::max(width, height);
+    return maxDim >= 7680 || area >= kLargeFrameThresholdPixels;
+}
+
+inline int adaptive_bucket_step_px(int width, int height) noexcept {
+    const int maxDim = std::max(width, height);
+    const std::uint64_t area = area_pixels_for_extent(width, height);
+    if (maxDim >= 8192 || area >= static_cast<std::uint64_t>(8192ull * 4320ull)) {
+        return kScratchBucketStepXLargePx;
+    }
+    if (maxDim >= 4096 || area >= static_cast<std::uint64_t>(4096ull * 2160ull)) {
+        return kScratchBucketStepLargePx;
+    }
+    return kScratchBucketStepBasePx;
+}
+
+inline std::uint32_t round_up_bucket_dim(int value, int step) noexcept {
+    const int safeStep = std::max(1, step);
+    const int clampedValue = std::max(kScratchBucketMinPx, value);
+    const int rounded = ((clampedValue + safeStep - 1) / safeStep) * safeStep;
+    return static_cast<std::uint32_t>(std::max(kScratchBucketMinPx, rounded));
+}
+
+inline ScratchBucketKey make_scratch_bucket_key(
+    int width,
+    int height,
+    ScratchWorkClass workClass) noexcept {
+    const int step = adaptive_bucket_step_px(width, height);
+    ScratchBucketKey key{};
+    key.widthBucket = round_up_bucket_dim(width, step);
+    key.heightBucket = round_up_bucket_dim(height, step);
+    key.bucketStepPx = static_cast<std::uint16_t>(std::max(1, step));
+    key.workClass = workClass;
+    key.largeFrame = is_large_frame_extent(width, height);
+    return key;
+}
 
 inline std::size_t plane_bytes_for_extent(int width, int height) noexcept {
     if (width <= 0 || height <= 0) {
@@ -300,28 +443,130 @@ std::size_t estimate_spatial_dir_growth_bytes(
     return estimate;
 }
 
+void trim_large_frame_quarantine_decay_locked(
+    ScratchContextState& contextState,
+    std::uint64_t nowMs) noexcept {
+    std::size_t index = 0;
+    std::uint64_t removedCount = 0;
+    while (index < contextState.largeFrameQuarantine.size()) {
+        const ScratchQuarantineEntry& entry = contextState.largeFrameQuarantine[index];
+        const std::uint64_t ageMs = (nowMs > entry.touchedMs) ? (nowMs - entry.touchedMs) : 0;
+        if (ageMs < kLargeFrameQuarantineDecayMs) {
+            ++index;
+            continue;
+        }
+        if (contextState.largeFrameQuarantineBytes >= entry.bytes) {
+            contextState.largeFrameQuarantineBytes -= entry.bytes;
+        }
+        else {
+            contextState.largeFrameQuarantineBytes = 0;
+        }
+        contextState.largeFrameQuarantine.erase(
+            contextState.largeFrameQuarantine.begin() + static_cast<std::ptrdiff_t>(index));
+        ++removedCount;
+    }
+    if (removedCount > 0) {
+        global_state().scratchLargeQuarantineDecayEvents.fetch_add(removedCount, std::memory_order_relaxed);
+    }
+}
+
+void trim_large_frame_quarantine_caps_locked(
+    ScratchContextState& contextState) noexcept {
+    std::uint64_t trimmedCount = 0;
+    while ((contextState.largeFrameQuarantineBytes > kLargeFrameQuarantineMaxBytes) ||
+           (contextState.largeFrameQuarantine.size() > kLargeFrameQuarantineMaxEntries)) {
+        if (contextState.largeFrameQuarantine.empty()) {
+            contextState.largeFrameQuarantineBytes = 0;
+            break;
+        }
+
+        std::size_t victimIndex = 0;
+        ScratchQuarantineEntry victim = contextState.largeFrameQuarantine[0];
+        for (std::size_t i = 1; i < contextState.largeFrameQuarantine.size(); ++i) {
+            const ScratchQuarantineEntry& candidate = contextState.largeFrameQuarantine[i];
+            const bool older = (candidate.touchedMs < victim.touchedMs) ||
+                ((candidate.touchedMs == victim.touchedMs) && (candidate.sequence < victim.sequence));
+            if (older) {
+                victim = candidate;
+                victimIndex = i;
+            }
+        }
+
+        if (contextState.largeFrameQuarantineBytes >= victim.bytes) {
+            contextState.largeFrameQuarantineBytes -= victim.bytes;
+        }
+        else {
+            contextState.largeFrameQuarantineBytes = 0;
+        }
+        contextState.largeFrameQuarantine.erase(
+            contextState.largeFrameQuarantine.begin() + static_cast<std::ptrdiff_t>(victimIndex));
+        ++trimmedCount;
+    }
+
+    if (trimmedCount > 0) {
+        global_state().scratchLargeQuarantineTrimEvents.fetch_add(trimmedCount, std::memory_order_relaxed);
+    }
+}
+
+void snapshot_bucket_state_locked(
+    const ScratchContextState& contextState,
+    const ScratchBucketEntry& bucketEntry,
+    const ScratchBucketKey& bucketKey,
+    ScratchPolicySnapshot& outSnapshot) noexcept {
+    outSnapshot.inFlightBytes = bucketEntry.inFlightBytes;
+    outSnapshot.inFlightSets = bucketEntry.inFlightSets;
+    outSnapshot.quarantineBytes = contextState.largeFrameQuarantineBytes;
+    outSnapshot.quarantineEntries = static_cast<std::uint32_t>(contextState.largeFrameQuarantine.size());
+    outSnapshot.bucketAttempts = bucketEntry.attemptCount;
+    outSnapshot.bucketExhausted = bucketEntry.exhaustedCount;
+    outSnapshot.bucketAllocGrowth = bucketEntry.allocGrowthEvents;
+    outSnapshot.bucketReuse = bucketEntry.reuseEvents;
+    outSnapshot.starvationLatched = bucketEntry.starvationLatched;
+    outSnapshot.bucketKey = bucketKey;
+}
+
 void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
     if (!claim.acquired) {
         return;
     }
+
     ScratchPolicyState& state = scratch_policy_state();
     std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byContext.find(claim.key);
-    if (it != state.byContext.end()) {
-        ScratchPolicyEntry& entry = it->second;
-        if (entry.inFlightSets > 0) {
-            --entry.inFlightSets;
+    auto contextIt = state.byContext.find(claim.contextKey);
+    if (contextIt == state.byContext.end()) {
+        claim = ScratchPolicyClaim{};
+        return;
+    }
+
+    ScratchContextState& contextState = contextIt->second;
+    auto bucketIt = contextState.buckets.find(claim.bucketKey);
+    if (bucketIt != contextState.buckets.end()) {
+        ScratchBucketEntry& bucketEntry = bucketIt->second;
+        if (bucketEntry.inFlightSets > 0) {
+            --bucketEntry.inFlightSets;
         }
-        if (entry.inFlightBytes >= claim.bytes) {
-            entry.inFlightBytes -= claim.bytes;
+        if (bucketEntry.inFlightBytes >= claim.bytes) {
+            bucketEntry.inFlightBytes -= claim.bytes;
         }
         else {
-            entry.inFlightBytes = 0;
-        }
-        if (entry.inFlightSets == 0 && entry.inFlightBytes == 0) {
-            state.byContext.erase(it);
+            bucketEntry.inFlightBytes = 0;
         }
     }
+
+    const std::uint64_t nowMs = monotonic_time_ms();
+    trim_large_frame_quarantine_decay_locked(contextState, nowMs);
+
+    if (claim.bucketKey.largeFrame && claim.bytes > 0) {
+        ScratchQuarantineEntry entry{};
+        entry.key = claim.bucketKey;
+        entry.bytes = claim.bytes;
+        entry.touchedMs = nowMs;
+        entry.sequence = contextState.nextQuarantineSequence++;
+        contextState.largeFrameQuarantine.push_back(entry);
+        contextState.largeFrameQuarantineBytes += claim.bytes;
+        trim_large_frame_quarantine_caps_locked(contextState);
+    }
+
     claim = ScratchPolicyClaim{};
 }
 
@@ -347,73 +592,130 @@ void trace_scratch_policy_decision(
     const char* commandName,
     const char* result,
     std::size_t requestBytes,
-    std::size_t inFlightBytes,
-    std::uint32_t inFlightSets,
+    const ScratchPolicySnapshot& snapshot,
     int waitMs) {
     const std::uintptr_t contextBits =
         reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::uint64_t churnDenom = snapshot.bucketAllocGrowth + snapshot.bucketReuse;
+    const std::uint64_t churnRatioMilli = (churnDenom == 0)
+        ? 0
+        : (snapshot.bucketAllocGrowth * 1000ull) / churnDenom;
+
     const std::string msg = std::string("event=scratch_policy")
         + " transaction_id=" + std::to_string(transaction.transactionId)
         + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
         + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
         + " command=" + (commandName ? commandName : "unknown")
         + " result=" + (result ? result : "unknown")
+        + " work_class=" + to_cstr(snapshot.bucketKey.workClass)
         + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
         + " context=" + std::to_string(contextBits)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
-        + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(inFlightBytes))
-        + " in_flight_sets=" + std::to_string(inFlightSets)
+        + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes))
+        + " in_flight_sets=" + std::to_string(snapshot.inFlightSets)
+        + " bucket_w=" + std::to_string(snapshot.bucketKey.widthBucket)
+        + " bucket_h=" + std::to_string(snapshot.bucketKey.heightBucket)
+        + " bucket_step_px=" + std::to_string(snapshot.bucketKey.bucketStepPx)
+        + " large_frame=" + std::to_string(snapshot.bucketKey.largeFrame ? 1 : 0)
+        + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts)
+        + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted)
+        + " bucket_alloc_growth=" + std::to_string(snapshot.bucketAllocGrowth)
+        + " bucket_reuse=" + std::to_string(snapshot.bucketReuse)
+        + " bucket_starvation_latched=" + std::to_string(snapshot.starvationLatched ? 1 : 0)
+        + " scratch_churn_ratio_milli=" + std::to_string(churnRatioMilli)
+        + " quarantine_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.quarantineBytes))
+        + " quarantine_entries=" + std::to_string(snapshot.quarantineEntries)
         + " wait_ms=" + std::to_string(waitMs)
         + " max_temp_sets=" + std::to_string(kMaxTempScratchSets)
-        + " max_temp_bytes=" + std::to_string(static_cast<unsigned long long>(kMaxTempScratchBytes));
+        + " max_temp_bytes=" + std::to_string(static_cast<unsigned long long>(kMaxTempScratchBytes))
+        + " quarantine_max_bytes=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxBytes))
+        + " quarantine_max_entries=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxEntries));
     JTRACE("MSACQ", msg);
 }
 
 bool try_acquire_scratch_policy_claim(
-    const DeviceContextKey& key,
+    const DeviceContextKey& contextKey,
+    const ScratchBucketKey& bucketKey,
     std::size_t requestBytes,
     ScratchPolicyClaim& outClaim,
-    std::size_t& outInFlightBytes,
-    std::uint32_t& outInFlightSets) noexcept {
+    ScratchPolicySnapshot& outSnapshot) noexcept {
     ScratchPolicyState& state = scratch_policy_state();
     std::lock_guard<std::mutex> lock(state.mutex);
-    ScratchPolicyEntry& entry = state.byContext[key];
 
-    const bool setsOk = entry.inFlightSets < kMaxTempScratchSets;
-    const bool bytesOk = requestBytes <= (kMaxTempScratchBytes - std::min(entry.inFlightBytes, kMaxTempScratchBytes));
+    ScratchContextState& contextState = state.byContext[contextKey];
+    const std::uint64_t nowMs = monotonic_time_ms();
+    trim_large_frame_quarantine_decay_locked(contextState, nowMs);
+
+    ScratchBucketEntry& bucketEntry = contextState.buckets[bucketKey];
+    bucketEntry.attemptCount += 1;
+    global_state().scratchBucketAcquireAttempts.fetch_add(1, std::memory_order_relaxed);
+
+    if (requestBytes == 0) {
+        bucketEntry.reuseEvents += 1;
+        global_state().scratchReuseEvents.fetch_add(1, std::memory_order_relaxed);
+        snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
+        return true;
+    }
+
+    const bool setsOk = bucketEntry.inFlightSets < kMaxTempScratchSets;
+    const bool bytesOk = requestBytes <=
+        (kMaxTempScratchBytes - std::min(bucketEntry.inFlightBytes, kMaxTempScratchBytes));
     if (!setsOk || !bytesOk) {
-        outInFlightBytes = entry.inFlightBytes;
-        outInFlightSets = entry.inFlightSets;
+        bucketEntry.exhaustedCount += 1;
+        global_state().scratchBucketExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+
+        const bool starvationNow =
+            (bucketEntry.attemptCount >= 8) &&
+            (bucketEntry.exhaustedCount * 4 >= bucketEntry.attemptCount);
+        if (starvationNow && !bucketEntry.starvationLatched) {
+            bucketEntry.starvationLatched = true;
+            global_state().scratchBucketStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        else if (!starvationNow) {
+            bucketEntry.starvationLatched = false;
+        }
+
+        snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
         return false;
     }
 
-    entry.inFlightSets += 1;
-    entry.inFlightBytes += requestBytes;
-    outInFlightBytes = entry.inFlightBytes;
-    outInFlightSets = entry.inFlightSets;
-    outClaim.key = key;
+    bucketEntry.inFlightSets += 1;
+    bucketEntry.inFlightBytes += requestBytes;
+    bucketEntry.allocGrowthEvents += 1;
+    global_state().scratchAllocGrowthEvents.fetch_add(1, std::memory_order_relaxed);
+    bucketEntry.starvationLatched = false;
+
+    outClaim.contextKey = contextKey;
+    outClaim.bucketKey = bucketKey;
     outClaim.bytes = requestBytes;
     outClaim.acquired = true;
+
+    snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
     return true;
 }
 
 bool acquire_scratch_policy_claim_with_wait(
     const SubmissionTransaction& transaction,
     const char* commandName,
+    ScratchWorkClass workClass,
+    int width,
+    int height,
     std::size_t requestBytes,
     ScratchPolicyClaim& outClaim,
     std::string& outError) {
     outClaim = ScratchPolicyClaim{};
     outError.clear();
-    if (requestBytes == 0) {
-        return true;
-    }
 
-    std::size_t inFlightBytes = 0;
-    std::uint32_t inFlightSets = 0;
+    const ScratchBucketKey bucketKey = make_scratch_bucket_key(width, height, workClass);
+    ScratchPolicySnapshot snapshot{};
     int waitedMs = 0;
     while (true) {
-        if (try_acquire_scratch_policy_claim(transaction.snapshot.deviceContextKey, requestBytes, outClaim, inFlightBytes, inFlightSets)) {
+        if (try_acquire_scratch_policy_claim(
+                transaction.snapshot.deviceContextKey,
+                bucketKey,
+                requestBytes,
+                outClaim,
+                snapshot)) {
             if (waitedMs > 0) {
                 global_state().scratchPolicyWaitEvents.fetch_add(1, std::memory_order_relaxed);
                 trace_scratch_policy_decision(
@@ -421,8 +723,16 @@ bool acquire_scratch_policy_claim_with_wait(
                     commandName,
                     "admit_after_wait",
                     requestBytes,
-                    inFlightBytes,
-                    inFlightSets,
+                    snapshot,
+                    waitedMs);
+            }
+            else if (requestBytes == 0) {
+                trace_scratch_policy_decision(
+                    transaction,
+                    commandName,
+                    "reuse_hit",
+                    requestBytes,
+                    snapshot,
                     waitedMs);
             }
             return true;
@@ -435,14 +745,18 @@ bool acquire_scratch_policy_claim_with_wait(
                 commandName,
                 "exhausted",
                 requestBytes,
-                inFlightBytes,
-                inFlightSets,
+                snapshot,
                 waitedMs);
             outError = std::string(kScratchExhaustedPrefix)
                 + " command=" + (commandName ? commandName : "unknown")
+                + " work_class=" + to_cstr(workClass)
+                + " bucket_w=" + std::to_string(bucketKey.widthBucket)
+                + " bucket_h=" + std::to_string(bucketKey.heightBucket)
                 + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
-                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(inFlightBytes))
-                + " in_flight_sets=" + std::to_string(inFlightSets)
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes))
+                + " in_flight_sets=" + std::to_string(snapshot.inFlightSets)
+                + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted)
+                + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts)
                 + " wait_ms=" + std::to_string(waitedMs);
             return false;
         }
@@ -1469,6 +1783,9 @@ bool command_ensure_optics_scratch(
     if (!acquire_scratch_policy_claim_with_wait(
             transaction,
             "command_ensure_optics_scratch",
+            ScratchWorkClass::Optics,
+            width,
+            height,
             growthBytes,
             scratchClaim,
             outError)) {
@@ -1509,6 +1826,9 @@ bool command_ensure_spatial_dir_scratch(
     if (!acquire_scratch_policy_claim_with_wait(
             transaction,
             "command_ensure_spatial_dir_scratch",
+            ScratchWorkClass::SpatialDir,
+            width,
+            height,
             growthBytes,
             scratchClaim,
             outError)) {
