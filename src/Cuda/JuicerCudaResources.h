@@ -316,6 +316,9 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::string& outError);
 
+    // Reaps deferred retire entries that are ready and returns reclaimed bytes.
+    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError);
+
     // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
     void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;
 

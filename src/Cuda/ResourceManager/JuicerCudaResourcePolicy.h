@@ -26,6 +26,18 @@ enum class StaleReason : std::uint8_t {
     KeySchemaMismatch = 4
 };
 
+enum class PressureState : std::uint8_t {
+    Normal = 0,
+    Constrained = 1,
+    Critical = 2,
+    Emergency = 3
+};
+
+enum class ReservationKind : std::uint8_t {
+    TransientNonManager = 0,
+    UploadCopy = 1
+};
+
 struct AcquireDecision {
     AcquireStatus status = AcquireStatus::Miss;
     bool shouldBuild = true;
@@ -68,12 +80,35 @@ struct ResourcePlan {
     ResourcePlanEntry autoExposure{};
 };
 
+struct PressureInput {
+    std::uint64_t softTargetBytes = 0;
+    std::uint64_t reserveBytes = 0;
+    std::uint64_t managerResidentBytes = 0;
+    std::uint64_t retirePendingBytes = 0;
+    std::uint64_t transientNonManagerBytes = 0;
+};
+
 struct PressureDecision {
+    PressureState state = PressureState::Normal;
     bool allowOpportunistic = true;
+    bool requestReclaimPass = false;
+    bool shouldShedNonCritical = false;
+    std::uint64_t effectiveReserveBytes = 0;
+};
+
+struct ReservationInput {
+    ReservationKind kind = ReservationKind::TransientNonManager;
+    std::uint64_t requestBytes = 0;
+    std::uint64_t bytesInFlight = 0;
+    std::uint64_t capBytes = 0;
+    bool criticalCurrentFrame = false;
 };
 
 struct ReservationDecision {
     bool granted = true;
+    bool shouldWait = false;
+    std::uint32_t waitMs = 0;
+    const char* reason = "granted";
 };
 
 AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noexcept;
@@ -84,6 +119,10 @@ const ResourcePlanEntry& resource_plan_entry(const ResourcePlan& plan, ResourceK
 const char* to_cstr(AcquireStatus status) noexcept;
 StaleDecision classify_stale_path(const StaleInput& input) noexcept;
 const char* to_cstr(StaleReason reason) noexcept;
+const char* to_cstr(PressureState state) noexcept;
+const char* to_cstr(ReservationKind kind) noexcept;
+PressureDecision classify_pressure(const PressureInput& input) noexcept;
+ReservationDecision classify_reservation(const ReservationInput& input) noexcept;
 
 AcquireDecision default_acquire_decision() noexcept;
 PressureDecision default_pressure_decision() noexcept;

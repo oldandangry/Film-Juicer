@@ -4,6 +4,7 @@
 
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaManagerRegistry.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Cuda/ResourceManager/JuicerCudaResourcePolicy.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceState.h"
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -243,6 +245,47 @@ constexpr std::size_t kLargeFrameQuarantineMaxBytes = static_cast<std::size_t>(1
 constexpr std::size_t kLargeFrameQuarantineMaxEntries = 2;
 constexpr std::uint64_t kLargeFrameQuarantineDecayMs = 2000;
 constexpr const char* kScratchExhaustedPrefix = "scratch_exhausted:";
+
+const ResourceManagerConfigEffective& manager_effective_config() noexcept {
+    static const ResourceManagerConfigEffective cfg = sanitize_config(ResourceManagerConfigRaw{});
+    return cfg;
+}
+
+bool contains_ascii_case_insensitive(const std::string& haystack, const char* needle) noexcept {
+    if (!needle || !*needle) {
+        return true;
+    }
+    if (haystack.empty()) {
+        return false;
+    }
+    const std::size_t needleLen = std::char_traits<char>::length(needle);
+    if (needleLen == 0 || needleLen > haystack.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i + needleLen <= haystack.size(); ++i) {
+        bool match = true;
+        for (std::size_t j = 0; j < needleLen; ++j) {
+            const unsigned char a = static_cast<unsigned char>(haystack[i + j]);
+            const unsigned char b = static_cast<unsigned char>(needle[j]);
+            if (std::tolower(a) != std::tolower(b)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_allocator_oom_error(const std::string& error) noexcept {
+    if (error.empty()) {
+        return false;
+    }
+    return contains_ascii_case_insensitive(error, "out of memory") ||
+        contains_ascii_case_insensitive(error, "memory allocation");
+}
 
 inline std::uint64_t monotonic_time_ms() noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -631,6 +674,29 @@ void trace_scratch_policy_decision(
         + " quarantine_max_bytes=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxBytes))
         + " quarantine_max_entries=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxEntries));
     JTRACE("MSACQ", msg);
+}
+
+void trace_budget_reclaim_retry(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint32_t attempt,
+    std::size_t reclaimedBytes,
+    bool success,
+    const char* reason) {
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=reclaim_retry")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " attempt=" + std::to_string(static_cast<unsigned long long>(attempt))
+        + " reclaimed_bytes=" + std::to_string(static_cast<unsigned long long>(reclaimedBytes))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " success=" + std::to_string(success ? 1 : 0)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSEVICT", msg);
 }
 
 bool try_acquire_scratch_policy_claim(
@@ -1793,17 +1859,70 @@ bool command_ensure_optics_scratch(
     }
     ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
 
-    return JuicerCuda::ensure_optics_scratch(
-        resources,
-        width,
-        height,
-        needBlurredScratch,
-        needAuxScratch,
-        needGrainScratch,
-        needGrainSharedScratch,
-        needGateMask,
-        cudaStreamOpaque,
-        outError);
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    std::uint32_t attempts = 0;
+    while (true) {
+        outError.clear();
+        if (JuicerCuda::ensure_optics_scratch(
+                resources,
+                width,
+                height,
+                needBlurredScratch,
+                needAuxScratch,
+                needGrainScratch,
+                needGrainSharedScratch,
+                needGateMask,
+                cudaStreamOpaque,
+                outError)) {
+            if (attempts > 0) {
+                global_state().budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
+            }
+            return true;
+        }
+
+        if (!is_allocator_oom_error(outError) || attempts >= cfg.reclaimRetryMaxAttempts) {
+            if (is_allocator_oom_error(outError)) {
+                global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+            return false;
+        }
+
+        ++attempts;
+        global_state().budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
+        std::size_t reclaimedBytes = 0;
+        std::string reclaimError;
+        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
+            trace_budget_reclaim_retry(
+                transaction,
+                "command_ensure_optics_scratch",
+                attempts,
+                reclaimedBytes,
+                false,
+                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
+            if (!reclaimError.empty()) {
+                outError += " | reclaim_retry_failed: " + reclaimError;
+            }
+            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+
+        if (reclaimedBytes > 0) {
+            global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
+            global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+        }
+        trace_budget_reclaim_retry(
+            transaction,
+            "command_ensure_optics_scratch",
+            attempts,
+            reclaimedBytes,
+            true,
+            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+
+        if (reclaimedBytes == 0) {
+            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+    }
 }
 
 bool command_ensure_spatial_dir_scratch(
@@ -1836,7 +1955,60 @@ bool command_ensure_spatial_dir_scratch(
     }
     ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
 
-    return JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError);
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    std::uint32_t attempts = 0;
+    while (true) {
+        outError.clear();
+        if (JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError)) {
+            if (attempts > 0) {
+                global_state().budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
+            }
+            return true;
+        }
+
+        if (!is_allocator_oom_error(outError) || attempts >= cfg.reclaimRetryMaxAttempts) {
+            if (is_allocator_oom_error(outError)) {
+                global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            }
+            return false;
+        }
+
+        ++attempts;
+        global_state().budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
+        std::size_t reclaimedBytes = 0;
+        std::string reclaimError;
+        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
+            trace_budget_reclaim_retry(
+                transaction,
+                "command_ensure_spatial_dir_scratch",
+                attempts,
+                reclaimedBytes,
+                false,
+                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
+            if (!reclaimError.empty()) {
+                outError += " | reclaim_retry_failed: " + reclaimError;
+            }
+            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+
+        if (reclaimedBytes > 0) {
+            global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
+            global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+        }
+        trace_budget_reclaim_retry(
+            transaction,
+            "command_ensure_spatial_dir_scratch",
+            attempts,
+            reclaimedBytes,
+            true,
+            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+
+        if (reclaimedBytes == 0) {
+            global_state().budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+    }
 }
 
 bool command_ensure_spatial_dir_kernel(

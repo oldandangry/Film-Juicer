@@ -4023,6 +4023,26 @@ namespace JuicerCuda {
 #endif
     }
 
+    bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError) {
+        reclaimedBytes = 0;
+        outError.clear();
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        const std::size_t beforeBytes = resources.retireBytes;
+        reap_retire_queue_locked(resources);
+        const std::size_t afterBytes = resources.retireBytes;
+        reclaimedBytes = (beforeBytes >= afterBytes) ? (beforeBytes - afterBytes) : 0;
+        return true;
+#endif
+    }
+
     void record_use(Resources& resources, void* cudaStreamOpaque) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;

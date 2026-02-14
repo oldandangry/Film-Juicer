@@ -140,6 +140,103 @@ const char* to_cstr(StaleReason reason) noexcept {
     }
 }
 
+const char* to_cstr(PressureState state) noexcept {
+    switch (state) {
+    case PressureState::Normal:
+        return "Normal";
+    case PressureState::Constrained:
+        return "Constrained";
+    case PressureState::Critical:
+        return "Critical";
+    case PressureState::Emergency:
+        return "Emergency";
+    default:
+        return "Unknown";
+    }
+}
+
+const char* to_cstr(ReservationKind kind) noexcept {
+    switch (kind) {
+    case ReservationKind::TransientNonManager:
+        return "TransientNonManager";
+    case ReservationKind::UploadCopy:
+        return "UploadCopy";
+    default:
+        return "Unknown";
+    }
+}
+
+PressureDecision classify_pressure(const PressureInput& input) noexcept {
+    PressureDecision out{};
+    out.effectiveReserveBytes = input.reserveBytes;
+
+    if (input.softTargetBytes == 0) {
+        out.state = PressureState::Normal;
+        return out;
+    }
+
+    const std::uint64_t pressureBytes =
+        input.managerResidentBytes + input.retirePendingBytes + input.transientNonManagerBytes;
+
+    const std::uint64_t constrainedThreshold = input.softTargetBytes;
+    const std::uint64_t criticalThreshold = input.softTargetBytes + (input.reserveBytes / 2u);
+    const std::uint64_t emergencyThreshold = input.softTargetBytes + input.reserveBytes;
+
+    if (pressureBytes >= emergencyThreshold && emergencyThreshold > 0) {
+        out.state = PressureState::Emergency;
+        out.allowOpportunistic = false;
+        out.requestReclaimPass = true;
+        out.shouldShedNonCritical = true;
+        return out;
+    }
+    if (pressureBytes >= criticalThreshold && criticalThreshold > 0) {
+        out.state = PressureState::Critical;
+        out.allowOpportunistic = false;
+        out.requestReclaimPass = true;
+        out.shouldShedNonCritical = false;
+        return out;
+    }
+    if (pressureBytes >= constrainedThreshold) {
+        out.state = PressureState::Constrained;
+        out.allowOpportunistic = true;
+        out.requestReclaimPass = true;
+        out.shouldShedNonCritical = false;
+        return out;
+    }
+
+    out.state = PressureState::Normal;
+    return out;
+}
+
+ReservationDecision classify_reservation(const ReservationInput& input) noexcept {
+    ReservationDecision out{};
+    out.granted = true;
+    out.reason = "granted";
+
+    if (input.capBytes == 0) {
+        out.granted = true;
+        out.reason = "cap_disabled";
+        return out;
+    }
+
+    const std::uint64_t nextBytes = input.bytesInFlight + input.requestBytes;
+    if (nextBytes <= input.capBytes) {
+        return out;
+    }
+
+    if (input.criticalCurrentFrame) {
+        out.granted = true;
+        out.reason = "critical_last_resort";
+        return out;
+    }
+
+    out.granted = false;
+    out.shouldWait = true;
+    out.waitMs = 1;
+    out.reason = "cap_exceeded";
+    return out;
+}
+
 AcquireDecision default_acquire_decision() noexcept {
     return AcquireDecision{};
 }
