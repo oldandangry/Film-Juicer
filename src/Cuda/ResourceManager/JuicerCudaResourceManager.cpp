@@ -460,6 +460,55 @@ TierCircuitPolicyState& tier_circuit_policy_state() noexcept {
     return state;
 }
 
+struct AdmissionChurnSnapshot {
+    bool enabled = false;
+    bool active = false;
+    std::uint32_t windowMs = 0;
+    std::uint32_t enterOneHitRatePct = 0;
+    std::uint32_t exitOneHitRatePct = 0;
+    std::uint32_t probationHitBonus = 0;
+    std::uint32_t keepHotMs = 0;
+    std::uint32_t readmitCooldownMs = 0;
+    std::uint32_t ghostHitsForReadmit = 0;
+    std::uint32_t oneHitRatePct = 0;
+    std::uint32_t uniqueKeys = 0;
+    std::uint32_t windowSamples = 0;
+};
+
+struct AdmissionChurnContextState {
+    std::uint64_t windowStartMs = 0;
+    std::uint64_t windowSamples = 0;
+    std::uint64_t windowOneHitSamples = 0;
+    std::unordered_map<std::uint64_t, std::uint32_t> windowDigestHits;
+    bool active = false;
+};
+
+struct AdmissionChurnPolicyState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, AdmissionChurnContextState, DeviceContextKeyHash> byContext;
+};
+
+AdmissionChurnPolicyState& admission_churn_policy_state() noexcept {
+    static AdmissionChurnPolicyState state{};
+    return state;
+}
+
+struct OptionalHeuristicTraceContextState {
+    bool keepHotTraced = false;
+    bool burstDebtTraced = false;
+    bool supersededBuilderCancelTraced = false;
+};
+
+struct OptionalHeuristicTraceState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, OptionalHeuristicTraceContextState, DeviceContextKeyHash> byContext;
+};
+
+OptionalHeuristicTraceState& optional_heuristic_trace_state() noexcept {
+    static OptionalHeuristicTraceState state{};
+    return state;
+}
+
 struct ManagerMemorySnapshot {
     std::uint64_t activeBytes = 0;
     std::uint64_t reclaimableBytes = 0;
@@ -3517,10 +3566,193 @@ void trace_copy_compute_guard(
     JTRACE("MSCOPY", msg);
 }
 
+AdmissionChurnSnapshot sample_admission_churn_state(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t entryDigest,
+    std::uint32_t observedProbationHits) {
+    AdmissionChurnSnapshot out{};
+    out.enabled = (cfg.admissionChurnWindowMs > 0);
+    out.windowMs = cfg.admissionChurnWindowMs;
+    out.enterOneHitRatePct = cfg.admissionChurnEnterOneHitRatePct;
+    out.exitOneHitRatePct = cfg.admissionChurnExitOneHitRatePct;
+    out.probationHitBonus = cfg.admissionChurnProbationHitBonus;
+    out.keepHotMs = cfg.keepHotMs;
+    out.readmitCooldownMs = cfg.largeEntryReadmitCooldownMs;
+    out.ghostHitsForReadmit = cfg.largeEntryGhostHitsForReadmit;
+    if (!out.enabled) {
+        return out;
+    }
+
+    const std::uint64_t nowMs = monotonic_time_ms();
+    AdmissionChurnPolicyState& state = admission_churn_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    AdmissionChurnContextState& contextState = state.byContext[transaction.snapshot.deviceContextKey];
+
+    const bool windowReset =
+        (contextState.windowStartMs == 0) ||
+        ((nowMs > contextState.windowStartMs) &&
+         ((nowMs - contextState.windowStartMs) >= static_cast<std::uint64_t>(cfg.admissionChurnWindowMs)));
+    if (windowReset) {
+        if (contextState.active) {
+            contextState.active = false;
+            global_state().admissionChurnExitEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        contextState.windowStartMs = nowMs;
+        contextState.windowSamples = 0;
+        contextState.windowOneHitSamples = 0;
+        contextState.windowDigestHits.clear();
+    }
+
+    contextState.windowSamples += 1;
+    if (observedProbationHits == 0) {
+        contextState.windowOneHitSamples += 1;
+    }
+    std::uint32_t& digestHits = contextState.windowDigestHits[entryDigest];
+    if (digestHits < std::numeric_limits<std::uint32_t>::max()) {
+        ++digestHits;
+    }
+
+    const std::uint64_t oneHitRatePctU64 = (contextState.windowSamples == 0)
+        ? 0
+        : ((contextState.windowOneHitSamples * 100ull) / contextState.windowSamples);
+    const std::uint32_t oneHitRatePct = static_cast<std::uint32_t>(std::min<std::uint64_t>(oneHitRatePctU64, 100ull));
+
+    bool nextActive = contextState.active;
+    if (!nextActive) {
+        nextActive = oneHitRatePct >= cfg.admissionChurnEnterOneHitRatePct;
+    }
+    else {
+        nextActive = oneHitRatePct > cfg.admissionChurnExitOneHitRatePct;
+    }
+    if (!contextState.active && nextActive) {
+        global_state().admissionChurnEnterEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+    else if (contextState.active && !nextActive) {
+        global_state().admissionChurnExitEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+    contextState.active = nextActive;
+
+    out.active = contextState.active;
+    out.oneHitRatePct = oneHitRatePct;
+    out.uniqueKeys = static_cast<std::uint32_t>(std::min<std::size_t>(
+        contextState.windowDigestHits.size(),
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())));
+    out.windowSamples = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        contextState.windowSamples,
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())));
+    global_state().admissionChurnSampleEvents.fetch_add(1, std::memory_order_relaxed);
+    return out;
+}
+
+void trace_keep_hot_surface(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=keep_hot_surface")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " enabled=" + std::to_string(cfg.keepHotMs > 0 ? 1 : 0)
+        + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(cfg.keepHotMs))
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSHOT", msg);
+    global_state().keepHotSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
+void trace_burst_debt_surface(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const bool enabled = (cfg.burstDebtHalfLifeMs > 0) && (cfg.maxBurstDebtPct < 100);
+    const std::string msg = std::string("event=burst_debt_surface")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " enabled=" + std::to_string(enabled ? 1 : 0)
+        + " burst_debt_half_life_ms=" + std::to_string(static_cast<unsigned long long>(cfg.burstDebtHalfLifeMs))
+        + " max_burst_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct))
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSBDE", msg);
+    global_state().burstDebtSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
+void trace_superseded_builder_cancel_surface(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=superseded_builder_cancel_surface")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " enabled=" + std::to_string(cfg.cancelSupersededBuilders ? 1 : 0)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSCNL", msg);
+    global_state().supersededBuilderCancelSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
+void trace_optional_heuristic_surfaces_once(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    const char* reason) {
+    bool traceKeepHot = false;
+    bool traceBurstDebt = false;
+    bool traceCancel = false;
+    {
+        OptionalHeuristicTraceState& traceState = optional_heuristic_trace_state();
+        std::lock_guard<std::mutex> lock(traceState.mutex);
+        OptionalHeuristicTraceContextState& entry =
+            traceState.byContext[transaction.snapshot.deviceContextKey];
+        if (!entry.keepHotTraced) {
+            entry.keepHotTraced = true;
+            traceKeepHot = true;
+        }
+        if (!entry.burstDebtTraced) {
+            entry.burstDebtTraced = true;
+            traceBurstDebt = true;
+        }
+        if (!entry.supersededBuilderCancelTraced) {
+            entry.supersededBuilderCancelTraced = true;
+            traceCancel = true;
+        }
+    }
+    if (traceKeepHot) {
+        trace_keep_hot_surface(transaction, cfg, reason);
+    }
+    if (traceBurstDebt) {
+        trace_burst_debt_surface(transaction, cfg, reason);
+    }
+    if (traceCancel) {
+        trace_superseded_builder_cancel_surface(transaction, cfg, reason);
+    }
+}
+
 void trace_cache_admission_decision(
     const SubmissionTransaction& transaction,
     const char* commandName,
     const CacheAdmissionDecision& decision,
+    const AdmissionChurnSnapshot& churnSnapshot,
     bool criticalCurrentFrame,
     std::uint64_t requestBytes,
     std::uint32_t observedProbationHits,
@@ -3542,6 +3774,18 @@ void trace_cache_admission_decision(
         + " probation_applied=" + std::to_string(decision.probationApplied ? 1 : 0)
         + " probation_hits_required=" + std::to_string(decision.probationHitsRequired)
         + " observed_probation_hits=" + std::to_string(observedProbationHits)
+        + " churn_enabled=" + std::to_string(churnSnapshot.enabled ? 1 : 0)
+        + " churn_active=" + std::to_string(churnSnapshot.active ? 1 : 0)
+        + " churn_window_ms=" + std::to_string(churnSnapshot.windowMs)
+        + " churn_window_samples=" + std::to_string(churnSnapshot.windowSamples)
+        + " churn_one_hit_rate_pct=" + std::to_string(churnSnapshot.oneHitRatePct)
+        + " churn_unique_keys=" + std::to_string(churnSnapshot.uniqueKeys)
+        + " churn_enter_one_hit_rate_pct=" + std::to_string(churnSnapshot.enterOneHitRatePct)
+        + " churn_exit_one_hit_rate_pct=" + std::to_string(churnSnapshot.exitOneHitRatePct)
+        + " churn_probation_hit_bonus=" + std::to_string(churnSnapshot.probationHitBonus)
+        + " keep_hot_ms=" + std::to_string(churnSnapshot.keepHotMs)
+        + " readmit_cooldown_ms=" + std::to_string(churnSnapshot.readmitCooldownMs)
+        + " ghost_hits_for_readmit=" + std::to_string(churnSnapshot.ghostHitsForReadmit)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " max_durable_bytes=" + std::to_string(static_cast<unsigned long long>(decision.maxDurableBytes))
@@ -4750,6 +4994,18 @@ void tier_circuit_retire_context(const DeviceContextKey& key) noexcept {
 
 void pressure_policy_retire_context(const DeviceContextKey& key) noexcept {
     PressurePolicyState& state = pressure_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.byContext.erase(key);
+}
+
+void admission_churn_retire_context(const DeviceContextKey& key) noexcept {
+    AdmissionChurnPolicyState& state = admission_churn_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.byContext.erase(key);
+}
+
+void optional_heuristic_trace_retire_context(const DeviceContextKey& key) noexcept {
+    OptionalHeuristicTraceState& state = optional_heuristic_trace_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.byContext.erase(key);
 }
@@ -6500,11 +6756,16 @@ bool begin_submission(
         outTransaction.committed = false;
         return false;
     }
-    ensure_allocator_backend_mode_initialized(outTransaction, manager_effective_config());
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    ensure_allocator_backend_mode_initialized(outTransaction, cfg);
     maybe_apply_async_mempool_release_policy(
         outTransaction,
         PressureState::Normal,
-        manager_effective_config(),
+        cfg,
+        "begin_submission");
+    trace_optional_heuristic_surfaces_once(
+        outTransaction,
+        cfg,
         "begin_submission");
     telemetry_trace_schema_announcement(
         outTransaction.transactionId,
@@ -6939,6 +7200,8 @@ bool command_retire_context_with_reason(
 #endif
     tier_circuit_retire_context(key);
     pressure_policy_retire_context(key);
+    admission_churn_retire_context(key);
+    optional_heuristic_trace_retire_context(key);
     allocator_backend_retire_context(key);
 
     RegistryHandle handle{};
@@ -8454,10 +8717,16 @@ bool command_launch_base_pipeline_graph(
         admissionInput.observedProbationHits = observedProbationHits;
         admissionInput.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
         const CacheAdmissionDecision admissionDecision = classify_cache_admission(admissionInput);
+        const AdmissionChurnSnapshot churnSnapshot = sample_admission_churn_state(
+            transaction,
+            cfg,
+            keyDigest,
+            observedProbationHits);
         trace_cache_admission_decision(
             transaction,
             "command_launch_base_pipeline_graph",
             admissionDecision,
+            churnSnapshot,
             kGraphAdmissionCriticalCurrentFrame,
             requestBytes,
             observedProbationHits,

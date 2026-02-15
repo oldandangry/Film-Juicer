@@ -70,6 +70,22 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMinLargeEntryProbationThresholdBytes = 16ull * kMiB;
     constexpr std::uint32_t kMinLargeEntryProbationHitsRequired = 1u;
     constexpr std::uint32_t kMaxLargeEntryProbationHitsRequired = 4u;
+    constexpr std::uint32_t kMinKeepHotMs = 0u;
+    constexpr std::uint32_t kMaxKeepHotMs = 5000u;
+    constexpr std::uint32_t kMinAdmissionChurnWindowMs = 0u;
+    constexpr std::uint32_t kMaxAdmissionChurnWindowMs = 60000u;
+    constexpr std::uint32_t kMinAdmissionChurnOneHitRatePct = 1u;
+    constexpr std::uint32_t kMaxAdmissionChurnOneHitRatePct = 100u;
+    constexpr std::uint32_t kMinAdmissionChurnProbationHitBonus = 0u;
+    constexpr std::uint32_t kMaxAdmissionChurnProbationHitBonus = 4u;
+    constexpr std::uint32_t kMinLargeEntryReadmitCooldownMs = 0u;
+    constexpr std::uint32_t kMaxLargeEntryReadmitCooldownMs = 60000u;
+    constexpr std::uint32_t kMinLargeEntryGhostHitsForReadmit = 0u;
+    constexpr std::uint32_t kMaxLargeEntryGhostHitsForReadmit = 8u;
+    constexpr std::uint32_t kMinBurstDebtHalfLifeMs = 0u;
+    constexpr std::uint32_t kMaxBurstDebtHalfLifeMs = 60000u;
+    constexpr std::uint32_t kMinMaxBurstDebtPct = 1u;
+    constexpr std::uint32_t kMaxMaxBurstDebtPct = 100u;
     constexpr std::uint64_t kMinHostAssetCacheMaxBytes = 64ull * kMiB;
     constexpr std::uint64_t kMaxHostAssetCacheMaxBytes = 1024ull * kMiB;
     constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
@@ -272,6 +288,43 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.largeEntryProbationHitsRequired,
         kMinLargeEntryProbationHitsRequired,
         kMaxLargeEntryProbationHitsRequired);
+    out.keepHotMs = std::clamp(
+        raw.keepHotMs,
+        kMinKeepHotMs,
+        kMaxKeepHotMs);
+    out.admissionChurnWindowMs = std::clamp(
+        raw.admissionChurnWindowMs,
+        kMinAdmissionChurnWindowMs,
+        kMaxAdmissionChurnWindowMs);
+    out.admissionChurnEnterOneHitRatePct = std::clamp(
+        raw.admissionChurnEnterOneHitRatePct,
+        kMinAdmissionChurnOneHitRatePct,
+        kMaxAdmissionChurnOneHitRatePct);
+    out.admissionChurnExitOneHitRatePct = std::clamp(
+        raw.admissionChurnExitOneHitRatePct,
+        kMinAdmissionChurnOneHitRatePct,
+        out.admissionChurnEnterOneHitRatePct);
+    out.admissionChurnProbationHitBonus = std::clamp(
+        raw.admissionChurnProbationHitBonus,
+        kMinAdmissionChurnProbationHitBonus,
+        kMaxAdmissionChurnProbationHitBonus);
+    out.largeEntryReadmitCooldownMs = std::clamp(
+        raw.largeEntryReadmitCooldownMs,
+        kMinLargeEntryReadmitCooldownMs,
+        kMaxLargeEntryReadmitCooldownMs);
+    out.largeEntryGhostHitsForReadmit = std::clamp(
+        raw.largeEntryGhostHitsForReadmit,
+        kMinLargeEntryGhostHitsForReadmit,
+        kMaxLargeEntryGhostHitsForReadmit);
+    out.burstDebtHalfLifeMs = std::clamp(
+        raw.burstDebtHalfLifeMs,
+        kMinBurstDebtHalfLifeMs,
+        kMaxBurstDebtHalfLifeMs);
+    out.maxBurstDebtPct = std::clamp(
+        raw.maxBurstDebtPct,
+        kMinMaxBurstDebtPct,
+        kMaxMaxBurstDebtPct);
+    out.cancelSupersededBuilders = raw.cancelSupersededBuilders;
 
     std::uint64_t immutableBp = std::min<std::uint64_t>(raw.tierTargetImmutableBp, kBasisPointsDenom);
     std::uint64_t lutBp = std::min<std::uint64_t>(raw.tierTargetLutBp, kBasisPointsDenom);

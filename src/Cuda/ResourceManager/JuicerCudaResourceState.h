@@ -136,6 +136,12 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> cacheAdmissionProbationDeferredEvents{ 0 };
     std::atomic<std::uint64_t> cacheAdmissionProbationAdmitEvents{ 0 };
     std::atomic<std::uint64_t> cacheAdmissionCriticalOverrideEvents{ 0 };
+    std::atomic<std::uint64_t> admissionChurnSampleEvents{ 0 };
+    std::atomic<std::uint64_t> admissionChurnEnterEvents{ 0 };
+    std::atomic<std::uint64_t> admissionChurnExitEvents{ 0 };
+    std::atomic<std::uint64_t> keepHotSurfaceTraceEvents{ 0 };
+    std::atomic<std::uint64_t> burstDebtSurfaceTraceEvents{ 0 };
+    std::atomic<std::uint64_t> supersededBuilderCancelSurfaceTraceEvents{ 0 };
     std::atomic<std::uint64_t> graphNonResidentServeEvents{ 0 };
     std::atomic<std::uint64_t> graphLargeEntryDecayEvents{ 0 };
     std::atomic<std::uint64_t> graphLargeEntryTrimEvents{ 0 };
