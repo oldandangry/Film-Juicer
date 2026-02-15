@@ -177,6 +177,43 @@ enum class TierCircuitState : std::uint8_t {
     HalfOpen = 2
 };
 
+enum class AllocatorBackendPreference : std::uint8_t {
+    Legacy = 0,
+    AsyncPool = 1,
+    Slab = 2,
+    Auto = 3
+};
+
+enum class AllocatorBackendMode : std::uint8_t {
+    Legacy = 0,
+    AsyncPool = 1,
+    Slab = 2
+};
+
+struct AllocatorBackendContextEntry {
+    bool valid = false;
+    bool traced = false;
+    AllocatorBackendPreference requested = AllocatorBackendPreference::Auto;
+    AllocatorBackendMode candidate = AllocatorBackendMode::Legacy;
+    AllocatorBackendMode active = AllocatorBackendMode::Legacy;
+    bool asyncPoolSupported = false;
+    bool slabSupported = false;
+    bool fallbackCapability = false;
+    bool fallbackScaffold = false;
+    const char* candidateReason = "unknown";
+    const char* activeReason = "unknown";
+};
+
+struct AllocatorBackendState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, AllocatorBackendContextEntry, DeviceContextKeyHash> byContext;
+};
+
+AllocatorBackendState& allocator_backend_state() noexcept {
+    static AllocatorBackendState state{};
+    return state;
+}
+
 const char* to_cstr(ScratchWorkClass workClass) noexcept {
     switch (workClass) {
     case ScratchWorkClass::Optics:
@@ -235,6 +272,34 @@ const char* to_cstr(TierCircuitState state) noexcept {
         return "open";
     case TierCircuitState::HalfOpen:
         return "half_open";
+    default:
+        return "unknown";
+    }
+}
+
+const char* to_cstr(AllocatorBackendPreference value) noexcept {
+    switch (value) {
+    case AllocatorBackendPreference::Legacy:
+        return "legacy";
+    case AllocatorBackendPreference::AsyncPool:
+        return "async_pool";
+    case AllocatorBackendPreference::Slab:
+        return "slab";
+    case AllocatorBackendPreference::Auto:
+        return "auto";
+    default:
+        return "unknown";
+    }
+}
+
+const char* to_cstr(AllocatorBackendMode value) noexcept {
+    switch (value) {
+    case AllocatorBackendMode::Legacy:
+        return "legacy";
+    case AllocatorBackendMode::AsyncPool:
+        return "async_pool";
+    case AllocatorBackendMode::Slab:
+        return "slab";
     default:
         return "unknown";
     }
@@ -562,6 +627,170 @@ constexpr std::uint64_t kUploadFairnessTickMs = 4;
 const ResourceManagerConfigEffective& manager_effective_config() noexcept {
     static const ResourceManagerConfigEffective cfg = sanitize_config(ResourceManagerConfigRaw{});
     return cfg;
+}
+
+AllocatorBackendPreference sanitize_allocator_backend_preference(std::uint32_t value) noexcept {
+    switch (value) {
+    case 0u:
+        return AllocatorBackendPreference::Legacy;
+    case 1u:
+        return AllocatorBackendPreference::AsyncPool;
+    case 2u:
+        return AllocatorBackendPreference::Slab;
+    case 3u:
+        return AllocatorBackendPreference::Auto;
+    default:
+        return AllocatorBackendPreference::Auto;
+    }
+}
+
+bool probe_async_pool_support_for_device(int deviceId) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+    if (deviceId < 0) {
+        return false;
+    }
+    int memoryPoolsSupported = 0;
+    const cudaError_t err = cudaDeviceGetAttribute(
+        &memoryPoolsSupported,
+        cudaDevAttrMemoryPoolsSupported,
+        deviceId);
+    return err == cudaSuccess && memoryPoolsSupported != 0;
+#else
+    (void)deviceId;
+    return false;
+#endif
+}
+
+AllocatorBackendContextEntry compute_allocator_backend_context_entry(
+    const DeviceContextKey& key,
+    const ResourceManagerConfigEffective& cfg) noexcept {
+    AllocatorBackendContextEntry out{};
+    out.valid = true;
+    out.requested = sanitize_allocator_backend_preference(cfg.allocatorBackendPreference);
+    out.asyncPoolSupported = probe_async_pool_support_for_device(key.deviceId);
+    out.slabSupported = false;
+    out.candidate = AllocatorBackendMode::Legacy;
+    out.active = AllocatorBackendMode::Legacy;
+    out.fallbackCapability = false;
+    out.fallbackScaffold = false;
+    out.candidateReason = "legacy_default";
+    out.activeReason = "legacy_active";
+
+    switch (out.requested) {
+    case AllocatorBackendPreference::Legacy:
+        out.candidate = AllocatorBackendMode::Legacy;
+        out.candidateReason = "requested_legacy";
+        break;
+    case AllocatorBackendPreference::AsyncPool:
+        if (out.asyncPoolSupported) {
+            out.candidate = AllocatorBackendMode::AsyncPool;
+            out.candidateReason = "requested_async_supported";
+        }
+        else {
+            out.candidate = AllocatorBackendMode::Legacy;
+            out.fallbackCapability = true;
+            out.candidateReason = "requested_async_unsupported";
+        }
+        break;
+    case AllocatorBackendPreference::Slab:
+        if (out.slabSupported) {
+            out.candidate = AllocatorBackendMode::Slab;
+            out.candidateReason = "requested_slab_supported";
+        }
+        else {
+            out.candidate = AllocatorBackendMode::Legacy;
+            out.fallbackCapability = true;
+            out.candidateReason = "requested_slab_unsupported";
+        }
+        break;
+    case AllocatorBackendPreference::Auto:
+        if (out.asyncPoolSupported) {
+            out.candidate = AllocatorBackendMode::AsyncPool;
+            out.candidateReason = "auto_select_async";
+        }
+        else if (out.slabSupported) {
+            out.candidate = AllocatorBackendMode::Slab;
+            out.candidateReason = "auto_select_slab";
+        }
+        else {
+            out.candidate = AllocatorBackendMode::Legacy;
+            out.candidateReason = "auto_no_optional_supported";
+        }
+        break;
+    default:
+        out.candidate = AllocatorBackendMode::Legacy;
+        out.candidateReason = "unknown_preference_fallback";
+        break;
+    }
+
+    // 4X cut-1 is scaffold-only: capability-gated selection is computed and traced,
+    // while active execution remains legacy until backend alloc/free paths are wired.
+    if (out.candidate != AllocatorBackendMode::Legacy) {
+        out.fallbackScaffold = true;
+        out.active = AllocatorBackendMode::Legacy;
+        out.activeReason = "cut1_scaffold_legacy_execution";
+    }
+    else if (out.fallbackCapability) {
+        out.activeReason = "capability_fallback_legacy";
+    }
+    else {
+        out.activeReason = out.candidateReason;
+    }
+    return out;
+}
+
+void trace_allocator_backend_mode_once(
+    const SubmissionTransaction& transaction,
+    const AllocatorBackendContextEntry& entry) {
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=backend_mode")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " requested=" + to_cstr(entry.requested)
+        + " candidate=" + to_cstr(entry.candidate)
+        + " active=" + to_cstr(entry.active)
+        + " async_pool_supported=" + std::to_string(entry.asyncPoolSupported ? 1 : 0)
+        + " slab_supported=" + std::to_string(entry.slabSupported ? 1 : 0)
+        + " fallback_capability=" + std::to_string(entry.fallbackCapability ? 1 : 0)
+        + " fallback_scaffold=" + std::to_string(entry.fallbackScaffold ? 1 : 0)
+        + " candidate_reason=" + (entry.candidateReason ? entry.candidateReason : "unknown")
+        + " active_reason=" + (entry.activeReason ? entry.activeReason : "unknown");
+    JTRACE("MSALC", msg);
+}
+
+void ensure_allocator_backend_mode_initialized(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg) {
+    AllocatorBackendContextEntry traceEntry{};
+    bool emitTrace = false;
+    {
+        AllocatorBackendState& state = allocator_backend_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        AllocatorBackendContextEntry& entry = state.byContext[transaction.snapshot.deviceContextKey];
+        if (!entry.valid) {
+            entry = compute_allocator_backend_context_entry(
+                transaction.snapshot.deviceContextKey,
+                cfg);
+        }
+        if (!entry.traced) {
+            entry.traced = true;
+            traceEntry = entry;
+            emitTrace = true;
+        }
+    }
+    if (emitTrace) {
+        trace_allocator_backend_mode_once(transaction, traceEntry);
+    }
+}
+
+void allocator_backend_retire_context(const DeviceContextKey& key) noexcept {
+    AllocatorBackendState& state = allocator_backend_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.byContext.erase(key);
 }
 
 constexpr std::size_t tier_circuit_index(ResourceTier tier) noexcept {
@@ -6088,6 +6317,7 @@ bool begin_submission(
         outTransaction.committed = false;
         return false;
     }
+    ensure_allocator_backend_mode_initialized(outTransaction, manager_effective_config());
     telemetry_trace_schema_announcement(
         outTransaction.transactionId,
         outTransaction.snapshot.snapshotId,
@@ -6521,6 +6751,7 @@ bool command_retire_context_with_reason(
 #endif
     tier_circuit_retire_context(key);
     pressure_policy_retire_context(key);
+    allocator_backend_retire_context(key);
 
     RegistryHandle handle{};
     if (!registry_get(key, handle) || handle.value == 0) {

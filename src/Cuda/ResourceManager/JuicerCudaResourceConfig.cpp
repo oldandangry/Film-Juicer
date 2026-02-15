@@ -73,6 +73,8 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMinHostAssetCacheMaxBytes = 64ull * kMiB;
     constexpr std::uint64_t kMaxHostAssetCacheMaxBytes = 1024ull * kMiB;
     constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
+    constexpr std::uint32_t kMinAllocatorBackendPreference = 0u;
+    constexpr std::uint32_t kMaxAllocatorBackendPreference = 3u;
     constexpr std::uint32_t kMinPrivateLutFallbackPerMediumCap = 0u;
     constexpr std::uint32_t kMaxPrivateLutFallbackPerMediumCap = 1u;
     constexpr std::uint32_t kMinPrivateLutFallbackPerInstanceCap = 0u;
@@ -174,6 +176,10 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.hostAssetTrimBatchBytes,
         kMinHostAssetTrimBatchBytes,
         out.hostAssetCacheMaxBytes);
+    out.allocatorBackendPreference = std::clamp(
+        raw.allocatorBackendPreference,
+        kMinAllocatorBackendPreference,
+        kMaxAllocatorBackendPreference);
     out.privateLutFallbackPerMediumCap = std::clamp(
         raw.privateLutFallbackPerMediumCap,
         kMinPrivateLutFallbackPerMediumCap,

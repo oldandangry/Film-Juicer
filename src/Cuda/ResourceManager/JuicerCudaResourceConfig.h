@@ -40,6 +40,7 @@ struct ResourceManagerConfigRaw {
     std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
     std::uint32_t hostAssetIdleTrimMs = 5000;
     std::uint64_t hostAssetTrimBatchBytes = 64ull * 1024ull * 1024ull;
+    std::uint32_t allocatorBackendPreference = 3;
     std::uint32_t privateLutFallbackPerMediumCap = 1;
     std::uint32_t privateLutFallbackPerInstanceCap = 2;
     std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
@@ -96,6 +97,7 @@ struct ResourceManagerConfigEffective {
     std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
     std::uint32_t hostAssetIdleTrimMs = 5000;
     std::uint64_t hostAssetTrimBatchBytes = 64ull * 1024ull * 1024ull;
+    std::uint32_t allocatorBackendPreference = 3;
     std::uint32_t privateLutFallbackPerMediumCap = 1;
     std::uint32_t privateLutFallbackPerInstanceCap = 2;
     std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
