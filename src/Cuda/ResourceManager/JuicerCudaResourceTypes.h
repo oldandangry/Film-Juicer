@@ -60,6 +60,19 @@ enum class ResourceTier : std::uint8_t {
     Graph = 3
 };
 
+enum class AllocatorBackendPreference : std::uint8_t {
+    Legacy = 0,
+    AsyncPool = 1,
+    Slab = 2,
+    Auto = 3
+};
+
+enum class AllocatorBackendMode : std::uint8_t {
+    Legacy = 0,
+    AsyncPool = 1,
+    Slab = 2
+};
+
 struct ResourceKindContractEntry {
     ResourceKind kind = ResourceKind::UploadCore;
     ResourceTier tier = ResourceTier::Immutable;

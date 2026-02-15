@@ -13,6 +13,7 @@
 #include <limits>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "Cuda/JuicerCudaAutoExposure.h"
@@ -53,7 +54,8 @@ namespace JuicerCuda {
         enum class RetireKind : int {
             DeviceFree = 0,
             HostPinnedFree = 1,
-            EventDestroy = 2
+            EventDestroy = 2,
+            DeviceFreeAsync = 3
         };
 
         struct RetireEntry {
@@ -67,6 +69,8 @@ namespace JuicerCuda {
         std::vector<RetireEntry> retireQueue;
         std::vector<void*> retireEventPoolOpaque; // cudaEvent_t pool (cudaEventDisableTiming)
         std::size_t retireBytes = 0;
+        // Tracks pointers allocated with cudaMallocAsync so free/retire uses cudaFreeAsync.
+        std::unordered_set<void*> asyncDeviceAllocPointers;
 
         DeviceCurve densB;
         DeviceCurve densG;

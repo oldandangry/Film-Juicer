@@ -177,19 +177,6 @@ enum class TierCircuitState : std::uint8_t {
     HalfOpen = 2
 };
 
-enum class AllocatorBackendPreference : std::uint8_t {
-    Legacy = 0,
-    AsyncPool = 1,
-    Slab = 2,
-    Auto = 3
-};
-
-enum class AllocatorBackendMode : std::uint8_t {
-    Legacy = 0,
-    AsyncPool = 1,
-    Slab = 2
-};
-
 struct AllocatorBackendContextEntry {
     bool valid = false;
     bool traced = false;
@@ -723,12 +710,15 @@ AllocatorBackendContextEntry compute_allocator_backend_context_entry(
         break;
     }
 
-    // 4X cut-1 is scaffold-only: capability-gated selection is computed and traced,
-    // while active execution remains legacy until backend alloc/free paths are wired.
-    if (out.candidate != AllocatorBackendMode::Legacy) {
+    if (out.candidate == AllocatorBackendMode::AsyncPool) {
+        out.active = AllocatorBackendMode::AsyncPool;
+        out.activeReason = "active_async_pool";
+    }
+    else if (out.candidate == AllocatorBackendMode::Slab) {
+        // Slab backend is not wired yet; retain deterministic legacy fallback.
         out.fallbackScaffold = true;
         out.active = AllocatorBackendMode::Legacy;
-        out.activeReason = "cut1_scaffold_legacy_execution";
+        out.activeReason = "slab_scaffold_fallback_legacy";
     }
     else if (out.fallbackCapability) {
         out.activeReason = "capability_fallback_legacy";
@@ -6247,6 +6237,20 @@ bool run_fragmentation_recovery_once(
 
 bool query_submission_active(const SubmissionTransaction& transaction) noexcept {
     return transaction.active;
+}
+
+AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) noexcept {
+    if (key.deviceId < 0) {
+        return AllocatorBackendMode::Legacy;
+    }
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    AllocatorBackendState& state = allocator_backend_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    AllocatorBackendContextEntry& entry = state.byContext[key];
+    if (!entry.valid) {
+        entry = compute_allocator_backend_context_entry(key, cfg);
+    }
+    return entry.active;
 }
 
 bool begin_submission(

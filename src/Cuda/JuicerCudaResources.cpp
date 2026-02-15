@@ -578,6 +578,179 @@ namespace JuicerCuda {
         return it->second.id == kernel.sharedKernelId &&
             it->second.weights == kernel.weights;
     }
+
+    static const char* to_cstr(ResourceManager::AllocatorBackendMode mode) noexcept {
+        switch (mode) {
+        case ResourceManager::AllocatorBackendMode::Legacy:
+            return "legacy";
+        case ResourceManager::AllocatorBackendMode::AsyncPool:
+            return "async_pool";
+        case ResourceManager::AllocatorBackendMode::Slab:
+            return "slab";
+        default:
+            return "unknown";
+        }
+    }
+
+    static ResourceManager::AllocatorBackendMode scratch_allocator_backend_mode_locked(
+        const Resources& resources) noexcept {
+        ResourceManager::DeviceContextKey key{};
+        key.deviceId = resources.deviceId;
+        key.contextOpaque = resources.ownerContextOpaque;
+        return ResourceManager::query_allocator_backend_mode(key);
+    }
+
+    static bool is_async_device_ptr_tracked_locked(const Resources& resources, const void* ptr) noexcept {
+        return ptr &&
+            resources.asyncDeviceAllocPointers.find(const_cast<void*>(ptr)) !=
+                resources.asyncDeviceAllocPointers.end();
+    }
+
+    static void track_async_device_ptr_locked(Resources& resources, void* ptr, bool asyncAllocated) noexcept {
+        if (!ptr) {
+            return;
+        }
+        if (asyncAllocated) {
+            resources.asyncDeviceAllocPointers.insert(ptr);
+        }
+        else {
+            resources.asyncDeviceAllocPointers.erase(ptr);
+        }
+    }
+
+    static void untrack_async_device_ptr_locked(Resources& resources, void* ptr) noexcept {
+        if (!ptr) {
+            return;
+        }
+        resources.asyncDeviceAllocPointers.erase(ptr);
+    }
+
+    static cudaError_t device_free_async_compat(void* ptr, void* cudaStreamOpaque) noexcept {
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        return cudaFreeAsync(ptr, stream);
+#else
+        (void)cudaStreamOpaque;
+        return cudaErrorNotSupported;
+#endif
+    }
+
+    static void free_tracked_device_ptr_locked(
+        Resources& resources,
+        void*& ptr,
+        void* cudaStreamOpaque) noexcept {
+        if (!ptr) {
+            return;
+        }
+        const bool asyncTracked = is_async_device_ptr_tracked_locked(resources, ptr);
+        if (asyncTracked) {
+            const cudaError_t asyncErr = device_free_async_compat(ptr, cudaStreamOpaque);
+            if (asyncErr != cudaSuccess) {
+                (void)cudaFree(ptr);
+            }
+            else if (!cudaStreamOpaque) {
+                (void)cudaStreamSynchronize(nullptr);
+            }
+        }
+        else {
+            (void)cudaFree(ptr);
+        }
+        untrack_async_device_ptr_locked(resources, ptr);
+        ptr = nullptr;
+    }
+
+    template <typename T>
+    static void free_tracked_device_ptr_locked(
+        Resources& resources,
+        T*& ptr,
+        void* cudaStreamOpaque) noexcept {
+        void* raw = reinterpret_cast<void*>(ptr);
+        free_tracked_device_ptr_locked(resources, raw, cudaStreamOpaque);
+        ptr = reinterpret_cast<T*>(raw);
+    }
+
+    static bool allocate_scratch_device_ptr_locked(
+        Resources& resources,
+        void*& outPtr,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+        outPtr = nullptr;
+        if (bytes == 0) {
+            outError = std::string(label ? label : "scratch") + " bytes invalid";
+            return false;
+        }
+
+        const ResourceManager::AllocatorBackendMode backendMode =
+            scratch_allocator_backend_mode_locked(resources);
+        const bool preferAsync = (backendMode == ResourceManager::AllocatorBackendMode::AsyncPool);
+
+        cudaError_t asyncErr = cudaSuccess;
+        if (preferAsync) {
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+            asyncErr = cudaMallocAsync(reinterpret_cast<void**>(&outPtr), bytes, stream);
+            if (asyncErr == cudaSuccess && outPtr) {
+                track_async_device_ptr_locked(resources, outPtr, true);
+                return true;
+            }
+            outPtr = nullptr;
+#else
+            asyncErr = cudaErrorNotSupported;
+#endif
+        }
+
+        const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&outPtr), bytes);
+        if (allocErr == cudaSuccess && outPtr) {
+            track_async_device_ptr_locked(resources, outPtr, false);
+            if (preferAsync && JTRACE_ENABLED(2)) {
+                std::ostringstream oss;
+                oss << "event=alloc_fallback"
+                    << " path=scratch"
+                    << " label=" << (label ? label : "scratch")
+                    << " backend_requested=" << to_cstr(backendMode)
+                    << " async_error=" << (cudaGetErrorString(asyncErr) ? cudaGetErrorString(asyncErr) : "(unknown)");
+                JTRACE("MSALC", oss.str());
+            }
+            return true;
+        }
+
+        if (preferAsync) {
+            outError = std::string("scratch alloc failed (async+legacy) [")
+                + (label ? label : "scratch")
+                + "]: async="
+                + (cudaGetErrorString(asyncErr) ? cudaGetErrorString(asyncErr) : "(unknown)")
+                + ", legacy="
+                + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+        }
+        else {
+            outError = std::string("cudaMalloc(") + (label ? label : "scratch") + ") failed: "
+                + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+        }
+        outPtr = nullptr;
+        return false;
+    }
+
+    template <typename T>
+    static bool allocate_scratch_device_ptr_locked(
+        Resources& resources,
+        T*& outPtr,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+        void* raw = nullptr;
+        const bool ok = allocate_scratch_device_ptr_locked(
+            resources,
+            raw,
+            bytes,
+            cudaStreamOpaque,
+            label,
+            outError);
+        outPtr = reinterpret_cast<T*>(raw);
+        return ok;
+    }
 #endif
 
     static void reap_retire_queue_locked(Resources& resources) noexcept {
@@ -589,6 +762,16 @@ namespace JuicerCuda {
                 // No fence: best-effort free immediately.
                 if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
                     cudaFree(e.ptr);
+                }
+                else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+                    const cudaError_t asyncErr = cudaFreeAsync(e.ptr, nullptr);
+                    if (asyncErr != cudaSuccess) {
+                        cudaFree(e.ptr);
+                    }
+#else
+                    cudaFree(e.ptr);
+#endif
                 }
                 else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
                     cudaFreeHost(e.ptr);
@@ -608,6 +791,16 @@ namespace JuicerCuda {
             if (q == cudaSuccess) {
                 if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
                     cudaFree(e.ptr);
+                }
+                else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+                    const cudaError_t asyncErr = cudaFreeAsync(e.ptr, nullptr);
+                    if (asyncErr != cudaSuccess) {
+                        cudaFree(e.ptr);
+                    }
+#else
+                    cudaFree(e.ptr);
+#endif
                 }
                 else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
                     cudaFreeHost(e.ptr);
@@ -647,6 +840,19 @@ namespace JuicerCuda {
             }
             if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
                 cudaFree(e.ptr);
+            }
+            else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+                const cudaError_t asyncErr = cudaFreeAsync(e.ptr, nullptr);
+                if (asyncErr == cudaSuccess) {
+                    (void)cudaStreamSynchronize(nullptr);
+                }
+                else {
+                    cudaFree(e.ptr);
+                }
+#else
+                cudaFree(e.ptr);
+#endif
             }
             else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
                 cudaFreeHost(e.ptr);
@@ -747,6 +953,15 @@ namespace JuicerCuda {
             return true;
         }
 
+        bool asyncTracked = false;
+        Resources::RetireKind effectiveKind = kind;
+        if (kind == Resources::RetireKind::DeviceFree) {
+            asyncTracked = is_async_device_ptr_tracked_locked(resources, ptr);
+            if (asyncTracked) {
+                effectiveKind = Resources::RetireKind::DeviceFreeAsync;
+            }
+        }
+
         reap_retire_queue_locked(resources);
 
         void* retireEventOpaque = nullptr;
@@ -769,10 +984,13 @@ namespace JuicerCuda {
         Resources::RetireEntry e{};
         e.ptr = ptr;
         e.bytes = bytes;
-        e.kind = kind;
+        e.kind = effectiveKind;
         e.doneEventOpaque = retireEventOpaque;
         resources.retireQueue.push_back(e);
         resources.retireBytes += bytes;
+        if (effectiveKind == Resources::RetireKind::DeviceFreeAsync && asyncTracked) {
+            untrack_async_device_ptr_locked(resources, ptr);
+        }
         return true;
 #endif
     }
@@ -2359,18 +2577,18 @@ namespace JuicerCuda {
         k.sharedKernelId = 0;
     }
 
-    static void free_optics_scratch(Resources::DeviceOpticsScratch& s) noexcept {
+    static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque = nullptr) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (s.rgbR) { cudaFree(s.rgbR); s.rgbR = nullptr; }
-        if (s.rgbG) { cudaFree(s.rgbG); s.rgbG = nullptr; }
-        if (s.rgbB) { cudaFree(s.rgbB); s.rgbB = nullptr; }
-        if (s.blurred) { cudaFree(s.blurred); s.blurred = nullptr; }
-        if (s.aux) { cudaFree(s.aux); s.aux = nullptr; }
-        if (s.grainTmp) { cudaFree(s.grainTmp); s.grainTmp = nullptr; }
-        if (s.grainTmpShared) { cudaFree(s.grainTmpShared); s.grainTmpShared = nullptr; }
-        if (s.grainTmpMid) { cudaFree(s.grainTmpMid); s.grainTmpMid = nullptr; }
-        if (s.grainTmpCoarse) { cudaFree(s.grainTmpCoarse); s.grainTmpCoarse = nullptr; }
-        if (s.gateMask) { cudaFree(s.gateMask); s.gateMask = nullptr; }
+        free_tracked_device_ptr_locked(resources, s.rgbR, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.rgbG, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.rgbB, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.blurred, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.aux, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.grainTmp, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.grainTmpShared, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.grainTmpMid, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.grainTmpCoarse, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.gateMask, cudaStreamOpaque);
 #endif
         s.tmp = nullptr;
         s.width = 0;
@@ -2445,11 +2663,11 @@ namespace JuicerCuda {
 #endif
     }
 
-    static void free_spatial_dir_scratch(Resources::DeviceSpatialDirScratch& s) noexcept {
+    static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque = nullptr) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (s.corrY) { cudaFree(s.corrY); s.corrY = nullptr; }
-        if (s.corrM) { cudaFree(s.corrM); s.corrM = nullptr; }
-        if (s.corrC) { cudaFree(s.corrC); s.corrC = nullptr; }
+        free_tracked_device_ptr_locked(resources, s.corrY, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.corrM, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.corrC, cudaStreamOpaque);
 #endif
         s.tmp = nullptr;
         s.width = 0;
@@ -2488,10 +2706,10 @@ namespace JuicerCuda {
 
     static void free_shared_tmp_plane(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (resources.sharedTmpPlane) {
-            cudaFree(resources.sharedTmpPlane);
-            resources.sharedTmpPlane = nullptr;
-        }
+        free_tracked_device_ptr_locked(
+            resources,
+            resources.sharedTmpPlane,
+            nullptr);
 #endif
         resources.sharedTmpWidth = 0;
         resources.sharedTmpHeight = 0;
@@ -2861,9 +3079,9 @@ namespace JuicerCuda {
             free_gaussian_kernel(halationKernel[i]);
             free_gaussian_kernel(halationScatterKernel[i]);
         }
-        free_optics_scratch(scannerScratch);
+        free_optics_scratch(*this, scannerScratch);
         free_gaussian_kernel(spatialDirKernel);
-        free_spatial_dir_scratch(spatialDirScratch);
+        free_spatial_dir_scratch(*this, spatialDirScratch);
         free_shared_tmp_plane(*this);
         free_stbn(*this);
         free_wang(*this);
@@ -2873,6 +3091,7 @@ namespace JuicerCuda {
         free_mallett_basis(*this);
         free_scan_error_flag(*this);
         free_auto_exposure(*this);
+        asyncDeviceAllocPointers.clear();
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (lastUseEventOpaque) {
             cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
@@ -4084,10 +4303,13 @@ namespace JuicerCuda {
 
         const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
         const size_t bytes = n * sizeof(float);
-        const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.sharedTmpPlane), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(") + (label ? label : "shared tmp") + ") failed: " +
-                (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!allocate_scratch_device_ptr_locked(
+                resources,
+                resources.sharedTmpPlane,
+                bytes,
+                cudaStreamOpaque,
+                label ? label : "shared tmp",
+                outError)) {
             resources.sharedTmpPlane = nullptr;
             return false;
         }
@@ -4134,27 +4356,39 @@ namespace JuicerCuda {
                 }
             }
             else {
-                free_optics_scratch(resources.scannerScratch);
+                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
             }
 
             const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
             const size_t bytes = n * sizeof(float);
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.rgbR), bytes);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(scannerScratch.rgbR) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                free_optics_scratch(resources.scannerScratch);
+            if (!allocate_scratch_device_ptr_locked(
+                    resources,
+                    resources.scannerScratch.rgbR,
+                    bytes,
+                    cudaStreamOpaque,
+                    "scannerScratch.rgbR",
+                    outError)) {
+                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
                 return false;
             }
-            err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.rgbG), bytes);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(scannerScratch.rgbG) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                free_optics_scratch(resources.scannerScratch);
+            if (!allocate_scratch_device_ptr_locked(
+                    resources,
+                    resources.scannerScratch.rgbG,
+                    bytes,
+                    cudaStreamOpaque,
+                    "scannerScratch.rgbG",
+                    outError)) {
+                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
                 return false;
             }
-            err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.rgbB), bytes);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(scannerScratch.rgbB) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                free_optics_scratch(resources.scannerScratch);
+            if (!allocate_scratch_device_ptr_locked(
+                    resources,
+                    resources.scannerScratch.rgbB,
+                    bytes,
+                    cudaStreamOpaque,
+                    "scannerScratch.rgbB",
+                    outError)) {
+                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
                 return false;
             }
 
@@ -4163,7 +4397,7 @@ namespace JuicerCuda {
         }
 
         if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
-            free_optics_scratch(resources.scannerScratch);
+            free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
             return false;
         }
         resources.scannerScratch.tmp = resources.sharedTmpPlane;
@@ -4172,9 +4406,13 @@ namespace JuicerCuda {
             if (!resources.scannerScratch.blurred) {
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
-                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.blurred), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(scannerScratch.blurred) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.blurred,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.blurred",
+                        outError)) {
                     return false;
                 }
             }
@@ -4194,9 +4432,13 @@ namespace JuicerCuda {
             if (!resources.scannerScratch.aux) {
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
-                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.aux), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(scannerScratch.aux) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.aux,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.aux",
+                        outError)) {
                     return false;
                 }
             }
@@ -4216,27 +4458,39 @@ namespace JuicerCuda {
             if (!resources.scannerScratch.grainTmp) {
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
-                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmp), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(scannerScratch.grainTmp) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.grainTmp,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.grainTmp",
+                        outError)) {
                     return false;
                 }
             }
             if (!resources.scannerScratch.grainTmpMid) {
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
-                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpMid), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(scannerScratch.grainTmpMid) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.grainTmpMid,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.grainTmpMid",
+                        outError)) {
                     return false;
                 }
             }
             if (!resources.scannerScratch.grainTmpCoarse) {
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
-                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpCoarse), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(scannerScratch.grainTmpCoarse) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.grainTmpCoarse,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.grainTmpCoarse",
+                        outError)) {
                     return false;
                 }
             }
@@ -4272,9 +4526,13 @@ namespace JuicerCuda {
             if (!resources.scannerScratch.grainTmpShared) {
                 const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
                 const size_t bytes = n * sizeof(float);
-                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.grainTmpShared), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(scannerScratch.grainTmpShared) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.grainTmpShared,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.grainTmpShared",
+                        outError)) {
                     return false;
                 }
             }
@@ -4306,9 +4564,13 @@ namespace JuicerCuda {
                 }
                 const size_t n = static_cast<size_t>(gateWidth) * static_cast<size_t>(gateHeight);
                 const size_t bytes = n * sizeof(float);
-                const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scannerScratch.gateMask), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(scannerScratch.gateMask) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.gateMask,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.gateMask",
+                        outError)) {
                     return false;
                 }
                 resources.scannerScratch.gateWidth = gateWidth;
@@ -4369,26 +4631,38 @@ namespace JuicerCuda {
 
         const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
         const size_t bytes = total * sizeof(float);
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&scratch.corrY), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(spatial DIR corrY) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            free_spatial_dir_scratch(scratch);
+        if (!allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.corrY,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR corrY",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
-        err = cudaMalloc(reinterpret_cast<void**>(&scratch.corrM), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(spatial DIR corrM) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            free_spatial_dir_scratch(scratch);
+        if (!allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.corrM,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR corrM",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
-        err = cudaMalloc(reinterpret_cast<void**>(&scratch.corrC), bytes);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(spatial DIR corrC) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            free_spatial_dir_scratch(scratch);
+        if (!allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.corrC,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR corrC",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
         if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
-            free_spatial_dir_scratch(scratch);
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
         scratch.tmp = resources.sharedTmpPlane;

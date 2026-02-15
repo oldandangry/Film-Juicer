@@ -20,6 +20,8 @@ namespace ResourceManager {
 
 bool query_submission_active(const SubmissionTransaction& transaction) noexcept;
 
+AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) noexcept;
+
 bool begin_submission(
     SubmissionTransaction& outTransaction,
     const SubmissionSnapshot& snapshot,
