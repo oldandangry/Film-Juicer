@@ -408,6 +408,11 @@ BuilderReservationState& builder_reservation_state() noexcept {
     return state;
 }
 
+struct BurstDebtEntry {
+    std::uint32_t debtPct = 0;
+    std::uint64_t lastUpdateMs = 0;
+};
+
 struct PressureContextState {
     bool valid = false;
     std::uint64_t lastSampleMs = 0;
@@ -424,6 +429,7 @@ struct PressureContextState {
     bool burstCapHitLatched = false;
     std::uint64_t burstWindowStartMs = 0;
     std::uint64_t burstPeakOverTargetBytes = 0;
+    std::unordered_map<std::uint64_t, BurstDebtEntry> burstDebtByInstance;
     bool headroomSourceValid = false;
     HeadroomSource lastHeadroomSource = HeadroomSource::FreeVramOnly;
 };
@@ -584,6 +590,17 @@ struct ActiveBurstDecision {
     std::uint64_t overTargetBytes = 0;
     std::uint64_t capBytes = 0;
     std::uint64_t elapsedMs = 0;
+};
+
+struct BurstDebtRuntimeDecision {
+    bool enabled = false;
+    bool sampled = false;
+    bool burstConsumed = false;
+    bool throttled = false;
+    std::uint32_t debtBeforePct = 0;
+    std::uint32_t debtAfterPct = 0;
+    std::uint32_t debtIncrementPct = 0;
+    const char* reason = "disabled";
 };
 
 struct ScratchPolicyClaim {
@@ -2447,6 +2464,31 @@ std::uint64_t active_burst_cap_bytes(
     return std::min<std::uint64_t>(cfg.maxActiveBurstBytes, pctCapBytes);
 }
 
+std::uint32_t decay_burst_debt_pct(
+    std::uint32_t currentDebtPct,
+    std::uint64_t elapsedMs,
+    std::uint32_t halfLifeMs) noexcept {
+    if (currentDebtPct == 0 || elapsedMs == 0 || halfLifeMs == 0) {
+        return currentDebtPct;
+    }
+
+    const double exponent =
+        -static_cast<double>(elapsedMs) / static_cast<double>(halfLifeMs);
+    const double decayed = static_cast<double>(currentDebtPct) * std::exp2(exponent);
+    if (!std::isfinite(decayed) || decayed <= 0.0) {
+        return 0;
+    }
+
+    const long long rounded = std::llround(decayed);
+    if (rounded <= 0) {
+        return 0;
+    }
+    if (rounded >= 100) {
+        return 100;
+    }
+    return static_cast<std::uint32_t>(rounded);
+}
+
 std::uint64_t graph_large_entry_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
     std::uint64_t thresholdBytes = std::max<std::uint64_t>(
         1ull,
@@ -3733,6 +3775,49 @@ void trace_burst_debt_surface(
     global_state().burstDebtSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
 }
 
+void trace_burst_debt_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureLane lane,
+    PressureState pressureState,
+    bool criticalCurrentFrame,
+    std::size_t requestBytes,
+    const ResourceManagerConfigEffective& cfg,
+    const BurstDebtRuntimeDecision& decision) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=burst_debt_decision")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " lane=" + to_cstr(lane)
+        + " pressure_state=" + to_cstr(pressureState)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " enabled=" + std::to_string(decision.enabled ? 1 : 0)
+        + " sampled=" + std::to_string(decision.sampled ? 1 : 0)
+        + " burst_consumed=" + std::to_string(decision.burstConsumed ? 1 : 0)
+        + " throttled=" + std::to_string(decision.throttled ? 1 : 0)
+        + " debt_before_pct=" + std::to_string(decision.debtBeforePct)
+        + " debt_after_pct=" + std::to_string(decision.debtAfterPct)
+        + " debt_increment_pct=" + std::to_string(decision.debtIncrementPct)
+        + " burst_debt_half_life_ms=" + std::to_string(
+            static_cast<unsigned long long>(cfg.burstDebtHalfLifeMs))
+        + " max_burst_debt_pct=" + std::to_string(
+            static_cast<unsigned long long>(cfg.maxBurstDebtPct))
+        + " instance_token=" + std::to_string(
+            static_cast<unsigned long long>(transaction.snapshot.instanceToken.value))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (decision.reason ? decision.reason : "unspecified");
+    JTRACE("MSBDE", msg);
+}
+
 void trace_superseded_builder_cancel_surface(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
@@ -4530,6 +4615,85 @@ void evaluate_active_burst_window(
     }
 }
 
+BurstDebtRuntimeDecision evaluate_burst_debt_runtime(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    const ActiveBurstDecision& burstDecision,
+    bool criticalCurrentFrame,
+    std::size_t requestBytes) {
+    BurstDebtRuntimeDecision out{};
+    if (requestBytes == 0) {
+        out.reason = "zero_request";
+        return out;
+    }
+
+    out.enabled = (cfg.burstDebtHalfLifeMs > 0) && (cfg.maxBurstDebtPct < 100);
+    if (!out.enabled) {
+        out.reason = "disabled";
+        return out;
+    }
+    out.sampled = true;
+    global_state().burstDebtSampleEvents.fetch_add(1, std::memory_order_relaxed);
+
+    const std::uint64_t instanceToken = transaction.snapshot.instanceToken.value;
+    if (instanceToken == 0) {
+        out.reason = "missing_instance_token";
+        return out;
+    }
+
+    const std::uint64_t nowMs = monotonic_time_ms();
+    out.burstConsumed = criticalCurrentFrame &&
+        burstDecision.considered &&
+        burstDecision.allowed;
+
+    PressurePolicyState& policyState = pressure_policy_state();
+    std::lock_guard<std::mutex> lock(policyState.mutex);
+    PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
+    BurstDebtEntry& debtEntry = contextState.burstDebtByInstance[instanceToken];
+
+    if (debtEntry.lastUpdateMs > 0) {
+        const std::uint64_t elapsedMs = (nowMs > debtEntry.lastUpdateMs)
+            ? (nowMs - debtEntry.lastUpdateMs)
+            : 0;
+        debtEntry.debtPct = decay_burst_debt_pct(
+            debtEntry.debtPct,
+            elapsedMs,
+            cfg.burstDebtHalfLifeMs);
+    }
+    debtEntry.lastUpdateMs = nowMs;
+    out.debtBeforePct = debtEntry.debtPct;
+
+    BurstDebtInput debtInput{};
+    debtInput.burstDebtHalfLifeMs = cfg.burstDebtHalfLifeMs;
+    debtInput.maxBurstDebtPct = cfg.maxBurstDebtPct;
+    debtInput.currentDebtPct = debtEntry.debtPct;
+    debtInput.criticalCurrentFrame = criticalCurrentFrame;
+    debtInput.burstConsumed = out.burstConsumed;
+    debtInput.burstOverTargetBytes = burstDecision.overTargetBytes;
+    debtInput.burstCapBytes = burstDecision.capBytes;
+    const BurstDebtDecision debtDecision = classify_burst_debt(debtInput);
+    out.reason = debtDecision.reason;
+
+    if (debtDecision.accrueDebt && debtDecision.debtIncrementPct > 0) {
+        const std::uint64_t expandedDebt =
+            static_cast<std::uint64_t>(debtEntry.debtPct) +
+            static_cast<std::uint64_t>(debtDecision.debtIncrementPct);
+        debtEntry.debtPct = static_cast<std::uint32_t>(std::min<std::uint64_t>(100ull, expandedDebt));
+        out.debtIncrementPct = debtDecision.debtIncrementPct;
+        global_state().burstDebtAccrualEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (debtDecision.throttleOpportunistic) {
+        out.throttled = true;
+        global_state().burstDebtThrottleEvents.fetch_add(1, std::memory_order_relaxed);
+    }
+    out.debtAfterPct = debtEntry.debtPct;
+
+    if (debtEntry.debtPct == 0 && !out.burstConsumed && !out.throttled) {
+        contextState.burstDebtByInstance.erase(instanceToken);
+    }
+    return out;
+}
+
 bool enforce_pressure_gate(
     const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -4556,6 +4720,7 @@ bool enforce_pressure_gate(
     bool checkpointValid = false;
     bool freezeBelowReserve = false;
     ActiveBurstDecision burstDecision{};
+    BurstDebtRuntimeDecision burstDebtDecision{};
     if (pressureEnabled) {
         checkpoint = evaluate_pressure_checkpoint(
             transaction,
@@ -4620,6 +4785,24 @@ bool enforce_pressure_gate(
                 checkpoint.freezeTransitionEnter
                     ? "freeze_enter"
                     : (checkpoint.freezeTransitionExit ? "freeze_exit" : "freeze_sample"));
+        }
+
+        burstDebtDecision = evaluate_burst_debt_runtime(
+            transaction,
+            cfg,
+            burstDecision,
+            criticalCurrentFrame,
+            requestBytes);
+        if (burstDebtDecision.sampled || JTRACE_ENABLED(3)) {
+            trace_burst_debt_decision(
+                transaction,
+                commandName,
+                lane,
+                pressureState,
+                criticalCurrentFrame,
+                requestBytes,
+                cfg,
+                burstDebtDecision);
         }
 
         fill_tier_budget_snapshot(
@@ -4696,6 +4879,17 @@ bool enforce_pressure_gate(
             + to_cstr(lane)
             + " state="
             + to_cstr(pressureState);
+        return false;
+    }
+
+    if (nonCritical &&
+        burstDebtDecision.enabled &&
+        burstDebtDecision.throttled &&
+        requestBytes > 0) {
+        outError = std::string("burst_debt_throttle_noncritical: lane=")
+            + to_cstr(lane)
+            + " debt_pct=" + std::to_string(static_cast<unsigned long long>(burstDebtDecision.debtAfterPct))
+            + " max_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct));
         return false;
     }
 

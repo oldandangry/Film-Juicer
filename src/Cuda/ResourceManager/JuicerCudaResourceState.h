@@ -145,6 +145,9 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> keepHotBypassEvents{ 0 };
     std::atomic<std::uint64_t> keepHotForcedEvictEvents{ 0 };
     std::atomic<std::uint64_t> burstDebtSurfaceTraceEvents{ 0 };
+    std::atomic<std::uint64_t> burstDebtSampleEvents{ 0 };
+    std::atomic<std::uint64_t> burstDebtAccrualEvents{ 0 };
+    std::atomic<std::uint64_t> burstDebtThrottleEvents{ 0 };
     std::atomic<std::uint64_t> supersededBuilderCancelSurfaceTraceEvents{ 0 };
     std::atomic<std::uint64_t> graphNonResidentServeEvents{ 0 };
     std::atomic<std::uint64_t> graphLargeEntryDecayEvents{ 0 };

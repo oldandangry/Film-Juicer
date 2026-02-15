@@ -153,6 +153,24 @@ struct CacheAdmissionDecision {
     const char* reason = "normal";
 };
 
+struct BurstDebtInput {
+    std::uint32_t burstDebtHalfLifeMs = 0;
+    std::uint32_t maxBurstDebtPct = 100;
+    std::uint32_t currentDebtPct = 0;
+    bool criticalCurrentFrame = false;
+    bool burstConsumed = false;
+    std::uint64_t burstOverTargetBytes = 0;
+    std::uint64_t burstCapBytes = 0;
+};
+
+struct BurstDebtDecision {
+    bool enabled = false;
+    bool accrueDebt = false;
+    std::uint32_t debtIncrementPct = 0;
+    bool throttleOpportunistic = false;
+    const char* reason = "disabled";
+};
+
 AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noexcept;
 ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept;
 bool shadow_key_changed_for_kind(const ShadowKeyDelta& delta, ResourceKind kind) noexcept;
@@ -168,6 +186,7 @@ const char* to_cstr(CacheAdmissionClass value) noexcept;
 PressureDecision classify_pressure(const PressureInput& input) noexcept;
 ReservationDecision classify_reservation(const ReservationInput& input) noexcept;
 CacheAdmissionDecision classify_cache_admission(const CacheAdmissionInput& input) noexcept;
+BurstDebtDecision classify_burst_debt(const BurstDebtInput& input) noexcept;
 
 AcquireDecision default_acquire_decision() noexcept;
 PressureDecision default_pressure_decision() noexcept;

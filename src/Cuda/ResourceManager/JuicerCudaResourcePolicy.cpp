@@ -412,6 +412,42 @@ CacheAdmissionDecision classify_cache_admission(const CacheAdmissionInput& input
     return out;
 }
 
+BurstDebtDecision classify_burst_debt(const BurstDebtInput& input) noexcept {
+    BurstDebtDecision out{};
+    out.enabled = (input.burstDebtHalfLifeMs > 0) && (input.maxBurstDebtPct < 100);
+    if (!out.enabled) {
+        out.reason = "disabled";
+        return out;
+    }
+
+    if (input.criticalCurrentFrame && input.burstConsumed) {
+        out.accrueDebt = true;
+        std::uint32_t incrementPct = 4;
+        if (input.burstCapBytes > 0 && input.burstOverTargetBytes > 0) {
+            const std::uint64_t ratioPctU64 = std::min<std::uint64_t>(
+                100ull,
+                (input.burstOverTargetBytes * 100ull) / input.burstCapBytes);
+            const std::uint32_t ratioPct = static_cast<std::uint32_t>(ratioPctU64);
+            incrementPct = std::max<std::uint32_t>(1u, 1u + (ratioPct / 10u));
+        }
+        out.debtIncrementPct = std::min<std::uint32_t>(25u, incrementPct);
+        out.reason = "accrue_burst_consumed";
+        return out;
+    }
+
+    if (!input.criticalCurrentFrame &&
+        input.currentDebtPct >= input.maxBurstDebtPct) {
+        out.throttleOpportunistic = true;
+        out.reason = "throttle_max_debt";
+        return out;
+    }
+
+    out.reason = input.criticalCurrentFrame
+        ? "critical_no_burst_consumption"
+        : "below_debt_threshold";
+    return out;
+}
+
 AcquireDecision default_acquire_decision() noexcept {
     return AcquireDecision{};
 }
