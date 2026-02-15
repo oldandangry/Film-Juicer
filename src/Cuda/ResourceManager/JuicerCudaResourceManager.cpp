@@ -187,6 +187,10 @@ struct AllocatorBackendContextEntry {
     bool slabSupported = false;
     bool fallbackCapability = false;
     bool fallbackScaffold = false;
+    bool mempoolPolicyValid = false;
+    bool mempoolPolicyApplied = false;
+    std::uint64_t mempoolReleaseThresholdBytes = 0;
+    PressureState mempoolPolicyPressureState = PressureState::Normal;
     const char* candidateReason = "unknown";
     const char* activeReason = "unknown";
 };
@@ -775,6 +779,176 @@ void ensure_allocator_backend_mode_initialized(
     if (emitTrace) {
         trace_allocator_backend_mode_once(transaction, traceEntry);
     }
+}
+
+std::uint64_t async_mempool_release_threshold_bytes_for_state(
+    const ResourceManagerConfigEffective& cfg,
+    PressureState pressureState) noexcept {
+    const std::uint64_t baseMb = static_cast<std::uint64_t>(cfg.asyncMempoolReleaseThresholdMB);
+    const std::uint64_t maxMbBeforeOverflow = std::numeric_limits<std::uint64_t>::max() / kBytesPerMiB;
+    const std::uint64_t baseBytes = (baseMb > maxMbBeforeOverflow)
+        ? std::numeric_limits<std::uint64_t>::max()
+        : (baseMb * kBytesPerMiB);
+    switch (pressureState) {
+    case PressureState::Emergency:
+        return 0;
+    case PressureState::Critical:
+        return baseBytes / 4ull;
+    case PressureState::Constrained:
+        return baseBytes / 2ull;
+    case PressureState::Normal:
+    default:
+        return baseBytes;
+    }
+}
+
+bool set_async_mempool_release_threshold(
+    const DeviceContextKey& key,
+    std::uint64_t thresholdBytes,
+    std::string& outError) noexcept {
+    outError.clear();
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+    if (key.deviceId < 0) {
+        outError = "invalid device id";
+        return false;
+    }
+
+    int previousDevice = -1;
+    const cudaError_t queryErr = cudaGetDevice(&previousDevice);
+    const bool havePrevious = (queryErr == cudaSuccess && previousDevice >= 0);
+    bool switchedDevice = false;
+
+    if (!havePrevious || previousDevice != key.deviceId) {
+        const cudaError_t setErr = cudaSetDevice(key.deviceId);
+        if (setErr != cudaSuccess) {
+            outError = std::string("cudaSetDevice failed: ")
+                + (cudaGetErrorString(setErr) ? cudaGetErrorString(setErr) : "(unknown)");
+            return false;
+        }
+        switchedDevice = havePrevious && previousDevice != key.deviceId;
+    }
+
+    cudaMemPool_t pool = nullptr;
+    const cudaError_t poolErr = cudaDeviceGetDefaultMemPool(&pool, key.deviceId);
+    if (poolErr != cudaSuccess || pool == nullptr) {
+        if (switchedDevice) {
+            (void)cudaSetDevice(previousDevice);
+        }
+        outError = std::string("cudaDeviceGetDefaultMemPool failed: ")
+            + (cudaGetErrorString(poolErr) ? cudaGetErrorString(poolErr) : "(unknown)");
+        return false;
+    }
+
+    std::size_t thresholdValue = (thresholdBytes >= static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+        ? std::numeric_limits<std::size_t>::max()
+        : static_cast<std::size_t>(thresholdBytes);
+    const cudaError_t setAttrErr = cudaMemPoolSetAttribute(
+        pool,
+        cudaMemPoolAttrReleaseThreshold,
+        &thresholdValue);
+
+    if (switchedDevice) {
+        (void)cudaSetDevice(previousDevice);
+    }
+
+    if (setAttrErr != cudaSuccess) {
+        outError = std::string("cudaMemPoolSetAttribute(release_threshold) failed: ")
+            + (cudaGetErrorString(setAttrErr) ? cudaGetErrorString(setAttrErr) : "(unknown)");
+        return false;
+    }
+    return true;
+#else
+    (void)key;
+    (void)thresholdBytes;
+    outError = "async mempool release threshold unsupported";
+    return false;
+#endif
+}
+
+void trace_async_mempool_release_policy(
+    const SubmissionTransaction& transaction,
+    PressureState pressureState,
+    std::uint64_t thresholdBytes,
+    bool applied,
+    bool changed,
+    const char* reason,
+    const char* detail) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=mempool_release_policy")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " pressure_state=" + to_cstr(pressureState)
+        + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
+        + " applied=" + std::to_string(applied ? 1 : 0)
+        + " changed=" + std::to_string(changed ? 1 : 0)
+        + " reason=" + (reason ? reason : "unspecified")
+        + " detail=" + (detail ? detail : "none");
+    JTRACE("MSALC", msg);
+}
+
+void maybe_apply_async_mempool_release_policy(
+    const SubmissionTransaction& transaction,
+    PressureState pressureState,
+    const ResourceManagerConfigEffective& cfg,
+    const char* reason) {
+    const DeviceContextKey key = transaction.snapshot.deviceContextKey;
+    const std::uint64_t thresholdBytes =
+        async_mempool_release_threshold_bytes_for_state(cfg, pressureState);
+
+    bool changed = false;
+    {
+        AllocatorBackendState& state = allocator_backend_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        AllocatorBackendContextEntry& entry = state.byContext[key];
+        if (!entry.valid) {
+            entry = compute_allocator_backend_context_entry(key, cfg);
+        }
+        if (entry.active != AllocatorBackendMode::AsyncPool) {
+            return;
+        }
+        changed =
+            !entry.mempoolPolicyValid ||
+            entry.mempoolReleaseThresholdBytes != thresholdBytes ||
+            entry.mempoolPolicyPressureState != pressureState;
+        if (!changed) {
+            return;
+        }
+    }
+
+    std::string applyError;
+    const bool applied = set_async_mempool_release_threshold(
+        key,
+        thresholdBytes,
+        applyError);
+
+    {
+        AllocatorBackendState& state = allocator_backend_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        AllocatorBackendContextEntry& entry = state.byContext[key];
+        if (!entry.valid) {
+            entry = compute_allocator_backend_context_entry(key, cfg);
+        }
+        entry.mempoolPolicyValid = true;
+        entry.mempoolPolicyApplied = applied;
+        entry.mempoolReleaseThresholdBytes = thresholdBytes;
+        entry.mempoolPolicyPressureState = pressureState;
+    }
+
+    trace_async_mempool_release_policy(
+        transaction,
+        pressureState,
+        thresholdBytes,
+        applied,
+        changed,
+        reason,
+        applied ? "set_ok" : applyError.c_str());
 }
 
 void allocator_backend_retire_context(const DeviceContextKey& key) noexcept {
@@ -4049,6 +4223,11 @@ bool enforce_pressure_gate(
         outRequestReclaimPass = checkpoint.decision.requestReclaimPass && (requestBytes > 0);
         pressureState = checkpoint.decision.state;
         freezeBelowReserve = checkpoint.decision.freezeOpportunistic;
+        maybe_apply_async_mempool_release_policy(
+            transaction,
+            pressureState,
+            cfg,
+            "pressure_checkpoint");
 
         evaluate_active_burst_window(
             transaction,
@@ -6322,6 +6501,11 @@ bool begin_submission(
         return false;
     }
     ensure_allocator_backend_mode_initialized(outTransaction, manager_effective_config());
+    maybe_apply_async_mempool_release_policy(
+        outTransaction,
+        PressureState::Normal,
+        manager_effective_config(),
+        "begin_submission");
     telemetry_trace_schema_announcement(
         outTransaction.transactionId,
         outTransaction.snapshot.snapshotId,

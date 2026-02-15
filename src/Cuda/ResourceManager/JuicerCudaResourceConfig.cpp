@@ -75,6 +75,8 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
     constexpr std::uint32_t kMinAllocatorBackendPreference = 0u;
     constexpr std::uint32_t kMaxAllocatorBackendPreference = 3u;
+    constexpr std::uint32_t kMinAsyncMempoolReleaseThresholdMB = 0u;
+    constexpr std::uint32_t kMaxAsyncMempoolReleaseThresholdMB = 4096u;
     constexpr std::uint32_t kMinPrivateLutFallbackPerMediumCap = 0u;
     constexpr std::uint32_t kMaxPrivateLutFallbackPerMediumCap = 1u;
     constexpr std::uint32_t kMinPrivateLutFallbackPerInstanceCap = 0u;
@@ -180,6 +182,10 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.allocatorBackendPreference,
         kMinAllocatorBackendPreference,
         kMaxAllocatorBackendPreference);
+    out.asyncMempoolReleaseThresholdMB = std::clamp(
+        raw.asyncMempoolReleaseThresholdMB,
+        kMinAsyncMempoolReleaseThresholdMB,
+        kMaxAsyncMempoolReleaseThresholdMB);
     out.privateLutFallbackPerMediumCap = std::clamp(
         raw.privateLutFallbackPerMediumCap,
         kMinPrivateLutFallbackPerMediumCap,
