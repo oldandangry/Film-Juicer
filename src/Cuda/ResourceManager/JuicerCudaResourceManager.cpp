@@ -14,13 +14,16 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -696,8 +699,215 @@ constexpr int kUploadReservationWaitStepMs = 1;
 constexpr int kUploadReservationWaitMaxMs = 8;
 constexpr std::uint64_t kUploadFairnessTickMs = 4;
 
+bool ascii_iequals(std::string_view lhs, std::string_view rhs) noexcept {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+        const unsigned char a = static_cast<unsigned char>(lhs[i]);
+        const unsigned char b = static_cast<unsigned char>(rhs[i]);
+        if (std::tolower(a) != std::tolower(b)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string_view trim_ascii_ws(std::string_view value) noexcept {
+    std::size_t begin = 0;
+    while (begin < value.size()) {
+        const unsigned char c = static_cast<unsigned char>(value[begin]);
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            break;
+        }
+        ++begin;
+    }
+    std::size_t end = value.size();
+    while (end > begin) {
+        const unsigned char c = static_cast<unsigned char>(value[end - 1]);
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            break;
+        }
+        --end;
+    }
+    return value.substr(begin, end - begin);
+}
+
+bool parse_env_bool(const char* name, bool& outValue) noexcept {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    const std::string_view text = trim_ascii_ws(raw);
+    if (text.empty()) {
+        return false;
+    }
+    if (text == "1" ||
+        ascii_iequals(text, "true") ||
+        ascii_iequals(text, "yes") ||
+        ascii_iequals(text, "on")) {
+        outValue = true;
+        return true;
+    }
+    if (text == "0" ||
+        ascii_iequals(text, "false") ||
+        ascii_iequals(text, "no") ||
+        ascii_iequals(text, "off")) {
+        outValue = false;
+        return true;
+    }
+    return false;
+}
+
+bool parse_env_u32(const char* name, std::uint32_t& outValue) noexcept {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::strtoull(raw, &end, 10);
+    if (errno != 0 || end == raw || (end && *end != '\0')) {
+        return false;
+    }
+    if (parsed > static_cast<unsigned long long>(std::numeric_limits<std::uint32_t>::max())) {
+        return false;
+    }
+    outValue = static_cast<std::uint32_t>(parsed);
+    return true;
+}
+
+struct FiveXEnvOverrides {
+    ResourceManagerConfigRaw raw{};
+    bool anyOverride = false;
+    bool profileEnabled = false;
+    bool profileDisabled = false;
+};
+
+void apply_5x_profile_enabled(ResourceManagerConfigRaw& raw) noexcept {
+    raw.keepHotMs = 300;
+    raw.admissionChurnWindowMs = 1500;
+    raw.admissionChurnEnterOneHitRatePct = 65;
+    raw.admissionChurnExitOneHitRatePct = 50;
+    raw.admissionChurnProbationHitBonus = 1;
+    raw.largeEntryReadmitCooldownMs = 1200;
+    raw.largeEntryGhostHitsForReadmit = 1;
+    raw.burstDebtHalfLifeMs = 3000;
+    raw.maxBurstDebtPct = 50;
+    raw.cancelSupersededBuilders = true;
+}
+
+void apply_5x_profile_disabled(ResourceManagerConfigRaw& raw) noexcept {
+    raw.keepHotMs = 0;
+    raw.admissionChurnWindowMs = 0;
+    raw.admissionChurnEnterOneHitRatePct = 75;
+    raw.admissionChurnExitOneHitRatePct = 60;
+    raw.admissionChurnProbationHitBonus = 0;
+    raw.largeEntryReadmitCooldownMs = 0;
+    raw.largeEntryGhostHitsForReadmit = 0;
+    raw.burstDebtHalfLifeMs = 0;
+    raw.maxBurstDebtPct = 100;
+    raw.cancelSupersededBuilders = false;
+}
+
+FiveXEnvOverrides load_5x_env_overrides() noexcept {
+    FiveXEnvOverrides out{};
+    out.raw = ResourceManagerConfigRaw{};
+
+    bool value = false;
+    if (parse_env_bool("JUICER_5X_ENABLE", value)) {
+        out.profileEnabled = value;
+        if (!value) {
+            out.profileDisabled = true;
+        }
+        out.anyOverride = true;
+    }
+    if (parse_env_bool("JUICER_5X_DISABLE", value)) {
+        if (value) {
+            out.profileDisabled = true;
+            out.anyOverride = true;
+        }
+    }
+
+    if (out.profileEnabled && !out.profileDisabled) {
+        apply_5x_profile_enabled(out.raw);
+    }
+    else if (out.profileDisabled) {
+        apply_5x_profile_disabled(out.raw);
+    }
+
+    auto parse_u32_override = [&](const char* envName, std::uint32_t& target) {
+        std::uint32_t parsed = 0;
+        if (parse_env_u32(envName, parsed)) {
+            target = parsed;
+            out.anyOverride = true;
+        }
+    };
+    auto parse_bool_override = [&](const char* envName, bool& target) {
+        bool parsed = false;
+        if (parse_env_bool(envName, parsed)) {
+            target = parsed;
+            out.anyOverride = true;
+        }
+    };
+
+    parse_u32_override("JUICER_5X_KEEP_HOT_MS", out.raw.keepHotMs);
+    parse_u32_override("JUICER_5X_ADMISSION_CHURN_WINDOW_MS", out.raw.admissionChurnWindowMs);
+    parse_u32_override(
+        "JUICER_5X_ADMISSION_CHURN_ENTER_ONE_HIT_RATE_PCT",
+        out.raw.admissionChurnEnterOneHitRatePct);
+    parse_u32_override(
+        "JUICER_5X_ADMISSION_CHURN_EXIT_ONE_HIT_RATE_PCT",
+        out.raw.admissionChurnExitOneHitRatePct);
+    parse_u32_override(
+        "JUICER_5X_ADMISSION_CHURN_PROBATION_HIT_BONUS",
+        out.raw.admissionChurnProbationHitBonus);
+    parse_u32_override(
+        "JUICER_5X_LARGE_ENTRY_READMIT_COOLDOWN_MS",
+        out.raw.largeEntryReadmitCooldownMs);
+    parse_u32_override(
+        "JUICER_5X_LARGE_ENTRY_GHOST_HITS_FOR_READMIT",
+        out.raw.largeEntryGhostHitsForReadmit);
+    parse_u32_override("JUICER_5X_BURST_DEBT_HALF_LIFE_MS", out.raw.burstDebtHalfLifeMs);
+    parse_u32_override("JUICER_5X_MAX_BURST_DEBT_PCT", out.raw.maxBurstDebtPct);
+    parse_bool_override("JUICER_5X_CANCEL_SUPERSEDED_BUILDERS", out.raw.cancelSupersededBuilders);
+
+    return out;
+}
+
+void trace_5x_env_overrides(const FiveXEnvOverrides& overrides, const ResourceManagerConfigEffective& cfg) {
+    if (!overrides.anyOverride || !JTRACE_ENABLED(2)) {
+        return;
+    }
+    const std::string msg = std::string("event=5x_env_overrides")
+        + " profile_enabled=" + std::to_string(overrides.profileEnabled ? 1 : 0)
+        + " profile_disabled=" + std::to_string(overrides.profileDisabled ? 1 : 0)
+        + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(cfg.keepHotMs))
+        + " admission_churn_window_ms=" + std::to_string(static_cast<unsigned long long>(cfg.admissionChurnWindowMs))
+        + " admission_churn_enter_one_hit_rate_pct=" + std::to_string(
+            static_cast<unsigned long long>(cfg.admissionChurnEnterOneHitRatePct))
+        + " admission_churn_exit_one_hit_rate_pct=" + std::to_string(
+            static_cast<unsigned long long>(cfg.admissionChurnExitOneHitRatePct))
+        + " admission_churn_probation_hit_bonus=" + std::to_string(
+            static_cast<unsigned long long>(cfg.admissionChurnProbationHitBonus))
+        + " large_entry_readmit_cooldown_ms=" + std::to_string(
+            static_cast<unsigned long long>(cfg.largeEntryReadmitCooldownMs))
+        + " large_entry_ghost_hits_for_readmit=" + std::to_string(
+            static_cast<unsigned long long>(cfg.largeEntryGhostHitsForReadmit))
+        + " burst_debt_half_life_ms=" + std::to_string(
+            static_cast<unsigned long long>(cfg.burstDebtHalfLifeMs))
+        + " max_burst_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct))
+        + " cancel_superseded_builders=" + std::to_string(cfg.cancelSupersededBuilders ? 1 : 0);
+    JTRACE("MSCFG", msg);
+}
+
 const ResourceManagerConfigEffective& manager_effective_config() noexcept {
-    static const ResourceManagerConfigEffective cfg = sanitize_config(ResourceManagerConfigRaw{});
+    static const ResourceManagerConfigEffective cfg = []() {
+        const FiveXEnvOverrides overrides = load_5x_env_overrides();
+        const ResourceManagerConfigEffective effective = sanitize_config(overrides.raw);
+        trace_5x_env_overrides(overrides, effective);
+        return effective;
+    }();
     return cfg;
 }
 
