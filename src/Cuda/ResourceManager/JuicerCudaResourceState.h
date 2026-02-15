@@ -136,6 +136,8 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> cacheAdmissionProbationDeferredEvents{ 0 };
     std::atomic<std::uint64_t> cacheAdmissionProbationAdmitEvents{ 0 };
     std::atomic<std::uint64_t> cacheAdmissionCriticalOverrideEvents{ 0 };
+    std::atomic<std::uint64_t> largeEntryReadmitBlockedEvents{ 0 };
+    std::atomic<std::uint64_t> largeEntryReadmitGhostBypassEvents{ 0 };
     std::atomic<std::uint64_t> admissionChurnSampleEvents{ 0 };
     std::atomic<std::uint64_t> admissionChurnEnterEvents{ 0 };
     std::atomic<std::uint64_t> admissionChurnExitEvents{ 0 };

@@ -475,6 +475,21 @@ struct AdmissionChurnSnapshot {
     std::uint32_t windowSamples = 0;
 };
 
+struct LargeEntryReadmitDecision {
+    bool enabled = false;
+    bool candidate = false;
+    bool criticalCurrentFrame = false;
+    bool hadHistory = false;
+    bool inCooldown = false;
+    bool blocked = false;
+    bool ghostBypass = false;
+    std::uint64_t ageMs = 0;
+    std::uint32_t cooldownMs = 0;
+    std::uint32_t ghostHitsRequired = 0;
+    std::uint32_t observedGhostHits = 0;
+    const char* reason = "disabled";
+};
+
 struct AdmissionChurnContextState {
     std::uint64_t windowStartMs = 0;
     std::uint64_t windowSamples = 0;
@@ -3768,6 +3783,44 @@ std::uint32_t next_probation_hits(std::uint32_t observed) noexcept {
         : std::numeric_limits<std::uint32_t>::max();
 }
 
+void trace_large_entry_readmit_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t entryDigest,
+    std::uint64_t requestBytes,
+    std::uint64_t thresholdBytes,
+    const LargeEntryReadmitDecision& decision) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=large_entry_readmit")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " entry_digest=" + std::to_string(static_cast<unsigned long long>(entryDigest))
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
+        + " enabled=" + std::to_string(decision.enabled ? 1 : 0)
+        + " candidate=" + std::to_string(decision.candidate ? 1 : 0)
+        + " critical_current_frame=" + std::to_string(decision.criticalCurrentFrame ? 1 : 0)
+        + " had_history=" + std::to_string(decision.hadHistory ? 1 : 0)
+        + " in_cooldown=" + std::to_string(decision.inCooldown ? 1 : 0)
+        + " blocked=" + std::to_string(decision.blocked ? 1 : 0)
+        + " ghost_bypass=" + std::to_string(decision.ghostBypass ? 1 : 0)
+        + " age_ms=" + std::to_string(static_cast<unsigned long long>(decision.ageMs))
+        + " cooldown_ms=" + std::to_string(static_cast<unsigned long long>(decision.cooldownMs))
+        + " ghost_hits_required=" + std::to_string(decision.ghostHitsRequired)
+        + " observed_ghost_hits=" + std::to_string(decision.observedGhostHits)
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (decision.reason ? decision.reason : "unspecified");
+    JTRACE("MSTHR", msg);
+}
+
 void trace_cache_admission_decision(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -6092,12 +6145,18 @@ struct BaseGraphEntry {
     std::uint64_t lastUseMs = 0;
 };
 
+struct GraphLargeEntryReadmitState {
+    std::uint64_t lastEvictedMs = 0;
+    std::uint32_t ghostHits = 0;
+};
+
 struct BaseGraphBucketState {
     std::mutex mutex;
     std::uint64_t contextEpoch = 0;
     std::uint64_t useTick = 0;
     std::vector<BaseGraphEntry> entries;
     std::unordered_map<std::uint64_t, std::uint32_t> probationHitsByDigest;
+    std::unordered_map<std::uint64_t, GraphLargeEntryReadmitState> largeEntryReadmitByDigest;
     std::uint64_t largeEntryResidentBytes = 0;
     std::uint32_t largeEntryResidentEntries = 0;
 };
@@ -6225,6 +6284,24 @@ std::uint64_t estimate_base_graph_request_bytes(const BaseGraphKey& key) noexcep
     return nextBytes;
 }
 
+void note_large_entry_evicted_for_readmit_locked(
+    BaseGraphBucketState& bucket,
+    const BaseGraphEntry& entry,
+    std::uint64_t thresholdBytes,
+    std::uint64_t nowMs) noexcept {
+    if (thresholdBytes == 0 || !base_graph_entry_live(entry)) {
+        return;
+    }
+    const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
+    if (entryBytes < thresholdBytes) {
+        return;
+    }
+    const std::uint64_t digest = base_graph_key_digest(entry.key);
+    GraphLargeEntryReadmitState& state = bucket.largeEntryReadmitByDigest[digest];
+    state.lastEvictedMs = nowMs;
+    state.ghostHits = 0;
+}
+
 void destroy_base_graph_entry(BaseGraphEntry& entry) noexcept {
     if (entry.execOpaque) {
         cudaGraphExecDestroy(reinterpret_cast<cudaGraphExec_t>(entry.execOpaque));
@@ -6267,6 +6344,7 @@ void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
     }
     bucket.entries.clear();
     bucket.probationHitsByDigest.clear();
+    bucket.largeEntryReadmitByDigest.clear();
     bucket.useTick = 0;
 }
 
@@ -6356,6 +6434,11 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
             ++index;
             continue;
         }
+        note_large_entry_evicted_for_readmit_locked(
+            bucket,
+            entry,
+            thresholdBytes,
+            nowMs);
         destroy_base_graph_entry(entry);
         bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(index));
         ++outDecayEvictedEntries;
@@ -6412,6 +6495,11 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
            (outResidentEntries > allowedEntries || residentBytes > capBytes)) {
         outCapHit = true;
         BaseGraphEntry& victim = bucket.entries[oldestIndex];
+        note_large_entry_evicted_for_readmit_locked(
+            bucket,
+            victim,
+            thresholdBytes,
+            nowMs);
         destroy_base_graph_entry(victim);
         bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(oldestIndex));
         ++outCapTrimEvictedEntries;
@@ -6497,13 +6585,15 @@ BaseGraphEntry* build_base_graph_entry(
     const BaseGraphKey& key,
     BasePipelineLaunchFn launchFn,
     JuicerCuda::PipelineRunParams& run,
-    cudaStream_t stream) noexcept {
+    cudaStream_t stream,
+    std::uint64_t largeEntryThresholdBytes) noexcept {
     if (!launchFn) {
         return nullptr;
     }
 
     constexpr std::size_t kBaseGraphCap = 4;
     if (bucket.entries.size() >= kBaseGraphCap && !bucket.entries.empty()) {
+        const std::uint64_t nowMs = monotonic_time_ms();
         std::size_t victim = 0;
         std::uint64_t bestTick = bucket.entries[0].lastUseTick;
         for (std::size_t i = 1; i < bucket.entries.size(); ++i) {
@@ -6512,6 +6602,11 @@ BaseGraphEntry* build_base_graph_entry(
                 victim = i;
             }
         }
+        note_large_entry_evicted_for_readmit_locked(
+            bucket,
+            bucket.entries[victim],
+            largeEntryThresholdBytes,
+            nowMs);
         destroy_base_graph_entry(bucket.entries[victim]);
         bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(victim));
     }
@@ -8726,6 +8821,72 @@ bool command_launch_base_pipeline_graph(
         if (probationIt != bucket.probationHitsByDigest.end()) {
             observedProbationHits = probationIt->second;
         }
+        LargeEntryReadmitDecision readmitDecision{};
+        readmitDecision.enabled =
+            (cfg.largeEntryReadmitCooldownMs > 0) || (cfg.largeEntryGhostHitsForReadmit > 0);
+        readmitDecision.candidate =
+            (graphLargeThresholdBytes > 0) && (requestBytes >= graphLargeThresholdBytes);
+        readmitDecision.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
+        readmitDecision.cooldownMs = cfg.largeEntryReadmitCooldownMs;
+        readmitDecision.ghostHitsRequired = cfg.largeEntryGhostHitsForReadmit;
+        readmitDecision.reason = readmitDecision.enabled ? "not_candidate" : "disabled";
+        if (readmitDecision.enabled && readmitDecision.candidate && !kGraphAdmissionCriticalCurrentFrame) {
+            auto readmitIt = bucket.largeEntryReadmitByDigest.find(keyDigest);
+            if (readmitIt != bucket.largeEntryReadmitByDigest.end()) {
+                readmitDecision.hadHistory = true;
+                GraphLargeEntryReadmitState& readmitState = readmitIt->second;
+                const std::uint64_t nowMs = monotonic_time_ms();
+                readmitDecision.ageMs = (nowMs > readmitState.lastEvictedMs)
+                    ? (nowMs - readmitState.lastEvictedMs)
+                    : 0;
+                readmitDecision.inCooldown =
+                    (cfg.largeEntryReadmitCooldownMs > 0) &&
+                    (readmitDecision.ageMs < static_cast<std::uint64_t>(cfg.largeEntryReadmitCooldownMs));
+
+                if (readmitDecision.inCooldown) {
+                    if (readmitState.ghostHits < std::numeric_limits<std::uint32_t>::max()) {
+                        ++readmitState.ghostHits;
+                    }
+                    readmitDecision.observedGhostHits = readmitState.ghostHits;
+                    if (cfg.largeEntryGhostHitsForReadmit > 0 &&
+                        readmitState.ghostHits >= cfg.largeEntryGhostHitsForReadmit) {
+                        readmitDecision.ghostBypass = true;
+                        readmitDecision.reason = "ghost_hit_bypass";
+                        bucket.largeEntryReadmitByDigest.erase(readmitIt);
+                    }
+                    else {
+                        readmitDecision.blocked = true;
+                        readmitDecision.reason = "cooldown_blocked";
+                    }
+                }
+                else {
+                    readmitDecision.reason = "cooldown_expired";
+                    bucket.largeEntryReadmitByDigest.erase(readmitIt);
+                }
+            }
+            else {
+                readmitDecision.reason = "no_history";
+            }
+        }
+        else if (readmitDecision.enabled && readmitDecision.candidate && kGraphAdmissionCriticalCurrentFrame) {
+            readmitDecision.reason = "critical_bypass";
+        }
+        trace_large_entry_readmit_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            keyDigest,
+            requestBytes,
+            graphLargeThresholdBytes,
+            readmitDecision);
+        if (readmitDecision.ghostBypass) {
+            managerState.largeEntryReadmitGhostBypassEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (readmitDecision.blocked) {
+            managerState.largeEntryReadmitBlockedEvents.fetch_add(1, std::memory_order_relaxed);
+            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            return true;
+        }
 
         CacheAdmissionInput admissionInput{};
         admissionInput.requestBytes = requestBytes;
@@ -8901,7 +9062,14 @@ bool command_launch_base_pipeline_graph(
         BuilderReservationGuard builderGuard(std::move(builderClaim));
 
         bucket.probationHitsByDigest.erase(keyDigest);
-        found = build_base_graph_entry(bucket, key, launchFn, run, stream);
+        bucket.largeEntryReadmitByDigest.erase(keyDigest);
+        found = build_base_graph_entry(
+            bucket,
+            key,
+            launchFn,
+            run,
+            stream,
+            graphLargeThresholdBytes);
         if (found) {
             applyGraphLargeEntryPolicy("post_build");
             found = find_base_graph_entry(bucket, key);
@@ -8909,6 +9077,7 @@ bool command_launch_base_pipeline_graph(
     }
     else {
         bucket.probationHitsByDigest.erase(keyDigest);
+        bucket.largeEntryReadmitByDigest.erase(keyDigest);
     }
 
     if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
