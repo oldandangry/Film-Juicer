@@ -128,6 +128,10 @@ namespace JuicerCuda {
 
         DeviceSpectralLut scanNegativeLut;
         DeviceSpectralLut scanPrintLut;
+        bool privateLutFallbackNegativeActive = false;
+        bool privateLutFallbackPrintActive = false;
+        std::uint64_t privateLutFallbackNegativeHash = 0;
+        std::uint64_t privateLutFallbackPrintHash = 0;
 
         struct DeviceGaussianKernel {
             float* weights = nullptr;

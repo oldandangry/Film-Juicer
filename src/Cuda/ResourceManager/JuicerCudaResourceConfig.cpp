@@ -73,6 +73,10 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMinHostAssetCacheMaxBytes = 64ull * kMiB;
     constexpr std::uint64_t kMaxHostAssetCacheMaxBytes = 1024ull * kMiB;
     constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
+    constexpr std::uint32_t kMinPrivateLutFallbackPerMediumCap = 0u;
+    constexpr std::uint32_t kMaxPrivateLutFallbackPerMediumCap = 1u;
+    constexpr std::uint32_t kMinPrivateLutFallbackPerInstanceCap = 0u;
+    constexpr std::uint32_t kMaxPrivateLutFallbackPerInstanceCap = 2u;
     constexpr std::uint64_t kMinPinnedStagingMaxBytes = 8ull * kMiB;
     constexpr std::uint64_t kMaxPinnedStagingMaxBytes = 2048ull * kMiB;
     constexpr std::uint64_t kMinPinnedStagingTrimBatchBytes = 1ull * kMiB;
@@ -170,6 +174,17 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.hostAssetTrimBatchBytes,
         kMinHostAssetTrimBatchBytes,
         out.hostAssetCacheMaxBytes);
+    out.privateLutFallbackPerMediumCap = std::clamp(
+        raw.privateLutFallbackPerMediumCap,
+        kMinPrivateLutFallbackPerMediumCap,
+        kMaxPrivateLutFallbackPerMediumCap);
+    out.privateLutFallbackPerInstanceCap = std::clamp(
+        raw.privateLutFallbackPerInstanceCap,
+        kMinPrivateLutFallbackPerInstanceCap,
+        kMaxPrivateLutFallbackPerInstanceCap);
+    out.privateLutFallbackPerInstanceCap = std::max(
+        out.privateLutFallbackPerInstanceCap,
+        out.privateLutFallbackPerMediumCap);
     out.pinnedUploadStagingMaxBytes = std::clamp(
         raw.pinnedUploadStagingMaxBytes,
         kMinPinnedStagingMaxBytes,

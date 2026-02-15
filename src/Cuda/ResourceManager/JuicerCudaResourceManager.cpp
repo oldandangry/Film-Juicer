@@ -6553,6 +6553,166 @@ bool command_retire_context_idle(
 }
 
 namespace {
+const char* scan_lut_medium_name(bool negativeMedium) noexcept {
+    return negativeMedium ? "negative" : "print";
+}
+
+bool compute_expected_scan_lut_hash(
+    const WorkingState& ws,
+    bool negativeMedium,
+    std::uint64_t& outExpectedHash) noexcept {
+    outExpectedHash = 0;
+    const Scanner::ScannerMediumRuntime& medium = negativeMedium
+        ? ws.negativeMediumRuntime
+        : ws.printMediumRuntime;
+    const Scanner::ScannerStaticKey& staticKey = negativeMedium
+        ? ws.negativeStaticKey
+        : ws.printStaticKey;
+    const Scanner::ScannerMedium expectedMedium = negativeMedium
+        ? Scanner::ScannerMedium::Negative
+        : Scanner::ScannerMedium::Print;
+
+    if (!medium.tables || medium.tables->K <= 0) {
+        return false;
+    }
+    if (medium.medium != expectedMedium || staticKey.medium != expectedMedium) {
+        return false;
+    }
+    if (medium.tables->tablesHash == 0 || medium.range.digest == 0) {
+        return false;
+    }
+    if (staticKey.tablesHash != medium.tables->tablesHash ||
+        staticKey.densityRangeHash != medium.range.digest) {
+        return false;
+    }
+    const std::uint32_t res =
+        ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
+    outExpectedHash = ResourceManager::make_scan_lut_key_digest(
+        static_cast<std::uint32_t>(medium.medium),
+        medium.tables->tablesHash,
+        medium.range.digest,
+        res);
+    return outExpectedHash != 0;
+}
+
+struct PrivateLutFallbackDecision {
+    bool allowed = false;
+    bool alreadyActive = false;
+    std::uint32_t activeCount = 0;
+    std::uint32_t perMediumCap = 0;
+    std::uint32_t perInstanceCap = 0;
+    const char* reason = "unspecified";
+};
+
+PrivateLutFallbackDecision evaluate_private_lut_fallback(
+    JuicerCuda::Resources& resources,
+    bool negativeMedium,
+    std::uint64_t expectedHash,
+    const ResourceManagerConfigEffective& cfg) {
+    PrivateLutFallbackDecision decision{};
+    decision.perMediumCap = cfg.privateLutFallbackPerMediumCap;
+    decision.perInstanceCap = cfg.privateLutFallbackPerInstanceCap;
+
+    if (expectedHash == 0) {
+        decision.reason = "invalid_expected_hash";
+        return decision;
+    }
+
+    std::lock_guard<std::mutex> lock(resources.m);
+    auto clear_stale = [](bool& active, std::uint64_t& hash, const JuicerCuda::Resources::DeviceSpectralLut& lut) {
+        if (!lut.log2XYZ) {
+            active = false;
+            hash = 0;
+        }
+    };
+    clear_stale(
+        resources.privateLutFallbackNegativeActive,
+        resources.privateLutFallbackNegativeHash,
+        resources.scanNegativeLut);
+    clear_stale(
+        resources.privateLutFallbackPrintActive,
+        resources.privateLutFallbackPrintHash,
+        resources.scanPrintLut);
+
+    decision.activeCount =
+        (resources.privateLutFallbackNegativeActive ? 1u : 0u) +
+        (resources.privateLutFallbackPrintActive ? 1u : 0u);
+
+    bool* slotActive = negativeMedium
+        ? &resources.privateLutFallbackNegativeActive
+        : &resources.privateLutFallbackPrintActive;
+    std::uint64_t* slotHash = negativeMedium
+        ? &resources.privateLutFallbackNegativeHash
+        : &resources.privateLutFallbackPrintHash;
+    const JuicerCuda::Resources::DeviceSpectralLut& slotLut = negativeMedium
+        ? resources.scanNegativeLut
+        : resources.scanPrintLut;
+
+    if (*slotActive && slotLut.log2XYZ && *slotHash == expectedHash) {
+        decision.allowed = true;
+        decision.alreadyActive = true;
+        decision.reason = "already_active";
+        return decision;
+    }
+
+    if (decision.perMediumCap == 0 || decision.perInstanceCap == 0) {
+        decision.reason = "disabled";
+        return decision;
+    }
+    if (decision.perMediumCap < 1u) {
+        decision.reason = "per_medium_cap_zero";
+        return decision;
+    }
+    if (!*slotActive && decision.activeCount >= decision.perInstanceCap) {
+        decision.reason = "per_instance_cap_reached";
+        return decision;
+    }
+
+    decision.allowed = true;
+    decision.reason = *slotActive ? "slot_reuse" : "admit_new";
+    return decision;
+}
+
+void mark_private_lut_fallback_active(
+    JuicerCuda::Resources& resources,
+    bool negativeMedium,
+    std::uint64_t expectedHash) {
+    if (expectedHash == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(resources.m);
+    if (negativeMedium) {
+        resources.privateLutFallbackNegativeActive = true;
+        resources.privateLutFallbackNegativeHash = expectedHash;
+    }
+    else {
+        resources.privateLutFallbackPrintActive = true;
+        resources.privateLutFallbackPrintHash = expectedHash;
+    }
+}
+
+void trace_private_lut_fallback(
+    const char* stage,
+    const char* eventName,
+    bool negativeMedium,
+    const PrivateLutFallbackDecision& decision,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+    std::string msg =
+        std::string("stage=") + (stage ? stage : "unknown") +
+        " event=" + (eventName ? eventName : "unknown") +
+        " medium=" + scan_lut_medium_name(negativeMedium) +
+        " allowed=" + std::to_string(decision.allowed ? 1 : 0) +
+        " already_active=" + std::to_string(decision.alreadyActive ? 1 : 0) +
+        " active_count=" + std::to_string(decision.activeCount) +
+        " per_medium_cap=" + std::to_string(decision.perMediumCap) +
+        " per_instance_cap=" + std::to_string(decision.perInstanceCap) +
+        " reason=" + (reason ? reason : decision.reason);
+    JTRACE("MSLUT", msg);
+}
+
 bool command_ensure_scan_lut_internal(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -6732,6 +6892,77 @@ bool command_ensure_scan_lut_internal(
     }
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    auto try_private_fallback = [&](const char* triggerReason) -> bool {
+        if (!criticalRequest) {
+            return false;
+        }
+
+        std::uint64_t expectedHash = 0;
+        if (!compute_expected_scan_lut_hash(ws, negativeMedium, expectedHash)) {
+            PrivateLutFallbackDecision invalidDecision{};
+            invalidDecision.reason = "invalid_scan_lut_key";
+            trace_private_lut_fallback(
+                stageName,
+                "private_fallback_denied",
+                negativeMedium,
+                invalidDecision,
+                triggerReason ? triggerReason : "invalid_scan_lut_key");
+            return false;
+        }
+
+        const PrivateLutFallbackDecision decision =
+            evaluate_private_lut_fallback(resources, negativeMedium, expectedHash, cfg);
+        if (!decision.allowed) {
+            trace_private_lut_fallback(
+                stageName,
+                "private_fallback_denied",
+                negativeMedium,
+                decision,
+                triggerReason ? triggerReason : decision.reason);
+            return false;
+        }
+
+        trace_private_lut_fallback(
+            stageName,
+            "private_fallback_admit",
+            negativeMedium,
+            decision,
+            triggerReason ? triggerReason : decision.reason);
+
+        std::string fallbackError;
+        const bool fallbackOk = JuicerCuda::ensure_scan_lut(
+            resources,
+            ws,
+            negativeMedium,
+            cudaStreamOpaque,
+            fallbackError);
+        if (!fallbackOk) {
+            trace_private_lut_fallback(
+                stageName,
+                "private_fallback_failed",
+                negativeMedium,
+                decision,
+                fallbackError.empty() ? "ensure_failed" : fallbackError.c_str());
+            if (!fallbackError.empty()) {
+                if (!outError.empty()) {
+                    outError += " | ";
+                }
+                outError += std::string("private_lut_fallback_failed: ") + fallbackError;
+            }
+            return false;
+        }
+
+        mark_private_lut_fallback_active(resources, negativeMedium, expectedHash);
+        trace_private_lut_fallback(
+            stageName,
+            "private_fallback_served",
+            negativeMedium,
+            decision,
+            triggerReason ? triggerReason : "served");
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+        return true;
+    };
     bool requestPreReclaim = false;
     if (!enforce_pressure_gate(
             transaction,
@@ -6742,6 +6973,10 @@ bool command_ensure_scan_lut_internal(
             criticalRequest,
             requestPreReclaim,
             outError)) {
+        if (try_private_fallback("pressure_gate_reject")) {
+            outError.clear();
+            return true;
+        }
         return false;
     }
     if (requestPreReclaim) {
@@ -6753,6 +6988,10 @@ bool command_ensure_scan_lut_internal(
                 "pressure_pre_upload",
                 reclaimError)) {
             outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
+            if (try_private_fallback("pressure_pre_upload_reclaim_failed")) {
+                outError.clear();
+                return true;
+            }
             return false;
         }
     }
@@ -6764,6 +7003,10 @@ bool command_ensure_scan_lut_internal(
             criticalRequest,
             uploadClaim,
             outError)) {
+        if (try_private_fallback("upload_reservation_reject")) {
+            outError.clear();
+            return true;
+        }
         return false;
     }
     UploadReservationGuard uploadGuard(std::move(uploadClaim));
@@ -6776,6 +7019,10 @@ bool command_ensure_scan_lut_internal(
             criticalRequest,
             builderClaim,
             outError)) {
+        if (try_private_fallback("builder_reservation_reject")) {
+            outError.clear();
+            return true;
+        }
         return false;
     }
     BuilderReservationGuard builderGuard(std::move(builderClaim));
@@ -6789,6 +7036,10 @@ bool command_ensure_scan_lut_internal(
             circuitAttempt,
             circuitError)) {
         outError = circuitError;
+        if (try_private_fallback("tier_circuit_blocked")) {
+            outError.clear();
+            return true;
+        }
         return false;
     }
     const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
