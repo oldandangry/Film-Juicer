@@ -3748,6 +3748,26 @@ void trace_optional_heuristic_surfaces_once(
     }
 }
 
+std::uint32_t effective_probation_hits_required(
+    std::uint32_t baseRequired,
+    const AdmissionChurnSnapshot& churnSnapshot) noexcept {
+    if (!churnSnapshot.enabled || !churnSnapshot.active || churnSnapshot.probationHitBonus == 0) {
+        return baseRequired;
+    }
+    const std::uint64_t expanded =
+        static_cast<std::uint64_t>(baseRequired) + static_cast<std::uint64_t>(churnSnapshot.probationHitBonus);
+    const std::uint64_t capped = std::min<std::uint64_t>(
+        expanded,
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()));
+    return static_cast<std::uint32_t>(capped);
+}
+
+std::uint32_t next_probation_hits(std::uint32_t observed) noexcept {
+    return (observed < std::numeric_limits<std::uint32_t>::max())
+        ? (observed + 1u)
+        : std::numeric_limits<std::uint32_t>::max();
+}
+
 void trace_cache_admission_decision(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -8722,6 +8742,12 @@ bool command_launch_base_pipeline_graph(
             cfg,
             keyDigest,
             observedProbationHits);
+        const std::uint32_t churnProbationHitsRequired = effective_probation_hits_required(
+            admissionDecision.probationHitsRequired,
+            churnSnapshot);
+        const bool churnProbationAllowDurable =
+            !admissionDecision.probationApplied ||
+            (next_probation_hits(observedProbationHits) >= churnProbationHitsRequired);
         trace_cache_admission_decision(
             transaction,
             "command_launch_base_pipeline_graph",
@@ -8736,19 +8762,16 @@ bool command_launch_base_pipeline_graph(
             managerState.cacheAdmissionTooLargeEvents.fetch_add(1, std::memory_order_relaxed);
         }
         if (admissionDecision.probationApplied) {
-            const std::uint32_t nextObservedHits =
-                (observedProbationHits < std::numeric_limits<std::uint32_t>::max())
-                ? (observedProbationHits + 1u)
-                : std::numeric_limits<std::uint32_t>::max();
+            const std::uint32_t nextObservedHits = next_probation_hits(observedProbationHits);
             trace_probation_decision(
                 transaction,
                 "command_launch_base_pipeline_graph",
                 keyDigest,
                 nextObservedHits,
-                admissionDecision.probationHitsRequired,
-                admissionDecision.allowDurableAdmission,
+                churnProbationHitsRequired,
+                churnProbationAllowDurable,
                 admissionDecision.reason);
-            if (admissionDecision.allowDurableAdmission) {
+            if (churnProbationAllowDurable) {
                 managerState.cacheAdmissionProbationAdmitEvents.fetch_add(1, std::memory_order_relaxed);
             }
             else {
@@ -8760,7 +8783,11 @@ bool command_launch_base_pipeline_graph(
             managerState.cacheAdmissionCriticalOverrideEvents.fetch_add(1, std::memory_order_relaxed);
         }
 
-        if (!admissionDecision.allowDurableAdmission) {
+        const bool allowDurableAdmission =
+            admissionDecision.probationApplied
+                ? churnProbationAllowDurable
+                : admissionDecision.allowDurableAdmission;
+        if (!allowDurableAdmission) {
             if (admissionDecision.probationApplied) {
                 std::uint32_t& probationHits = bucket.probationHitsByDigest[keyDigest];
                 if (probationHits < std::numeric_limits<std::uint32_t>::max()) {
