@@ -3682,6 +3682,33 @@ void trace_keep_hot_surface(
     global_state().keepHotSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
 }
 
+void trace_keep_hot_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t keepHotMs,
+    std::uint64_t bypassEvents,
+    std::uint64_t forcedEvictEvents,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::string msg = std::string("event=keep_hot_decision")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(keepHotMs))
+        + " bypass_events=" + std::to_string(static_cast<unsigned long long>(bypassEvents))
+        + " forced_evict_events=" + std::to_string(static_cast<unsigned long long>(forcedEvictEvents))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSHOT", msg);
+}
+
 void trace_burst_debt_surface(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
@@ -6284,6 +6311,17 @@ std::uint64_t estimate_base_graph_request_bytes(const BaseGraphKey& key) noexcep
     return nextBytes;
 }
 
+bool graph_entry_in_keep_hot_window(
+    const BaseGraphEntry& entry,
+    std::uint32_t keepHotMs,
+    std::uint64_t nowMs) noexcept {
+    if (keepHotMs == 0 || entry.lastUseMs == 0) {
+        return false;
+    }
+    const std::uint64_t ageMs = (nowMs > entry.lastUseMs) ? (nowMs - entry.lastUseMs) : 0;
+    return ageMs < static_cast<std::uint64_t>(keepHotMs);
+}
+
 void note_large_entry_evicted_for_readmit_locked(
     BaseGraphBucketState& bucket,
     const BaseGraphEntry& entry,
@@ -6402,13 +6440,18 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
     std::uint64_t thresholdBytes,
     std::uint64_t capBytes,
     std::uint32_t capEntries,
+    std::uint32_t keepHotMs,
     std::uint64_t nowMs,
     std::uint64_t& outDecayEvictedEntries,
     std::uint64_t& outCapTrimEvictedEntries,
+    std::uint64_t& outKeepHotBypassEvents,
+    std::uint64_t& outKeepHotForcedEvictEvents,
     bool& outCapHit,
     std::uint32_t& outResidentEntries) noexcept {
     outDecayEvictedEntries = 0;
     outCapTrimEvictedEntries = 0;
+    outKeepHotBypassEvents = 0;
+    outKeepHotForcedEvictEvents = 0;
     outCapHit = false;
     outResidentEntries = 0;
 
@@ -6444,14 +6487,24 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
         ++outDecayEvictedEntries;
     }
 
-    auto recompute_large_snapshot = [&](std::size_t* outOldestIndex) noexcept -> std::uint64_t {
+    auto recompute_large_snapshot = [&](std::size_t* outOldestIndex,
+                                        std::size_t* outOldestNonHotIndex,
+                                        bool* outHasKeepHotCandidates) noexcept -> std::uint64_t {
         if (outOldestIndex) {
             *outOldestIndex = std::numeric_limits<std::size_t>::max();
+        }
+        if (outOldestNonHotIndex) {
+            *outOldestNonHotIndex = std::numeric_limits<std::size_t>::max();
+        }
+        if (outHasKeepHotCandidates) {
+            *outHasKeepHotCandidates = false;
         }
         outResidentEntries = 0;
         std::uint64_t residentBytes = 0;
         std::uint64_t oldestUseMs = std::numeric_limits<std::uint64_t>::max();
         std::uint64_t oldestUseTick = std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t oldestNonHotUseMs = std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t oldestNonHotUseTick = std::numeric_limits<std::uint64_t>::max();
 
         for (std::size_t i = 0; i < bucket.entries.size(); ++i) {
             const BaseGraphEntry& entry = bucket.entries[i];
@@ -6475,6 +6528,11 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
                 ++outResidentEntries;
             }
 
+            const bool inKeepHotWindow = graph_entry_in_keep_hot_window(entry, keepHotMs, nowMs);
+            if (inKeepHotWindow && outHasKeepHotCandidates) {
+                *outHasKeepHotCandidates = true;
+            }
+
             const bool older = (entry.lastUseMs < oldestUseMs) ||
                 ((entry.lastUseMs == oldestUseMs) && (entry.lastUseTick < oldestUseTick));
             if (older) {
@@ -6484,26 +6542,58 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
                     *outOldestIndex = i;
                 }
             }
+
+            if (!inKeepHotWindow) {
+                const bool olderNonHot = (entry.lastUseMs < oldestNonHotUseMs) ||
+                    ((entry.lastUseMs == oldestNonHotUseMs) && (entry.lastUseTick < oldestNonHotUseTick));
+                if (olderNonHot) {
+                    oldestNonHotUseMs = entry.lastUseMs;
+                    oldestNonHotUseTick = entry.lastUseTick;
+                    if (outOldestNonHotIndex) {
+                        *outOldestNonHotIndex = i;
+                    }
+                }
+            }
         }
         return residentBytes;
     };
 
     std::size_t oldestIndex = std::numeric_limits<std::size_t>::max();
-    std::uint64_t residentBytes = recompute_large_snapshot(&oldestIndex);
+    std::size_t oldestNonHotIndex = std::numeric_limits<std::size_t>::max();
+    bool hasKeepHotCandidates = false;
+    std::uint64_t residentBytes = recompute_large_snapshot(
+        &oldestIndex,
+        &oldestNonHotIndex,
+        &hasKeepHotCandidates);
     const std::uint32_t allowedEntries = std::max<std::uint32_t>(1u, capEntries);
     while (oldestIndex != std::numeric_limits<std::size_t>::max() &&
            (outResidentEntries > allowedEntries || residentBytes > capBytes)) {
         outCapHit = true;
-        BaseGraphEntry& victim = bucket.entries[oldestIndex];
+        std::size_t victimIndex = oldestIndex;
+        if (keepHotMs > 0 && hasKeepHotCandidates) {
+            if (oldestNonHotIndex != std::numeric_limits<std::size_t>::max()) {
+                victimIndex = oldestNonHotIndex;
+                if (victimIndex != oldestIndex) {
+                    ++outKeepHotBypassEvents;
+                }
+            }
+            else {
+                ++outKeepHotForcedEvictEvents;
+            }
+        }
+        BaseGraphEntry& victim = bucket.entries[victimIndex];
         note_large_entry_evicted_for_readmit_locked(
             bucket,
             victim,
             thresholdBytes,
             nowMs);
         destroy_base_graph_entry(victim);
-        bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(oldestIndex));
+        bucket.entries.erase(bucket.entries.begin() + static_cast<std::ptrdiff_t>(victimIndex));
         ++outCapTrimEvictedEntries;
-        residentBytes = recompute_large_snapshot(&oldestIndex);
+        residentBytes = recompute_large_snapshot(
+            &oldestIndex,
+            &oldestNonHotIndex,
+            &hasKeepHotCandidates);
     }
 
     publish_graph_large_entry_resident_snapshot_locked(bucket, residentBytes, outResidentEntries);
@@ -6586,7 +6676,12 @@ BaseGraphEntry* build_base_graph_entry(
     BasePipelineLaunchFn launchFn,
     JuicerCuda::PipelineRunParams& run,
     cudaStream_t stream,
-    std::uint64_t largeEntryThresholdBytes) noexcept {
+    std::uint64_t largeEntryThresholdBytes,
+    std::uint32_t keepHotMs,
+    std::uint64_t& outKeepHotBypassEvents,
+    std::uint64_t& outKeepHotForcedEvictEvents) noexcept {
+    outKeepHotBypassEvents = 0;
+    outKeepHotForcedEvictEvents = 0;
     if (!launchFn) {
         return nullptr;
     }
@@ -6594,14 +6689,47 @@ BaseGraphEntry* build_base_graph_entry(
     constexpr std::size_t kBaseGraphCap = 4;
     if (bucket.entries.size() >= kBaseGraphCap && !bucket.entries.empty()) {
         const std::uint64_t nowMs = monotonic_time_ms();
-        std::size_t victim = 0;
+        std::size_t oldestAny = 0;
         std::uint64_t bestTick = bucket.entries[0].lastUseTick;
         for (std::size_t i = 1; i < bucket.entries.size(); ++i) {
             if (bucket.entries[i].lastUseTick < bestTick) {
                 bestTick = bucket.entries[i].lastUseTick;
-                victim = i;
+                oldestAny = i;
             }
         }
+
+        std::size_t victim = oldestAny;
+        if (keepHotMs > 0) {
+            std::size_t oldestNonHot = std::numeric_limits<std::size_t>::max();
+            std::uint64_t oldestNonHotTick = std::numeric_limits<std::uint64_t>::max();
+            bool hasKeepHotCandidates = false;
+            for (std::size_t i = 0; i < bucket.entries.size(); ++i) {
+                const BaseGraphEntry& entry = bucket.entries[i];
+                const bool inKeepHotWindow = graph_entry_in_keep_hot_window(entry, keepHotMs, nowMs);
+                if (inKeepHotWindow) {
+                    hasKeepHotCandidates = true;
+                    continue;
+                }
+                if (oldestNonHot == std::numeric_limits<std::size_t>::max() ||
+                    entry.lastUseTick < oldestNonHotTick) {
+                    oldestNonHotTick = entry.lastUseTick;
+                    oldestNonHot = i;
+                }
+            }
+
+            if (hasKeepHotCandidates) {
+                if (oldestNonHot != std::numeric_limits<std::size_t>::max()) {
+                    victim = oldestNonHot;
+                    if (victim != oldestAny) {
+                        ++outKeepHotBypassEvents;
+                    }
+                }
+                else {
+                    ++outKeepHotForcedEvictEvents;
+                }
+            }
+        }
+
         note_large_entry_evicted_for_readmit_locked(
             bucket,
             bucket.entries[victim],
@@ -8770,6 +8898,8 @@ bool command_launch_base_pipeline_graph(
     auto applyGraphLargeEntryPolicy = [&](const char* reason) {
         std::uint64_t decayEvictedEntries = 0;
         std::uint64_t capTrimEvictedEntries = 0;
+        std::uint64_t keepHotBypassEvents = 0;
+        std::uint64_t keepHotForcedEvictEvents = 0;
         bool capHit = false;
         std::uint32_t residentEntries = 0;
         const std::uint64_t residentBytes = trim_graph_large_entry_decay_and_caps_locked(
@@ -8777,9 +8907,12 @@ bool command_launch_base_pipeline_graph(
             graphLargeThresholdBytes,
             graphLargeCapBytes,
             graphLargeCapEntries,
+            cfg.keepHotMs,
             monotonic_time_ms(),
             decayEvictedEntries,
             capTrimEvictedEntries,
+            keepHotBypassEvents,
+            keepHotForcedEvictEvents,
             capHit,
             residentEntries);
         if (decayEvictedEntries > 0) {
@@ -8794,6 +8927,25 @@ bool command_launch_base_pipeline_graph(
         }
         if (capHit) {
             managerState.graphLargeEntryCapHits.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (keepHotBypassEvents > 0) {
+            managerState.keepHotBypassEvents.fetch_add(
+                keepHotBypassEvents,
+                std::memory_order_relaxed);
+        }
+        if (keepHotForcedEvictEvents > 0) {
+            managerState.keepHotForcedEvictEvents.fetch_add(
+                keepHotForcedEvictEvents,
+                std::memory_order_relaxed);
+        }
+        if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
+            trace_keep_hot_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                cfg.keepHotMs,
+                keepHotBypassEvents,
+                keepHotForcedEvictEvents,
+                reason ? reason : "policy");
         }
         if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
             trace_graph_large_entry_quarantine(
@@ -9063,13 +9215,37 @@ bool command_launch_base_pipeline_graph(
 
         bucket.probationHitsByDigest.erase(keyDigest);
         bucket.largeEntryReadmitByDigest.erase(keyDigest);
+        std::uint64_t keepHotBypassEvents = 0;
+        std::uint64_t keepHotForcedEvictEvents = 0;
         found = build_base_graph_entry(
             bucket,
             key,
             launchFn,
             run,
             stream,
-            graphLargeThresholdBytes);
+            graphLargeThresholdBytes,
+            cfg.keepHotMs,
+            keepHotBypassEvents,
+            keepHotForcedEvictEvents);
+        if (keepHotBypassEvents > 0) {
+            managerState.keepHotBypassEvents.fetch_add(
+                keepHotBypassEvents,
+                std::memory_order_relaxed);
+        }
+        if (keepHotForcedEvictEvents > 0) {
+            managerState.keepHotForcedEvictEvents.fetch_add(
+                keepHotForcedEvictEvents,
+                std::memory_order_relaxed);
+        }
+        if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
+            trace_keep_hot_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                cfg.keepHotMs,
+                keepHotBypassEvents,
+                keepHotForcedEvictEvents,
+                "base_graph_cap");
+        }
         if (found) {
             applyGraphLargeEntryPolicy("post_build");
             found = find_base_graph_entry(bucket, key);
