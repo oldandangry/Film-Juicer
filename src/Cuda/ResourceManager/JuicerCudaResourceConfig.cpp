@@ -41,6 +41,8 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint32_t kMaxTierCircuitOpenMs = 10000u;
     constexpr std::uint32_t kMinHostAssetIdleTrimMs = 1000u;
     constexpr std::uint32_t kMaxHostAssetIdleTrimMs = 60000u;
+    constexpr std::uint32_t kMinPinnedStagingIdleTrimMs = 500u;
+    constexpr std::uint32_t kMaxPinnedStagingIdleTrimMs = 60000u;
     constexpr std::uint32_t kMinScratchBuilderBytesInFlightLimitMB = 128u;
     constexpr std::uint32_t kMaxScratchBuilderBytesInFlightLimitMB = 512u;
     constexpr std::uint32_t kMinLutBuilderBytesInFlightLimitMB = 64u;
@@ -71,6 +73,9 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMinHostAssetCacheMaxBytes = 64ull * kMiB;
     constexpr std::uint64_t kMaxHostAssetCacheMaxBytes = 1024ull * kMiB;
     constexpr std::uint64_t kMinHostAssetTrimBatchBytes = 8ull * kMiB;
+    constexpr std::uint64_t kMinPinnedStagingMaxBytes = 8ull * kMiB;
+    constexpr std::uint64_t kMaxPinnedStagingMaxBytes = 2048ull * kMiB;
+    constexpr std::uint64_t kMinPinnedStagingTrimBatchBytes = 1ull * kMiB;
 
     ResourceManagerConfigEffective out{};
     out.keySchemaVersion = std::max<std::uint32_t>(1u, raw.keySchemaVersion);
@@ -165,6 +170,18 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
         raw.hostAssetTrimBatchBytes,
         kMinHostAssetTrimBatchBytes,
         out.hostAssetCacheMaxBytes);
+    out.pinnedUploadStagingMaxBytes = std::clamp(
+        raw.pinnedUploadStagingMaxBytes,
+        kMinPinnedStagingMaxBytes,
+        kMaxPinnedStagingMaxBytes);
+    out.pinnedUploadStagingIdleTrimMs = std::clamp(
+        raw.pinnedUploadStagingIdleTrimMs,
+        kMinPinnedStagingIdleTrimMs,
+        kMaxPinnedStagingIdleTrimMs);
+    out.pinnedUploadStagingTrimBatchBytes = std::clamp(
+        raw.pinnedUploadStagingTrimBatchBytes,
+        kMinPinnedStagingTrimBatchBytes,
+        out.pinnedUploadStagingMaxBytes);
     out.scratchBuilderBytesInFlightLimitMB = std::clamp(
         raw.scratchBuilderBytesInFlightLimitMB,
         kMinScratchBuilderBytesInFlightLimitMB,

@@ -6514,6 +6514,9 @@ bool command_retire_context_with_reason(
     JuicerCuda::purge_shared_gaussian_kernels_for_context(
         key.deviceId,
         key.contextOpaque);
+    JuicerCuda::purge_pinned_upload_staging_for_context(
+        key.deviceId,
+        key.contextOpaque);
     retire_base_graph_cache_for_context(key);
 #endif
     tier_circuit_retire_context(key);

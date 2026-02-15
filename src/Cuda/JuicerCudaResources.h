@@ -296,4 +296,7 @@ namespace JuicerCuda {
     // Purges process-shared Gaussian kernels for one device/context key.
     void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept;
 
+    // Purges process-shared pinned upload staging blocks for one device/context key.
+    void purge_pinned_upload_staging_for_context(int deviceId, void* contextOpaque) noexcept;
+
 } // namespace JuicerCuda

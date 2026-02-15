@@ -1221,6 +1221,525 @@ namespace JuicerCuda {
         publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
     }
 
+    #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+
+    struct PinnedUploadContextKey {
+        int deviceId = -1;
+        void* contextOpaque = nullptr;
+
+        bool operator==(const PinnedUploadContextKey& other) const noexcept {
+            return deviceId == other.deviceId &&
+                contextOpaque == other.contextOpaque;
+        }
+    };
+
+    struct PinnedUploadContextKeyHash {
+        std::size_t operator()(const PinnedUploadContextKey& key) const noexcept {
+            const std::size_t hDevice = std::hash<int>{}(key.deviceId);
+            const std::size_t hContext = std::hash<std::uintptr_t>{}(
+                reinterpret_cast<std::uintptr_t>(key.contextOpaque));
+            return hDevice ^ (hContext + 0x9e3779b9u + (hDevice << 6u) + (hDevice >> 2u));
+        }
+    };
+
+    struct PinnedUploadBlock {
+        std::uint64_t id = 0;
+        void* ptr = nullptr;
+        std::size_t capacity = 0;
+        std::uint64_t lastTouchedMs = 0;
+        void* doneEventOpaque = nullptr;
+        bool inFlight = false;
+        bool reserved = false;
+    };
+
+    struct PinnedUploadPool {
+        std::vector<PinnedUploadBlock> blocks;
+        std::uint64_t nextBlockId = 1;
+        std::uint64_t nextTrimSequence = 1;
+        std::size_t totalBytes = 0;
+    };
+
+    struct PinnedUploadStagingPolicyState {
+        std::mutex mutex;
+        std::unordered_map<PinnedUploadContextKey, PinnedUploadPool, PinnedUploadContextKeyHash> pools;
+        std::size_t totalBytesAllContexts = 0;
+    };
+
+    static PinnedUploadStagingPolicyState& pinned_upload_staging_policy_state() {
+        static PinnedUploadStagingPolicyState state;
+        return state;
+    }
+
+    static const ResourceManager::ResourceManagerConfigEffective& pinned_upload_staging_config() {
+        static const ResourceManager::ResourceManagerConfigEffective cfg =
+            ResourceManager::sanitize_config(ResourceManager::ResourceManagerConfigRaw{});
+        return cfg;
+    }
+
+    static void publish_pinned_upload_staging_bytes(std::size_t bytes) {
+        ResourceManager::global_state().pinnedStagingBytes.store(
+            static_cast<std::uint64_t>(bytes), std::memory_order_relaxed);
+    }
+
+    static void trace_pinned_staging_event(
+        const char* stage,
+        const char* eventName,
+        const char* reason,
+        const PinnedUploadContextKey& key,
+        std::size_t bytes,
+        std::size_t capBytes,
+        std::size_t totalBytes,
+        std::size_t trimBatchBytes,
+        std::uint64_t sequence) {
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        std::ostringstream oss;
+        oss << "stage=" << (stage ? stage : "unknown")
+            << " event=" << (eventName ? eventName : "unknown")
+            << " reason=" << (reason ? reason : "none")
+            << " device_id=" << key.deviceId
+            << " context=" << reinterpret_cast<std::uintptr_t>(key.contextOpaque)
+            << " bytes=" << bytes
+            << " cap_bytes=" << capBytes
+            << " total_bytes=" << totalBytes
+            << " trim_batch_bytes=" << trimBatchBytes
+            << " sequence=" << sequence;
+        JTRACE("MSPIN", oss.str());
+    }
+
+    static void refresh_pinned_block_completion_locked(
+        PinnedUploadBlock& block,
+        std::uint64_t nowMs) {
+        if (!block.inFlight || !block.doneEventOpaque) {
+            return;
+        }
+        cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+        const cudaError_t queryErr = cudaEventQuery(doneEvent);
+        if (queryErr == cudaSuccess) {
+            block.inFlight = false;
+            block.lastTouchedMs = nowMs;
+            return;
+        }
+        if (queryErr != cudaErrorNotReady) {
+            block.inFlight = false;
+            block.lastTouchedMs = nowMs;
+        }
+    }
+
+    static int pick_reusable_pinned_block_locked(
+        PinnedUploadPool& pool,
+        std::size_t requiredBytes,
+        std::uint64_t nowMs) {
+        int bestIndex = -1;
+        std::size_t bestCapacity = std::numeric_limits<std::size_t>::max();
+        for (std::size_t i = 0; i < pool.blocks.size(); ++i) {
+            PinnedUploadBlock& block = pool.blocks[i];
+            refresh_pinned_block_completion_locked(block, nowMs);
+            if (block.reserved || block.inFlight || !block.ptr || block.capacity < requiredBytes) {
+                continue;
+            }
+            if (block.capacity < bestCapacity) {
+                bestCapacity = block.capacity;
+                bestIndex = static_cast<int>(i);
+            }
+        }
+        return bestIndex;
+    }
+
+    static int pick_trim_candidate_pinned_block_locked(
+        PinnedUploadPool& pool,
+        std::uint64_t nowMs,
+        std::uint32_t idleTrimMs,
+        bool idleOnly) {
+        int candidateIndex = -1;
+        std::uint64_t oldestTouched = 0;
+        for (std::size_t i = 0; i < pool.blocks.size(); ++i) {
+            PinnedUploadBlock& block = pool.blocks[i];
+            refresh_pinned_block_completion_locked(block, nowMs);
+            if (block.reserved || block.inFlight || !block.ptr) {
+                continue;
+            }
+            if (idleOnly) {
+                const std::uint64_t ageMs = (nowMs >= block.lastTouchedMs) ? (nowMs - block.lastTouchedMs) : 0;
+                if (ageMs < static_cast<std::uint64_t>(idleTrimMs)) {
+                    continue;
+                }
+            }
+            if (candidateIndex < 0 || block.lastTouchedMs < oldestTouched) {
+                candidateIndex = static_cast<int>(i);
+                oldestTouched = block.lastTouchedMs;
+            }
+        }
+        return candidateIndex;
+    }
+
+    static std::size_t trim_pinned_upload_pool_locked(
+        PinnedUploadStagingPolicyState& policyState,
+        PinnedUploadPool& pool,
+        const PinnedUploadContextKey& key,
+        const char* stage,
+        const char* reason,
+        std::size_t trimBudgetBytes,
+        std::uint32_t idleTrimMs,
+        bool idleOnly,
+        std::size_t capBytes) {
+        std::size_t trimmedBytes = 0;
+        const std::uint64_t nowMs = host_asset_now_ms();
+        const std::size_t trimBatchBytes = static_cast<std::size_t>(
+            pinned_upload_staging_config().pinnedUploadStagingTrimBatchBytes);
+        const std::uint64_t trimSequence = pool.nextTrimSequence++;
+
+        while (trimmedBytes < trimBudgetBytes) {
+            const int candidate = pick_trim_candidate_pinned_block_locked(
+                pool, nowMs, idleTrimMs, idleOnly);
+            if (candidate < 0) {
+                break;
+            }
+
+            PinnedUploadBlock block = std::move(pool.blocks[static_cast<std::size_t>(candidate)]);
+            pool.blocks.erase(pool.blocks.begin() + candidate);
+            if (!block.ptr) {
+                continue;
+            }
+
+            const std::size_t blockBytes = block.capacity;
+            if (block.doneEventOpaque) {
+                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                (void)cudaEventDestroy(doneEvent);
+            }
+            (void)cudaFreeHost(block.ptr);
+
+            if (pool.totalBytes >= blockBytes) {
+                pool.totalBytes -= blockBytes;
+            }
+            else {
+                pool.totalBytes = 0;
+            }
+            if (policyState.totalBytesAllContexts >= blockBytes) {
+                policyState.totalBytesAllContexts -= blockBytes;
+            }
+            else {
+                policyState.totalBytesAllContexts = 0;
+            }
+
+            trimmedBytes += blockBytes;
+            trace_pinned_staging_event(
+                stage,
+                "trim",
+                reason,
+                key,
+                blockBytes,
+                capBytes,
+                policyState.totalBytesAllContexts,
+                trimBatchBytes,
+                trimSequence);
+        }
+
+        if (trimmedBytes > 0) {
+            ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
+            managerState.pinnedStagingTrimEvents.fetch_add(1, std::memory_order_relaxed);
+            managerState.pinnedStagingTrimBytes.fetch_add(
+                static_cast<std::uint64_t>(trimmedBytes),
+                std::memory_order_relaxed);
+            publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
+        }
+
+        return trimmedBytes;
+    }
+
+    struct PinnedUploadReservation {
+        bool staged = false;
+        PinnedUploadContextKey key{};
+        std::uint64_t blockId = 0;
+        void* stagingPtr = nullptr;
+        std::size_t capBytes = 0;
+        std::size_t trimBatchBytes = 0;
+        std::string fallbackReason;
+    };
+
+    static PinnedUploadReservation reserve_pinned_upload_block(
+        std::size_t bytes,
+        const char* stage) {
+        PinnedUploadReservation result{};
+        if (bytes == 0) {
+            return result;
+        }
+
+        const ResourceManager::ResourceManagerConfigEffective& cfg = pinned_upload_staging_config();
+        result.capBytes = static_cast<std::size_t>(cfg.pinnedUploadStagingMaxBytes);
+        result.trimBatchBytes = static_cast<std::size_t>(cfg.pinnedUploadStagingTrimBatchBytes);
+
+        int deviceId = -1;
+        std::string deviceError;
+        if (!query_current_cuda_device(deviceId, deviceError)) {
+            result.fallbackReason = "device_query_failed";
+            return result;
+        }
+        void* contextOpaque = nullptr;
+        std::string contextError;
+        if (!query_current_cuda_context(contextOpaque, contextError) || !contextOpaque) {
+            result.fallbackReason = "context_query_failed";
+            return result;
+        }
+        result.key.deviceId = deviceId;
+        result.key.contextOpaque = contextOpaque;
+
+        PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
+        std::lock_guard<std::mutex> lock(policyState.mutex);
+        PinnedUploadPool& pool = policyState.pools[result.key];
+        const std::uint64_t nowMs = host_asset_now_ms();
+
+        (void)trim_pinned_upload_pool_locked(
+            policyState,
+            pool,
+            result.key,
+            stage,
+            "idle_trim",
+            result.trimBatchBytes,
+            cfg.pinnedUploadStagingIdleTrimMs,
+            true,
+            result.capBytes);
+
+        int blockIndex = pick_reusable_pinned_block_locked(pool, bytes, nowMs);
+        if (blockIndex < 0) {
+            if (pool.totalBytes + bytes > result.capBytes) {
+                ResourceManager::global_state().pinnedStagingCapHits.fetch_add(1, std::memory_order_relaxed);
+                trace_pinned_staging_event(
+                    stage,
+                    "cap_hit",
+                    "cap_before_alloc",
+                    result.key,
+                    bytes,
+                    result.capBytes,
+                    policyState.totalBytesAllContexts,
+                    result.trimBatchBytes,
+                    pool.nextTrimSequence);
+                (void)trim_pinned_upload_pool_locked(
+                    policyState,
+                    pool,
+                    result.key,
+                    stage,
+                    "cap_trim",
+                    result.trimBatchBytes,
+                    cfg.pinnedUploadStagingIdleTrimMs,
+                    false,
+                    result.capBytes);
+            }
+
+            if (pool.totalBytes + bytes > result.capBytes) {
+                result.fallbackReason = "cap_exceeded";
+                return result;
+            }
+
+            void* pinnedPtr = nullptr;
+            const cudaError_t allocErr = cudaMallocHost(&pinnedPtr, bytes);
+            if (allocErr != cudaSuccess || !pinnedPtr) {
+                result.fallbackReason = "host_alloc_failed";
+                return result;
+            }
+
+            cudaEvent_t doneEvent = nullptr;
+            const cudaError_t eventErr = cudaEventCreateWithFlags(&doneEvent, cudaEventDisableTiming);
+            if (eventErr != cudaSuccess || !doneEvent) {
+                (void)cudaFreeHost(pinnedPtr);
+                result.fallbackReason = "event_create_failed";
+                return result;
+            }
+
+            PinnedUploadBlock block{};
+            block.id = pool.nextBlockId++;
+            block.ptr = pinnedPtr;
+            block.capacity = bytes;
+            block.lastTouchedMs = nowMs;
+            block.doneEventOpaque = reinterpret_cast<void*>(doneEvent);
+            block.inFlight = false;
+            block.reserved = true;
+            pool.blocks.push_back(block);
+            pool.totalBytes += bytes;
+            policyState.totalBytesAllContexts += bytes;
+
+            publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
+            trace_pinned_staging_event(
+                stage,
+                "alloc",
+                "new_block",
+                result.key,
+                bytes,
+                result.capBytes,
+                policyState.totalBytesAllContexts,
+                result.trimBatchBytes,
+                pool.nextTrimSequence);
+
+            result.staged = true;
+            result.blockId = block.id;
+            result.stagingPtr = block.ptr;
+            return result;
+        }
+
+        PinnedUploadBlock& block = pool.blocks[static_cast<std::size_t>(blockIndex)];
+        block.reserved = true;
+        block.lastTouchedMs = nowMs;
+        result.staged = true;
+        result.blockId = block.id;
+        result.stagingPtr = block.ptr;
+        return result;
+    }
+
+    static bool release_pinned_upload_reservation(
+        const PinnedUploadReservation& reservation,
+        bool copyEnqueued,
+        cudaStream_t stream,
+        const char* stage,
+        std::string& outRecordError) {
+        outRecordError.clear();
+        if (!reservation.staged || reservation.blockId == 0) {
+            return false;
+        }
+
+        PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
+        std::lock_guard<std::mutex> lock(policyState.mutex);
+        const auto poolIt = policyState.pools.find(reservation.key);
+        if (poolIt == policyState.pools.end()) {
+            return false;
+        }
+        PinnedUploadPool& pool = poolIt->second;
+        for (PinnedUploadBlock& block : pool.blocks) {
+            if (block.id != reservation.blockId) {
+                continue;
+            }
+            block.reserved = false;
+            block.lastTouchedMs = host_asset_now_ms();
+            if (!copyEnqueued) {
+                block.inFlight = false;
+                return false;
+            }
+            cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+            const cudaError_t recordErr = cudaEventRecord(doneEvent, stream);
+            if (recordErr == cudaSuccess) {
+                block.inFlight = true;
+                return false;
+            }
+
+            outRecordError = std::string("cudaEventRecord(pinned staging) failed: ")
+                + (cudaGetErrorString(recordErr) ? cudaGetErrorString(recordErr) : "(unknown)");
+            block.inFlight = false;
+            trace_pinned_staging_event(
+                stage,
+                "event_record_failed",
+                "sync_fallback_required",
+                reservation.key,
+                block.capacity,
+                reservation.capBytes,
+                policyState.totalBytesAllContexts,
+                reservation.trimBatchBytes,
+                pool.nextTrimSequence);
+            return true;
+        }
+        return false;
+    }
+
+    static bool enqueue_host_to_device_copy(
+        const char* stage,
+        const char* label,
+        void* dst,
+        const void* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (bytes == 0) {
+            return true;
+        }
+        if (!dst || !src) {
+            outError = std::string(label ? label : "copy") + " upload args invalid";
+            return false;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+            : nullptr;
+
+        PinnedUploadReservation reservation = reserve_pinned_upload_block(bytes, stage);
+        bool stagedCopyAttempted = false;
+        if (reservation.staged && reservation.stagingPtr) {
+            stagedCopyAttempted = true;
+            std::memcpy(reservation.stagingPtr, src, bytes);
+            const cudaError_t stagedErr = cudaMemcpyAsync(
+                dst,
+                reservation.stagingPtr,
+                bytes,
+                cudaMemcpyHostToDevice,
+                stream);
+            const bool copyEnqueued = (stagedErr == cudaSuccess);
+            std::string recordError;
+            const bool syncRequired = release_pinned_upload_reservation(
+                reservation,
+                copyEnqueued,
+                stream,
+                stage,
+                recordError);
+
+            if (copyEnqueued) {
+                if (syncRequired) {
+                    const cudaError_t syncErr = cudaStreamSynchronize(stream);
+                    if (syncErr != cudaSuccess) {
+                        outError = std::string("cudaStreamSynchronize(")
+                            + (label ? label : "upload")
+                            + ") failed after pinned staging fallback: "
+                            + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+                        return false;
+                    }
+                    ResourceManager::global_state().pinnedStagingFallbackEvents.fetch_add(
+                        1, std::memory_order_relaxed);
+                    trace_pinned_staging_event(
+                        stage,
+                        "fallback",
+                        recordError.empty() ? "event_record_failed" : recordError.c_str(),
+                        reservation.key,
+                        bytes,
+                        reservation.capBytes,
+                        ResourceManager::global_state().pinnedStagingBytes.load(std::memory_order_relaxed),
+                        reservation.trimBatchBytes,
+                        0);
+                }
+                return true;
+            }
+        }
+
+        const cudaError_t err = cudaMemcpyAsync(
+            dst,
+            src,
+            bytes,
+            cudaMemcpyHostToDevice,
+            stream);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMemcpyAsync(")
+                + (label ? label : "upload")
+                + ") failed: "
+                + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            return false;
+        }
+
+        if (stagedCopyAttempted || !reservation.fallbackReason.empty()) {
+            ResourceManager::global_state().pinnedStagingFallbackEvents.fetch_add(
+                1, std::memory_order_relaxed);
+            trace_pinned_staging_event(
+                stage,
+                "fallback",
+                reservation.fallbackReason.empty() ? "staged_copy_failed" : reservation.fallbackReason.c_str(),
+                reservation.key,
+                bytes,
+                reservation.capBytes,
+                ResourceManager::global_state().pinnedStagingBytes.load(std::memory_order_relaxed),
+                reservation.trimBatchBytes,
+                0);
+        }
+        return true;
+    }
+
+    #endif // defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+
     struct StbnCpuView {
         const std::uint8_t* data = nullptr;
         std::size_t bytes = 0;
@@ -2075,10 +2594,14 @@ namespace JuicerCuda {
             outError = std::string("cudaMalloc(") + label + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
         }
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        err = cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(") + label + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!enqueue_host_to_device_copy(
+                "alloc_and_upload_array",
+                label,
+                dst,
+                src,
+                bytes,
+                cudaStreamOpaque,
+                outError)) {
             cudaFree(dst);
             dst = nullptr;
             return false;
@@ -2131,16 +2654,27 @@ namespace JuicerCuda {
             return false;
         }
 
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        err = cudaMemcpyAsync(dst.x, src.lambda_nm.data(), bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(curve.x) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!enqueue_host_to_device_copy(
+                "alloc_and_upload_curve",
+                "curve.x",
+                dst.x,
+                src.lambda_nm.data(),
+                bytes,
+                cudaStreamOpaque,
+                outError)) {
+            outError = std::string("curve.x upload failed: ") + outError;
             free_curve(dst);
             return false;
         }
-        err = cudaMemcpyAsync(dst.y, src.linear.data(), bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(curve.y) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!enqueue_host_to_device_copy(
+                "alloc_and_upload_curve",
+                "curve.y",
+                dst.y,
+                src.linear.data(),
+                bytes,
+                cudaStreamOpaque,
+                outError)) {
+            outError = std::string("curve.y upload failed: ") + outError;
             free_curve(dst);
             return false;
         }
@@ -2185,14 +2719,29 @@ namespace JuicerCuda {
                 }
             }
 
-            cudaError_t err = cudaMemcpyAsync(dst.x, src.lambda_nm.data(), bytes, cudaMemcpyHostToDevice, stream);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMemcpyAsync(") + label + ".x failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            const char* baseLabel = label ? label : "curve";
+            const std::string labelX = std::string(baseLabel) + ".x";
+            if (!enqueue_host_to_device_copy(
+                    "upload_curve_locked",
+                    labelX.c_str(),
+                    dst.x,
+                    src.lambda_nm.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError)) {
+                outError = std::string(baseLabel) + ".x upload failed: " + outError;
                 return false;
             }
-            err = cudaMemcpyAsync(dst.y, src.linear.data(), bytes, cudaMemcpyHostToDevice, stream);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMemcpyAsync(") + label + ".y failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            const std::string labelY = std::string(baseLabel) + ".y";
+            if (!enqueue_host_to_device_copy(
+                    "upload_curve_locked",
+                    labelY.c_str(),
+                    dst.y,
+                    src.linear.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError)) {
+                outError = std::string(baseLabel) + ".y upload failed: " + outError;
                 return false;
             }
 
@@ -2262,10 +2811,14 @@ namespace JuicerCuda {
             free_curve(dst);
             return false;
         }
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        err = cudaMemcpyAsync(dst.y, src.data(), bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(") + label + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!enqueue_host_to_device_copy(
+                "alloc_and_upload_spectral_samples",
+                label,
+                dst.y,
+                src.data(),
+                bytes,
+                cudaStreamOpaque,
+                outError)) {
             free_curve(dst);
             return false;
         }
@@ -2594,10 +3147,14 @@ namespace JuicerCuda {
                     if (view.bytes > 0) {
                         const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&resources.stbnData), view.bytes);
                         if (allocErr == cudaSuccess) {
-                            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-                            const cudaError_t copyErr = cudaMemcpyAsync(resources.stbnData, view.data, view.bytes, cudaMemcpyHostToDevice, stream);
-                            if (copyErr != cudaSuccess) {
-                                stbnError = std::string("cudaMemcpyAsync(STBN) failed: ") + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
+                            if (!enqueue_host_to_device_copy(
+                                    "ensure_uploaded",
+                                    "STBN",
+                                    resources.stbnData,
+                                    view.data,
+                                    view.bytes,
+                                    cudaStreamOpaque,
+                                    stbnError)) {
                                 free_stbn(resources);
                             }
                             else {
@@ -2639,12 +3196,23 @@ namespace JuicerCuda {
                         const cudaError_t allocTiles = cudaMalloc(reinterpret_cast<void**>(&resources.wangTilesData), view.tileBytes);
                         const cudaError_t allocLut = cudaMalloc(reinterpret_cast<void**>(&resources.wangLutData), view.lutBytes);
                         if (allocTiles == cudaSuccess && allocLut == cudaSuccess) {
-                            const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-                            const cudaError_t copyTiles = cudaMemcpyAsync(resources.wangTilesData, view.tiles, view.tileBytes, cudaMemcpyHostToDevice, stream);
-                            const cudaError_t copyLut = cudaMemcpyAsync(resources.wangLutData, view.lut, view.lutBytes, cudaMemcpyHostToDevice, stream);
-                            if (copyTiles != cudaSuccess || copyLut != cudaSuccess) {
-                                wangError = std::string("cudaMemcpyAsync(Wang) failed: ") +
-                                    (cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) ? cudaGetErrorString(copyTiles != cudaSuccess ? copyTiles : copyLut) : "(unknown)");
+                            const bool tilesOk = enqueue_host_to_device_copy(
+                                "ensure_uploaded",
+                                "Wang.tiles",
+                                resources.wangTilesData,
+                                view.tiles,
+                                view.tileBytes,
+                                cudaStreamOpaque,
+                                wangError);
+                            const bool lutOk = tilesOk && enqueue_host_to_device_copy(
+                                "ensure_uploaded",
+                                "Wang.lut",
+                                resources.wangLutData,
+                                view.lut,
+                                view.lutBytes,
+                                cudaStreamOpaque,
+                                wangError);
+                            if (!tilesOk || !lutOk) {
                                 free_wang(resources);
                             }
                             else {
@@ -3006,7 +3574,6 @@ namespace JuicerCuda {
                 }
             } else {
                 if (!resources.hanatosLut || resources.hanatosN != N) {
-                    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
                     if (resources.hanatosLut) {
                         const size_t count = static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(Spectral::kNumSamples);
                         const size_t bytes = count * sizeof(float);
@@ -3025,9 +3592,14 @@ namespace JuicerCuda {
                         free_hanatos(resources);
                         return false;
                     }
-                    err = cudaMemcpyAsync(resources.hanatosLut, ctx.hanSpectra.data.data(), bytes, cudaMemcpyHostToDevice, stream);
-                    if (err != cudaSuccess) {
-                        outError = std::string("cudaMemcpyAsync(Hanatos LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    if (!enqueue_host_to_device_copy(
+                            "ensure_uploaded",
+                            "Hanatos LUT",
+                            resources.hanatosLut,
+                            ctx.hanSpectra.data.data(),
+                            bytes,
+                            cudaStreamOpaque,
+                            outError)) {
                         free_hanatos(resources);
                         return false;
                     }
@@ -3064,7 +3636,6 @@ namespace JuicerCuda {
                     lock.lock();
                     reap_retire_queue_locked(resources);
 
-                    const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
                     const bool stillNeedAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
                     const bool stillNeedUpload = stillNeedAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
                     if (stillNeedUpload) {
@@ -3075,9 +3646,14 @@ namespace JuicerCuda {
                             outError = std::string("cudaMalloc(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
                             return false;
                         }
-                        err = cudaMemcpyAsync(dLut, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
-                        if (err != cudaSuccess) {
-                            outError = std::string("cudaMemcpyAsync(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                        if (!enqueue_host_to_device_copy(
+                                "ensure_uploaded",
+                                "Hanatos integrated LUT",
+                                dLut,
+                                cpu.data(),
+                                bytes,
+                                cudaStreamOpaque,
+                                outError)) {
                             cudaFree(dLut);
                             return false;
                         }
@@ -3123,7 +3699,6 @@ namespace JuicerCuda {
                 }
             }
             else if (!resources.mallettBasis || resources.mallettBasisK != K) {
-                const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
                 if (resources.mallettBasis) {
                     const size_t count = static_cast<size_t>(resources.mallettBasisK) * 3u;
                     const size_t bytes = count * sizeof(float);
@@ -3141,9 +3716,14 @@ namespace JuicerCuda {
                     free_mallett_basis(resources);
                     return false;
                 }
-                err = cudaMemcpyAsync(resources.mallettBasis, ctx.mallettBasis.data.data(), bytes, cudaMemcpyHostToDevice, stream);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMemcpyAsync(Mallett basis) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                if (!enqueue_host_to_device_copy(
+                        "ensure_uploaded",
+                        "Mallett basis",
+                        resources.mallettBasis,
+                        ctx.mallettBasis.data.data(),
+                        bytes,
+                        cudaStreamOpaque,
+                        outError)) {
                     free_mallett_basis(resources);
                     return false;
                 }
@@ -3228,7 +3808,6 @@ namespace JuicerCuda {
             return false;
         }
 
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
         {
             std::lock_guard<std::mutex> lock(resources.m);
             if (!validate_resource_owner_locked(resources, outError, false)) {
@@ -3258,9 +3837,14 @@ namespace JuicerCuda {
                 free_scan_lut(*dst);
                 return false;
             }
-            err = cudaMemcpyAsync(dLut, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMemcpyAsync(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            if (!enqueue_host_to_device_copy(
+                    "ensure_scan_lut",
+                    "scan LUT",
+                    dLut,
+                    cpu.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError)) {
                 cudaFree(dLut);
                 free_scan_lut(*dst);
                 return false;
@@ -4177,9 +4761,14 @@ namespace JuicerCuda {
         }
 
         const size_t bytes = static_cast<size_t>(K) * sizeof(float);
-        const cudaError_t err = cudaMemcpyAsync(resources.printIllumFiltered, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!enqueue_host_to_device_copy(
+                "ensure_print_illuminant_filtered",
+                "print illuminant filtered",
+                resources.printIllumFiltered,
+                cpu.data(),
+                bytes,
+                cudaStreamOpaque,
+                outError)) {
             return false;
         }
 
@@ -4992,6 +5581,83 @@ namespace JuicerCuda {
             }
         }
 
+        if (needRestore) {
+            (void)cudaSetDevice(previousDevice);
+        }
+#else
+        (void)deviceId;
+        (void)contextOpaque;
+#endif
+    }
+
+    void purge_pinned_upload_staging_for_context(int deviceId, void* contextOpaque) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (deviceId < 0 || contextOpaque == nullptr) {
+            return;
+        }
+
+        const PinnedUploadContextKey key{ deviceId, contextOpaque };
+        std::vector<PinnedUploadBlock> blocksToFree;
+        {
+            PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
+            std::lock_guard<std::mutex> lock(policyState.mutex);
+            const auto it = policyState.pools.find(key);
+            if (it == policyState.pools.end()) {
+                return;
+            }
+            const std::uint64_t nowMs = host_asset_now_ms();
+            PinnedUploadPool retained{};
+            retained.nextBlockId = it->second.nextBlockId;
+            retained.nextTrimSequence = it->second.nextTrimSequence;
+            for (PinnedUploadBlock& block : it->second.blocks) {
+                refresh_pinned_block_completion_locked(block, nowMs);
+                if (block.reserved || block.inFlight || !block.ptr) {
+                    retained.blocks.push_back(block);
+                    retained.totalBytes += block.capacity;
+                    continue;
+                }
+                blocksToFree.push_back(block);
+            }
+
+            const std::size_t oldBytes = it->second.totalBytes;
+            const std::size_t retainedBytes = retained.totalBytes;
+            if (oldBytes >= retainedBytes) {
+                const std::size_t reclaimed = oldBytes - retainedBytes;
+                if (policyState.totalBytesAllContexts >= reclaimed) {
+                    policyState.totalBytesAllContexts -= reclaimed;
+                }
+                else {
+                    policyState.totalBytesAllContexts = 0;
+                }
+            }
+
+            if (retained.blocks.empty()) {
+                policyState.pools.erase(it);
+            }
+            else {
+                it->second = std::move(retained);
+            }
+            publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
+        }
+
+        if (blocksToFree.empty()) {
+            return;
+        }
+
+        int previousDevice = -1;
+        const cudaError_t prevErr = cudaGetDevice(&previousDevice);
+        const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
+        const bool needRestore = havePreviousDevice && previousDevice != deviceId;
+        (void)cudaSetDevice(deviceId);
+        for (const PinnedUploadBlock& block : blocksToFree) {
+            if (block.doneEventOpaque) {
+                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                (void)cudaEventDestroy(doneEvent);
+            }
+            if (block.ptr) {
+                (void)cudaFreeHost(block.ptr);
+            }
+        }
         if (needRestore) {
             (void)cudaSetDevice(previousDevice);
         }

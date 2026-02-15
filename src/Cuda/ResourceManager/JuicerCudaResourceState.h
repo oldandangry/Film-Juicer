@@ -92,6 +92,11 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> hostAssetCacheTrimEvents{ 0 };
     std::atomic<std::uint64_t> hostAssetCacheTrimBytes{ 0 };
     std::atomic<std::uint64_t> hostAssetCacheCapHits{ 0 };
+    std::atomic<std::uint64_t> pinnedStagingBytes{ 0 };
+    std::atomic<std::uint64_t> pinnedStagingCapHits{ 0 };
+    std::atomic<std::uint64_t> pinnedStagingFallbackEvents{ 0 };
+    std::atomic<std::uint64_t> pinnedStagingTrimEvents{ 0 };
+    std::atomic<std::uint64_t> pinnedStagingTrimBytes{ 0 };
     std::atomic<std::uint64_t> transientNonManagerBytes{ 0 };
     std::atomic<std::uint64_t> allocatorEffectiveHeadroomBytes{ 0 };
     std::atomic<std::uint64_t> allocatorPoolReservedBytes{ 0 };
