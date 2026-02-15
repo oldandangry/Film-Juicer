@@ -149,6 +149,8 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> burstDebtAccrualEvents{ 0 };
     std::atomic<std::uint64_t> burstDebtThrottleEvents{ 0 };
     std::atomic<std::uint64_t> supersededBuilderCancelSurfaceTraceEvents{ 0 };
+    std::atomic<std::uint64_t> supersededBuilderCancelEvents{ 0 };
+    std::atomic<std::uint64_t> supersededBuilderCancelSavedBytes{ 0 };
     std::atomic<std::uint64_t> graphNonResidentServeEvents{ 0 };
     std::atomic<std::uint64_t> graphLargeEntryDecayEvents{ 0 };
     std::atomic<std::uint64_t> graphLargeEntryTrimEvents{ 0 };
@@ -164,6 +166,11 @@ struct ResourceManagerState {
 
 ResourceManagerState& global_state() noexcept;
 void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus status) noexcept;
+void state_note_latest_snapshot(const SubmissionSnapshot& snapshot) noexcept;
+bool state_snapshot_is_superseded(
+    const SubmissionSnapshot& snapshot,
+    std::uint64_t* outLatestSnapshotId = nullptr) noexcept;
+void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexcept;
 
 struct MetadataMutationScope {
     std::uint64_t sequence = 0;

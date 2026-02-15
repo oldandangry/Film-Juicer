@@ -3839,6 +3839,40 @@ void trace_superseded_builder_cancel_surface(
     global_state().supersededBuilderCancelSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
 }
 
+void trace_superseded_builder_cancel_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    bool criticalCurrentFrame,
+    std::uint64_t requestBytes,
+    std::uint64_t latestSnapshotId,
+    const SupersededBuilderCancelInput& input,
+    const SupersededBuilderCancelDecision& decision) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
+    const std::uint64_t savedBytes = decision.cancel ? requestBytes : 0;
+    const std::string msg = std::string("event=superseded_builder_cancel_decision")
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + (commandName ? commandName : "unknown")
+        + " enabled=" + std::to_string(input.enabled ? 1 : 0)
+        + " superseded=" + std::to_string(input.superseded ? 1 : 0)
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " cancel=" + std::to_string(decision.cancel ? 1 : 0)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " saved_bytes=" + std::to_string(static_cast<unsigned long long>(savedBytes))
+        + " latest_snapshot_id=" + std::to_string(static_cast<unsigned long long>(latestSnapshotId))
+        + " instance_token=" + std::to_string(
+            static_cast<unsigned long long>(transaction.snapshot.instanceToken.value))
+        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " reason=" + (decision.reason ? decision.reason : "unspecified");
+    JTRACE("MSCNL", msg);
+}
+
 void trace_optional_heuristic_surfaces_once(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
@@ -4694,6 +4728,59 @@ BurstDebtRuntimeDecision evaluate_burst_debt_runtime(
     return out;
 }
 
+std::string make_superseded_builder_cancel_error(
+    const char* commandName,
+    std::uint64_t latestSnapshotId) {
+    std::string out = std::string(kReservationDeferredPrefix) + "superseded_builder_cancel";
+    if (commandName && *commandName) {
+        out += ":command=";
+        out += commandName;
+    }
+    if (latestSnapshotId > 0) {
+        out += ":latest_snapshot_id=" + std::to_string(static_cast<unsigned long long>(latestSnapshotId));
+    }
+    return out;
+}
+
+bool should_cancel_superseded_noncritical_builder(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    bool criticalCurrentFrame,
+    std::uint64_t requestBytes,
+    std::uint64_t& outLatestSnapshotId) {
+    outLatestSnapshotId = 0;
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+
+    SupersededBuilderCancelInput input{};
+    input.enabled = cfg.cancelSupersededBuilders;
+    input.criticalCurrentFrame = criticalCurrentFrame;
+    input.superseded = state_snapshot_is_superseded(transaction.snapshot, &outLatestSnapshotId);
+    const SupersededBuilderCancelDecision decision =
+        classify_superseded_builder_cancel(input);
+
+    if (input.enabled || decision.cancel || JTRACE_ENABLED(3)) {
+        trace_superseded_builder_cancel_decision(
+            transaction,
+            commandName,
+            criticalCurrentFrame,
+            requestBytes,
+            outLatestSnapshotId,
+            input,
+            decision);
+    }
+
+    if (!decision.cancel) {
+        return false;
+    }
+
+    ResourceManagerState& state = global_state();
+    state.supersededBuilderCancelEvents.fetch_add(1, std::memory_order_relaxed);
+    if (requestBytes > 0) {
+        state.supersededBuilderCancelSavedBytes.fetch_add(requestBytes, std::memory_order_relaxed);
+    }
+    return true;
+}
+
 bool enforce_pressure_gate(
     const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -4712,6 +4799,17 @@ bool enforce_pressure_gate(
     const bool uploadCapEnabled = (uploadCapBytes > 0);
     const bool uploadCapSaturated = uploadCapEnabled && (uploadBytesInFlight >= uploadCapBytes);
     const bool nonCritical = !criticalCurrentFrame;
+    std::uint64_t supersededLatestSnapshotId = 0;
+    if (requestBytes > 0 &&
+        should_cancel_superseded_noncritical_builder(
+            transaction,
+            commandName,
+            criticalCurrentFrame,
+            static_cast<std::uint64_t>(requestBytes),
+            supersededLatestSnapshotId)) {
+        outError = make_superseded_builder_cancel_error(commandName, supersededLatestSnapshotId);
+        return false;
+    }
     PressureState pressureState = PressureState::Normal;
     TierBudgetSnapshot tierBudget{};
     bool tierBudgetValid = false;
@@ -7195,6 +7293,7 @@ bool begin_submission(
     }
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     ensure_allocator_backend_mode_initialized(outTransaction, cfg);
+    state_note_latest_snapshot(outTransaction.snapshot);
     maybe_apply_async_mempool_release_policy(
         outTransaction,
         PressureState::Normal,
@@ -7640,6 +7739,7 @@ bool command_retire_context_with_reason(
     admission_churn_retire_context(key);
     optional_heuristic_trace_retire_context(key);
     allocator_backend_retire_context(key);
+    state_clear_latest_snapshot_for_context(key);
 
     RegistryHandle handle{};
     if (!registry_get(key, handle) || handle.value == 0) {
@@ -9062,6 +9162,18 @@ bool command_launch_base_pipeline_graph(
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     constexpr bool kGraphAdmissionCriticalCurrentFrame = false;
     ResourceManagerState& managerState = global_state();
+    std::uint64_t supersededLatestSnapshotId = 0;
+    if (requestBytes > 0 &&
+        should_cancel_superseded_noncritical_builder(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            kGraphAdmissionCriticalCurrentFrame,
+            requestBytes,
+            supersededLatestSnapshotId)) {
+        managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        return true;
+    }
     const std::uint64_t graphLargeThresholdBytes = graph_large_entry_threshold_bytes(cfg);
     const std::uint64_t graphLargeCapBytes = graph_large_entry_quarantine_cap_bytes(cfg);
     const std::uint32_t graphLargeCapEntries = graph_large_entry_quarantine_cap_entries(cfg);

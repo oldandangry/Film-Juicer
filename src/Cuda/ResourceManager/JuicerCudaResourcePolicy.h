@@ -171,6 +171,17 @@ struct BurstDebtDecision {
     const char* reason = "disabled";
 };
 
+struct SupersededBuilderCancelInput {
+    bool enabled = false;
+    bool criticalCurrentFrame = false;
+    bool superseded = false;
+};
+
+struct SupersededBuilderCancelDecision {
+    bool cancel = false;
+    const char* reason = "disabled";
+};
+
 AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noexcept;
 ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept;
 bool shadow_key_changed_for_kind(const ShadowKeyDelta& delta, ResourceKind kind) noexcept;
@@ -187,6 +198,8 @@ PressureDecision classify_pressure(const PressureInput& input) noexcept;
 ReservationDecision classify_reservation(const ReservationInput& input) noexcept;
 CacheAdmissionDecision classify_cache_admission(const CacheAdmissionInput& input) noexcept;
 BurstDebtDecision classify_burst_debt(const BurstDebtInput& input) noexcept;
+SupersededBuilderCancelDecision classify_superseded_builder_cancel(
+    const SupersededBuilderCancelInput& input) noexcept;
 
 AcquireDecision default_acquire_decision() noexcept;
 PressureDecision default_pressure_decision() noexcept;

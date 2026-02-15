@@ -448,6 +448,26 @@ BurstDebtDecision classify_burst_debt(const BurstDebtInput& input) noexcept {
     return out;
 }
 
+SupersededBuilderCancelDecision classify_superseded_builder_cancel(
+    const SupersededBuilderCancelInput& input) noexcept {
+    SupersededBuilderCancelDecision out{};
+    if (!input.enabled) {
+        out.reason = "disabled";
+        return out;
+    }
+    if (input.criticalCurrentFrame) {
+        out.reason = "critical_preserve";
+        return out;
+    }
+    if (!input.superseded) {
+        out.reason = "not_superseded";
+        return out;
+    }
+    out.cancel = true;
+    out.reason = "cancel_superseded_noncritical";
+    return out;
+}
+
 AcquireDecision default_acquire_decision() noexcept {
     return AcquireDecision{};
 }

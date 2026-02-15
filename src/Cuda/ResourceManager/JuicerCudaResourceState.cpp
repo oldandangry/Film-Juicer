@@ -4,11 +4,35 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
 
 #include <mutex>
+#include <unordered_map>
 
 namespace JuicerCuda {
 namespace ResourceManager {
 
 namespace {
+
+struct LatestSnapshotKey {
+    std::uint64_t instanceToken = 0;
+    DeviceContextKey deviceContextKey{};
+
+    bool operator==(const LatestSnapshotKey& other) const noexcept {
+        return instanceToken == other.instanceToken &&
+            deviceContextKey == other.deviceContextKey;
+    }
+};
+
+struct LatestSnapshotKeyHasher {
+    std::size_t operator()(const LatestSnapshotKey& key) const noexcept {
+        const std::size_t hInstance = std::hash<std::uint64_t>{}(key.instanceToken);
+        const std::size_t hContext = DeviceContextKeyHash{}(key.deviceContextKey);
+        return hInstance ^ (hContext + 0x9e3779b9u + (hInstance << 6u) + (hInstance >> 2u));
+    }
+};
+
+struct LatestSnapshotState {
+    std::mutex mutex;
+    std::unordered_map<LatestSnapshotKey, std::uint64_t, LatestSnapshotKeyHasher> bySubmissionKey;
+};
 
 std::recursive_mutex& metadata_mutation_mutex() {
     static std::recursive_mutex m;
@@ -18,6 +42,11 @@ std::recursive_mutex& metadata_mutation_mutex() {
 std::uint64_t& metadata_last_issued_sequence() {
     static std::uint64_t value = 0;
     return value;
+}
+
+LatestSnapshotState& latest_snapshot_state() {
+    static LatestSnapshotState state{};
+    return state;
 }
 
 } // namespace
@@ -52,6 +81,59 @@ void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus statu
     default:
         counters.error.fetch_add(1, std::memory_order_relaxed);
         break;
+    }
+}
+
+void state_note_latest_snapshot(const SubmissionSnapshot& snapshot) noexcept {
+    const std::uint64_t instanceToken = snapshot.instanceToken.value;
+    if (instanceToken == 0 || snapshot.snapshotId == 0) {
+        return;
+    }
+
+    const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
+    LatestSnapshotState& state = latest_snapshot_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    std::uint64_t& latest = state.bySubmissionKey[key];
+    if (snapshot.snapshotId > latest) {
+        latest = snapshot.snapshotId;
+    }
+}
+
+bool state_snapshot_is_superseded(
+    const SubmissionSnapshot& snapshot,
+    std::uint64_t* outLatestSnapshotId) noexcept {
+    if (outLatestSnapshotId) {
+        *outLatestSnapshotId = 0;
+    }
+
+    const std::uint64_t instanceToken = snapshot.instanceToken.value;
+    if (instanceToken == 0 || snapshot.snapshotId == 0) {
+        return false;
+    }
+
+    const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
+    LatestSnapshotState& state = latest_snapshot_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto it = state.bySubmissionKey.find(key);
+    if (it == state.bySubmissionKey.end()) {
+        return false;
+    }
+    if (outLatestSnapshotId) {
+        *outLatestSnapshotId = it->second;
+    }
+    return it->second > snapshot.snapshotId;
+}
+
+void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexcept {
+    LatestSnapshotState& state = latest_snapshot_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (auto it = state.bySubmissionKey.begin(); it != state.bySubmissionKey.end();) {
+        if (it->first.deviceContextKey == key) {
+            it = state.bySubmissionKey.erase(it);
+        }
+        else {
+            ++it;
+        }
     }
 }
 
