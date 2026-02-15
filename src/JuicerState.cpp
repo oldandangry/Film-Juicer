@@ -2,6 +2,7 @@
 
 #include "LogExposureOffsets.h"
 #include "RebuildWorkingStateInternals.h"
+#include "WorkingStateCorePayload.h"
 #include "WorkingStateCoreSharing.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -99,6 +100,8 @@ namespace {
             + " core_share_identity=" + std::to_string(result.identity)
             + " cache_hit=" + std::to_string(result.hit ? 1 : 0)
             + " cache_inserted=" + std::to_string(result.inserted ? 1 : 0)
+            + " payload_present=" + std::to_string(result.payloadPresent ? 1 : 0)
+            + " payload_backfilled=" + std::to_string(result.payloadBackfilled ? 1 : 0)
             + " cache_entries=" + std::to_string(static_cast<unsigned long long>(result.cacheEntries));
         JTRACE("MSWSC", msg);
     }
@@ -2499,8 +2502,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
     {
+        auto corePayload = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
+        WorkingStateSharing::capture_working_state_core_payload(*target, *corePayload);
         const WorkingStateSharing::AcquireCoreSharedResult coreShare =
-            WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash);
+            WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash, std::move(corePayload));
         target->sharedCore = coreShare.sharedCore;
         trace_working_state_core_share(coreShare, target->buildCounter, "full_rebuild");
     }
@@ -2572,74 +2577,26 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
         return;
     }
 
-    auto copy_immutable_for_coupler_overlay = [](const WorkingState& in, WorkingState& out) {
-        out.densB = in.densB;
-        out.densG = in.densG;
-        out.densR = in.densR;
-        out.densityCurvesLayers = in.densityCurvesLayers;
-        out.hasDensityCurvesLayers = in.hasDensityCurvesLayers;
-        out.grain = in.grain;
-        out.halation = in.halation;
-        out.negativeGlare = in.negativeGlare;
-        out.printGlare = in.printGlare;
-        out.sensB = in.sensB;
-        out.sensG = in.sensG;
-        out.sensR = in.sensR;
-        out.negSensB = in.negSensB;
-        out.negSensG = in.negSensG;
-        out.negSensR = in.negSensR;
-        out.baseMin = in.baseMin;
-        out.baseMid = in.baseMid;
-        out.hasBaseline = in.hasBaseline;
-        out.baselineMixReference = in.baselineMixReference;
-        out.printBaselineMixReference = in.printBaselineMixReference;
-        out.gammaFactorB = in.gammaFactorB;
-        out.gammaFactorG = in.gammaFactorG;
-        out.gammaFactorR = in.gammaFactorR;
-        out.tablesView = in.tablesView;
-        out.tablesPrint = in.tablesPrint;
-        out.tablesRef = in.tablesRef;
-        out.tablesScan = in.tablesScan;
-        out.negativeScannerIlluminant = in.negativeScannerIlluminant;
-        out.negativeDensityRange = in.negativeDensityRange;
-        out.negativeStaticKey = in.negativeStaticKey;
-        out.negativeColorRuntime = in.negativeColorRuntime;
-        out.negativeMediumRuntime = in.negativeMediumRuntime;
-        out.printScannerIlluminant = in.printScannerIlluminant;
-        out.printDensityRange = in.printDensityRange;
-        out.printStaticKey = in.printStaticKey;
-        out.printColorRuntime = in.printColorRuntime;
-        out.printMediumRuntime = in.printMediumRuntime;
-        out.negativeScannerValid = in.negativeScannerValid;
-        out.printScannerValid = in.printScannerValid;
-        out.printGlareCompensated = in.printGlareCompensated;
-        for (int i = 0; i < 9; ++i) {
-            out.spdSInv[i] = in.spdSInv[i];
-        }
-        out.spdReady = in.spdReady;
-        out.filmRaw = in.filmRaw;
-        out.printRT = in.printRT;
-        out.negParams = in.negParams;
-        out.coreShareHash = in.coreShareHash;
-        out.sharedCore = in.sharedCore;
-
-        out.negativeMediumRuntime.tables = (out.tablesScan.K > 0) ? &out.tablesScan : nullptr;
-        out.negativeMediumRuntime.color = &out.negativeColorRuntime;
-        out.negativeMediumRuntime.staticKey = out.negativeStaticKey;
-        if (out.printScannerValid) {
-            out.printMediumRuntime.tables = (out.tablesPrint.K > 0) ? &out.tablesPrint : nullptr;
-            out.printMediumRuntime.color = &out.printColorRuntime;
-        }
-        else {
-            out.printMediumRuntime.tables = nullptr;
-            out.printMediumRuntime.color = nullptr;
-        }
-        out.printMediumRuntime.staticKey = out.printStaticKey;
-    };
-
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
-    copy_immutable_for_coupler_overlay(*src, *target);
+    const std::uint64_t coreShareHash = hash_params_core(P);
+    WorkingStateSharing::AcquireCoreSharedResult coreShare =
+        WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
+    if (!(coreShare.sharedCore && coreShare.sharedCore->payload)) {
+        auto payloadSeed = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
+        WorkingStateSharing::capture_working_state_core_payload(*src, *payloadSeed);
+        coreShare = WorkingStateSharing::acquire_or_create_shared_core(coreShareHash, std::move(payloadSeed));
+    }
+    if (coreShare.sharedCore && coreShare.sharedCore->payload) {
+        WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
+    }
+    else {
+        WorkingStateSharing::WorkingStateCorePayload fallbackPayload{};
+        WorkingStateSharing::capture_working_state_core_payload(*src, fallbackPayload);
+        WorkingStateSharing::apply_working_state_core_payload(fallbackPayload, *target);
+    }
+    target->coreShareHash = coreShareHash;
+    target->sharedCore = coreShare.sharedCore;
 
     const Profiles::DirCouplersProfile& dirCfg = S.base.dirCouplers;
 
@@ -2792,16 +2749,12 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
 
     target->fullHash = hash_params(P);
     target->uploadCoreHash = hash_params_upload_core(P);
-    target->coreHash = hash_params_core(P);
-    target->coreShareHash = target->coreHash;
+    target->coreHash = coreShareHash;
+    target->coreShareHash = coreShareHash;
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-    {
-        const WorkingStateSharing::AcquireCoreSharedResult coreShare =
-            WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash);
-        target->sharedCore = coreShare.sharedCore;
-        trace_working_state_core_share(coreShare, target->buildCounter, "couplers_only");
-    }
+    target->sharedCore = coreShare.sharedCore;
+    trace_working_state_core_share(coreShare, target->buildCounter, "couplers_only");
 
     JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
     S.activeBuildCounter = target->buildCounter;

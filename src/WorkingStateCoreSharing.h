@@ -6,21 +6,27 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 
 namespace WorkingStateSharing {
+
+struct WorkingStateCorePayload;
 
 struct WorkingStateCoreShared {
     std::uint64_t keyHash = 0;
     std::uint64_t identity = 0;
+    std::shared_ptr<const WorkingStateCorePayload> payload;
 };
 
 struct AcquireCoreSharedResult {
-    std::shared_ptr<const WorkingStateCoreShared> sharedCore;
+    std::shared_ptr<WorkingStateCoreShared> sharedCore;
     std::uint64_t keyHash = 0;
     std::uint64_t identity = 0;
     std::uint32_t cacheEntries = 0;
     bool hit = false;
     bool inserted = false;
+    bool payloadPresent = false;
+    bool payloadBackfilled = false;
 };
 
 class WorkingStateCoreSharedCache final {
@@ -30,7 +36,10 @@ public:
         return cache;
     }
 
-    AcquireCoreSharedResult acquire_or_create(std::uint64_t keyHash) {
+    AcquireCoreSharedResult acquire_or_create(
+        std::uint64_t keyHash,
+        std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr)
+    {
         AcquireCoreSharedResult out{};
         out.keyHash = keyHash;
         if (keyHash == 0) {
@@ -43,12 +52,17 @@ public:
 
         auto it = entries_.find(keyHash);
         if (it != entries_.end()) {
-            std::shared_ptr<const WorkingStateCoreShared> shared = it->second.shared.lock();
+            std::shared_ptr<WorkingStateCoreShared> shared = it->second.shared.lock();
             if (shared) {
+                if (!shared->payload && insertPayload) {
+                    shared->payload = std::move(insertPayload);
+                    out.payloadBackfilled = true;
+                }
                 it->second.lastTouchSequence = touchSequence_;
                 out.sharedCore = std::move(shared);
                 out.identity = out.sharedCore->identity;
                 out.hit = true;
+                out.payloadPresent = (out.sharedCore->payload != nullptr);
                 out.cacheEntries = static_cast<std::uint32_t>(entries_.size());
                 return out;
             }
@@ -58,6 +72,7 @@ public:
         auto created = std::make_shared<WorkingStateCoreShared>();
         created->keyHash = keyHash;
         created->identity = ++identitySequence_;
+        created->payload = std::move(insertPayload);
 
         CacheEntry entry{};
         entry.shared = created;
@@ -68,13 +83,14 @@ public:
         out.sharedCore = std::move(created);
         out.identity = out.sharedCore->identity;
         out.inserted = true;
+        out.payloadPresent = (out.sharedCore->payload != nullptr);
         out.cacheEntries = static_cast<std::uint32_t>(entries_.size());
         return out;
     }
 
 private:
     struct CacheEntry {
-        std::weak_ptr<const WorkingStateCoreShared> shared;
+        std::weak_ptr<WorkingStateCoreShared> shared;
         std::uint64_t lastTouchSequence = 0;
     };
 
@@ -115,8 +131,11 @@ private:
     std::uint64_t identitySequence_ = 0;
 };
 
-inline AcquireCoreSharedResult acquire_or_create_shared_core(std::uint64_t keyHash) {
-    return WorkingStateCoreSharedCache::instance().acquire_or_create(keyHash);
+inline AcquireCoreSharedResult acquire_or_create_shared_core(
+    std::uint64_t keyHash,
+    std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr)
+{
+    return WorkingStateCoreSharedCache::instance().acquire_or_create(keyHash, std::move(insertPayload));
 }
 
 } // namespace WorkingStateSharing
