@@ -39,15 +39,9 @@ struct WorkingStateCorePayload {
 
     Scanner::ScannerIlluminant negativeScannerIlluminant;
     Scanner::ScannerDensityRange negativeDensityRange;
-    Scanner::ScannerStaticKey negativeStaticKey;
-    Scanner::ColorRuntime negativeColorRuntime;
-    Scanner::ScannerMediumRuntime negativeMediumRuntime;
 
     Scanner::ScannerIlluminant printScannerIlluminant;
     Scanner::ScannerDensityRange printDensityRange;
-    Scanner::ScannerStaticKey printStaticKey;
-    Scanner::ColorRuntime printColorRuntime;
-    Scanner::ScannerMediumRuntime printMediumRuntime;
 
     bool negativeScannerValid = false;
     bool printScannerValid = false;
@@ -96,15 +90,9 @@ inline void capture_working_state_core_payload(const WorkingState& in, WorkingSt
 
     out.negativeScannerIlluminant = in.negativeScannerIlluminant;
     out.negativeDensityRange = in.negativeDensityRange;
-    out.negativeStaticKey = in.negativeStaticKey;
-    out.negativeColorRuntime = in.negativeColorRuntime;
-    out.negativeMediumRuntime = in.negativeMediumRuntime;
 
     out.printScannerIlluminant = in.printScannerIlluminant;
     out.printDensityRange = in.printDensityRange;
-    out.printStaticKey = in.printStaticKey;
-    out.printColorRuntime = in.printColorRuntime;
-    out.printMediumRuntime = in.printMediumRuntime;
 
     out.negativeScannerValid = in.negativeScannerValid;
     out.printScannerValid = in.printScannerValid;
@@ -155,15 +143,9 @@ inline void apply_working_state_core_payload(const WorkingStateCorePayload& in, 
 
     out.negativeScannerIlluminant = in.negativeScannerIlluminant;
     out.negativeDensityRange = in.negativeDensityRange;
-    out.negativeStaticKey = in.negativeStaticKey;
-    out.negativeColorRuntime = in.negativeColorRuntime;
-    out.negativeMediumRuntime = in.negativeMediumRuntime;
 
     out.printScannerIlluminant = in.printScannerIlluminant;
     out.printDensityRange = in.printDensityRange;
-    out.printStaticKey = in.printStaticKey;
-    out.printColorRuntime = in.printColorRuntime;
-    out.printMediumRuntime = in.printMediumRuntime;
 
     out.negativeScannerValid = in.negativeScannerValid;
     out.printScannerValid = in.printScannerValid;
@@ -177,20 +159,6 @@ inline void apply_working_state_core_payload(const WorkingStateCorePayload& in, 
     out.printRT = in.printRT;
     out.negParams = in.negParams;
     out.coreShareHash = in.coreShareHash;
-
-    out.negativeMediumRuntime.tables = (out.tablesScan.K > 0) ? &out.tablesScan : nullptr;
-    out.negativeMediumRuntime.color = &out.negativeColorRuntime;
-    out.negativeMediumRuntime.staticKey = out.negativeStaticKey;
-    if (out.printScannerValid) {
-        out.printMediumRuntime.tables = (out.tablesPrint.K > 0) ? &out.tablesPrint : nullptr;
-        out.printMediumRuntime.color = &out.printColorRuntime;
-    }
-    else {
-        out.printMediumRuntime.tables = nullptr;
-        out.printMediumRuntime.color = nullptr;
-    }
-    out.printMediumRuntime.staticKey = out.printStaticKey;
 }
 
 } // namespace WorkingStateSharing
-

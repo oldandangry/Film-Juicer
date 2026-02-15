@@ -321,6 +321,107 @@ namespace {
         }
     }
 
+    bool rebuild_working_state_scanner_output_runtime(const ParamSnapshot& P, WorkingState& target) {
+        const bool printRuntimeOk = target.printScannerValid;
+        if (!target.negativeScannerValid) {
+            JTRACE("HASH", "FATAL: negative scanner runtime marked invalid");
+            return false;
+        }
+
+        OutputEncoding::Params scannerEncoding{};
+        scannerEncoding.colorSpace = OutputEncoding::colorSpaceFromIndex(P.outputColorSpace);
+        scannerEncoding.applyCctfEncoding = (P.outputCctfEncoding != 0);
+        scannerEncoding.preserveLinearRange = (P.outputLinearPassThrough != 0);
+        scannerEncoding.inputIsOutputSpace = true;
+
+        const std::uint32_t lutRes =
+            static_cast<std::uint32_t>(std::clamp(P.scannerLutResolution, 17, 128));
+        const std::uint64_t negGlareHash = Scanner::hash_glare(target.negativeGlare);
+        const std::uint64_t printGlareHash = printRuntimeOk ? Scanner::hash_glare(target.printGlare) : 0;
+        if (negGlareHash == 0) {
+            JTRACE("HASH", "FATAL: failed to hash negative glare parameters");
+            return false;
+        }
+        if (printRuntimeOk && printGlareHash == 0) {
+            JTRACE("HASH", "FATAL: failed to hash print glare parameters");
+            return false;
+        }
+        if (target.tablesScan.tablesHash == 0) {
+            JTRACE("HASH", "FATAL: scanner table hash invalid for negative medium");
+            return false;
+        }
+        if (printRuntimeOk && target.tablesPrint.tablesHash == 0) {
+            JTRACE("HASH", "FATAL: scanner table hash invalid for print medium");
+            return false;
+        }
+
+        target.negativeMediumRuntime = Scanner::ScannerMediumRuntime{};
+        target.negativeMediumRuntime.medium = Scanner::ScannerMedium::Negative;
+        target.negativeMediumRuntime.tables = (target.tablesScan.K > 0) ? &target.tablesScan : nullptr;
+        target.negativeMediumRuntime.range = target.negativeDensityRange;
+        target.negativeMediumRuntime.illuminant = target.negativeScannerIlluminant;
+        target.negativeMediumRuntime.glare = target.negativeGlare;
+
+        target.printMediumRuntime = Scanner::ScannerMediumRuntime{};
+        target.printMediumRuntime.medium = Scanner::ScannerMedium::Print;
+        target.printMediumRuntime.tables = (target.tablesPrint.K > 0) ? &target.tablesPrint : nullptr;
+        target.printMediumRuntime.range = target.printDensityRange;
+        target.printMediumRuntime.illuminant = target.printScannerIlluminant;
+        target.printMediumRuntime.glare = target.printGlare;
+
+        target.negativeColorRuntime = ScannerOptics::build_color_runtime(
+            target.negativeMediumRuntime,
+            scannerEncoding);
+        if (target.negativeColorRuntime.hash == 0) {
+            JTRACE("HASH", "FATAL: scanner color runtime hash invalid for negative medium");
+            return false;
+        }
+        if (printRuntimeOk) {
+            target.printColorRuntime = ScannerOptics::build_color_runtime(
+                target.printMediumRuntime,
+                scannerEncoding);
+            if (target.printColorRuntime.hash == 0) {
+                JTRACE("HASH", "FATAL: scanner color runtime hash invalid for print medium");
+                return false;
+            }
+        }
+        else {
+            target.printColorRuntime = Scanner::ColorRuntime{};
+        }
+
+        target.negativeStaticKey = Scanner::ScannerStaticKey{};
+        target.negativeStaticKey.medium = Scanner::ScannerMedium::Negative;
+        target.negativeStaticKey.tablesHash = target.tablesScan.tablesHash;
+        target.negativeStaticKey.densityRangeHash = target.negativeDensityRange.digest;
+        target.negativeStaticKey.glareHash = negGlareHash;
+        target.negativeStaticKey.colorRuntimeHash = target.negativeColorRuntime.hash;
+        target.negativeStaticKey.lutResolution = lutRes;
+        Scanner::finalize_static_key(target.negativeStaticKey);
+
+        target.printStaticKey = Scanner::ScannerStaticKey{};
+        if (printRuntimeOk) {
+            target.printStaticKey.medium = Scanner::ScannerMedium::Print;
+            target.printStaticKey.tablesHash = target.tablesPrint.tablesHash;
+            target.printStaticKey.densityRangeHash = target.printDensityRange.digest;
+            target.printStaticKey.glareHash = printGlareHash;
+            target.printStaticKey.colorRuntimeHash = target.printColorRuntime.hash;
+            target.printStaticKey.lutResolution = lutRes;
+            Scanner::finalize_static_key(target.printStaticKey);
+        }
+
+        target.negativeMediumRuntime.color = &target.negativeColorRuntime;
+        target.negativeMediumRuntime.staticKey = target.negativeStaticKey;
+
+        target.printMediumRuntime.color = printRuntimeOk ? &target.printColorRuntime : nullptr;
+        target.printMediumRuntime.staticKey = target.printStaticKey;
+
+        const float glareCompensationFactor = target.printRT
+            ? target.printRT->profile.glare.compensationRemovalFactor
+            : target.printGlare.compensationRemovalFactor;
+        target.printGlareCompensated = (printRuntimeOk && glareCompensationFactor > 0.0f);
+        return true;
+    }
+
     std::string sanitize_identifier(const std::string& value) {
         std::string out;
         out.reserve(value.size());
@@ -1560,48 +1661,50 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
         recompute_working_state_dir_overlay(S, P, *target);
         S.spatialSigmaCacheValid.store(false, std::memory_order_release);
+        if (rebuild_working_state_scanner_output_runtime(P, *target)) {
+            target->fullHash = hash_params(P);
+            target->uploadCoreHash = hash_params_upload_core(P);
+            target->coreHash = coreShareHash;
+            target->coreShareHash = coreShareHash;
+            target->dirHash = hash_params_dir(P);
+            target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
+            trace_working_state_core_share(coreShare, target->buildCounter, "full_rebuild_payload_fast");
 
-        target->fullHash = hash_params(P);
-        target->uploadCoreHash = hash_params_upload_core(P);
-        target->coreHash = coreShareHash;
-        target->coreShareHash = coreShareHash;
-        target->dirHash = hash_params_dir(P);
-        target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-        trace_working_state_core_share(coreShare, target->buildCounter, "full_rebuild_payload_fast");
+            if (JTRACE_ENABLED(3)) {
+                const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
+                const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+                const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
+                const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
+                const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
+                const float neutralC = target->printRT ? target->printRT->neutralC : 0.0f;
+                std::string msg = std::string("working state commit build=") + std::to_string(target->buildCounter)
+                    + " paper=" + std::string(paperKey ? paperKey : "<null>")
+                    + " film=" + std::string(filmKey ? filmKey : "<null>")
+                    + " printRT=" + std::to_string(prtPtr)
+                    + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
+                    + " printRef=" + (target->printRT ? target->printRT->referenceIlluminant : std::string("<null>"))
+                    + " printView=" + (target->printRT ? target->printRT->viewingIlluminant : std::string("<null>"));
+                JTRACE_VERBOSE("PRINTDBG", msg);
+            }
 
-        if (JTRACE_ENABLED(3)) {
-            const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-            const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-            const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
-            const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
-            const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
-            const float neutralC = target->printRT ? target->printRT->neutralC : 0.0f;
-            std::string msg = std::string("working state commit build=") + std::to_string(target->buildCounter)
-                + " paper=" + std::string(paperKey ? paperKey : "<null>")
-                + " film=" + std::string(filmKey ? filmKey : "<null>")
-                + " printRT=" + std::to_string(prtPtr)
-                + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
-                + " printRef=" + (target->printRT ? target->printRT->referenceIlluminant : std::string("<null>"))
-                + " printView=" + (target->printRT ? target->printRT->viewingIlluminant : std::string("<null>"));
-            JTRACE_VERBOSE("PRINTDBG", msg);
+            {
+                std::ostringstream oss;
+                oss << "WorkingState build #" << target->buildCounter;
+                JTRACE("BUILD", oss.str());
+            }
+
+            JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
+            {
+                std::ostringstream oss;
+                oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
+                JTRACE("BUILD", oss.str());
+            }
+            S.activeBuildCounter = target->buildCounter;
+            S.lastParams = P;
+            S.lastHash.store(target->fullHash, std::memory_order_release);
+            return;
         }
-
-        {
-            std::ostringstream oss;
-            oss << "WorkingState build #" << target->buildCounter;
-            JTRACE("BUILD", oss.str());
-        }
-
-        JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
-        {
-            std::ostringstream oss;
-            oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
-            JTRACE("BUILD", oss.str());
-        }
-        S.activeBuildCounter = target->buildCounter;
-        S.lastParams = P;
-        S.lastHash.store(target->fullHash, std::memory_order_release);
-        return;
+        JTRACE("MSWSC", "event=core_share_fastpath_fallback reason=scanner_runtime_rebuild_failed");
     }
 
     Print::build_illuminant_from_choice(P.enlIll, S.printRT, S.dataDir, /*forEnlarger*/true);
@@ -2672,97 +2775,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->negativeDensityRange = negativeDensityRange;
     target->printDensityRange = printDensityRange;
 
-    OutputEncoding::Params scannerEncoding{};
-    scannerEncoding.colorSpace = OutputEncoding::colorSpaceFromIndex(P.outputColorSpace);
-    scannerEncoding.applyCctfEncoding = (P.outputCctfEncoding != 0);
-    scannerEncoding.preserveLinearRange = (P.outputLinearPassThrough != 0);
-    scannerEncoding.inputIsOutputSpace = true;
-
-    const std::uint32_t lutRes =
-        static_cast<std::uint32_t>(std::clamp(P.scannerLutResolution, 17, 128));
-    const std::uint64_t negGlareHash = Scanner::hash_glare(target->negativeGlare);
-    const std::uint64_t printGlareHash = printRuntimeOk ? Scanner::hash_glare(target->printGlare) : 0;
-    if (negGlareHash == 0) {
-        JTRACE("HASH", "FATAL: failed to hash negative glare parameters");
-        return;
-    }
-    if (printRuntimeOk && printGlareHash == 0) {
-        JTRACE("HASH", "FATAL: failed to hash print glare parameters");
-        return;
-    }
-    if (target->tablesScan.tablesHash == 0) {
-        JTRACE("HASH", "FATAL: scanner table hash invalid for negative medium");
-        return;
-    }
-    if (printRuntimeOk && target->tablesPrint.tablesHash == 0) {
-        JTRACE("HASH", "FATAL: scanner table hash invalid for print medium");
-        return;
-    }
-
-    // Build color runtimes for both media before finalizing static keys
-    target->negativeMediumRuntime = Scanner::ScannerMediumRuntime{};
-    target->negativeMediumRuntime.medium = Scanner::ScannerMedium::Negative;
-    target->negativeMediumRuntime.tables = (target->tablesScan.K > 0) ? &target->tablesScan : nullptr;
-    target->negativeMediumRuntime.range = target->negativeDensityRange;
-    target->negativeMediumRuntime.illuminant = target->negativeScannerIlluminant;
-    target->negativeMediumRuntime.glare = target->negativeGlare;
-
-    target->printMediumRuntime = Scanner::ScannerMediumRuntime{};
-    target->printMediumRuntime.medium = Scanner::ScannerMedium::Print;
-    target->printMediumRuntime.tables = (target->tablesPrint.K > 0) ? &target->tablesPrint : nullptr;
-    target->printMediumRuntime.range = target->printDensityRange;
-    target->printMediumRuntime.illuminant = target->printScannerIlluminant;
-    target->printMediumRuntime.glare = target->printGlare;
-
-    target->negativeColorRuntime = ScannerOptics::build_color_runtime(
-        target->negativeMediumRuntime,
-        scannerEncoding);
-    if (target->negativeColorRuntime.hash == 0) {
-        JTRACE("HASH", "FATAL: scanner color runtime hash invalid for negative medium");
-        return;
-    }
-    if (printRuntimeOk) {
-        target->printColorRuntime = ScannerOptics::build_color_runtime(
-            target->printMediumRuntime,
-            scannerEncoding);
-        if (target->printColorRuntime.hash == 0) {
-            JTRACE("HASH", "FATAL: scanner color runtime hash invalid for print medium");
-            return;
-        }
-    }
-    else {
-        target->printColorRuntime = Scanner::ColorRuntime{};
-    }
-
-    target->negativeStaticKey = Scanner::ScannerStaticKey{};
-    target->negativeStaticKey.medium = Scanner::ScannerMedium::Negative;
-    target->negativeStaticKey.tablesHash = target->tablesScan.tablesHash;
-    target->negativeStaticKey.densityRangeHash = target->negativeDensityRange.digest;
-    target->negativeStaticKey.glareHash = negGlareHash;
-    target->negativeStaticKey.colorRuntimeHash = target->negativeColorRuntime.hash;
-    target->negativeStaticKey.lutResolution = lutRes;
-    Scanner::finalize_static_key(target->negativeStaticKey);
-
-    target->printStaticKey = Scanner::ScannerStaticKey{};
-    if (printRuntimeOk) {
-        target->printStaticKey.medium = Scanner::ScannerMedium::Print;
-        target->printStaticKey.tablesHash = target->tablesPrint.tablesHash;
-        target->printStaticKey.densityRangeHash = target->printDensityRange.digest;
-        target->printStaticKey.glareHash = printGlareHash;
-        target->printStaticKey.colorRuntimeHash = target->printColorRuntime.hash;
-        target->printStaticKey.lutResolution = lutRes;
-        Scanner::finalize_static_key(target->printStaticKey);
-    }
-
-    target->negativeMediumRuntime.color = &target->negativeColorRuntime;
-    target->negativeMediumRuntime.staticKey = target->negativeStaticKey;
-
-    target->printMediumRuntime.color = printRuntimeOk ? &target->printColorRuntime : nullptr;
-    target->printMediumRuntime.staticKey = target->printStaticKey;
-
     target->negativeScannerValid = true;
     target->printScannerValid = printRuntimeOk;
     target->printGlareCompensated = (printRuntimeOk && printProfile.glare.compensationRemovalFactor > 0.0f);
+    if (!rebuild_working_state_scanner_output_runtime(P, *target)) {
+        return;
+    }
 
     target->fullHash = hash_params(P);
     target->uploadCoreHash = hash_params_upload_core(P);
@@ -2853,6 +2871,11 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     target->sharedCore = coreShare.sharedCore;
     recompute_working_state_dir_overlay(S, P, *target);
     S.spatialSigmaCacheValid.store(false, std::memory_order_release);
+    if (!rebuild_working_state_scanner_output_runtime(P, *target)) {
+        lk.unlock();
+        rebuild_working_state(instance, S, P);
+        return;
+    }
 
     target->fullHash = hash_params(P);
     target->uploadCoreHash = hash_params_upload_core(P);
