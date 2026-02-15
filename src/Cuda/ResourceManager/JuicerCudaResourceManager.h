@@ -51,6 +51,7 @@ bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
+    bool allowLutPrewarm,
     void* cudaStreamOpaque,
     std::string& outError);
 

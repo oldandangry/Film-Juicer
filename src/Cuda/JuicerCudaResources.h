@@ -134,6 +134,8 @@ namespace JuicerCuda {
             int radius = 0;
             float sigma = 0.0f;
             int capacity = 0;
+            // Non-zero when this kernel points to the process-shared immutable Gaussian cache.
+            std::uint64_t sharedKernelId = 0;
         };
 
         // Shared single-plane W×H float scratch used as a blur/unsharp intermediate.
@@ -290,5 +292,8 @@ namespace JuicerCuda {
 
     // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
     void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;
+
+    // Purges process-shared Gaussian kernels for one device/context key.
+    void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept;
 
 } // namespace JuicerCuda

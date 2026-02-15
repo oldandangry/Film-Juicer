@@ -1772,6 +1772,7 @@ void JuicerProcessor::processImagesCUDA() {
             submissionTxn,
             *cudaResources,
             *_ws,
+            _scannerSettings.useLut,
             _pCudaStream,
             uploadError)) {
         mark_context_loss_recovery("command_ensure_uploaded", cudaErrorUnknown, uploadError);

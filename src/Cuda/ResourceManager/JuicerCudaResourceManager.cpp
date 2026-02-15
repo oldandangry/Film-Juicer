@@ -6511,6 +6511,9 @@ bool command_retire_context_with_reason(
     }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    JuicerCuda::purge_shared_gaussian_kernels_for_context(
+        key.deviceId,
+        key.contextOpaque);
     retire_base_graph_cache_for_context(key);
 #endif
     tier_circuit_retire_context(key);
@@ -6546,14 +6549,34 @@ bool command_retire_context_idle(
         outError);
 }
 
+namespace {
+bool command_ensure_scan_lut_internal(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium,
+    bool criticalRequest,
+    const char* commandName,
+    void* cudaStreamOpaque,
+    std::string& outError);
+}
+
 bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
+    bool allowLutPrewarm,
     void* cudaStreamOpaque,
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_uploaded")) {
         return false;
+    }
+    const std::uint64_t wsCoreHash =
+        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    bool coreUploadStale = true;
+    if (wsCoreHash != 0) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        coreUploadStale = resources.uploadedCoreHash != wsCoreHash;
     }
     const std::uint64_t uploadRequestBytes =
         estimate_upload_core_request_bytes(resources, ws);
@@ -6587,65 +6610,115 @@ bool command_ensure_uploaded(
             return false;
         }
     }
-    UploadReservationClaim uploadClaim{};
-    if (!acquire_upload_reservation_with_wait(
+    bool ok = false;
+    {
+        UploadReservationClaim uploadClaim{};
+        if (!acquire_upload_reservation_with_wait(
+                transaction,
+                "command_ensure_uploaded",
+                uploadRequestBytes,
+                true,
+                uploadClaim,
+                outError)) {
+            return false;
+        }
+        UploadReservationGuard uploadGuard(std::move(uploadClaim));
+        TierCircuitAttempt circuitAttempt{};
+        std::string circuitError;
+        if (!tier_circuit_begin_attempt(
+                transaction,
+                "command_ensure_uploaded",
+                ResourceTier::Immutable,
+                tier_circuit_blocks_admission(ResourceTier::Immutable),
+                circuitAttempt,
+                circuitError)) {
+            outError = circuitError;
+            return false;
+        }
+        ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
+        if (ok) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_ensure_uploaded",
+                circuitAttempt,
+                true,
+                "ensure_success");
+        }
+        else if (tier_circuit_should_count_failure(outError)) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_ensure_uploaded",
+                circuitAttempt,
+                false,
+                outError.c_str());
+        }
+        else {
+            tier_circuit_cancel_attempt(
+                transaction,
+                "command_ensure_uploaded",
+                circuitAttempt,
+                "ignored_policy_failure");
+        }
+    }
+
+    if (ok && allowLutPrewarm && coreUploadStale) {
+        std::string prewarmError;
+        (void)command_ensure_scan_lut_internal(
             transaction,
-            "command_ensure_uploaded",
-            uploadRequestBytes,
+            resources,
+            ws,
             true,
-            uploadClaim,
-            outError)) {
-        return false;
-    }
-    UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    TierCircuitAttempt circuitAttempt{};
-    std::string circuitError;
-    if (!tier_circuit_begin_attempt(
-            transaction,
-            "command_ensure_uploaded",
-            ResourceTier::Immutable,
-            tier_circuit_blocks_admission(ResourceTier::Immutable),
-            circuitAttempt,
-            circuitError)) {
-        outError = circuitError;
-        return false;
-    }
-    const bool ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
-    if (ok) {
-        tier_circuit_record_outcome(
-            transaction,
-            "command_ensure_uploaded",
-            circuitAttempt,
-            true,
-            "ensure_success");
-    }
-    else if (tier_circuit_should_count_failure(outError)) {
-        tier_circuit_record_outcome(
-            transaction,
-            "command_ensure_uploaded",
-            circuitAttempt,
             false,
-            outError.c_str());
-    }
-    else {
-        tier_circuit_cancel_attempt(
+            "command_prewarm_scan_lut_negative",
+            cudaStreamOpaque,
+            prewarmError);
+        if (JTRACE_ENABLED(3)) {
+            std::string msg = std::string("stage=prewarm medium=negative result=")
+                + (prewarmError.empty() ? "ok" : "skip");
+            if (!prewarmError.empty()) {
+                msg += " detail=" + prewarmError;
+            }
+            JTRACE_VERBOSE("MSLUT", msg);
+        }
+
+        prewarmError.clear();
+        (void)command_ensure_scan_lut_internal(
             transaction,
-            "command_ensure_uploaded",
-            circuitAttempt,
-            "ignored_policy_failure");
+            resources,
+            ws,
+            false,
+            false,
+            "command_prewarm_scan_lut_print",
+            cudaStreamOpaque,
+            prewarmError);
+        if (JTRACE_ENABLED(3)) {
+            std::string msg = std::string("stage=prewarm medium=print result=")
+                + (prewarmError.empty() ? "ok" : "skip");
+            if (!prewarmError.empty()) {
+                msg += " detail=" + prewarmError;
+            }
+            JTRACE_VERBOSE("MSLUT", msg);
+        }
     }
+
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
 
-bool command_ensure_scan_lut(
+namespace {
+bool command_ensure_scan_lut_internal(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     bool negativeMedium,
+    bool criticalRequest,
+    const char* commandName,
     void* cudaStreamOpaque,
     std::string& outError) {
-    if (!ensure_active_for_command(transaction, outError, "command_ensure_scan_lut")) {
+    const char* stageName = (commandName && *commandName)
+        ? commandName
+        : "command_ensure_scan_lut";
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
     const std::uint64_t uploadRequestBytes =
@@ -6660,10 +6733,10 @@ bool command_ensure_scan_lut(
     if (!enforce_pressure_gate(
             transaction,
             resources,
-            "command_ensure_scan_lut",
+            stageName,
             PressureLane::Upload,
             saturating_u64_to_size_t(uploadRequestBytes),
-            true,
+            criticalRequest,
             requestPreReclaim,
             outError)) {
         return false;
@@ -6673,7 +6746,7 @@ bool command_ensure_scan_lut(
         if (!run_reap_pass_for_pressure(
                 transaction,
                 resources,
-                "command_ensure_scan_lut",
+                stageName,
                 "pressure_pre_upload",
                 reclaimError)) {
             outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
@@ -6683,9 +6756,9 @@ bool command_ensure_scan_lut(
     UploadReservationClaim uploadClaim{};
     if (!acquire_upload_reservation_with_wait(
             transaction,
-            "command_ensure_scan_lut",
+            stageName,
             uploadRequestBytes,
-            true,
+            criticalRequest,
             uploadClaim,
             outError)) {
         return false;
@@ -6694,10 +6767,10 @@ bool command_ensure_scan_lut(
     BuilderReservationClaim builderClaim{};
     if (!acquire_builder_reservation_with_wait(
             transaction,
-            "command_ensure_scan_lut",
+            stageName,
             BuilderReservationTier::Lut,
             uploadRequestBytes,
-            true,
+            criticalRequest,
             builderClaim,
             outError)) {
         return false;
@@ -6707,7 +6780,7 @@ bool command_ensure_scan_lut(
     std::string circuitError;
     if (!tier_circuit_begin_attempt(
             transaction,
-            "command_ensure_scan_lut",
+            stageName,
             ResourceTier::Lut,
             tier_circuit_blocks_admission(ResourceTier::Lut),
             circuitAttempt,
@@ -6719,7 +6792,7 @@ bool command_ensure_scan_lut(
     if (ok) {
         tier_circuit_record_outcome(
             transaction,
-            "command_ensure_scan_lut",
+            stageName,
             circuitAttempt,
             true,
             "ensure_success");
@@ -6727,7 +6800,7 @@ bool command_ensure_scan_lut(
     else if (tier_circuit_should_count_failure(outError)) {
         tier_circuit_record_outcome(
             transaction,
-            "command_ensure_scan_lut",
+            stageName,
             circuitAttempt,
             false,
             outError.c_str());
@@ -6735,12 +6808,31 @@ bool command_ensure_scan_lut(
     else {
         tier_circuit_cancel_attempt(
             transaction,
-            "command_ensure_scan_lut",
+            stageName,
             circuitAttempt,
             "ignored_policy_failure");
     }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
+}
+} // namespace
+
+bool command_ensure_scan_lut(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    return command_ensure_scan_lut_internal(
+        transaction,
+        resources,
+        ws,
+        negativeMedium,
+        true,
+        "command_ensure_scan_lut",
+        cudaStreamOpaque,
+        outError);
 }
 
 bool command_ensure_scan_error_flag(

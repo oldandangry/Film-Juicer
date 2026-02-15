@@ -40,11 +40,13 @@ extern const std::string gDataDir;
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <atomic>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 namespace JuicerCuda {
@@ -381,6 +383,200 @@ namespace JuicerCuda {
                 detail);
             delete entry.resources;
         }
+    }
+#endif
+
+    enum class SharedGaussianKind : std::uint8_t {
+        Standard = 0,
+        Halation = 1,
+        SpatialDir = 2
+    };
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+
+    struct SharedGaussianKey {
+        int deviceId = -1;
+        void* contextOpaque = nullptr;
+        SharedGaussianKind kind = SharedGaussianKind::Standard;
+        int radius = 0;
+        std::uint32_t sigmaBits = 0;
+
+        bool operator==(const SharedGaussianKey& other) const noexcept {
+            return deviceId == other.deviceId &&
+                contextOpaque == other.contextOpaque &&
+                kind == other.kind &&
+                radius == other.radius &&
+                sigmaBits == other.sigmaBits;
+        }
+    };
+
+    struct SharedGaussianKeyHash {
+        std::size_t operator()(const SharedGaussianKey& key) const noexcept {
+            const std::size_t hDevice = std::hash<int>{}(key.deviceId);
+            const std::size_t hContext = std::hash<std::uintptr_t>{}(
+                reinterpret_cast<std::uintptr_t>(key.contextOpaque));
+            const std::size_t hKind = std::hash<std::uint8_t>{}(
+                static_cast<std::uint8_t>(key.kind));
+            const std::size_t hRadius = std::hash<int>{}(key.radius);
+            const std::size_t hSigma = std::hash<std::uint32_t>{}(key.sigmaBits);
+            std::size_t h = hDevice;
+            h ^= hContext + 0x9e3779b9u + (h << 6u) + (h >> 2u);
+            h ^= hKind + 0x9e3779b9u + (h << 6u) + (h >> 2u);
+            h ^= hRadius + 0x9e3779b9u + (h << 6u) + (h >> 2u);
+            h ^= hSigma + 0x9e3779b9u + (h << 6u) + (h >> 2u);
+            return h;
+        }
+    };
+
+    struct SharedGaussianEntry {
+        float* weights = nullptr;
+        int radius = 0;
+        float sigma = 0.0f;
+        int capacity = 0;
+        std::uint64_t id = 0;
+    };
+
+    struct SharedGaussianCacheState {
+        std::mutex mutex;
+        std::unordered_map<SharedGaussianKey, SharedGaussianEntry, SharedGaussianKeyHash> byKey;
+    };
+
+    static SharedGaussianCacheState& shared_gaussian_cache_state() {
+        static SharedGaussianCacheState state;
+        return state;
+    }
+
+    static std::uint32_t gaussian_sigma_bits(float sigma) noexcept {
+        float canonical = sigma;
+        if (canonical == 0.0f) {
+            canonical = 0.0f;
+        }
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &canonical, sizeof(bits));
+        return bits;
+    }
+
+    static std::uint64_t make_shared_gaussian_id(const SharedGaussianKey& key) noexcept {
+        std::uint64_t h = Hash::kFnvOffset;
+        Hash::hash_bytes_update(h, &key.deviceId, sizeof(key.deviceId));
+        const std::uintptr_t contextBits =
+            reinterpret_cast<std::uintptr_t>(key.contextOpaque);
+        Hash::hash_bytes_update(h, &contextBits, sizeof(contextBits));
+        const std::uint8_t kindValue = static_cast<std::uint8_t>(key.kind);
+        Hash::hash_bytes_update(h, &kindValue, sizeof(kindValue));
+        Hash::hash_bytes_update(h, &key.radius, sizeof(key.radius));
+        Hash::hash_bytes_update(h, &key.sigmaBits, sizeof(key.sigmaBits));
+        return h;
+    }
+
+    static SharedGaussianKey make_shared_gaussian_key(
+        const Resources& resources,
+        SharedGaussianKind kind,
+        int radius,
+        float sigma) noexcept {
+        SharedGaussianKey key{};
+        key.deviceId = resources.deviceId;
+        key.contextOpaque = resources.ownerContextOpaque;
+        key.kind = kind;
+        key.radius = radius;
+        key.sigmaBits = gaussian_sigma_bits(sigma);
+        return key;
+    }
+
+    static void build_gaussian_weights_cpu(
+        int radius,
+        float sigma,
+        std::vector<float>& outWeights) {
+        outWeights.clear();
+        if (radius <= 0 || !std::isfinite(sigma) || sigma <= 0.0f) {
+            return;
+        }
+        outWeights.resize(static_cast<std::size_t>(2 * radius + 1));
+        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
+        double wsum = 0.0;
+        for (int i = -radius; i <= radius; ++i) {
+            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
+            outWeights[static_cast<std::size_t>(i + radius)] = static_cast<float>(w);
+            wsum += w;
+        }
+        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
+        for (float& w : outWeights) {
+            w = static_cast<float>(static_cast<double>(w) * invW);
+        }
+    }
+
+    static bool acquire_shared_gaussian_entry(
+        const SharedGaussianKey& key,
+        int radius,
+        float sigma,
+        const std::vector<float>& cpuWeights,
+        SharedGaussianEntry& outEntry,
+        std::string& outError) {
+        outError.clear();
+        SharedGaussianCacheState& cache = shared_gaussian_cache_state();
+        {
+            std::lock_guard<std::mutex> lock(cache.mutex);
+            const auto it = cache.byKey.find(key);
+            if (it != cache.byKey.end()) {
+                outEntry = it->second;
+                return true;
+            }
+        }
+
+        float* dWeights = nullptr;
+        const std::size_t bytes = cpuWeights.size() * sizeof(float);
+        const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&dWeights), bytes);
+        if (allocErr != cudaSuccess || !dWeights) {
+            outError = std::string("cudaMalloc(shared gaussian kernel) failed: ")
+                + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+            dWeights = nullptr;
+            return false;
+        }
+        const cudaError_t copyErr = cudaMemcpy(
+            dWeights,
+            cpuWeights.data(),
+            bytes,
+            cudaMemcpyHostToDevice);
+        if (copyErr != cudaSuccess) {
+            outError = std::string("cudaMemcpy(shared gaussian kernel) failed: ")
+                + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
+            cudaFree(dWeights);
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        const auto existingIt = cache.byKey.find(key);
+        if (existingIt != cache.byKey.end()) {
+            cudaFree(dWeights);
+            outEntry = existingIt->second;
+            return true;
+        }
+
+        SharedGaussianEntry entry{};
+        entry.weights = dWeights;
+        entry.radius = radius;
+        entry.sigma = sigma;
+        entry.capacity = static_cast<int>(cpuWeights.size());
+        entry.id = make_shared_gaussian_id(key);
+        cache.byKey.emplace(key, entry);
+        outEntry = entry;
+        return true;
+    }
+
+    static bool shared_gaussian_entry_matches_cache(
+        const SharedGaussianKey& key,
+        const Resources::DeviceGaussianKernel& kernel) {
+        if (kernel.sharedKernelId == 0 || !kernel.weights) {
+            return false;
+        }
+        SharedGaussianCacheState& cache = shared_gaussian_cache_state();
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        const auto it = cache.byKey.find(key);
+        if (it == cache.byKey.end()) {
+            return false;
+        }
+        return it->second.id == kernel.sharedKernelId &&
+            it->second.weights == kernel.weights;
     }
 #endif
 
@@ -1632,13 +1828,16 @@ namespace JuicerCuda {
     static void free_gaussian_kernel(Resources::DeviceGaussianKernel& k) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (k.weights) {
-            cudaFree(k.weights);
+            if (k.sharedKernelId == 0) {
+                cudaFree(k.weights);
+            }
             k.weights = nullptr;
         }
 #endif
         k.radius = 0;
         k.sigma = 0.0f;
         k.capacity = 0;
+        k.sharedKernelId = 0;
     }
 
     static void free_optics_scratch(Resources::DeviceOpticsScratch& s) noexcept {
@@ -3616,62 +3815,118 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
+    static bool retire_or_clear_gaussian_kernel_locked(
+        Resources& resources,
+        Resources::DeviceGaussianKernel& kernel,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)kernel;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (kernel.weights) {
+            if (kernel.sharedKernelId == 0) {
+                const std::size_t bytes =
+                    static_cast<std::size_t>(std::max(0, kernel.capacity)) * sizeof(float);
+                if (!retire_ptr_locked(
+                        resources,
+                        kernel.weights,
+                        bytes,
+                        Resources::RetireKind::DeviceFree,
+                        cudaStreamOpaque,
+                        label,
+                        outError)) {
+                    return false;
+                }
+            }
+            kernel.weights = nullptr;
+        }
+        kernel.radius = 0;
+        kernel.sigma = 0.0f;
+        kernel.capacity = 0;
+        kernel.sharedKernelId = 0;
+        return true;
+#endif
+    }
+
+    static bool ensure_shared_gaussian_kernel(
+        Resources& resources,
+        Resources::DeviceGaussianKernel& kernel,
+        float sigma,
+        int radius,
+        SharedGaussianKind kind,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)kernel;
         (void)sigma;
+        (void)radius;
+        (void)kind;
         (void)cudaStreamOpaque;
+        (void)label;
         outError = "CUDA is not enabled";
         return false;
 #else
-        constexpr int kMaxRadius = 75;
-        constexpr int kMaxCount = 2 * kMaxRadius + 1;
+        const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
+        if (!sigmaOk || radius <= 0) {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            if (!validate_resource_owner_locked(resources, outError, true)) {
+                return false;
+            }
+            return retire_or_clear_gaussian_kernel_locked(
+                resources,
+                kernel,
+                cudaStreamOpaque,
+                label,
+                outError);
+        }
 
-        const bool sigmaOk = (std::isfinite(sigma) && sigma > 0.0f);
-        const int radiusRaw = sigmaOk ? std::max(1, static_cast<int>(std::ceil(3.0f * sigma))) : 0;
-        const int radius = std::min(radiusRaw, kMaxRadius);
-        const bool wantDisable = (!sigmaOk || radius <= 0);
-
+        SharedGaussianKey key{};
+        std::uint64_t kernelId = 0;
         {
             std::lock_guard<std::mutex> lock(resources.m);
             reap_retire_queue_locked(resources);
             if (!validate_resource_owner_locked(resources, outError, true)) {
                 return false;
             }
-
-            if (wantDisable) {
-                if (kernel.weights) {
-                    const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
-                    if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "spatial DIR kernel", outError)) {
-                        return false;
-                    }
-                    kernel.weights = nullptr;
-                }
-                kernel.radius = 0;
-                kernel.sigma = 0.0f;
-                kernel.capacity = 0;
-                return true;
-            }
-
-            const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+            key = make_shared_gaussian_key(resources, kind, radius, sigma);
+            kernelId = make_shared_gaussian_id(key);
+            const bool same =
+                kernel.weights &&
+                kernel.sharedKernelId == kernelId &&
+                kernel.radius == radius &&
+                std::fabs(kernel.sigma - sigma) <= 1e-6f &&
+                shared_gaussian_entry_matches_cache(key, kernel);
             if (same) {
                 return true;
             }
         }
 
-        std::vector<float> cpu;
-        cpu.resize(static_cast<size_t>(2 * radius + 1));
-        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
-        double wsum = 0.0;
-        for (int i = -radius; i <= radius; ++i) {
-            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
-            cpu[static_cast<size_t>(i + radius)] = static_cast<float>(w);
-            wsum += w;
+        std::vector<float> cpuWeights;
+        build_gaussian_weights_cpu(radius, sigma, cpuWeights);
+        if (cpuWeights.empty()) {
+            outError = std::string(label ? label : "gaussian kernel")
+                + " weights build failed";
+            return false;
         }
-        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
-        for (float& w : cpu) {
-            w = static_cast<float>(static_cast<double>(w) * invW);
+
+        SharedGaussianEntry sharedEntry{};
+        if (!acquire_shared_gaussian_entry(
+                key,
+                radius,
+                sigma,
+                cpuWeights,
+                sharedEntry,
+                outError)) {
+            return false;
         }
 
         std::lock_guard<std::mutex> lock(resources.m);
@@ -3680,277 +3935,101 @@ namespace JuicerCuda {
             return false;
         }
 
-        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
+        key = make_shared_gaussian_key(resources, kind, radius, sigma);
+        kernelId = make_shared_gaussian_id(key);
+        if (kernelId != sharedEntry.id) {
+            if (!acquire_shared_gaussian_entry(
+                    key,
+                    radius,
+                    sigma,
+                    cpuWeights,
+                    sharedEntry,
+                    outError)) {
+                return false;
+            }
+            kernelId = sharedEntry.id;
+        }
+
+        const bool same =
+            kernel.weights &&
+            kernel.sharedKernelId == kernelId &&
+            kernel.radius == radius &&
+            std::fabs(kernel.sigma - sigma) <= 1e-6f &&
+            shared_gaussian_entry_matches_cache(key, kernel);
         if (same) {
             return true;
         }
 
-        const bool overwriting = (kernel.weights != nullptr);
-        if (kernel.weights && kernel.capacity < kMaxCount) {
-            const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
-            if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "spatial DIR kernel resize", outError)) {
-                return false;
-            }
-            kernel.weights = nullptr;
-            kernel.capacity = 0;
-        }
-        if (!kernel.weights) {
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), static_cast<size_t>(kMaxCount) * sizeof(float));
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(spatial DIR kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                kernel.weights = nullptr;
-                kernel.capacity = 0;
-                return false;
-            }
-            kernel.capacity = kMaxCount;
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        if (overwriting && resources.lastUseEventOpaque) {
-            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-            if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before spatial DIR kernel update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                return false;
-            }
-        }
-
-        const size_t bytes = cpu.size() * sizeof(float);
-        cudaError_t err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(spatial DIR kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+        if (!retire_or_clear_gaussian_kernel_locked(
+                resources,
+                kernel,
+                cudaStreamOpaque,
+                label,
+                outError)) {
             return false;
         }
 
-        kernel.radius = radius;
-        kernel.sigma = sigma;
+        kernel.weights = sharedEntry.weights;
+        kernel.radius = sharedEntry.radius;
+        kernel.sigma = sharedEntry.sigma;
+        kernel.capacity = 0;
+        kernel.sharedKernelId = sharedEntry.id;
         return true;
 #endif
+    }
+
+    bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
+        constexpr int kMaxRadius = 75;
+        const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
+        const int radiusRaw = sigmaOk
+            ? std::max(1, static_cast<int>(std::ceil(3.0f * sigma)))
+            : 0;
+        const int radius = std::min(radiusRaw, kMaxRadius);
+        return ensure_shared_gaussian_kernel(
+            resources,
+            kernel,
+            sigma,
+            radius,
+            SharedGaussianKind::SpatialDir,
+            cudaStreamOpaque,
+            "spatial DIR kernel",
+            outError);
     }
 
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)kernel;
-        (void)sigma;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         constexpr int kMaxRadius = 75;
-        constexpr int kMaxCount = 2 * kMaxRadius + 1;
-
-        const bool sigmaOk = (std::isfinite(sigma) && sigma > 0.0f);
-        const int radiusRaw = sigmaOk ? JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f) : 0;
+        const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
+        const int radiusRaw = sigmaOk
+            ? JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f)
+            : 0;
         const int radius = std::min(radiusRaw, kMaxRadius);
-        const bool wantDisable = (!sigmaOk || radius <= 0);
-
-        {
-            std::lock_guard<std::mutex> lock(resources.m);
-            reap_retire_queue_locked(resources);
-            if (!validate_resource_owner_locked(resources, outError, true)) {
-                return false;
-            }
-
-            if (wantDisable) {
-                if (kernel.weights) {
-                    const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
-                    if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gaussian kernel", outError)) {
-                        return false;
-                    }
-                    kernel.weights = nullptr;
-                }
-                kernel.radius = 0;
-                kernel.sigma = 0.0f;
-                kernel.capacity = 0;
-                return true;
-            }
-
-            const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
-            if (same) {
-                return true;
-            }
-        }
-
-        std::vector<float> cpu;
-        cpu.resize(static_cast<size_t>(2 * radius + 1));
-        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
-        double wsum = 0.0;
-        for (int i = -radius; i <= radius; ++i) {
-            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
-            cpu[static_cast<size_t>(i + radius)] = static_cast<float>(w);
-            wsum += w;
-        }
-        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
-        for (float& w : cpu) {
-            w = static_cast<float>(static_cast<double>(w) * invW);
-        }
-
-        std::lock_guard<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-
-        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
-        if (same) {
-            return true;
-        }
-
-        // Fixed-capacity allocation: avoid alloc/free churn on animated sigma.
-        const bool overwriting = (kernel.weights != nullptr);
-        if (kernel.weights && kernel.capacity < kMaxCount) {
-            const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
-            if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gaussian kernel resize", outError)) {
-                return false;
-            }
-            kernel.weights = nullptr;
-            kernel.capacity = 0;
-        }
-        if (!kernel.weights) {
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), static_cast<size_t>(kMaxCount) * sizeof(float));
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                kernel.weights = nullptr;
-                kernel.capacity = 0;
-                return false;
-            }
-            kernel.capacity = kMaxCount;
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        if (overwriting && resources.lastUseEventOpaque) {
-            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-            if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before gaussian kernel update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                return false;
-            }
-        }
-
-        const size_t bytes = cpu.size() * sizeof(float);
-        cudaError_t err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(gaussian kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            return false;
-        }
-
-        kernel.radius = radius;
-        kernel.sigma = sigma;
-        return true;
-#endif
+        return ensure_shared_gaussian_kernel(
+            resources,
+            kernel,
+            sigma,
+            radius,
+            SharedGaussianKind::Standard,
+            cudaStreamOpaque,
+            "gaussian kernel",
+            outError);
     }
 
     bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)kernel;
-        (void)sigma;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
         constexpr int kMaxRadius = 75;
-        constexpr int kMaxCount = 2 * kMaxRadius + 1;
-
-        const bool sigmaOk = (std::isfinite(sigma) && sigma > 0.0f);
-        const int radiusRaw = sigmaOk ? JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f) : 0;
+        const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
+        const int radiusRaw = sigmaOk
+            ? JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f)
+            : 0;
         const int radius = std::min(radiusRaw, kMaxRadius);
-        const bool wantDisable = (!sigmaOk || radius <= 0);
-
-        {
-            std::lock_guard<std::mutex> lock(resources.m);
-            reap_retire_queue_locked(resources);
-            if (!validate_resource_owner_locked(resources, outError, true)) {
-                return false;
-            }
-
-            if (wantDisable) {
-                if (kernel.weights) {
-                    const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
-                    if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "halation kernel", outError)) {
-                        return false;
-                    }
-                    kernel.weights = nullptr;
-                }
-                kernel.radius = 0;
-                kernel.sigma = 0.0f;
-                kernel.capacity = 0;
-                return true;
-            }
-
-            const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
-            if (same) {
-                return true;
-            }
-        }
-
-        std::vector<float> cpu;
-        cpu.resize(static_cast<size_t>(2 * radius + 1));
-        const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
-        double wsum = 0.0;
-        for (int i = -radius; i <= radius; ++i) {
-            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
-            cpu[static_cast<size_t>(i + radius)] = static_cast<float>(w);
-            wsum += w;
-        }
-        const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
-        for (float& w : cpu) {
-            w = static_cast<float>(static_cast<double>(w) * invW);
-        }
-
-        std::lock_guard<std::mutex> lock(resources.m);
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-
-        const bool same = (kernel.weights && kernel.radius == radius && std::fabs(kernel.sigma - sigma) <= 1e-6f);
-        if (same) {
-            return true;
-        }
-
-        const bool overwriting = (kernel.weights != nullptr);
-        if (kernel.weights && kernel.capacity < kMaxCount) {
-            const size_t bytes = static_cast<size_t>(std::max(0, kernel.capacity)) * sizeof(float);
-            if (!retire_ptr_locked(resources, kernel.weights, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "halation kernel resize", outError)) {
-                return false;
-            }
-            kernel.weights = nullptr;
-            kernel.capacity = 0;
-        }
-        if (!kernel.weights) {
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&kernel.weights), static_cast<size_t>(kMaxCount) * sizeof(float));
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(halation kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                kernel.weights = nullptr;
-                kernel.capacity = 0;
-                return false;
-            }
-            kernel.capacity = kMaxCount;
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        if (overwriting && resources.lastUseEventOpaque) {
-            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-            if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before halation kernel update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                return false;
-            }
-        }
-
-        const size_t bytes = cpu.size() * sizeof(float);
-        cudaError_t err = cudaMemcpyAsync(kernel.weights, cpu.data(), bytes, cudaMemcpyHostToDevice, stream);
-        if (err != cudaSuccess) {
-            outError = std::string("cudaMemcpyAsync(halation kernel) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            return false;
-        }
-
-        kernel.radius = radius;
-        kernel.sigma = sigma;
-        return true;
-#endif
+        return ensure_shared_gaussian_kernel(
+            resources,
+            kernel,
+            sigma,
+            radius,
+            SharedGaussianKind::Halation,
+            cudaStreamOpaque,
+            "halation kernel",
+            outError);
     }
 
     bool ensure_print_illuminant_filtered(
@@ -4871,6 +4950,54 @@ namespace JuicerCuda {
 #else
         (void)resources;
         (void)cudaStreamOpaque;
+#endif
+    }
+
+    void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (deviceId < 0 || contextOpaque == nullptr) {
+            return;
+        }
+
+        std::vector<float*> toFree;
+        {
+            SharedGaussianCacheState& cache = shared_gaussian_cache_state();
+            std::lock_guard<std::mutex> lock(cache.mutex);
+            for (auto it = cache.byKey.begin(); it != cache.byKey.end();) {
+                if (it->first.deviceId == deviceId &&
+                    it->first.contextOpaque == contextOpaque) {
+                    if (it->second.weights) {
+                        toFree.push_back(it->second.weights);
+                    }
+                    it = cache.byKey.erase(it);
+                    continue;
+                }
+                ++it;
+            }
+        }
+
+        if (toFree.empty()) {
+            return;
+        }
+
+        int previousDevice = -1;
+        const cudaError_t prevErr = cudaGetDevice(&previousDevice);
+        const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
+        const bool needRestore = havePreviousDevice && previousDevice != deviceId;
+        (void)cudaSetDevice(deviceId);
+
+        for (float* ptr : toFree) {
+            if (ptr) {
+                (void)cudaFree(ptr);
+            }
+        }
+
+        if (needRestore) {
+            (void)cudaSetDevice(previousDevice);
+        }
+#else
+        (void)deviceId;
+        (void)contextOpaque;
 #endif
     }
 
