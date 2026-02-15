@@ -15,6 +15,10 @@ namespace Print {
     struct Runtime;
 }
 
+namespace WorkingStateSharing {
+    struct WorkingStateCoreShared;
+}
+
 // Per‑instance, derived state used for rendering.
 // Built from BaseState in rebuild_working_state() and never mutated in render().
 struct WorkingState {
@@ -111,8 +115,10 @@ struct WorkingState {
     std::uint64_t fullHash = 0;
     std::uint64_t uploadCoreHash = 0;
     std::uint64_t coreHash = 0;
+    std::uint64_t coreShareHash = 0;
     std::uint64_t dirHash = 0;
     std::uint64_t buildCounter = 0;
+    std::shared_ptr<const WorkingStateSharing::WorkingStateCoreShared> sharedCore;
 };
 
 enum class DirSampleMode {

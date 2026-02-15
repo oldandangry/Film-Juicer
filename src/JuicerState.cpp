@@ -2,6 +2,7 @@
 
 #include "LogExposureOffsets.h"
 #include "RebuildWorkingStateInternals.h"
+#include "WorkingStateCoreSharing.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) const noexcept {
@@ -82,6 +83,25 @@ namespace {
         std::unordered_set<std::string> paperKeySet;
         std::unordered_set<std::string> filmKeySet;
     };
+
+    void trace_working_state_core_share(
+        const WorkingStateSharing::AcquireCoreSharedResult& result,
+        std::uint64_t buildCounter,
+        const char* path)
+    {
+        if (!JTRACE_ENABLED(2) || result.keyHash == 0) {
+            return;
+        }
+        std::string msg = std::string("event=core_share_shell")
+            + " path=" + (path ? std::string(path) : std::string("unknown"))
+            + " build=" + std::to_string(buildCounter)
+            + " core_share_hash=" + std::to_string(result.keyHash)
+            + " core_share_identity=" + std::to_string(result.identity)
+            + " cache_hit=" + std::to_string(result.hit ? 1 : 0)
+            + " cache_inserted=" + std::to_string(result.inserted ? 1 : 0)
+            + " cache_entries=" + std::to_string(static_cast<unsigned long long>(result.cacheEntries));
+        JTRACE("MSWSC", msg);
+    }
 
     std::string sanitize_identifier(const std::string& value) {
         std::string out;
@@ -2475,8 +2495,15 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->fullHash = hash_params(P);
     target->uploadCoreHash = hash_params_upload_core(P);
     target->coreHash = hash_params_core(P);
+    target->coreShareHash = target->coreHash;
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
+    {
+        const WorkingStateSharing::AcquireCoreSharedResult coreShare =
+            WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash);
+        target->sharedCore = coreShare.sharedCore;
+        trace_working_state_core_share(coreShare, target->buildCounter, "full_rebuild");
+    }
     if (JTRACE_ENABLED(3)) {
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
         const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
@@ -2593,6 +2620,8 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
         out.filmRaw = in.filmRaw;
         out.printRT = in.printRT;
         out.negParams = in.negParams;
+        out.coreShareHash = in.coreShareHash;
+        out.sharedCore = in.sharedCore;
 
         out.negativeMediumRuntime.tables = (out.tablesScan.K > 0) ? &out.tablesScan : nullptr;
         out.negativeMediumRuntime.color = &out.negativeColorRuntime;
@@ -2764,8 +2793,15 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     target->fullHash = hash_params(P);
     target->uploadCoreHash = hash_params_upload_core(P);
     target->coreHash = hash_params_core(P);
+    target->coreShareHash = target->coreHash;
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
+    {
+        const WorkingStateSharing::AcquireCoreSharedResult coreShare =
+            WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash);
+        target->sharedCore = coreShare.sharedCore;
+        trace_working_state_core_share(coreShare, target->buildCounter, "couplers_only");
+    }
 
     JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
     S.activeBuildCounter = target->buildCounter;
