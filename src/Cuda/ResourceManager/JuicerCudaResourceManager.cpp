@@ -6663,6 +6663,42 @@ bool validate_lifecycle_for_stage(const SubmissionTransaction& transaction,
     return true;
 }
 
+bool validate_stale_tuple_for_stage(
+    const SubmissionTransaction& transaction,
+    const char* stage,
+    LeaseObservationMode leaseObservationMode,
+    const char* errorPrefix,
+    std::string* outError,
+    bool recordModuleBoundaryViolation,
+    const char* moduleBoundaryReason) {
+    const StaleInput staleInput = state_build_stale_input(transaction, leaseObservationMode);
+    const StaleDecision staleDecision = classify_stale_path(staleInput);
+    telemetry_trace_stale_decision(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        stage,
+        staleInput,
+        staleDecision);
+    if (!staleDecision.hardStale && !staleDecision.hardMiss) {
+        return true;
+    }
+
+    telemetry_record_stale_tuple_hard_reject();
+    if (outError && errorPrefix) {
+        *outError = std::string(errorPrefix) + to_cstr(staleDecision.reason) + ")";
+    }
+    if (recordModuleBoundaryViolation) {
+        telemetry_record_module_boundary_violation();
+        telemetry_trace_module_boundary_violation(
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            moduleBoundaryReason ? moduleBoundaryReason : "stale_tuple_reject");
+    }
+    return false;
+}
+
 bool ensure_active_for_command(
     const SubmissionTransaction& transaction,
     std::string& outError,
@@ -6677,37 +6713,15 @@ bool ensure_active_for_command(
         return false;
     }
 
-    ResourceManagerState& state = global_state();
-    StaleInput staleInput{};
-    staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
-    staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
-    staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
-    staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
-    staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
-    staleInput.observedLeaseGeneration = transaction.active ? transaction.leaseGeneration : 0;
-    staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
-
-    const StaleDecision staleDecision = classify_stale_path(staleInput);
-    telemetry_trace_stale_decision(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
-        commandName ? commandName : "command",
-        staleInput,
-        staleDecision);
-    if (!staleDecision.hardStale && !staleDecision.hardMiss) {
-        return true;
-    }
-    telemetry_record_stale_tuple_hard_reject();
-    outError = std::string("stale transaction in command path (reason=") +
-        to_cstr(staleDecision.reason) + ")";
-    telemetry_record_module_boundary_violation();
-    telemetry_trace_module_boundary_violation(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
+    const char* stage = commandName ? commandName : "command";
+    return validate_stale_tuple_for_stage(
+        transaction,
+        stage,
+        LeaseObservationMode::ActiveOnly,
+        "stale transaction in command path (reason=",
+        &outError,
+        true,
         commandName ? commandName : "command_requires_active_submission");
-    return false;
 }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -7616,43 +7630,28 @@ bool acquire_plan(
         return false;
     }
 
-    {
-        ResourceManagerState& state = global_state();
-        StaleInput staleInput{};
-        staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
-        staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
-        staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
-        staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
-        staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
-        staleInput.observedLeaseGeneration = transaction.active ? transaction.leaseGeneration : 0;
-        staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
-        const StaleDecision staleDecision = classify_stale_path(staleInput);
-        telemetry_trace_stale_decision(
+    if (!validate_stale_tuple_for_stage(
+            transaction,
+            "acquire",
+            LeaseObservationMode::ActiveOnly,
+            "stale transaction in acquire path (reason=",
+            &outError,
+            false,
+            nullptr)) {
+        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
+        telemetry_record_acquire_status(AcquireStatus::Error);
+        for (ResourceKind kind : kResourceKindOrder) {
+            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
+        }
+        telemetry_trace_acquire(
+            acquireId,
             transaction.transactionId,
             transaction.snapshot.snapshotId,
             transaction.snapshot.traceSchemaVersion,
-            "acquire",
-            staleInput,
-            staleDecision);
-        if (staleDecision.hardStale || staleDecision.hardMiss) {
-            const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
-            telemetry_record_stale_tuple_hard_reject();
-            outError = std::string("stale transaction in acquire path (reason=") +
-                to_cstr(staleDecision.reason) + ")";
-            telemetry_record_acquire_status(AcquireStatus::Error);
-            for (ResourceKind kind : kResourceKindOrder) {
-                telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
-            }
-            telemetry_trace_acquire(
-                acquireId,
-                transaction.transactionId,
-                transaction.snapshot.snapshotId,
-                transaction.snapshot.traceSchemaVersion,
-                AcquireStatus::Error,
-                errorPlan,
-                false);
-            return false;
-        }
+            AcquireStatus::Error,
+            errorPlan,
+            false);
+        return false;
     }
 
     if (!transaction.active) {
@@ -7935,30 +7934,15 @@ bool commit_submission(
     if (!validate_lifecycle_for_stage(transaction, "commit", false, &outError)) {
         return false;
     }
-    {
-        ResourceManagerState& state = global_state();
-        StaleInput staleInput{};
-        staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
-        staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
-        staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
-        staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
-        staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
-        staleInput.observedLeaseGeneration = transaction.active ? transaction.leaseGeneration : 0;
-        staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
-        const StaleDecision staleDecision = classify_stale_path(staleInput);
-        telemetry_trace_stale_decision(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
+    if (!validate_stale_tuple_for_stage(
+            transaction,
             "commit",
-            staleInput,
-            staleDecision);
-        if (staleDecision.hardStale || staleDecision.hardMiss) {
-            telemetry_record_stale_tuple_hard_reject();
-            outError = std::string("stale transaction in commit path (reason=") +
-                to_cstr(staleDecision.reason) + ")";
-            return false;
-        }
+            LeaseObservationMode::ActiveOnly,
+            "stale transaction in commit path (reason=",
+            &outError,
+            false,
+            nullptr)) {
+        return false;
     }
     if (!transaction.active) {
         outError = "submission transaction is not active";
@@ -9932,26 +9916,14 @@ void rollback_submission(
         return;
     }
     (void)validate_lifecycle_for_stage(transaction, "release", true, nullptr);
-    ResourceManagerState& state = global_state();
-    StaleInput staleInput{};
-    staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
-    staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
-    staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
-    staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
-    staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
-    staleInput.observedLeaseGeneration = transaction.leaseGeneration;
-    staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
-    const StaleDecision staleDecision = classify_stale_path(staleInput);
-    telemetry_trace_stale_decision(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
+    (void)validate_stale_tuple_for_stage(
+        transaction,
         "release",
-        staleInput,
-        staleDecision);
-    if (staleDecision.hardStale || staleDecision.hardMiss) {
-        telemetry_record_stale_tuple_hard_reject();
-    }
+        LeaseObservationMode::Always,
+        nullptr,
+        nullptr,
+        false,
+        nullptr);
     if (!transaction.active) {
         return;
     }

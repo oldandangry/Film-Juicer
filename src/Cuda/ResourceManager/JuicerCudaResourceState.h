@@ -180,6 +180,15 @@ bool state_snapshot_is_superseded(
     std::uint64_t* outLatestSnapshotId = nullptr) noexcept;
 void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexcept;
 
+enum class LeaseObservationMode : std::uint8_t {
+    ActiveOnly = 0,
+    Always = 1
+};
+
+StaleInput state_build_stale_input(
+    const SubmissionTransaction& transaction,
+    LeaseObservationMode leaseObservationMode = LeaseObservationMode::ActiveOnly) noexcept;
+
 struct QueryReadOnlySnapshot {
     bool threadMutationActive = false;
     std::uint32_t threadMutationDepth = 0;

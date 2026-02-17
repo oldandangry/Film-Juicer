@@ -256,6 +256,21 @@ bool transition_entry_locked(const DeviceContextKey& key,
     return true;
 }
 
+bool transition_entry_to_retired_locked(const DeviceContextKey& key,
+                                        RegistryEntry& entry,
+                                        const char* reason) {
+    if (entry.lifecycleState == ContextLifecycleState::Retired) {
+        return true;
+    }
+    const ContextLifecycleState observed = entry.lifecycleState;
+    return transition_entry_locked(
+        key,
+        entry,
+        observed,
+        ContextLifecycleState::Retired,
+        reason);
+}
+
 ContextLifecycleState desired_retire_state(RegistryRetireReason reason) noexcept {
     (void)reason;
     return ContextLifecycleState::Retired;
@@ -542,17 +557,28 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
     auto inserted = state.byDeviceContext.emplace(key, entry);
     RegistryEntry& insertedEntry = inserted.first->second;
     state.keyByHandle[insertedEntry.handle.value] = key;
-    if (!transition_entry_locked(key, insertedEntry,
-            ContextLifecycleState::Unbound,
-            ContextLifecycleState::Binding,
-            "create_bind")) {
-        insertedEntry.lifecycleState = ContextLifecycleState::Retired;
+    const bool createBound = transition_entry_locked(
+        key,
+        insertedEntry,
+        ContextLifecycleState::Unbound,
+        ContextLifecycleState::Binding,
+        "create_bind");
+    if (!createBound) {
+        (void)transition_entry_to_retired_locked(
+            key,
+            insertedEntry,
+            "create_bind_retire");
     }
-    if (!transition_entry_locked(key, insertedEntry,
+    else if (!transition_entry_locked(
+            key,
+            insertedEntry,
             ContextLifecycleState::Binding,
             ContextLifecycleState::Active,
             "create_activate")) {
-        insertedEntry.lifecycleState = ContextLifecycleState::Retired;
+        (void)transition_entry_to_retired_locked(
+            key,
+            insertedEntry,
+            "create_activate_retire");
     }
 
     publish_registry_live_count(state.byDeviceContext.size());
@@ -844,16 +870,14 @@ void registry_retire(
         }
     }
     ContextLifecycleState desired = desired_retire_state(reason);
-    if (entry.lifecycleState != ContextLifecycleState::Retired) {
-        if (!is_legal_transition(entry.lifecycleState, desired)) {
-            global_state().lifecycleTransitionCalls.fetch_add(1, std::memory_order_relaxed);
-            global_state().lifecycleTransitionRejects.fetch_add(1, std::memory_order_relaxed);
-            trace_lifecycle_transition(deviceKey, entry.handle, entry.lifecycleState, desired, false, "retire_illegal");
-            return;
-        }
+    if (desired != ContextLifecycleState::Retired) {
         global_state().lifecycleTransitionCalls.fetch_add(1, std::memory_order_relaxed);
-        trace_lifecycle_transition(deviceKey, entry.handle, entry.lifecycleState, desired, true, "retire");
-        entry.lifecycleState = ContextLifecycleState::Retired;
+        global_state().lifecycleTransitionRejects.fetch_add(1, std::memory_order_relaxed);
+        trace_lifecycle_transition(deviceKey, entry.handle, entry.lifecycleState, desired, false, "retire_unsupported");
+        return;
+    }
+    if (!transition_entry_to_retired_locked(deviceKey, entry, "retire")) {
+        return;
     }
     RegistryEntry removed = entry;
     const char* retireReason = (reason == RegistryRetireReason::ContextReset)

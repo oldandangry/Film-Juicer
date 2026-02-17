@@ -82,6 +82,22 @@ ResourceManagerState& global_state() noexcept {
     return state;
 }
 
+StaleInput state_build_stale_input(
+    const SubmissionTransaction& transaction,
+    LeaseObservationMode leaseObservationMode) noexcept {
+    StaleInput staleInput{};
+    ResourceManagerState& state = global_state();
+    staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
+    staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
+    staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
+    staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+    staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
+    const bool observeLease = (leaseObservationMode == LeaseObservationMode::Always) || transaction.active;
+    staleInput.observedLeaseGeneration = observeLease ? transaction.leaseGeneration : 0;
+    staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
+    return staleInput;
+}
+
 QueryReadOnlyGuard::QueryReadOnlyGuard(
     const char* queryName,
     const DeviceContextKey* key) noexcept
