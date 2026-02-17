@@ -1654,6 +1654,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
         WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
+    const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
     if (coreShare.sharedCore && coreShare.sharedCore->payload) {
         WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
         target->coreShareHash = coreShareHash;
@@ -2794,6 +2795,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const WorkingStateSharing::AcquireCoreSharedResult coreShareSeed =
             WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash, std::move(corePayload));
         target->sharedCore = coreShareSeed.sharedCore;
+        trace_working_state_core_share(coreShareInitial, target->buildCounter, "full_rebuild_shell_acquire");
         trace_working_state_core_share(coreShareSeed, target->buildCounter, "full_rebuild");
     }
     if (JTRACE_ENABLED(3)) {
@@ -2847,6 +2849,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
         WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
+    const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
     std::shared_ptr<const WorkingState> src;
     if (!(coreShare.sharedCore && coreShare.sharedCore->payload)) {
         src = JuicerAtomic::load_shared_ptr(&S.activeWorkingState);
@@ -2884,6 +2887,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
     target->sharedCore = coreShare.sharedCore;
+    trace_working_state_core_share(coreShareInitial, target->buildCounter, "couplers_only_shell_acquire");
     trace_working_state_core_share(coreShare, target->buildCounter, "couplers_only");
 
     JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
