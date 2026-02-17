@@ -22,6 +22,7 @@ namespace {
 struct RegistryEntry {
     RegistryHandle handle{};
     ContextLifecycleState lifecycleState = ContextLifecycleState::Unbound;
+    std::uint64_t lifecycleSinceMs = 0;
     std::uint64_t createOrder = 0;
     std::uint64_t lastTouchedMs = 0;
     std::uint64_t activeSubmissionCount = 0;
@@ -156,6 +157,84 @@ void trace_lifecycle_bump(const DeviceContextKey& key,
     JTRACE("MSLCY", msg);
 }
 
+constexpr std::uint64_t kLifecycleTimeoutMinMs = 2000ull;
+constexpr std::uint64_t kRebindingTimeoutMinMs = 1000ull;
+
+bool lifecycle_state_allowed_for_stage(ContextLifecycleState state, bool allowNonActiveRelease) noexcept {
+    if (allowNonActiveRelease) {
+        return state != ContextLifecycleState::Unbound;
+    }
+    return state == ContextLifecycleState::Active;
+}
+
+std::uint64_t lifecycle_timeout_ms_for_state(
+    ContextLifecycleState state,
+    const ResourceManagerConfigEffective& cfg) noexcept {
+    const std::uint64_t baseMs = std::max<std::uint64_t>(
+        static_cast<std::uint64_t>(cfg.managerIdleReapMs),
+        kLifecycleTimeoutMinMs);
+    switch (state) {
+    case ContextLifecycleState::Draining:
+        return baseMs;
+    case ContextLifecycleState::Rebinding:
+        return std::max<std::uint64_t>(baseMs / 2ull, kRebindingTimeoutMinMs);
+    default:
+        return 0ull;
+    }
+}
+
+void bump_registry_epoch_locked(
+    const DeviceContextKey& key,
+    RegistryHandle handle,
+    bool accepted,
+    const char* reason) noexcept {
+    ResourceManagerState& rmState = global_state();
+    const std::uint64_t prevRegistryGeneration =
+        rmState.registryGeneration.fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t newRegistryGeneration = prevRegistryGeneration + 1;
+    if (newRegistryGeneration == 0) {
+        newRegistryGeneration = 1;
+        rmState.registryGeneration.store(newRegistryGeneration, std::memory_order_relaxed);
+    }
+    const std::uint64_t prevContextEpoch =
+        rmState.contextEpoch.fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t newContextEpoch = prevContextEpoch + 1;
+    if (newContextEpoch == 0) {
+        newContextEpoch = 1;
+        rmState.contextEpoch.store(newContextEpoch, std::memory_order_relaxed);
+    }
+    trace_lifecycle_bump(
+        key,
+        handle,
+        prevRegistryGeneration,
+        newRegistryGeneration,
+        prevContextEpoch,
+        newContextEpoch,
+        accepted,
+        reason);
+}
+
+void trace_lifecycle_timeout(
+    const DeviceContextKey& key,
+    RegistryHandle handle,
+    ContextLifecycleState observedState,
+    std::uint64_t stateAgeMs,
+    std::uint64_t timeoutMs,
+    bool escalated,
+    const char* reason) noexcept {
+    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
+    const std::string msg = std::string("handle=") + std::to_string(handle.value)
+        + " device_id=" + std::to_string(key.deviceId)
+        + " context=" + std::to_string(contextBits)
+        + " action=watchdog_timeout"
+        + " observed_state=" + to_cstr(observedState)
+        + " state_age_ms=" + std::to_string(stateAgeMs)
+        + " timeout_ms=" + std::to_string(timeoutMs)
+        + " escalated=" + std::to_string(escalated ? 1 : 0)
+        + " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSLCY", msg);
+}
+
 bool transition_entry_locked(const DeviceContextKey& key,
                              RegistryEntry& entry,
                              ContextLifecycleState expectedState,
@@ -172,6 +251,7 @@ bool transition_entry_locked(const DeviceContextKey& key,
         return false;
     }
     entry.lifecycleState = desiredState;
+    entry.lifecycleSinceMs = monotonic_time_ms();
     trace_lifecycle_transition(key, entry.handle, observed, desiredState, true, reason);
     return true;
 }
@@ -360,27 +440,9 @@ bool run_freeze_drain_bump_resume_locked(const DeviceContextKey& key,
     ok = ok && transition_entry_locked(
         key, entry, ContextLifecycleState::Freezing, ContextLifecycleState::Draining, "barrier_drain");
 
-    const std::uint64_t prevRegistryGeneration =
-        rmState.registryGeneration.fetch_add(1, std::memory_order_relaxed);
-    std::uint64_t newRegistryGeneration = prevRegistryGeneration + 1;
-    if (newRegistryGeneration == 0) {
-        newRegistryGeneration = 1;
-        rmState.registryGeneration.store(newRegistryGeneration, std::memory_order_relaxed);
-    }
-    const std::uint64_t prevContextEpoch =
-        rmState.contextEpoch.fetch_add(1, std::memory_order_relaxed);
-    std::uint64_t newContextEpoch = prevContextEpoch + 1;
-    if (newContextEpoch == 0) {
-        newContextEpoch = 1;
-        rmState.contextEpoch.store(newContextEpoch, std::memory_order_relaxed);
-    }
-    trace_lifecycle_bump(
+    bump_registry_epoch_locked(
         key,
         entry.handle,
-        prevRegistryGeneration,
-        newRegistryGeneration,
-        prevContextEpoch,
-        newContextEpoch,
         ok,
         reason ? reason : "barrier_bump");
 
@@ -418,6 +480,21 @@ const char* to_cstr(ContextLifecycleState state) noexcept {
     }
 }
 
+const char* to_cstr(LifecycleStageDecision decision) noexcept {
+    switch (decision) {
+    case LifecycleStageDecision::Allowed:
+        return "Allowed";
+    case LifecycleStageDecision::MissingRegistryEntry:
+        return "MissingRegistryEntry";
+    case LifecycleStageDecision::StateNotAllowed:
+        return "StateNotAllowed";
+    case LifecycleStageDecision::TimedOut:
+        return "TimedOut";
+    default:
+        return "Unknown";
+    }
+}
+
 RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
     MetadataMutationGuard mutationGuard("registry_get_or_create", &key);
     if (!mutationGuard.ok()) {
@@ -430,9 +507,22 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
     const std::uint64_t nowMs = monotonic_time_ms();
     auto it = state.byDeviceContext.find(key);
     if (it != state.byDeviceContext.end()) {
-        it->second.lastTouchedMs = nowMs;
-        publish_registry_live_count(state.byDeviceContext.size());
-        return it->second.handle;
+        if (it->second.lifecycleState == ContextLifecycleState::Retired) {
+            RegistryEntry retiredEntry = it->second;
+            (void)erase_registry_entry_locked(
+                state,
+                key,
+                retiredEntry,
+                "recreate",
+                "retired_recreate",
+                false,
+                0);
+        }
+        else {
+            it->second.lastTouchedMs = nowMs;
+            publish_registry_live_count(state.byDeviceContext.size());
+            return it->second.handle;
+        }
     }
 
     RegistryEntry entry{};
@@ -446,6 +536,7 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
         entry.createOrder = state.nextCreateOrder.fetch_add(1, std::memory_order_relaxed);
     }
     entry.lastTouchedMs = nowMs;
+    entry.lifecycleSinceMs = nowMs;
     entry.activeSubmissionCount = 0;
 
     auto inserted = state.byDeviceContext.emplace(key, entry);
@@ -489,6 +580,90 @@ bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleS
         return false;
     }
     outState = it->second.lifecycleState;
+    return true;
+}
+
+bool registry_validate_lifecycle_stage(
+    const DeviceContextKey& key,
+    bool allowNonActiveRelease,
+    LifecycleStageValidation& outValidation) noexcept {
+    outValidation = LifecycleStageValidation{};
+    RegistryState& state = registry_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto it = state.byDeviceContext.find(key);
+    if (it == state.byDeviceContext.end()) {
+        outValidation.decision = LifecycleStageDecision::MissingRegistryEntry;
+        outValidation.observedState = ContextLifecycleState::Unbound;
+        outValidation.observedStateAgeMs = 0;
+        outValidation.escalated = false;
+        return false;
+    }
+
+    RegistryEntry& entry = it->second;
+    const std::uint64_t nowMs = monotonic_time_ms();
+    if (entry.lifecycleSinceMs == 0) {
+        entry.lifecycleSinceMs = nowMs;
+    }
+
+    const ContextLifecycleState observedState = entry.lifecycleState;
+    const std::uint64_t stateAgeMs = saturating_elapsed_ms(nowMs, entry.lifecycleSinceMs);
+    outValidation.observedState = observedState;
+    outValidation.observedStateAgeMs = stateAgeMs;
+
+    const ResourceManagerConfigEffective& cfg = registry_policy_config();
+    const std::uint64_t timeoutMs = lifecycle_timeout_ms_for_state(observedState, cfg);
+    if (timeoutMs > 0 && stateAgeMs >= timeoutMs) {
+        ResourceManagerState& rmState = global_state();
+        rmState.lifecycleTimeoutEvents.fetch_add(1, std::memory_order_relaxed);
+        const RegistryHandle observedHandle = entry.handle;
+        const char* timeoutReason = (observedState == ContextLifecycleState::Draining)
+            ? "drain_timeout"
+            : "rebind_timeout";
+
+        bool escalated = false;
+        if (entry.activeSubmissionCount == 0) {
+            bump_registry_epoch_locked(key, observedHandle, true, "watchdog_timeout_bump");
+            if (transition_entry_locked(
+                    key,
+                    entry,
+                    observedState,
+                    ContextLifecycleState::Retired,
+                    "watchdog_timeout_retire")) {
+                entry.lastTouchedMs = nowMs;
+                RegistryEntry retiredEntry = entry;
+                (void)erase_registry_entry_locked(
+                    state,
+                    key,
+                    retiredEntry,
+                    "lifecycle_timeout",
+                    "watchdog_timeout_retire",
+                    false,
+                    0);
+                escalated = true;
+            }
+        }
+
+        trace_lifecycle_timeout(
+            key,
+            observedHandle,
+            observedState,
+            stateAgeMs,
+            timeoutMs,
+            escalated,
+            timeoutReason);
+        outValidation.decision = LifecycleStageDecision::TimedOut;
+        outValidation.escalated = escalated;
+        return false;
+    }
+
+    if (!lifecycle_state_allowed_for_stage(observedState, allowNonActiveRelease)) {
+        outValidation.decision = LifecycleStageDecision::StateNotAllowed;
+        outValidation.escalated = false;
+        return false;
+    }
+
+    outValidation.decision = LifecycleStageDecision::Allowed;
+    outValidation.escalated = false;
     return true;
 }
 

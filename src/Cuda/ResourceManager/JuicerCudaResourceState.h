@@ -47,6 +47,7 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> lifecycleStageRejects{ 0 };
     std::atomic<std::uint64_t> lifecycleBarrierCalls{ 0 };
     std::atomic<std::uint64_t> lifecycleBarrierRejects{ 0 };
+    std::atomic<std::uint64_t> lifecycleTimeoutEvents{ 0 };
     std::atomic<std::uint64_t> metadataMutationBeginCalls{ 0 };
     std::atomic<std::uint64_t> metadataMutationEndCalls{ 0 };
     std::atomic<std::uint64_t> metadataMutationRejects{ 0 };

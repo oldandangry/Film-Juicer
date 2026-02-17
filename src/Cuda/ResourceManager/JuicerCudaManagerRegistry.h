@@ -26,15 +26,34 @@ enum class ContextLifecycleState : std::uint8_t {
     Retired = 6
 };
 
+enum class LifecycleStageDecision : std::uint8_t {
+    Allowed = 0,
+    MissingRegistryEntry = 1,
+    StateNotAllowed = 2,
+    TimedOut = 3
+};
+
 struct RegistryHandle {
     std::uint64_t value = 0;
 };
 
+struct LifecycleStageValidation {
+    LifecycleStageDecision decision = LifecycleStageDecision::MissingRegistryEntry;
+    ContextLifecycleState observedState = ContextLifecycleState::Unbound;
+    std::uint64_t observedStateAgeMs = 0;
+    bool escalated = false;
+};
+
 const char* to_cstr(ContextLifecycleState state) noexcept;
+const char* to_cstr(LifecycleStageDecision decision) noexcept;
 
 RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept;
 bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexcept;
 bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept;
+bool registry_validate_lifecycle_stage(
+    const DeviceContextKey& key,
+    bool allowNonActiveRelease,
+    LifecycleStageValidation& outValidation) noexcept;
 bool registry_note_submission_begin(const DeviceContextKey& key) noexcept;
 bool registry_note_submission_end(const DeviceContextKey& key) noexcept;
 bool registry_transition_lifecycle_state(

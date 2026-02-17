@@ -6573,6 +6573,8 @@ bool validate_resource_kind_onboarding_contract(std::string& outError) noexcept 
 void trace_lifecycle_stage_decision(
     const SubmissionTransaction& transaction,
     ContextLifecycleState observedState,
+    LifecycleStageDecision decision,
+    std::uint64_t stateAgeMs,
     const char* stage,
     bool accepted,
     const char* reason) {
@@ -6585,42 +6587,78 @@ void trace_lifecycle_stage_decision(
         + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
         + " context=" + std::to_string(contextBits)
         + " observed_state=" + to_cstr(observedState)
+        + " decision=" + to_cstr(decision)
+        + " state_age_ms=" + std::to_string(static_cast<unsigned long long>(stateAgeMs))
         + " accepted=" + std::to_string(accepted ? 1 : 0)
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSLCY", msg);
-}
-
-bool lifecycle_state_allowed_for_stage(ContextLifecycleState state, bool allowNonActiveRelease) {
-    if (allowNonActiveRelease) {
-        return state != ContextLifecycleState::Unbound;
-    }
-    return state == ContextLifecycleState::Active;
 }
 
 bool validate_lifecycle_for_stage(const SubmissionTransaction& transaction,
                                   const char* stage,
                                   bool allowNonActiveRelease,
                                   std::string* outError) {
-    ContextLifecycleState lifecycleState = ContextLifecycleState::Unbound;
-    if (!registry_get_lifecycle_state(transaction.snapshot.deviceContextKey, lifecycleState)) {
+    LifecycleStageValidation validation{};
+    if (!registry_validate_lifecycle_stage(
+            transaction.snapshot.deviceContextKey,
+            allowNonActiveRelease,
+            validation)) {
         global_state().lifecycleStageRejects.fetch_add(1, std::memory_order_relaxed);
-        trace_lifecycle_stage_decision(transaction, lifecycleState, stage, false, "missing_registry_entry");
-        if (outError) {
-            *outError = "missing registry entry for lifecycle validation";
+        const char* reason = "lifecycle_stage_rejected";
+        switch (validation.decision) {
+        case LifecycleStageDecision::MissingRegistryEntry:
+            reason = "missing_registry_entry";
+            if (outError) {
+                *outError = "missing registry entry for lifecycle validation";
+            }
+            break;
+        case LifecycleStageDecision::StateNotAllowed:
+            reason = "lifecycle_state_not_allowed";
+            if (outError) {
+                *outError = std::string("lifecycle state not allowed for stage (state=")
+                    + to_cstr(validation.observedState) + ")";
+            }
+            break;
+        case LifecycleStageDecision::TimedOut:
+            reason = validation.escalated
+                ? "lifecycle_state_timeout_escalated"
+                : "lifecycle_state_timeout_not_escalated";
+            if (outError) {
+                *outError = std::string("lifecycle watchdog timeout for stage (state=")
+                    + to_cstr(validation.observedState)
+                    + ", age_ms="
+                    + std::to_string(static_cast<unsigned long long>(validation.observedStateAgeMs))
+                    + ")";
+            }
+            break;
+        case LifecycleStageDecision::Allowed:
+        default:
+            break;
         }
-        return false;
-    }
-    if (!lifecycle_state_allowed_for_stage(lifecycleState, allowNonActiveRelease)) {
-        global_state().lifecycleStageRejects.fetch_add(1, std::memory_order_relaxed);
-        trace_lifecycle_stage_decision(transaction, lifecycleState, stage, false, "lifecycle_state_not_allowed");
+        trace_lifecycle_stage_decision(
+            transaction,
+            validation.observedState,
+            validation.decision,
+            validation.observedStateAgeMs,
+            stage,
+            false,
+            reason);
         if (outError) {
-            *outError = std::string("lifecycle state not allowed for stage (state=")
-                + to_cstr(lifecycleState) + ")";
+            if (outError->empty()) {
+                *outError = "lifecycle stage rejected";
+            }
         }
         return false;
     }
     if (JTRACE_ENABLED(3)) {
-        trace_lifecycle_stage_decision(transaction, lifecycleState, stage, true, "stage_allowed");
+        trace_lifecycle_stage_decision(
+            transaction,
+            validation.observedState,
+            validation.decision,
+            validation.observedStateAgeMs,
+            stage,
+            true,
+            "stage_allowed");
     }
     return true;
 }
