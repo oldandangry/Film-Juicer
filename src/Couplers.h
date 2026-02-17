@@ -2,7 +2,6 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <numeric>
 #include "FilmProcessing.h"
 #include "SpectralData.h"
@@ -410,18 +409,9 @@ namespace Couplers {
 
     // Called from onParamChanged
     inline void on_param_changed(const char* name) {
-        if (!name) return;
-        if (std::strcmp(name, kParamCouplersActive) == 0 ||
-            std::strcmp(name, kParamCouplersAmount) == 0 ||
-            std::strcmp(name, kParamCouplersAmountR) == 0 ||
-            std::strcmp(name, kParamCouplersAmountG) == 0 ||
-            std::strcmp(name, kParamCouplersAmountB) == 0 ||
-            std::strcmp(name, kParamCouplersLayerSigma) == 0 ||
-            std::strcmp(name, kParamCouplersHighExpShift) == 0 ||
-            std::strcmp(name, kParamCouplersSpatialSigma) == 0) {
-            Spectral::mark_mixing_dirty();
-        }
-
+        (void)name;
+        // Coupler changes are consumed by WorkingState rebuild from ParamSnapshot.
+        // Do not mutate process-global spectral precompute state from runtime param changes.
     }
 
 

@@ -1,12 +1,38 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 
 #include "SpectralTypes.h"
 #include "NpyLoader.h"
 
 namespace Spectral {
+
+    enum class SpectralMutationStage : std::uint8_t {
+        None = 0,
+        Bootstrap = 1,
+        Rebuild = 2
+    };
+
+    const char* to_cstr(SpectralMutationStage stage) noexcept;
+
+    class SpectralMutationScope {
+    public:
+        SpectralMutationScope(SpectralMutationStage stage, const char* owner = nullptr) noexcept;
+        ~SpectralMutationScope() noexcept;
+
+        bool active() const noexcept { return _active; }
+
+    private:
+        SpectralMutationStage _stage = SpectralMutationStage::None;
+        const char* _owner = nullptr;
+        bool _active = false;
+    };
+
+    bool spectral_mutation_scope_active() noexcept;
+    SpectralMutationStage spectral_mutation_stage() noexcept;
+    bool require_spectral_mutation_scope(const char* action) noexcept;
 
     struct SpectralContext {
         PrecomputeStatus precomputeStatus;

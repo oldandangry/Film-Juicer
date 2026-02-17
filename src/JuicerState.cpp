@@ -1551,6 +1551,11 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
 }
 
 void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P) {
+    Spectral::SpectralMutationScope mutationScope(
+        Spectral::SpectralMutationStage::Rebuild,
+        "rebuild_working_state");
+    (void)mutationScope;
+
     auto sanitize_curve = [](Spectral::Curve& c) {
         for (float& v : c.linear) {
             if (!std::isfinite(v)) v = 0.0f;
@@ -1848,8 +1853,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 applyFilter(sensB);
                 applyFilter(sensG);
                 applyFilter(sensR);
-
-                Spectral::mark_spectral_tables_dirty();
             }
         }
     }
@@ -2840,6 +2843,11 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     rebuild_working_state(instance, S, P);
     return;
 #else
+    Spectral::SpectralMutationScope mutationScope(
+        Spectral::SpectralMutationStage::Rebuild,
+        "rebuild_working_state_couplers_only");
+    (void)mutationScope;
+
     JTRACE_SCOPE("BUILD", "rebuild_working_state_couplers_only");
 
     std::unique_lock<std::mutex> lk(S.m);

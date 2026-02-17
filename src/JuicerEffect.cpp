@@ -486,6 +486,11 @@ namespace {
     }
 
     void init_spectral_globals_once() {
+        Spectral::SpectralMutationScope mutationScope(
+            Spectral::SpectralMutationStage::Bootstrap,
+            "init_spectral_globals_once");
+        (void)mutationScope;
+
         try {
             Spectral::lock_shape_to_reference_axis();
             const auto cmf = Spectral::load_csv_triplets(data_dir_string("cie1931_2deg.csv"));
