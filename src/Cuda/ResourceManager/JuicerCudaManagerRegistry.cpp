@@ -419,7 +419,7 @@ const char* to_cstr(ContextLifecycleState state) noexcept {
 }
 
 RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
-    MetadataMutationGuard mutationGuard("registry_get_or_create");
+    MetadataMutationGuard mutationGuard("registry_get_or_create", &key);
     if (!mutationGuard.ok()) {
         return RegistryHandle{};
     }
@@ -561,7 +561,7 @@ bool registry_transition_lifecycle_state(
     ContextLifecycleState expectedState,
     ContextLifecycleState desiredState,
     const char* reason) noexcept {
-    MetadataMutationGuard mutationGuard("registry_transition_lifecycle_state");
+    MetadataMutationGuard mutationGuard("registry_transition_lifecycle_state", &key);
     if (!mutationGuard.ok()) {
         return false;
     }
@@ -586,7 +586,7 @@ bool registry_transition_lifecycle_state(
 bool registry_freeze_drain_bump_resume(
     const DeviceContextKey& key,
     const char* reason) noexcept {
-    MetadataMutationGuard mutationGuard("registry_freeze_drain_bump_resume");
+    MetadataMutationGuard mutationGuard("registry_freeze_drain_bump_resume", &key);
     if (!mutationGuard.ok()) {
         return false;
     }
@@ -626,8 +626,11 @@ bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexce
     return true;
 }
 
-void registry_retire(RegistryHandle handle, RegistryRetireReason reason) noexcept {
-    MetadataMutationGuard mutationGuard("registry_retire");
+void registry_retire(
+    RegistryHandle handle,
+    RegistryRetireReason reason,
+    const DeviceContextKey* managerKey) noexcept {
+    MetadataMutationGuard mutationGuard("registry_retire", managerKey);
     if (!mutationGuard.ok()) {
         return;
     }

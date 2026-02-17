@@ -88,6 +88,36 @@ void telemetry_record_metadata_mutation_order_violation() noexcept {
     global_state().metadataMutationOrderViolations.fetch_add(1, std::memory_order_relaxed);
 }
 
+void telemetry_record_metadata_queue_enqueue() noexcept {
+    global_state().metadataMutationQueueEnqueueCalls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_record_metadata_queue_dequeue() noexcept {
+    global_state().metadataMutationQueueDequeueCalls.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_record_metadata_queue_wait() noexcept {
+    global_state().metadataMutationQueueWaitEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_record_metadata_queue_backpressure() noexcept {
+    global_state().metadataMutationQueueBackpressureEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_record_metadata_queue_reject() noexcept {
+    global_state().metadataMutationQueueRejects.fetch_add(1, std::memory_order_relaxed);
+}
+
+void telemetry_note_metadata_queue_depth(std::uint64_t depth) noexcept {
+    std::atomic<std::uint64_t>& gauge = global_state().metadataMutationQueueMaxDepth;
+    std::uint64_t observed = gauge.load(std::memory_order_relaxed);
+    while (depth > observed) {
+        if (gauge.compare_exchange_weak(observed, depth, std::memory_order_relaxed)) {
+            break;
+        }
+    }
+}
+
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept {
     ResourceManagerState& state = global_state();
     std::uint64_t id = state.nextAcquireAttemptId.fetch_add(1, std::memory_order_relaxed);
@@ -253,6 +283,25 @@ void telemetry_trace_metadata_mutation(
         " accepted=" + std::to_string(accepted ? 1 : 0) +
         " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSMUT", msg);
+}
+
+void telemetry_trace_metadata_queue(
+    const char* eventName,
+    const char* stage,
+    std::uint64_t ticket,
+    std::uint64_t depth,
+    std::uint64_t waitedMs,
+    bool accepted,
+    const char* reason) noexcept {
+    const std::string msg =
+        std::string("event=") + (eventName ? eventName : "unknown") +
+        " stage=" + (stage ? stage : "unknown") +
+        " ticket=" + std::to_string(ticket) +
+        " depth=" + std::to_string(depth) +
+        " waited_ms=" + std::to_string(waitedMs) +
+        " accepted=" + std::to_string(accepted ? 1 : 0) +
+        " reason=" + (reason ? reason : "unspecified");
+    JTRACE("MSMQ", msg);
 }
 
 void telemetry_trace_acquire(

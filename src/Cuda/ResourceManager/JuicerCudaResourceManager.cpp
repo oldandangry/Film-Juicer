@@ -7438,7 +7438,7 @@ bool begin_submission(
     const SubmissionSnapshot& snapshot,
     std::string& outError) {
     outError.clear();
-    MetadataMutationGuard mutationGuard("begin_submission");
+    MetadataMutationGuard mutationGuard("begin_submission", &snapshot.deviceContextKey);
     if (!mutationGuard.ok()) {
         outError = "metadata mutation guard rejected begin_submission";
         return false;
@@ -7525,7 +7525,7 @@ bool acquire_plan(
     SubmissionTransaction& transaction,
     std::string& outError) {
     outError.clear();
-    MetadataMutationGuard mutationGuard("acquire_plan");
+    MetadataMutationGuard mutationGuard("acquire_plan", &transaction.snapshot.deviceContextKey);
     if (!mutationGuard.ok()) {
         outError = "metadata mutation guard rejected acquire_plan";
         return false;
@@ -7860,7 +7860,7 @@ bool commit_submission(
     std::string& outError) {
     (void)cudaStreamOpaque;
     outError.clear();
-    MetadataMutationGuard mutationGuard("commit_submission");
+    MetadataMutationGuard mutationGuard("commit_submission", &transaction.snapshot.deviceContextKey);
     if (!mutationGuard.ok()) {
         outError = "metadata mutation guard rejected commit_submission";
         return false;
@@ -7909,7 +7909,7 @@ bool command_freeze_drain_bump_resume(
     const char* reason,
     std::string& outError) {
     outError.clear();
-    MetadataMutationGuard mutationGuard("command_freeze_drain_bump_resume");
+    MetadataMutationGuard mutationGuard("command_freeze_drain_bump_resume", &key);
     if (!mutationGuard.ok()) {
         outError = "metadata mutation guard rejected command_freeze_drain_bump_resume";
         return false;
@@ -7928,7 +7928,7 @@ bool command_retire_context_with_reason(
     const char* commandName,
     std::string& outError) {
     outError.clear();
-    MetadataMutationGuard mutationGuard(commandName ? commandName : "command_retire_context");
+    MetadataMutationGuard mutationGuard(commandName ? commandName : "command_retire_context", &key);
     if (!mutationGuard.ok()) {
         outError = std::string("metadata mutation guard rejected ")
             + (commandName ? commandName : "command_retire_context");
@@ -7956,7 +7956,7 @@ bool command_retire_context_with_reason(
         return true;
     }
 
-    registry_retire(handle, reason);
+    registry_retire(handle, reason, &key);
     return true;
 }
 } // namespace
@@ -9860,7 +9860,7 @@ void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept {
     (void)reason;
-    MetadataMutationGuard mutationGuard("rollback_submission");
+    MetadataMutationGuard mutationGuard("rollback_submission", &transaction.snapshot.deviceContextKey);
     if (!mutationGuard.ok()) {
         return;
     }

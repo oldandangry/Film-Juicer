@@ -28,6 +28,9 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
+    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaMetadataMutationQueue.cpp">
+      <Filter>Cuda</Filter>
+    </ClCompile>
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>

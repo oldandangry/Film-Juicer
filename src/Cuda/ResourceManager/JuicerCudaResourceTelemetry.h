@@ -26,6 +26,12 @@ void telemetry_record_metadata_mutation_begin() noexcept;
 void telemetry_record_metadata_mutation_end() noexcept;
 void telemetry_record_metadata_mutation_reject() noexcept;
 void telemetry_record_metadata_mutation_order_violation() noexcept;
+void telemetry_record_metadata_queue_enqueue() noexcept;
+void telemetry_record_metadata_queue_dequeue() noexcept;
+void telemetry_record_metadata_queue_wait() noexcept;
+void telemetry_record_metadata_queue_backpressure() noexcept;
+void telemetry_record_metadata_queue_reject() noexcept;
+void telemetry_note_metadata_queue_depth(std::uint64_t depth) noexcept;
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept;
 
 void telemetry_trace_schema_announcement(
@@ -91,6 +97,15 @@ void telemetry_trace_metadata_mutation(
     std::uint64_t sequence,
     bool accepted,
     std::uint64_t expectedSequence,
+    const char* reason) noexcept;
+
+void telemetry_trace_metadata_queue(
+    const char* eventName,
+    const char* stage,
+    std::uint64_t ticket,
+    std::uint64_t depth,
+    std::uint64_t waitedMs,
+    bool accepted,
     const char* reason) noexcept;
 
 void telemetry_trace_acquire(

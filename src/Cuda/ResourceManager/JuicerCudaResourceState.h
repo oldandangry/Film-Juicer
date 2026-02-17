@@ -51,6 +51,12 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> metadataMutationEndCalls{ 0 };
     std::atomic<std::uint64_t> metadataMutationRejects{ 0 };
     std::atomic<std::uint64_t> metadataMutationOrderViolations{ 0 };
+    std::atomic<std::uint64_t> metadataMutationQueueEnqueueCalls{ 0 };
+    std::atomic<std::uint64_t> metadataMutationQueueDequeueCalls{ 0 };
+    std::atomic<std::uint64_t> metadataMutationQueueWaitEvents{ 0 };
+    std::atomic<std::uint64_t> metadataMutationQueueBackpressureEvents{ 0 };
+    std::atomic<std::uint64_t> metadataMutationQueueRejects{ 0 };
+    std::atomic<std::uint64_t> metadataMutationQueueMaxDepth{ 0 };
     std::atomic<std::uint64_t> scratchPolicyWaitEvents{ 0 };
     std::atomic<std::uint64_t> scratchPolicyExhaustedEvents{ 0 };
     std::atomic<std::uint64_t> scratchBucketAcquireAttempts{ 0 };
@@ -174,15 +180,21 @@ void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexce
 
 struct MetadataMutationScope {
     std::uint64_t sequence = 0;
+    std::uint64_t queueTicket = 0;
+    DeviceContextKey managerKey{};
+    bool hasManagerKey = false;
     bool active = false;
 };
 
-bool metadata_mutation_begin(const char* stage, MetadataMutationScope& outScope) noexcept;
+bool metadata_mutation_begin(
+    const char* stage,
+    MetadataMutationScope& outScope,
+    const DeviceContextKey* managerKey = nullptr) noexcept;
 void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noexcept;
 
 class MetadataMutationGuard {
 public:
-    explicit MetadataMutationGuard(const char* stage) noexcept;
+    explicit MetadataMutationGuard(const char* stage, const DeviceContextKey* managerKey = nullptr) noexcept;
     ~MetadataMutationGuard() noexcept;
 
     bool ok() const noexcept { return _scope.active; }
@@ -190,6 +202,8 @@ public:
 
 private:
     const char* _stage = nullptr;
+    bool _hasManagerKey = false;
+    DeviceContextKey _managerKey{};
     MetadataMutationScope _scope{};
 };
 
