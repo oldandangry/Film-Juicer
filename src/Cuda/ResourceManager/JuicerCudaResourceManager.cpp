@@ -208,6 +208,24 @@ AllocatorBackendState& allocator_backend_state() noexcept {
     return state;
 }
 
+AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
+    AllocatorBackendState& state,
+    const DeviceContextKey& key,
+    const ResourceManagerConfigEffective& cfg) noexcept;
+
+bool allocator_backend_try_get_active_mode(
+    const DeviceContextKey& key,
+    AllocatorBackendMode& outMode) noexcept {
+    AllocatorBackendState& state = allocator_backend_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto it = state.byContext.find(key);
+    if (it == state.byContext.end() || !it->second.valid) {
+        return false;
+    }
+    outMode = it->second.active;
+    return true;
+}
+
 const char* to_cstr(ScratchWorkClass workClass) noexcept {
     switch (workClass) {
     case ScratchWorkClass::Optics:
@@ -1024,6 +1042,17 @@ AllocatorBackendContextEntry compute_allocator_backend_context_entry(
     return out;
 }
 
+AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
+    AllocatorBackendState& state,
+    const DeviceContextKey& key,
+    const ResourceManagerConfigEffective& cfg) noexcept {
+    AllocatorBackendContextEntry& entry = state.byContext[key];
+    if (!entry.valid) {
+        entry = compute_allocator_backend_context_entry(key, cfg);
+    }
+    return entry;
+}
+
 void trace_allocator_backend_mode_once(
     const SubmissionTransaction& transaction,
     const AllocatorBackendContextEntry& entry) {
@@ -1055,12 +1084,10 @@ void ensure_allocator_backend_mode_initialized(
     {
         AllocatorBackendState& state = allocator_backend_state();
         std::lock_guard<std::mutex> lock(state.mutex);
-        AllocatorBackendContextEntry& entry = state.byContext[transaction.snapshot.deviceContextKey];
-        if (!entry.valid) {
-            entry = compute_allocator_backend_context_entry(
-                transaction.snapshot.deviceContextKey,
-                cfg);
-        }
+        AllocatorBackendContextEntry& entry = allocator_backend_get_or_init_locked(
+            state,
+            transaction.snapshot.deviceContextKey,
+            cfg);
         if (!entry.traced) {
             entry.traced = true;
             traceEntry = entry;
@@ -1197,10 +1224,8 @@ void maybe_apply_async_mempool_release_policy(
     {
         AllocatorBackendState& state = allocator_backend_state();
         std::lock_guard<std::mutex> lock(state.mutex);
-        AllocatorBackendContextEntry& entry = state.byContext[key];
-        if (!entry.valid) {
-            entry = compute_allocator_backend_context_entry(key, cfg);
-        }
+        AllocatorBackendContextEntry& entry =
+            allocator_backend_get_or_init_locked(state, key, cfg);
         if (entry.active != AllocatorBackendMode::AsyncPool) {
             return;
         }
@@ -1222,10 +1247,8 @@ void maybe_apply_async_mempool_release_policy(
     {
         AllocatorBackendState& state = allocator_backend_state();
         std::lock_guard<std::mutex> lock(state.mutex);
-        AllocatorBackendContextEntry& entry = state.byContext[key];
-        if (!entry.valid) {
-            entry = compute_allocator_backend_context_entry(key, cfg);
-        }
+        AllocatorBackendContextEntry& entry =
+            allocator_backend_get_or_init_locked(state, key, cfg);
         entry.mempoolPolicyValid = true;
         entry.mempoolPolicyApplied = applied;
         entry.mempoolReleaseThresholdBytes = thresholdBytes;
@@ -7423,14 +7446,16 @@ AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) n
     if (key.deviceId < 0) {
         return AllocatorBackendMode::Legacy;
     }
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    AllocatorBackendState& state = allocator_backend_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    AllocatorBackendContextEntry& entry = state.byContext[key];
-    if (!entry.valid) {
-        entry = compute_allocator_backend_context_entry(key, cfg);
+    AllocatorBackendMode activeMode = AllocatorBackendMode::Legacy;
+    if (allocator_backend_try_get_active_mode(key, activeMode)) {
+        return activeMode;
     }
-    return entry.active;
+
+    // Query APIs are read-only: derive an uncached mode when command path has not initialized state yet.
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    const AllocatorBackendContextEntry derived =
+        compute_allocator_backend_context_entry(key, cfg);
+    return derived.active;
 }
 
 bool begin_submission(

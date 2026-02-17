@@ -20,6 +20,7 @@ namespace ResourceManager {
 
 bool query_submission_active(const SubmissionTransaction& transaction) noexcept;
 
+// Query surface is read-only: this must not mutate manager state.
 AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) noexcept;
 
 bool begin_submission(
