@@ -40,6 +40,7 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> traceSchemaMismatchEvents{ 0 };
     std::atomic<std::uint64_t> forbiddenInvalidationEdges{ 0 };
     std::atomic<std::uint64_t> moduleBoundaryViolations{ 0 };
+    std::atomic<std::uint64_t> queryMutationViolationEvents{ 0 };
     std::atomic<std::uint64_t> frameSnapshotMismatchEvents{ 0 };
     std::atomic<std::uint64_t> staleTupleHardRejects{ 0 };
     std::atomic<std::uint64_t> lifecycleTransitionCalls{ 0 };
@@ -179,6 +180,24 @@ bool state_snapshot_is_superseded(
     std::uint64_t* outLatestSnapshotId = nullptr) noexcept;
 void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexcept;
 
+struct QueryReadOnlySnapshot {
+    bool threadMutationActive = false;
+    std::uint32_t threadMutationDepth = 0;
+    std::uint64_t threadMutationTicket = 0;
+    std::uint64_t threadMutationBeginCount = 0;
+};
+
+class QueryReadOnlyGuard {
+public:
+    explicit QueryReadOnlyGuard(const char* queryName, const DeviceContextKey* key = nullptr) noexcept;
+    ~QueryReadOnlyGuard() noexcept;
+
+private:
+    const char* _queryName = nullptr;
+    const DeviceContextKey* _key = nullptr;
+    QueryReadOnlySnapshot _before{};
+};
+
 struct MetadataMutationScope {
     std::uint64_t sequence = 0;
     std::uint64_t queueTicket = 0;
@@ -192,6 +211,10 @@ bool metadata_mutation_begin(
     MetadataMutationScope& outScope,
     const DeviceContextKey* managerKey = nullptr) noexcept;
 void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noexcept;
+bool metadata_mutation_thread_active() noexcept;
+std::uint32_t metadata_mutation_thread_depth() noexcept;
+std::uint64_t metadata_mutation_thread_ticket() noexcept;
+std::uint64_t metadata_mutation_thread_begin_count() noexcept;
 
 class MetadataMutationGuard {
 public:

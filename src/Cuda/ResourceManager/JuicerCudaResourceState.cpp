@@ -39,11 +39,76 @@ LatestSnapshotState& latest_snapshot_state() {
     return state;
 }
 
+QueryReadOnlySnapshot take_query_read_only_snapshot() noexcept {
+    QueryReadOnlySnapshot snapshot{};
+    snapshot.threadMutationActive = metadata_mutation_thread_active();
+    snapshot.threadMutationDepth = metadata_mutation_thread_depth();
+    snapshot.threadMutationTicket = metadata_mutation_thread_ticket();
+    snapshot.threadMutationBeginCount = metadata_mutation_thread_begin_count();
+    return snapshot;
+}
+
+bool query_read_only_snapshot_equal(
+    const QueryReadOnlySnapshot& lhs,
+    const QueryReadOnlySnapshot& rhs) noexcept {
+    return lhs.threadMutationActive == rhs.threadMutationActive &&
+        lhs.threadMutationDepth == rhs.threadMutationDepth &&
+        lhs.threadMutationTicket == rhs.threadMutationTicket &&
+        lhs.threadMutationBeginCount == rhs.threadMutationBeginCount;
+}
+
+const char* query_mutation_reason(
+    const QueryReadOnlySnapshot& before,
+    const QueryReadOnlySnapshot& after) noexcept {
+    if (!before.threadMutationActive && after.threadMutationActive) {
+        return "thread_entered_metadata_mutation";
+    }
+    if (before.threadMutationDepth != after.threadMutationDepth) {
+        return "thread_mutation_depth_changed";
+    }
+    if (before.threadMutationTicket != after.threadMutationTicket) {
+        return "thread_mutation_ticket_changed";
+    }
+    if (before.threadMutationBeginCount != after.threadMutationBeginCount) {
+        return "thread_mutation_begin_count_changed";
+    }
+    return "unknown";
+}
+
 } // namespace
 
 ResourceManagerState& global_state() noexcept {
     static ResourceManagerState state{};
     return state;
+}
+
+QueryReadOnlyGuard::QueryReadOnlyGuard(
+    const char* queryName,
+    const DeviceContextKey* key) noexcept
+    : _queryName(queryName)
+    , _key(key)
+    , _before(take_query_read_only_snapshot()) {
+}
+
+QueryReadOnlyGuard::~QueryReadOnlyGuard() noexcept {
+    const QueryReadOnlySnapshot after = take_query_read_only_snapshot();
+    if (query_read_only_snapshot_equal(_before, after)) {
+        return;
+    }
+
+    const char* reason = query_mutation_reason(_before, after);
+    telemetry_record_query_mutation_violation();
+    telemetry_record_module_boundary_violation();
+    telemetry_trace_query_mutation_violation(
+        _queryName,
+        _key,
+        _before.threadMutationDepth,
+        after.threadMutationDepth,
+        _before.threadMutationTicket,
+        after.threadMutationTicket,
+        _before.threadMutationBeginCount,
+        after.threadMutationBeginCount,
+        reason);
 }
 
 void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus status) noexcept {

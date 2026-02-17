@@ -20,6 +20,7 @@ void telemetry_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus s
 void telemetry_record_trace_schema_mismatch() noexcept;
 void telemetry_record_forbidden_invalidation_edge() noexcept;
 void telemetry_record_module_boundary_violation() noexcept;
+void telemetry_record_query_mutation_violation() noexcept;
 void telemetry_record_frame_snapshot_mismatch() noexcept;
 void telemetry_record_stale_tuple_hard_reject() noexcept;
 void telemetry_record_metadata_mutation_begin() noexcept;
@@ -73,6 +74,17 @@ void telemetry_trace_module_boundary_violation(
     std::uint64_t transactionId,
     std::uint64_t snapshotId,
     std::uint32_t traceSchemaVersion,
+    const char* reason) noexcept;
+
+void telemetry_trace_query_mutation_violation(
+    const char* queryName,
+    const DeviceContextKey* key,
+    std::uint32_t beforeThreadMutationDepth,
+    std::uint32_t afterThreadMutationDepth,
+    std::uint64_t beforeThreadMutationTicket,
+    std::uint64_t afterThreadMutationTicket,
+    std::uint64_t beforeThreadMutationBeginCount,
+    std::uint64_t afterThreadMutationBeginCount,
     const char* reason) noexcept;
 
 void telemetry_trace_frame_snapshot_mismatch(

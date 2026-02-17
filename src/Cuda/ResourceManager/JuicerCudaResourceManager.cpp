@@ -7477,10 +7477,14 @@ bool run_fragmentation_recovery_once(
 } // namespace
 
 bool query_submission_active(const SubmissionTransaction& transaction) noexcept {
+    QueryReadOnlyGuard queryGuard("query_submission_active");
+    (void)queryGuard;
     return transaction.active;
 }
 
 AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) noexcept {
+    QueryReadOnlyGuard queryGuard("query_allocator_backend_mode", &key);
+    (void)queryGuard;
     if (key.deviceId < 0) {
         return AllocatorBackendMode::Legacy;
     }

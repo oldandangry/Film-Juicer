@@ -64,6 +64,10 @@ void telemetry_record_module_boundary_violation() noexcept {
     global_state().moduleBoundaryViolations.fetch_add(1, std::memory_order_relaxed);
 }
 
+void telemetry_record_query_mutation_violation() noexcept {
+    global_state().queryMutationViolationEvents.fetch_add(1, std::memory_order_relaxed);
+}
+
 void telemetry_record_frame_snapshot_mismatch() noexcept {
     global_state().frameSnapshotMismatchEvents.fetch_add(1, std::memory_order_relaxed);
 }
@@ -222,6 +226,35 @@ void telemetry_trace_module_boundary_violation(
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
         " reason=" + (reason ? reason : "unknown");
+    JTRACE("MSCMD", msg);
+}
+
+void telemetry_trace_query_mutation_violation(
+    const char* queryName,
+    const DeviceContextKey* key,
+    std::uint32_t beforeThreadMutationDepth,
+    std::uint32_t afterThreadMutationDepth,
+    std::uint64_t beforeThreadMutationTicket,
+    std::uint64_t afterThreadMutationTicket,
+    std::uint64_t beforeThreadMutationBeginCount,
+    std::uint64_t afterThreadMutationBeginCount,
+    const char* reason) noexcept {
+    const int deviceId = key ? key->deviceId : -1;
+    const std::uintptr_t contextBits = key
+        ? reinterpret_cast<std::uintptr_t>(key->contextOpaque)
+        : 0;
+    const std::string msg =
+        std::string("event=query_mutation_violation") +
+        " query=" + (queryName ? queryName : "unknown") +
+        " reason=" + (reason ? reason : "unknown") +
+        " device_id=" + std::to_string(deviceId) +
+        " context=" + std::to_string(contextBits) +
+        " before_thread_mutation_depth=" + std::to_string(beforeThreadMutationDepth) +
+        " after_thread_mutation_depth=" + std::to_string(afterThreadMutationDepth) +
+        " before_thread_mutation_ticket=" + std::to_string(beforeThreadMutationTicket) +
+        " after_thread_mutation_ticket=" + std::to_string(afterThreadMutationTicket) +
+        " before_thread_mutation_begin_count=" + std::to_string(beforeThreadMutationBeginCount) +
+        " after_thread_mutation_begin_count=" + std::to_string(afterThreadMutationBeginCount);
     JTRACE("MSCMD", msg);
 }
 

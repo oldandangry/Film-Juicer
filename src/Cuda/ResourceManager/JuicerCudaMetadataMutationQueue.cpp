@@ -19,6 +19,9 @@ namespace {
 
 constexpr std::uint64_t kMetadataMutationQueueDepthLimit = 64ull;
 constexpr auto kMetadataMutationQueueWaitStep = std::chrono::milliseconds(1);
+thread_local std::uint32_t gMutationThreadDepth = 0;
+thread_local std::uint64_t gMutationThreadTicket = 0;
+thread_local std::uint64_t gMutationThreadBeginCount = 0;
 
 struct MetadataMutationLane {
     std::mutex mutex;
@@ -273,6 +276,9 @@ bool metadata_mutation_begin(
     outScope.hasManagerKey = (managerKey && managerKey->deviceId >= 0);
     outScope.managerKey = outScope.hasManagerKey ? *managerKey : DeviceContextKey{};
     outScope.active = true;
+    gMutationThreadDepth += 1;
+    gMutationThreadTicket = ticket;
+    gMutationThreadBeginCount += 1;
 
     telemetry_trace_metadata_mutation(
         "begin",
@@ -326,6 +332,8 @@ void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noex
             false,
             scope.sequence,
             "missing_lane");
+        gMutationThreadDepth = 0;
+        gMutationThreadTicket = 0;
         reset_scope(scope);
         return;
     }
@@ -353,6 +361,8 @@ void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noex
                 false,
                 scope.sequence,
                 "owner_mismatch");
+            gMutationThreadDepth = 0;
+            gMutationThreadTicket = 0;
             reset_scope(scope);
             return;
         }
@@ -410,7 +420,29 @@ void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noex
         true,
         scope.sequence,
         "ok");
+    if (gMutationThreadDepth > 0) {
+        --gMutationThreadDepth;
+    }
+    if (gMutationThreadDepth == 0) {
+        gMutationThreadTicket = 0;
+    }
     reset_scope(scope);
+}
+
+bool metadata_mutation_thread_active() noexcept {
+    return gMutationThreadDepth > 0;
+}
+
+std::uint32_t metadata_mutation_thread_depth() noexcept {
+    return gMutationThreadDepth;
+}
+
+std::uint64_t metadata_mutation_thread_ticket() noexcept {
+    return gMutationThreadTicket;
+}
+
+std::uint64_t metadata_mutation_thread_begin_count() noexcept {
+    return gMutationThreadBeginCount;
 }
 
 MetadataMutationGuard::MetadataMutationGuard(
