@@ -238,6 +238,9 @@
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp" />
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.cpp" />
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp" />
+    <None Include="src\Cuda\JuicerCudaResourcesServing.cpp" />
+    <None Include="src\Cuda\JuicerCudaResourcesScratch.cpp" />
+    <None Include="src\Cuda\JuicerCudaResourcesValidation.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AgxNanSemantics.h" />
@@ -251,6 +254,7 @@
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaPrintPipeline.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
+    <ClInclude Include="src\Cuda\JuicerCudaResourcesInternal.h" />
     <ClInclude Include="src\Cuda\JuicerCudaSelfCheck.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.h" />

@@ -144,6 +144,15 @@
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp">
       <Filter>Cuda</Filter>
     </None>
+    <None Include="src\Cuda\JuicerCudaResourcesServing.cpp">
+      <Filter>Cuda</Filter>
+    </None>
+    <None Include="src\Cuda\JuicerCudaResourcesScratch.cpp">
+      <Filter>Cuda</Filter>
+    </None>
+    <None Include="src\Cuda\JuicerCudaResourcesValidation.cpp">
+      <Filter>Cuda</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Cuda\JuicerCudaAutoExposure.h">
@@ -159,6 +168,9 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaResources.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Cuda\JuicerCudaResourcesInternal.h">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaSelfCheck.h">
