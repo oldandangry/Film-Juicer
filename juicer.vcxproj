@@ -235,6 +235,11 @@
     <ClCompile Include="src\SpectralMathAVX.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp" />
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.cpp" />
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp" />
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="src\AgxNanSemantics.h" />
     <ClInclude Include="src\AkimaInterpolator.h" />
     <ClInclude Include="src\ColorTransforms.h" />

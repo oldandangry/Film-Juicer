@@ -43,3 +43,4 @@ vcpkg_installed/
 /third_party/nlohmann/json.hpp
 /DaVinci_Resolve_17_Wide_Gamut_Intermediate.pdf
 /AGENTS.md
+/before-juicer.ofx

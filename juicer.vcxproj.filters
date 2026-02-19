@@ -135,6 +135,17 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp">
+      <Filter>Cuda</Filter>
+    </None>
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.cpp">
+      <Filter>Cuda</Filter>
+    </None>
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp">
+      <Filter>Cuda</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="src\Cuda\JuicerCudaAutoExposure.h">
       <Filter>Cuda</Filter>
     </ClInclude>
