@@ -3,6 +3,1459 @@
 // Included by JuicerCudaResourceManager.cpp (single-TU split).
 std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept;
 std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey& key) noexcept;
+void maybe_apply_async_mempool_release_policy(
+    const SubmissionTransaction& transaction,
+    PressureState pressureState,
+    const ResourceManagerConfigEffective& cfg,
+    const char* reason);
+void trim_large_frame_quarantine_decay_locked(
+    ScratchContextState& contextState,
+    std::uint64_t nowMs) noexcept;
+void snapshot_bucket_state_locked(
+    const ScratchContextState& contextState,
+    const ScratchBucketEntry& bucketEntry,
+    const ScratchBucketKey& bucketKey,
+    ScratchPolicySnapshot& outSnapshot) noexcept;
+void trace_scratch_policy_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const char* result,
+    std::size_t requestBytes,
+    const ScratchPolicySnapshot& snapshot,
+    int waitMs);
+void trace_transient_reservation_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::size_t requestBytes,
+    std::uint64_t bytesInFlight,
+    std::uint64_t capBytes,
+    std::uint64_t thresholdBytes,
+    const ReservationDecision& decision,
+    bool criticalCurrentFrame,
+    int waitMs,
+    const char* reason);
+void trace_upload_reservation_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t requestBytes,
+    std::uint64_t bytesInFlight,
+    std::uint64_t capBytes,
+    std::uint64_t thresholdBytes,
+    const ReservationDecision& decision,
+    bool criticalCurrentFrame,
+    std::uint64_t instanceToken,
+    std::uint32_t sharedTokens,
+    std::uint32_t criticalTokens,
+    int waitMs,
+    const char* reason);
+void trace_builder_reservation_decision(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    BuilderReservationTier tier,
+    std::uint64_t requestBytes,
+    std::uint64_t bytesInFlight,
+    std::uint64_t capBytes,
+    std::uint64_t thresholdBytes,
+    const ReservationDecision& decision,
+    bool criticalCurrentFrame,
+    std::uint64_t instanceToken,
+    std::uint32_t sharedTokens,
+    std::uint32_t criticalTokens,
+    int waitMs,
+    const char* reason);
+void trace_lane_wait_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureLane lane,
+    bool criticalCurrentFrame,
+    int waitMs,
+    const char* outcome,
+    const char* reason);
+
+ScratchPolicyState& scratch_policy_state() noexcept {
+    static ScratchPolicyState state{};
+    return state;
+}
+
+UploadReservationState& upload_reservation_state() noexcept {
+    static UploadReservationState state{};
+    return state;
+}
+
+BuilderReservationState& builder_reservation_state() noexcept {
+    static BuilderReservationState state{};
+    return state;
+}
+
+PressurePolicyState& pressure_policy_state() noexcept {
+    static PressurePolicyState state{};
+    return state;
+}
+
+TierCircuitPolicyState& tier_circuit_policy_state() noexcept {
+    static TierCircuitPolicyState state{};
+    return state;
+}
+
+AdmissionChurnPolicyState& admission_churn_policy_state() noexcept {
+    static AdmissionChurnPolicyState state{};
+    return state;
+}
+
+OptionalHeuristicTraceState& optional_heuristic_trace_state() noexcept {
+    static OptionalHeuristicTraceState state{};
+    return state;
+}
+
+bool contains_ascii_case_insensitive(const std::string& haystack, const char* needle) noexcept {
+    if (!needle || !*needle) {
+        return true;
+    }
+    if (haystack.empty()) {
+        return false;
+    }
+    const std::size_t needleLen = std::char_traits<char>::length(needle);
+    if (needleLen == 0 || needleLen > haystack.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i + needleLen <= haystack.size(); ++i) {
+        bool match = true;
+        for (std::size_t j = 0; j < needleLen; ++j) {
+            const unsigned char a = static_cast<unsigned char>(haystack[i + j]);
+            const unsigned char b = static_cast<unsigned char>(needle[j]);
+            if (std::tolower(a) != std::tolower(b)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_allocator_oom_error(const std::string& error) noexcept {
+    if (error.empty()) {
+        return false;
+    }
+    return contains_ascii_case_insensitive(error, "out of memory") ||
+        contains_ascii_case_insensitive(error, "memory allocation");
+}
+
+bool tier_circuit_should_count_failure(const std::string& error) noexcept {
+    if (error.empty()) {
+        return true;
+    }
+    if (error.rfind(kScratchExhaustedPrefix, 0) == 0) {
+        return false;
+    }
+    if (error.rfind(kReservationDeferredPrefix, 0) == 0) {
+        return false;
+    }
+    if (error.rfind("pressure_shed_noncritical:", 0) == 0) {
+        return false;
+    }
+    if (error.rfind("pressure_copy_compute_guard:", 0) == 0) {
+        return false;
+    }
+    return true;
+}
+
+std::uint64_t tier_target_basis_points(
+    const ResourceManagerConfigEffective& cfg,
+    ResourceTier tier) noexcept {
+    switch (tier) {
+    case ResourceTier::Immutable:
+        return cfg.tierTargetImmutableBp;
+    case ResourceTier::Lut:
+        return cfg.tierTargetLutBp;
+    case ResourceTier::Scratch:
+        return cfg.tierTargetScratchBp;
+    case ResourceTier::Graph:
+        return cfg.tierTargetGraphBp;
+    default:
+        return 0;
+    }
+}
+
+std::uint64_t tier_target_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    ResourceTier tier) noexcept {
+    if (cfg.managerSoftTargetBytes == 0) {
+        return 0;
+    }
+    const std::uint64_t bp = std::min<std::uint64_t>(
+        tier_target_basis_points(cfg, tier),
+        kBasisPointsDenominator);
+    std::uint64_t weighted = 0;
+    if (!mul_u64_checked(cfg.managerSoftTargetBytes, bp, weighted)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return weighted / kBasisPointsDenominator;
+}
+
+inline bool pressure_policy_enabled(const ResourceManagerConfigEffective& cfg) noexcept {
+    return cfg.managerSoftTargetBytes > 0;
+}
+
+std::uint64_t transient_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    if (cfg.managerSoftTargetBytes == 0) {
+        return kTransientReservationCapDefaultBytes;
+    }
+    const std::uint64_t quarterTarget = cfg.managerSoftTargetBytes / 4ull;
+    return std::max<std::uint64_t>(
+        kTransientReservationThresholdDefaultBytes,
+        std::min<std::uint64_t>(kTransientReservationCapDefaultBytes, quarterTarget));
+}
+
+std::uint64_t transient_reservation_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    const std::uint64_t capBytes = transient_reservation_cap_bytes(cfg);
+    if (capBytes == 0) {
+        return 0;
+    }
+    return std::min<std::uint64_t>(kTransientReservationThresholdDefaultBytes, capBytes);
+}
+
+std::uint64_t builder_reservation_cap_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    BuilderReservationTier tier) noexcept {
+    std::uint32_t configCapMb = 0;
+    std::uint64_t defaultCapBytes = kScratchBuilderReservationCapDefaultBytes;
+    switch (tier) {
+    case BuilderReservationTier::Scratch:
+        configCapMb = cfg.scratchBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kScratchBuilderReservationCapDefaultBytes;
+        break;
+    case BuilderReservationTier::Lut:
+        configCapMb = cfg.lutBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kLutBuilderReservationCapDefaultBytes;
+        break;
+    case BuilderReservationTier::Graph:
+        configCapMb = cfg.graphBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kGraphBuilderReservationCapDefaultBytes;
+        break;
+    default:
+        configCapMb = cfg.scratchBuilderBytesInFlightLimitMB;
+        defaultCapBytes = kScratchBuilderReservationCapDefaultBytes;
+        break;
+    }
+
+    std::uint64_t capBytes = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(configCapMb), kBytesPerMiB, capBytes)) {
+        capBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    if (capBytes == 0) {
+        capBytes = defaultCapBytes;
+    }
+    return std::max<std::uint64_t>(kBuilderReservationThresholdDefaultBytes, capBytes);
+}
+
+std::uint64_t builder_reservation_threshold_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    BuilderReservationTier tier) noexcept {
+    const std::uint64_t capBytes = builder_reservation_cap_bytes(cfg, tier);
+    if (capBytes == 0) {
+        return 0;
+    }
+    return std::min<std::uint64_t>(kBuilderReservationThresholdDefaultBytes, capBytes);
+}
+
+bool builder_context_has_inflight(const BuilderReservationContextState& contextState) noexcept {
+    return contextState.inFlightScratchBytes > 0 ||
+        contextState.inFlightLutBytes > 0 ||
+        contextState.inFlightGraphBytes > 0;
+}
+
+std::uint64_t upload_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    std::uint64_t configCapBytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(cfg.uploadBytesInFlightLimitMB),
+            kBytesPerMiB,
+            configCapBytes)) {
+        configCapBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    if (configCapBytes == 0) {
+        configCapBytes = kUploadReservationCapDefaultBytes;
+    }
+    if (cfg.managerSoftTargetBytes == 0) {
+        return std::max<std::uint64_t>(kUploadReservationThresholdDefaultBytes, configCapBytes);
+    }
+    const std::uint64_t quarterTarget = cfg.managerSoftTargetBytes / 4ull;
+    const std::uint64_t boundedCap = std::min<std::uint64_t>(configCapBytes, quarterTarget);
+    return std::max<std::uint64_t>(kUploadReservationThresholdDefaultBytes, boundedCap);
+}
+
+std::uint64_t upload_reservation_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+    const std::uint64_t capBytes = upload_reservation_cap_bytes(cfg);
+    if (capBytes == 0) {
+        return 0;
+    }
+    return std::min<std::uint64_t>(kUploadReservationThresholdDefaultBytes, capBytes);
+}
+
+void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& overflow) noexcept {
+    if (overflow) {
+        return;
+    }
+    std::uint64_t next = 0;
+    if (!add_u64_checked(total, bytes, next)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    total = next;
+}
+
+template <typename T>
+void add_vector_upload_estimate_bytes(
+    const std::vector<T>& values,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (values.empty() || overflow) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(values.size()),
+            static_cast<std::uint64_t>(sizeof(T)),
+            bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_curve_upload_estimate_bytes(
+    const Spectral::Curve& curve,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const std::size_t n = std::min(curve.lambda_nm.size(), curve.linear.size());
+    if (n == 0 || overflow) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(2u * sizeof(float)), bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_scan_medium_upload_estimate_bytes(
+    const Scanner::ScannerMediumRuntime& medium,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const Spectral::SpectralTables* t = medium.tables;
+    if (!t) {
+        return;
+    }
+    add_vector_upload_estimate_bytes(t->epsC, total, overflow);
+    add_vector_upload_estimate_bytes(t->epsM, total, overflow);
+    add_vector_upload_estimate_bytes(t->epsY, total, overflow);
+    add_vector_upload_estimate_bytes(t->Ax, total, overflow);
+    add_vector_upload_estimate_bytes(t->Ay, total, overflow);
+    add_vector_upload_estimate_bytes(t->Az, total, overflow);
+    if (t->hasBaseline) {
+        add_vector_upload_estimate_bytes(t->baseMin, total, overflow);
+    }
+}
+
+std::uint64_t estimate_upload_core_request_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws) noexcept {
+    const std::uint64_t wsCoreHash =
+        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    const std::uint64_t wsDirHash = ws.dirHash;
+    if (wsCoreHash == 0 || wsDirHash == 0) {
+        return kUploadReservationThresholdDefaultBytes;
+    }
+
+    bool coreUpToDate = false;
+    bool dirUpToDate = false;
+    bool needStbnUpload = false;
+    bool needWangUpload = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
+        dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
+        needStbnUpload = (resources.stbnData == nullptr);
+        needWangUpload = (resources.wangTilesData == nullptr) || (resources.wangLutData == nullptr);
+    }
+
+    std::uint64_t estimateBytes = 0;
+    bool overflow = false;
+    if (needStbnUpload) {
+        add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimateBytes, overflow);
+    }
+    if (needWangUpload) {
+        add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimateBytes, overflow);
+        add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimateBytes, overflow);
+    }
+
+    if (coreUpToDate && dirUpToDate) {
+        return estimateBytes;
+    }
+
+    if (coreUpToDate && !dirUpToDate) {
+        add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
+        return estimateBytes;
+    }
+
+    add_curve_upload_estimate_bytes(ws.densB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.densG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.densR, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensR, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Ax, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Ay, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Az, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.illum, estimateBytes, overflow);
+
+    for (int layer = 0; layer < 3; ++layer) {
+        for (int ch = 0; ch < 3; ++ch) {
+            add_vector_upload_estimate_bytes(ws.densityCurvesLayers[layer][ch], estimateBytes, overflow);
+        }
+    }
+
+    add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimateBytes, overflow);
+    add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimateBytes, overflow);
+
+    if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
+        const Print::Profile& p = ws.printRT->profile;
+        add_curve_upload_estimate_bytes(p.dcC, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(p.dcM, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(p.dcY, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensC_log.linear, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensM_log.linear, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensY_log.linear, estimateBytes, overflow);
+    }
+
+    // Keep a deterministic floor so large rebuilds always enter upload reservation admission.
+    if (estimateBytes < kUploadReservationThresholdDefaultBytes) {
+        estimateBytes = kUploadReservationThresholdDefaultBytes;
+    }
+    return estimateBytes;
+}
+
+void refill_upload_fairness_tokens(
+    UploadReservationContextState::FairnessEntry& entry,
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t nowMs) noexcept {
+    const std::uint32_t sharedPerTick = std::max<std::uint32_t>(1u, cfg.uploadFairnessTokensPerTick);
+    const std::uint32_t criticalPerTick = std::min<std::uint32_t>(
+        std::max<std::uint32_t>(1u, cfg.criticalUploadReservedTokens),
+        sharedPerTick);
+
+    if (entry.lastRefillMs == 0) {
+        entry.sharedTokens = sharedPerTick;
+        entry.criticalTokens = criticalPerTick;
+        entry.lastRefillMs = nowMs;
+        return;
+    }
+
+    const std::uint64_t elapsedMs = (nowMs > entry.lastRefillMs) ? (nowMs - entry.lastRefillMs) : 0;
+    if (elapsedMs < kUploadFairnessTickMs) {
+        return;
+    }
+
+    entry.sharedTokens = sharedPerTick;
+    entry.criticalTokens = criticalPerTick;
+    entry.lastRefillMs = nowMs;
+}
+
+void refill_builder_fairness_tokens(
+    BuilderReservationContextState::FairnessEntry& entry,
+    const ResourceManagerConfigEffective& cfg,
+    std::uint64_t nowMs) noexcept {
+    const std::uint32_t sharedPerTick = std::max<std::uint32_t>(1u, cfg.builderFairnessTokensPerTick);
+    const std::uint32_t criticalPerTick = std::min<std::uint32_t>(
+        std::max<std::uint32_t>(1u, cfg.criticalBuilderReservedTokens),
+        sharedPerTick);
+
+    if (entry.lastRefillMs == 0) {
+        entry.sharedTokens = sharedPerTick;
+        entry.criticalTokens = criticalPerTick;
+        entry.lastRefillMs = nowMs;
+        return;
+    }
+
+    const std::uint64_t elapsedMs = (nowMs > entry.lastRefillMs) ? (nowMs - entry.lastRefillMs) : 0;
+    if (elapsedMs < kBuilderFairnessTickMs) {
+        return;
+    }
+
+    entry.sharedTokens = sharedPerTick;
+    entry.criticalTokens = criticalPerTick;
+    entry.lastRefillMs = nowMs;
+}
+
+std::uint64_t estimate_scan_lut_upload_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium) noexcept {
+    const Scanner::ScannerStaticKey& staticKey = negativeMedium ? ws.negativeStaticKey : ws.printStaticKey;
+    const std::uint32_t res =
+        ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
+    std::uint64_t voxelCount = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(res), static_cast<std::uint64_t>(res), voxelCount)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    if (!mul_u64_checked(voxelCount, static_cast<std::uint64_t>(res), voxelCount)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t values = 0;
+    if (!mul_u64_checked(voxelCount, 3ull, values)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(values, static_cast<std::uint64_t>(sizeof(double)), bytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+
+    const Scanner::ScannerMediumRuntime& medium = negativeMedium ? ws.negativeMediumRuntime : ws.printMediumRuntime;
+    if (!medium.tables || medium.tables->tablesHash == 0 || medium.range.digest == 0) {
+        return 0;
+    }
+    const std::uint64_t expectedHash = ResourceManager::make_scan_lut_key_digest(
+        static_cast<std::uint32_t>(medium.medium),
+        medium.tables->tablesHash,
+        medium.range.digest,
+        res);
+    if (expectedHash == 0) {
+        return 0;
+    }
+
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        const JuicerCuda::Resources::DeviceSpectralLut& dst =
+            negativeMedium ? resources.scanNegativeLut : resources.scanPrintLut;
+        cached = dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
+    }
+    return cached ? 0 : bytes;
+}
+
+std::uint64_t estimate_print_illuminant_upload_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    const Print::Runtime& prt,
+    const Print::Params& params) noexcept {
+    const int k = Spectral::gShape.K;
+    if (k <= 0) {
+        return 0;
+    }
+    const std::uint64_t wsCoreHash =
+        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    if (wsCoreHash == 0) {
+        return 0;
+    }
+    const float yKey = std::isfinite(params.yFilter) ? params.yFilter : 0.0f;
+    const float mKey = std::isfinite(params.mFilter) ? params.mFilter : 0.0f;
+    const float cKey = std::isfinite(params.cFilter) ? params.cFilter : 0.0f;
+    const std::uint64_t neutralFilterHash =
+        (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        cached =
+            resources.printIllumFiltered &&
+            resources.printIllumK == k &&
+            resources.printIllumShapeK == k &&
+            resources.printIllumCoreHash == wsCoreHash &&
+            resources.printIllumYShiftSteps == yKey &&
+            resources.printIllumMShiftSteps == mKey &&
+            resources.printIllumCShiftSteps == cKey &&
+            resources.printIllumNeutralFilterHash == neutralFilterHash;
+    }
+    if (cached) {
+        return 0;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(k),
+            static_cast<std::uint64_t>(sizeof(float)),
+            bytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return bytes;
+}
+
+bool try_acquire_scratch_policy_claim(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const DeviceContextKey& contextKey,
+    const ScratchBucketKey& bucketKey,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    ScratchPolicyClaim& outClaim,
+    ScratchPolicySnapshot& outSnapshot,
+    ReservationAttemptInfo& outReservation) noexcept {
+    outReservation = ReservationAttemptInfo{};
+    ScratchPolicyState& state = scratch_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+
+    ScratchContextState& contextState = state.byContext[contextKey];
+    const std::uint64_t nowMs = monotonic_time_ms();
+    trim_large_frame_quarantine_decay_locked(contextState, nowMs);
+
+    ScratchBucketEntry& bucketEntry = contextState.buckets[bucketKey];
+    bucketEntry.attemptCount += 1;
+    global_state().scratchBucketAcquireAttempts.fetch_add(1, std::memory_order_relaxed);
+
+    if (requestBytes == 0) {
+        bucketEntry.reuseEvents += 1;
+        global_state().scratchReuseEvents.fetch_add(1, std::memory_order_relaxed);
+        global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
+        snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
+        return true;
+    }
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    outReservation.considered = true;
+    outReservation.bytesInFlight = state.totalInFlightBytes;
+    outReservation.capBytes = transient_reservation_cap_bytes(cfg);
+    outReservation.thresholdBytes = transient_reservation_threshold_bytes(cfg);
+
+    ReservationDecision reservationDecision{};
+    if (static_cast<std::uint64_t>(requestBytes) < outReservation.thresholdBytes) {
+        reservationDecision.granted = true;
+        reservationDecision.reason = "below_threshold";
+    }
+    else {
+        ReservationInput reservationInput{};
+        reservationInput.kind = ReservationKind::TransientNonManager;
+        reservationInput.requestBytes = static_cast<std::uint64_t>(requestBytes);
+        reservationInput.bytesInFlight = state.totalInFlightBytes;
+        reservationInput.capBytes = outReservation.capBytes;
+        reservationInput.criticalCurrentFrame = criticalCurrentFrame;
+        reservationDecision = classify_reservation(reservationInput);
+    }
+    outReservation.decision = reservationDecision;
+    global_state().transientReservationRequests.fetch_add(1, std::memory_order_relaxed);
+    if (!reservationDecision.granted) {
+        if (reservationDecision.shouldWait) {
+            global_state().transientReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+        }
+        else {
+            global_state().transientReservationDenied.fetch_add(1, std::memory_order_relaxed);
+        }
+        trace_transient_reservation_decision(
+            transaction,
+            commandName,
+            requestBytes,
+            outReservation.bytesInFlight,
+            outReservation.capBytes,
+            outReservation.thresholdBytes,
+            reservationDecision,
+            criticalCurrentFrame,
+            static_cast<int>(reservationDecision.waitMs),
+            reservationDecision.shouldWait ? "deferred" : "denied");
+        snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
+        return false;
+    }
+
+    const std::size_t effectiveCapBytes = effective_temp_scratch_bytes_cap(requestBytes);
+    const bool setsOk = bucketEntry.inFlightSets < kMaxTempScratchSets;
+    const bool bytesOk = requestBytes <=
+        (effectiveCapBytes - std::min(bucketEntry.inFlightBytes, effectiveCapBytes));
+    if (!setsOk || !bytesOk) {
+        bucketEntry.exhaustedCount += 1;
+        global_state().scratchBucketExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+
+        const bool starvationNow =
+            (bucketEntry.attemptCount >= 8) &&
+            (bucketEntry.exhaustedCount * 4 >= bucketEntry.attemptCount);
+        if (starvationNow && !bucketEntry.starvationLatched) {
+            bucketEntry.starvationLatched = true;
+            global_state().scratchBucketStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+        }
+        else if (!starvationNow) {
+            bucketEntry.starvationLatched = false;
+        }
+
+        snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
+        return false;
+    }
+
+    bucketEntry.inFlightSets += 1;
+    bucketEntry.inFlightBytes += requestBytes;
+    bucketEntry.allocGrowthEvents += 1;
+    {
+        std::size_t nextContextBytes = 0;
+        if (add_bytes_checked(contextState.totalInFlightBytes, requestBytes, nextContextBytes)) {
+            contextState.totalInFlightBytes = nextContextBytes;
+        }
+        else {
+            contextState.totalInFlightBytes = std::numeric_limits<std::size_t>::max();
+        }
+    }
+    {
+        std::uint64_t nextGlobalBytes = 0;
+        if (add_u64_checked(state.totalInFlightBytes, static_cast<std::uint64_t>(requestBytes), nextGlobalBytes)) {
+            state.totalInFlightBytes = nextGlobalBytes;
+        }
+        else {
+            state.totalInFlightBytes = std::numeric_limits<std::uint64_t>::max();
+        }
+    }
+    global_state().scratchAllocGrowthEvents.fetch_add(1, std::memory_order_relaxed);
+    bucketEntry.starvationLatched = false;
+    global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
+    global_state().transientReservationGranted.fetch_add(1, std::memory_order_relaxed);
+    if (reservationDecision.reason && std::string_view(reservationDecision.reason) == "critical_last_resort") {
+        trace_transient_reservation_decision(
+            transaction,
+            commandName,
+            requestBytes,
+            outReservation.bytesInFlight,
+            outReservation.capBytes,
+            outReservation.thresholdBytes,
+            reservationDecision,
+            criticalCurrentFrame,
+            0,
+            "critical_last_resort");
+    }
+
+    outClaim.contextKey = contextKey;
+    outClaim.bucketKey = bucketKey;
+    outClaim.bytes = requestBytes;
+    outClaim.acquired = true;
+
+    snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
+    return true;
+}
+
+bool acquire_scratch_policy_claim_with_wait(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    ScratchWorkClass workClass,
+    int width,
+    int height,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    ScratchPolicyClaim& outClaim,
+    std::string& outError) {
+    outClaim = ScratchPolicyClaim{};
+    outError.clear();
+    ResourceManagerState& state = global_state();
+
+    const ScratchBucketKey bucketKey = make_scratch_bucket_key(width, height, workClass);
+    const int waitBudgetMs = scratch_wait_budget_ms(bucketKey, requestBytes);
+    ScratchPolicySnapshot snapshot{};
+    ReservationAttemptInfo reservation{};
+    int waitedMs = 0;
+    while (true) {
+        if (try_acquire_scratch_policy_claim(
+                transaction,
+                commandName,
+                transaction.snapshot.deviceContextKey,
+                bucketKey,
+                requestBytes,
+                criticalCurrentFrame,
+                outClaim,
+                snapshot,
+                reservation)) {
+            if (waitedMs > 0) {
+                state.scratchPolicyWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                if (criticalCurrentFrame) {
+                    const std::uint64_t waitedMsU64 =
+                        static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                    state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                    state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    trace_lane_wait_event(
+                        transaction,
+                        commandName,
+                        PressureLane::Builder,
+                        criticalCurrentFrame,
+                        waitedMs,
+                        "admit_after_wait",
+                        "scratch_policy_wait");
+                }
+                trace_scratch_policy_decision(
+                    transaction,
+                    commandName,
+                    "admit_after_wait",
+                    requestBytes,
+                    snapshot,
+                    waitedMs);
+            }
+            else if (requestBytes == 0) {
+                trace_scratch_policy_decision(
+                    transaction,
+                    commandName,
+                    "reuse_hit",
+                    requestBytes,
+                    snapshot,
+                    waitedMs);
+            }
+            return true;
+        }
+
+        if (waitedMs >= waitBudgetMs) {
+            state.scratchPolicyExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Builder,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "starved",
+                    (reservation.considered && reservation.decision.reason)
+                        ? reservation.decision.reason
+                        : "scratch_exhausted");
+            }
+            trace_scratch_policy_decision(
+                transaction,
+                commandName,
+                "exhausted",
+                requestBytes,
+                snapshot,
+                waitedMs);
+            if (reservation.considered && !reservation.decision.granted) {
+                outError = std::string(kReservationDeferredPrefix)
+                    + " command=" + (commandName ? commandName : "unknown")
+                    + " work_class=" + to_cstr(workClass)
+                    + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                    + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                    + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                    + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                    + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                    + " wait_ms=" + std::to_string(waitedMs)
+                    + " wait_budget_ms=" + std::to_string(waitBudgetMs)
+                    + " reason=" + (reservation.decision.reason ? reservation.decision.reason : "unspecified");
+            }
+            else {
+                outError = std::string(kScratchExhaustedPrefix)
+                    + " command=" + (commandName ? commandName : "unknown")
+                    + " work_class=" + to_cstr(workClass)
+                    + " bucket_w=" + std::to_string(bucketKey.widthBucket)
+                    + " bucket_h=" + std::to_string(bucketKey.heightBucket)
+                    + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                    + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes))
+                    + " in_flight_sets=" + std::to_string(snapshot.inFlightSets)
+                    + " bucket_exhausted=" + std::to_string(snapshot.bucketExhausted)
+                    + " bucket_attempts=" + std::to_string(snapshot.bucketAttempts)
+                    + " wait_ms=" + std::to_string(waitedMs)
+                    + " wait_budget_ms=" + std::to_string(waitBudgetMs);
+            }
+            return false;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(kScratchWaitStepMs));
+        waitedMs += kScratchWaitStepMs;
+    }
+}
+
+bool try_acquire_builder_reservation_claim(
+    const SubmissionTransaction& transaction,
+    BuilderReservationTier tier,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    BuilderReservationClaim& outClaim,
+    ReservationAttemptInfo& outReservation) noexcept {
+    outClaim = BuilderReservationClaim{};
+    outReservation = ReservationAttemptInfo{};
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    BuilderReservationState& state = builder_reservation_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    outReservation.instanceToken = transaction.snapshot.instanceToken.value;
+
+    outReservation.considered = true;
+    std::uint64_t& tierTotalBytes = builder_total_bytes_for_tier(state, tier);
+    outReservation.bytesInFlight = tierTotalBytes;
+    outReservation.capBytes = builder_reservation_cap_bytes(cfg, tier);
+    outReservation.thresholdBytes = builder_reservation_threshold_bytes(cfg, tier);
+
+    ReservationDecision reservationDecision{};
+    if (requestBytes < outReservation.thresholdBytes) {
+        reservationDecision.granted = true;
+        reservationDecision.reason = "below_threshold";
+    }
+    else {
+        ReservationInput reservationInput{};
+        reservationInput.kind = ReservationKind::BuilderWork;
+        reservationInput.requestBytes = requestBytes;
+        reservationInput.bytesInFlight = tierTotalBytes;
+        reservationInput.capBytes = outReservation.capBytes;
+        reservationInput.criticalCurrentFrame = criticalCurrentFrame;
+        reservationDecision = classify_reservation(reservationInput);
+    }
+    outReservation.decision = reservationDecision;
+
+    if (!reservationDecision.granted) {
+        return false;
+    }
+
+    BuilderReservationContextState& contextState =
+        state.byContext[transaction.snapshot.deviceContextKey];
+    BuilderReservationContextState::FairnessEntry& fairness =
+        contextState.fairnessByInstance[outReservation.instanceToken];
+    refill_builder_fairness_tokens(fairness, cfg, monotonic_time_ms());
+
+    bool fairnessGranted = false;
+    if (criticalCurrentFrame && fairness.criticalTokens > 0) {
+        --fairness.criticalTokens;
+        fairnessGranted = true;
+    }
+    else if (fairness.sharedTokens > 0) {
+        --fairness.sharedTokens;
+        fairnessGranted = true;
+    }
+    outReservation.sharedTokens = fairness.sharedTokens;
+    outReservation.criticalTokens = fairness.criticalTokens;
+    if (!fairnessGranted) {
+        ReservationDecision fairnessDecision{};
+        fairnessDecision.granted = false;
+        fairnessDecision.shouldWait = true;
+        fairnessDecision.waitMs = static_cast<std::uint32_t>(kBuilderReservationWaitStepMs);
+        fairnessDecision.reason = "fairness_tokens_exhausted";
+        outReservation.decision = fairnessDecision;
+        return false;
+    }
+
+    std::uint64_t& contextTierBytes = builder_context_bytes_for_tier(contextState, tier);
+    std::uint64_t nextContextBytes = 0;
+    if (add_u64_checked(contextTierBytes, requestBytes, nextContextBytes)) {
+        contextTierBytes = nextContextBytes;
+    }
+    else {
+        contextTierBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t nextTotalBytes = 0;
+    if (add_u64_checked(tierTotalBytes, requestBytes, nextTotalBytes)) {
+        tierTotalBytes = nextTotalBytes;
+    }
+    else {
+        tierTotalBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    builder_global_gauge_for_tier(global_state(), tier).store(tierTotalBytes, std::memory_order_relaxed);
+    outClaim.contextKey = transaction.snapshot.deviceContextKey;
+    outClaim.tier = tier;
+    outClaim.bytes = requestBytes;
+    outClaim.acquired = true;
+    return true;
+}
+
+bool acquire_builder_reservation_with_wait(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    BuilderReservationTier tier,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    BuilderReservationClaim& outClaim,
+    std::string& outError) {
+    outClaim = BuilderReservationClaim{};
+    outError.clear();
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    ResourceManagerState& state = global_state();
+    state.builderReservationRequests.fetch_add(1, std::memory_order_relaxed);
+
+    ReservationAttemptInfo reservation{};
+    int waitedMs = 0;
+    while (true) {
+        if (try_acquire_builder_reservation_claim(
+                transaction,
+                tier,
+                requestBytes,
+                criticalCurrentFrame,
+                outClaim,
+                reservation)) {
+            state.builderReservationGranted.fetch_add(1, std::memory_order_relaxed);
+            if (waitedMs > 0) {
+                state.builderFairnessWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                if (criticalCurrentFrame) {
+                    const std::uint64_t waitedMsU64 =
+                        static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                    state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                    state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    trace_lane_wait_event(
+                        transaction,
+                        commandName,
+                        PressureLane::Builder,
+                        criticalCurrentFrame,
+                        waitedMs,
+                        "admit_after_wait",
+                        reservation.decision.reason ? reservation.decision.reason : "waited");
+                }
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "admit_after_wait");
+            }
+            else if (reservation.decision.reason &&
+                     std::string_view(reservation.decision.reason) == "critical_last_resort") {
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "critical_last_resort");
+            }
+            else if (JTRACE_ENABLED(3)) {
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "admitted");
+            }
+            return true;
+        }
+
+        const ReservationDecision& decision = reservation.decision;
+        const bool fairnessDeferred =
+            (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
+        if (fairnessDeferred) {
+            state.builderFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (!decision.shouldWait) {
+            state.builderReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Builder,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "denied",
+                    decision.reason ? decision.reason : "reservation_denied");
+            }
+            trace_builder_reservation_decision(
+                transaction,
+                commandName,
+                tier,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
+                waitedMs,
+                "denied");
+            outError = std::string(kReservationDeferredPrefix)
+                + " command=" + (commandName ? commandName : "unknown")
+                + " kind=" + to_cstr(ReservationKind::BuilderWork)
+                + " tier=" + to_cstr(tier)
+                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " wait_ms=" + std::to_string(waitedMs)
+                + " wait_budget_ms=" + std::to_string(kBuilderReservationWaitMaxMs)
+                + " reason=" + (decision.reason ? decision.reason : "unspecified");
+            return false;
+        }
+
+        if (waitedMs >= kBuilderReservationWaitMaxMs) {
+            state.builderReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                state.builderReservationBypass.fetch_add(1, std::memory_order_relaxed);
+                if (fairnessDeferred) {
+                    state.builderFairnessTokenBypass.fetch_add(1, std::memory_order_relaxed);
+                }
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Builder,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    fairnessDeferred ? "bypass_after_starvation" : "deferred_bypass",
+                    decision.reason ? decision.reason : "wait_budget_reached");
+                trace_builder_reservation_decision(
+                    transaction,
+                    commandName,
+                    tier,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "deferred_bypass_wait_budget");
+                return true;
+            }
+            trace_builder_reservation_decision(
+                transaction,
+                commandName,
+                tier,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
+                waitedMs,
+                "deferred_wait_budget");
+            outError = std::string(kReservationDeferredPrefix)
+                + " command=" + (commandName ? commandName : "unknown")
+                + " kind=" + to_cstr(ReservationKind::BuilderWork)
+                + " tier=" + to_cstr(tier)
+                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " wait_ms=" + std::to_string(waitedMs)
+                + " wait_budget_ms=" + std::to_string(kBuilderReservationWaitMaxMs)
+                + " reason=" + (decision.reason ? decision.reason : "wait_budget_reached");
+            return false;
+        }
+
+        const int sleepMs = std::max<int>(
+            1,
+            std::min<int>(
+                static_cast<int>(decision.waitMs > 0 ? decision.waitMs : 1),
+                kBuilderReservationWaitStepMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        waitedMs += sleepMs;
+    }
+}
+
+bool try_acquire_upload_reservation_claim(
+    const SubmissionTransaction& transaction,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    UploadReservationClaim& outClaim,
+    ReservationAttemptInfo& outReservation) noexcept {
+    outClaim = UploadReservationClaim{};
+    outReservation = ReservationAttemptInfo{};
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    UploadReservationState& state = upload_reservation_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    outReservation.instanceToken = transaction.snapshot.instanceToken.value;
+
+    outReservation.considered = true;
+    outReservation.bytesInFlight = state.totalInFlightBytes;
+    outReservation.capBytes = upload_reservation_cap_bytes(cfg);
+    outReservation.thresholdBytes = upload_reservation_threshold_bytes(cfg);
+
+    ReservationDecision reservationDecision{};
+    if (requestBytes < outReservation.thresholdBytes) {
+        reservationDecision.granted = true;
+        reservationDecision.reason = "below_threshold";
+    }
+    else {
+        ReservationInput reservationInput{};
+        reservationInput.kind = ReservationKind::UploadCopy;
+        reservationInput.requestBytes = requestBytes;
+        reservationInput.bytesInFlight = state.totalInFlightBytes;
+        reservationInput.capBytes = outReservation.capBytes;
+        reservationInput.criticalCurrentFrame = criticalCurrentFrame;
+        reservationDecision = classify_reservation(reservationInput);
+    }
+    outReservation.decision = reservationDecision;
+
+    if (!reservationDecision.granted) {
+        return false;
+    }
+
+    UploadReservationContextState& contextState =
+        state.byContext[transaction.snapshot.deviceContextKey];
+    UploadReservationContextState::FairnessEntry& fairness =
+        contextState.fairnessByInstance[outReservation.instanceToken];
+    refill_upload_fairness_tokens(fairness, cfg, monotonic_time_ms());
+
+    bool fairnessGranted = false;
+    if (criticalCurrentFrame && fairness.criticalTokens > 0) {
+        --fairness.criticalTokens;
+        fairnessGranted = true;
+    }
+    else if (fairness.sharedTokens > 0) {
+        --fairness.sharedTokens;
+        fairnessGranted = true;
+    }
+    outReservation.sharedTokens = fairness.sharedTokens;
+    outReservation.criticalTokens = fairness.criticalTokens;
+    if (!fairnessGranted) {
+        ReservationDecision fairnessDecision{};
+        fairnessDecision.granted = false;
+        fairnessDecision.shouldWait = true;
+        fairnessDecision.waitMs = static_cast<std::uint32_t>(kUploadReservationWaitStepMs);
+        fairnessDecision.reason = "fairness_tokens_exhausted";
+        outReservation.decision = fairnessDecision;
+        return false;
+    }
+
+    std::uint64_t nextContextBytes = 0;
+    if (add_u64_checked(contextState.inFlightBytes, requestBytes, nextContextBytes)) {
+        contextState.inFlightBytes = nextContextBytes;
+    }
+    else {
+        contextState.inFlightBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t nextTotalBytes = 0;
+    if (add_u64_checked(state.totalInFlightBytes, requestBytes, nextTotalBytes)) {
+        state.totalInFlightBytes = nextTotalBytes;
+    }
+    else {
+        state.totalInFlightBytes = std::numeric_limits<std::uint64_t>::max();
+    }
+    global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
+    outClaim.contextKey = transaction.snapshot.deviceContextKey;
+    outClaim.bytes = requestBytes;
+    outClaim.acquired = true;
+    return true;
+}
+
+bool acquire_upload_reservation_with_wait(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    UploadReservationClaim& outClaim,
+    std::string& outError) {
+    outClaim = UploadReservationClaim{};
+    outError.clear();
+
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    ResourceManagerState& state = global_state();
+    state.uploadReservationRequests.fetch_add(1, std::memory_order_relaxed);
+
+    ReservationAttemptInfo reservation{};
+    int waitedMs = 0;
+    while (true) {
+        if (try_acquire_upload_reservation_claim(
+                transaction,
+                requestBytes,
+                criticalCurrentFrame,
+                outClaim,
+                reservation)) {
+            state.uploadReservationGranted.fetch_add(1, std::memory_order_relaxed);
+            if (waitedMs > 0) {
+                state.uploadFairnessWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                if (criticalCurrentFrame) {
+                    const std::uint64_t waitedMsU64 =
+                        static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                    state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                    state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    trace_lane_wait_event(
+                        transaction,
+                        commandName,
+                        PressureLane::Upload,
+                        criticalCurrentFrame,
+                        waitedMs,
+                        "admit_after_wait",
+                        reservation.decision.reason ? reservation.decision.reason : "waited");
+                }
+                trace_upload_reservation_decision(
+                    transaction,
+                    commandName,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "admit_after_wait");
+            }
+            else if (reservation.decision.reason &&
+                     std::string_view(reservation.decision.reason) == "critical_last_resort") {
+                trace_upload_reservation_decision(
+                    transaction,
+                    commandName,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    "critical_last_resort");
+            }
+            return true;
+        }
+
+        const ReservationDecision& decision = reservation.decision;
+        const bool fairnessDeferred =
+            (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
+        if (fairnessDeferred) {
+            state.uploadFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (!decision.shouldWait) {
+            state.uploadReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Upload,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    "denied",
+                    decision.reason ? decision.reason : "reservation_denied");
+            }
+            trace_upload_reservation_decision(
+                transaction,
+                commandName,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
+                waitedMs,
+                "denied");
+            outError = std::string(kReservationDeferredPrefix)
+                + " command=" + (commandName ? commandName : "unknown")
+                + " kind=" + to_cstr(ReservationKind::UploadCopy)
+                + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+                + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
+                + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
+                + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
+                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " wait_ms=" + std::to_string(waitedMs)
+                + " wait_budget_ms=" + std::to_string(kUploadReservationWaitMaxMs)
+                + " reason=" + (decision.reason ? decision.reason : "unspecified");
+            return false;
+        }
+
+        if (waitedMs >= kUploadReservationWaitMaxMs) {
+            state.uploadReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+            state.uploadReservationBypass.fetch_add(1, std::memory_order_relaxed);
+            if (fairnessDeferred) {
+                state.uploadFairnessTokenBypass.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (criticalCurrentFrame) {
+                const std::uint64_t waitedMsU64 =
+                    static_cast<std::uint64_t>(std::max(waitedMs, 0));
+                state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                if (fairnessDeferred) {
+                    state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                }
+                trace_lane_wait_event(
+                    transaction,
+                    commandName,
+                    PressureLane::Upload,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    fairnessDeferred ? "bypass_after_starvation" : "deferred_bypass",
+                    decision.reason ? decision.reason : "wait_budget_reached");
+            }
+            trace_upload_reservation_decision(
+                transaction,
+                commandName,
+                requestBytes,
+                reservation.bytesInFlight,
+                reservation.capBytes,
+                reservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                reservation.instanceToken,
+                reservation.sharedTokens,
+                reservation.criticalTokens,
+                waitedMs,
+                "deferred_bypass_wait_budget");
+            return true;
+        }
+
+        const int sleepMs = std::max<int>(
+            1,
+            std::min<int>(
+                static_cast<int>(decision.waitMs > 0 ? decision.waitMs : 1),
+                kUploadReservationWaitStepMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        waitedMs += sleepMs;
+    }
+}
+
 
 void maybe_publish_manager_memory_snapshot(
     JuicerCuda::Resources& resources,
@@ -215,21 +1668,6 @@ std::uint32_t graph_large_entry_quarantine_cap_entries(const ResourceManagerConf
         cfg.graphLargeEntryQuarantineMaxEntries > 0
             ? cfg.graphLargeEntryQuarantineMaxEntries
             : kGraphLargeEntryQuarantineMaxEntriesDefault);
-}
-
-int pressure_state_rank(PressureState state) noexcept {
-    switch (state) {
-    case PressureState::Normal:
-        return 0;
-    case PressureState::Constrained:
-        return 1;
-    case PressureState::Critical:
-        return 2;
-    case PressureState::Emergency:
-        return 3;
-    default:
-        return 0;
-    }
 }
 
 std::uint32_t pressure_poll_interval_ms_for_state(
@@ -3090,4 +4528,3 @@ void optional_heuristic_trace_retire_context(const DeviceContextKey& key) noexce
     std::lock_guard<std::mutex> lock(state.mutex);
     state.byContext.erase(key);
 }
-

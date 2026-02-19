@@ -256,6 +256,7 @@
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceKeys.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h" />
+    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerInternal.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceState.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceTelemetry.h" />

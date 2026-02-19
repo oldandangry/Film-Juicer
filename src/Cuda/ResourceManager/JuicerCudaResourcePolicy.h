@@ -191,6 +191,7 @@ const char* to_cstr(AcquireStatus status) noexcept;
 StaleDecision classify_stale_path(const StaleInput& input) noexcept;
 const char* to_cstr(StaleReason reason) noexcept;
 const char* to_cstr(PressureState state) noexcept;
+int pressure_state_rank(PressureState state) noexcept;
 const char* to_cstr(ReservationKind kind) noexcept;
 const char* to_cstr(HeadroomSource source) noexcept;
 const char* to_cstr(CacheAdmissionClass value) noexcept;

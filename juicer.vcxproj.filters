@@ -176,6 +176,9 @@
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h">
       <Filter>Cuda</Filter>
     </ClInclude>
+    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerInternal.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.h">
       <Filter>Cuda</Filter>
     </ClInclude>
