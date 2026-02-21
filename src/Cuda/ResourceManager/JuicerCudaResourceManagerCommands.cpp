@@ -26,6 +26,250 @@ bool ensure_active_for_command(
         commandName ? commandName : "command_requires_active_submission");
 }
 
+void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& overflow) noexcept {
+    if (overflow) {
+        return;
+    }
+    std::uint64_t next = 0;
+    if (!add_u64_checked(total, bytes, next)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    total = next;
+}
+
+template <typename T>
+void add_vector_upload_estimate_bytes(
+    const std::vector<T>& values,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (values.empty() || overflow) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(values.size()),
+            static_cast<std::uint64_t>(sizeof(T)),
+            bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_curve_upload_estimate_bytes(
+    const Spectral::Curve& curve,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const std::size_t n = std::min(curve.lambda_nm.size(), curve.linear.size());
+    if (n == 0 || overflow) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(2u * sizeof(float)), bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_scan_medium_upload_estimate_bytes(
+    const Scanner::ScannerMediumRuntime& medium,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const Spectral::SpectralTables* t = medium.tables;
+    if (!t) {
+        return;
+    }
+    add_vector_upload_estimate_bytes(t->epsC, total, overflow);
+    add_vector_upload_estimate_bytes(t->epsM, total, overflow);
+    add_vector_upload_estimate_bytes(t->epsY, total, overflow);
+    add_vector_upload_estimate_bytes(t->Ax, total, overflow);
+    add_vector_upload_estimate_bytes(t->Ay, total, overflow);
+    add_vector_upload_estimate_bytes(t->Az, total, overflow);
+    if (t->hasBaseline) {
+        add_vector_upload_estimate_bytes(t->baseMin, total, overflow);
+    }
+}
+
+std::uint64_t estimate_upload_core_request_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws) noexcept {
+    const std::uint64_t wsCoreHash =
+        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    const std::uint64_t wsDirHash = ws.dirHash;
+    if (wsCoreHash == 0 || wsDirHash == 0) {
+        return kUploadReservationThresholdDefaultBytes;
+    }
+
+    bool coreUpToDate = false;
+    bool dirUpToDate = false;
+    bool needStbnUpload = false;
+    bool needWangUpload = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
+        dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
+        needStbnUpload = (resources.stbnData == nullptr);
+        needWangUpload = (resources.wangTilesData == nullptr) || (resources.wangLutData == nullptr);
+    }
+
+    std::uint64_t estimateBytes = 0;
+    bool overflow = false;
+    if (needStbnUpload) {
+        add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimateBytes, overflow);
+    }
+    if (needWangUpload) {
+        add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimateBytes, overflow);
+        add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimateBytes, overflow);
+    }
+
+    if (coreUpToDate && dirUpToDate) {
+        return estimateBytes;
+    }
+
+    if (coreUpToDate && !dirUpToDate) {
+        add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
+        return estimateBytes;
+    }
+
+    add_curve_upload_estimate_bytes(ws.densB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.densG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.densR, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensB, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensG, estimateBytes, overflow);
+    add_curve_upload_estimate_bytes(ws.sensR, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Ax, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Ay, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.Az, estimateBytes, overflow);
+    add_vector_upload_estimate_bytes(ws.tablesRef.illum, estimateBytes, overflow);
+
+    for (int layer = 0; layer < 3; ++layer) {
+        for (int ch = 0; ch < 3; ++ch) {
+            add_vector_upload_estimate_bytes(ws.densityCurvesLayers[layer][ch], estimateBytes, overflow);
+        }
+    }
+
+    add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimateBytes, overflow);
+    add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimateBytes, overflow);
+
+    if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
+        const Print::Profile& p = ws.printRT->profile;
+        add_curve_upload_estimate_bytes(p.dcC, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(p.dcM, estimateBytes, overflow);
+        add_curve_upload_estimate_bytes(p.dcY, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensC_log.linear, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensM_log.linear, estimateBytes, overflow);
+        add_vector_upload_estimate_bytes(p.sensY_log.linear, estimateBytes, overflow);
+    }
+
+    // Keep a deterministic floor so large rebuilds always enter upload reservation admission.
+    if (estimateBytes < kUploadReservationThresholdDefaultBytes) {
+        estimateBytes = kUploadReservationThresholdDefaultBytes;
+    }
+    return estimateBytes;
+}
+
+std::uint64_t estimate_scan_lut_upload_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium) noexcept {
+    const Scanner::ScannerStaticKey& staticKey = negativeMedium ? ws.negativeStaticKey : ws.printStaticKey;
+    const std::uint32_t res =
+        ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
+    std::uint64_t voxelCount = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(res), static_cast<std::uint64_t>(res), voxelCount)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    if (!mul_u64_checked(voxelCount, static_cast<std::uint64_t>(res), voxelCount)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t values = 0;
+    if (!mul_u64_checked(voxelCount, 3ull, values)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(values, static_cast<std::uint64_t>(sizeof(double)), bytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+
+    const Scanner::ScannerMediumRuntime& medium = negativeMedium ? ws.negativeMediumRuntime : ws.printMediumRuntime;
+    if (!medium.tables || medium.tables->tablesHash == 0 || medium.range.digest == 0) {
+        return 0;
+    }
+    const std::uint64_t expectedHash = ResourceManager::make_scan_lut_key_digest(
+        static_cast<std::uint32_t>(medium.medium),
+        medium.tables->tablesHash,
+        medium.range.digest,
+        res);
+    if (expectedHash == 0) {
+        return 0;
+    }
+
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        const JuicerCuda::Resources::DeviceSpectralLut& dst =
+            negativeMedium ? resources.scanNegativeLut : resources.scanPrintLut;
+        cached = dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
+    }
+    return cached ? 0 : bytes;
+}
+
+std::uint64_t estimate_print_illuminant_upload_bytes(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    const Print::Runtime& prt,
+    const Print::Params& params) noexcept {
+    const int k = Spectral::gShape.K;
+    if (k <= 0) {
+        return 0;
+    }
+    const std::uint64_t wsCoreHash =
+        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    if (wsCoreHash == 0) {
+        return 0;
+    }
+    const float yKey = std::isfinite(params.yFilter) ? params.yFilter : 0.0f;
+    const float mKey = std::isfinite(params.mFilter) ? params.mFilter : 0.0f;
+    const float cKey = std::isfinite(params.cFilter) ? params.cFilter : 0.0f;
+    const std::uint64_t neutralFilterHash =
+        (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(resources.m);
+        cached =
+            resources.printIllumFiltered &&
+            resources.printIllumK == k &&
+            resources.printIllumShapeK == k &&
+            resources.printIllumCoreHash == wsCoreHash &&
+            resources.printIllumYShiftSteps == yKey &&
+            resources.printIllumMShiftSteps == mKey &&
+            resources.printIllumCShiftSteps == cKey &&
+            resources.printIllumNeutralFilterHash == neutralFilterHash;
+    }
+    if (cached) {
+        return 0;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(
+            static_cast<std::uint64_t>(k),
+            static_cast<std::uint64_t>(sizeof(float)),
+            bytes)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return bytes;
+}
+
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 struct BaseGraphKey {
     int width = 0;
