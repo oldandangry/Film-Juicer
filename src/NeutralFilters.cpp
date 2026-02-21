@@ -217,7 +217,7 @@ namespace {
     }
 
     bool diagnostics_reload_enabled() {
-        return JuicerLogging::enabled(3);
+        return JTRACE_ENABLED(3);
     }
 
     void trace_neutral_filter_event(

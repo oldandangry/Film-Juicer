@@ -1439,7 +1439,7 @@ void JuicerProcessor::processImpl() {
         return;
     }
 
-#if defined(JUICER_SPD_DEBUG)
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
     Spectral::spd_probe_reset();
 #endif
 

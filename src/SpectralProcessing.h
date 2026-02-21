@@ -55,7 +55,7 @@ namespace Spectral {
     inline Curve& gDensityCurveG = context().densityCurveG;
     inline Curve& gDensityCurveR = context().densityCurveR;
 
-#if defined(JUICER_SPD_DEBUG)
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
 #ifndef JUICER_SPD_DEBUG_MAX_SAMPLES
 #define JUICER_SPD_DEBUG_MAX_SAMPLES 1
 #endif

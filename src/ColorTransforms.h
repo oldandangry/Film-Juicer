@@ -20,7 +20,7 @@ namespace Spectral {
         const float refIllumWhiteXYZ[3]);
     inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]);
 
-#if defined(JUICER_SPD_DEBUG)
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
     bool spd_probe_begin_capture(const float rgbIn[3], const float rgbDWG[3], bool spdEnabled);
     void spd_probe_finalize(float midgrayScale, const float E_afterMidgray[3]);
 #endif
@@ -647,7 +647,7 @@ namespace Spectral {
             mallett_basis_ready_for_tables(tablesSPD, sB, sG, sR);
         convert_input_rgb_to_DWG(cfg, rgbIn, rgbDWG, xyzWorking, !useHanatos);
 
-#if defined(JUICER_SPD_DEBUG)
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
         spd_probe_begin_capture(rgbIn, rgbDWG, spdReady);
 #endif
 
@@ -677,7 +677,7 @@ namespace Spectral {
             E[0] = E[1] = E[2] = 0.0f;
         }
 
-#if defined(JUICER_SPD_DEBUG)
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
         spd_probe_finalize(normScale, E);
 #endif
 
