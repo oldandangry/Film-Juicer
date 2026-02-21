@@ -1443,7 +1443,7 @@ bool command_ensure_scan_lut_internal(
                 if (!outError.empty()) {
                     outError += " | ";
                 }
-                outError += std::string("private_lut_fallback_failed: ") + fallbackError;
+                outError += std::string(kPrivateLutFallbackFailedPrefix) + " " + fallbackError;
             }
             return false;
         }

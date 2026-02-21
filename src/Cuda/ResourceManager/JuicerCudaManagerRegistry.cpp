@@ -397,12 +397,19 @@ bool is_legal_transition(ContextLifecycleState from, ContextLifecycleState to) n
     }
 }
 
+const char* trace_reason_or_unspecified(const char* reason) noexcept {
+    return reason ? reason : "unspecified";
+}
+
 void trace_lifecycle_transition(const DeviceContextKey& key,
                                 RegistryHandle handle,
                                 ContextLifecycleState from,
                                 ContextLifecycleState to,
                                 bool accepted,
                                 const char* reason) {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
     const std::string msg = std::string("handle=") + std::to_string(handle.value)
         + " device_id=" + std::to_string(key.deviceId)
@@ -410,7 +417,7 @@ void trace_lifecycle_transition(const DeviceContextKey& key,
         + " from=" + to_cstr(from)
         + " to=" + to_cstr(to)
         + " accepted=" + std::to_string(accepted ? 1 : 0)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -422,6 +429,9 @@ void trace_lifecycle_bump(const DeviceContextKey& key,
                           std::uint64_t newContextEpoch,
                           bool accepted,
                           const char* reason) {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
     const std::string msg = std::string("handle=") + std::to_string(handle.value)
         + " device_id=" + std::to_string(key.deviceId)
@@ -432,7 +442,7 @@ void trace_lifecycle_bump(const DeviceContextKey& key,
         + " new_registry_generation=" + std::to_string(newRegistryGeneration)
         + " prev_context_epoch=" + std::to_string(previousContextEpoch)
         + " new_context_epoch=" + std::to_string(newContextEpoch)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -501,6 +511,9 @@ void trace_lifecycle_timeout(
     std::uint64_t timeoutMs,
     bool escalated,
     const char* reason) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
     const std::string msg = std::string("handle=") + std::to_string(handle.value)
         + " device_id=" + std::to_string(key.deviceId)
@@ -510,7 +523,7 @@ void trace_lifecycle_timeout(
         + " state_age_ms=" + std::to_string(stateAgeMs)
         + " timeout_ms=" + std::to_string(timeoutMs)
         + " escalated=" + std::to_string(escalated ? 1 : 0)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 

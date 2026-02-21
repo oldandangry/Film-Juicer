@@ -171,9 +171,20 @@ AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
     return entry;
 }
 
+const char* trace_reason_or_unknown(const char* reason) noexcept {
+    return reason ? reason : "unknown";
+}
+
+const char* trace_reason_or_unspecified(const char* reason) noexcept {
+    return reason ? reason : "unspecified";
+}
+
 void trace_allocator_backend_mode_once(
     const SubmissionTransaction& transaction,
     const AllocatorBackendContextEntry& entry) {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::uintptr_t contextBits =
         reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const std::string msg = std::string("event=backend_mode")
@@ -189,8 +200,8 @@ void trace_allocator_backend_mode_once(
         + " slab_supported=" + std::to_string(entry.slabSupported ? 1 : 0)
         + " fallback_capability=" + std::to_string(entry.fallbackCapability ? 1 : 0)
         + " fallback_scaffold=" + std::to_string(entry.fallbackScaffold ? 1 : 0)
-        + " candidate_reason=" + (entry.candidateReason ? entry.candidateReason : "unknown")
-        + " active_reason=" + (entry.activeReason ? entry.activeReason : "unknown");
+        + " candidate_reason=" + trace_reason_or_unknown(entry.candidateReason)
+        + " active_reason=" + trace_reason_or_unknown(entry.activeReason);
     JTRACE("MSALC", msg);
 }
 
@@ -508,6 +519,9 @@ void trace_lifecycle_stage_decision(
     const char* stage,
     bool accepted,
     const char* reason) {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::uintptr_t contextBits =
         reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const std::string msg = std::string("transaction_id=") + std::to_string(transaction.transactionId)
@@ -520,7 +534,7 @@ void trace_lifecycle_stage_decision(
         + " decision=" + to_cstr(decision)
         + " state_age_ms=" + std::to_string(static_cast<unsigned long long>(stateAgeMs))
         + " accepted=" + std::to_string(accepted ? 1 : 0)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 

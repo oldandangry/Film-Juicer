@@ -96,13 +96,36 @@ bool tier_circuit_should_count_failure(const std::string& error) noexcept {
     if (error.rfind(kReservationDeferredPrefix, 0) == 0) {
         return false;
     }
-    if (error.rfind("pressure_shed_noncritical:", 0) == 0) {
+    if (error.rfind(kPressureShedNonCriticalPrefix, 0) == 0) {
         return false;
     }
-    if (error.rfind("pressure_copy_compute_guard:", 0) == 0) {
+    if (error.rfind(kPressureCopyComputeGuardPrefix, 0) == 0) {
         return false;
     }
     return true;
+}
+
+std::string make_pressure_shed_noncritical_error(
+    PressureLane lane,
+    PressureState state) {
+    return std::string(kPressureShedNonCriticalPrefix)
+        + " lane="
+        + to_cstr(lane)
+        + " state="
+        + to_cstr(state);
+}
+
+std::string make_burst_debt_throttle_noncritical_error(
+    PressureLane lane,
+    std::uint64_t debtPct,
+    std::uint64_t maxDebtPct) {
+    return std::string(kBurstDebtThrottleNonCriticalPrefix)
+        + " lane="
+        + to_cstr(lane)
+        + " debt_pct="
+        + std::to_string(static_cast<unsigned long long>(debtPct))
+        + " max_debt_pct="
+        + std::to_string(static_cast<unsigned long long>(maxDebtPct));
 }
 
 std::uint64_t tier_target_basis_points(
@@ -2634,10 +2657,7 @@ bool enforce_pressure_gate(
             false,
             criticalCurrentFrame,
             "below_effective_reserve_noncritical");
-        outError = std::string("pressure_shed_noncritical: lane=")
-            + to_cstr(lane)
-            + " state="
-            + to_cstr(pressureState);
+        outError = make_pressure_shed_noncritical_error(lane, pressureState);
         return false;
     }
 
@@ -2645,10 +2665,10 @@ bool enforce_pressure_gate(
         burstDebtDecision.enabled &&
         burstDebtDecision.throttled &&
         requestBytes > 0) {
-        outError = std::string("burst_debt_throttle_noncritical: lane=")
-            + to_cstr(lane)
-            + " debt_pct=" + std::to_string(static_cast<unsigned long long>(burstDebtDecision.debtAfterPct))
-            + " max_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct));
+        outError = make_burst_debt_throttle_noncritical_error(
+            lane,
+            burstDebtDecision.debtAfterPct,
+            cfg.maxBurstDebtPct);
         return false;
     }
 
@@ -2680,10 +2700,7 @@ bool enforce_pressure_gate(
             uploadBytesInFlight,
             uploadCapBytes,
             denyReason);
-        outError = std::string("pressure_shed_noncritical: lane=")
-            + to_cstr(lane)
-            + " state="
-            + to_cstr(pressureState);
+        outError = make_pressure_shed_noncritical_error(lane, pressureState);
         return false;
     }
 
@@ -2698,7 +2715,8 @@ bool enforce_pressure_gate(
             criticalCurrentFrame,
             false,
             "upload_cap_saturated_noncritical");
-        outError = "pressure_copy_compute_guard: upload_cap_saturated_noncritical";
+        outError = std::string(kPressureCopyComputeGuardPrefix)
+            + " upload_cap_saturated_noncritical";
         return false;
     }
 
@@ -2807,7 +2825,7 @@ bool tier_circuit_begin_attempt(
             openMs,
             openRemainingMs,
             "open_blocked");
-        outError = std::string("tier_circuit_open: tier=") + to_cstr(tier);
+        outError = std::string(kTierCircuitOpenPrefix) + " tier=" + to_cstr(tier);
         return false;
     }
 
@@ -2829,7 +2847,7 @@ bool tier_circuit_begin_attempt(
                 openMs,
                 0,
                 "half_open_probe_in_flight");
-            outError = std::string("tier_circuit_half_open_busy: tier=") + to_cstr(tier);
+            outError = std::string(kTierCircuitHalfOpenBusyPrefix) + " tier=" + to_cstr(tier);
             return false;
         }
         if (!tierState.probeInFlight) {

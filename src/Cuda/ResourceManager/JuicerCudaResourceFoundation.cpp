@@ -798,10 +798,20 @@ std::uint64_t telemetry_next_acquire_attempt_id() noexcept {
     return id;
 }
 
+constexpr const char* kTraceTokenUnknown = "unknown";
+constexpr const char* kTraceTokenUnspecified = "unspecified";
+
+const char* trace_token_or(const char* value, const char* fallback) noexcept {
+    return value ? value : fallback;
+}
+
 void telemetry_trace_schema_announcement(
     std::uint64_t transactionId,
     std::uint64_t snapshotId,
     std::uint32_t traceSchemaVersion) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
@@ -814,6 +824,9 @@ void telemetry_trace_schema_mismatch(
     std::uint64_t transactionId,
     std::uint64_t snapshotId,
     std::uint32_t observedTraceSchemaVersion) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
@@ -829,6 +842,9 @@ void telemetry_trace_key_normalization(
     std::uint32_t traceSchemaVersion,
     const KeyDigests& before,
     const KeyDigests& after) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
@@ -853,14 +869,17 @@ void telemetry_trace_invalidation(
     const char* reason,
     std::uint64_t previousHash,
     std::uint64_t currentHash) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
-        " lane=" + (lane ? lane : "unknown") +
+        " lane=" + trace_token_or(lane, kTraceTokenUnknown) +
         " previous_hash=" + std::to_string(previousHash) +
         " current_hash=" + std::to_string(currentHash) +
-        " reason=" + (reason ? reason : "unknown");
+        " reason=" + trace_token_or(reason, kTraceTokenUnknown);
     JTRACE("MSINV", msg);
 }
 
@@ -872,14 +891,17 @@ void telemetry_trace_dag_edge(
     const char* toNode,
     bool allowed,
     const char* reason) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
-        " from=" + (fromNode ? fromNode : "unknown") +
-        " to=" + (toNode ? toNode : "unknown") +
+        " from=" + trace_token_or(fromNode, kTraceTokenUnknown) +
+        " to=" + trace_token_or(toNode, kTraceTokenUnknown) +
         " allowed=" + std::to_string(allowed ? 1 : 0) +
-        " reason=" + (reason ? reason : "unspecified");
+        " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSDAG", msg);
 }
 
@@ -888,11 +910,14 @@ void telemetry_trace_module_boundary_violation(
     std::uint64_t snapshotId,
     std::uint32_t traceSchemaVersion,
     const char* reason) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
-        " reason=" + (reason ? reason : "unknown");
+        " reason=" + trace_token_or(reason, kTraceTokenUnknown);
     JTRACE("MSCMD", msg);
 }
 
@@ -906,14 +931,17 @@ void telemetry_trace_query_mutation_violation(
     std::uint64_t beforeThreadMutationBeginCount,
     std::uint64_t afterThreadMutationBeginCount,
     const char* reason) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const int deviceId = key ? key->deviceId : -1;
     const std::uintptr_t contextBits = key
         ? reinterpret_cast<std::uintptr_t>(key->contextOpaque)
         : 0;
     const std::string msg =
         std::string("event=query_mutation_violation") +
-        " query=" + (queryName ? queryName : "unknown") +
-        " reason=" + (reason ? reason : "unknown") +
+        " query=" + trace_token_or(queryName, kTraceTokenUnknown) +
+        " reason=" + trace_token_or(reason, kTraceTokenUnknown) +
         " device_id=" + std::to_string(deviceId) +
         " context=" + std::to_string(contextBits) +
         " before_thread_mutation_depth=" + std::to_string(beforeThreadMutationDepth) +
@@ -932,6 +960,9 @@ void telemetry_trace_frame_snapshot_mismatch(
     std::uint64_t frameToken,
     std::uint64_t expectedSnapshotId,
     std::uint64_t observedSnapshotId) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
@@ -950,11 +981,14 @@ void telemetry_trace_stale_decision(
     const char* stage,
     const StaleInput& input,
     const StaleDecision& decision) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
-        " stage=" + (stage ? stage : "unknown") +
+        " stage=" + trace_token_or(stage, kTraceTokenUnknown) +
         " expected_registry_generation=" + std::to_string(input.expectedRegistryGeneration) +
         " observed_registry_generation=" + std::to_string(input.observedRegistryGeneration) +
         " expected_context_epoch=" + std::to_string(input.expectedContextEpoch) +
@@ -975,13 +1009,16 @@ void telemetry_trace_metadata_mutation(
     bool accepted,
     std::uint64_t expectedSequence,
     const char* reason) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
-        std::string("phase=") + (phase ? phase : "unknown") +
-        " stage=" + (stage ? stage : "unknown") +
+        std::string("phase=") + trace_token_or(phase, kTraceTokenUnknown) +
+        " stage=" + trace_token_or(stage, kTraceTokenUnknown) +
         " sequence=" + std::to_string(sequence) +
         " expected_sequence=" + std::to_string(expectedSequence) +
         " accepted=" + std::to_string(accepted ? 1 : 0) +
-        " reason=" + (reason ? reason : "unspecified");
+        " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSMUT", msg);
 }
 
@@ -993,14 +1030,17 @@ void telemetry_trace_metadata_queue(
     std::uint64_t waitedMs,
     bool accepted,
     const char* reason) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
-        std::string("event=") + (eventName ? eventName : "unknown") +
-        " stage=" + (stage ? stage : "unknown") +
+        std::string("event=") + trace_token_or(eventName, kTraceTokenUnknown) +
+        " stage=" + trace_token_or(stage, kTraceTokenUnknown) +
         " ticket=" + std::to_string(ticket) +
         " depth=" + std::to_string(depth) +
         " waited_ms=" + std::to_string(waitedMs) +
         " accepted=" + std::to_string(accepted ? 1 : 0) +
-        " reason=" + (reason ? reason : "unspecified");
+        " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSMQ", msg);
 }
 
@@ -1012,6 +1052,9 @@ void telemetry_trace_acquire(
     AcquireStatus finalStatus,
     const ResourcePlan& plan,
     bool hadPreviousSnapshot) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     std::string msg =
         std::string("acquire_id=") + std::to_string(acquireId) +
         " transaction_id=" + std::to_string(transactionId) +
@@ -1041,18 +1084,21 @@ void telemetry_trace_auto_exposure_ownership(
     int meterHeight,
     bool hadPrevious,
     const char* reason) noexcept {
+    if (!JTRACE_ENABLED(1)) {
+        return;
+    }
     const std::string msg =
         std::string("transaction_id=") + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
-        " mode=" + (mode ? mode : "unknown") +
-        " event=" + (eventName ? eventName : "unknown") +
+        " mode=" + trace_token_or(mode, kTraceTokenUnknown) +
+        " event=" + trace_token_or(eventName, kTraceTokenUnknown) +
         " hit=" + std::to_string(hit ? 1 : 0) +
         " key_hash=" + std::to_string(keyHash) +
         " meter_w=" + std::to_string(meterWidth) +
         " meter_h=" + std::to_string(meterHeight) +
         " had_previous=" + std::to_string(hadPrevious ? 1 : 0) +
-        " reason=" + (reason ? reason : "unspecified");
+        " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSAEX", msg);
 }
 
