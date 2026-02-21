@@ -208,12 +208,9 @@
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaMetadataMutationQueue.cpp" />
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.cpp" />
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceKeys.cpp" />
+    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceFoundation.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp" />
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceState.cpp" />
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceTelemetry.cpp" />
     <ClCompile Include="src\DevelopFilmStage.cpp" />
     <ClCompile Include="src\DevelopPrintStage.cpp" />
     <ClCompile Include="src\ExposeFilmStage.cpp" />

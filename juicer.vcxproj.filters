@@ -31,22 +31,13 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaMetadataMutationQueue.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceKeys.cpp">
+    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceFoundation.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceState.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceTelemetry.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
     <ClCompile Include="src\SpectralMathAVX.cpp">
