@@ -37,6 +37,12 @@ struct RegistryState {
     std::unordered_map<std::uint64_t, DeviceContextKey> keyByHandle;
 };
 
+struct ReapCandidate {
+    DeviceContextKey key{};
+    RegistryEntry entry{};
+    std::uint64_t idleMs = 0;
+};
+
 RegistryState& registry_state() {
     static RegistryState state{};
     return state;
@@ -128,6 +134,16 @@ void trace_registry_missing_entry(const DeviceContextKey& key, const char* event
         eventName,
         false,
         "missing_registry_entry",
+        0);
+}
+
+void trace_reap_skip_event(const char* reason) noexcept {
+    trace_registry_event_current(
+        nullptr,
+        nullptr,
+        "reap_skip",
+        false,
+        reason,
         0);
 }
 
@@ -346,6 +362,72 @@ bool erase_registry_entry_locked(RegistryState& state,
     return true;
 }
 
+void collect_reap_candidates_locked(
+    const RegistryState& state,
+    const DeviceContextKey* protectKey,
+    std::uint64_t nowMs,
+    std::uint64_t idleReapMs,
+    std::vector<ReapCandidate>& outCandidates) {
+    outCandidates.clear();
+    outCandidates.reserve(state.byDeviceContext.size());
+    for (const auto& kv : state.byDeviceContext) {
+        const DeviceContextKey& candidateKey = kv.first;
+        const RegistryEntry& entry = kv.second;
+        if (protectKey && candidateKey == *protectKey) {
+            continue;
+        }
+        if (entry.activeSubmissionCount != 0) {
+            continue;
+        }
+        if (entry.lifecycleState != ContextLifecycleState::Active &&
+            entry.lifecycleState != ContextLifecycleState::Retired) {
+            continue;
+        }
+
+        const std::uint64_t idleMs = saturating_elapsed_ms(nowMs, entry.lastTouchedMs);
+        const bool eligible = (entry.lifecycleState == ContextLifecycleState::Retired) ||
+            (idleMs >= idleReapMs);
+        if (!eligible) {
+            continue;
+        }
+
+        ReapCandidate candidate{};
+        candidate.key = candidateKey;
+        candidate.entry = entry;
+        candidate.idleMs = idleMs;
+        outCandidates.push_back(candidate);
+    }
+}
+
+void sort_reap_candidates(std::vector<ReapCandidate>& candidates) {
+    std::sort(candidates.begin(), candidates.end(), [](const ReapCandidate& lhs, const ReapCandidate& rhs) {
+        if (lhs.entry.lifecycleState != rhs.entry.lifecycleState) {
+            if (lhs.entry.lifecycleState == ContextLifecycleState::Retired) {
+                return true;
+            }
+            if (rhs.entry.lifecycleState == ContextLifecycleState::Retired) {
+                return false;
+            }
+        }
+        if (lhs.idleMs != rhs.idleMs) {
+            return lhs.idleMs > rhs.idleMs;
+        }
+        if (lhs.entry.createOrder != rhs.entry.createOrder) {
+            return lhs.entry.createOrder < rhs.entry.createOrder;
+        }
+        return lhs.entry.handle.value < rhs.entry.handle.value;
+    });
+}
+
+std::size_t compute_reap_count(std::size_t candidateCount, std::uint64_t overflow) noexcept {
+    if (overflow == 0) {
+        return candidateCount;
+    }
+    const std::size_t overflowCount = static_cast<std::size_t>(
+        std::min<std::uint64_t>(overflow, static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())));
+    return std::min(candidateCount, overflowCount);
+}
+
 void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protectKey) noexcept {
     const ResourceManagerConfigEffective& cfg = registry_policy_config();
     if (cfg.maxLiveManagersPerProcess == 0 || cfg.managerIdleReapMs == 0) {
@@ -369,79 +451,23 @@ void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protec
     }
     state.lastIdleReapScanMs = nowMs;
 
-    struct ReapCandidate {
-        DeviceContextKey key{};
-        RegistryEntry entry{};
-        std::uint64_t idleMs = 0;
-    };
-
     std::vector<ReapCandidate> candidates;
-    candidates.reserve(state.byDeviceContext.size());
-    for (const auto& kv : state.byDeviceContext) {
-        const DeviceContextKey& candidateKey = kv.first;
-        const RegistryEntry& entry = kv.second;
-        if (protectKey && candidateKey == *protectKey) {
-            continue;
-        }
-        if (entry.activeSubmissionCount != 0) {
-            continue;
-        }
-        if (entry.lifecycleState != ContextLifecycleState::Active &&
-            entry.lifecycleState != ContextLifecycleState::Retired) {
-            continue;
-        }
-
-        const std::uint64_t idleMs = saturating_elapsed_ms(nowMs, entry.lastTouchedMs);
-        const bool eligible = (entry.lifecycleState == ContextLifecycleState::Retired) ||
-            (idleMs >= static_cast<std::uint64_t>(cfg.managerIdleReapMs));
-        if (!eligible) {
-            continue;
-        }
-
-        ReapCandidate candidate{};
-        candidate.key = candidateKey;
-        candidate.entry = entry;
-        candidate.idleMs = idleMs;
-        candidates.push_back(candidate);
-    }
+    collect_reap_candidates_locked(
+        state,
+        protectKey,
+        nowMs,
+        static_cast<std::uint64_t>(cfg.managerIdleReapMs),
+        candidates);
 
     if (candidates.empty()) {
         if (overflow > 0) {
-            trace_registry_event_current(
-                nullptr,
-                nullptr,
-                "reap_skip",
-                false,
-                "overflow_no_eligible_idle_manager",
-                0);
+            trace_reap_skip_event("overflow_no_eligible_idle_manager");
         }
         return;
     }
 
-    std::sort(candidates.begin(), candidates.end(), [](const ReapCandidate& lhs, const ReapCandidate& rhs) {
-        if (lhs.entry.lifecycleState != rhs.entry.lifecycleState) {
-            if (lhs.entry.lifecycleState == ContextLifecycleState::Retired) {
-                return true;
-            }
-            if (rhs.entry.lifecycleState == ContextLifecycleState::Retired) {
-                return false;
-            }
-        }
-        if (lhs.idleMs != rhs.idleMs) {
-            return lhs.idleMs > rhs.idleMs;
-        }
-        if (lhs.entry.createOrder != rhs.entry.createOrder) {
-            return lhs.entry.createOrder < rhs.entry.createOrder;
-        }
-        return lhs.entry.handle.value < rhs.entry.handle.value;
-    });
-
-    std::size_t reapCount = candidates.size();
-    if (overflow > 0) {
-        const std::size_t overflowCount = static_cast<std::size_t>(
-            std::min<std::uint64_t>(overflow, static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())));
-        reapCount = std::min(reapCount, overflowCount);
-    }
+    sort_reap_candidates(candidates);
+    const std::size_t reapCount = compute_reap_count(candidates.size(), overflow);
 
     for (std::size_t i = 0; i < reapCount; ++i) {
         const ReapCandidate& candidate = candidates[i];
@@ -457,13 +483,7 @@ void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protec
     }
 
     if (overflow > static_cast<std::uint64_t>(reapCount)) {
-        trace_registry_event_current(
-            nullptr,
-            nullptr,
-            "reap_skip",
-            false,
-            "overflow_remaining_after_safe_reap",
-            0);
+        trace_reap_skip_event("overflow_remaining_after_safe_reap");
     }
 }
 

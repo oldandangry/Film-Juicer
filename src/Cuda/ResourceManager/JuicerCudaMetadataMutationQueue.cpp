@@ -39,6 +39,14 @@ struct MetadataMutationLaneDirectory {
     std::unordered_map<DeviceContextKey, std::shared_ptr<MetadataMutationLane>, DeviceContextKeyHash> byManagerKey;
 };
 
+struct LaneAcquireResult {
+    std::uint64_t ticket = 0;
+    std::uint64_t waitedMs = 0;
+    bool observedWait = false;
+    bool observedBackpressure = false;
+    bool reentrant = false;
+};
+
 MetadataMutationLaneDirectory& mutation_lane_directory() {
     static MetadataMutationLaneDirectory directory{};
     return directory;
@@ -126,6 +134,111 @@ void trace_mutation_reject(
         reason);
 }
 
+void note_queue_wait_if_needed(bool& observedWait) noexcept {
+    if (!observedWait) {
+        observedWait = true;
+        telemetry_record_metadata_queue_wait();
+    }
+}
+
+void wait_on_lane_for_step(
+    std::unique_lock<std::mutex>& lock,
+    MetadataMutationLane& lane,
+    std::uint64_t& waitedMs) {
+    const auto waitStart = std::chrono::steady_clock::now();
+    lane.cv.wait_for(lock, kMetadataMutationQueueWaitStep);
+    waitedMs += elapsed_ms(waitStart);
+}
+
+bool acquire_lane_ticket(
+    MetadataMutationLane& lane,
+    const std::thread::id& currentThread,
+    const char* stage,
+    LaneAcquireResult& out) {
+    std::unique_lock<std::mutex> lock(lane.mutex);
+    if (lane.ownerDepth > 0 && lane.ownerThread == currentThread) {
+        out.reentrant = true;
+        ++lane.ownerDepth;
+        out.ticket = lane.activeTicket;
+        if (out.ticket == 0) {
+            out.ticket = lane.servingTicket;
+            lane.activeTicket = out.ticket;
+        }
+        telemetry_trace_metadata_queue(
+            "reenter",
+            stage,
+            out.ticket,
+            lane_depth_nolock(lane),
+            0,
+            true,
+            "owner_reentrant");
+        return true;
+    }
+
+    while (lane_depth_nolock(lane) >= kMetadataMutationQueueDepthLimit) {
+        if (!out.observedBackpressure) {
+            out.observedBackpressure = true;
+            telemetry_record_metadata_queue_backpressure();
+            telemetry_trace_metadata_queue(
+                "backpressure",
+                stage,
+                0,
+                lane_depth_nolock(lane),
+                out.waitedMs,
+                true,
+                "depth_limit");
+        }
+        note_queue_wait_if_needed(out.observedWait);
+        wait_on_lane_for_step(lock, lane, out.waitedMs);
+    }
+
+    out.ticket = lane.nextTicket++;
+    if (out.ticket == 0) {
+        trace_mutation_reject(
+            "begin",
+            stage,
+            0,
+            0,
+            0,
+            lane_depth_nolock(lane),
+            out.waitedMs,
+            false,
+            "ticket_overflow");
+        return false;
+    }
+
+    telemetry_record_metadata_queue_enqueue();
+    const std::uint64_t depthAfterEnqueue = lane_depth_nolock(lane);
+    telemetry_note_metadata_queue_depth(depthAfterEnqueue);
+    telemetry_trace_metadata_queue(
+        "enqueue",
+        stage,
+        out.ticket,
+        depthAfterEnqueue,
+        out.waitedMs,
+        true,
+        out.observedBackpressure ? "accepted_after_backpressure" : "accepted");
+
+    while (out.ticket != lane.servingTicket || lane.ownerDepth != 0) {
+        note_queue_wait_if_needed(out.observedWait);
+        wait_on_lane_for_step(lock, lane, out.waitedMs);
+    }
+
+    lane.ownerThread = currentThread;
+    lane.ownerDepth = 1;
+    lane.activeTicket = out.ticket;
+    telemetry_record_metadata_queue_dequeue();
+    telemetry_trace_metadata_queue(
+        "dequeue",
+        stage,
+        out.ticket,
+        lane_depth_nolock(lane),
+        out.waitedMs,
+        true,
+        out.observedWait ? "turn_wait" : "immediate");
+    return true;
+}
+
 } // namespace
 
 bool metadata_mutation_begin(
@@ -161,105 +274,9 @@ bool metadata_mutation_begin(
         return false;
     }
 
-    const std::thread::id currentThread = std::this_thread::get_id();
-    std::uint64_t ticket = 0;
-    std::uint64_t waitedMs = 0;
-    bool observedWait = false;
-    bool observedBackpressure = false;
-    bool reentrant = false;
-
-    {
-        std::unique_lock<std::mutex> lock(lane->mutex);
-        if (lane->ownerDepth > 0 && lane->ownerThread == currentThread) {
-            reentrant = true;
-            ++lane->ownerDepth;
-            ticket = lane->activeTicket;
-            if (ticket == 0) {
-                ticket = lane->servingTicket;
-                lane->activeTicket = ticket;
-            }
-            telemetry_trace_metadata_queue(
-                "reenter",
-                stage,
-                ticket,
-                lane_depth_nolock(*lane),
-                0,
-                true,
-                "owner_reentrant");
-        }
-        else {
-            while (lane_depth_nolock(*lane) >= kMetadataMutationQueueDepthLimit) {
-                if (!observedBackpressure) {
-                    observedBackpressure = true;
-                    telemetry_record_metadata_queue_backpressure();
-                    telemetry_trace_metadata_queue(
-                        "backpressure",
-                        stage,
-                        0,
-                        lane_depth_nolock(*lane),
-                        waitedMs,
-                        true,
-                        "depth_limit");
-                }
-                if (!observedWait) {
-                    observedWait = true;
-                    telemetry_record_metadata_queue_wait();
-                }
-                const auto waitStart = std::chrono::steady_clock::now();
-                lane->cv.wait_for(lock, kMetadataMutationQueueWaitStep);
-                waitedMs += elapsed_ms(waitStart);
-            }
-
-            ticket = lane->nextTicket++;
-            if (ticket == 0) {
-                trace_mutation_reject(
-                    "begin",
-                    stage,
-                    0,
-                    0,
-                    0,
-                    lane_depth_nolock(*lane),
-                    waitedMs,
-                    false,
-                    "ticket_overflow");
-                return false;
-            }
-
-            telemetry_record_metadata_queue_enqueue();
-            const std::uint64_t depthAfterEnqueue = lane_depth_nolock(*lane);
-            telemetry_note_metadata_queue_depth(depthAfterEnqueue);
-            telemetry_trace_metadata_queue(
-                "enqueue",
-                stage,
-                ticket,
-                depthAfterEnqueue,
-                waitedMs,
-                true,
-                observedBackpressure ? "accepted_after_backpressure" : "accepted");
-
-            while (ticket != lane->servingTicket || lane->ownerDepth != 0) {
-                if (!observedWait) {
-                    observedWait = true;
-                    telemetry_record_metadata_queue_wait();
-                }
-                const auto waitStart = std::chrono::steady_clock::now();
-                lane->cv.wait_for(lock, kMetadataMutationQueueWaitStep);
-                waitedMs += elapsed_ms(waitStart);
-            }
-
-            lane->ownerThread = currentThread;
-            lane->ownerDepth = 1;
-            lane->activeTicket = ticket;
-            telemetry_record_metadata_queue_dequeue();
-            telemetry_trace_metadata_queue(
-                "dequeue",
-                stage,
-                ticket,
-                lane_depth_nolock(*lane),
-                waitedMs,
-                true,
-                observedWait ? "turn_wait" : "immediate");
-        }
+    LaneAcquireResult acquire{};
+    if (!acquire_lane_ticket(*lane, std::this_thread::get_id(), stage, acquire)) {
+        return false;
     }
 
     telemetry_record_metadata_mutation_begin();
@@ -285,12 +302,12 @@ bool metadata_mutation_begin(
     }
 
     outScope.sequence = sequence;
-    outScope.queueTicket = ticket;
+    outScope.queueTicket = acquire.ticket;
     outScope.hasManagerKey = (managerKey && managerKey->deviceId >= 0);
     outScope.managerKey = outScope.hasManagerKey ? *managerKey : DeviceContextKey{};
     outScope.active = true;
     gMutationThreadDepth += 1;
-    gMutationThreadTicket = ticket;
+    gMutationThreadTicket = acquire.ticket;
     gMutationThreadBeginCount += 1;
 
     telemetry_trace_metadata_mutation(
@@ -299,7 +316,7 @@ bool metadata_mutation_begin(
         sequence,
         true,
         expectedSequence,
-        orderOk ? (reentrant ? "ok_reentrant" : "ok") : "sequence_order_violation");
+        orderOk ? (acquire.reentrant ? "ok_reentrant" : "ok") : "sequence_order_violation");
     return true;
 }
 
