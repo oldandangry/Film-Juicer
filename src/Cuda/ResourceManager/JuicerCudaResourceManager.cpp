@@ -1656,7 +1656,6 @@ std::atomic<std::uint64_t>& builder_global_gauge_for_tier(
 
 AdmissionChurnPolicyState& admission_churn_policy_state() noexcept;
 OptionalHeuristicTraceState& optional_heuristic_trace_state() noexcept;
-std::uint64_t pressure_total_bytes(const PressureInput& input) noexcept;
 
 void trace_scratch_policy_decision(
     const SubmissionTransaction& transaction,
