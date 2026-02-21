@@ -171,11 +171,11 @@ AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
     return entry;
 }
 
-const char* trace_reason_or_unknown(const char* reason) noexcept {
+const char* submission_trace_reason_or_unknown(const char* reason) noexcept {
     return reason ? reason : "unknown";
 }
 
-const char* trace_reason_or_unspecified(const char* reason) noexcept {
+const char* submission_trace_reason_or_unspecified(const char* reason) noexcept {
     return reason ? reason : "unspecified";
 }
 
@@ -200,8 +200,8 @@ void trace_allocator_backend_mode_once(
         + " slab_supported=" + std::to_string(entry.slabSupported ? 1 : 0)
         + " fallback_capability=" + std::to_string(entry.fallbackCapability ? 1 : 0)
         + " fallback_scaffold=" + std::to_string(entry.fallbackScaffold ? 1 : 0)
-        + " candidate_reason=" + trace_reason_or_unknown(entry.candidateReason)
-        + " active_reason=" + trace_reason_or_unknown(entry.activeReason);
+        + " candidate_reason=" + submission_trace_reason_or_unknown(entry.candidateReason)
+        + " active_reason=" + submission_trace_reason_or_unknown(entry.activeReason);
     JTRACE("MSALC", msg);
 }
 
@@ -534,7 +534,7 @@ void trace_lifecycle_stage_decision(
         + " decision=" + to_cstr(decision)
         + " state_age_ms=" + std::to_string(static_cast<unsigned long long>(stateAgeMs))
         + " accepted=" + std::to_string(accepted ? 1 : 0)
-        + " reason=" + trace_reason_or_unspecified(reason);
+        + " reason=" + submission_trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 

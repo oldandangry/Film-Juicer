@@ -397,7 +397,7 @@ bool is_legal_transition(ContextLifecycleState from, ContextLifecycleState to) n
     }
 }
 
-const char* trace_reason_or_unspecified(const char* reason) noexcept {
+const char* registry_trace_reason_or_unspecified(const char* reason) noexcept {
     return reason ? reason : "unspecified";
 }
 
@@ -417,7 +417,7 @@ void trace_lifecycle_transition(const DeviceContextKey& key,
         + " from=" + to_cstr(from)
         + " to=" + to_cstr(to)
         + " accepted=" + std::to_string(accepted ? 1 : 0)
-        + " reason=" + trace_reason_or_unspecified(reason);
+        + " reason=" + registry_trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -442,7 +442,7 @@ void trace_lifecycle_bump(const DeviceContextKey& key,
         + " new_registry_generation=" + std::to_string(newRegistryGeneration)
         + " prev_context_epoch=" + std::to_string(previousContextEpoch)
         + " new_context_epoch=" + std::to_string(newContextEpoch)
-        + " reason=" + trace_reason_or_unspecified(reason);
+        + " reason=" + registry_trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -523,7 +523,7 @@ void trace_lifecycle_timeout(
         + " state_age_ms=" + std::to_string(stateAgeMs)
         + " timeout_ms=" + std::to_string(timeoutMs)
         + " escalated=" + std::to_string(escalated ? 1 : 0)
-        + " reason=" + trace_reason_or_unspecified(reason);
+        + " reason=" + registry_trace_reason_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -760,6 +760,10 @@ bool metadata_mutation_begin(
     const char* stage,
     MetadataMutationScope& outScope,
     const DeviceContextKey* managerKey) noexcept {
+    // Lock-order invariant:
+    // - Resolve lane (directory mutex), then acquire/release lane mutex for ticketing.
+    // - Sequence mutex is acquired only after lane mutex is released.
+    // - Do not hold registry_state().mutex while touching lane/directory/sequence mutexes.
     if (outScope.active) {
         trace_mutation_reject(
             "begin",

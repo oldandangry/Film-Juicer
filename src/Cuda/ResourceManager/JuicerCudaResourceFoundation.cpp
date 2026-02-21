@@ -1055,7 +1055,9 @@ void telemetry_trace_acquire(
     if (!JTRACE_ENABLED(1)) {
         return;
     }
-    std::string msg =
+    std::string msg;
+    msg.reserve(192u + (kResourceKindOrder.size() * 96u));
+    msg =
         std::string("acquire_id=") + std::to_string(acquireId) +
         " transaction_id=" + std::to_string(transactionId) +
         " snapshot_id=" + std::to_string(snapshotId) +
