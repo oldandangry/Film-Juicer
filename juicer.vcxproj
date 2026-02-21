@@ -207,7 +207,6 @@
     <ClCompile Include="src\Cuda\JuicerCudaPrecompute.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaMetadataMutationQueue.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceFoundation.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp" />
