@@ -2340,7 +2340,7 @@ AdmissionChurnSnapshot sample_admission_churn_state(
     if (windowReset) {
         if (contextState.active) {
             contextState.active = false;
-            global_state().admissionChurnExitEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().admissionChurnExitEvents, 1);
         }
         contextState.windowStartMs = nowMs;
         contextState.windowSamples = 0;
@@ -2370,10 +2370,10 @@ AdmissionChurnSnapshot sample_admission_churn_state(
         nextActive = oneHitRatePct > cfg.admissionChurnExitOneHitRatePct;
     }
     if (!contextState.active && nextActive) {
-        global_state().admissionChurnEnterEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().admissionChurnEnterEvents, 1);
     }
     else if (contextState.active && !nextActive) {
-        global_state().admissionChurnExitEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().admissionChurnExitEvents, 1);
     }
     contextState.active = nextActive;
 
@@ -2385,7 +2385,7 @@ AdmissionChurnSnapshot sample_admission_churn_state(
     out.windowSamples = static_cast<std::uint32_t>(std::min<std::uint64_t>(
         contextState.windowSamples,
         static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())));
-    global_state().admissionChurnSampleEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().admissionChurnSampleEvents, 1);
     return out;
 }
 
@@ -2408,7 +2408,7 @@ void trace_keep_hot_surface(
         + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(cfg.keepHotMs))
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSHOT", msg);
-    global_state().keepHotSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().keepHotSurfaceTraceEvents, 1);
 }
 
 void trace_keep_hot_decision(
@@ -2459,7 +2459,7 @@ void trace_burst_debt_surface(
         + " max_burst_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct))
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSBDE", msg);
-    global_state().burstDebtSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().burstDebtSurfaceTraceEvents, 1);
 }
 
 void trace_burst_debt_decision(
@@ -2523,7 +2523,7 @@ void trace_superseded_builder_cancel_surface(
         + " enabled=" + std::to_string(cfg.cancelSupersededBuilders ? 1 : 0)
         + " reason=" + (reason ? reason : "unspecified");
     JTRACE("MSCNL", msg);
-    global_state().supersededBuilderCancelSurfaceTraceEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().supersededBuilderCancelSurfaceTraceEvents, 1);
 }
 
 void trace_superseded_builder_cancel_decision(

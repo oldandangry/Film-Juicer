@@ -396,26 +396,11 @@ void add_graph_large_entry_resident_bytes_global(std::uint64_t bytes) noexcept {
     if (bytes == 0) {
         return;
     }
-    global_state().graphLargeEntryResidentBytes.fetch_add(bytes, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().graphLargeEntryResidentBytes, bytes);
 }
 
 void sub_graph_large_entry_resident_bytes_global(std::uint64_t bytes) noexcept {
-    if (bytes == 0) {
-        return;
-    }
-
-    std::atomic<std::uint64_t>& gauge = global_state().graphLargeEntryResidentBytes;
-    std::uint64_t current = gauge.load(std::memory_order_relaxed);
-    while (true) {
-        const std::uint64_t next = (current >= bytes) ? (current - bytes) : 0;
-        if (gauge.compare_exchange_weak(
-                current,
-                next,
-                std::memory_order_relaxed,
-                std::memory_order_relaxed)) {
-            return;
-        }
-    }
+    telemetry_counter_subtract_saturating(global_state().graphLargeEntryResidentBytes, bytes);
 }
 
 void publish_graph_large_entry_resident_snapshot_locked(
@@ -1756,10 +1741,10 @@ bool command_ensure_optics_scratch(
             return;
         }
         if (success) {
-            managerState.fragmentationRecoverySuccess.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
         }
         else {
-            managerState.fragmentationRecoveryFailures.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
         }
         trace_fragmentation_recovery(
             transaction,
@@ -1811,7 +1796,7 @@ bool command_ensure_optics_scratch(
                 outError);
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
-                managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
             }
             finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
@@ -1848,7 +1833,7 @@ bool command_ensure_optics_scratch(
                         transaction,
                         "command_ensure_optics_scratch",
                         growthBytes);
-                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
                     return false;
                 }
                 fragmentationRecoveryTriggered = true;
@@ -1859,13 +1844,13 @@ bool command_ensure_optics_scratch(
                 transaction,
                 "command_ensure_optics_scratch",
                 growthBytes);
-            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
             finalizeFragmentationOutcome(false, "allocator_oom_final");
             return false;
         }
 
         ++attempts;
-        managerState.budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
         std::size_t reclaimedBytes = 0;
         std::string reclaimError;
         if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
@@ -1885,14 +1870,14 @@ bool command_ensure_optics_scratch(
             if (!reclaimError.empty()) {
                 outError += " | reclaim_retry_failed: " + reclaimError;
             }
-            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
             finalizeFragmentationOutcome(false, "reap_retry_failed");
             return false;
         }
 
         if (reclaimedBytes > 0) {
-            managerState.retireReapPasses.fetch_add(1, std::memory_order_relaxed);
-            managerState.retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.retireReapPasses, 1);
+            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
         }
         trace_reap_pass(
             transaction,
@@ -1927,7 +1912,7 @@ bool command_ensure_optics_scratch(
                         transaction,
                         "command_ensure_optics_scratch",
                         growthBytes);
-                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
                     return false;
                 }
                 fragmentationRecoveryTriggered = true;
@@ -1938,7 +1923,7 @@ bool command_ensure_optics_scratch(
                 transaction,
                 "command_ensure_optics_scratch",
                 growthBytes);
-            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
             finalizeFragmentationOutcome(false, "reap_no_progress");
             return false;
         }
@@ -2026,10 +2011,10 @@ bool command_ensure_spatial_dir_scratch(
             return;
         }
         if (success) {
-            managerState.fragmentationRecoverySuccess.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
         }
         else {
-            managerState.fragmentationRecoveryFailures.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
         }
         trace_fragmentation_recovery(
             transaction,
@@ -2071,7 +2056,7 @@ bool command_ensure_spatial_dir_scratch(
                 outError);
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
-                managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
             }
             finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
@@ -2108,7 +2093,7 @@ bool command_ensure_spatial_dir_scratch(
                         transaction,
                         "command_ensure_spatial_dir_scratch",
                         growthBytes);
-                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
                     return false;
                 }
                 fragmentationRecoveryTriggered = true;
@@ -2119,13 +2104,13 @@ bool command_ensure_spatial_dir_scratch(
                 transaction,
                 "command_ensure_spatial_dir_scratch",
                 growthBytes);
-            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
             finalizeFragmentationOutcome(false, "allocator_oom_final");
             return false;
         }
 
         ++attempts;
-        managerState.budgetReclaimRetryAttempts.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
         std::size_t reclaimedBytes = 0;
         std::string reclaimError;
         if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
@@ -2145,14 +2130,14 @@ bool command_ensure_spatial_dir_scratch(
             if (!reclaimError.empty()) {
                 outError += " | reclaim_retry_failed: " + reclaimError;
             }
-            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
             finalizeFragmentationOutcome(false, "reap_retry_failed");
             return false;
         }
 
         if (reclaimedBytes > 0) {
-            managerState.retireReapPasses.fetch_add(1, std::memory_order_relaxed);
-            managerState.retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.retireReapPasses, 1);
+            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
         }
         trace_reap_pass(
             transaction,
@@ -2187,7 +2172,7 @@ bool command_ensure_spatial_dir_scratch(
                         transaction,
                         "command_ensure_spatial_dir_scratch",
                         growthBytes);
-                    managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
                     return false;
                 }
                 fragmentationRecoveryTriggered = true;
@@ -2198,7 +2183,7 @@ bool command_ensure_spatial_dir_scratch(
                 transaction,
                 "command_ensure_spatial_dir_scratch",
                 growthBytes);
-            managerState.budgetAllocatorOomEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
             finalizeFragmentationOutcome(false, "reap_no_progress");
             return false;
         }
@@ -2400,7 +2385,7 @@ bool command_launch_base_pipeline_graph(
             kGraphAdmissionCriticalCurrentFrame,
             requestBytes,
             supersededLatestSnapshotId)) {
-        managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
         outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
         return true;
     }
@@ -2452,27 +2437,19 @@ bool command_launch_base_pipeline_graph(
             capHit,
             residentEntries);
         if (decayEvictedEntries > 0) {
-            managerState.graphLargeEntryDecayEvents.fetch_add(
-                decayEvictedEntries,
-                std::memory_order_relaxed);
+            telemetry_counter_add(managerState.graphLargeEntryDecayEvents, decayEvictedEntries);
         }
         if (capTrimEvictedEntries > 0) {
-            managerState.graphLargeEntryTrimEvents.fetch_add(
-                capTrimEvictedEntries,
-                std::memory_order_relaxed);
+            telemetry_counter_add(managerState.graphLargeEntryTrimEvents, capTrimEvictedEntries);
         }
         if (capHit) {
-            managerState.graphLargeEntryCapHits.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.graphLargeEntryCapHits, 1);
         }
         if (keepHotBypassEvents > 0) {
-            managerState.keepHotBypassEvents.fetch_add(
-                keepHotBypassEvents,
-                std::memory_order_relaxed);
+            telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
         }
         if (keepHotForcedEvictEvents > 0) {
-            managerState.keepHotForcedEvictEvents.fetch_add(
-                keepHotForcedEvictEvents,
-                std::memory_order_relaxed);
+            telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
         }
         if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
             trace_keep_hot_decision(
@@ -2567,11 +2544,11 @@ bool command_launch_base_pipeline_graph(
             graphLargeThresholdBytes,
             readmitDecision);
         if (readmitDecision.ghostBypass) {
-            managerState.largeEntryReadmitGhostBypassEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.largeEntryReadmitGhostBypassEvents, 1);
         }
         if (readmitDecision.blocked) {
-            managerState.largeEntryReadmitBlockedEvents.fetch_add(1, std::memory_order_relaxed);
-            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.largeEntryReadmitBlockedEvents, 1);
+            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
             outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
             return true;
         }
@@ -2608,7 +2585,7 @@ bool command_launch_base_pipeline_graph(
             keyDigest,
             "graph_miss");
         if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
-            managerState.cacheAdmissionTooLargeEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.cacheAdmissionTooLargeEvents, 1);
         }
         if (admissionDecision.probationApplied) {
             const std::uint32_t nextObservedHits = next_probation_hits(observedProbationHits);
@@ -2621,15 +2598,15 @@ bool command_launch_base_pipeline_graph(
                 churnProbationAllowDurable,
                 admissionDecision.reason);
             if (churnProbationAllowDurable) {
-                managerState.cacheAdmissionProbationAdmitEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.cacheAdmissionProbationAdmitEvents, 1);
             }
             else {
-                managerState.cacheAdmissionProbationDeferredEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.cacheAdmissionProbationDeferredEvents, 1);
             }
         }
         if (admissionDecision.reason &&
             std::string_view(admissionDecision.reason).find("critical_override") != std::string_view::npos) {
-            managerState.cacheAdmissionCriticalOverrideEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.cacheAdmissionCriticalOverrideEvents, 1);
         }
 
         const bool allowDurableAdmission =
@@ -2646,7 +2623,7 @@ bool command_launch_base_pipeline_graph(
             else {
                 bucket.probationHitsByDigest.erase(keyDigest);
             }
-            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
             outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
             return true;
         }
@@ -2659,7 +2636,7 @@ bool command_launch_base_pipeline_graph(
                 tier_circuit_blocks_admission(ResourceTier::Graph),
                 graphCircuitAttempt,
                 circuitError)) {
-            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
             outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
             return true;
         }
@@ -2667,7 +2644,7 @@ bool command_launch_base_pipeline_graph(
 
         BuilderReservationClaim builderClaim{};
         ReservationAttemptInfo builderReservation{};
-        managerState.builderReservationRequests.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.builderReservationRequests, 1);
         if (!try_acquire_builder_reservation_claim(
                 transaction,
                 BuilderReservationTier::Graph,
@@ -2679,9 +2656,9 @@ bool command_launch_base_pipeline_graph(
             const bool fairnessDeferred =
                 (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
             if (decision.shouldWait) {
-                managerState.builderReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.builderReservationDeferred, 1);
                 if (fairnessDeferred) {
-                    managerState.builderFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(managerState.builderFairnessTokenDeferred, 1);
                 }
                 trace_builder_reservation_decision(
                     transaction,
@@ -2700,7 +2677,7 @@ bool command_launch_base_pipeline_graph(
                     "deferred_nonresident");
             }
             else {
-                managerState.builderReservationDenied.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.builderReservationDenied, 1);
                 trace_builder_reservation_decision(
                     transaction,
                     "command_launch_base_pipeline_graph",
@@ -2725,11 +2702,11 @@ bool command_launch_base_pipeline_graph(
                     "nonresident_builder_gate");
                 graphCircuitAttemptActive = false;
             }
-            managerState.graphNonResidentServeEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
             outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
             return true;
         }
-        managerState.builderReservationGranted.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.builderReservationGranted, 1);
         if (JTRACE_ENABLED(3)) {
             trace_builder_reservation_decision(
                 transaction,
@@ -2764,14 +2741,10 @@ bool command_launch_base_pipeline_graph(
             keepHotBypassEvents,
             keepHotForcedEvictEvents);
         if (keepHotBypassEvents > 0) {
-            managerState.keepHotBypassEvents.fetch_add(
-                keepHotBypassEvents,
-                std::memory_order_relaxed);
+            telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
         }
         if (keepHotForcedEvictEvents > 0) {
-            managerState.keepHotForcedEvictEvents.fetch_add(
-                keepHotForcedEvictEvents,
-                std::memory_order_relaxed);
+            telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
         }
         if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
             trace_keep_hot_decision(

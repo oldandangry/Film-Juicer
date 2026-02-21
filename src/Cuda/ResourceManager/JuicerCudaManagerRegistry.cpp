@@ -533,12 +533,12 @@ bool transition_entry_locked(const DeviceContextKey& key,
                              ContextLifecycleState desiredState,
                              const char* reason) {
     ResourceManagerState& rmState = global_state();
-    rmState.lifecycleTransitionCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(rmState.lifecycleTransitionCalls, 1);
     const ContextLifecycleState observed = entry.lifecycleState;
     const bool expectedOk = (observed == expectedState);
     const bool legal = expectedOk && is_legal_transition(observed, desiredState);
     if (!legal) {
-        rmState.lifecycleTransitionRejects.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(rmState.lifecycleTransitionRejects, 1);
         trace_lifecycle_transition(key, entry.handle, observed, desiredState, false, reason);
         return false;
     }
@@ -588,7 +588,7 @@ bool erase_registry_entry_locked(RegistryState& state,
     ResourceManagerState& rmState = global_state();
     publish_registry_live_count(state.byDeviceContext.size());
     if (countReapEvent) {
-        rmState.registryReapEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(rmState.registryReapEvents, 1);
     }
     trace_registry_event_current(
         &key,
@@ -729,7 +729,7 @@ bool run_freeze_drain_bump_resume_locked(const DeviceContextKey& key,
                                          RegistryEntry& entry,
                                          const char* reason) {
     ResourceManagerState& rmState = global_state();
-    rmState.lifecycleBarrierCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(rmState.lifecycleBarrierCalls, 1);
 
     bool ok = true;
     ok = ok && transition_entry_locked(
@@ -749,7 +749,7 @@ bool run_freeze_drain_bump_resume_locked(const DeviceContextKey& key,
         key, entry, ContextLifecycleState::Rebinding, ContextLifecycleState::Active, "barrier_resume");
 
     if (!ok) {
-        rmState.lifecycleBarrierRejects.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(rmState.lifecycleBarrierRejects, 1);
     }
     return ok;
 }
@@ -1144,7 +1144,7 @@ bool registry_validate_lifecycle_stage(
     const std::uint64_t timeoutMs = lifecycle_timeout_ms_for_state(observedState, cfg);
     if (timeoutMs > 0 && stateAgeMs >= timeoutMs) {
         ResourceManagerState& rmState = global_state();
-        rmState.lifecycleTimeoutEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(rmState.lifecycleTimeoutEvents, 1);
         const RegistryHandle observedHandle = entry.handle;
         const char* timeoutReason = (observedState == ContextLifecycleState::Draining)
             ? "drain_timeout"
@@ -1253,8 +1253,8 @@ bool registry_transition_lifecycle_state(
     std::lock_guard<std::mutex> lock(state.mutex);
     auto it = state.byDeviceContext.find(key);
     if (it == state.byDeviceContext.end()) {
-        global_state().lifecycleTransitionCalls.fetch_add(1, std::memory_order_relaxed);
-        global_state().lifecycleTransitionRejects.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().lifecycleTransitionCalls, 1);
+        telemetry_counter_add(global_state().lifecycleTransitionRejects, 1);
         const RegistryHandle missingHandle{};
         trace_lifecycle_transition(key, missingHandle, ContextLifecycleState::Unbound, desiredState, false, reason);
         return false;
@@ -1279,8 +1279,8 @@ bool registry_freeze_drain_bump_resume(
     auto it = state.byDeviceContext.find(key);
     if (it == state.byDeviceContext.end()) {
         ResourceManagerState& rmState = global_state();
-        rmState.lifecycleBarrierCalls.fetch_add(1, std::memory_order_relaxed);
-        rmState.lifecycleBarrierRejects.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(rmState.lifecycleBarrierCalls, 1);
+        telemetry_counter_add(rmState.lifecycleBarrierRejects, 1);
         const RegistryHandle missingHandle{};
         trace_lifecycle_transition(
             key,
@@ -1354,8 +1354,8 @@ void registry_retire(
     }
     ContextLifecycleState desired = desired_retire_state(reason);
     if (desired != ContextLifecycleState::Retired) {
-        global_state().lifecycleTransitionCalls.fetch_add(1, std::memory_order_relaxed);
-        global_state().lifecycleTransitionRejects.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().lifecycleTransitionCalls, 1);
+        telemetry_counter_add(global_state().lifecycleTransitionRejects, 1);
         trace_lifecycle_transition(deviceKey, entry.handle, entry.lifecycleState, desired, false, "retire_unsupported");
         return;
     }

@@ -547,7 +547,7 @@ bool validate_lifecycle_for_stage(const SubmissionTransaction& transaction,
             transaction.snapshot.deviceContextKey,
             allowNonActiveRelease,
             validation)) {
-        global_state().lifecycleStageRejects.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().lifecycleStageRejects, 1);
         const char* reason = "lifecycle_stage_rejected";
         switch (validation.decision) {
         case LifecycleStageDecision::MissingRegistryEntry:
@@ -653,7 +653,7 @@ bool run_fragmentation_recovery_once(
     std::string& outError) {
     outError.clear();
     ResourceManagerState& managerState = global_state();
-    managerState.fragmentationRecoveryAttempts.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(managerState.fragmentationRecoveryAttempts, 1);
 
     std::size_t reapedBytes = 0;
     std::string reapError;
@@ -675,14 +675,14 @@ bool run_fragmentation_recovery_once(
             false,
             "attempt",
             reapError.empty() ? "reap_failed" : reapError.c_str());
-        managerState.fragmentationRecoveryFailures.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
         outError = reapError.empty() ? "fragmentation recovery reap failed" : reapError;
         return false;
     }
 
     if (reapedBytes > 0) {
-        managerState.retireReapPasses.fetch_add(1, std::memory_order_relaxed);
-        managerState.retireReapBytes.fetch_add(reapedBytes, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.retireReapPasses, 1);
+        telemetry_counter_add(managerState.retireReapBytes, reapedBytes);
     }
     trace_reap_pass(
         transaction,
@@ -697,14 +697,10 @@ bool run_fragmentation_recovery_once(
         evict_noncritical_graph_entries_for_context(transaction.snapshot.deviceContextKey);
 
     if (quarantineTrimmedEntries > 0) {
-        managerState.fragmentationRecoveryQuarantineTrimmedEntries.fetch_add(
-            quarantineTrimmedEntries,
-            std::memory_order_relaxed);
+        telemetry_counter_add(managerState.fragmentationRecoveryQuarantineTrimmedEntries, quarantineTrimmedEntries);
     }
     if (graphEvictedEntries > 0) {
-        managerState.fragmentationRecoveryGraphEvictedEntries.fetch_add(
-            graphEvictedEntries,
-            std::memory_order_relaxed);
+        telemetry_counter_add(managerState.fragmentationRecoveryGraphEvictedEntries, graphEvictedEntries);
     }
 
     if (captureMemorySnapshots) {

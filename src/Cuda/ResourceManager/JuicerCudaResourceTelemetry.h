@@ -3,6 +3,7 @@
 // Phase-0 telemetry scaffolding for fixed counters and trace schema contract.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "Cuda/ResourceManager/JuicerCudaResourcePolicy.h"
@@ -10,6 +11,68 @@
 
 namespace JuicerCuda {
 namespace ResourceManager {
+
+#ifndef JUICER_RM_TELEMETRY_COUNTERS_COMPILED
+#define JUICER_RM_TELEMETRY_COUNTERS_COMPILED 1
+#endif
+
+inline void telemetry_counter_add(
+    std::atomic<std::uint64_t>& counter,
+    std::uint64_t delta = 1) noexcept {
+#if JUICER_RM_TELEMETRY_COUNTERS_COMPILED
+    if (delta == 0) {
+        return;
+    }
+    counter.fetch_add(delta, std::memory_order_relaxed);
+#else
+    (void)counter;
+    (void)delta;
+#endif
+}
+
+inline void telemetry_counter_note_max(
+    std::atomic<std::uint64_t>& counter,
+    std::uint64_t value) noexcept {
+#if JUICER_RM_TELEMETRY_COUNTERS_COMPILED
+    std::uint64_t observed = counter.load(std::memory_order_relaxed);
+    while (value > observed) {
+        if (counter.compare_exchange_weak(
+                observed,
+                value,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            break;
+        }
+    }
+#else
+    (void)counter;
+    (void)value;
+#endif
+}
+
+inline void telemetry_counter_subtract_saturating(
+    std::atomic<std::uint64_t>& counter,
+    std::uint64_t delta) noexcept {
+#if JUICER_RM_TELEMETRY_COUNTERS_COMPILED
+    if (delta == 0) {
+        return;
+    }
+    std::uint64_t current = counter.load(std::memory_order_relaxed);
+    while (true) {
+        const std::uint64_t next = (current >= delta) ? (current - delta) : 0;
+        if (counter.compare_exchange_weak(
+                current,
+                next,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return;
+        }
+    }
+#else
+    (void)counter;
+    (void)delta;
+#endif
+}
 
 void telemetry_record_begin_submission() noexcept;
 void telemetry_record_acquire_plan() noexcept;

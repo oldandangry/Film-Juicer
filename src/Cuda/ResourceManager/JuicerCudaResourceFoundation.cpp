@@ -604,20 +604,20 @@ void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus statu
     ResourceKindAcquireCounters& counters = state.acquireStatusByKind[kindIndex];
     switch (status) {
     case AcquireStatus::Hit:
-        counters.hit.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(counters.hit, 1);
         break;
     case AcquireStatus::Miss:
-        counters.miss.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(counters.miss, 1);
         break;
     case AcquireStatus::Busy:
-        counters.busy.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(counters.busy, 1);
         break;
     case AcquireStatus::Exhausted:
-        counters.exhausted.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(counters.exhausted, 1);
         break;
     case AcquireStatus::Error:
     default:
-        counters.error.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(counters.error, 1);
         break;
     }
 }
@@ -678,39 +678,39 @@ void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexce
 
 
 void telemetry_record_begin_submission() noexcept {
-    global_state().beginSubmissionCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().beginSubmissionCalls, 1);
 }
 
 void telemetry_record_acquire_plan() noexcept {
-    global_state().acquirePlanCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().acquirePlanCalls, 1);
 }
 
 void telemetry_record_commit_submission() noexcept {
-    global_state().commitSubmissionCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().commitSubmissionCalls, 1);
 }
 
 void telemetry_record_rollback_submission() noexcept {
-    global_state().rollbackSubmissionCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().rollbackSubmissionCalls, 1);
 }
 
 void telemetry_record_acquire_status(AcquireStatus status) noexcept {
     ResourceManagerState& state = global_state();
     switch (status) {
     case AcquireStatus::Hit:
-        state.acquireStatusHit.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(state.acquireStatusHit, 1);
         break;
     case AcquireStatus::Miss:
-        state.acquireStatusMiss.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(state.acquireStatusMiss, 1);
         break;
     case AcquireStatus::Busy:
-        state.acquireStatusBusy.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(state.acquireStatusBusy, 1);
         break;
     case AcquireStatus::Exhausted:
-        state.acquireStatusExhausted.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(state.acquireStatusExhausted, 1);
         break;
     case AcquireStatus::Error:
     default:
-        state.acquireStatusError.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(state.acquireStatusError, 1);
         break;
     }
 }
@@ -720,73 +720,67 @@ void telemetry_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus s
 }
 
 void telemetry_record_trace_schema_mismatch() noexcept {
-    global_state().traceSchemaMismatchEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().traceSchemaMismatchEvents, 1);
 }
 
 void telemetry_record_forbidden_invalidation_edge() noexcept {
-    global_state().forbiddenInvalidationEdges.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().forbiddenInvalidationEdges, 1);
 }
 
 void telemetry_record_module_boundary_violation() noexcept {
-    global_state().moduleBoundaryViolations.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().moduleBoundaryViolations, 1);
 }
 
 void telemetry_record_query_mutation_violation() noexcept {
-    global_state().queryMutationViolationEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().queryMutationViolationEvents, 1);
 }
 
 void telemetry_record_frame_snapshot_mismatch() noexcept {
-    global_state().frameSnapshotMismatchEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().frameSnapshotMismatchEvents, 1);
 }
 
 void telemetry_record_stale_tuple_hard_reject() noexcept {
-    global_state().staleTupleHardRejects.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().staleTupleHardRejects, 1);
 }
 
 void telemetry_record_metadata_mutation_begin() noexcept {
-    global_state().metadataMutationBeginCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationBeginCalls, 1);
 }
 
 void telemetry_record_metadata_mutation_end() noexcept {
-    global_state().metadataMutationEndCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationEndCalls, 1);
 }
 
 void telemetry_record_metadata_mutation_reject() noexcept {
-    global_state().metadataMutationRejects.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationRejects, 1);
 }
 
 void telemetry_record_metadata_mutation_order_violation() noexcept {
-    global_state().metadataMutationOrderViolations.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationOrderViolations, 1);
 }
 
 void telemetry_record_metadata_queue_enqueue() noexcept {
-    global_state().metadataMutationQueueEnqueueCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationQueueEnqueueCalls, 1);
 }
 
 void telemetry_record_metadata_queue_dequeue() noexcept {
-    global_state().metadataMutationQueueDequeueCalls.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationQueueDequeueCalls, 1);
 }
 
 void telemetry_record_metadata_queue_wait() noexcept {
-    global_state().metadataMutationQueueWaitEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationQueueWaitEvents, 1);
 }
 
 void telemetry_record_metadata_queue_backpressure() noexcept {
-    global_state().metadataMutationQueueBackpressureEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationQueueBackpressureEvents, 1);
 }
 
 void telemetry_record_metadata_queue_reject() noexcept {
-    global_state().metadataMutationQueueRejects.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().metadataMutationQueueRejects, 1);
 }
 
 void telemetry_note_metadata_queue_depth(std::uint64_t depth) noexcept {
-    std::atomic<std::uint64_t>& gauge = global_state().metadataMutationQueueMaxDepth;
-    std::uint64_t observed = gauge.load(std::memory_order_relaxed);
-    while (depth > observed) {
-        if (gauge.compare_exchange_weak(observed, depth, std::memory_order_relaxed)) {
-            break;
-        }
-    }
+    telemetry_counter_note_max(global_state().metadataMutationQueueMaxDepth, depth);
 }
 
 std::uint64_t telemetry_next_acquire_attempt_id() noexcept {

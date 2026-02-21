@@ -9,6 +9,7 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceState.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
 
 #include "FilmProcessing.h"
 #include "ColorTransforms.h"

@@ -334,11 +334,11 @@ bool try_acquire_scratch_policy_claim(
 
     ScratchBucketEntry& bucketEntry = contextState.buckets[bucketKey];
     bucketEntry.attemptCount += 1;
-    global_state().scratchBucketAcquireAttempts.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().scratchBucketAcquireAttempts, 1);
 
     if (requestBytes == 0) {
         bucketEntry.reuseEvents += 1;
-        global_state().scratchReuseEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().scratchReuseEvents, 1);
         global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
         snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
         return true;
@@ -365,13 +365,13 @@ bool try_acquire_scratch_policy_claim(
         reservationDecision = classify_reservation(reservationInput);
     }
     outReservation.decision = reservationDecision;
-    global_state().transientReservationRequests.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().transientReservationRequests, 1);
     if (!reservationDecision.granted) {
         if (reservationDecision.shouldWait) {
-            global_state().transientReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().transientReservationDeferred, 1);
         }
         else {
-            global_state().transientReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().transientReservationDenied, 1);
         }
         trace_transient_reservation_decision(
             transaction,
@@ -394,14 +394,14 @@ bool try_acquire_scratch_policy_claim(
         (effectiveCapBytes - std::min(bucketEntry.inFlightBytes, effectiveCapBytes));
     if (!setsOk || !bytesOk) {
         bucketEntry.exhaustedCount += 1;
-        global_state().scratchBucketExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().scratchBucketExhaustedEvents, 1);
 
         const bool starvationNow =
             (bucketEntry.attemptCount >= 8) &&
             (bucketEntry.exhaustedCount * 4 >= bucketEntry.attemptCount);
         if (starvationNow && !bucketEntry.starvationLatched) {
             bucketEntry.starvationLatched = true;
-            global_state().scratchBucketStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().scratchBucketStarvationEvents, 1);
         }
         else if (!starvationNow) {
             bucketEntry.starvationLatched = false;
@@ -432,10 +432,10 @@ bool try_acquire_scratch_policy_claim(
             state.totalInFlightBytes = std::numeric_limits<std::uint64_t>::max();
         }
     }
-    global_state().scratchAllocGrowthEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().scratchAllocGrowthEvents, 1);
     bucketEntry.starvationLatched = false;
     global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
-    global_state().transientReservationGranted.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().transientReservationGranted, 1);
     if (reservationDecision.reason && std::string_view(reservationDecision.reason) == "critical_last_resort") {
         trace_transient_reservation_decision(
             transaction,
@@ -490,12 +490,12 @@ bool acquire_scratch_policy_claim_with_wait(
                 snapshot,
                 reservation)) {
             if (waitedMs > 0) {
-                state.scratchPolicyWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.scratchPolicyWaitEvents, 1);
                 if (criticalCurrentFrame) {
                     const std::uint64_t waitedMsU64 =
                         static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                    state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                    state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    telemetry_counter_add(state.criticalBuilderWaitEvents, 1);
+                    telemetry_counter_add(state.criticalBuilderWaitTotalMs, waitedMsU64);
                     trace_lane_wait_event(
                         transaction,
                         commandName,
@@ -526,13 +526,13 @@ bool acquire_scratch_policy_claim_with_wait(
         }
 
         if (waitedMs >= waitBudgetMs) {
-            state.scratchPolicyExhaustedEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.scratchPolicyExhaustedEvents, 1);
             if (criticalCurrentFrame) {
                 const std::uint64_t waitedMsU64 =
                     static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
-                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.criticalBuilderWaitEvents, 1);
+                telemetry_counter_add(state.criticalBuilderWaitTotalMs, waitedMsU64);
+                telemetry_counter_add(state.criticalLaneStarvationEvents, 1);
                 trace_lane_wait_event(
                     transaction,
                     commandName,
@@ -697,7 +697,7 @@ bool acquire_builder_reservation_with_wait(
     }
 
     ResourceManagerState& state = global_state();
-    state.builderReservationRequests.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(state.builderReservationRequests, 1);
 
     ReservationAttemptInfo reservation{};
     int waitedMs = 0;
@@ -709,14 +709,14 @@ bool acquire_builder_reservation_with_wait(
                 criticalCurrentFrame,
                 outClaim,
                 reservation)) {
-            state.builderReservationGranted.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.builderReservationGranted, 1);
             if (waitedMs > 0) {
-                state.builderFairnessWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.builderFairnessWaitEvents, 1);
                 if (criticalCurrentFrame) {
                     const std::uint64_t waitedMsU64 =
                         static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                    state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                    state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    telemetry_counter_add(state.criticalBuilderWaitEvents, 1);
+                    telemetry_counter_add(state.criticalBuilderWaitTotalMs, waitedMsU64);
                     trace_lane_wait_event(
                         transaction,
                         commandName,
@@ -784,16 +784,16 @@ bool acquire_builder_reservation_with_wait(
         const bool fairnessDeferred =
             (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
         if (fairnessDeferred) {
-            state.builderFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.builderFairnessTokenDeferred, 1);
         }
         if (!decision.shouldWait) {
-            state.builderReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.builderReservationDenied, 1);
             if (criticalCurrentFrame) {
                 const std::uint64_t waitedMsU64 =
                     static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
-                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.criticalBuilderWaitEvents, 1);
+                telemetry_counter_add(state.criticalBuilderWaitTotalMs, waitedMsU64);
+                telemetry_counter_add(state.criticalLaneStarvationEvents, 1);
                 trace_lane_wait_event(
                     transaction,
                     commandName,
@@ -834,17 +834,17 @@ bool acquire_builder_reservation_with_wait(
         }
 
         if (waitedMs >= kBuilderReservationWaitMaxMs) {
-            state.builderReservationDeferred.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.builderReservationDeferred, 1);
             if (criticalCurrentFrame) {
-                state.builderReservationBypass.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.builderReservationBypass, 1);
                 if (fairnessDeferred) {
-                    state.builderFairnessTokenBypass.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(state.builderFairnessTokenBypass, 1);
                 }
                 const std::uint64_t waitedMsU64 =
                     static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                state.criticalBuilderWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                state.criticalBuilderWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
-                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.criticalBuilderWaitEvents, 1);
+                telemetry_counter_add(state.criticalBuilderWaitTotalMs, waitedMsU64);
+                telemetry_counter_add(state.criticalLaneStarvationEvents, 1);
                 trace_lane_wait_event(
                     transaction,
                     commandName,
@@ -1016,7 +1016,7 @@ bool acquire_upload_reservation_with_wait(
     }
 
     ResourceManagerState& state = global_state();
-    state.uploadReservationRequests.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(state.uploadReservationRequests, 1);
 
     ReservationAttemptInfo reservation{};
     int waitedMs = 0;
@@ -1027,14 +1027,14 @@ bool acquire_upload_reservation_with_wait(
                 criticalCurrentFrame,
                 outClaim,
                 reservation)) {
-            state.uploadReservationGranted.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.uploadReservationGranted, 1);
             if (waitedMs > 0) {
-                state.uploadFairnessWaitEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.uploadFairnessWaitEvents, 1);
                 if (criticalCurrentFrame) {
                     const std::uint64_t waitedMsU64 =
                         static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                    state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                    state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                    telemetry_counter_add(state.criticalUploadWaitEvents, 1);
+                    telemetry_counter_add(state.criticalUploadWaitTotalMs, waitedMsU64);
                     trace_lane_wait_event(
                         transaction,
                         commandName,
@@ -1083,16 +1083,16 @@ bool acquire_upload_reservation_with_wait(
         const bool fairnessDeferred =
             (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
         if (fairnessDeferred) {
-            state.uploadFairnessTokenDeferred.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.uploadFairnessTokenDeferred, 1);
         }
         if (!decision.shouldWait) {
-            state.uploadReservationDenied.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.uploadReservationDenied, 1);
             if (criticalCurrentFrame) {
                 const std::uint64_t waitedMsU64 =
                     static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
-                state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.criticalUploadWaitEvents, 1);
+                telemetry_counter_add(state.criticalUploadWaitTotalMs, waitedMsU64);
+                telemetry_counter_add(state.criticalLaneStarvationEvents, 1);
                 trace_lane_wait_event(
                     transaction,
                     commandName,
@@ -1131,18 +1131,18 @@ bool acquire_upload_reservation_with_wait(
         }
 
         if (waitedMs >= kUploadReservationWaitMaxMs) {
-            state.uploadReservationDeferred.fetch_add(1, std::memory_order_relaxed);
-            state.uploadReservationBypass.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(state.uploadReservationDeferred, 1);
+            telemetry_counter_add(state.uploadReservationBypass, 1);
             if (fairnessDeferred) {
-                state.uploadFairnessTokenBypass.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(state.uploadFairnessTokenBypass, 1);
             }
             if (criticalCurrentFrame) {
                 const std::uint64_t waitedMsU64 =
                     static_cast<std::uint64_t>(std::max(waitedMs, 0));
-                state.criticalUploadWaitEvents.fetch_add(1, std::memory_order_relaxed);
-                state.criticalUploadWaitTotalMs.fetch_add(waitedMsU64, std::memory_order_relaxed);
+                telemetry_counter_add(state.criticalUploadWaitEvents, 1);
+                telemetry_counter_add(state.criticalUploadWaitTotalMs, waitedMsU64);
                 if (fairnessDeferred) {
-                    state.criticalLaneStarvationEvents.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(state.criticalLaneStarvationEvents, 1);
                 }
                 trace_lane_wait_event(
                     transaction,
@@ -1553,7 +1553,7 @@ void trim_large_frame_quarantine_decay_locked(
         ++removedCount;
     }
     if (removedCount > 0) {
-        global_state().scratchLargeQuarantineDecayEvents.fetch_add(removedCount, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().scratchLargeQuarantineDecayEvents, removedCount);
     }
 }
 
@@ -1591,7 +1591,7 @@ void trim_large_frame_quarantine_caps_locked(
     }
 
     if (trimmedCount > 0) {
-        global_state().scratchLargeQuarantineTrimEvents.fetch_add(trimmedCount, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().scratchLargeQuarantineTrimEvents, trimmedCount);
     }
 }
 
@@ -1983,10 +1983,10 @@ PressureCheckpoint evaluate_pressure_checkpoint(
                 effectiveDecision.state = contextState.lastState;
                 checkpoint.decision = effectiveDecision;
                 if (checkpoint.transitionDeferredByDwell) {
-                    managerState.pressureTransitionDwellDefers.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(managerState.pressureTransitionDwellDefers, 1);
                 }
                 if (checkpoint.transitionDeferredByRate) {
-                    managerState.pressureTransitionRateDefers.fetch_add(1, std::memory_order_relaxed);
+                    telemetry_counter_add(managerState.pressureTransitionRateDefers, 1);
                 }
             }
             else {
@@ -2021,22 +2021,22 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             contextState.lastHeadroomSource = checkpoint.input.headroomSource;
 
             if (checkpoint.transition) {
-                managerState.pressureStateTransitions.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.pressureStateTransitions, 1);
             }
             if (checkpoint.reserveCrossing) {
-                managerState.reserveCrossingEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.reserveCrossingEvents, 1);
             }
             if (checkpoint.reserveUpdated) {
-                managerState.reserveAdaptationEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.reserveAdaptationEvents, 1);
             }
             if (checkpoint.freezeTransitionEnter) {
-                managerState.opportunisticFreezeEnterEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.opportunisticFreezeEnterEvents, 1);
             }
             if (checkpoint.freezeTransitionExit) {
-                managerState.opportunisticFreezeExitEvents.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.opportunisticFreezeExitEvents, 1);
             }
             if (headroomSourceSwitch) {
-                managerState.headroomSourceSwitches.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(managerState.headroomSourceSwitches, 1);
             }
         }
         else if (contextState.valid) {
@@ -2144,7 +2144,7 @@ void record_allocator_oom_headroom_observation(
     const bool aboveHeadroom =
         (requestBytes > 0) && (headroom.effectiveHeadroomBytes >= static_cast<std::uint64_t>(requestBytes));
     if (aboveHeadroom) {
-        managerState.allocFailAboveHeadroomEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(managerState.allocFailAboveHeadroomEvents, 1);
     }
 
     PressureCheckpoint checkpoint{};
@@ -2182,8 +2182,8 @@ bool run_reap_pass_for_pressure(
     }
 
     if (reclaimedBytes > 0) {
-        global_state().retireReapPasses.fetch_add(1, std::memory_order_relaxed);
-        global_state().retireReapBytes.fetch_add(reclaimedBytes, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().retireReapPasses, 1);
+        telemetry_counter_add(global_state().retireReapBytes, reclaimedBytes);
     }
     trace_reap_pass(
         transaction,
@@ -2351,7 +2351,7 @@ BurstDebtRuntimeDecision evaluate_burst_debt_runtime(
         return out;
     }
     out.sampled = true;
-    global_state().burstDebtSampleEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(global_state().burstDebtSampleEvents, 1);
 
     const std::uint64_t instanceToken = transaction.snapshot.instanceToken.value;
     if (instanceToken == 0) {
@@ -2398,11 +2398,11 @@ BurstDebtRuntimeDecision evaluate_burst_debt_runtime(
             static_cast<std::uint64_t>(debtDecision.debtIncrementPct);
         debtEntry.debtPct = static_cast<std::uint32_t>(std::min<std::uint64_t>(100ull, expandedDebt));
         out.debtIncrementPct = debtDecision.debtIncrementPct;
-        global_state().burstDebtAccrualEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().burstDebtAccrualEvents, 1);
     }
     if (debtDecision.throttleOpportunistic) {
         out.throttled = true;
-        global_state().burstDebtThrottleEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().burstDebtThrottleEvents, 1);
     }
     out.debtAfterPct = debtEntry.debtPct;
 
@@ -2458,9 +2458,9 @@ bool should_cancel_superseded_noncritical_builder(
     }
 
     ResourceManagerState& state = global_state();
-    state.supersededBuilderCancelEvents.fetch_add(1, std::memory_order_relaxed);
+    telemetry_counter_add(state.supersededBuilderCancelEvents, 1);
     if (requestBytes > 0) {
-        state.supersededBuilderCancelSavedBytes.fetch_add(requestBytes, std::memory_order_relaxed);
+        telemetry_counter_add(state.supersededBuilderCancelSavedBytes, requestBytes);
     }
     return true;
 }
@@ -2528,13 +2528,13 @@ bool enforce_pressure_gate(
             criticalCurrentFrame,
             burstDecision);
         if (burstDecision.entered) {
-            global_state().activeBurstEnterEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().activeBurstEnterEvents, 1);
         }
         if (burstDecision.exited) {
-            global_state().activeBurstExitEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().activeBurstExitEvents, 1);
         }
         if (burstDecision.capHit) {
-            global_state().activeBurstCapHitEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().activeBurstCapHitEvents, 1);
         }
         if (burstDecision.considered && !burstDecision.allowed && requestBytes > 0) {
             outRequestReclaimPass = true;
@@ -2646,7 +2646,7 @@ bool enforce_pressure_gate(
     }
 
     if (nonCritical && pressureEnabled && freezeBelowReserve && requestBytes > 0) {
-        global_state().opportunisticFreezeDenyEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().opportunisticFreezeDenyEvents, 1);
         trace_opportunistic_freeze_event(
             transaction,
             commandName,
@@ -2681,11 +2681,11 @@ bool enforce_pressure_gate(
         }
         if (pressureState == PressureState::Emergency) {
             if (lane == PressureLane::Upload) {
-                global_state().uploadEmergencyShedDenials.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(global_state().uploadEmergencyShedDenials, 1);
                 denyReason = "emergency_shed_upload_precedence";
             }
             else {
-                global_state().builderEmergencyShedDenials.fetch_add(1, std::memory_order_relaxed);
+                telemetry_counter_add(global_state().builderEmergencyShedDenials, 1);
                 denyReason = "emergency_shed_builder_precedence";
             }
         }
@@ -2705,7 +2705,7 @@ bool enforce_pressure_gate(
     }
 
     if (lane == PressureLane::Upload && nonCritical && uploadCapSaturated) {
-        global_state().copyComputeGuardShedEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().copyComputeGuardShedEvents, 1);
         trace_copy_compute_guard(
             transaction,
             commandName,
@@ -2785,7 +2785,7 @@ bool tier_circuit_begin_attempt(
             const TierCircuitState previousState = tierState.state;
             tierState.state = TierCircuitState::HalfOpen;
             tierState.probeInFlight = false;
-            global_state().tierCircuitHalfOpenEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().tierCircuitHalfOpenEvents, 1);
             trace_tier_circuit_event(
                 transaction,
                 commandName,
@@ -2809,7 +2809,7 @@ bool tier_circuit_begin_attempt(
         const std::uint64_t openRemainingMs = (elapsedMs >= static_cast<std::uint64_t>(openMs))
             ? 0
             : (static_cast<std::uint64_t>(openMs) - elapsedMs);
-        global_state().tierCircuitBlockedEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().tierCircuitBlockedEvents, 1);
         trace_tier_circuit_event(
             transaction,
             commandName,
@@ -2831,7 +2831,7 @@ bool tier_circuit_begin_attempt(
 
     if (tierState.state == TierCircuitState::HalfOpen) {
         if (tierState.probeInFlight && blocksAdmission) {
-            global_state().tierCircuitBlockedEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().tierCircuitBlockedEvents, 1);
             trace_tier_circuit_event(
                 transaction,
                 commandName,
@@ -2963,7 +2963,7 @@ void tier_circuit_record_outcome(
             tierState.windowErrors = 0;
             tierState.openedAtMs = 0;
             tierState.probeInFlight = false;
-            global_state().tierCircuitCloseEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().tierCircuitCloseEvents, 1);
             trace_tier_circuit_event(
                 transaction,
                 commandName,
@@ -2999,7 +2999,7 @@ void tier_circuit_record_outcome(
         tierState.windowErrors = threshold;
         tierState.openedAtMs = nowMs;
         tierState.probeInFlight = false;
-        global_state().tierCircuitOpenEvents.fetch_add(1, std::memory_order_relaxed);
+        telemetry_counter_add(global_state().tierCircuitOpenEvents, 1);
         trace_tier_circuit_event(
             transaction,
             commandName,
@@ -3028,7 +3028,7 @@ void tier_circuit_record_outcome(
             tierState.state = TierCircuitState::Open;
             tierState.openedAtMs = nowMs;
             tierState.probeInFlight = false;
-            global_state().tierCircuitOpenEvents.fetch_add(1, std::memory_order_relaxed);
+            telemetry_counter_add(global_state().tierCircuitOpenEvents, 1);
             trace_tier_circuit_event(
                 transaction,
                 commandName,

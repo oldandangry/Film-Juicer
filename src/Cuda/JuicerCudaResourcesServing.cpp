@@ -294,7 +294,7 @@
         }
 
         if (totalBytes > capBytes) {
-            ResourceManager::global_state().hostAssetCacheCapHits.fetch_add(1, std::memory_order_relaxed);
+            ResourceManager::telemetry_counter_add(ResourceManager::global_state().hostAssetCacheCapHits, 1);
             std::size_t capTrimmed = 0;
             for (;;) {
                 if (totalBytes <= capBytes) {
@@ -321,9 +321,8 @@
 
         if (trimmedBytesTotal > 0) {
             ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
-            managerState.hostAssetCacheTrimEvents.fetch_add(1, std::memory_order_relaxed);
-            managerState.hostAssetCacheTrimBytes.fetch_add(
-                static_cast<std::uint64_t>(trimmedBytesTotal), std::memory_order_relaxed);
+            ResourceManager::telemetry_counter_add(managerState.hostAssetCacheTrimEvents, 1);
+            ResourceManager::telemetry_counter_add(managerState.hostAssetCacheTrimBytes, static_cast<std::uint64_t>(trimmedBytesTotal));
         }
 
         publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
@@ -546,10 +545,8 @@
 
         if (trimmedBytes > 0) {
             ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
-            managerState.pinnedStagingTrimEvents.fetch_add(1, std::memory_order_relaxed);
-            managerState.pinnedStagingTrimBytes.fetch_add(
-                static_cast<std::uint64_t>(trimmedBytes),
-                std::memory_order_relaxed);
+            ResourceManager::telemetry_counter_add(managerState.pinnedStagingTrimEvents, 1);
+            ResourceManager::telemetry_counter_add(managerState.pinnedStagingTrimBytes, static_cast<std::uint64_t>(trimmedBytes));
             publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
         }
 
@@ -612,7 +609,7 @@
         int blockIndex = pick_reusable_pinned_block_locked(pool, bytes, nowMs);
         if (blockIndex < 0) {
             if (pool.totalBytes + bytes > result.capBytes) {
-                ResourceManager::global_state().pinnedStagingCapHits.fetch_add(1, std::memory_order_relaxed);
+                ResourceManager::telemetry_counter_add(ResourceManager::global_state().pinnedStagingCapHits, 1);
                 trace_pinned_staging_event(
                     stage,
                     "cap_hit",
@@ -798,8 +795,7 @@
                             + (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
                         return false;
                     }
-                    ResourceManager::global_state().pinnedStagingFallbackEvents.fetch_add(
-                        1, std::memory_order_relaxed);
+                    ResourceManager::telemetry_counter_add(ResourceManager::global_state().pinnedStagingFallbackEvents, 1);
                     trace_pinned_staging_event(
                         stage,
                         "fallback",
@@ -830,8 +826,7 @@
         }
 
         if (stagedCopyAttempted || !reservation.fallbackReason.empty()) {
-            ResourceManager::global_state().pinnedStagingFallbackEvents.fetch_add(
-                1, std::memory_order_relaxed);
+            ResourceManager::telemetry_counter_add(ResourceManager::global_state().pinnedStagingFallbackEvents, 1);
             trace_pinned_staging_event(
                 stage,
                 "fallback",
