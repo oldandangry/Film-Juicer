@@ -92,6 +92,40 @@ void reset_scope(MetadataMutationScope& scope) noexcept {
     scope.active = false;
 }
 
+void reset_thread_mutation_context() noexcept {
+    gMutationThreadDepth = 0;
+    gMutationThreadTicket = 0;
+}
+
+void trace_mutation_reject(
+    const char* action,
+    const char* stage,
+    std::uint64_t sequence,
+    std::uint64_t expectedSequence,
+    std::uint64_t queueTicket,
+    std::uint64_t queueDepth,
+    std::uint64_t waitedMs,
+    bool accepted,
+    const char* reason) noexcept {
+    telemetry_record_metadata_mutation_reject();
+    telemetry_record_metadata_queue_reject();
+    telemetry_trace_metadata_queue(
+        "reject",
+        stage,
+        queueTicket,
+        queueDepth,
+        waitedMs,
+        accepted,
+        reason);
+    telemetry_trace_metadata_mutation(
+        action,
+        stage,
+        sequence,
+        false,
+        expectedSequence,
+        reason);
+}
+
 } // namespace
 
 bool metadata_mutation_begin(
@@ -99,44 +133,30 @@ bool metadata_mutation_begin(
     MetadataMutationScope& outScope,
     const DeviceContextKey* managerKey) noexcept {
     if (outScope.active) {
-        telemetry_record_metadata_mutation_reject();
-        telemetry_record_metadata_queue_reject();
-        telemetry_trace_metadata_queue(
-            "reject",
+        trace_mutation_reject(
+            "begin",
             stage,
+            outScope.sequence,
+            outScope.sequence,
             outScope.queueTicket,
             0,
             0,
             false,
-            "scope_already_active");
-        telemetry_trace_metadata_mutation(
-            "begin",
-            stage,
-            outScope.sequence,
-            false,
-            outScope.sequence,
             "scope_already_active");
         return false;
     }
 
     std::shared_ptr<MetadataMutationLane> lane = resolve_mutation_lane(managerKey);
     if (!lane) {
-        telemetry_record_metadata_mutation_reject();
-        telemetry_record_metadata_queue_reject();
-        telemetry_trace_metadata_queue(
-            "reject",
-            stage,
-            0,
-            0,
-            0,
-            false,
-            "missing_lane");
-        telemetry_trace_metadata_mutation(
+        trace_mutation_reject(
             "begin",
             stage,
             0,
-            false,
             0,
+            0,
+            0,
+            0,
+            false,
             "missing_lane");
         return false;
     }
@@ -192,22 +212,15 @@ bool metadata_mutation_begin(
 
             ticket = lane->nextTicket++;
             if (ticket == 0) {
-                telemetry_record_metadata_mutation_reject();
-                telemetry_record_metadata_queue_reject();
-                telemetry_trace_metadata_queue(
-                    "reject",
+                trace_mutation_reject(
+                    "begin",
                     stage,
+                    0,
+                    0,
                     0,
                     lane_depth_nolock(*lane),
                     waitedMs,
                     false,
-                    "ticket_overflow");
-                telemetry_trace_metadata_mutation(
-                    "begin",
-                    stage,
-                    0,
-                    false,
-                    0,
                     "ticket_overflow");
                 return false;
             }
@@ -292,22 +305,15 @@ bool metadata_mutation_begin(
 
 void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noexcept {
     if (!scope.active) {
-        telemetry_record_metadata_mutation_reject();
-        telemetry_record_metadata_queue_reject();
-        telemetry_trace_metadata_queue(
-            "reject",
+        trace_mutation_reject(
+            "end",
             stage,
+            scope.sequence,
+            scope.sequence,
             scope.queueTicket,
             0,
             0,
             false,
-            "scope_not_active");
-        telemetry_trace_metadata_mutation(
-            "end",
-            stage,
-            scope.sequence,
-            false,
-            scope.sequence,
             "scope_not_active");
         return;
     }
@@ -315,25 +321,17 @@ void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noex
     std::shared_ptr<MetadataMutationLane> lane =
         resolve_mutation_lane(scope.hasManagerKey ? &scope.managerKey : nullptr);
     if (!lane) {
-        telemetry_record_metadata_mutation_reject();
-        telemetry_record_metadata_queue_reject();
-        telemetry_trace_metadata_queue(
-            "reject",
+        trace_mutation_reject(
+            "end",
             stage,
+            scope.sequence,
+            scope.sequence,
             scope.queueTicket,
             0,
             0,
             false,
             "missing_lane");
-        telemetry_trace_metadata_mutation(
-            "end",
-            stage,
-            scope.sequence,
-            false,
-            scope.sequence,
-            "missing_lane");
-        gMutationThreadDepth = 0;
-        gMutationThreadTicket = 0;
+        reset_thread_mutation_context();
         reset_scope(scope);
         return;
     }
@@ -344,25 +342,17 @@ void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noex
     {
         std::lock_guard<std::mutex> lock(lane->mutex);
         if (lane->ownerDepth == 0 || lane->ownerThread != currentThread) {
-            telemetry_record_metadata_mutation_reject();
-            telemetry_record_metadata_queue_reject();
-            telemetry_trace_metadata_queue(
-                "reject",
+            trace_mutation_reject(
+                "end",
                 stage,
+                scope.sequence,
+                scope.sequence,
                 scope.queueTicket,
                 lane_depth_nolock(*lane),
                 0,
                 false,
                 "owner_mismatch");
-            telemetry_trace_metadata_mutation(
-                "end",
-                stage,
-                scope.sequence,
-                false,
-                scope.sequence,
-                "owner_mismatch");
-            gMutationThreadDepth = 0;
-            gMutationThreadTicket = 0;
+            reset_thread_mutation_context();
             reset_scope(scope);
             return;
         }

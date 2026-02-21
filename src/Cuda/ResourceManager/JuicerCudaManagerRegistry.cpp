@@ -60,6 +60,14 @@ void publish_registry_live_count(std::size_t count) noexcept {
     global_state().registryLiveManagers.store(static_cast<std::uint64_t>(count), std::memory_order_relaxed);
 }
 
+inline std::uint64_t next_nonzero_counter(std::atomic<std::uint64_t>& counter) noexcept {
+    std::uint64_t value = counter.fetch_add(1, std::memory_order_relaxed);
+    if (value == 0) {
+        value = counter.fetch_add(1, std::memory_order_relaxed);
+    }
+    return value;
+}
+
 void trace_registry_event(const DeviceContextKey* key,
                           const RegistryEntry* entry,
                           const char* eventName,
@@ -91,6 +99,36 @@ void trace_registry_event(const DeviceContextKey* key,
         " max_live_managers=" + std::to_string(maxLiveManagers) +
         " reap_events=" + std::to_string(reapEvents);
     JTRACE_LEVEL(2, "MSREG", msg);
+}
+
+void trace_registry_event_current(
+    const DeviceContextKey* key,
+    const RegistryEntry* entry,
+    const char* eventName,
+    bool accepted,
+    const char* reason,
+    std::uint64_t idleMs) noexcept {
+    ResourceManagerState& rmState = global_state();
+    trace_registry_event(
+        key,
+        entry,
+        eventName,
+        accepted,
+        reason,
+        idleMs,
+        rmState.registryLiveManagers.load(std::memory_order_relaxed),
+        static_cast<std::uint64_t>(registry_policy_config().maxLiveManagersPerProcess),
+        rmState.registryReapEvents.load(std::memory_order_relaxed));
+}
+
+void trace_registry_missing_entry(const DeviceContextKey& key, const char* eventName) noexcept {
+    trace_registry_event_current(
+        &key,
+        nullptr,
+        eventName,
+        false,
+        "missing_registry_entry",
+        0);
 }
 
 bool is_legal_transition(ContextLifecycleState from, ContextLifecycleState to) noexcept {
@@ -298,19 +336,13 @@ bool erase_registry_entry_locked(RegistryState& state,
     if (countReapEvent) {
         rmState.registryReapEvents.fetch_add(1, std::memory_order_relaxed);
     }
-    const std::uint64_t liveManagers = rmState.registryLiveManagers.load(std::memory_order_relaxed);
-    const std::uint64_t reapEvents = rmState.registryReapEvents.load(std::memory_order_relaxed);
-    const ResourceManagerConfigEffective& cfg = registry_policy_config();
-    trace_registry_event(
+    trace_registry_event_current(
         &key,
         &entry,
         eventName,
         true,
         reason,
-        idleMs,
-        liveManagers,
-        static_cast<std::uint64_t>(cfg.maxLiveManagersPerProcess),
-        reapEvents);
+        idleMs);
     return true;
 }
 
@@ -375,17 +407,13 @@ void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protec
 
     if (candidates.empty()) {
         if (overflow > 0) {
-            ResourceManagerState& rmState = global_state();
-            trace_registry_event(
+            trace_registry_event_current(
                 nullptr,
                 nullptr,
                 "reap_skip",
                 false,
                 "overflow_no_eligible_idle_manager",
-                0,
-                rmState.registryLiveManagers.load(std::memory_order_relaxed),
-                maxLive,
-                rmState.registryReapEvents.load(std::memory_order_relaxed));
+                0);
         }
         return;
     }
@@ -429,17 +457,13 @@ void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protec
     }
 
     if (overflow > static_cast<std::uint64_t>(reapCount)) {
-        ResourceManagerState& rmState = global_state();
-        trace_registry_event(
+        trace_registry_event_current(
             nullptr,
             nullptr,
             "reap_skip",
             false,
             "overflow_remaining_after_safe_reap",
-            0,
-            rmState.registryLiveManagers.load(std::memory_order_relaxed),
-            maxLive,
-            rmState.registryReapEvents.load(std::memory_order_relaxed));
+            0);
     }
 }
 
@@ -541,15 +565,9 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
     }
 
     RegistryEntry entry{};
-    entry.handle.value = state.nextHandle.fetch_add(1, std::memory_order_relaxed);
-    if (entry.handle.value == 0) {
-        entry.handle.value = state.nextHandle.fetch_add(1, std::memory_order_relaxed);
-    }
+    entry.handle.value = next_nonzero_counter(state.nextHandle);
     entry.lifecycleState = ContextLifecycleState::Unbound;
-    entry.createOrder = state.nextCreateOrder.fetch_add(1, std::memory_order_relaxed);
-    if (entry.createOrder == 0) {
-        entry.createOrder = state.nextCreateOrder.fetch_add(1, std::memory_order_relaxed);
-    }
+    entry.createOrder = next_nonzero_counter(state.nextCreateOrder);
     entry.lastTouchedMs = nowMs;
     entry.lifecycleSinceMs = nowMs;
     entry.activeSubmissionCount = 0;
@@ -582,16 +600,13 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
     }
 
     publish_registry_live_count(state.byDeviceContext.size());
-    trace_registry_event(
+    trace_registry_event_current(
         &key,
         &insertedEntry,
         "create",
         true,
         "create_or_reuse",
-        0,
-        global_state().registryLiveManagers.load(std::memory_order_relaxed),
-        static_cast<std::uint64_t>(registry_policy_config().maxLiveManagersPerProcess),
-        global_state().registryReapEvents.load(std::memory_order_relaxed));
+        0);
 
     maybe_reap_idle_locked(state, &key);
     return insertedEntry.handle;
@@ -698,16 +713,7 @@ bool registry_note_submission_begin(const DeviceContextKey& key) noexcept {
     std::lock_guard<std::mutex> lock(state.mutex);
     auto it = state.byDeviceContext.find(key);
     if (it == state.byDeviceContext.end()) {
-        trace_registry_event(
-            &key,
-            nullptr,
-            "submission_begin",
-            false,
-            "missing_registry_entry",
-            0,
-            global_state().registryLiveManagers.load(std::memory_order_relaxed),
-            static_cast<std::uint64_t>(registry_policy_config().maxLiveManagersPerProcess),
-            global_state().registryReapEvents.load(std::memory_order_relaxed));
+        trace_registry_missing_entry(key, "submission_begin");
         return false;
     }
 
@@ -724,31 +730,19 @@ bool registry_note_submission_end(const DeviceContextKey& key) noexcept {
     std::lock_guard<std::mutex> lock(state.mutex);
     auto it = state.byDeviceContext.find(key);
     if (it == state.byDeviceContext.end()) {
-        trace_registry_event(
-            &key,
-            nullptr,
-            "submission_end",
-            false,
-            "missing_registry_entry",
-            0,
-            global_state().registryLiveManagers.load(std::memory_order_relaxed),
-            static_cast<std::uint64_t>(registry_policy_config().maxLiveManagersPerProcess),
-            global_state().registryReapEvents.load(std::memory_order_relaxed));
+        trace_registry_missing_entry(key, "submission_end");
         return false;
     }
 
     RegistryEntry& entry = it->second;
     if (entry.activeSubmissionCount == 0) {
-        trace_registry_event(
+        trace_registry_event_current(
             &key,
             &entry,
             "submission_end",
             false,
             "active_submission_underflow",
-            0,
-            global_state().registryLiveManagers.load(std::memory_order_relaxed),
-            static_cast<std::uint64_t>(registry_policy_config().maxLiveManagersPerProcess),
-            global_state().registryReapEvents.load(std::memory_order_relaxed));
+            0);
         return false;
     }
     --entry.activeSubmissionCount;
