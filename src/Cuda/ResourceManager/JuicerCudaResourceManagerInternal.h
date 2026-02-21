@@ -1,8 +1,7 @@
 #pragma once
 
-// Internal forward declarations for single-TU split ownership files.
-// This header is included from JuicerCudaResourceManager.cpp inside the
-// ResourceManager anonymous namespace.
+// Internal forward declarations for cross-split helpers referenced from
+// JuicerCudaResourceManager.cpp before the split implementation sections.
 
 std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept;
 std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey& key) noexcept;

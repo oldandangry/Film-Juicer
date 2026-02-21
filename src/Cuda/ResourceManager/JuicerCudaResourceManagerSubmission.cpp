@@ -439,6 +439,47 @@ AcquireStatus combine_status(const ResourcePlan& plan) noexcept {
     return AcquireStatus::Hit;
 }
 
+void finalize_submission_transaction(
+    SubmissionTransaction& transaction,
+    bool committed) noexcept {
+    transaction.committed = committed;
+    transaction.active = false;
+}
+
+bool ensure_submission_active(
+    const SubmissionTransaction& transaction,
+    std::string& outError) {
+    if (transaction.active) {
+        return true;
+    }
+    outError = "submission transaction is not active";
+    return false;
+}
+
+void record_uniform_acquire_status(AcquireStatus status) noexcept {
+    telemetry_record_acquire_status(status);
+    for (ResourceKind kind : kResourceKindOrder) {
+        telemetry_record_acquire_status_for_kind(kind, status);
+    }
+}
+
+bool trace_uniform_acquire_error(
+    const SubmissionTransaction& transaction,
+    std::uint64_t acquireId,
+    bool hasPrevious) {
+    const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
+    record_uniform_acquire_status(AcquireStatus::Error);
+    telemetry_trace_acquire(
+        acquireId,
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        AcquireStatus::Error,
+        errorPlan,
+        hasPrevious);
+    return false;
+}
+
 bool validate_resource_kind_onboarding_contract(std::string& outError) noexcept {
     if (!resource_kind_contract_is_valid()) {
         outError = "resource kind onboarding contract invalid";
@@ -752,14 +793,12 @@ bool begin_submission(
 
     (void)registry_get_or_create(outTransaction.snapshot.deviceContextKey);
     if (!validate_lifecycle_for_stage(outTransaction, "begin", false, &outError)) {
-        outTransaction.active = false;
-        outTransaction.committed = false;
+        finalize_submission_transaction(outTransaction, false);
         return false;
     }
     if (!registry_note_submission_begin(outTransaction.snapshot.deviceContextKey)) {
         outError = "registry submission-begin tracking rejected";
-        outTransaction.active = false;
-        outTransaction.committed = false;
+        finalize_submission_transaction(outTransaction, false);
         return false;
     }
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
@@ -794,20 +833,7 @@ bool acquire_plan(
     const std::uint64_t acquireId = telemetry_next_acquire_attempt_id();
 
     if (!validate_lifecycle_for_stage(transaction, "acquire", false, &outError)) {
-        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
-        telemetry_record_acquire_status(AcquireStatus::Error);
-        for (ResourceKind kind : kResourceKindOrder) {
-            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
-        }
-        telemetry_trace_acquire(
-            acquireId,
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            AcquireStatus::Error,
-            errorPlan,
-            false);
-        return false;
+        return trace_uniform_acquire_error(transaction, acquireId, false);
     }
 
     if (!validate_stale_tuple_for_stage(
@@ -818,62 +844,22 @@ bool acquire_plan(
             &outError,
             false,
             nullptr)) {
-        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
-        telemetry_record_acquire_status(AcquireStatus::Error);
-        for (ResourceKind kind : kResourceKindOrder) {
-            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
-        }
-        telemetry_trace_acquire(
-            acquireId,
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            AcquireStatus::Error,
-            errorPlan,
-            false);
-        return false;
+        return trace_uniform_acquire_error(transaction, acquireId, false);
     }
 
-    if (!transaction.active) {
-        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
-        outError = "submission transaction is not active";
-        telemetry_record_acquire_status(AcquireStatus::Error);
-        for (ResourceKind kind : kResourceKindOrder) {
-            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
-        }
-        telemetry_trace_acquire(
-            acquireId,
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            AcquireStatus::Error,
-            errorPlan,
-            false);
-        return false;
+    if (!ensure_submission_active(transaction, outError)) {
+        return trace_uniform_acquire_error(transaction, acquireId, false);
     }
 
     SubmissionSnapshot& snapshot = transaction.snapshot;
     if (!trace_schema_matches_contract(snapshot.traceSchemaVersion)) {
-        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
         outError = "trace schema mismatch";
         telemetry_record_trace_schema_mismatch();
         telemetry_trace_schema_mismatch(
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion);
-        telemetry_record_acquire_status(AcquireStatus::Error);
-        for (ResourceKind kind : kResourceKindOrder) {
-            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
-        }
-        telemetry_trace_acquire(
-            acquireId,
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            AcquireStatus::Error,
-            errorPlan,
-            false);
-        return false;
+        return trace_uniform_acquire_error(transaction, acquireId, false);
     }
 
     if (snapshot.keySchemaVersion == 0) {
@@ -962,26 +948,13 @@ bool acquire_plan(
     const ResourcePlan plan = build_shadow_resource_plan(delta);
 
     if (!validate_resource_kind_onboarding_contract(outError)) {
-        const ResourcePlan errorPlan = make_uniform_resource_plan(AcquireStatus::Error);
         telemetry_record_module_boundary_violation();
         telemetry_trace_module_boundary_violation(
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
             "resource_kind_onboarding_contract_invalid");
-        telemetry_record_acquire_status(AcquireStatus::Error);
-        for (ResourceKind kind : kResourceKindOrder) {
-            telemetry_record_acquire_status_for_kind(kind, AcquireStatus::Error);
-        }
-        telemetry_trace_acquire(
-            acquireId,
-            transaction.transactionId,
-            snapshot.snapshotId,
-            snapshot.traceSchemaVersion,
-            AcquireStatus::Error,
-            errorPlan,
-            hasPrevious);
-        return false;
+        return trace_uniform_acquire_error(transaction, acquireId, hasPrevious);
     }
 
     for (ResourceKind kind : kResourceKindOrder) {
@@ -1124,13 +1097,11 @@ bool commit_submission(
             nullptr)) {
         return false;
     }
-    if (!transaction.active) {
-        outError = "submission transaction is not active";
+    if (!ensure_submission_active(transaction, outError)) {
         return false;
     }
     (void)registry_note_submission_end(transaction.snapshot.deviceContextKey);
-    transaction.committed = true;
-    transaction.active = false;
+    finalize_submission_transaction(transaction, true);
     telemetry_record_commit_submission();
     return true;
 }
@@ -1157,7 +1128,6 @@ void rollback_submission(
         return;
     }
     (void)registry_note_submission_end(transaction.snapshot.deviceContextKey);
-    transaction.committed = false;
-    transaction.active = false;
+    finalize_submission_transaction(transaction, false);
     telemetry_record_rollback_submission();
 }

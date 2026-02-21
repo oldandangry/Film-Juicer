@@ -26,6 +26,39 @@ bool ensure_active_for_command(
         commandName ? commandName : "command_requires_active_submission");
 }
 
+void complete_tier_circuit_attempt(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const TierCircuitAttempt& attempt,
+    bool success,
+    const char* successReason,
+    const std::string& failureError) {
+    const char* stageName = (commandName && *commandName) ? commandName : "command";
+    if (success) {
+        tier_circuit_record_outcome(
+            transaction,
+            stageName,
+            attempt,
+            true,
+            successReason ? successReason : "ensure_success");
+        return;
+    }
+    if (tier_circuit_should_count_failure(failureError)) {
+        tier_circuit_record_outcome(
+            transaction,
+            stageName,
+            attempt,
+            false,
+            failureError.c_str());
+        return;
+    }
+    tier_circuit_cancel_attempt(
+        transaction,
+        stageName,
+        attempt,
+        "ignored_policy_failure");
+}
+
 void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& overflow) noexcept {
     if (overflow) {
         return;
@@ -1277,29 +1310,13 @@ bool command_ensure_uploaded(
             return false;
         }
         ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
-        if (ok) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_ensure_uploaded",
-                circuitAttempt,
-                true,
-                "ensure_success");
-        }
-        else if (tier_circuit_should_count_failure(outError)) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_ensure_uploaded",
-                circuitAttempt,
-                false,
-                outError.c_str());
-        }
-        else {
-            tier_circuit_cancel_attempt(
-                transaction,
-                "command_ensure_uploaded",
-                circuitAttempt,
-                "ignored_policy_failure");
-        }
+        complete_tier_circuit_attempt(
+            transaction,
+            "command_ensure_uploaded",
+            circuitAttempt,
+            ok,
+            "ensure_success",
+            outError);
     }
 
     if (ok && allowLutPrewarm && coreUploadStale) {
@@ -1521,29 +1538,13 @@ bool command_ensure_scan_lut_internal(
         return false;
     }
     const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
-    if (ok) {
-        tier_circuit_record_outcome(
-            transaction,
-            stageName,
-            circuitAttempt,
-            true,
-            "ensure_success");
-    }
-    else if (tier_circuit_should_count_failure(outError)) {
-        tier_circuit_record_outcome(
-            transaction,
-            stageName,
-            circuitAttempt,
-            false,
-            outError.c_str());
-    }
-    else {
-        tier_circuit_cancel_attempt(
-            transaction,
-            stageName,
-            circuitAttempt,
-            "ignored_policy_failure");
-    }
+    complete_tier_circuit_attempt(
+        transaction,
+        stageName,
+        circuitAttempt,
+        ok,
+        "ensure_success",
+        outError);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
@@ -1650,29 +1651,13 @@ bool command_ensure_print_illuminant_filtered(
     }
     const bool ok =
         JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
-    if (ok) {
-        tier_circuit_record_outcome(
-            transaction,
-            "command_ensure_print_illuminant_filtered",
-            circuitAttempt,
-            true,
-            "ensure_success");
-    }
-    else if (tier_circuit_should_count_failure(outError)) {
-        tier_circuit_record_outcome(
-            transaction,
-            "command_ensure_print_illuminant_filtered",
-            circuitAttempt,
-            false,
-            outError.c_str());
-    }
-    else {
-        tier_circuit_cancel_attempt(
-            transaction,
-            "command_ensure_print_illuminant_filtered",
-            circuitAttempt,
-            "ignored_policy_failure");
-    }
+    complete_tier_circuit_attempt(
+        transaction,
+        "command_ensure_print_illuminant_filtered",
+        circuitAttempt,
+        ok,
+        "ensure_success",
+        outError);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
@@ -1817,12 +1802,13 @@ bool command_ensure_optics_scratch(
                 needGateMask,
                 cudaStreamOpaque,
                 outError)) {
-            tier_circuit_record_outcome(
+            complete_tier_circuit_attempt(
                 transaction,
                 "command_ensure_optics_scratch",
                 circuitAttempt,
                 true,
-                "ensure_success");
+                "ensure_success",
+                outError);
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
                 managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
@@ -1830,21 +1816,13 @@ bool command_ensure_optics_scratch(
             finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
         }
-        if (tier_circuit_should_count_failure(outError)) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_ensure_optics_scratch",
-                circuitAttempt,
-                false,
-                outError.c_str());
-        }
-        else {
-            tier_circuit_cancel_attempt(
-                transaction,
-                "command_ensure_optics_scratch",
-                circuitAttempt,
-                "ignored_policy_failure");
-        }
+        complete_tier_circuit_attempt(
+            transaction,
+            "command_ensure_optics_scratch",
+            circuitAttempt,
+            false,
+            "ensure_success",
+            outError);
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         const bool allocatorOom = is_allocator_oom_error(outError);
@@ -2084,12 +2062,13 @@ bool command_ensure_spatial_dir_scratch(
         }
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         if (JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError)) {
-            tier_circuit_record_outcome(
+            complete_tier_circuit_attempt(
                 transaction,
                 "command_ensure_spatial_dir_scratch",
                 circuitAttempt,
                 true,
-                "ensure_success");
+                "ensure_success",
+                outError);
             maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
             if (attempts > 0) {
                 managerState.budgetReclaimRetrySuccess.fetch_add(1, std::memory_order_relaxed);
@@ -2097,21 +2076,13 @@ bool command_ensure_spatial_dir_scratch(
             finalizeFragmentationOutcome(true, "allocation_retry_success");
             return true;
         }
-        if (tier_circuit_should_count_failure(outError)) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                circuitAttempt,
-                false,
-                outError.c_str());
-        }
-        else {
-            tier_circuit_cancel_attempt(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                circuitAttempt,
-                "ignored_policy_failure");
-        }
+        complete_tier_circuit_attempt(
+            transaction,
+            "command_ensure_spatial_dir_scratch",
+            circuitAttempt,
+            false,
+            "ensure_success",
+            outError);
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         const bool allocatorOom = is_allocator_oom_error(outError);
@@ -2904,4 +2875,3 @@ bool error_is_scratch_exhausted(const std::string& error) noexcept {
     return error.rfind(kScratchExhaustedPrefix, 0) == 0 ||
         error.rfind(kReservationDeferredPrefix, 0) == 0;
 }
-
