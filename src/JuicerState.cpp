@@ -2050,7 +2050,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         dirRT.dMax[0] = densityMaxPostDir[0];
         dirRT.dMax[1] = densityMaxPostDir[1];
         dirRT.dMax[2] = densityMaxPostDir[2];
-        {
+        if (buildTraceEnabled) {
             std::ostringstream oss;
             oss << "DIR active=" << (dirRT.active ? 1 : 0)
                 << " sigma=" << static_cast<float>(effectiveCouplersSigma) << " high=" << static_cast<float>(effectiveCouplersHigh)
