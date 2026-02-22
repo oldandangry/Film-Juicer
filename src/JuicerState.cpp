@@ -1651,8 +1651,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     std::unique_lock<std::mutex> lk(S.m);
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
+    const bool buildTraceEnabled = JTRACE_ENABLED(1);
 
-    {
+    if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "enter with baseLoaded=" << (S.baseLoaded ? 1 : 0);
         JTRACE("BUILD", oss.str());
@@ -1695,14 +1696,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 JTRACE_VERBOSE("PRINTDBG", msg);
             }
 
-            {
+            if (buildTraceEnabled) {
                 std::ostringstream oss;
                 oss << "WorkingState build #" << target->buildCounter;
                 JTRACE("BUILD", oss.str());
             }
 
             JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
-            {
+            if (buildTraceEnabled) {
                 std::ostringstream oss;
                 oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
                 JTRACE("BUILD", oss.str());
@@ -1722,7 +1723,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         return;
     }
     S.printRT.illumView = printScannerIlluminant.curve;
-    {
+    if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "Enl illum K=" << static_cast<int>(S.printRT.illumEnlarger.linear.size())
             << " View illum K=" << static_cast<int>(S.printRT.illumView.linear.size());
@@ -2536,13 +2537,15 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             (target->tablesScan.K == Spectral::gShape.K) &&
             (!target->spdReady || target->tablesRef.K == Spectral::gShape.K);
 
-        std::ostringstream oss;
-        oss << "pre-Ecal: ok_dens=" << (ok_dens ? 1 : 0)
-            << " ok_sens=" << (ok_sens ? 1 : 0)
-            << " ok_base=" << (ok_base ? 1 : 0)
-            << " ok_tables=" << (ok_tables ? 1 : 0)
-            << " spdReady=" << (target->spdReady ? 1 : 0);
-        JTRACE("BUILD", oss.str());
+        if (buildTraceEnabled) {
+            std::ostringstream oss;
+            oss << "pre-Ecal: ok_dens=" << (ok_dens ? 1 : 0)
+                << " ok_sens=" << (ok_sens ? 1 : 0)
+                << " ok_base=" << (ok_base ? 1 : 0)
+                << " ok_tables=" << (ok_tables ? 1 : 0)
+                << " spdReady=" << (target->spdReady ? 1 : 0);
+            JTRACE("BUILD", oss.str());
+        }
 
         if (!(ok_dens && ok_sens && ok_base && ok_tables)) {
             JTRACE("BUILD", "pre-Ecal: invalid inputs; aborting rebuild to avoid crash");
@@ -2560,10 +2563,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             std::isfinite(target->tablesScan.invYn) && target->tablesScan.invYn > 0.0f &&
             (!target->spdReady || (std::isfinite(target->tablesRef.invYn) && target->tablesRef.invYn > 0.0f));
 
-        std::ostringstream oss;
-        oss << "pre-Ecal: ok_spd=" << (ok_spd ? 1 : 0)
-            << " ok_invYn=" << (ok_invYn ? 1 : 0);
-        JTRACE("BUILD", oss.str());
+        if (buildTraceEnabled) {
+            std::ostringstream oss;
+            oss << "pre-Ecal: ok_spd=" << (ok_spd ? 1 : 0)
+                << " ok_invYn=" << (ok_invYn ? 1 : 0);
+            JTRACE("BUILD", oss.str());
+        }
 
         if (!ok_spd || !ok_invYn) {
             JTRACE("BUILD", "pre-Ecal: invalid S_inv or invYn; aborting rebuild");
@@ -2632,7 +2637,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     const float offG = offsetsRGB[1];
     const float offB = offsetsRGB[2];
 
-    {
+    if (buildTraceEnabled) {
         std::ostringstream oss;
         if (usingLogEMetadata) {
             oss << "negative logE offsets B/G/R=" << offB << "/" << offG << "/" << offR
@@ -2767,7 +2772,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target->sensG,
         target->sensR);
 
-    {
+    if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "film raw midgray scale=" << target->filmRaw.midgrayScale
             << " rawMidGreen=" << target->filmRaw.rawMidgrayGreen;
@@ -2820,14 +2825,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
-    {
+    if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "WorkingState build #" << target->buildCounter;
         JTRACE("BUILD", oss.str());
     }
 
     JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
-    {
+    if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
         JTRACE("BUILD", oss.str());
