@@ -1279,6 +1279,7 @@ const char* print_paper_option_label(int index) {
 bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     const FilmStockDefinition& stock = film_stock_for_index(filmIndex);
     JTRACE_SCOPE("STOCK", std::string("load_film_stock_into_base: ") + stock.jsonKey);
+    const bool stockTraceEnabled = JTRACE_ENABLED(1);
 
     std::vector<std::pair<float, float>> c_data;
     std::vector<std::pair<float, float>> m_data;
@@ -1376,18 +1377,20 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             }
         }
     }
-    JTRACE("STOCK", std::string("loaded agx profile json: ") + stock.jsonKey);
-    if (!dc_r.empty() && !dc_g.empty() && !dc_b.empty()) {
-        std::ostringstream oss;
-        oss << "density curves loaded from JSON '" << stock.jsonKey << "' samples R/G/B="
-            << dc_r.size() << "/" << dc_g.size() << "/" << dc_b.size();
-        JTRACE("STOCK", oss.str());
-    }
-    else {
-        JTRACE("STOCK", std::string("density curves missing in JSON profile: ") + stock.jsonKey);
+    if (stockTraceEnabled) {
+        JTRACE("STOCK", std::string("loaded agx profile json: ") + stock.jsonKey);
+        if (!dc_r.empty() && !dc_g.empty() && !dc_b.empty()) {
+            std::ostringstream oss;
+            oss << "density curves loaded from JSON '" << stock.jsonKey << "' samples R/G/B="
+                << dc_r.size() << "/" << dc_g.size() << "/" << dc_b.size();
+            JTRACE("STOCK", oss.str());
+        }
+        else {
+            JTRACE("STOCK", std::string("density curves missing in JSON profile: ") + stock.jsonKey);
+        }
     }
 
-    {
+    if (stockTraceEnabled) {
         auto sz = [](const auto& v) { return static_cast<int>(v.size()); };
         std::ostringstream oss;
         oss << "c/m/y=" << sz(c_data) << "/" << sz(m_data) << "/" << sz(y_data)
@@ -1528,7 +1531,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         JTRACE("STOCK", oss.str());
     }
 
-    {
+    if (stockTraceEnabled) {
         std::ostringstream oss;
         oss << "epsY/M/C K=" << static_cast<int>(S.base.epsY.linear.size())
             << "/" << static_cast<int>(S.base.epsM.linear.size())
@@ -1543,9 +1546,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             << "/" << static_cast<int>(S.base.baseMid.linear.size())
             << " hasBaseline=" << (S.base.hasBaseline ? 1 : 0);
         JTRACE("STOCK", oss.str());
+        JTRACE("STOCK", std::string("loaded OK; baseline=") + (S.base.hasBaseline ? "1" : "0"));
     }
-
-    JTRACE("STOCK", std::string("loaded OK; baseline=") + (S.base.hasBaseline ? "1" : "0"));
 
     return true;
 }

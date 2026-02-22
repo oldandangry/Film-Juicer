@@ -1265,8 +1265,10 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         JTRACE("SCAN", std::string("FATAL: ") + scannerPreflightError);
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    JTRACE_VERBOSE("MSSKV", std::string("path=cpu result=ok medium=") + (ctx.printActive ? "print" : "negative")
-        + " static_key_hash=" + std::to_string(scannerPreflight.staticKey.hash));
+    if (JTRACE_ENABLED(3)) {
+        JTRACE_VERBOSE("MSSKV", std::string("path=cpu result=ok medium=") + (ctx.printActive ? "print" : "negative")
+            + " static_key_hash=" + std::to_string(scannerPreflight.staticKey.hash));
+    }
 
     mediumRuntime = scannerPreflight.mediumRuntime;
     const Scanner::ColorRuntime* colorPtr = scannerPreflight.colorRuntime;
@@ -1365,10 +1367,12 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         JTRACE("SCAN", "FATAL: scanner runtime lease unavailable after bounded wait");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    JTRACE_VERBOSE("MSSRL", std::string("event=runtime_lease outcome=")
-        + (waitedForLease ? "wait_acquired" : "acquired")
-        + " wait_us=" + std::to_string(leaseWaitUs)
-        + " slot=" + runtimeLease.slotName);
+    if (JTRACE_ENABLED(3)) {
+        JTRACE_VERBOSE("MSSRL", std::string("event=runtime_lease outcome=")
+            + (waitedForLease ? "wait_acquired" : "acquired")
+            + " wait_us=" + std::to_string(leaseWaitUs)
+            + " slot=" + runtimeLease.slotName);
+    }
 
     const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
     const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
@@ -2831,8 +2835,10 @@ void JuicerProcessor::processImagesCUDA() {
             JTRACE("CUDA", std::string("FATAL: ") + scannerPreflightError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        JTRACE_VERBOSE("MSSKV", std::string("path=cuda result=ok medium=negative static_key_hash=")
-            + std::to_string(scannerPreflight.staticKey.hash));
+        if (JTRACE_ENABLED(3)) {
+            JTRACE_VERBOSE("MSSKV", std::string("path=cuda result=ok medium=negative static_key_hash=")
+                + std::to_string(scannerPreflight.staticKey.hash));
+        }
         const Scanner::ScannerMediumRuntime& negativeMediumRuntime = *scannerPreflight.mediumRuntime;
 
         const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
@@ -3382,8 +3388,10 @@ void JuicerProcessor::processImagesCUDA() {
             JTRACE("CUDA", std::string("FATAL: ") + scannerPreflightError);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        JTRACE_VERBOSE("MSSKV", std::string("path=cuda result=ok medium=print static_key_hash=")
-            + std::to_string(scannerPreflight.staticKey.hash));
+        if (JTRACE_ENABLED(3)) {
+            JTRACE_VERBOSE("MSSKV", std::string("path=cuda result=ok medium=print static_key_hash=")
+                + std::to_string(scannerPreflight.staticKey.hash));
+        }
 
         const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
 

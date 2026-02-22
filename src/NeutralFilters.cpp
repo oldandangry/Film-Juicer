@@ -227,6 +227,9 @@ namespace {
         const char* reason = nullptr,
         const std::string* path = nullptr)
     {
+        if (!JTRACE_ENABLED(1)) {
+            return;
+        }
         std::ostringstream oss;
         oss << "operation=" << (operation ? operation : "unknown")
             << " selected_db_version_hash=" << (selectedDbVersionHash.empty() ? "none" : selectedDbVersionHash)

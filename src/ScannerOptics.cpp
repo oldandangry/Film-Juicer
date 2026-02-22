@@ -333,6 +333,9 @@ namespace {
         const Scanner::Settings& settings,
         const Spectral::SpectralTables* tables)
     {
+        if (!JTRACE_ENABLED(1)) {
+            return;
+        }
         std::ostringstream oss;
         oss << label
             << " medium=" << static_cast<int>(medium.medium)
@@ -520,7 +523,7 @@ namespace ScannerOptics {
                 ctx.scannerKey.staticKey.lutResolution);
             runtime.lut.cpu.resize(size_t(res) * size_t(res) * size_t(res) * 3u);
             runtime.lut.res = res;
-            {
+            if (JTRACE_ENABLED(1)) {
                 std::ostringstream oss;
                 oss << "build LUT res=" << res
                     << " lutKey=" << lutDigest

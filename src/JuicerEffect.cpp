@@ -2298,11 +2298,15 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName) {
     // Suppress recursion while we are programmatically setting params
     if (_state && _state->suppressParamEvents) {
-        JTRACE("BUILD", std::string("changedParam suppressed for '") + paramName + "'");
+        if (JTRACE_ENABLED(1)) {
+            JTRACE("BUILD", std::string("changedParam suppressed for '") + paramName + "'");
+        }
         return;
     }
     if (_state && _state->inBootstrap) {
-        JTRACE("BUILD", std::string("changedParam ignored during bootstrap for '") + paramName + "'");
+        if (JTRACE_ENABLED(1)) {
+            JTRACE("BUILD", std::string("changedParam ignored during bootstrap for '") + paramName + "'");
+        }
         return;
     }
     if (_state && (paramName == kParamCameraAutoExposure || paramName == JuicerParams::kCameraMeteringMethod)) {
@@ -2687,10 +2691,12 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
             loaded = true;
-            JTRACE("PRINT", "Neutral filters loaded for " + std::string(illumKey)
-                + " Y/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM)
-                + "/" + std::to_string(neutralC)
-                + " db_version_hash=" + (selectedDbVersionHash.empty() ? std::string("none") : selectedDbVersionHash));
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("PRINT", "Neutral filters loaded for " + std::string(illumKey)
+                    + " Y/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM)
+                    + "/" + std::to_string(neutralC)
+                    + " db_version_hash=" + (selectedDbVersionHash.empty() ? std::string("none") : selectedDbVersionHash));
+            }
             break;
         }
     }
