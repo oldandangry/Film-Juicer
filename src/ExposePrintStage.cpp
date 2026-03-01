@@ -2,17 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <sstream>
 
-#include "Couplers.h"
 #include "DevelopFilmStage.h"
 #include "ExposeFilmStage.h"
 #include "Logging.h"
 #include "Print.h"
 #include "PrintPreflashShared.h"
-#include "SpectralData.h"
-#include "SpectralProcessing.h"
 #include "WorkingState.h"
 
 namespace Pipeline {

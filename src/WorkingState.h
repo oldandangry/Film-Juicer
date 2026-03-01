@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
+#include "ColorTransforms.h"
 #include "FilmProcessing.h"
 #include "Couplers.h"
 #include "ProfileJSONLoader.h"

@@ -12,8 +12,16 @@
 #include <string>
 
 #include "ofxsImageEffect.h"
-#include "JuicerState.h"
-#include "Scanner.h"
+
+struct InstanceState;
+struct ParamSnapshot;
+struct WorkingState;
+
+namespace Profiles {
+    struct HalationMetadata;
+    struct GrainMetadata;
+    struct ProfileGlare;
+}
 
 namespace Scanner {
     struct Options;

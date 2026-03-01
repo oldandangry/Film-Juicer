@@ -2,11 +2,9 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <chrono>
-#include <condition_variable>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -14,10 +12,10 @@
 #include <atomic>
 #include <limits>
 #include <tuple>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "JuicerState.h"
 #include "ColorTransforms.h"
 #include "Couplers.h"
 #include "Illuminants.h"
@@ -28,10 +26,10 @@
 #include "ParamNames.h"
 #include "Scanner.h"
 #include "SpectralData.h"
-#include "FilmProcessing.h"
 #include "Logging.h"
 #include "Hash.h"
 #include "mainProcessing.h"
+#include "WorkingState.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
@@ -63,6 +61,27 @@ namespace {
         }
     }
 
+    std::string profile_json_path_for_key_or_empty(const char* jsonKey) {
+        return jsonKey
+            ? data_dir_string("profiles", std::string(jsonKey) + ".json")
+            : std::string();
+    }
+
+    void trace_dichroic_load_failure(
+        const char* operation,
+        const std::string& dichroicDir,
+        const char* detail,
+        const char* fallbackState) {
+
+        if (!JTRACE_ENABLED(1)) {
+            return;
+        }
+        const char* errorDetail = detail ? detail : "unknown error";
+        JTRACE("PRINT", std::string(operation ? operation : "dichroic load failed")
+            + " at '" + dichroicDir + "' (" + errorDetail + "); "
+            + (fallbackState ? fallbackState : "using identity filters"));
+    }
+
     inline bool nearly_equal_double(double a, double b) {
         const double diff = std::fabs(a - b);
         const double scale = std::max({ 1.0, std::fabs(a), std::fabs(b) });
@@ -70,7 +89,14 @@ namespace {
     }
 
     constexpr std::uint64_t kAutoExposureMaskCacheMaxBytes = 96ull * 1024ull * 1024ull;
+    constexpr std::size_t kAutoExposureMedianScratchMaxSamples =
+        static_cast<std::size_t>(kAutoExposureMaskCacheMaxBytes / sizeof(float));
     static std::atomic<std::uint64_t> gAutoExposureMaskCacheResidentBytes{ 0 };
+
+    std::vector<float>& auto_exposure_median_scratch() {
+        thread_local std::vector<float> scratch;
+        return scratch;
+    }
 
     inline std::uint64_t mask_bytes_for_dimensions(int width, int height) {
         if (width <= 0 || height <= 0) {
@@ -147,18 +173,25 @@ namespace {
             std::fill(outMask.begin(), outMask.end(), 0.0);
             return 0.0;
         }
+        const double maxDim = static_cast<double>(std::max(width, height));
+        const double invMax = (maxDim > 0.0) ? (1.0 / maxDim) : 0.0;
+        const double invWidth = (width > 0) ? (1.0 / static_cast<double>(width)) : 0.0;
+        const double invHeight = (height > 0) ? (1.0 / static_cast<double>(height)) : 0.0;
+        const double scaleX = static_cast<double>(width) * invMax;
+        const double scaleY = static_cast<double>(height) * invMax;
+        const double sigmaDenom = 2.0 * sigma * sigma;
+
         double sumMask = 0.0;
         for (int y = 0; y < height; ++y) {
+            double* row = outMask.data() + static_cast<size_t>(y) * static_cast<size_t>(width);
+            const double ny = static_cast<double>(y) * invHeight - 0.5;
+            const double normY = ny * scaleY;
             for (int x = 0; x < width; ++x) {
-                const double nx = static_cast<double>(x) / static_cast<double>(width) - 0.5;
-                const double ny = static_cast<double>(y) / static_cast<double>(height) - 0.5;
-                const double maxDim = static_cast<double>(std::max(width, height));
-                const double invMax = (maxDim > 0.0) ? (1.0 / maxDim) : 0.0;
-                const double normX = nx * static_cast<double>(width) * invMax;
-                const double normY = ny * static_cast<double>(height) * invMax;
+                const double nx = static_cast<double>(x) * invWidth - 0.5;
+                const double normX = nx * scaleX;
                 const double r2 = normX * normX + normY * normY;
-                const double w = std::exp(-r2 / (2.0 * sigma * sigma));
-                outMask[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] = w;
+                const double w = std::exp(-r2 / sigmaDenom);
+                row[static_cast<size_t>(x)] = w;
                 sumMask += w;
             }
         }
@@ -190,14 +223,18 @@ namespace {
         auto accumulateYFromMask = [&](const std::vector<double>& mask, double* outSumMask) {
             double sumY = 0.0;
             double sumMask = 0.0;
+            const int xStart = bounds.x1;
+            const int xEnd = bounds.x2;
             for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
                 const size_t rowOffset = static_cast<size_t>(yy - bounds.y1) * static_cast<size_t>(width);
-                for (int xx = bounds.x1; xx < bounds.x2; ++xx) {
+                const double* maskRow = mask.data() + rowOffset;
+                int localX = 0;
+                for (int xx = xStart; xx < xEnd; ++xx, ++localX) {
                     const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
                     if (!pix) {
                         continue;
                     }
-                    const double w = mask[rowOffset + static_cast<size_t>(xx - bounds.x1)];
+                    const double w = maskRow[static_cast<size_t>(localX)];
                     float linear[3];
                     Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
                     float XYZ[3];
@@ -229,6 +266,10 @@ namespace {
 
             const double maxDim = static_cast<double>(std::max(width, height));
             const double invMax = (maxDim > 0.0) ? (1.0 / maxDim) : 0.0;
+            const double invWidth = 1.0 / static_cast<double>(width);
+            const double invHeight = 1.0 / static_cast<double>(height);
+            const double scaleX = static_cast<double>(width) * invMax;
+            const double scaleY = static_cast<double>(height) * invMax;
             const double sigmaDenom = 2.0 * sigma * sigma;
             if (!(std::isfinite(sigmaDenom)) || sigmaDenom <= 0.0) {
                 if (outSumMask) {
@@ -239,18 +280,20 @@ namespace {
 
             double sumY = 0.0;
             double sumMask = 0.0;
+            const int xStart = bounds.x1;
+            const int xEnd = bounds.x2;
             for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
                 const int localY = yy - bounds.y1;
-                const double ny = static_cast<double>(localY) / static_cast<double>(height) - 0.5;
-                const double normY = ny * static_cast<double>(height) * invMax;
-                for (int xx = bounds.x1; xx < bounds.x2; ++xx) {
+                const double ny = static_cast<double>(localY) * invHeight - 0.5;
+                const double normY = ny * scaleY;
+                int localX = 0;
+                for (int xx = xStart; xx < xEnd; ++xx, ++localX) {
                     const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
                     if (!pix) {
                         continue;
                     }
-                    const int localX = xx - bounds.x1;
-                    const double nx = static_cast<double>(localX) / static_cast<double>(width) - 0.5;
-                    const double normX = nx * static_cast<double>(width) * invMax;
+                    const double nx = static_cast<double>(localX) * invWidth - 0.5;
+                    const double normX = nx * scaleX;
                     const double r2 = normX * normX + normY * normY;
                     const double w = std::exp(-r2 / sigmaDenom);
                     float linear[3];
@@ -442,8 +485,19 @@ namespace {
         }
 
         const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
-        std::vector<float> values;
-        values.reserve(total);
+        std::vector<float>* valuesPtr = nullptr;
+        std::vector<float> localValues;
+        if (total <= kAutoExposureMedianScratchMaxSamples) {
+            std::vector<float>& scratch = auto_exposure_median_scratch();
+            scratch.clear();
+            scratch.reserve(total);
+            valuesPtr = &scratch;
+        }
+        else {
+            localValues.reserve(total);
+            valuesPtr = &localValues;
+        }
+        std::vector<float>& values = *valuesPtr;
 
         for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
             for (int xx = bounds.x1; xx < bounds.x2; ++xx) {
@@ -2022,15 +2076,17 @@ JuicerEffect::~JuicerEffect() {
             std::string retireError;
             const bool retireOk = JuicerCuda::ResourceManager::command_retire_context_idle(key, retireError);
             if (!retireOk || !retireError.empty()) {
-                const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-                std::string msg = std::string("teardown_retire_idle_failed device_id=")
-                    + std::to_string(key.deviceId)
-                    + " context=" + std::to_string(contextBits)
-                    + " accepted=" + std::to_string(retireOk ? 1 : 0);
-                if (!retireError.empty()) {
-                    msg += " error=" + retireError;
+                if (JTRACE_ENABLED(1)) {
+                    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
+                    std::string msg = std::string("teardown_retire_idle_failed device_id=")
+                        + std::to_string(key.deviceId)
+                        + " context=" + std::to_string(contextBits)
+                        + " accepted=" + std::to_string(retireOk ? 1 : 0);
+                    if (!retireError.empty()) {
+                        msg += " error=" + retireError;
+                    }
+                    JTRACE("MSLCY", msg);
                 }
-                JTRACE("MSLCY", msg);
             }
         }
     }
@@ -2225,9 +2281,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         const float neutralY = prt ? prt->neutralY : 0.0f;
         const float neutralM = prt ? prt->neutralM : 0.0f;
         const float neutralC = prt ? prt->neutralC : 0.0f;
+        const char* paperLabel = paperKey ? paperKey : "<null>";
+        const char* filmLabel = filmKey ? filmKey : "<null>";
         std::string msg = std::string("render print state build=") + std::to_string(buildCounter)
-            + " paper=" + std::string(paperKey ? paperKey : "<null>")
-            + " film=" + std::string(filmKey ? filmKey : "<null>")
+            + " paper=" + paperLabel
+            + " film=" + filmLabel
             + " printRT=" + std::to_string(prtPtr)
             + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
             + " yFilter=" + std::to_string(printParams.yFilter)
@@ -2296,17 +2354,23 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 }
 
 void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName) {
+    auto trace_changed_param_gate = [&](const char* prefix) {
+        if (!JTRACE_ENABLED(1)) {
+            return;
+        }
+        std::string msg = prefix;
+        msg += paramName;
+        msg += "'";
+        JTRACE("BUILD", msg);
+    };
+
     // Suppress recursion while we are programmatically setting params
     if (_state && _state->suppressParamEvents) {
-        if (JTRACE_ENABLED(1)) {
-            JTRACE("BUILD", std::string("changedParam suppressed for '") + paramName + "'");
-        }
+        trace_changed_param_gate("changedParam suppressed for '");
         return;
     }
     if (_state && _state->inBootstrap) {
-        if (JTRACE_ENABLED(1)) {
-            JTRACE("BUILD", std::string("changedParam ignored during bootstrap for '") + paramName + "'");
-        }
+        trace_changed_param_gate("changedParam ignored during bootstrap for '");
         return;
     }
     if (_state && (paramName == kParamCameraAutoExposure || paramName == JuicerParams::kCameraMeteringMethod)) {
@@ -2590,9 +2654,7 @@ void JuicerEffect::bootstrap_after_attach() {
     // Load selected print paper profile
     const std::string printDir = print_dir_for_index(P.printPaperIndex);
     const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-    const std::string printProfileJson = paperKey
-        ? data_dir_string("profiles", std::string(paperKey) + ".json")
-        : std::string();
+    const std::string printProfileJson = profile_json_path_for_key_or_empty(paperKey);
     Print::load_profile_from_dir(printDir, _state->printRT.profile, printProfileJson, &_state->printRT);
     _state->printRT.hasMidNeutralDensity = _state->printRT.profile.hasMidNeutralDensity;
     _state->printRT.midNeutralDensity = _state->printRT.profile.midNeutralDensity;
@@ -2616,11 +2678,11 @@ void JuicerEffect::bootstrap_after_attach() {
         Print::load_dichroic_filters_from_csvs(dichroicDir, _state->printRT);
     }
     catch (const std::exception& ex) {
-        // Identity fallback is already handled in loader via 1.0 curves
-        JTRACE("PRINT", std::string("dichroic load failed at '") + dichroicDir + "' (" + ex.what() + "); using identity filters");
+        // Identity fallback is already handled in loader via 1.0 curves.
+        trace_dichroic_load_failure("dichroic load failed", dichroicDir, ex.what(), "using identity filters");
     }
     catch (...) {
-        JTRACE("PRINT", std::string("dichroic load failed at '") + dichroicDir + "' (unknown error); using identity filters");
+        trace_dichroic_load_failure("dichroic load failed", dichroicDir, nullptr, "using identity filters");
     }
 
     applyNeutralFilters(P);
@@ -2664,10 +2726,12 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
         };
 
     if (!(paperKey && negativeKey && !illumKeys.empty())) {
-        const std::string paperStr = paperKey ? paperKey : "<unset>";
-        const std::string negStr = negativeKey ? negativeKey : "<unset>";
-        JTRACE("PRINT", "Neutral filter lookup prerequisites missing: paper="
-            + paperStr + " negative=" + negStr + " illum_choices=" + join_illum_keys());
+        if (JTRACE_ENABLED(1)) {
+            const std::string paperStr = paperKey ? paperKey : "<unset>";
+            const std::string negStr = negativeKey ? negativeKey : "<unset>";
+            JTRACE("PRINT", "Neutral filter lookup prerequisites missing: paper="
+                + paperStr + " negative=" + negStr + " illum_choices=" + join_illum_keys());
+        }
         throw std::runtime_error("Neutral filter metadata incomplete for current selection");
     }
 
@@ -2692,21 +2756,25 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
             loaded = true;
             if (JTRACE_ENABLED(1)) {
-                JTRACE("PRINT", "Neutral filters loaded for " + std::string(illumKey)
+                std::string msg = "Neutral filters loaded for " + illumKey
                     + " Y/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM)
                     + "/" + std::to_string(neutralC)
-                    + " db_version_hash=" + (selectedDbVersionHash.empty() ? std::string("none") : selectedDbVersionHash));
+                    + " db_version_hash=";
+                msg += selectedDbVersionHash.empty() ? "none" : selectedDbVersionHash;
+                JTRACE("PRINT", msg);
             }
             break;
         }
     }
 
     if (!loaded) {
-        const std::string paperStr = paperKey ? paperKey : "<unset>";
-        const std::string negStr = negativeKey ? negativeKey : "<unset>";
-        JTRACE("PRINT", "Neutral filters missing for paper=" + paperStr
-            + " illuminant_keys=" + join_illum_keys()
-            + " negative=" + negStr + "; aborting print path");
+        if (JTRACE_ENABLED(1)) {
+            const std::string paperStr = paperKey ? paperKey : "<unset>";
+            const std::string negStr = negativeKey ? negativeKey : "<unset>";
+            JTRACE("PRINT", "Neutral filters missing for paper=" + paperStr
+                + " illuminant_keys=" + join_illum_keys()
+                + " negative=" + negStr + "; aborting print path");
+        }
         throw std::runtime_error("Neutral filter database entry not found");
     }
 
@@ -2885,11 +2953,13 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         const std::shared_ptr<const WorkingState> wsDbg = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
         const std::uint64_t activeBuild = wsDbg ? wsDbg->buildCounter : 0;
         const std::uint64_t lastHash = _state->lastHash.load(std::memory_order_acquire);
+        const char* paperLabel = paperKey ? paperKey : "<null>";
+        const char* filmLabel = filmKey ? filmKey : "<null>";
         std::string msg = std::string("params change name=") + (changedNameOrNull ? changedNameOrNull : "<null>")
             + " printIndex=" + std::to_string(P.printPaperIndex)
-            + " printKey=" + std::string(paperKey ? paperKey : "<null>")
+            + " printKey=" + paperLabel
             + " filmIndex=" + std::to_string(P.filmStockIndex)
-            + " filmKey=" + std::string(filmKey ? filmKey : "<null>")
+            + " filmKey=" + filmLabel
             + " activeBuild=" + std::to_string(activeBuild)
             + " lastHash=" + std::to_string(lastHash);
         JTRACE_VERBOSE("PRINTDBG", msg);
@@ -2933,20 +3003,61 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         }
     }
 
+    auto reload_dichroic_filters = [&]() -> bool {
+        const std::string dichroicDirReload = ensure_trailing_separator(
+            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
+        try {
+            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
+            return true;
+        }
+        catch (const std::exception& ex) {
+            trace_dichroic_load_failure(
+                "dichroic reload failed",
+                dichroicDirReload,
+                ex.what(),
+                "identity filters remain active");
+        }
+        catch (...) {
+            trace_dichroic_load_failure(
+                "dichroic reload failed",
+                dichroicDirReload,
+                nullptr,
+                "identity filters remain active");
+        }
+        return false;
+    };
+
+    auto trace_neutral_filters_applied = [&](const char* reloadSource) {
+        if (!JTRACE_ENABLED(3)) {
+            return;
+        }
+        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
+        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+        const char* paperLabel = paperKey ? paperKey : "<null>";
+        const char* filmLabel = filmKey ? filmKey : "<null>";
+        std::string msg = std::string("neutral filters applied (")
+            + (reloadSource ? reloadSource : "unspecified")
+            + ") paper=" + paperLabel
+            + " film=" + filmLabel
+            + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
+            + "/" + std::to_string(_state->printRT.neutralM)
+            + "/" + std::to_string(_state->printRT.neutralC);
+        JTRACE_VERBOSE("PRINTDBG", msg);
+    };
+
     bool printReloaded = false;
     if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamPrintPaper) == 0) {
         const std::string printDir = print_dir_for_index(P.printPaperIndex);
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-        const std::string printProfileJson = paperKey
-            ? data_dir_string("profiles", std::string(paperKey) + ".json")
-            : std::string();
+        const std::string printProfileJson = profile_json_path_for_key_or_empty(paperKey);
         Print::load_profile_from_dir(printDir, _state->printRT.profile, printProfileJson, &_state->printRT);
         _state->printRT.hasMidNeutralDensity = _state->printRT.profile.hasMidNeutralDensity;
         _state->printRT.midNeutralDensity = std::move(_state->printRT.profile.midNeutralDensity);
         _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
         _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
         if (JTRACE_ENABLED(3)) {
-            std::string msg = std::string("print reload key=") + std::string(paperKey ? paperKey : "<null>")
+            const char* paperLabel = paperKey ? paperKey : "<null>";
+            std::string msg = std::string("print reload key=") + paperLabel
                 + " dir=" + printDir
                 + " json=" + printProfileJson
                 + " ref=" + _state->printRT.referenceIlluminant
@@ -2955,35 +3066,14 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         }
 
         // Reload dichroic filters (vendor selection controls which curves are used).
-        const std::string dichroicDirReload = ensure_trailing_separator(
-            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
-        try {
-            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
-        }
-        catch (const std::exception& ex) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (" + ex.what() + "); identity filters remain active");
-        }
-        catch (...) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (unknown error); identity filters remain active");
-        }
+        (void)reload_dichroic_filters();
 
         printReloaded = true;
     }
 
     bool dichroicReloaded = false;
     if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerDichroicSet) == 0) {
-        const std::string dichroicDirReload = ensure_trailing_separator(
-            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
-        try {
-            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
-            dichroicReloaded = true;
-        }
-        catch (const std::exception& ex) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (" + ex.what() + "); identity filters remain active");
-        }
-        catch (...) {
-            JTRACE("PRINT", std::string("dichroic reload failed at '") + dichroicDirReload + "' (unknown error); identity filters remain active");
-        }
+        dichroicReloaded = reload_dichroic_filters();
     }
 
     bool filmReloaded = false;
@@ -3004,30 +3094,12 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     if (printReloaded || dichroicReloaded) {
         applyNeutralFilters(P);
         neutralApplied = true;
-        if (JTRACE_ENABLED(3)) {
-            const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-            const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-            std::string msg = std::string("neutral filters applied (print/dichroic) paper=") + std::string(paperKey ? paperKey : "<null>")
-                + " film=" + std::string(filmKey ? filmKey : "<null>")
-                + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
-                + "/" + std::to_string(_state->printRT.neutralM)
-                + "/" + std::to_string(_state->printRT.neutralC);
-            JTRACE_VERBOSE("PRINTDBG", msg);
-        }
+        trace_neutral_filters_applied("print/dichroic");
     }
     if (filmReloaded && !neutralApplied) {
         applyNeutralFilters(P);
         neutralApplied = true;
-        if (JTRACE_ENABLED(3)) {
-            const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-            const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-            std::string msg = std::string("neutral filters applied (film) paper=") + std::string(paperKey ? paperKey : "<null>")
-                + " film=" + std::string(filmKey ? filmKey : "<null>")
-                + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
-                + "/" + std::to_string(_state->printRT.neutralM)
-                + "/" + std::to_string(_state->printRT.neutralC);
-            JTRACE_VERBOSE("PRINTDBG", msg);
-        }
+        trace_neutral_filters_applied("film");
     }
 
     if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerIlluminant) == 0) {

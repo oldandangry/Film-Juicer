@@ -214,13 +214,13 @@ namespace {
               ctr3(0u)
         {}
 
-        static inline std::uint32_t mulhilo(std::uint32_t a, std::uint32_t b, std::uint32_t& hi) {
+        static std::uint32_t mulhilo(std::uint32_t a, std::uint32_t b, std::uint32_t& hi) {
             const std::uint64_t product = static_cast<std::uint64_t>(a) * static_cast<std::uint64_t>(b);
             hi = static_cast<std::uint32_t>(product >> 32);
             return static_cast<std::uint32_t>(product);
         }
 
-        static inline void round(std::uint32_t key0, std::uint32_t key1, std::uint32_t& c0, std::uint32_t& c1, std::uint32_t& c2, std::uint32_t& c3) {
+        static void round(std::uint32_t key0, std::uint32_t key1, std::uint32_t& c0, std::uint32_t& c1, std::uint32_t& c2, std::uint32_t& c3) {
             std::uint32_t hi0 = 0;
             std::uint32_t hi1 = 0;
             const std::uint32_t lo0 = mulhilo(kM0, c0, hi0);

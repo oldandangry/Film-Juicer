@@ -207,7 +207,9 @@ namespace Spectral {
     // ============================================================================
 
     inline void log_spectral_warning(const std::string& message) {
-        JTRACE("SPECTRAL", "WARN: " + message);
+        if (JTRACE_ENABLED(1)) {
+            JTRACE("SPECTRAL", "WARN: " + message);
+        }
     }
 
     inline void log_resample_failure(const char* context,

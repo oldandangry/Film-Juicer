@@ -128,6 +128,205 @@ std::string make_burst_debt_throttle_noncritical_error(
         + std::to_string(static_cast<unsigned long long>(maxDebtPct));
 }
 
+const char* reservation_wait_outcome_reason(bool shouldWait) noexcept {
+    if (shouldWait) {
+        return "deferred";
+    }
+    return "denied";
+}
+
+const char* fairness_bypass_reason(bool fairnessDeferred) noexcept {
+    if (fairnessDeferred) {
+        return "bypass_after_starvation";
+    }
+    return "deferred_bypass";
+}
+
+const char* sampled_cache_reason(bool sampled) noexcept {
+    if (sampled) {
+        return "sampled";
+    }
+    return "cached";
+}
+
+const char* headroom_trace_reason(bool sourceSwitch, bool sampled) noexcept {
+    if (sourceSwitch) {
+        return "source_switch";
+    }
+    return sampled_cache_reason(sampled);
+}
+
+const char* reserve_update_reason(bool reserveUpdated) noexcept {
+    if (reserveUpdated) {
+        return "reserve_update";
+    }
+    return "reserve_sample";
+}
+
+const char* freeze_transition_reason(bool entered, bool exited) noexcept {
+    if (entered) {
+        return "freeze_enter";
+    }
+    if (exited) {
+        return "freeze_exit";
+    }
+    return "freeze_sample";
+}
+
+const char* headroom_alloc_fail_reason(bool aboveHeadroom) noexcept {
+    if (aboveHeadroom) {
+        return "alloc_fail_above_headroom";
+    }
+    return "alloc_fail_below_headroom";
+}
+
+const char* burst_transition_reason(bool capHit, bool entered, bool exited) noexcept {
+    if (capHit) {
+        return "burst_cap_hit";
+    }
+    if (entered) {
+        return "burst_enter";
+    }
+    if (exited) {
+        return "burst_exit";
+    }
+    return "burst_sample";
+}
+
+const char* tier_pretrim_reason(bool didTierPretrim) noexcept {
+    if (didTierPretrim) {
+        return "tier_target_pretrim";
+    }
+    return "tier_target_observation";
+}
+
+const char* emergency_progress_reason(bool criticalCurrentFrame) noexcept {
+    if (criticalCurrentFrame) {
+        return "allow_critical_progress";
+    }
+    return "allow_noncritical_progress";
+}
+
+std::uint64_t admission_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t startMs) noexcept {
+    if (nowMs > startMs) {
+        return nowMs - startMs;
+    }
+    return 0;
+}
+
+std::uint32_t admission_bool_u32(bool value) noexcept {
+    if (value) {
+        return 1u;
+    }
+    return 0u;
+}
+
+int admission_wait_ms_or_one(std::uint64_t waitMs) noexcept {
+    if (waitMs > 0) {
+        return static_cast<int>(waitMs);
+    }
+    return 1;
+}
+
+const char* admission_reservation_reason_or(
+    const ReservationAttemptInfo& reservation,
+    const char* fallback) noexcept {
+    if (reservation.considered && reservation.decision.reason) {
+        return reservation.decision.reason;
+    }
+    return fallback;
+}
+
+std::uint64_t admission_u64_or_default(std::uint64_t value, std::uint64_t fallback) noexcept {
+    if (value > 0) {
+        return value;
+    }
+    return fallback;
+}
+
+std::uint32_t admission_u32_or_default(std::uint32_t value, std::uint32_t fallback) noexcept {
+    if (value > 0) {
+        return value;
+    }
+    return fallback;
+}
+
+PressureState admission_pressure_state_or_default(
+    const PressureContextState& contextState,
+    PressureState fallback) noexcept {
+    if (contextState.valid) {
+        return contextState.lastState;
+    }
+    return fallback;
+}
+
+std::uint64_t admission_effective_reserve_or_default(
+    const PressureContextState& contextState,
+    std::uint64_t fallback) noexcept {
+    if (contextState.effectiveReserveValid) {
+        return contextState.effectiveReserveBytes;
+    }
+    return fallback;
+}
+
+PressureState admission_previous_state_or_decision(
+    const PressureContextState& contextState,
+    PressureState decisionState) noexcept {
+    if (contextState.valid) {
+        return contextState.lastState;
+    }
+    return decisionState;
+}
+
+std::uint64_t admission_checkpoint_headroom_or_zero(
+    bool checkpointValid,
+    const PressureCheckpoint& checkpoint) noexcept {
+    if (checkpointValid) {
+        return checkpoint.input.effectiveHeadroomBytes;
+    }
+    return 0;
+}
+
+std::uint64_t admission_checkpoint_reserve_or_zero(
+    bool checkpointValid,
+    const PressureCheckpoint& checkpoint) noexcept {
+    if (checkpointValid) {
+        return checkpoint.decision.effectiveReserveBytes;
+    }
+    return 0;
+}
+
+const char* admission_upload_saturation_reason(bool criticalCurrentFrame) noexcept {
+    if (criticalCurrentFrame) {
+        return "critical_upload_allowed_despite_saturation";
+    }
+    return "upload_allowed_below_shed_threshold";
+}
+
+std::uint64_t admission_open_remaining_ms(std::uint64_t elapsedMs, std::uint32_t openMs) noexcept {
+    const std::uint64_t openMsU64 = static_cast<std::uint64_t>(openMs);
+    if (elapsedMs >= openMsU64) {
+        return 0;
+    }
+    return openMsU64 - elapsedMs;
+}
+
+std::uint64_t admission_state_age_or_max(
+    std::uint64_t nowMs,
+    std::uint64_t lastStateChangeMs) noexcept {
+    if (lastStateChangeMs == 0 || nowMs < lastStateChangeMs) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return nowMs - lastStateChangeMs;
+}
+
+std::string admission_error_or_message(const std::string& error, const char* fallback) {
+    if (error.empty()) {
+        return std::string(fallback);
+    }
+    return error;
+}
+
 std::uint64_t tier_target_basis_points(
     const ResourceManagerConfigEffective& cfg,
     ResourceTier tier) noexcept {
@@ -277,7 +476,7 @@ void refill_upload_fairness_tokens(
         return;
     }
 
-    const std::uint64_t elapsedMs = (nowMs > entry.lastRefillMs) ? (nowMs - entry.lastRefillMs) : 0;
+    const std::uint64_t elapsedMs = admission_elapsed_ms_since(nowMs, entry.lastRefillMs);
     if (elapsedMs < kUploadFairnessTickMs) {
         return;
     }
@@ -303,7 +502,7 @@ void refill_builder_fairness_tokens(
         return;
     }
 
-    const std::uint64_t elapsedMs = (nowMs > entry.lastRefillMs) ? (nowMs - entry.lastRefillMs) : 0;
+    const std::uint64_t elapsedMs = admission_elapsed_ms_since(nowMs, entry.lastRefillMs);
     if (elapsedMs < kBuilderFairnessTickMs) {
         return;
     }
@@ -383,7 +582,7 @@ bool try_acquire_scratch_policy_claim(
             reservationDecision,
             criticalCurrentFrame,
             static_cast<int>(reservationDecision.waitMs),
-            reservationDecision.shouldWait ? "deferred" : "denied");
+            reservation_wait_outcome_reason(reservationDecision.shouldWait));
         snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
         return false;
     }
@@ -540,9 +739,7 @@ bool acquire_scratch_policy_claim_with_wait(
                     criticalCurrentFrame,
                     waitedMs,
                     "starved",
-                    (reservation.considered && reservation.decision.reason)
-                        ? reservation.decision.reason
-                        : "scratch_exhausted");
+                    admission_reservation_reason_or(reservation, "scratch_exhausted"));
             }
             trace_scratch_policy_decision(
                 transaction,
@@ -553,20 +750,20 @@ bool acquire_scratch_policy_claim_with_wait(
                 waitedMs);
             if (reservation.considered && !reservation.decision.granted) {
                 outError = std::string(kReservationDeferredPrefix)
-                    + " command=" + (commandName ? commandName : "unknown")
+                    + " command=" + trace_or_unknown(commandName)
                     + " work_class=" + to_cstr(workClass)
                     + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
                     + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
                     + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
                     + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
-                    + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                    + " critical_current_frame=" + std::to_string(admission_bool_u32(criticalCurrentFrame))
                     + " wait_ms=" + std::to_string(waitedMs)
                     + " wait_budget_ms=" + std::to_string(waitBudgetMs)
-                    + " reason=" + (reservation.decision.reason ? reservation.decision.reason : "unspecified");
+                    + " reason=" + trace_or_unspecified(reservation.decision.reason);
             }
             else {
                 outError = std::string(kScratchExhaustedPrefix)
-                    + " command=" + (commandName ? commandName : "unknown")
+                    + " command=" + trace_or_unknown(commandName)
                     + " work_class=" + to_cstr(workClass)
                     + " bucket_w=" + std::to_string(bucketKey.widthBucket)
                     + " bucket_h=" + std::to_string(bucketKey.heightBucket)
@@ -724,7 +921,7 @@ bool acquire_builder_reservation_with_wait(
                         criticalCurrentFrame,
                         waitedMs,
                         "admit_after_wait",
-                        reservation.decision.reason ? reservation.decision.reason : "waited");
+                        trace_or(reservation.decision.reason, "waited"));
                 }
                 trace_builder_reservation_decision(
                     transaction,
@@ -801,7 +998,7 @@ bool acquire_builder_reservation_with_wait(
                     criticalCurrentFrame,
                     waitedMs,
                     "denied",
-                    decision.reason ? decision.reason : "reservation_denied");
+                    trace_or(decision.reason, "reservation_denied"));
             }
             trace_builder_reservation_decision(
                 transaction,
@@ -819,17 +1016,17 @@ bool acquire_builder_reservation_with_wait(
                 waitedMs,
                 "denied");
             outError = std::string(kReservationDeferredPrefix)
-                + " command=" + (commandName ? commandName : "unknown")
+                + " command=" + trace_or_unknown(commandName)
                 + " kind=" + to_cstr(ReservationKind::BuilderWork)
                 + " tier=" + to_cstr(tier)
                 + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
                 + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
                 + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
                 + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
-                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " critical_current_frame=" + std::to_string(admission_bool_u32(criticalCurrentFrame))
                 + " wait_ms=" + std::to_string(waitedMs)
                 + " wait_budget_ms=" + std::to_string(kBuilderReservationWaitMaxMs)
-                + " reason=" + (decision.reason ? decision.reason : "unspecified");
+                + " reason=" + trace_or_unspecified(decision.reason);
             return false;
         }
 
@@ -851,8 +1048,8 @@ bool acquire_builder_reservation_with_wait(
                     PressureLane::Builder,
                     criticalCurrentFrame,
                     waitedMs,
-                    fairnessDeferred ? "bypass_after_starvation" : "deferred_bypass",
-                    decision.reason ? decision.reason : "wait_budget_reached");
+                    fairness_bypass_reason(fairnessDeferred),
+                    trace_or(decision.reason, "wait_budget_reached"));
                 trace_builder_reservation_decision(
                     transaction,
                     commandName,
@@ -886,24 +1083,24 @@ bool acquire_builder_reservation_with_wait(
                 waitedMs,
                 "deferred_wait_budget");
             outError = std::string(kReservationDeferredPrefix)
-                + " command=" + (commandName ? commandName : "unknown")
+                + " command=" + trace_or_unknown(commandName)
                 + " kind=" + to_cstr(ReservationKind::BuilderWork)
                 + " tier=" + to_cstr(tier)
                 + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
                 + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
                 + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
                 + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
-                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " critical_current_frame=" + std::to_string(admission_bool_u32(criticalCurrentFrame))
                 + " wait_ms=" + std::to_string(waitedMs)
                 + " wait_budget_ms=" + std::to_string(kBuilderReservationWaitMaxMs)
-                + " reason=" + (decision.reason ? decision.reason : "wait_budget_reached");
+                + " reason=" + trace_or(decision.reason, "wait_budget_reached");
             return false;
         }
 
         const int sleepMs = std::max<int>(
             1,
             std::min<int>(
-                static_cast<int>(decision.waitMs > 0 ? decision.waitMs : 1),
+                admission_wait_ms_or_one(decision.waitMs),
                 kBuilderReservationWaitStepMs));
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
         waitedMs += sleepMs;
@@ -1042,7 +1239,7 @@ bool acquire_upload_reservation_with_wait(
                         criticalCurrentFrame,
                         waitedMs,
                         "admit_after_wait",
-                        reservation.decision.reason ? reservation.decision.reason : "waited");
+                        trace_or(reservation.decision.reason, "waited"));
                 }
                 trace_upload_reservation_decision(
                     transaction,
@@ -1100,7 +1297,7 @@ bool acquire_upload_reservation_with_wait(
                     criticalCurrentFrame,
                     waitedMs,
                     "denied",
-                    decision.reason ? decision.reason : "reservation_denied");
+                    trace_or(decision.reason, "reservation_denied"));
             }
             trace_upload_reservation_decision(
                 transaction,
@@ -1117,16 +1314,16 @@ bool acquire_upload_reservation_with_wait(
                 waitedMs,
                 "denied");
             outError = std::string(kReservationDeferredPrefix)
-                + " command=" + (commandName ? commandName : "unknown")
+                + " command=" + trace_or_unknown(commandName)
                 + " kind=" + to_cstr(ReservationKind::UploadCopy)
                 + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
                 + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.bytesInFlight))
                 + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.capBytes))
                 + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(reservation.thresholdBytes))
-                + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+                + " critical_current_frame=" + std::to_string(admission_bool_u32(criticalCurrentFrame))
                 + " wait_ms=" + std::to_string(waitedMs)
                 + " wait_budget_ms=" + std::to_string(kUploadReservationWaitMaxMs)
-                + " reason=" + (decision.reason ? decision.reason : "unspecified");
+                + " reason=" + trace_or_unspecified(decision.reason);
             return false;
         }
 
@@ -1150,8 +1347,8 @@ bool acquire_upload_reservation_with_wait(
                     PressureLane::Upload,
                     criticalCurrentFrame,
                     waitedMs,
-                    fairnessDeferred ? "bypass_after_starvation" : "deferred_bypass",
-                    decision.reason ? decision.reason : "wait_budget_reached");
+                    fairness_bypass_reason(fairnessDeferred),
+                    trace_or(decision.reason, "wait_budget_reached"));
             }
             trace_upload_reservation_decision(
                 transaction,
@@ -1173,7 +1370,7 @@ bool acquire_upload_reservation_with_wait(
         const int sleepMs = std::max<int>(
             1,
             std::min<int>(
-                static_cast<int>(decision.waitMs > 0 ? decision.waitMs : 1),
+                admission_wait_ms_or_one(decision.waitMs),
                 kUploadReservationWaitStepMs));
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
         waitedMs += sleepMs;
@@ -1358,9 +1555,7 @@ std::uint32_t decay_burst_debt_pct(
 std::uint64_t graph_large_entry_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
     std::uint64_t thresholdBytes = std::max<std::uint64_t>(
         1ull,
-        cfg.graphLargeEntryThresholdBytes > 0
-            ? cfg.graphLargeEntryThresholdBytes
-            : kGraphLargeEntryThresholdDefaultBytes);
+        admission_u64_or_default(cfg.graphLargeEntryThresholdBytes, kGraphLargeEntryThresholdDefaultBytes));
     if (cfg.managerSoftTargetBytes > 0) {
         const std::uint64_t pctThresholdBytes = cfg.managerSoftTargetBytes / 10ull;
         if (pctThresholdBytes > 0) {
@@ -1371,9 +1566,9 @@ std::uint64_t graph_large_entry_threshold_bytes(const ResourceManagerConfigEffec
 }
 
 std::uint64_t graph_large_entry_quarantine_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
-    std::uint64_t capBytes = cfg.graphLargeEntryQuarantineMaxBytes > 0
-        ? cfg.graphLargeEntryQuarantineMaxBytes
-        : kGraphLargeEntryQuarantineMaxBytesDefault;
+    std::uint64_t capBytes = admission_u64_or_default(
+        cfg.graphLargeEntryQuarantineMaxBytes,
+        kGraphLargeEntryQuarantineMaxBytesDefault);
     if (cfg.managerSoftTargetBytes > 0) {
         std::uint64_t weighted = 0;
         if (mul_u64_checked(cfg.managerSoftTargetBytes, 15ull, weighted)) {
@@ -1389,9 +1584,9 @@ std::uint64_t graph_large_entry_quarantine_cap_bytes(const ResourceManagerConfig
 std::uint32_t graph_large_entry_quarantine_cap_entries(const ResourceManagerConfigEffective& cfg) noexcept {
     return std::max<std::uint32_t>(
         1u,
-        cfg.graphLargeEntryQuarantineMaxEntries > 0
-            ? cfg.graphLargeEntryQuarantineMaxEntries
-            : kGraphLargeEntryQuarantineMaxEntriesDefault);
+        admission_u32_or_default(
+            cfg.graphLargeEntryQuarantineMaxEntries,
+            kGraphLargeEntryQuarantineMaxEntriesDefault));
 }
 
 std::uint32_t pressure_poll_interval_ms_for_state(
@@ -1537,7 +1732,7 @@ void trim_large_frame_quarantine_decay_locked(
     std::uint64_t removedCount = 0;
     while (index < contextState.largeFrameQuarantine.size()) {
         const ScratchQuarantineEntry& entry = contextState.largeFrameQuarantine[index];
-        const std::uint64_t ageMs = (nowMs > entry.touchedMs) ? (nowMs - entry.touchedMs) : 0;
+        const std::uint64_t ageMs = admission_elapsed_ms_since(nowMs, entry.touchedMs);
         if (ageMs < kLargeFrameQuarantineDecayMs) {
             ++index;
             continue;
@@ -1899,9 +2094,8 @@ PressureCheckpoint evaluate_pressure_checkpoint(
     {
         std::lock_guard<std::mutex> lock(policyState.mutex);
         PressureContextState& contextState = policyState.byContext[transaction.snapshot.deviceContextKey];
-        const PressureState cadenceState = contextState.valid
-            ? contextState.lastState
-            : PressureState::Normal;
+        const PressureState cadenceState =
+            admission_pressure_state_or_default(contextState, PressureState::Normal);
         checkpoint.pollIntervalMs = pressure_poll_interval_ms_for_state(cfg, cadenceState);
 
         bool sampleDue = forceSample || !contextState.valid;
@@ -1912,13 +2106,12 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         }
         if (!sampleDue) {
             const std::uint64_t elapsedMs =
-                (nowMs > contextState.lastSampleMs) ? (nowMs - contextState.lastSampleMs) : 0;
+                admission_elapsed_ms_since(nowMs, contextState.lastSampleMs);
             sampleDue = elapsedMs >= static_cast<std::uint64_t>(checkpoint.pollIntervalMs);
         }
 
-        checkpoint.reserveBeforeBytes = contextState.effectiveReserveValid
-            ? contextState.effectiveReserveBytes
-            : cfg.managerReserveBytes;
+        checkpoint.reserveBeforeBytes =
+            admission_effective_reserve_or_default(contextState, cfg.managerReserveBytes);
         checkpoint.reserveTargetBytes = compute_effective_reserve_target_bytes(
             cfg,
             checkpoint.input.transientNonManagerBytes);
@@ -1935,9 +2128,8 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             contextState.effectiveReserveValid = true;
         }
 
-        checkpoint.input.effectiveReserveBytes = contextState.effectiveReserveValid
-            ? contextState.effectiveReserveBytes
-            : cfg.managerReserveBytes;
+        checkpoint.input.effectiveReserveBytes =
+            admission_effective_reserve_or_default(contextState, cfg.managerReserveBytes);
         const PressureDecision computedDecision = classify_pressure(checkpoint.input);
         checkpoint.decision = computedDecision;
         checkpoint.desiredState = computedDecision.state;
@@ -1945,7 +2137,8 @@ PressureCheckpoint evaluate_pressure_checkpoint(
 
         if (sampleDue) {
             checkpoint.sampled = true;
-            checkpoint.previousState = contextState.valid ? contextState.lastState : computedDecision.state;
+            checkpoint.previousState =
+                admission_previous_state_or_decision(contextState, computedDecision.state);
             checkpoint.desiredState = computedDecision.state;
 
             if (contextState.transitionWindowStartMs == 0 ||
@@ -1964,9 +2157,8 @@ PressureCheckpoint evaluate_pressure_checkpoint(
                     pressure_state_rank(computedDecision.state) >
                     pressure_state_rank(contextState.lastState);
                 if (!escalation) {
-                    const std::uint64_t stateAgeMs = (contextState.lastStateChangeMs == 0 || nowMs < contextState.lastStateChangeMs)
-                        ? std::numeric_limits<std::uint64_t>::max()
-                        : (nowMs - contextState.lastStateChangeMs);
+                    const std::uint64_t stateAgeMs =
+                        admission_state_age_or_max(nowMs, contextState.lastStateChangeMs);
                     const bool dwellOk =
                         stateAgeMs >= static_cast<std::uint64_t>(cfg.pressureStateMinDwellMs);
                     const bool rateOk =
@@ -2044,9 +2236,8 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             checkpoint.previousState = contextState.lastState;
             checkpoint.desiredState = computedDecision.state;
             checkpoint.reserveCrossedNow = contextState.reserveCrossed;
-            checkpoint.input.effectiveReserveBytes = contextState.effectiveReserveValid
-                ? contextState.effectiveReserveBytes
-                : cfg.managerReserveBytes;
+            checkpoint.input.effectiveReserveBytes =
+                admission_effective_reserve_or_default(contextState, cfg.managerReserveBytes);
         }
     }
 
@@ -2090,14 +2281,14 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             commandName,
             checkpoint,
             pendingGrowthBytes,
-            checkpoint.sampled ? "sampled" : "cached");
+            sampled_cache_reason(checkpoint.sampled));
         trace_headroom_sample(
             transaction,
             commandName,
             checkpoint,
             pendingGrowthBytes,
             headroomSourceSwitch,
-            headroomSourceSwitch ? "source_switch" : (checkpoint.sampled ? "sampled" : "cached"));
+            headroom_trace_reason(headroomSourceSwitch, checkpoint.sampled));
 
         if (checkpoint.sampled || checkpoint.reserveUpdated || JTRACE_ENABLED(3)) {
             trace_effective_reserve_event(
@@ -2109,7 +2300,7 @@ PressureCheckpoint evaluate_pressure_checkpoint(
                 checkpoint.input.effectiveReserveBytes,
                 checkpoint.input.transientNonManagerBytes,
                 checkpoint.reserveUpdated,
-                checkpoint.reserveUpdated ? "reserve_update" : "reserve_sample");
+                reserve_update_reason(checkpoint.reserveUpdated));
         }
         if (checkpoint.freezeTransitionEnter || checkpoint.freezeTransitionExit || JTRACE_ENABLED(3)) {
             const bool freezeActive = checkpoint.decision.freezeOpportunistic;
@@ -2122,9 +2313,9 @@ PressureCheckpoint evaluate_pressure_checkpoint(
                 freezeActive,
                 !freezeActive,
                 false,
-                checkpoint.freezeTransitionEnter
-                    ? "freeze_enter"
-                    : (checkpoint.freezeTransitionExit ? "freeze_exit" : "freeze_sample"));
+                freeze_transition_reason(
+                    checkpoint.freezeTransitionEnter,
+                    checkpoint.freezeTransitionExit));
         }
     }
 
@@ -2159,7 +2350,7 @@ void record_allocator_oom_headroom_observation(
         checkpoint,
         requestBytes,
         false,
-        aboveHeadroom ? "alloc_fail_above_headroom" : "alloc_fail_below_headroom");
+        headroom_alloc_fail_reason(aboveHeadroom));
 }
 
 bool run_reap_pass_for_pressure(
@@ -2171,7 +2362,7 @@ bool run_reap_pass_for_pressure(
     std::size_t reclaimedBytes = 0;
     std::string reclaimError;
     if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
-        outError = reclaimError.empty() ? "reap pass failed" : reclaimError;
+        outError = admission_error_or_message(reclaimError, "reap pass failed");
         trace_reap_pass(
             transaction,
             commandName,
@@ -2312,9 +2503,8 @@ void evaluate_active_burst_window(
             outDecision.overTargetBytes);
     }
 
-    const std::uint64_t elapsedMs = (nowMs > contextState.burstWindowStartMs)
-        ? (nowMs - contextState.burstWindowStartMs)
-        : 0;
+    const std::uint64_t elapsedMs =
+        admission_elapsed_ms_since(nowMs, contextState.burstWindowStartMs);
     outDecision.elapsedMs = elapsedMs;
     outDecision.active = contextState.burstActive;
     outDecision.allowed = true;
@@ -2370,9 +2560,8 @@ BurstDebtRuntimeDecision evaluate_burst_debt_runtime(
     BurstDebtEntry& debtEntry = contextState.burstDebtByInstance[instanceToken];
 
     if (debtEntry.lastUpdateMs > 0) {
-        const std::uint64_t elapsedMs = (nowMs > debtEntry.lastUpdateMs)
-            ? (nowMs - debtEntry.lastUpdateMs)
-            : 0;
+        const std::uint64_t elapsedMs =
+            admission_elapsed_ms_since(nowMs, debtEntry.lastUpdateMs);
         debtEntry.debtPct = decay_burst_debt_pct(
             debtEntry.debtPct,
             elapsedMs,
@@ -2548,11 +2737,10 @@ bool enforce_pressure_gate(
                 commandName,
                 burstDecision,
                 criticalCurrentFrame,
-                burstDecision.capHit
-                    ? "burst_cap_hit"
-                    : (burstDecision.entered
-                        ? "burst_enter"
-                        : (burstDecision.exited ? "burst_exit" : "burst_sample")));
+                burst_transition_reason(
+                    burstDecision.capHit,
+                    burstDecision.entered,
+                    burstDecision.exited));
         }
         if (checkpoint.freezeTransitionEnter || checkpoint.freezeTransitionExit || JTRACE_ENABLED(3)) {
             trace_opportunistic_freeze_event(
@@ -2564,9 +2752,9 @@ bool enforce_pressure_gate(
                 freezeBelowReserve,
                 !freezeBelowReserve,
                 criticalCurrentFrame,
-                checkpoint.freezeTransitionEnter
-                    ? "freeze_enter"
-                    : (checkpoint.freezeTransitionExit ? "freeze_exit" : "freeze_sample"));
+                freeze_transition_reason(
+                    checkpoint.freezeTransitionEnter,
+                    checkpoint.freezeTransitionExit));
         }
 
         burstDebtDecision = evaluate_burst_debt_runtime(
@@ -2627,7 +2815,7 @@ bool enforce_pressure_gate(
                 outRequestReclaimPass,
                 scratchTrimmedEntries,
                 graphEvictedEntries,
-                didTierPretrim ? "tier_target_pretrim" : "tier_target_observation");
+                tier_pretrim_reason(didTierPretrim));
         }
     }
     else if (JTRACE_ENABLED(3)) {
@@ -2651,8 +2839,8 @@ bool enforce_pressure_gate(
             transaction,
             commandName,
             pressureState,
-            checkpointValid ? checkpoint.input.effectiveHeadroomBytes : 0,
-            checkpointValid ? checkpoint.decision.effectiveReserveBytes : 0,
+            admission_checkpoint_headroom_or_zero(checkpointValid, checkpoint),
+            admission_checkpoint_reserve_or_zero(checkpointValid, checkpoint),
             true,
             false,
             criticalCurrentFrame,
@@ -2731,7 +2919,7 @@ bool enforce_pressure_gate(
             true,
             uploadBytesInFlight,
             uploadCapBytes,
-            criticalCurrentFrame ? "allow_critical_progress" : "allow_noncritical_progress");
+            emergency_progress_reason(criticalCurrentFrame));
     }
 
     if (lane == PressureLane::Upload && uploadCapSaturated) {
@@ -2743,9 +2931,7 @@ bool enforce_pressure_gate(
             uploadCapBytes,
             criticalCurrentFrame,
             true,
-            criticalCurrentFrame
-                ? "critical_upload_allowed_despite_saturation"
-                : "upload_allowed_below_shed_threshold");
+            admission_upload_saturation_reason(criticalCurrentFrame));
     }
     return true;
 }
@@ -2780,7 +2966,7 @@ bool tier_circuit_begin_attempt(
     TierCircuitTierState& tierState = contextState.tiers[tier_circuit_index(tier)];
 
     if (tierState.state == TierCircuitState::Open) {
-        const std::uint64_t elapsedMs = (nowMs > tierState.openedAtMs) ? (nowMs - tierState.openedAtMs) : 0;
+        const std::uint64_t elapsedMs = admission_elapsed_ms_since(nowMs, tierState.openedAtMs);
         if (elapsedMs >= static_cast<std::uint64_t>(openMs)) {
             const TierCircuitState previousState = tierState.state;
             tierState.state = TierCircuitState::HalfOpen;
@@ -2805,10 +2991,8 @@ bool tier_circuit_begin_attempt(
     }
 
     if (tierState.state == TierCircuitState::Open && blocksAdmission) {
-        const std::uint64_t elapsedMs = (nowMs > tierState.openedAtMs) ? (nowMs - tierState.openedAtMs) : 0;
-        const std::uint64_t openRemainingMs = (elapsedMs >= static_cast<std::uint64_t>(openMs))
-            ? 0
-            : (static_cast<std::uint64_t>(openMs) - elapsedMs);
+        const std::uint64_t elapsedMs = admission_elapsed_ms_since(nowMs, tierState.openedAtMs);
+        const std::uint64_t openRemainingMs = admission_open_remaining_ms(elapsedMs, openMs);
         telemetry_counter_add(global_state().tierCircuitBlockedEvents, 1);
         trace_tier_circuit_event(
             transaction,
@@ -2914,7 +3098,7 @@ void tier_circuit_cancel_attempt(
             windowMs,
             openMs,
             0,
-            reason ? reason : "attempt_cancelled");
+            trace_or(reason, "attempt_cancelled"));
     }
 }
 
@@ -2978,7 +3162,7 @@ void tier_circuit_record_outcome(
                 windowMs,
                 openMs,
                 0,
-                reason ? reason : "half_open_probe_success");
+                trace_or(reason, "half_open_probe_success"));
             return;
         }
 
@@ -3014,7 +3198,7 @@ void tier_circuit_record_outcome(
             windowMs,
             openMs,
             0,
-            reason ? reason : "half_open_probe_failed");
+            trace_or(reason, "half_open_probe_failed"));
         return;
     }
 
@@ -3043,7 +3227,7 @@ void tier_circuit_record_outcome(
                 windowMs,
                 openMs,
                 0,
-                reason ? reason : "error_threshold_reached");
+                trace_or(reason, "error_threshold_reached"));
         }
         return;
     }

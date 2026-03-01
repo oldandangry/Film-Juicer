@@ -4,10 +4,6 @@
 #include "ofxsProcessing.h"
 #include "ofxsImageEffect.h"
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
-#include "FilmProcessing.h"
-#include "ColorTransforms.h"
-#include "WorkingState.h"
 #include "PipelineTypes.h"
 #include "Print.h"
 #include "Scanner.h"
@@ -15,7 +11,6 @@
 #include "SpatialDIR.h"
 #include "OutputEncoding.h"
 #include <vector>
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -39,6 +34,7 @@ namespace JuicerProc {
 }
 
 struct InstanceState;
+struct WorkingState;
 
 // Full class declaration
 class JuicerProcessor : public OFX::ImageProcessor {

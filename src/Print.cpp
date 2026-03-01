@@ -1395,10 +1395,18 @@ namespace Print {
         using Spectral::build_curve_on_reference_axis_from_log10_pairs;
 
         reset_profile_state(out, runtime);
+        auto trace_print_json_profile = [&](const char* prefix, const char* suffix) {
+            if (!JTRACE_ENABLED(1)) {
+                return;
+            }
+            std::ostringstream oss;
+            oss << prefix << "'" << jsonProfilePath << "'" << suffix;
+            JTRACE("PRINT", oss.str());
+        };
 
         JsonProfileContext jsonCtx = load_json_profile(jsonProfilePath);
         if (!jsonCtx.hasProfile) {
-            JTRACE("PRINT", std::string("FATAL: missing JSON profile '") + jsonProfilePath + "' for print paper (glare metadata required)");
+            trace_print_json_profile("FATAL: missing JSON profile ", " for print paper (glare metadata required)");
             return;
         }
 
@@ -1425,7 +1433,7 @@ namespace Print {
             c_eps, m_eps, y_eps, r_sens, g_sens, b_sens, usedJsonEps, usedJsonSens);
 
         if (jsonCtx.hasProfile && usedJsonEps) {
-            JTRACE("PRINT", "PROFILE_LOAD dye densities from JSON '" + jsonProfilePath + "'");
+            trace_print_json_profile("PROFILE_LOAD dye densities from JSON ", "");
         }
 
         const bool epsOk = build_eps_curves(c_eps, m_eps, y_eps, out);

@@ -9,16 +9,11 @@
 #include <initializer_list>
 #include <utility>
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
-#include "ColorTransforms.h"
 #include "Illuminants.h"
 #include "ProfileJSONLoader.h"
-#include "AkimaInterpolator.h"
-#include "AgxNanSemantics.h"
 #include <sstream>
 #include <algorithm>
 #include <limits>
-#include "Logging.h"
 
 namespace Print {
 

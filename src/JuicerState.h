@@ -21,17 +21,15 @@
 #include <vector>
 #include <unordered_map>
 
-#include "Logging.h"
-#include "Couplers.h"
 #include "Print.h"
 #include "ProfileJSONLoader.h"
+#include "ColorTransforms.h"
 #include "SpectralData.h"
-#include "SpectralProcessing.h"
-#include "WorkingState.h"
 #include "ofxImageEffect.h"
 #include "ScannerOptics.h"
 
 extern const std::string gDataDir;
+struct WorkingState;
 
 namespace JuicerAtomic {
 

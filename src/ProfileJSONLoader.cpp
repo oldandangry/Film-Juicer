@@ -174,18 +174,28 @@ namespace Profiles {
         }
 
         bool parse_json_file(const std::string& path, Json& out) {
+            const auto trace_parse_failure = [&](const char* reason) {
+                if (!JTRACE_ENABLED(1)) {
+                    return;
+                }
+                JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': "
+                    + (reason ? reason : "unknown exception"));
+            };
+
             errno = 0;
             std::ifstream file(path, std::ios::binary);
             if (!file.is_open()) {
-                const int err = errno;
-                std::string reason;
-                if (err != 0) {
-                    reason = std::system_category().message(err);
+                if (JTRACE_ENABLED(1)) {
+                    const int err = errno;
+                    std::string reason;
+                    if (err != 0) {
+                        reason = std::system_category().message(err);
+                    }
+                    if (reason.empty()) {
+                        reason = "unknown error";
+                    }
+                    JTRACE("PROFILE", std::string("failed to open profile '") + path + "': " + reason);
                 }
-                if (reason.empty()) {
-                    reason = "unknown error";
-                }
-                JTRACE("PROFILE", std::string("failed to open profile '") + path + "': " + reason);
                 return false;
             }
             std::ostringstream oss;
@@ -202,20 +212,22 @@ namespace Profiles {
                     /*ignore_comments*/true);
             }
             catch (const Json::parse_error& e) {
-                JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': " + e.what());
+                trace_parse_failure(e.what());
                 return false;
             }
             catch (const std::exception& e) {
-                JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': " + e.what());
+                trace_parse_failure(e.what());
                 return false;
             }
             catch (...) {
-                JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': unknown exception");
+                trace_parse_failure(nullptr);
                 return false;
             }
 
             if (out.is_discarded()) {
-                JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': parser discarded document");
+                if (JTRACE_ENABLED(1)) {
+                    JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': parser discarded document");
+                }
                 return false;
             }
 
@@ -297,38 +309,48 @@ namespace Profiles {
         }
 
         bool json_wavelengths_match_reference_axis(const Json& wavelengths, std::string_view sourceLabel) {
-            const std::string labelStr = sourceLabel.empty()
-                ? std::string("profile JSON")
-                : std::string(sourceLabel);
+            const std::string_view label = sourceLabel.empty()
+                ? std::string_view("profile JSON")
+                : sourceLabel;
 
             if (!wavelengths.is_array()) {
-                JTRACE("PROFILE", "JSON wavelengths not an array (" + labelStr + ')');
+                if (JTRACE_ENABLED(1)) {
+                    std::ostringstream oss;
+                    oss << "JSON wavelengths not an array (" << label << ')';
+                    JTRACE("PROFILE", oss.str());
+                }
                 return false;
             }
             if (wavelengths.size() != Spectral::kNumSamples) {
-                std::ostringstream oss;
-                oss << "JSON wavelengths mismatch (" << labelStr << "): expected "
-                    << Spectral::kNumSamples << " samples, got " << wavelengths.size();
-                JTRACE("PROFILE", oss.str());
+                if (JTRACE_ENABLED(1)) {
+                    std::ostringstream oss;
+                    oss << "JSON wavelengths mismatch (" << label << "): expected "
+                        << Spectral::kNumSamples << " samples, got " << wavelengths.size();
+                    JTRACE("PROFILE", oss.str());
+                }
                 return false;
             }
 
             for (int i = 0; i < Spectral::kNumSamples; ++i) {
                 std::optional<float> wlOpt = parse_optional_float(wavelengths[i]);
                 if (!wlOpt) {
-                    std::ostringstream oss;
-                    oss << "JSON wavelength missing at index " << i
-                        << " (" << labelStr << ')';
-                    JTRACE("PROFILE", oss.str());
+                    if (JTRACE_ENABLED(1)) {
+                        std::ostringstream oss;
+                        oss << "JSON wavelength missing at index " << i
+                            << " (" << label << ')';
+                        JTRACE("PROFILE", oss.str());
+                    }
                     return false;
                 }
                 const float expected = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
                 if (*wlOpt != expected) {
-                    std::ostringstream oss;
-                    oss << "JSON wavelength mismatch at index " << i
-                        << " (" << labelStr << "): expected "
-                        << expected << "nm, got " << *wlOpt << "nm";
-                    JTRACE("PROFILE", oss.str());
+                    if (JTRACE_ENABLED(1)) {
+                        std::ostringstream oss;
+                        oss << "JSON wavelength mismatch at index " << i
+                            << " (" << label << "): expected "
+                            << expected << "nm, got " << *wlOpt << "nm";
+                        JTRACE("PROFILE", oss.str());
+                    }
                     return false;
                 }
             }
@@ -659,7 +681,9 @@ namespace Profiles {
         if (!wavelengths.is_array() || !dyeDensity.is_array()) {
             return false;
         }
-        const std::string wavelengthLabel = jsonPath.empty() ? std::string("profile JSON") : jsonPath;
+        const std::string_view wavelengthLabel = jsonPath.empty()
+            ? std::string_view("profile JSON")
+            : std::string_view(jsonPath);
         if (!json_wavelengths_match_reference_axis(wavelengths, wavelengthLabel)) {
             return false;
         }
@@ -861,10 +885,16 @@ namespace Profiles {
             parse_masking_couplers(root["masking_couplers"], outProfile.maskingCouplers);
         }
 
+        auto log_profile_field_failure = [&](const char* section, const std::string& field) {
+            if (JTRACE_ENABLED(1)) {
+                std::ostringstream oss;
+                oss << "FATAL: missing or invalid " << (section ? section : "profile")
+                    << " field '" << field << "' in profile '" << jsonPath << "'";
+                JTRACE("PROFILE", oss.str());
+            }
+        };
         auto log_glare_failure = [&](const std::string& field) {
-            std::ostringstream oss;
-            oss << "FATAL: missing or invalid glare field '" << field << "' in profile '" << jsonPath << "'";
-            JTRACE("PROFILE", oss.str());
+            log_profile_field_failure("glare", field);
         };
 
         if (!root.contains("glare") || !root["glare"].is_object()) {
@@ -924,14 +954,10 @@ namespace Profiles {
 
         if (isNegative) {
             auto log_grain_failure = [&](const std::string& field) {
-                std::ostringstream oss;
-                oss << "FATAL: missing or invalid grain field '" << field << "' in profile '" << jsonPath << "'";
-                JTRACE("PROFILE", oss.str());
+                log_profile_field_failure("grain", field);
             };
             auto log_halation_failure = [&](const std::string& field) {
-                std::ostringstream oss;
-                oss << "FATAL: missing or invalid halation field '" << field << "' in profile '" << jsonPath << "'";
-                JTRACE("PROFILE", oss.str());
+                log_profile_field_failure("halation", field);
             };
 
             if (!root.contains("grain") || !root["grain"].is_object()) {

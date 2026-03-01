@@ -104,6 +104,106 @@ inline std::uint64_t elapsed_ms(const std::chrono::steady_clock::time_point& sta
         std::chrono::duration_cast<std::chrono::milliseconds>(delta).count());
 }
 
+const char* registry_trace_or_unknown(const char* value) noexcept {
+    if (value && value[0] != '\0') {
+        return value;
+    }
+    return "unknown";
+}
+
+const char* registry_trace_or_unspecified(const char* value) noexcept {
+    if (value && value[0] != '\0') {
+        return value;
+    }
+    return "unspecified";
+}
+
+const char* registry_trace_or(const char* value, const char* fallback) noexcept {
+    if (value) {
+        return value;
+    }
+    return fallback;
+}
+
+const char* registry_bool_reason(bool value, const char* whenTrue, const char* whenFalse) noexcept {
+    if (value) {
+        return whenTrue;
+    }
+    return whenFalse;
+}
+
+std::uint32_t registry_bool_u32(bool value) noexcept {
+    if (value) {
+        return 1u;
+    }
+    return 0u;
+}
+
+const char* registry_mutation_begin_reason(bool orderOk, bool reentrant) noexcept {
+    if (!orderOk) {
+        return "sequence_order_violation";
+    }
+    if (reentrant) {
+        return "ok_reentrant";
+    }
+    return "ok";
+}
+
+const char* registry_entry_lifecycle_name(const RegistryEntry* entry) noexcept {
+    if (entry) {
+        return to_cstr(entry->lifecycleState);
+    }
+    return "Missing";
+}
+
+int registry_device_id_or_default(const DeviceContextKey* key) noexcept {
+    if (key) {
+        return key->deviceId;
+    }
+    return -1;
+}
+
+std::uintptr_t registry_context_bits_or_zero(const DeviceContextKey* key) noexcept {
+    if (key) {
+        return reinterpret_cast<std::uintptr_t>(key->contextOpaque);
+    }
+    return 0;
+}
+
+std::string registry_trace_event_prefix(const char* eventName) {
+    return std::string("event=") + registry_trace_or_unknown(eventName);
+}
+
+std::string registry_trace_device_context_fields(const DeviceContextKey* key) {
+    const int deviceId = registry_device_id_or_default(key);
+    const std::uintptr_t contextBits = registry_context_bits_or_zero(key);
+    return std::string(" device_id=") + std::to_string(deviceId)
+        + " context=" + std::to_string(contextBits);
+}
+
+std::string registry_trace_handle_prefix(RegistryHandle handle, const DeviceContextKey& key) {
+    return std::string("handle=") + std::to_string(handle.value)
+        + registry_trace_device_context_fields(&key);
+}
+
+const char* registry_retire_reason_name(RegistryRetireReason reason) noexcept {
+    switch (reason) {
+    case RegistryRetireReason::ContextReset:
+        return "context_reset";
+    case RegistryRetireReason::Idle:
+        return "idle";
+    default:
+        return "unknown";
+    }
+}
+
+const char* registry_lifecycle_timeout_reason(ContextLifecycleState observedState) noexcept {
+    if (observedState == ContextLifecycleState::Draining) {
+        return "drain_timeout";
+    }
+    return "rebind_timeout";
+}
+
 std::shared_ptr<MetadataMutationLane> resolve_mutation_lane(const DeviceContextKey* managerKey) {
     MetadataMutationLaneDirectory& directory = mutation_lane_directory();
     if (!managerKey || managerKey->deviceId < 0) {
@@ -132,6 +232,24 @@ void reset_scope(MetadataMutationScope& scope) noexcept {
 void reset_thread_mutation_context() noexcept {
     gMutationThreadDepth = 0;
     gMutationThreadTicket = 0;
+}
+
+DeviceContextKey registry_manager_key_or_default(
+    bool hasManagerKey,
+    const DeviceContextKey* managerKey) noexcept {
+    if (hasManagerKey && managerKey) {
+        return *managerKey;
+    }
+    return DeviceContextKey{};
+}
+
+const DeviceContextKey* registry_manager_key_ptr_or_null(
+    bool hasManagerKey,
+    const DeviceContextKey* managerKey) noexcept {
+    if (hasManagerKey) {
+        return managerKey;
+    }
+    return nullptr;
 }
 
 void trace_mutation_reject(
@@ -242,7 +360,7 @@ bool acquire_lane_ticket(
         depthAfterEnqueue,
         out.waitedMs,
         true,
-        out.observedBackpressure ? "accepted_after_backpressure" : "accepted");
+        registry_bool_reason(out.observedBackpressure, "accepted_after_backpressure", "accepted"));
 
     while (out.ticket != lane.servingTicket || lane.ownerDepth != 0) {
         note_queue_wait_if_needed(out.observedWait);
@@ -264,7 +382,7 @@ bool acquire_lane_ticket(
         lane_depth_nolock(lane),
         out.waitedMs,
         true,
-        out.observedWait ? "turn_wait" : "immediate");
+        registry_bool_reason(out.observedWait, "turn_wait", "immediate"));
     return true;
 }
 
@@ -284,7 +402,10 @@ inline std::uint64_t monotonic_time_ms() noexcept {
 }
 
 inline std::uint64_t saturating_elapsed_ms(std::uint64_t nowMs, std::uint64_t thenMs) noexcept {
-    return (nowMs >= thenMs) ? (nowMs - thenMs) : 0ull;
+    if (nowMs >= thenMs) {
+        return nowMs - thenMs;
+    }
+    return 0ull;
 }
 
 void publish_registry_live_count(std::size_t count) noexcept {
@@ -299,6 +420,20 @@ inline std::uint64_t next_nonzero_counter(std::atomic<std::uint64_t>& counter) n
     return value;
 }
 
+std::uint64_t registry_entry_handle_value_or_zero(const RegistryEntry* entry) noexcept {
+    if (entry) {
+        return entry->handle.value;
+    }
+    return 0;
+}
+
+std::uint64_t registry_entry_active_submissions_or_zero(const RegistryEntry* entry) noexcept {
+    if (entry) {
+        return entry->activeSubmissionCount;
+    }
+    return 0;
+}
+
 void trace_registry_event(const DeviceContextKey* key,
                           const RegistryEntry* entry,
                           const char* eventName,
@@ -311,18 +446,15 @@ void trace_registry_event(const DeviceContextKey* key,
     if (!JTRACE_ENABLED(2)) {
         return;
     }
-    const int deviceId = key ? key->deviceId : -1;
-    const std::uintptr_t contextBits = key ? reinterpret_cast<std::uintptr_t>(key->contextOpaque) : 0;
-    const std::uint64_t handleValue = entry ? entry->handle.value : 0;
-    const char* lifecycle = entry ? to_cstr(entry->lifecycleState) : "Missing";
-    const std::uint64_t activeSubmissions = entry ? entry->activeSubmissionCount : 0;
+    const std::uint64_t handleValue = registry_entry_handle_value_or_zero(entry);
+    const char* lifecycle = registry_entry_lifecycle_name(entry);
+    const std::uint64_t activeSubmissions = registry_entry_active_submissions_or_zero(entry);
     const std::string msg =
-        std::string("event=") + (eventName ? eventName : "unknown") +
-        " accepted=" + std::to_string(accepted ? 1 : 0) +
-        " reason=" + (reason ? reason : "unspecified") +
+        registry_trace_event_prefix(eventName) +
+        " accepted=" + std::to_string(registry_bool_u32(accepted)) +
+        " reason=" + registry_trace_or_unspecified(reason) +
         " handle=" + std::to_string(handleValue) +
-        " device_id=" + std::to_string(deviceId) +
-        " context=" + std::to_string(contextBits) +
+        registry_trace_device_context_fields(key) +
         " lifecycle=" + lifecycle +
         " active_submissions=" + std::to_string(activeSubmissions) +
         " idle_ms=" + std::to_string(idleMs) +
@@ -397,10 +529,6 @@ bool is_legal_transition(ContextLifecycleState from, ContextLifecycleState to) n
     }
 }
 
-const char* registry_trace_reason_or_unspecified(const char* reason) noexcept {
-    return reason ? reason : "unspecified";
-}
-
 void trace_lifecycle_transition(const DeviceContextKey& key,
                                 RegistryHandle handle,
                                 ContextLifecycleState from,
@@ -410,14 +538,11 @@ void trace_lifecycle_transition(const DeviceContextKey& key,
     if (!JTRACE_ENABLED(1)) {
         return;
     }
-    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-    const std::string msg = std::string("handle=") + std::to_string(handle.value)
-        + " device_id=" + std::to_string(key.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = registry_trace_handle_prefix(handle, key)
         + " from=" + to_cstr(from)
         + " to=" + to_cstr(to)
-        + " accepted=" + std::to_string(accepted ? 1 : 0)
-        + " reason=" + registry_trace_reason_or_unspecified(reason);
+        + " accepted=" + std::to_string(registry_bool_u32(accepted))
+        + " reason=" + registry_trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -432,17 +557,14 @@ void trace_lifecycle_bump(const DeviceContextKey& key,
     if (!JTRACE_ENABLED(1)) {
         return;
     }
-    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-    const std::string msg = std::string("handle=") + std::to_string(handle.value)
-        + " device_id=" + std::to_string(key.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = registry_trace_handle_prefix(handle, key)
         + " action=bump"
-        + " accepted=" + std::to_string(accepted ? 1 : 0)
+        + " accepted=" + std::to_string(registry_bool_u32(accepted))
         + " prev_registry_generation=" + std::to_string(previousRegistryGeneration)
         + " new_registry_generation=" + std::to_string(newRegistryGeneration)
         + " prev_context_epoch=" + std::to_string(previousContextEpoch)
         + " new_context_epoch=" + std::to_string(newContextEpoch)
-        + " reason=" + registry_trace_reason_or_unspecified(reason);
+        + " reason=" + registry_trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -514,16 +636,13 @@ void trace_lifecycle_timeout(
     if (!JTRACE_ENABLED(1)) {
         return;
     }
-    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-    const std::string msg = std::string("handle=") + std::to_string(handle.value)
-        + " device_id=" + std::to_string(key.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = registry_trace_handle_prefix(handle, key)
         + " action=watchdog_timeout"
         + " observed_state=" + to_cstr(observedState)
         + " state_age_ms=" + std::to_string(stateAgeMs)
         + " timeout_ms=" + std::to_string(timeoutMs)
-        + " escalated=" + std::to_string(escalated ? 1 : 0)
-        + " reason=" + registry_trace_reason_or_unspecified(reason);
+        + " escalated=" + std::to_string(registry_bool_u32(escalated))
+        + " reason=" + registry_trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -666,6 +785,15 @@ std::size_t compute_reap_count(std::size_t candidateCount, std::uint64_t overflo
     return std::min(candidateCount, overflowCount);
 }
 
+std::uint64_t registry_overflow_count_or_zero(
+    std::uint64_t liveManagersBefore,
+    std::uint64_t maxLive) noexcept {
+    if (liveManagersBefore > maxLive) {
+        return liveManagersBefore - maxLive;
+    }
+    return 0ull;
+}
+
 void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protectKey) noexcept {
     const ResourceManagerConfigEffective& cfg = registry_policy_config();
     if (cfg.maxLiveManagersPerProcess == 0 || cfg.managerIdleReapMs == 0) {
@@ -683,7 +811,7 @@ void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protec
     const std::uint64_t liveManagersBefore = static_cast<std::uint64_t>(state.byDeviceContext.size());
     publish_registry_live_count(state.byDeviceContext.size());
     const std::uint64_t maxLive = static_cast<std::uint64_t>(cfg.maxLiveManagersPerProcess);
-    const std::uint64_t overflow = (liveManagersBefore > maxLive) ? (liveManagersBefore - maxLive) : 0ull;
+    const std::uint64_t overflow = registry_overflow_count_or_zero(liveManagersBefore, maxLive);
     if (!cadenceDue && overflow == 0) {
         return;
     }
@@ -709,7 +837,7 @@ void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protec
 
     for (std::size_t i = 0; i < reapCount; ++i) {
         const ReapCandidate& candidate = candidates[i];
-        const char* reason = (overflow > 0) ? "max_live_oldest_idle" : "idle_timeout";
+        const char* reason = registry_bool_reason(overflow > 0, "max_live_oldest_idle", "idle_timeout");
         (void)erase_registry_entry_locked(
             state,
             candidate.key,
@@ -741,7 +869,7 @@ bool run_freeze_drain_bump_resume_locked(const DeviceContextKey& key,
         key,
         entry.handle,
         ok,
-        reason ? reason : "barrier_bump");
+        registry_trace_or(reason, "barrier_bump"));
 
     ok = ok && transition_entry_locked(
         key, entry, ContextLifecycleState::Draining, ContextLifecycleState::Rebinding, "barrier_rebind");
@@ -823,7 +951,7 @@ bool metadata_mutation_begin(
     outScope.sequence = sequence;
     outScope.queueTicket = acquire.ticket;
     outScope.hasManagerKey = (managerKey && managerKey->deviceId >= 0);
-    outScope.managerKey = outScope.hasManagerKey ? *managerKey : DeviceContextKey{};
+    outScope.managerKey = registry_manager_key_or_default(outScope.hasManagerKey, managerKey);
     outScope.active = true;
     gMutationThreadDepth += 1;
     gMutationThreadTicket = acquire.ticket;
@@ -835,7 +963,7 @@ bool metadata_mutation_begin(
         sequence,
         true,
         expectedSequence,
-        orderOk ? (acquire.reentrant ? "ok_reentrant" : "ok") : "sequence_order_violation");
+        registry_mutation_begin_reason(orderOk, acquire.reentrant));
     return true;
 }
 
@@ -855,7 +983,7 @@ void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noex
     }
 
     std::shared_ptr<MetadataMutationLane> lane =
-        resolve_mutation_lane(scope.hasManagerKey ? &scope.managerKey : nullptr);
+        resolve_mutation_lane(registry_manager_key_ptr_or_null(scope.hasManagerKey, &scope.managerKey));
     if (!lane) {
         trace_mutation_reject(
             "end",
@@ -979,7 +1107,7 @@ MetadataMutationGuard::MetadataMutationGuard(
         _hasManagerKey = true;
         _managerKey = *managerKey;
     }
-    const DeviceContextKey* key = _hasManagerKey ? &_managerKey : nullptr;
+    const DeviceContextKey* key = registry_manager_key_ptr_or_null(_hasManagerKey, &_managerKey);
     (void)metadata_mutation_begin(_stage, _scope, key);
 }
 
@@ -1146,9 +1274,7 @@ bool registry_validate_lifecycle_stage(
         ResourceManagerState& rmState = global_state();
         telemetry_counter_add(rmState.lifecycleTimeoutEvents, 1);
         const RegistryHandle observedHandle = entry.handle;
-        const char* timeoutReason = (observedState == ContextLifecycleState::Draining)
-            ? "drain_timeout"
-            : "rebind_timeout";
+        const char* timeoutReason = registry_lifecycle_timeout_reason(observedState);
 
         bool escalated = false;
         if (entry.activeSubmissionCount == 0) {
@@ -1288,7 +1414,7 @@ bool registry_freeze_drain_bump_resume(
             ContextLifecycleState::Unbound,
             ContextLifecycleState::Freezing,
             false,
-            reason ? reason : "barrier_missing_entry");
+            registry_trace_or(reason, "barrier_missing_entry"));
         return false;
     }
     const bool ok = run_freeze_drain_bump_resume_locked(key, it->second, reason);
@@ -1363,15 +1489,12 @@ void registry_retire(
         return;
     }
     RegistryEntry removed = entry;
-    const char* retireReason = (reason == RegistryRetireReason::ContextReset)
-        ? "context_reset"
-        : ((reason == RegistryRetireReason::Idle) ? "idle" : "unknown");
     (void)erase_registry_entry_locked(
         state,
         deviceKey,
         removed,
         "retire",
-        retireReason,
+        registry_retire_reason_name(reason),
         false,
         0);
 }

@@ -5,17 +5,18 @@ bool ensure_active_for_command(
     const SubmissionTransaction& transaction,
     std::string& outError,
     const char* commandName) {
-    if (!validate_lifecycle_for_stage(transaction, commandName ? commandName : "command", false, &outError)) {
+    const char* stage = trace_or(commandName, "command");
+    const char* rejectionStage = trace_or(commandName, "command_requires_active_submission");
+    if (!validate_lifecycle_for_stage(transaction, stage, false, &outError)) {
         telemetry_record_module_boundary_violation();
         telemetry_trace_module_boundary_violation(
             transaction.transactionId,
             transaction.snapshot.snapshotId,
             transaction.snapshot.traceSchemaVersion,
-            commandName ? commandName : "command_requires_active_submission");
+            rejectionStage);
         return false;
     }
 
-    const char* stage = commandName ? commandName : "command";
     return validate_stale_tuple_for_stage(
         transaction,
         stage,
@@ -23,7 +24,49 @@ bool ensure_active_for_command(
         "stale transaction in command path (reason=",
         &outError,
         true,
-        commandName ? commandName : "command_requires_active_submission");
+        rejectionStage);
+}
+
+const char* prewarm_result_reason(const std::string& prewarmError) noexcept {
+    if (prewarmError.empty()) {
+        return "ok";
+    }
+    return "skip";
+}
+
+const char* reclaim_retry_reason(std::size_t reclaimedBytes) noexcept {
+    if (reclaimedBytes > 0) {
+        return "retry_after_reap";
+    }
+    return "reap_no_progress";
+}
+
+const char* bool_reason(bool value, const char* whenTrue, const char* whenFalse) noexcept {
+    if (value) {
+        return whenTrue;
+    }
+    return whenFalse;
+}
+
+std::uint32_t bool_u32(bool value) noexcept {
+    if (value) {
+        return 1u;
+    }
+    return 0u;
+}
+
+const char* commands_error_or_cstr(const std::string& error, const char* fallback) noexcept {
+    if (error.empty()) {
+        return fallback;
+    }
+    return error.c_str();
+}
+
+std::string commands_error_or_message(const std::string& error, const char* fallback) {
+    if (error.empty()) {
+        return std::string(fallback);
+    }
+    return error;
 }
 
 void complete_tier_circuit_attempt(
@@ -33,14 +76,14 @@ void complete_tier_circuit_attempt(
     bool success,
     const char* successReason,
     const std::string& failureError) {
-    const char* stageName = (commandName && *commandName) ? commandName : "command";
+    const char* stageName = trace_or_non_empty(commandName, "command");
     if (success) {
         tier_circuit_record_outcome(
             transaction,
             stageName,
             attempt,
             true,
-            successReason ? successReason : "ensure_success");
+            trace_or(successReason, "ensure_success"));
         return;
     }
     if (tier_circuit_should_count_failure(failureError)) {
@@ -70,6 +113,86 @@ void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& ove
         return;
     }
     total = next;
+}
+
+std::uint64_t commands_preferred_upload_core_hash(const WorkingState& ws) noexcept {
+    if (ws.uploadCoreHash != 0) {
+        return ws.uploadCoreHash;
+    }
+    return ws.coreHash;
+}
+
+float commands_sanitize_filter_shift_step(float value) noexcept {
+    if (std::isfinite(value)) {
+        return value;
+    }
+    return 0.0f;
+}
+
+std::uint64_t commands_neutral_filter_hash_or_default(const Print::Runtime& prt) noexcept {
+    if (prt.neutralFilterHash != 0) {
+        return prt.neutralFilterHash;
+    }
+    return Print::kDefaultNeutralFilterHash;
+}
+
+const Scanner::ScannerStaticKey& commands_select_scanner_static_key(
+    const WorkingState& ws,
+    bool negativeMedium) noexcept {
+    if (negativeMedium) {
+        return ws.negativeStaticKey;
+    }
+    return ws.printStaticKey;
+}
+
+const Scanner::ScannerMediumRuntime& commands_select_scanner_medium_runtime(
+    const WorkingState& ws,
+    bool negativeMedium) noexcept {
+    if (negativeMedium) {
+        return ws.negativeMediumRuntime;
+    }
+    return ws.printMediumRuntime;
+}
+
+const JuicerCuda::Resources::DeviceSpectralLut& commands_select_scan_lut_slot(
+    JuicerCuda::Resources& resources,
+    bool negativeMedium) noexcept {
+    if (negativeMedium) {
+        return resources.scanNegativeLut;
+    }
+    return resources.scanPrintLut;
+}
+
+std::uint64_t commands_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t earlierMs) noexcept {
+    if (nowMs > earlierMs) {
+        return nowMs - earlierMs;
+    }
+    return 0;
+}
+
+std::uint64_t commands_uncached_bytes(bool cached, std::uint64_t bytes) noexcept {
+    if (cached) {
+        return 0;
+    }
+    return bytes;
+}
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+cudaStream_t commands_cuda_stream_or_null(void* cudaStreamOpaque) noexcept {
+    if (!cudaStreamOpaque) {
+        return nullptr;
+    }
+    return reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+}
+#endif
+
+bool commands_allow_durable_admission(
+    const CacheAdmissionDecision& decision,
+    bool churnProbationAllowDurable) noexcept {
+    if (decision.probationApplied) {
+        return churnProbationAllowDurable;
+    }
+    return decision.allowDurableAdmission;
 }
 
 template <typename T>
@@ -131,8 +254,7 @@ void add_scan_medium_upload_estimate_bytes(
 std::uint64_t estimate_upload_core_request_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws) noexcept {
-    const std::uint64_t wsCoreHash =
-        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     const std::uint64_t wsDirHash = ws.dirHash;
     if (wsCoreHash == 0 || wsDirHash == 0) {
         return kUploadReservationThresholdDefaultBytes;
@@ -215,7 +337,8 @@ std::uint64_t estimate_scan_lut_upload_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     bool negativeMedium) noexcept {
-    const Scanner::ScannerStaticKey& staticKey = negativeMedium ? ws.negativeStaticKey : ws.printStaticKey;
+    const Scanner::ScannerStaticKey& staticKey =
+        commands_select_scanner_static_key(ws, negativeMedium);
     const std::uint32_t res =
         ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
     std::uint64_t voxelCount = 0;
@@ -234,7 +357,8 @@ std::uint64_t estimate_scan_lut_upload_bytes(
         return std::numeric_limits<std::uint64_t>::max();
     }
 
-    const Scanner::ScannerMediumRuntime& medium = negativeMedium ? ws.negativeMediumRuntime : ws.printMediumRuntime;
+    const Scanner::ScannerMediumRuntime& medium =
+        commands_select_scanner_medium_runtime(ws, negativeMedium);
     if (!medium.tables || medium.tables->tablesHash == 0 || medium.range.digest == 0) {
         return 0;
     }
@@ -251,10 +375,10 @@ std::uint64_t estimate_scan_lut_upload_bytes(
     {
         std::lock_guard<std::mutex> lock(resources.m);
         const JuicerCuda::Resources::DeviceSpectralLut& dst =
-            negativeMedium ? resources.scanNegativeLut : resources.scanPrintLut;
+            commands_select_scan_lut_slot(resources, negativeMedium);
         cached = dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
     }
-    return cached ? 0 : bytes;
+    return commands_uncached_bytes(cached, bytes);
 }
 
 std::uint64_t estimate_print_illuminant_upload_bytes(
@@ -266,16 +390,14 @@ std::uint64_t estimate_print_illuminant_upload_bytes(
     if (k <= 0) {
         return 0;
     }
-    const std::uint64_t wsCoreHash =
-        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     if (wsCoreHash == 0) {
         return 0;
     }
-    const float yKey = std::isfinite(params.yFilter) ? params.yFilter : 0.0f;
-    const float mKey = std::isfinite(params.mFilter) ? params.mFilter : 0.0f;
-    const float cKey = std::isfinite(params.cFilter) ? params.cFilter : 0.0f;
-    const std::uint64_t neutralFilterHash =
-        (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+    const float yKey = commands_sanitize_filter_shift_step(params.yFilter);
+    const float mKey = commands_sanitize_filter_shift_step(params.mFilter);
+    const float cKey = commands_sanitize_filter_shift_step(params.cFilter);
+    const std::uint64_t neutralFilterHash = commands_neutral_filter_hash_or_default(prt);
 
     bool cached = false;
     {
@@ -459,7 +581,7 @@ bool graph_entry_in_keep_hot_window(
     if (keepHotMs == 0 || entry.lastUseMs == 0) {
         return false;
     }
-    const std::uint64_t ageMs = (nowMs > entry.lastUseMs) ? (nowMs - entry.lastUseMs) : 0;
+    const std::uint64_t ageMs = commands_elapsed_ms_since(nowMs, entry.lastUseMs);
     return ageMs < static_cast<std::uint64_t>(keepHotMs);
 }
 
@@ -613,7 +735,7 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
             ++index;
             continue;
         }
-        const std::uint64_t ageMs = (nowMs > entry.lastUseMs) ? (nowMs - entry.lastUseMs) : 0;
+        const std::uint64_t ageMs = commands_elapsed_ms_since(nowMs, entry.lastUseMs);
         if (ageMs < kGraphLargeEntryDecayMs) {
             ++index;
             continue;
@@ -995,10 +1117,10 @@ bool command_retire_context_with_reason(
     const char* commandName,
     std::string& outError) {
     outError.clear();
-    MetadataMutationGuard mutationGuard(commandName ? commandName : "command_retire_context", &key);
+    const char* stageName = trace_or(commandName, "command_retire_context");
+    MetadataMutationGuard mutationGuard(stageName, &key);
     if (!mutationGuard.ok()) {
-        outError = std::string("metadata mutation guard rejected ")
-            + (commandName ? commandName : "command_retire_context");
+        outError = std::string("metadata mutation guard rejected ") + stageName;
         return false;
     }
 
@@ -1050,7 +1172,7 @@ bool command_retire_context_idle(
 
 namespace {
 const char* scan_lut_medium_name(bool negativeMedium) noexcept {
-    return negativeMedium ? "negative" : "print";
+    return bool_reason(negativeMedium, "negative", "print");
 }
 
 bool compute_expected_scan_lut_hash(
@@ -1058,35 +1180,34 @@ bool compute_expected_scan_lut_hash(
     bool negativeMedium,
     std::uint64_t& outExpectedHash) noexcept {
     outExpectedHash = 0;
-    const Scanner::ScannerMediumRuntime& medium = negativeMedium
-        ? ws.negativeMediumRuntime
-        : ws.printMediumRuntime;
-    const Scanner::ScannerStaticKey& staticKey = negativeMedium
-        ? ws.negativeStaticKey
-        : ws.printStaticKey;
-    const Scanner::ScannerMedium expectedMedium = negativeMedium
-        ? Scanner::ScannerMedium::Negative
-        : Scanner::ScannerMedium::Print;
+    const Scanner::ScannerMediumRuntime* medium = &ws.printMediumRuntime;
+    const Scanner::ScannerStaticKey* staticKey = &ws.printStaticKey;
+    Scanner::ScannerMedium expectedMedium = Scanner::ScannerMedium::Print;
+    if (negativeMedium) {
+        medium = &ws.negativeMediumRuntime;
+        staticKey = &ws.negativeStaticKey;
+        expectedMedium = Scanner::ScannerMedium::Negative;
+    }
 
-    if (!medium.tables || medium.tables->K <= 0) {
+    if (!medium->tables || medium->tables->K <= 0) {
         return false;
     }
-    if (medium.medium != expectedMedium || staticKey.medium != expectedMedium) {
+    if (medium->medium != expectedMedium || staticKey->medium != expectedMedium) {
         return false;
     }
-    if (medium.tables->tablesHash == 0 || medium.range.digest == 0) {
+    if (medium->tables->tablesHash == 0 || medium->range.digest == 0) {
         return false;
     }
-    if (staticKey.tablesHash != medium.tables->tablesHash ||
-        staticKey.densityRangeHash != medium.range.digest) {
+    if (staticKey->tablesHash != medium->tables->tablesHash ||
+        staticKey->densityRangeHash != medium->range.digest) {
         return false;
     }
     const std::uint32_t res =
-        ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
+        ResourceManager::normalize_scan_lut_resolution(staticKey->lutResolution);
     outExpectedHash = ResourceManager::make_scan_lut_key_digest(
-        static_cast<std::uint32_t>(medium.medium),
-        medium.tables->tablesHash,
-        medium.range.digest,
+        static_cast<std::uint32_t>(medium->medium),
+        medium->tables->tablesHash,
+        medium->range.digest,
         res);
     return outExpectedHash != 0;
 }
@@ -1131,20 +1252,19 @@ PrivateLutFallbackDecision evaluate_private_lut_fallback(
         resources.scanPrintLut);
 
     decision.activeCount =
-        (resources.privateLutFallbackNegativeActive ? 1u : 0u) +
-        (resources.privateLutFallbackPrintActive ? 1u : 0u);
+        bool_u32(resources.privateLutFallbackNegativeActive) +
+        bool_u32(resources.privateLutFallbackPrintActive);
 
-    bool* slotActive = negativeMedium
-        ? &resources.privateLutFallbackNegativeActive
-        : &resources.privateLutFallbackPrintActive;
-    std::uint64_t* slotHash = negativeMedium
-        ? &resources.privateLutFallbackNegativeHash
-        : &resources.privateLutFallbackPrintHash;
-    const JuicerCuda::Resources::DeviceSpectralLut& slotLut = negativeMedium
-        ? resources.scanNegativeLut
-        : resources.scanPrintLut;
+    bool* slotActive = &resources.privateLutFallbackPrintActive;
+    std::uint64_t* slotHash = &resources.privateLutFallbackPrintHash;
+    const JuicerCuda::Resources::DeviceSpectralLut* slotLut = &resources.scanPrintLut;
+    if (negativeMedium) {
+        slotActive = &resources.privateLutFallbackNegativeActive;
+        slotHash = &resources.privateLutFallbackNegativeHash;
+        slotLut = &resources.scanNegativeLut;
+    }
 
-    if (*slotActive && slotLut.log2XYZ && *slotHash == expectedHash) {
+    if (*slotActive && slotLut->log2XYZ && *slotHash == expectedHash) {
         decision.allowed = true;
         decision.alreadyActive = true;
         decision.reason = "already_active";
@@ -1165,7 +1285,7 @@ PrivateLutFallbackDecision evaluate_private_lut_fallback(
     }
 
     decision.allowed = true;
-    decision.reason = *slotActive ? "slot_reuse" : "admit_new";
+    decision.reason = bool_reason(*slotActive, "slot_reuse", "admit_new");
     return decision;
 }
 
@@ -1197,15 +1317,15 @@ void trace_private_lut_fallback(
         return;
     }
     std::string msg =
-        std::string("stage=") + (stage ? stage : "unknown") +
-        " event=" + (eventName ? eventName : "unknown") +
+        std::string("stage=") + trace_or_unknown(stage) +
+        " event=" + trace_or_unknown(eventName) +
         " medium=" + scan_lut_medium_name(negativeMedium) +
-        " allowed=" + std::to_string(decision.allowed ? 1 : 0) +
-        " already_active=" + std::to_string(decision.alreadyActive ? 1 : 0) +
+        " allowed=" + std::to_string(bool_u32(decision.allowed)) +
+        " already_active=" + std::to_string(bool_u32(decision.alreadyActive)) +
         " active_count=" + std::to_string(decision.activeCount) +
         " per_medium_cap=" + std::to_string(decision.perMediumCap) +
         " per_instance_cap=" + std::to_string(decision.perInstanceCap) +
-        " reason=" + (reason ? reason : decision.reason);
+        " reason=" + trace_or(reason, decision.reason);
     JTRACE("MSLUT", msg);
 }
 
@@ -1230,8 +1350,7 @@ bool command_ensure_uploaded(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_uploaded")) {
         return false;
     }
-    const std::uint64_t wsCoreHash =
-        (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+    const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     bool coreUploadStale = true;
     if (wsCoreHash != 0) {
         std::lock_guard<std::mutex> lock(resources.m);
@@ -1265,7 +1384,7 @@ bool command_ensure_uploaded(
                 "command_ensure_uploaded",
                 "pressure_pre_upload",
                 reclaimError)) {
-            outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
+            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
             return false;
         }
     }
@@ -1317,7 +1436,7 @@ bool command_ensure_uploaded(
             prewarmError);
         if (JTRACE_ENABLED(3)) {
             std::string msg = std::string("stage=prewarm medium=negative result=")
-                + (prewarmError.empty() ? "ok" : "skip");
+                + prewarm_result_reason(prewarmError);
             if (!prewarmError.empty()) {
                 msg += " detail=" + prewarmError;
             }
@@ -1336,7 +1455,7 @@ bool command_ensure_uploaded(
             prewarmError);
         if (JTRACE_ENABLED(3)) {
             std::string msg = std::string("stage=prewarm medium=print result=")
-                + (prewarmError.empty() ? "ok" : "skip");
+                + prewarm_result_reason(prewarmError);
             if (!prewarmError.empty()) {
                 msg += " detail=" + prewarmError;
             }
@@ -1358,9 +1477,7 @@ bool command_ensure_scan_lut_internal(
     const char* commandName,
     void* cudaStreamOpaque,
     std::string& outError) {
-    const char* stageName = (commandName && *commandName)
-        ? commandName
-        : "command_ensure_scan_lut";
+    const char* stageName = trace_or_non_empty(commandName, "command_ensure_scan_lut");
     if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
@@ -1387,7 +1504,7 @@ bool command_ensure_scan_lut_internal(
                 "private_fallback_denied",
                 negativeMedium,
                 invalidDecision,
-                triggerReason ? triggerReason : "invalid_scan_lut_key");
+                trace_or(triggerReason, "invalid_scan_lut_key"));
             return false;
         }
 
@@ -1399,7 +1516,7 @@ bool command_ensure_scan_lut_internal(
                 "private_fallback_denied",
                 negativeMedium,
                 decision,
-                triggerReason ? triggerReason : decision.reason);
+                trace_or(triggerReason, decision.reason));
             return false;
         }
 
@@ -1408,7 +1525,7 @@ bool command_ensure_scan_lut_internal(
             "private_fallback_admit",
             negativeMedium,
             decision,
-            triggerReason ? triggerReason : decision.reason);
+            trace_or(triggerReason, decision.reason));
 
         std::string fallbackError;
         const bool fallbackOk = JuicerCuda::ensure_scan_lut(
@@ -1423,7 +1540,7 @@ bool command_ensure_scan_lut_internal(
                 "private_fallback_failed",
                 negativeMedium,
                 decision,
-                fallbackError.empty() ? "ensure_failed" : fallbackError.c_str());
+                commands_error_or_cstr(fallbackError, "ensure_failed"));
             if (!fallbackError.empty()) {
                 if (!outError.empty()) {
                     outError += " | ";
@@ -1439,7 +1556,7 @@ bool command_ensure_scan_lut_internal(
             "private_fallback_served",
             negativeMedium,
             decision,
-            triggerReason ? triggerReason : "served");
+            trace_or(triggerReason, "served"));
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         return true;
     };
@@ -1467,7 +1584,7 @@ bool command_ensure_scan_lut_internal(
                 stageName,
                 "pressure_pre_upload",
                 reclaimError)) {
-            outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
+            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
             if (try_private_fallback("pressure_pre_upload_reclaim_failed")) {
                 outError.clear();
                 return true;
@@ -1607,7 +1724,7 @@ bool command_ensure_print_illuminant_filtered(
                 "command_ensure_print_illuminant_filtered",
                 "pressure_pre_upload",
                 reclaimError)) {
-            outError = reclaimError.empty() ? "pressure pre-upload reclaim failed" : reclaimError;
+            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
             return false;
         }
     }
@@ -1699,7 +1816,7 @@ bool command_ensure_optics_scratch(
                 "command_ensure_optics_scratch",
                 "pressure_pre_growth",
                 reclaimError)) {
-            outError = reclaimError.empty() ? "pressure pre-growth reclaim failed" : reclaimError;
+            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
             return false;
         }
     }
@@ -1859,14 +1976,14 @@ bool command_ensure_optics_scratch(
                 "command_ensure_optics_scratch",
                 reclaimedBytes,
                 false,
-                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
+                commands_error_or_cstr(reclaimError, "reap_failed"));
             trace_budget_reclaim_retry(
                 transaction,
                 "command_ensure_optics_scratch",
                 attempts,
                 reclaimedBytes,
                 false,
-                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
+                commands_error_or_cstr(reclaimError, "reap_failed"));
             if (!reclaimError.empty()) {
                 outError += " | reclaim_retry_failed: " + reclaimError;
             }
@@ -1884,14 +2001,14 @@ bool command_ensure_optics_scratch(
             "command_ensure_optics_scratch",
             reclaimedBytes,
             true,
-            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+            reclaim_retry_reason(reclaimedBytes));
         trace_budget_reclaim_retry(
             transaction,
             "command_ensure_optics_scratch",
             attempts,
             reclaimedBytes,
             true,
-            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+            reclaim_retry_reason(reclaimedBytes));
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (reclaimedBytes == 0) {
@@ -1969,7 +2086,7 @@ bool command_ensure_spatial_dir_scratch(
                 "command_ensure_spatial_dir_scratch",
                 "pressure_pre_growth",
                 reclaimError)) {
-            outError = reclaimError.empty() ? "pressure pre-growth reclaim failed" : reclaimError;
+            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
             return false;
         }
     }
@@ -2119,14 +2236,14 @@ bool command_ensure_spatial_dir_scratch(
                 "command_ensure_spatial_dir_scratch",
                 reclaimedBytes,
                 false,
-                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
+                commands_error_or_cstr(reclaimError, "reap_failed"));
             trace_budget_reclaim_retry(
                 transaction,
                 "command_ensure_spatial_dir_scratch",
                 attempts,
                 reclaimedBytes,
                 false,
-                reclaimError.empty() ? "reap_failed" : reclaimError.c_str());
+                commands_error_or_cstr(reclaimError, "reap_failed"));
             if (!reclaimError.empty()) {
                 outError += " | reclaim_retry_failed: " + reclaimError;
             }
@@ -2144,14 +2261,14 @@ bool command_ensure_spatial_dir_scratch(
             "command_ensure_spatial_dir_scratch",
             reclaimedBytes,
             true,
-            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+            reclaim_retry_reason(reclaimedBytes));
         trace_budget_reclaim_retry(
             transaction,
             "command_ensure_spatial_dir_scratch",
             attempts,
             reclaimedBytes,
             true,
-            (reclaimedBytes > 0) ? "retry_after_reap" : "reap_no_progress");
+            reclaim_retry_reason(reclaimedBytes));
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (reclaimedBytes == 0) {
@@ -2289,7 +2406,7 @@ bool command_ensure_auto_exposure_buffers(
         meterWidth,
         meterHeight,
         hadPrevious,
-        metadataHit ? "metadata_hit" : "metadata_miss");
+        bool_reason(metadataHit, "metadata_hit", "metadata_miss"));
 
     if (!JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError)) {
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
@@ -2304,7 +2421,7 @@ bool command_ensure_auto_exposure_buffers(
             meterWidth,
             meterHeight,
             hadPrevious,
-            outError.empty() ? "ensure_failed" : outError.c_str());
+            commands_error_or_cstr(outError, "ensure_failed"));
         return false;
     }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
@@ -2331,7 +2448,7 @@ bool command_ensure_auto_exposure_buffers(
         meterWidth,
         meterHeight,
         hadPrevious,
-        metadataHit ? "reuse" : "refresh");
+        bool_reason(metadataHit, "reuse", "refresh"));
     return true;
 }
 
@@ -2363,9 +2480,7 @@ bool command_launch_base_pipeline_graph(
         return true;
     }
 
-    const cudaStream_t stream = cudaStreamOpaque
-        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-        : nullptr;
+    const cudaStream_t stream = commands_cuda_stream_or_null(cudaStreamOpaque);
 
     BaseGraphKey key{};
     key.width = run.width;
@@ -2458,7 +2573,7 @@ bool command_launch_base_pipeline_graph(
                 cfg.keepHotMs,
                 keepHotBypassEvents,
                 keepHotForcedEvictEvents,
-                reason ? reason : "policy");
+                trace_or(reason, "policy"));
         }
         if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
             trace_graph_large_entry_quarantine(
@@ -2472,7 +2587,7 @@ bool command_launch_base_pipeline_graph(
                 decayEvictedEntries,
                 capTrimEvictedEntries,
                 capHit,
-                reason ? reason : "policy");
+                trace_or(reason, "policy"));
         }
     };
     applyGraphLargeEntryPolicy("pre_admission");
@@ -2494,16 +2609,14 @@ bool command_launch_base_pipeline_graph(
         readmitDecision.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
         readmitDecision.cooldownMs = cfg.largeEntryReadmitCooldownMs;
         readmitDecision.ghostHitsRequired = cfg.largeEntryGhostHitsForReadmit;
-        readmitDecision.reason = readmitDecision.enabled ? "not_candidate" : "disabled";
+        readmitDecision.reason = bool_reason(readmitDecision.enabled, "not_candidate", "disabled");
         if (readmitDecision.enabled && readmitDecision.candidate && !kGraphAdmissionCriticalCurrentFrame) {
             auto readmitIt = bucket.largeEntryReadmitByDigest.find(keyDigest);
             if (readmitIt != bucket.largeEntryReadmitByDigest.end()) {
                 readmitDecision.hadHistory = true;
                 GraphLargeEntryReadmitState& readmitState = readmitIt->second;
                 const std::uint64_t nowMs = monotonic_time_ms();
-                readmitDecision.ageMs = (nowMs > readmitState.lastEvictedMs)
-                    ? (nowMs - readmitState.lastEvictedMs)
-                    : 0;
+                readmitDecision.ageMs = commands_elapsed_ms_since(nowMs, readmitState.lastEvictedMs);
                 readmitDecision.inCooldown =
                     (cfg.largeEntryReadmitCooldownMs > 0) &&
                     (readmitDecision.ageMs < static_cast<std::uint64_t>(cfg.largeEntryReadmitCooldownMs));
@@ -2610,9 +2723,7 @@ bool command_launch_base_pipeline_graph(
         }
 
         const bool allowDurableAdmission =
-            admissionDecision.probationApplied
-                ? churnProbationAllowDurable
-                : admissionDecision.allowDurableAdmission;
+            commands_allow_durable_admission(admissionDecision, churnProbationAllowDurable);
         if (!allowDurableAdmission) {
             if (admissionDecision.probationApplied) {
                 std::uint32_t& probationHits = bucket.probationHitsByDigest[keyDigest];

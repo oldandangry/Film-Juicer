@@ -549,6 +549,10 @@ ResourceManagerState& global_state() noexcept {
     return state;
 }
 
+std::uint64_t foundation_observed_lease_generation(
+    bool observeLease,
+    std::uint64_t leaseGeneration) noexcept;
+
 StaleInput state_build_stale_input(
     const SubmissionTransaction& transaction,
     LeaseObservationMode leaseObservationMode) noexcept {
@@ -560,7 +564,8 @@ StaleInput state_build_stale_input(
     staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
     staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
     const bool observeLease = (leaseObservationMode == LeaseObservationMode::Always) || transaction.active;
-    staleInput.observedLeaseGeneration = observeLease ? transaction.leaseGeneration : 0;
+    staleInput.observedLeaseGeneration =
+        foundation_observed_lease_generation(observeLease, transaction.leaseGeneration);
     staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
     return staleInput;
 }
@@ -796,7 +801,66 @@ constexpr const char* kTraceTokenUnknown = "unknown";
 constexpr const char* kTraceTokenUnspecified = "unspecified";
 
 const char* trace_token_or(const char* value, const char* fallback) noexcept {
-    return value ? value : fallback;
+    if (value) {
+        return value;
+    }
+    return fallback;
+}
+
+std::uint32_t foundation_bool_u32(bool value) noexcept {
+    if (value) {
+        return 1u;
+    }
+    return 0u;
+}
+
+std::uint64_t foundation_observed_lease_generation(
+    bool observeLease,
+    std::uint64_t leaseGeneration) noexcept {
+    if (observeLease) {
+        return leaseGeneration;
+    }
+    return 0;
+}
+
+std::string telemetry_trace_txn_snapshot_prefix(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId) {
+    return std::string("transaction_id=") + std::to_string(transactionId)
+        + " snapshot_id=" + std::to_string(snapshotId);
+}
+
+std::string telemetry_trace_txn_snapshot_schema_prefix(
+    std::uint64_t transactionId,
+    std::uint64_t snapshotId,
+    std::uint32_t traceSchemaVersion) {
+    return telemetry_trace_txn_snapshot_prefix(transactionId, snapshotId)
+        + " trace_schema=" + std::to_string(traceSchemaVersion);
+}
+
+std::string telemetry_trace_device_context_fields(const DeviceContextKey* key) {
+    int deviceId = -1;
+    std::uintptr_t contextBits = 0;
+    if (key) {
+        deviceId = key->deviceId;
+        contextBits = reinterpret_cast<std::uintptr_t>(key->contextOpaque);
+    }
+    return std::string(" device_id=") + std::to_string(deviceId)
+        + " context=" + std::to_string(contextBits);
+}
+
+std::string telemetry_trace_event_prefix(const char* eventName) {
+    return std::string("event=") + trace_token_or(eventName, kTraceTokenUnknown);
+}
+
+std::string telemetry_trace_event_stage_prefix(const char* eventName, const char* stage) {
+    return telemetry_trace_event_prefix(eventName)
+        + " stage=" + trace_token_or(stage, kTraceTokenUnknown);
+}
+
+std::string telemetry_trace_phase_stage_prefix(const char* phase, const char* stage) {
+    return std::string("phase=") + trace_token_or(phase, kTraceTokenUnknown)
+        + " stage=" + trace_token_or(stage, kTraceTokenUnknown);
 }
 
 void telemetry_trace_schema_announcement(
@@ -807,9 +871,7 @@ void telemetry_trace_schema_announcement(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " expected_schema=" + std::to_string(kTraceSchemaVersion);
     JTRACE("MSTRC", msg);
 }
@@ -822,8 +884,7 @@ void telemetry_trace_schema_mismatch(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
+        telemetry_trace_txn_snapshot_prefix(transactionId, snapshotId) +
         " observed_schema=" + std::to_string(observedTraceSchemaVersion) +
         " expected_schema=" + std::to_string(kTraceSchemaVersion) +
         " reason=trace_schema_mismatch";
@@ -840,9 +901,7 @@ void telemetry_trace_key_normalization(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " upload_before=" + std::to_string(before.uploadCoreHash) +
         " upload_after=" + std::to_string(after.uploadCoreHash) +
         " dir_before=" + std::to_string(before.dirHash) +
@@ -867,9 +926,7 @@ void telemetry_trace_invalidation(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " lane=" + trace_token_or(lane, kTraceTokenUnknown) +
         " previous_hash=" + std::to_string(previousHash) +
         " current_hash=" + std::to_string(currentHash) +
@@ -889,12 +946,10 @@ void telemetry_trace_dag_edge(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " from=" + trace_token_or(fromNode, kTraceTokenUnknown) +
         " to=" + trace_token_or(toNode, kTraceTokenUnknown) +
-        " allowed=" + std::to_string(allowed ? 1 : 0) +
+        " allowed=" + std::to_string(foundation_bool_u32(allowed)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSDAG", msg);
 }
@@ -908,9 +963,7 @@ void telemetry_trace_module_boundary_violation(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " reason=" + trace_token_or(reason, kTraceTokenUnknown);
     JTRACE("MSCMD", msg);
 }
@@ -928,16 +981,11 @@ void telemetry_trace_query_mutation_violation(
     if (!JTRACE_ENABLED(1)) {
         return;
     }
-    const int deviceId = key ? key->deviceId : -1;
-    const std::uintptr_t contextBits = key
-        ? reinterpret_cast<std::uintptr_t>(key->contextOpaque)
-        : 0;
     const std::string msg =
-        std::string("event=query_mutation_violation") +
+        telemetry_trace_event_prefix("query_mutation_violation") +
         " query=" + trace_token_or(queryName, kTraceTokenUnknown) +
         " reason=" + trace_token_or(reason, kTraceTokenUnknown) +
-        " device_id=" + std::to_string(deviceId) +
-        " context=" + std::to_string(contextBits) +
+        telemetry_trace_device_context_fields(key) +
         " before_thread_mutation_depth=" + std::to_string(beforeThreadMutationDepth) +
         " after_thread_mutation_depth=" + std::to_string(afterThreadMutationDepth) +
         " before_thread_mutation_ticket=" + std::to_string(beforeThreadMutationTicket) +
@@ -958,9 +1006,7 @@ void telemetry_trace_frame_snapshot_mismatch(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " frame_token=" + std::to_string(frameToken) +
         " expected_snapshot_id=" + std::to_string(expectedSnapshotId) +
         " observed_snapshot_id=" + std::to_string(observedSnapshotId) +
@@ -979,9 +1025,7 @@ void telemetry_trace_stale_decision(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " stage=" + trace_token_or(stage, kTraceTokenUnknown) +
         " expected_registry_generation=" + std::to_string(input.expectedRegistryGeneration) +
         " observed_registry_generation=" + std::to_string(input.observedRegistryGeneration) +
@@ -989,9 +1033,9 @@ void telemetry_trace_stale_decision(
         " observed_context_epoch=" + std::to_string(input.observedContextEpoch) +
         " expected_lease_generation=" + std::to_string(input.expectedLeaseGeneration) +
         " observed_lease_generation=" + std::to_string(input.observedLeaseGeneration) +
-        " key_schema_mismatch=" + std::to_string(input.keySchemaMismatch ? 1 : 0) +
-        " hard_stale=" + std::to_string(decision.hardStale ? 1 : 0) +
-        " hard_miss=" + std::to_string(decision.hardMiss ? 1 : 0) +
+        " key_schema_mismatch=" + std::to_string(foundation_bool_u32(input.keySchemaMismatch)) +
+        " hard_stale=" + std::to_string(foundation_bool_u32(decision.hardStale)) +
+        " hard_miss=" + std::to_string(foundation_bool_u32(decision.hardMiss)) +
         " reason=" + to_cstr(decision.reason);
     JTRACE("MSSTL", msg);
 }
@@ -1007,11 +1051,10 @@ void telemetry_trace_metadata_mutation(
         return;
     }
     const std::string msg =
-        std::string("phase=") + trace_token_or(phase, kTraceTokenUnknown) +
-        " stage=" + trace_token_or(stage, kTraceTokenUnknown) +
+        telemetry_trace_phase_stage_prefix(phase, stage) +
         " sequence=" + std::to_string(sequence) +
         " expected_sequence=" + std::to_string(expectedSequence) +
-        " accepted=" + std::to_string(accepted ? 1 : 0) +
+        " accepted=" + std::to_string(foundation_bool_u32(accepted)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSMUT", msg);
 }
@@ -1028,12 +1071,11 @@ void telemetry_trace_metadata_queue(
         return;
     }
     const std::string msg =
-        std::string("event=") + trace_token_or(eventName, kTraceTokenUnknown) +
-        " stage=" + trace_token_or(stage, kTraceTokenUnknown) +
+        telemetry_trace_event_stage_prefix(eventName, stage) +
         " ticket=" + std::to_string(ticket) +
         " depth=" + std::to_string(depth) +
         " waited_ms=" + std::to_string(waitedMs) +
-        " accepted=" + std::to_string(accepted ? 1 : 0) +
+        " accepted=" + std::to_string(foundation_bool_u32(accepted)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSMQ", msg);
 }
@@ -1057,13 +1099,13 @@ void telemetry_trace_acquire(
         " snapshot_id=" + std::to_string(snapshotId) +
         " trace_schema=" + std::to_string(traceSchemaVersion) +
         " final_status=" + to_cstr(finalStatus) +
-        " had_previous=" + std::to_string(hadPreviousSnapshot ? 1 : 0);
+        " had_previous=" + std::to_string(foundation_bool_u32(hadPreviousSnapshot));
     for (ResourceKind kind : kResourceKindOrder) {
         const ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
         const ResourceKindContractEntry& contract = resource_kind_contract_entry(kind);
         msg += std::string(" ") + contract.acquireStatusField + "=" + to_cstr(entry.acquire.status);
         msg += std::string(" ") + contract.invalidationLane + "_invalidated=" +
-            std::to_string(entry.invalidated ? 1 : 0);
+            std::to_string(foundation_bool_u32(entry.invalidated));
     }
     JTRACE("MSACQ", msg);
 }
@@ -1084,16 +1126,14 @@ void telemetry_trace_auto_exposure_ownership(
         return;
     }
     const std::string msg =
-        std::string("transaction_id=") + std::to_string(transactionId) +
-        " snapshot_id=" + std::to_string(snapshotId) +
-        " trace_schema=" + std::to_string(traceSchemaVersion) +
+        telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " mode=" + trace_token_or(mode, kTraceTokenUnknown) +
         " event=" + trace_token_or(eventName, kTraceTokenUnknown) +
-        " hit=" + std::to_string(hit ? 1 : 0) +
+        " hit=" + std::to_string(foundation_bool_u32(hit)) +
         " key_hash=" + std::to_string(keyHash) +
         " meter_w=" + std::to_string(meterWidth) +
         " meter_h=" + std::to_string(meterHeight) +
-        " had_previous=" + std::to_string(hadPrevious ? 1 : 0) +
+        " had_previous=" + std::to_string(foundation_bool_u32(hadPrevious)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSAEX", msg);
 }

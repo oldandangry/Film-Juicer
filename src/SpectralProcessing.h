@@ -820,7 +820,7 @@ namespace Spectral {
     // 3. TABLE OPERATIONS (~150 lines)
     // -------------------------------------------------------------------------
 
-    namespace detail {
+    namespace precompute_impl {
         inline void precompute_spectral_tables_locked_body() {
             if (gShape.K <= 0 ||
                 gShape.wavelengths.size() != static_cast<size_t>(gShape.K) ||
@@ -932,7 +932,7 @@ namespace Spectral {
             gSPDInit.store(false, std::memory_order_release);
         }
 
-    } // namespace detail
+    } // namespace precompute_impl
 
     inline void precompute_spectral_tables() {
         bool dirty = gPrecomputeStatus.dirty.load(std::memory_order_acquire);
@@ -957,7 +957,7 @@ namespace Spectral {
             return;
         }
 
-        detail::precompute_spectral_tables_locked_body();
+        precompute_impl::precompute_spectral_tables_locked_body();
         disable_hanatos_if_reference_mismatch();
 
         illumVersion = gPrecomputeStatus.illumVersion.load(std::memory_order_acquire);

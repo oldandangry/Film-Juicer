@@ -47,6 +47,13 @@ bool allocator_backend_try_get_active_mode(
     return true;
 }
 
+std::uint32_t submission_bool_u32(bool value) noexcept {
+    if (value) {
+        return 1u;
+    }
+    return 0u;
+}
+
 AllocatorBackendPreference sanitize_allocator_backend_preference(std::uint32_t value) noexcept {
     switch (value) {
     case 0u:
@@ -171,37 +178,23 @@ AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
     return entry;
 }
 
-const char* submission_trace_reason_or_unknown(const char* reason) noexcept {
-    return reason ? reason : "unknown";
-}
-
-const char* submission_trace_reason_or_unspecified(const char* reason) noexcept {
-    return reason ? reason : "unspecified";
-}
-
 void trace_allocator_backend_mode_once(
     const SubmissionTransaction& transaction,
     const AllocatorBackendContextEntry& entry) {
     if (!JTRACE_ENABLED(1)) {
         return;
     }
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=backend_mode")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = trace_event_identity_prefix("backend_mode", transaction)
+        + trace_device_context_fields(transaction)
         + " requested=" + to_cstr(entry.requested)
         + " candidate=" + to_cstr(entry.candidate)
         + " active=" + to_cstr(entry.active)
-        + " async_pool_supported=" + std::to_string(entry.asyncPoolSupported ? 1 : 0)
-        + " slab_supported=" + std::to_string(entry.slabSupported ? 1 : 0)
-        + " fallback_capability=" + std::to_string(entry.fallbackCapability ? 1 : 0)
-        + " fallback_scaffold=" + std::to_string(entry.fallbackScaffold ? 1 : 0)
-        + " candidate_reason=" + submission_trace_reason_or_unknown(entry.candidateReason)
-        + " active_reason=" + submission_trace_reason_or_unknown(entry.activeReason);
+        + " async_pool_supported=" + std::to_string(submission_bool_u32(entry.asyncPoolSupported))
+        + " slab_supported=" + std::to_string(submission_bool_u32(entry.slabSupported))
+        + " fallback_capability=" + std::to_string(submission_bool_u32(entry.fallbackCapability))
+        + " fallback_scaffold=" + std::to_string(submission_bool_u32(entry.fallbackScaffold))
+        + " candidate_reason=" + trace_or_unknown(entry.candidateReason)
+        + " active_reason=" + trace_or_unknown(entry.activeReason);
     JTRACE("MSALC", msg);
 }
 
@@ -228,14 +221,41 @@ void ensure_allocator_backend_mode_initialized(
     }
 }
 
+std::uint64_t submission_saturating_mib_to_bytes(std::uint64_t mebibytes) noexcept {
+    const std::uint64_t maxMbBeforeOverflow = std::numeric_limits<std::uint64_t>::max() / kBytesPerMiB;
+    if (mebibytes > maxMbBeforeOverflow) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return mebibytes * kBytesPerMiB;
+}
+
+std::size_t submission_saturating_u64_to_size_t(std::uint64_t value) noexcept {
+    const std::uint64_t sizeTMax = static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max());
+    if (value >= sizeTMax) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return static_cast<std::size_t>(value);
+}
+
+const char* submission_apply_policy_detail(const std::string& applyError, bool applied) noexcept {
+    if (applied) {
+        return "set_ok";
+    }
+    return applyError.c_str();
+}
+
+const char* submission_lifecycle_timeout_reason(bool escalated) noexcept {
+    if (escalated) {
+        return "lifecycle_state_timeout_escalated";
+    }
+    return "lifecycle_state_timeout_not_escalated";
+}
+
 std::uint64_t async_mempool_release_threshold_bytes_for_state(
     const ResourceManagerConfigEffective& cfg,
     PressureState pressureState) noexcept {
     const std::uint64_t baseMb = static_cast<std::uint64_t>(cfg.asyncMempoolReleaseThresholdMB);
-    const std::uint64_t maxMbBeforeOverflow = std::numeric_limits<std::uint64_t>::max() / kBytesPerMiB;
-    const std::uint64_t baseBytes = (baseMb > maxMbBeforeOverflow)
-        ? std::numeric_limits<std::uint64_t>::max()
-        : (baseMb * kBytesPerMiB);
+    const std::uint64_t baseBytes = submission_saturating_mib_to_bytes(baseMb);
     switch (pressureState) {
     case PressureState::Emergency:
         return 0;
@@ -255,6 +275,9 @@ bool set_async_mempool_release_threshold(
     std::string& outError) noexcept {
     outError.clear();
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+    auto cuda_error_or_unknown = [](cudaError_t err) noexcept {
+        return trace_or(cudaGetErrorString(err), "(unknown)");
+    };
     if (key.deviceId < 0) {
         outError = "invalid device id";
         return false;
@@ -268,8 +291,7 @@ bool set_async_mempool_release_threshold(
     if (!havePrevious || previousDevice != key.deviceId) {
         const cudaError_t setErr = cudaSetDevice(key.deviceId);
         if (setErr != cudaSuccess) {
-            outError = std::string("cudaSetDevice failed: ")
-                + (cudaGetErrorString(setErr) ? cudaGetErrorString(setErr) : "(unknown)");
+            outError = std::string("cudaSetDevice failed: ") + cuda_error_or_unknown(setErr);
             return false;
         }
         switchedDevice = havePrevious && previousDevice != key.deviceId;
@@ -281,14 +303,11 @@ bool set_async_mempool_release_threshold(
         if (switchedDevice) {
             (void)cudaSetDevice(previousDevice);
         }
-        outError = std::string("cudaDeviceGetDefaultMemPool failed: ")
-            + (cudaGetErrorString(poolErr) ? cudaGetErrorString(poolErr) : "(unknown)");
+        outError = std::string("cudaDeviceGetDefaultMemPool failed: ") + cuda_error_or_unknown(poolErr);
         return false;
     }
 
-    std::size_t thresholdValue = (thresholdBytes >= static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
-        ? std::numeric_limits<std::size_t>::max()
-        : static_cast<std::size_t>(thresholdBytes);
+    std::size_t thresholdValue = submission_saturating_u64_to_size_t(thresholdBytes);
     const cudaError_t setAttrErr = cudaMemPoolSetAttribute(
         pool,
         cudaMemPoolAttrReleaseThreshold,
@@ -300,7 +319,7 @@ bool set_async_mempool_release_threshold(
 
     if (setAttrErr != cudaSuccess) {
         outError = std::string("cudaMemPoolSetAttribute(release_threshold) failed: ")
-            + (cudaGetErrorString(setAttrErr) ? cudaGetErrorString(setAttrErr) : "(unknown)");
+            + cuda_error_or_unknown(setAttrErr);
         return false;
     }
     return true;
@@ -323,20 +342,14 @@ void trace_async_mempool_release_policy(
     if (!JTRACE_ENABLED(2)) {
         return;
     }
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=mempool_release_policy")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = trace_event_identity_prefix("mempool_release_policy", transaction)
+        + trace_device_context_fields(transaction)
         + " pressure_state=" + to_cstr(pressureState)
         + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
-        + " applied=" + std::to_string(applied ? 1 : 0)
-        + " changed=" + std::to_string(changed ? 1 : 0)
-        + " reason=" + (reason ? reason : "unspecified")
-        + " detail=" + (detail ? detail : "none");
+        + " applied=" + std::to_string(submission_bool_u32(applied))
+        + " changed=" + std::to_string(submission_bool_u32(changed))
+        + " reason=" + trace_or_unspecified(reason)
+        + " detail=" + trace_or(detail, "none");
     JTRACE("MSALC", msg);
 }
 
@@ -391,7 +404,7 @@ void maybe_apply_async_mempool_release_policy(
         applied,
         changed,
         reason,
-        applied ? "set_ok" : applyError.c_str());
+        submission_apply_policy_detail(applyError, applied));
 }
 
 
@@ -527,14 +540,14 @@ void trace_lifecycle_stage_decision(
     const std::string msg = std::string("transaction_id=") + std::to_string(transaction.transactionId)
         + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
         + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " stage=" + (stage ? stage : "unknown")
+        + " stage=" + trace_or_unknown(stage)
         + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
         + " context=" + std::to_string(contextBits)
         + " observed_state=" + to_cstr(observedState)
         + " decision=" + to_cstr(decision)
         + " state_age_ms=" + std::to_string(static_cast<unsigned long long>(stateAgeMs))
-        + " accepted=" + std::to_string(accepted ? 1 : 0)
-        + " reason=" + submission_trace_reason_or_unspecified(reason);
+        + " accepted=" + std::to_string(submission_bool_u32(accepted))
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
 }
 
@@ -564,9 +577,7 @@ bool validate_lifecycle_for_stage(const SubmissionTransaction& transaction,
             }
             break;
         case LifecycleStageDecision::TimedOut:
-            reason = validation.escalated
-                ? "lifecycle_state_timeout_escalated"
-                : "lifecycle_state_timeout_not_escalated";
+            reason = submission_lifecycle_timeout_reason(validation.escalated);
             if (outError) {
                 *outError = std::string("lifecycle watchdog timeout for stage (state=")
                     + to_cstr(validation.observedState)
@@ -638,9 +649,43 @@ bool validate_stale_tuple_for_stage(
             transaction.transactionId,
             transaction.snapshot.snapshotId,
             transaction.snapshot.traceSchemaVersion,
-            moduleBoundaryReason ? moduleBoundaryReason : "stale_tuple_reject");
+            trace_or(moduleBoundaryReason, "stale_tuple_reject"));
     }
     return false;
+}
+
+const char* fragmentation_reap_outcome_reason(std::size_t reapedBytes) noexcept {
+    if (reapedBytes > 0) {
+        return "fragmentation_recovery_reap";
+    }
+    return "fragmentation_recovery_reap_no_progress";
+}
+
+const char* invalidation_reason(bool keySchemaChanged, bool laneChanged) noexcept {
+    if (keySchemaChanged) {
+        return "key_schema_changed";
+    }
+    if (laneChanged) {
+        return "lane_hash_changed";
+    }
+    return "policy_invalidated";
+}
+
+std::uint64_t submission_previous_digest_for_kind(
+    bool hasPrevious,
+    const ShadowHistoryEntry& previous,
+    ResourceKind kind) noexcept {
+    if (hasPrevious) {
+        return key_digest_for_kind(previous.digests, kind);
+    }
+    return 0;
+}
+
+const char* submission_error_or_cstr(const std::string& error, const char* fallback) noexcept {
+    if (error.empty()) {
+        return fallback;
+    }
+    return error.c_str();
 }
 
 bool run_fragmentation_recovery_once(
@@ -663,7 +708,7 @@ bool run_fragmentation_recovery_once(
             commandName,
             reapedBytes,
             false,
-            reapError.empty() ? "fragmentation_recovery_reap_failed" : reapError.c_str());
+            submission_error_or_cstr(reapError, "fragmentation_recovery_reap_failed"));
         trace_fragmentation_recovery(
             transaction,
             commandName,
@@ -674,9 +719,9 @@ bool run_fragmentation_recovery_once(
             0,
             false,
             "attempt",
-            reapError.empty() ? "reap_failed" : reapError.c_str());
+            submission_error_or_cstr(reapError, "reap_failed"));
         telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
-        outError = reapError.empty() ? "fragmentation recovery reap failed" : reapError;
+        outError = submission_error_or_cstr(reapError, "fragmentation recovery reap failed");
         return false;
     }
 
@@ -689,7 +734,7 @@ bool run_fragmentation_recovery_once(
         commandName,
         reapedBytes,
         true,
-        (reapedBytes > 0) ? "fragmentation_recovery_reap" : "fragmentation_recovery_reap_no_progress");
+        fragmentation_reap_outcome_reason(reapedBytes));
 
     const std::uint64_t quarantineTrimmedEntries =
         trim_large_frame_quarantine_for_context(transaction.snapshot.deviceContextKey);
@@ -971,7 +1016,8 @@ bool acquire_plan(
         const ResourcePlanEntry& entry = resource_plan_entry(plan, kind);
         const ResourceKindContractEntry& contract = resource_kind_contract_entry(kind);
         const bool laneChanged = shadow_key_changed_for_kind(delta, kind);
-        const std::uint64_t previousHash = hasPrevious ? key_digest_for_kind(previous.digests, kind) : 0;
+        const std::uint64_t previousHash =
+            submission_previous_digest_for_kind(hasPrevious, previous, kind);
         const std::uint64_t currentHash = key_digest_for_kind(snapshot.keyDigests, kind);
 
         if (entry.invalidated) {
@@ -980,7 +1026,7 @@ bool acquire_plan(
                 snapshot.snapshotId,
                 snapshot.traceSchemaVersion,
                 contract.invalidationLane,
-                delta.keySchemaChanged ? "key_schema_changed" : (laneChanged ? "lane_hash_changed" : "policy_invalidated"),
+                invalidation_reason(delta.keySchemaChanged, laneChanged),
                 previousHash,
                 currentHash);
         }

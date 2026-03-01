@@ -10,13 +10,12 @@
 
 #include "Hash.h"
 #include "ProfileJSONLoader.h"
-#include "SpectralProcessing.h"
-#include "ColorTransforms.h"
-#include "ParamNames.h"
+#include "SpectralTypes.h"
 #include "OutputEncoding.h"
 
-// Forward-declare WorkingState so we don't create header cycles
-struct WorkingState;
+namespace Spectral {
+    struct SpectralTables;
+}
 
 namespace Scanner {
 

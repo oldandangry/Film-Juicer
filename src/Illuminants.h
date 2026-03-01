@@ -2,7 +2,6 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <limits>
 #include <sstream>
 #include <string_view>
@@ -65,18 +64,20 @@ namespace Spectral {
         const bool coversMax = (maxLambda >= maxNeeded);
 
         if (!coversMin || !coversMax) {
-            std::ostringstream oss;
-            oss << "CSV coverage warning (" << label << "): ";
-            if (!coversMin) {
-                oss << "start=" << minLambda << "nm (need <= " << minNeeded << "nm)";
-            }
-            if (!coversMax) {
+            if (JTRACE_ENABLED(1)) {
+                std::ostringstream oss;
+                oss << "CSV coverage warning (" << label << "): ";
                 if (!coversMin) {
-                    oss << ", ";
+                    oss << "start=" << minLambda << "nm (need <= " << minNeeded << "nm)";
                 }
-                oss << "end=" << maxLambda << "nm (need >= " << maxNeeded << "nm)";
+                if (!coversMax) {
+                    if (!coversMin) {
+                        oss << ", ";
+                    }
+                    oss << "end=" << maxLambda << "nm (need >= " << maxNeeded << "nm)";
+                }
+                JTRACE("ILLUM", oss.str());
             }
-            JTRACE("ILLUM", oss.str());
         }
 
         return coversMin && coversMax;
@@ -89,9 +90,11 @@ namespace Spectral {
         if (Spectral::samples_follow_reference_axis(pairs)) {
             return true;
         }
-        std::ostringstream oss;
-        oss << "Illuminant CSV axis mismatch (" << label << "): expected agx reference grid";
-        JTRACE("ILLUM", oss.str());
+        if (JTRACE_ENABLED(1)) {
+            std::ostringstream oss;
+            oss << "Illuminant CSV axis mismatch (" << label << "): expected agx reference grid";
+            JTRACE("ILLUM", oss.str());
+        }
         return false;
     }
 
@@ -100,19 +103,23 @@ namespace Spectral {
         std::string_view label)
     {
         if (pairs.size() != static_cast<size_t>(Spectral::SpectralShape::K)) {
-            std::ostringstream oss;
-            oss << "Illuminant CSV sample count mismatch (" << label << "): expected "
-                << Spectral::SpectralShape::K << " samples";
-            JTRACE("ILLUM", oss.str());
+            if (JTRACE_ENABLED(1)) {
+                std::ostringstream oss;
+                oss << "Illuminant CSV sample count mismatch (" << label << "): expected "
+                    << Spectral::SpectralShape::K << " samples";
+                JTRACE("ILLUM", oss.str());
+            }
             return false;
         }
 
         double sum = 0.0;
         for (const auto& sample : pairs) {
             if (!std::isfinite(sample.second)) {
-                std::ostringstream oss;
-                oss << "Illuminant CSV contains non-finite sample (" << label << ")";
-                JTRACE("ILLUM", oss.str());
+                if (JTRACE_ENABLED(1)) {
+                    std::ostringstream oss;
+                    oss << "Illuminant CSV contains non-finite sample (" << label << ")";
+                    JTRACE("ILLUM", oss.str());
+                }
                 return false;
             }
             sum += static_cast<double>(sample.second);
@@ -121,9 +128,11 @@ namespace Spectral {
         const double mean = sum / static_cast<double>(pairs.size());
         constexpr double kMeanTolerance = 1e-5;
         if (!std::isfinite(mean) || std::abs(mean - 1.0) > kMeanTolerance) {
-            std::ostringstream oss;
-            oss << "Illuminant CSV mean-power mismatch (" << label << "): mean=" << mean;
-            JTRACE("ILLUM", oss.str());
+            if (JTRACE_ENABLED(1)) {
+                std::ostringstream oss;
+                oss << "Illuminant CSV mean-power mismatch (" << label << "): mean=" << mean;
+                JTRACE("ILLUM", oss.str());
+            }
             return false;
         }
         return true;
@@ -133,7 +142,7 @@ namespace Spectral {
     // Placeholder filters
     // --------------------------
     inline float schott_KG3_transmission(float /*lambda_nm*/) {
-        // TODO: replace with measured KG3 transmission; unity means "no attenuation".
+        // Placeholder until measured KG3 transmission data is installed; unity means "no attenuation".
         return 1.0f;
     }
     inline float generic_lens_transmission(float lambda_nm) {
@@ -230,7 +239,9 @@ namespace Spectral {
         try { pairs = Spectral::load_csv_pairs(csvPath); }
         catch (...) { pairs.clear(); }
         if (pairs.empty()) {
-            JTRACE("ILLUM", std::string("Failed to load illuminant CSV: ") + csvPath);
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("ILLUM", std::string("Failed to load illuminant CSV: ") + csvPath);
+            }
             // Return empty curve to signal failure
             return c;
         }
@@ -283,7 +294,9 @@ namespace Spectral {
         try { kg3_pairs = Spectral::load_csv_pairs(kg3CsvPath); }
         catch (...) { kg3_pairs.clear(); }
         if (kg3_pairs.empty()) {
-            JTRACE("ILLUM", std::string("Failed to load KG3 filter CSV: ") + kg3CsvPath);
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("ILLUM", std::string("Failed to load KG3 filter CSV: ") + kg3CsvPath);
+            }
             c.lambda_nm.clear();
             c.linear.clear();
             return c;
@@ -291,7 +304,9 @@ namespace Spectral {
         csv_pairs_cover_reference_band(kg3_pairs, kg3CsvPath);
         auto kg3_pinned = Spectral::resample_pairs_akima_to_reference_axis(kg3_pairs);
         if (kg3_pinned.empty()) {
-            JTRACE("ILLUM", std::string("KG3 filter resample failed for: ") + kg3CsvPath);
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("ILLUM", std::string("KG3 filter resample failed for: ") + kg3CsvPath);
+            }
             c.lambda_nm.clear();
             c.linear.clear();
             return c;
@@ -302,7 +317,9 @@ namespace Spectral {
         try { lens_pairs = Spectral::load_csv_pairs(lensCsvPath); }
         catch (...) { lens_pairs.clear(); }
         if (lens_pairs.empty()) {
-            JTRACE("ILLUM", std::string("Failed to load lens transmission CSV: ") + lensCsvPath);
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("ILLUM", std::string("Failed to load lens transmission CSV: ") + lensCsvPath);
+            }
             c.lambda_nm.clear();
             c.linear.clear();
             return c;
@@ -310,7 +327,9 @@ namespace Spectral {
         csv_pairs_cover_reference_band(lens_pairs, lensCsvPath);
         auto lens_pinned = Spectral::resample_pairs_akima_to_reference_axis(lens_pairs);
         if (lens_pinned.empty()) {
-            JTRACE("ILLUM", std::string("Lens transmission resample failed for: ") + lensCsvPath);
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("ILLUM", std::string("Lens transmission resample failed for: ") + lensCsvPath);
+            }
             c.lambda_nm.clear();
             c.linear.clear();
             return c;

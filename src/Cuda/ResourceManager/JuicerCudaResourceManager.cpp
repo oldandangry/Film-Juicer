@@ -273,6 +273,50 @@ const char* to_cstr(AllocatorBackendMode value) noexcept {
     }
 }
 
+const char* trace_or_unknown(const char* value) noexcept {
+    return value ? value : "unknown";
+}
+
+const char* trace_or_unspecified(const char* value) noexcept {
+    return value ? value : "unspecified";
+}
+
+const char* trace_or(const char* value, const char* fallback) noexcept {
+    return value ? value : fallback;
+}
+
+const char* trace_or_non_empty(const char* value, const char* fallback) noexcept {
+    return (value && value[0] != '\0') ? value : fallback;
+}
+
+std::string trace_event_prefix(
+    const char* eventName,
+    const SubmissionTransaction& transaction,
+    const char* commandName) {
+    return std::string("event=") + trace_or_unknown(eventName)
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
+        + " command=" + trace_or_unknown(commandName);
+}
+
+std::string trace_event_identity_prefix(
+    const char* eventName,
+    const SubmissionTransaction& transaction) {
+    return std::string("event=") + trace_or_unknown(eventName)
+        + " transaction_id=" + std::to_string(transaction.transactionId)
+        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
+        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion);
+}
+
+std::string trace_device_context_fields(const SubmissionTransaction& transaction) {
+    const auto& contextKey = transaction.snapshot.deviceContextKey;
+    const std::uintptr_t contextBits =
+        reinterpret_cast<std::uintptr_t>(contextKey.contextOpaque);
+    return std::string(" device_id=") + std::to_string(contextKey.deviceId)
+        + " context=" + std::to_string(contextBits);
+}
+
 struct ScratchBucketKey {
     std::uint32_t widthBucket = 0;
     std::uint32_t heightBucket = 0;
@@ -1674,23 +1718,16 @@ void trace_scratch_policy_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const std::uint64_t churnDenom = snapshot.bucketAllocGrowth + snapshot.bucketReuse;
     const std::uint64_t churnRatioMilli = (churnDenom == 0)
         ? 0
         : (snapshot.bucketAllocGrowth * 1000ull) / churnDenom;
     const std::size_t effectiveTempCap = effective_temp_scratch_bytes_cap(requestBytes);
 
-    const std::string msg = std::string("event=scratch_policy")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
-        + " result=" + (result ? result : "unknown")
+    const std::string msg = trace_event_prefix("scratch_policy", transaction, commandName)
+        + " result=" + trace_or_unknown(result)
         + " work_class=" + to_cstr(snapshot.bucketKey.workClass)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+        + trace_device_context_fields(transaction)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " in_flight_bytes=" + std::to_string(static_cast<unsigned long long>(snapshot.inFlightBytes))
         + " in_flight_sets=" + std::to_string(snapshot.inFlightSets)
@@ -1730,16 +1767,9 @@ void trace_transient_reservation_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=transient_reservation")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("transient_reservation", transaction, commandName)
         + " kind=" + to_cstr(ReservationKind::TransientNonManager)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+        + trace_device_context_fields(transaction)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
         + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
@@ -1748,8 +1778,8 @@ void trace_transient_reservation_decision(
         + " should_wait=" + std::to_string(decision.shouldWait ? 1 : 0)
         + " wait_ms=" + std::to_string(waitMs)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
-        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
-        + " reason=" + (reason ? reason : "unspecified");
+        + " decision_reason=" + trace_or_unspecified(decision.reason)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSTRS", msg);
 }
 
@@ -1771,17 +1801,10 @@ void trace_upload_reservation_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=upload_reservation")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("upload_reservation", transaction, commandName)
         + " kind=" + to_cstr(ReservationKind::UploadCopy)
         + " instance_token=" + std::to_string(static_cast<unsigned long long>(instanceToken))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+        + trace_device_context_fields(transaction)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
         + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
@@ -1792,8 +1815,8 @@ void trace_upload_reservation_decision(
         + " should_wait=" + std::to_string(decision.shouldWait ? 1 : 0)
         + " wait_ms=" + std::to_string(waitMs)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
-        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
-        + " reason=" + (reason ? reason : "unspecified");
+        + " decision_reason=" + trace_or_unspecified(decision.reason)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSUPL", msg);
 }
 
@@ -1816,18 +1839,11 @@ void trace_builder_reservation_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=builder_reservation")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("builder_reservation", transaction, commandName)
         + " kind=" + to_cstr(ReservationKind::BuilderWork)
         + " tier=" + to_cstr(tier)
         + " instance_token=" + std::to_string(static_cast<unsigned long long>(instanceToken))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+        + trace_device_context_fields(transaction)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
         + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
@@ -1838,8 +1854,8 @@ void trace_builder_reservation_decision(
         + " should_wait=" + std::to_string(decision.shouldWait ? 1 : 0)
         + " wait_ms=" + std::to_string(waitMs)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
-        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
-        + " reason=" + (reason ? reason : "unspecified");
+        + " decision_reason=" + trace_or_unspecified(decision.reason)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSBPR", msg);
 }
 
@@ -1862,13 +1878,7 @@ void trace_tier_circuit_event(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=tier_circuit")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("tier_circuit", transaction, commandName)
         + " tier=" + to_cstr(tier)
         + " prev_state=" + to_cstr(previousState)
         + " state=" + to_cstr(state)
@@ -1880,9 +1890,8 @@ void trace_tier_circuit_event(
         + " window_ms=" + std::to_string(windowMs)
         + " open_ms=" + std::to_string(openMs)
         + " open_remaining_ms=" + std::to_string(static_cast<unsigned long long>(openRemainingMs))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSCB", msg);
 }
 
@@ -1902,13 +1911,7 @@ void trace_tier_budget_event(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=tier_budget")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("tier_budget", transaction, commandName)
         + " lane=" + to_cstr(lane)
         + " state=" + to_cstr(pressureState)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
@@ -1955,9 +1958,8 @@ void trace_tier_budget_event(
             static_cast<unsigned long long>(tierBudget.totalReclaimableBytes))
         + " scratch_trimmed_entries=" + std::to_string(static_cast<unsigned long long>(scratchTrimmedEntries))
         + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(graphEvictedEntries))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSTGT", msg);
 }
 
@@ -1975,14 +1977,8 @@ void trace_effective_reserve_event(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    const std::string msg = std::string("event=effective_reserve")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("effective_reserve", transaction, commandName)
         + " reserve_base_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBaseBytes))
         + " reserve_before_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBeforeBytes))
         + " reserve_target_bytes=" + std::to_string(static_cast<unsigned long long>(reserveTargetBytes))
@@ -1996,9 +1992,8 @@ void trace_effective_reserve_event(
         + " reserve_step_down_bytes=" + std::to_string(
             static_cast<unsigned long long>(cfg.reserveAdaptDownStepBytes))
         + " updated=" + std::to_string(updated ? 1 : 0)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSRSV", msg);
 }
 
@@ -2016,13 +2011,7 @@ void trace_opportunistic_freeze_event(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=opportunistic_freeze")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("opportunistic_freeze", transaction, commandName)
         + " state=" + to_cstr(pressureState)
         + " effective_headroom_bytes=" + std::to_string(
             static_cast<unsigned long long>(effectiveHeadroomBytes))
@@ -2031,9 +2020,8 @@ void trace_opportunistic_freeze_event(
         + " frozen=" + std::to_string(frozen ? 1 : 0)
         + " allowed=" + std::to_string(allowed ? 1 : 0)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSFRZ", msg);
 }
 
@@ -2047,13 +2035,7 @@ void trace_active_burst_event(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=active_burst")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("active_burst", transaction, commandName)
         + " considered=" + std::to_string(burst.considered ? 1 : 0)
         + " active=" + std::to_string(burst.active ? 1 : 0)
         + " allowed=" + std::to_string(burst.allowed ? 1 : 0)
@@ -2064,9 +2046,8 @@ void trace_active_burst_event(
         + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(burst.capBytes))
         + " elapsed_ms=" + std::to_string(static_cast<unsigned long long>(burst.elapsedMs))
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSBURST", msg);
 }
 
@@ -2081,19 +2062,12 @@ void trace_budget_reclaim_retry(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=reclaim_retry")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("reclaim_retry", transaction, commandName)
         + " attempt=" + std::to_string(static_cast<unsigned long long>(attempt))
         + " reclaimed_bytes=" + std::to_string(static_cast<unsigned long long>(reclaimedBytes))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+        + trace_device_context_fields(transaction)
         + " success=" + std::to_string(success ? 1 : 0)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSEVICT", msg);
 }
 
@@ -2107,13 +2081,7 @@ void trace_pressure_checkpoint(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=pressure_checkpoint")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("pressure_checkpoint", transaction, commandName)
         + " state=" + to_cstr(checkpoint.decision.state)
         + " prev_state=" + to_cstr(checkpoint.previousState)
         + " desired_state=" + to_cstr(checkpoint.desiredState)
@@ -2124,8 +2092,7 @@ void trace_pressure_checkpoint(
         + " reserve_crossed=" + std::to_string(checkpoint.reserveCrossedNow ? 1 : 0)
         + " sampled=" + std::to_string(checkpoint.sampled ? 1 : 0)
         + " poll_interval_ms=" + std::to_string(checkpoint.pollIntervalMs)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+        + trace_device_context_fields(transaction)
         + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.softTargetBytes))
         + " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.reserveBytes))
         + " manager_resident_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.managerResidentBytes))
@@ -2151,7 +2118,7 @@ void trace_pressure_checkpoint(
             static_cast<unsigned long long>(checkpoint.input.allocatorPoolReservedBytes))
         + " allocator_pool_used_bytes=" + std::to_string(
             static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes))
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSPRS", msg);
 }
 
@@ -2166,15 +2133,8 @@ void trace_headroom_sample(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=headroom")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = trace_event_prefix("headroom", transaction, commandName)
+        + trace_device_context_fields(transaction)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " effective_headroom_bytes=" + std::to_string(
             static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes))
@@ -2185,7 +2145,7 @@ void trace_headroom_sample(
         + " allocator_pool_used_bytes=" + std::to_string(
             static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes))
         + " source_switch=" + std::to_string(sourceSwitch ? 1 : 0)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSHDR", msg);
 }
 
@@ -2199,19 +2159,12 @@ void trace_transient_non_manager_sample(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=transient_non_manager_sample")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = trace_event_prefix("transient_non_manager_sample", transaction, commandName)
+        + trace_device_context_fields(transaction)
         + " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.transientNonManagerBytes))
         + " pending_growth_bytes=" + std::to_string(static_cast<unsigned long long>(pendingGrowthBytes))
         + " pressure_total_bytes=" + std::to_string(static_cast<unsigned long long>(pressure_total_bytes(checkpoint.input)))
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSTRN", msg);
 }
 
@@ -2230,13 +2183,7 @@ void trace_emergency_shed_action(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=emergency_shed")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("emergency_shed", transaction, commandName)
         + " lane=" + to_cstr(lane)
         + " state=" + to_cstr(state)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
@@ -2244,9 +2191,8 @@ void trace_emergency_shed_action(
         + " allowed=" + std::to_string(allowed ? 1 : 0)
         + " upload_bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(uploadBytesInFlight))
         + " upload_cap_bytes=" + std::to_string(static_cast<unsigned long long>(uploadCapBytes))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSEMS", msg);
 }
 
@@ -2262,20 +2208,13 @@ void trace_lane_wait_event(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=lane_wait")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("lane_wait", transaction, commandName)
         + " lane=" + to_cstr(lane)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " wait_ms=" + std::to_string(waitMs)
-        + " outcome=" + (outcome ? outcome : "unknown")
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " outcome=" + trace_or_unknown(outcome)
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSFAIR", msg);
 }
 
@@ -2292,21 +2231,14 @@ void trace_copy_compute_guard(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=copy_compute_guard")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("copy_compute_guard", transaction, commandName)
         + " state=" + to_cstr(state)
         + " upload_bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(uploadBytesInFlight))
         + " upload_cap_bytes=" + std::to_string(static_cast<unsigned long long>(uploadCapBytes))
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " allowed=" + std::to_string(allowed ? 1 : 0)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSCOPY", msg);
 }
 
@@ -2396,17 +2328,11 @@ void trace_keep_hot_surface(
     if (!JTRACE_ENABLED(2)) {
         return;
     }
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=keep_hot_surface")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = trace_event_identity_prefix("keep_hot_surface", transaction)
+        + trace_device_context_fields(transaction)
         + " enabled=" + std::to_string(cfg.keepHotMs > 0 ? 1 : 0)
         + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(cfg.keepHotMs))
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSHOT", msg);
     telemetry_counter_add(global_state().keepHotSurfaceTraceEvents, 1);
 }
@@ -2422,19 +2348,12 @@ void trace_keep_hot_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=keep_hot_decision")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("keep_hot_decision", transaction, commandName)
         + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(keepHotMs))
         + " bypass_events=" + std::to_string(static_cast<unsigned long long>(bypassEvents))
         + " forced_evict_events=" + std::to_string(static_cast<unsigned long long>(forcedEvictEvents))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSHOT", msg);
 }
 
@@ -2445,19 +2364,13 @@ void trace_burst_debt_surface(
     if (!JTRACE_ENABLED(2)) {
         return;
     }
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const bool enabled = (cfg.burstDebtHalfLifeMs > 0) && (cfg.maxBurstDebtPct < 100);
-    const std::string msg = std::string("event=burst_debt_surface")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = trace_event_identity_prefix("burst_debt_surface", transaction)
+        + trace_device_context_fields(transaction)
         + " enabled=" + std::to_string(enabled ? 1 : 0)
         + " burst_debt_half_life_ms=" + std::to_string(static_cast<unsigned long long>(cfg.burstDebtHalfLifeMs))
         + " max_burst_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct))
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSBDE", msg);
     telemetry_counter_add(global_state().burstDebtSurfaceTraceEvents, 1);
 }
@@ -2475,13 +2388,7 @@ void trace_burst_debt_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=burst_debt_decision")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("burst_debt_decision", transaction, commandName)
         + " lane=" + to_cstr(lane)
         + " pressure_state=" + to_cstr(pressureState)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
@@ -2499,9 +2406,8 @@ void trace_burst_debt_decision(
             static_cast<unsigned long long>(cfg.maxBurstDebtPct))
         + " instance_token=" + std::to_string(
             static_cast<unsigned long long>(transaction.snapshot.instanceToken.value))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (decision.reason ? decision.reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(decision.reason);
     JTRACE("MSBDE", msg);
 }
 
@@ -2512,16 +2418,10 @@ void trace_superseded_builder_cancel_surface(
     if (!JTRACE_ENABLED(2)) {
         return;
     }
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=superseded_builder_cancel_surface")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
+    const std::string msg = trace_event_identity_prefix("superseded_builder_cancel_surface", transaction)
+        + trace_device_context_fields(transaction)
         + " enabled=" + std::to_string(cfg.cancelSupersededBuilders ? 1 : 0)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSCNL", msg);
     telemetry_counter_add(global_state().supersededBuilderCancelSurfaceTraceEvents, 1);
 }
@@ -2537,14 +2437,8 @@ void trace_superseded_builder_cancel_decision(
     if (!JTRACE_ENABLED(2)) {
         return;
     }
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
     const std::uint64_t savedBytes = decision.cancel ? requestBytes : 0;
-    const std::string msg = std::string("event=superseded_builder_cancel_decision")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("superseded_builder_cancel_decision", transaction, commandName)
         + " enabled=" + std::to_string(input.enabled ? 1 : 0)
         + " superseded=" + std::to_string(input.superseded ? 1 : 0)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
@@ -2554,9 +2448,8 @@ void trace_superseded_builder_cancel_decision(
         + " latest_snapshot_id=" + std::to_string(static_cast<unsigned long long>(latestSnapshotId))
         + " instance_token=" + std::to_string(
             static_cast<unsigned long long>(transaction.snapshot.instanceToken.value))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (decision.reason ? decision.reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(decision.reason);
     JTRACE("MSCNL", msg);
 }
 
@@ -2627,13 +2520,7 @@ void trace_large_entry_readmit_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=large_entry_readmit")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("large_entry_readmit", transaction, commandName)
         + " entry_digest=" + std::to_string(static_cast<unsigned long long>(entryDigest))
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
@@ -2648,9 +2535,8 @@ void trace_large_entry_readmit_decision(
         + " cooldown_ms=" + std::to_string(static_cast<unsigned long long>(decision.cooldownMs))
         + " ghost_hits_required=" + std::to_string(decision.ghostHitsRequired)
         + " observed_ghost_hits=" + std::to_string(decision.observedGhostHits)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (decision.reason ? decision.reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(decision.reason);
     JTRACE("MSTHR", msg);
 }
 
@@ -2668,13 +2554,7 @@ void trace_cache_admission_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=cache_admission")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("cache_admission", transaction, commandName)
         + " class=" + to_cstr(decision.admissionClass)
         + " allow_durable=" + std::to_string(decision.allowDurableAdmission ? 1 : 0)
         + " probation_applied=" + std::to_string(decision.probationApplied ? 1 : 0)
@@ -2696,10 +2576,9 @@ void trace_cache_admission_decision(
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " max_durable_bytes=" + std::to_string(static_cast<unsigned long long>(decision.maxDurableBytes))
         + " entry_digest=" + std::to_string(static_cast<unsigned long long>(entryDigest))
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " decision_reason=" + (decision.reason ? decision.reason : "unspecified")
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " decision_reason=" + trace_or_unspecified(decision.reason)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSADM", msg);
 }
 
@@ -2715,20 +2594,13 @@ void trace_probation_decision(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=probation")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("probation", transaction, commandName)
         + " entry_digest=" + std::to_string(static_cast<unsigned long long>(entryDigest))
         + " observed_probation_hits=" + std::to_string(observedProbationHits)
         + " required_probation_hits=" + std::to_string(requiredProbationHits)
         + " admitted=" + std::to_string(admitted ? 1 : 0)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSPRB", msg);
 }
 
@@ -2748,13 +2620,7 @@ void trace_graph_large_entry_quarantine(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=graph_large_quarantine")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("graph_large_quarantine", transaction, commandName)
         + " threshold_bytes=" + std::to_string(static_cast<unsigned long long>(thresholdBytes))
         + " cap_bytes=" + std::to_string(static_cast<unsigned long long>(capBytes))
         + " cap_entries=" + std::to_string(capEntries)
@@ -2764,9 +2630,8 @@ void trace_graph_large_entry_quarantine(
         + " cap_trim_evicted_entries=" + std::to_string(
             static_cast<unsigned long long>(capTrimEvictedEntries))
         + " cap_hit=" + std::to_string(capHit ? 1 : 0)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSADM", msg);
 }
 
@@ -2780,18 +2645,11 @@ void trace_reap_pass(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=reap_pass")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("reap_pass", transaction, commandName)
         + " reclaimed_bytes=" + std::to_string(static_cast<unsigned long long>(reclaimedBytes))
         + " success=" + std::to_string(success ? 1 : 0)
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSREAP", msg);
 }
 
@@ -2810,13 +2668,7 @@ void trace_fragmentation_recovery(
         return;
     }
 
-    const std::uintptr_t contextBits =
-        reinterpret_cast<std::uintptr_t>(transaction.snapshot.deviceContextKey.contextOpaque);
-    const std::string msg = std::string("event=fragmentation_recovery")
-        + " transaction_id=" + std::to_string(transaction.transactionId)
-        + " snapshot_id=" + std::to_string(transaction.snapshot.snapshotId)
-        + " trace_schema=" + std::to_string(transaction.snapshot.traceSchemaVersion)
-        + " command=" + (commandName ? commandName : "unknown")
+    const std::string msg = trace_event_prefix("fragmentation_recovery", transaction, commandName)
         + " attempt=" + std::to_string(static_cast<unsigned long long>(attempt))
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " reaped_bytes=" + std::to_string(static_cast<unsigned long long>(reapedBytes))
@@ -2824,10 +2676,9 @@ void trace_fragmentation_recovery(
             static_cast<unsigned long long>(quarantineTrimmedEntries))
         + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(graphEvictedEntries))
         + " success=" + std::to_string(success ? 1 : 0)
-        + " stage=" + (stage ? stage : "unknown")
-        + " device_id=" + std::to_string(transaction.snapshot.deviceContextKey.deviceId)
-        + " context=" + std::to_string(contextBits)
-        + " reason=" + (reason ? reason : "unspecified");
+        + " stage=" + trace_or_unknown(stage)
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSFRAG", msg);
 }
 

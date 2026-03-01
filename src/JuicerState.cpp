@@ -1,7 +1,9 @@
 #include "JuicerState.h"
 
+#include "Couplers.h"
 #include "LogExposureOffsets.h"
 #include "RebuildWorkingStateInternals.h"
+#include "WorkingState.h"
 #include "WorkingStateCorePayload.h"
 #include "WorkingStateCoreSharing.h"
 
@@ -13,7 +15,6 @@ void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) co
 
 #include <algorithm>
 #include <array>
-#include <functional>
 #include <filesystem>
 #include <cctype>
 #include <cfloat>
@@ -93,8 +94,9 @@ namespace {
         if (!JTRACE_ENABLED(2) || result.keyHash == 0) {
             return;
         }
+        const char* pathLabel = path ? path : "unknown";
         std::string msg = std::string("event=core_share_shell")
-            + " path=" + (path ? std::string(path) : std::string("unknown"))
+            + " path=" + pathLabel
             + " build=" + std::to_string(buildCounter)
             + " core_share_hash=" + std::to_string(result.keyHash)
             + " core_share_identity=" + std::to_string(result.identity)
@@ -970,9 +972,21 @@ namespace {
         out.whiteXY[0] = static_cast<float>(sumX / whiteSum);
         out.whiteXY[1] = static_cast<float>(sumY / whiteSum);
 
-        std::vector<float> hashSamples = out.curve.linear;
-        hashSamples.push_back(out.normalization);
-        out.hash = Hash::hash_float_span(hashSamples.data(), hashSamples.size());
+        constexpr int kReferenceAxisSamples = 81;
+        if (K == kReferenceAxisSamples && out.curve.linear.size() == static_cast<size_t>(kReferenceAxisSamples)) {
+            float hashSamples[kReferenceAxisSamples + 1];
+            std::copy(
+                out.curve.linear.begin(),
+                out.curve.linear.end(),
+                hashSamples);
+            hashSamples[kReferenceAxisSamples] = out.normalization;
+            out.hash = Hash::hash_float_span(hashSamples, static_cast<size_t>(kReferenceAxisSamples + 1));
+        }
+        else {
+            std::vector<float> hashSamples = out.curve.linear;
+            hashSamples.push_back(out.normalization);
+            out.hash = Hash::hash_float_span(hashSamples.data(), hashSamples.size());
+        }
         if (out.hash == 0) {
             std::ostringstream oss;
             oss << "FATAL: failed to hash viewing illuminant for " << label;
@@ -1278,8 +1292,18 @@ const char* print_paper_option_label(int index) {
 
 bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     const FilmStockDefinition& stock = film_stock_for_index(filmIndex);
-    JTRACE_SCOPE("STOCK", std::string("load_film_stock_into_base: ") + stock.jsonKey);
     const bool stockTraceEnabled = JTRACE_ENABLED(1);
+    JTRACE_SCOPE("STOCK", "load_film_stock_into_base");
+    auto trace_stock_key = [&](const char* prefix) {
+        if (stockTraceEnabled) {
+            std::string msg = prefix;
+            msg += stock.jsonKey;
+            JTRACE("STOCK", msg);
+        }
+    };
+    if (stockTraceEnabled) {
+        trace_stock_key("load_film_stock_into_base: ");
+    }
 
     std::vector<std::pair<float, float>> c_data;
     std::vector<std::pair<float, float>> m_data;
@@ -1321,7 +1345,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     const std::string jsonPath = data_dir_string("profiles", stock.jsonKey + ".json");
     Profiles::AgxFilmProfile profile;
     if (!Profiles::load_agx_film_profile_json(jsonPath, profile)) {
-        JTRACE("STOCK", std::string("failed to load agx profile json: ") + stock.jsonKey);
+        trace_stock_key("failed to load agx profile json: ");
         return false;
     }
 
@@ -1378,7 +1402,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         }
     }
     if (stockTraceEnabled) {
-        JTRACE("STOCK", std::string("loaded agx profile json: ") + stock.jsonKey);
+        trace_stock_key("loaded agx profile json: ");
         if (!dc_r.empty() && !dc_g.empty() && !dc_b.empty()) {
             std::ostringstream oss;
             oss << "density curves loaded from JSON '" << stock.jsonKey << "' samples R/G/B="
@@ -1386,7 +1410,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             JTRACE("STOCK", oss.str());
         }
         else {
-            JTRACE("STOCK", std::string("density curves missing in JSON profile: ") + stock.jsonKey);
+            trace_stock_key("density curves missing in JSON profile: ");
         }
     }
 
@@ -1436,14 +1460,14 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     const bool sensOk = sensBOk && sensGOk && sensROk;
     const bool densOk = densBOk && densGOk && densROk;
 
-    if (!dyeOk) {
+    if (!dyeOk && stockTraceEnabled) {
         std::ostringstream oss;
         oss << "dye epsilon resample failure (Y=" << (epsYOk ? "ok" : "empty")
             << ", M=" << (epsMOk ? "ok" : "empty")
             << ", C=" << (epsCOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
     }
-    if (!sensOk) {
+    if (!sensOk && stockTraceEnabled) {
         std::ostringstream oss;
         oss << "log sensitivity resample failure (B=" << (sensBOk ? "ok" : "empty")
             << ", G=" << (sensGOk ? "ok" : "empty")
@@ -1451,7 +1475,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         JTRACE("STOCK", oss.str());
     }
 
-    if (!densOk) {
+    if (!densOk && stockTraceEnabled) {
         std::ostringstream oss;
         oss << "density curve build failure (B=" << (densBOk ? "ok" : "empty")
             << ", G=" << (densGOk ? "ok" : "empty")
@@ -1460,9 +1484,11 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     }
 
     if (!(dyeOk && sensOk && densOk)) {
-        std::ostringstream fatal;
-        fatal << "FATAL: missing spectral data (film profile '" << stock.jsonKey << "')";
-        JTRACE("STOCK", fatal.str());
+        if (stockTraceEnabled) {
+            std::ostringstream fatal;
+            fatal << "FATAL: missing spectral data (film profile '" << stock.jsonKey << "')";
+            JTRACE("STOCK", fatal.str());
+        }
         return false;
     }
 
@@ -1520,12 +1546,12 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     }
 
     S.base.hasBaseline = baseMinOk && !S.base.baseMin.linear.empty();
-    if (!baseMinOk) {
+    if (!baseMinOk && stockTraceEnabled) {
         std::ostringstream oss;
         oss << "baseline resample failure (min=" << (baseMinOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
     }
-    else if (!baseMidOk && !dmid.empty()) {
+    else if (!baseMidOk && !dmid.empty() && stockTraceEnabled) {
         std::ostringstream oss;
         oss << "baseline resample warning (mid=" << (baseMidOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
@@ -1546,7 +1572,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             << "/" << static_cast<int>(S.base.baseMid.linear.size())
             << " hasBaseline=" << (S.base.hasBaseline ? 1 : 0);
         JTRACE("STOCK", oss.str());
-        JTRACE("STOCK", std::string("loaded OK; baseline=") + (S.base.hasBaseline ? "1" : "0"));
+        JTRACE("STOCK", S.base.hasBaseline ? "loaded OK; baseline=1" : "loaded OK; baseline=0");
     }
 
     return true;
@@ -1659,6 +1685,30 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
 
+    auto trace_print_working_state_commit = [&]() {
+        if (!JTRACE_ENABLED(3)) {
+            return;
+        }
+        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
+        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+        const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
+        const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
+        const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
+        const float neutralC = target->printRT ? target->printRT->neutralC : 0.0f;
+        const char* paperLabel = paperKey ? paperKey : "<null>";
+        const char* filmLabel = filmKey ? filmKey : "<null>";
+        const char* printRef = target->printRT ? target->printRT->referenceIlluminant.c_str() : "<null>";
+        const char* printView = target->printRT ? target->printRT->viewingIlluminant.c_str() : "<null>";
+        std::string msg = std::string("working state commit build=") + std::to_string(target->buildCounter)
+            + " paper=" + paperLabel
+            + " film=" + filmLabel
+            + " printRT=" + std::to_string(prtPtr)
+            + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
+            + " printRef=" + printRef
+            + " printView=" + printView;
+        JTRACE_VERBOSE("PRINTDBG", msg);
+    };
+
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
         WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
@@ -1679,22 +1729,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
             trace_working_state_core_share(coreShare, target->buildCounter, "full_rebuild_payload_fast");
 
-            if (JTRACE_ENABLED(3)) {
-                const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-                const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-                const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
-                const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
-                const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
-                const float neutralC = target->printRT ? target->printRT->neutralC : 0.0f;
-                std::string msg = std::string("working state commit build=") + std::to_string(target->buildCounter)
-                    + " paper=" + std::string(paperKey ? paperKey : "<null>")
-                    + " film=" + std::string(filmKey ? filmKey : "<null>")
-                    + " printRT=" + std::to_string(prtPtr)
-                    + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
-                    + " printRef=" + (target->printRT ? target->printRT->referenceIlluminant : std::string("<null>"))
-                    + " printView=" + (target->printRT ? target->printRT->viewingIlluminant : std::string("<null>"));
-                JTRACE_VERBOSE("PRINTDBG", msg);
-            }
+            trace_print_working_state_commit();
 
             if (buildTraceEnabled) {
                 std::ostringstream oss;
@@ -2808,22 +2843,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         trace_working_state_core_share(coreShareInitial, target->buildCounter, "full_rebuild_shell_acquire");
         trace_working_state_core_share(coreShareSeed, target->buildCounter, "full_rebuild");
     }
-    if (JTRACE_ENABLED(3)) {
-        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-        const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
-        const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
-        const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
-        const float neutralC = target->printRT ? target->printRT->neutralC : 0.0f;
-        std::string msg = std::string("working state commit build=") + std::to_string(target->buildCounter)
-            + " paper=" + std::string(paperKey ? paperKey : "<null>")
-            + " film=" + std::string(filmKey ? filmKey : "<null>")
-            + " printRT=" + std::to_string(prtPtr)
-            + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
-            + " printRef=" + (target->printRT ? target->printRT->referenceIlluminant : std::string("<null>"))
-            + " printView=" + (target->printRT ? target->printRT->viewingIlluminant : std::string("<null>"));
-        JTRACE_VERBOSE("PRINTDBG", msg);
-    }
+    trace_print_working_state_commit();
 
     if (buildTraceEnabled) {
         std::ostringstream oss;

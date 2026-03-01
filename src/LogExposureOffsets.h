@@ -10,7 +10,7 @@
 #include "FilmProcessing.h"
 
 namespace RebuildWorkingState {
-    namespace detail {
+    namespace curve_inversion {
         inline std::optional<float> invert_density_curve(const Spectral::Curve& curve, float targetDensity) {
             if (!std::isfinite(targetDensity)) {
                 return std::nullopt;
@@ -91,7 +91,7 @@ namespace RebuildWorkingState {
 
             return samples.back().first;
         }
-    } // namespace detail
+    } // namespace curve_inversion
 
     inline std::array<float, 3> compute_mid_neutral_logE_offsets_rgb(
         const Spectral::Curve& densR,
@@ -101,13 +101,13 @@ namespace RebuildWorkingState {
     {
         std::array<float, 3> result{ {0.0f, 0.0f, 0.0f} };
 
-        if (auto logER = detail::invert_density_curve(densR, densityMidRGB[0])) {
+        if (auto logER = curve_inversion::invert_density_curve(densR, densityMidRGB[0])) {
             result[0] = *logER;
         }
-        if (auto logEG = detail::invert_density_curve(densG, densityMidRGB[1])) {
+        if (auto logEG = curve_inversion::invert_density_curve(densG, densityMidRGB[1])) {
             result[1] = *logEG;
         }
-        if (auto logEB = detail::invert_density_curve(densB, densityMidRGB[2])) {
+        if (auto logEB = curve_inversion::invert_density_curve(densB, densityMidRGB[2])) {
             result[2] = *logEB;
         }
 
