@@ -97,23 +97,107 @@ namespace {
             return;
         }
         const char* pathLabel = path ? path : "unknown";
-        std::string msg = std::string("event=core_share_shell")
-            + " path=" + pathLabel
-            + " build=" + std::to_string(buildCounter)
-            + " core_share_hash=" + std::to_string(result.keyHash)
-            + " core_share_identity=" + std::to_string(result.identity)
-            + " cache_hit=" + std::to_string(result.hit ? 1 : 0)
-            + " cache_inserted=" + std::to_string(result.inserted ? 1 : 0)
-            + " payload_present=" + std::to_string(result.payloadPresent ? 1 : 0)
-            + " payload_backfilled=" + std::to_string(result.payloadBackfilled ? 1 : 0)
-            + " cache_entries=" + std::to_string(static_cast<unsigned long long>(result.cacheEntries));
+        std::string msg;
+        msg.reserve(256);
+        msg = "event=core_share_shell";
+        msg += " path=";
+        msg += pathLabel;
+        msg += " build=";
+        msg += std::to_string(buildCounter);
+        msg += " core_share_hash=";
+        msg += std::to_string(result.keyHash);
+        msg += " core_share_identity=";
+        msg += std::to_string(result.identity);
+        msg += " cache_hit=";
+        msg += std::to_string(result.hit ? 1 : 0);
+        msg += " cache_inserted=";
+        msg += std::to_string(result.inserted ? 1 : 0);
+        msg += " payload_present=";
+        msg += std::to_string(result.payloadPresent ? 1 : 0);
+        msg += " payload_backfilled=";
+        msg += std::to_string(result.payloadBackfilled ? 1 : 0);
+        msg += " cache_entries=";
+        msg += std::to_string(static_cast<unsigned long long>(result.cacheEntries));
         JTRACE("MSWSC", msg);
+    }
+
+    inline void copy_float3(float dst[3], const float src[3]) {
+        std::memcpy(dst, src, 3u * sizeof(float));
+    }
+
+    inline void sanitize_dir_matrix(float matrix[3][3]) {
+        float* valueIt = &matrix[0][0];
+        const float* const valueEnd = valueIt + 9;
+        for (; valueIt < valueEnd; ++valueIt) {
+            float value = *valueIt;
+            if (!std::isfinite(value)) value = 0.0f;
+            if (value < -10.0f) value = -10.0f;
+            if (value > 10.0f) value = 10.0f;
+            *valueIt = value;
+        }
+    }
+
+    inline void sanitize_dir_dmax(float dMax[3], float mirror[3]) {
+        float* valueIt = dMax;
+        float* mirrorIt = mirror;
+        const float* const valueEnd = valueIt + 3;
+        for (; valueIt < valueEnd; ++valueIt, ++mirrorIt) {
+            float value = *valueIt;
+            if (!std::isfinite(value) || value <= 1e-4f) value = 1.0f;
+            if (value > 1000.0f) value = 1000.0f;
+            *valueIt = value;
+            *mirrorIt = value;
+        }
+    }
+
+    inline void build_dir_matrix_fallback(float matrix[3][3], const float amountValues[3], float layerSigma) {
+        const float sigma = std::isfinite(layerSigma) ? std::max(0.0f, layerSigma) : 0.0f;
+        float amount[3] = { amountValues[0], amountValues[1], amountValues[2] };
+        const float sigmaCapped = std::min(sigma, 3.0f);
+        float* amountIt = amount;
+        for (int i = 0; i < 3; ++i, ++amountIt) {
+            if (!std::isfinite(*amountIt)) *amountIt = 0.0f;
+            *amountIt = std::clamp(*amountIt, 0.0f, 1.0f);
+        }
+
+        auto gauss = [sigmaCapped](int dx) -> float {
+            if (sigmaCapped <= 0.0f) {
+                return (dx == 0) ? 1.0f : 0.0f;
+            }
+            const float s2 = sigmaCapped * sigmaCapped;
+            return std::exp(-0.5f * (dx * dx) / s2);
+            };
+
+        for (int row = 0; row < 3; ++row) {
+            float kernelRow[3];
+            float rowWeightSum = 0.0f;
+            for (int col = 0; col < 3; ++col) {
+                kernelRow[col] = gauss(col - row);
+                rowWeightSum += kernelRow[col];
+            }
+            if (rowWeightSum > 0.0f) {
+                for (float& v : kernelRow) {
+                    v /= rowWeightSum;
+                }
+            }
+            float* dst = matrix[row];
+            const float* src = kernelRow;
+            const float amountRow = amount[row];
+            for (int col = 0; col < 3; ++col, ++dst, ++src) {
+                *dst = amountRow * *src;
+            }
+        }
+
+        sanitize_dir_matrix(matrix);
     }
 
     void recompute_working_state_dir_overlay(InstanceState& S, const ParamSnapshot& P, WorkingState& target) {
         auto compute_curve_max = [](const Spectral::Curve& c) {
             float m = 0.0f;
-            for (float v : c.linear) {
+            const float* values = c.linear.data();
+            const float* const valuesEnd = values + c.linear.size();
+            for (; values < valuesEnd; ++values) {
+                const float v = *values;
                 if (std::isfinite(v) && v > m) {
                     m = v;
                 }
@@ -216,46 +300,7 @@ namespace {
 #ifdef JUICER_ENABLE_COUPLERS
             Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #else
-            auto build_dir_matrix_stub = [](float M[3][3], const float amountValues[3], float layerSigma) {
-                const float sigma = std::isfinite(layerSigma) ? std::max(0.0f, layerSigma) : 0.0f;
-                float amt[3] = { amountValues[0], amountValues[1], amountValues[2] };
-                const float sigmaCapped = std::min(sigma, 3.0f);
-                for (int i = 0; i < 3; ++i) {
-                    if (!std::isfinite(amt[i])) amt[i] = 0.0f;
-                    amt[i] = std::clamp(amt[i], 0.0f, 1.0f);
-                }
-                auto gauss = [sigmaCapped](int dx) -> float {
-                    if (sigmaCapped <= 0.0f) {
-                        return (dx == 0) ? 1.0f : 0.0f;
-                    }
-                    const float s2 = sigmaCapped * sigmaCapped;
-                    return std::exp(-0.5f * (dx * dx) / s2);
-                    };
-                for (int r = 0; r < 3; ++r) {
-                    float row[3];
-                    float wsum = 0.0f;
-                    for (int c = 0; c < 3; ++c) {
-                        row[c] = gauss(c - r);
-                        wsum += row[c];
-                    }
-                    if (wsum > 0.0f) {
-                        for (int c = 0; c < 3; ++c) {
-                            row[c] /= wsum;
-                        }
-                    }
-                    for (int c = 0; c < 3; ++c) {
-                        M[r][c] = amt[r] * row[c];
-                    }
-                }
-                for (int r = 0; r < 3; ++r) {
-                    for (int c = 0; c < 3; ++c) {
-                        if (!std::isfinite(M[r][c])) {
-                            M[r][c] = 0.0f;
-                        }
-                    }
-                }
-                };
-            build_dir_matrix_stub(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
+            build_dir_matrix_fallback(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #endif
             dirRT.highShift = static_cast<float>(effectiveCouplersHigh);
             dirRT.spatialSigmaMicrometers = static_cast<float>(effectiveSpatialSigma);
@@ -264,7 +309,10 @@ namespace {
 #ifdef JUICER_ENABLE_COUPLERS
             if (dirRT.active) {
                 auto has_nonfinite_density = [](const Spectral::Curve& c) -> bool {
-                    for (float v : c.linear) {
+                    const float* values = c.linear.data();
+                    const float* const valuesEnd = values + c.linear.size();
+                    for (; values < valuesEnd; ++values) {
+                        const float v = *values;
                         if (!std::isfinite(v)) {
                             return true;
                         }
@@ -290,9 +338,7 @@ namespace {
 #endif
         }
 
-        dirRT.dMax[0] = densityMaxPostDir[0];
-        dirRT.dMax[1] = densityMaxPostDir[1];
-        dirRT.dMax[2] = densityMaxPostDir[2];
+        copy_float3(dirRT.dMax, densityMaxPostDir.data());
         target.dirRT = dirRT;
         target.dirPrecorrected = precorrectApplied;
         if (!precorrectApplied) {
@@ -300,29 +346,13 @@ namespace {
             target.dirDensG = target.densG;
             target.dirDensR = target.densR;
         }
-        target.dMax[0] = dirRT.dMax[0];
-        target.dMax[1] = dirRT.dMax[1];
-        target.dMax[2] = dirRT.dMax[2];
+        copy_float3(target.dMax, dirRT.dMax);
         target.negParams.DmaxY = target.dMax[0];
         target.negParams.DmaxM = target.dMax[1];
         target.negParams.DmaxC = target.dMax[2];
 
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                float v = target.dirRT.M[r][c];
-                if (!std::isfinite(v)) v = 0.0f;
-                if (v < -10.0f) v = -10.0f;
-                if (v > 10.0f)  v = 10.0f;
-                target.dirRT.M[r][c] = v;
-            }
-        }
-        for (int i = 0; i < 3; ++i) {
-            float v = target.dMax[i];
-            if (!std::isfinite(v) || v <= 1e-4f) v = 1.0f;
-            if (v > 1000.0f) v = 1000.0f;
-            target.dMax[i] = v;
-            target.dirRT.dMax[i] = v;
-        }
+        sanitize_dir_matrix(target.dirRT.M);
+        sanitize_dir_dmax(target.dMax, target.dirRT.dMax);
     }
 
     bool rebuild_working_state_scanner_output_runtime(const ParamSnapshot& P, WorkingState& target) {
@@ -429,8 +459,10 @@ namespace {
     std::string sanitize_identifier(const std::string& value) {
         std::string out;
         out.reserve(value.size());
-        for (char ch : value) {
-            unsigned char uc = static_cast<unsigned char>(ch);
+        const char* inData = value.data();
+        const char* const inEnd = inData + value.size();
+        for (; inData < inEnd; ++inData) {
+            unsigned char uc = static_cast<unsigned char>(*inData);
             if (std::isalnum(uc)) {
                 out.push_back(static_cast<char>(std::tolower(uc)));
             }
@@ -442,9 +474,12 @@ namespace {
         if (a.size() != b.size()) {
             return false;
         }
-        for (size_t i = 0; i < a.size(); ++i) {
-            if (std::tolower(static_cast<unsigned char>(a[i])) !=
-                std::tolower(static_cast<unsigned char>(b[i]))) {
+        const char* aData = a.data();
+        const char* bData = b.data();
+        const char* const aEnd = aData + a.size();
+        for (; aData < aEnd; ++aData, ++bData) {
+            if (std::tolower(static_cast<unsigned char>(*aData)) !=
+                std::tolower(static_cast<unsigned char>(*bData))) {
                 return false;
             }
         }
@@ -577,11 +612,13 @@ namespace {
                 if (!missingFilmKeys.empty()) {
                     std::ostringstream oss;
                     oss << "catalog fallback: film profiles unavailable for keys: ";
-                    for (size_t i = 0; i < missingFilmKeys.size(); ++i) {
+                    const size_t missingCount = missingFilmKeys.size();
+                    const std::string* missingData = missingFilmKeys.data();
+                    for (size_t i = 0; i < missingCount; ++i, ++missingData) {
                         if (i > 0) {
                             oss << ", ";
                         }
-                        oss << missingFilmKeys[i];
+                        oss << *missingData;
                     }
                     JTRACE("CATALOG", oss.str());
                 }
@@ -615,11 +652,14 @@ namespace {
             std::string nameSan = sanitize_identifier(info.name);
             size_t bestScore = 0;
             int bestIndex = -1;
-            for (size_t i = 0; i < folders.size(); ++i) {
-                if (folders[i].used) {
+            PrintFolderInfo* folderData = folders.data();
+            const size_t folderCount = folders.size();
+            PrintFolderInfo* folderIt = folderData;
+            for (size_t i = 0; i < folderCount; ++i, ++folderIt) {
+                if (folderIt->used) {
                     continue;
                 }
-                const std::string& folderSan = folders[i].sanitized;
+                const std::string& folderSan = folderIt->sanitized;
                 if (folderSan.empty()) {
                     continue;
                 }
@@ -647,8 +687,8 @@ namespace {
                 }
             }
             if (bestIndex >= 0) {
-                folders[bestIndex].used = true;
-                return folders[bestIndex].name;
+                folderData[bestIndex].used = true;
+                return folderData[bestIndex].name;
             }
             return {};
             };
@@ -729,11 +769,13 @@ namespace {
                 if (!missingPaperKeys.empty()) {
                     std::ostringstream oss;
                     oss << "catalog fallback: print profiles unavailable for keys: ";
-                    for (size_t i = 0; i < missingPaperKeys.size(); ++i) {
+                    const size_t missingCount = missingPaperKeys.size();
+                    const std::string* missingData = missingPaperKeys.data();
+                    for (size_t i = 0; i < missingCount; ++i, ++missingData) {
                         if (i > 0) {
                             oss << ", ";
                         }
-                        oss << missingPaperKeys[i];
+                        oss << *missingData;
                     }
                     JTRACE("CATALOG", oss.str());
                 }
@@ -792,13 +834,14 @@ namespace {
         if (!(temperature > 0.0f)) {
             return curve;
         }
+        const int K = Spectral::gShape.K;
         Spectral::assign_reference_axis(curve.lambda_nm);
-        curve.linear.resize(static_cast<size_t>(Spectral::gShape.K));
+        curve.linear.resize(static_cast<size_t>(K));
         const float* wavelengths = Spectral::gShape.wavelengths.data();
         float* outLinear = curve.linear.data();
-        for (int i = 0; i < Spectral::gShape.K; ++i) {
+        for (int i = 0; i < K; ++i) {
             outLinear[i] = Spectral::planck_blackbody(
-                wavelengths[static_cast<size_t>(i)],
+                wavelengths[i],
                 temperature);
         }
         Spectral::mean_power_normalize(curve.linear);
@@ -812,7 +855,7 @@ namespace {
         fs::path path(baseDir);
         for (std::string_view seg : segments) {
             if (!seg.empty()) {
-                path /= fs::path(seg);
+                path /= seg;
             }
         }
         path = path.lexically_normal();
@@ -914,11 +957,14 @@ namespace {
         if (curve.linear.size() != expected || curve.lambda_nm.size() != expected) {
             return false;
         }
+        const float* lambdaData = curve.lambda_nm.data();
+        const float* axisData = Spectral::gShape.wavelengths.data();
         constexpr float kAxisMatchTolerance = 1e-3f;
-        for (size_t i = 0; i < expected; ++i) {
-            const float lambda = curve.lambda_nm[i];
+        const float* const lambdaEnd = lambdaData + expected;
+        for (; lambdaData < lambdaEnd; ++lambdaData, ++axisData) {
+            const float lambda = *lambdaData;
             if (!std::isfinite(lambda) ||
-                std::abs(lambda - Spectral::gShape.wavelengths[i]) > kAxisMatchTolerance) {
+                std::abs(lambda - *axisData) > kAxisMatchTolerance) {
                 return false;
             }
         }
@@ -994,9 +1040,12 @@ namespace {
         out.curve = std::move(curve);
         out.normalization = static_cast<float>(sumY);
         const double invYn = 1.0 / sumY;
-        out.whiteXYZ[0] = static_cast<float>(sumX * invYn);
-        out.whiteXYZ[1] = 1.0f;
-        out.whiteXYZ[2] = static_cast<float>(sumZ * invYn);
+        const float whiteXYZ[3] = {
+            static_cast<float>(sumX * invYn),
+            1.0f,
+            static_cast<float>(sumZ * invYn)
+        };
+        copy_float3(out.whiteXYZ, whiteXYZ);
 
         const double whiteSum = sumX + sumY + sumZ;
         if (!(std::isfinite(whiteSum) && whiteSum > 0.0)) {
@@ -1007,7 +1056,8 @@ namespace {
         out.whiteXY[1] = static_cast<float>(sumY / whiteSum);
 
         constexpr int kReferenceAxisSamples = 81;
-        if (K == kReferenceAxisSamples && out.curve.linear.size() == static_cast<size_t>(kReferenceAxisSamples)) {
+        const size_t sampleCount = out.curve.linear.size();
+        if (K == kReferenceAxisSamples && sampleCount == static_cast<size_t>(kReferenceAxisSamples)) {
             float hashSamples[kReferenceAxisSamples + 1];
             std::memcpy(
                 hashSamples,
@@ -1017,15 +1067,14 @@ namespace {
             out.hash = Hash::hash_float_span(hashSamples, static_cast<size_t>(kReferenceAxisSamples + 1));
         }
         else {
-            std::vector<float> hashSamples;
-            hashSamples.resize(out.curve.linear.size() + 1);
-            if (!out.curve.linear.empty()) {
+            std::vector<float> hashSamples(sampleCount + 1);
+            if (sampleCount > 0) {
                 std::memcpy(
                     hashSamples.data(),
                     out.curve.linear.data(),
-                    out.curve.linear.size() * sizeof(float));
+                    sampleCount * sizeof(float));
             }
-            hashSamples[out.curve.linear.size()] = out.normalization;
+            hashSamples[sampleCount] = out.normalization;
             out.hash = Hash::hash_float_span(hashSamples.data(), hashSamples.size());
         }
         if (out.hash == 0) {
@@ -1043,7 +1092,10 @@ namespace {
         }
         double m = -std::numeric_limits<double>::infinity();
         bool found = false;
-        for (float v : curve.linear) {
+        const float* values = curve.linear.data();
+        const float* const valuesEnd = values + curve.linear.size();
+        for (; values < valuesEnd; ++values) {
+            const float v = *values;
             if (std::isfinite(v)) {
                 m = std::max(m, static_cast<double>(v));
                 found = true;
@@ -1056,6 +1108,42 @@ namespace {
         return std::isfinite(outMax);
     }
 
+    inline void add_triplet(float dst[3], const float lhs[3], const float rhs[3]) {
+        float* dstIt = dst;
+        const float* lhsIt = lhs;
+        const float* rhsIt = rhs;
+        for (int i = 0; i < 3; ++i, ++dstIt, ++lhsIt, ++rhsIt) {
+            *dstIt = *lhsIt + *rhsIt;
+        }
+    }
+
+    inline bool finalize_density_range(
+        Scanner::ScannerDensityRange& range,
+        const char* invalidRangeMessage,
+        const char* hashFailMessage) {
+        const float* maxCmyIt = range.max_cmy;
+        float* invMaxCmyIt = range.inv_max_cmy;
+        for (int i = 0; i < 3; ++i, ++maxCmyIt, ++invMaxCmyIt) {
+            const float v = *maxCmyIt;
+            if (!(std::isfinite(v) && v > 0.0f)) {
+                JTRACE("BUILD", invalidRangeMessage);
+                return false;
+            }
+            *invMaxCmyIt = 1.0f / v;
+        }
+
+        float hashVals[6] = {
+            range.min_cmy[0], range.min_cmy[1], range.min_cmy[2],
+            range.max_cmy[0], range.max_cmy[1], range.max_cmy[2]
+        };
+        range.digest = Hash::hash_float_span(hashVals, std::size(hashVals));
+        if (range.digest == 0) {
+            JTRACE("HASH", hashFailMessage);
+            return false;
+        }
+        return true;
+    }
+
     static bool compute_negative_density_range(
         const Spectral::Curve& densB,
         const Spectral::Curve& densG,
@@ -1064,13 +1152,15 @@ namespace {
         Scanner::ScannerDensityRange& outRange)
     {
         outRange = Scanner::ScannerDensityRange{};
-        for (int i = 0; i < 3; ++i) {
-            const float v = grain.densityMin[static_cast<size_t>(i)];
+        const float* densityMinIt = grain.densityMin.data();
+        float* minCmyIt = outRange.min_cmy;
+        for (int i = 0; i < 3; ++i, ++densityMinIt, ++minCmyIt) {
+            const float v = *densityMinIt;
             if (!std::isfinite(v)) {
                 JTRACE("BUILD", "FATAL: non-finite grain density_min for negative medium");
                 return false;
             }
-            outRange.min_cmy[i] = v;
+            *minCmyIt = v;
         }
 
         float maxC = 0.0f, maxM = 0.0f, maxY = 0.0f;
@@ -1082,29 +1172,12 @@ namespace {
             return false;
         }
 
-        outRange.max_cmy[0] = maxC + outRange.min_cmy[0];
-        outRange.max_cmy[1] = maxM + outRange.min_cmy[1];
-        outRange.max_cmy[2] = maxY + outRange.min_cmy[2];
-
-        for (int i = 0; i < 3; ++i) {
-            const float v = outRange.max_cmy[i];
-            if (!(std::isfinite(v) && v > 0.0f)) {
-                JTRACE("BUILD", "FATAL: invalid negative density range (non-positive max)");
-                return false;
-            }
-            outRange.inv_max_cmy[i] = 1.0f / v;
-        }
-
-        float hashVals[6] = {
-            outRange.min_cmy[0], outRange.min_cmy[1], outRange.min_cmy[2],
-            outRange.max_cmy[0], outRange.max_cmy[1], outRange.max_cmy[2]
-        };
-        outRange.digest = Hash::hash_float_span(hashVals, std::size(hashVals));
-        if (outRange.digest == 0) {
-            JTRACE("HASH", "FATAL: failed to hash negative density range");
-            return false;
-        }
-        return true;
+        const float maxCmy[3] = { maxC, maxM, maxY };
+        add_triplet(outRange.max_cmy, maxCmy, outRange.min_cmy);
+        return finalize_density_range(
+            outRange,
+            "FATAL: invalid negative density range (non-positive max)",
+            "FATAL: failed to hash negative density range");
     }
 
     static bool compute_print_density_range(
@@ -1121,29 +1194,12 @@ namespace {
             return false;
         }
 
-        outRange.max_cmy[0] = maxC;
-        outRange.max_cmy[1] = maxM;
-        outRange.max_cmy[2] = maxY;
-
-        for (int i = 0; i < 3; ++i) {
-            const float v = outRange.max_cmy[i];
-            if (!(std::isfinite(v) && v > 0.0f)) {
-                JTRACE("BUILD", "FATAL: invalid print density range (non-positive max)");
-                return false;
-            }
-            outRange.inv_max_cmy[i] = 1.0f / v;
-        }
-
-        float hashVals[6] = {
-            outRange.min_cmy[0], outRange.min_cmy[1], outRange.min_cmy[2],
-            outRange.max_cmy[0], outRange.max_cmy[1], outRange.max_cmy[2]
-        };
-        outRange.digest = Hash::hash_float_span(hashVals, std::size(hashVals));
-        if (outRange.digest == 0) {
-            JTRACE("HASH", "FATAL: failed to hash print density range");
-            return false;
-        }
-        return true;
+        const float maxCmy[3] = { maxC, maxM, maxY };
+        copy_float3(outRange.max_cmy, maxCmy);
+        return finalize_density_range(
+            outRange,
+            "FATAL: invalid print density range (non-positive max)",
+            "FATAL: failed to hash print density range");
     }
 }
 
@@ -1180,7 +1236,10 @@ uint64_t hash_params(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
     if (p.cameraFilterOverride) {
         auto mix_triplet = [&](const std::array<double, 3>& triplet) {
-            for (double v : triplet) {
+            const double* values = triplet.data();
+            const double* const valuesEnd = values + triplet.size();
+            for (; values < valuesEnd; ++values) {
+                const double v = *values;
                 if (std::isfinite(v)) {
                     const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
                     h = mix(h, static_cast<uint64_t>(scaled));
@@ -1218,7 +1277,10 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
     if (p.cameraFilterOverride) {
         auto mix_triplet = [&](const std::array<double, 3>& triplet) {
-            for (double v : triplet) {
+            const double* values = triplet.data();
+            const double* const valuesEnd = values + triplet.size();
+            for (; values < valuesEnd; ++values) {
+                const double v = *values;
                 if (std::isfinite(v)) {
                     const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
                     h = mix(h, static_cast<uint64_t>(scaled));
@@ -1250,7 +1312,10 @@ static uint64_t hash_params_upload_core(const ParamSnapshot& p) {
     h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
     if (p.cameraFilterOverride) {
         auto mix_triplet = [&](const std::array<double, 3>& triplet) {
-            for (double v : triplet) {
+            const double* values = triplet.data();
+            const double* const valuesEnd = values + triplet.size();
+            for (; values < valuesEnd; ++values) {
+                const double v = *values;
                 if (std::isfinite(v)) {
                     const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
                     h = mix(h, static_cast<uint64_t>(scaled));
@@ -1287,7 +1352,7 @@ std::string print_dir_for_index(int index) {
     }
 
     std::filesystem::path base = std::filesystem::path(gDataDir);
-    std::filesystem::path dir = base / "paper" / std::filesystem::path(paper.folderName);
+    std::filesystem::path dir = base / "paper" / paper.folderName;
     dir.make_preferred();
     std::string result = dir.string();
 #ifdef _WIN32
@@ -1337,7 +1402,9 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     JTRACE_SCOPE("STOCK", "load_film_stock_into_base");
     auto trace_stock_key = [&](const char* prefix) {
         if (stockTraceEnabled) {
-            std::string msg = prefix;
+            std::string msg;
+            msg.reserve((prefix ? std::strlen(prefix) : 0u) + stock.jsonKey.size());
+            msg = prefix ? prefix : "";
             msg += stock.jsonKey;
             JTRACE("STOCK", msg);
         }
@@ -1376,7 +1443,9 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.glare = Profiles::ProfileGlare{};
     S.base.hasDensityCurvesLayers = false;
     for (auto& layer : S.base.densityCurvesLayers) {
-        for (auto& ch : layer) ch.clear();
+        for (auto& ch : layer) {
+            ch.clear();
+        }
     }
 
     if (stock.jsonKey.empty()) {
@@ -1432,12 +1501,20 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.glare = profile.glare;
     if (profile.hasDensityCurvesLayers) {
         S.base.hasDensityCurvesLayers = true;
-        for (size_t layer = 0; layer < dc_layers.size(); ++layer) {
-            for (size_t ch = 0; ch < dc_layers[layer].size(); ++ch) {
-                S.base.densityCurvesLayers[layer][ch].clear();
-                S.base.densityCurvesLayers[layer][ch].reserve(dc_layers[layer][ch].size());
-                for (const auto& sample : dc_layers[layer][ch]) {
-                    S.base.densityCurvesLayers[layer][ch].emplace_back(sample.second);
+        const size_t layerCount = dc_layers.size();
+        for (size_t layer = 0; layer < layerCount; ++layer) {
+            auto& dstLayer = S.base.densityCurvesLayers[layer];
+            const auto& srcLayer = dc_layers[layer];
+            const size_t channelCount = srcLayer.size();
+            for (size_t ch = 0; ch < channelCount; ++ch) {
+                auto& dstCurve = dstLayer[ch];
+                const auto& srcCurve = srcLayer[ch];
+                dstCurve.clear();
+                dstCurve.reserve(srcCurve.size());
+                const auto* srcSamples = srcCurve.data();
+                const auto* const srcEnd = srcSamples + srcCurve.size();
+                for (; srcSamples < srcEnd; ++srcSamples) {
+                    dstCurve.emplace_back(srcSamples->second);
                 }
             }
         }
@@ -1536,7 +1613,10 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     auto subtract_baseline_floor = [](Spectral::Curve& curve) {
         if (curve.linear.empty()) return;
         float minVal = FLT_MAX;
-        for (float v : curve.linear) {
+        const float* inData = curve.linear.data();
+        const float* const inEnd = inData + curve.linear.size();
+        for (; inData < inEnd; ++inData) {
+            const float v = *inData;
             if (std::isfinite(v) && v < minVal) {
                 minVal = v;
             }
@@ -1544,7 +1624,10 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         if (!std::isfinite(minVal) || minVal == FLT_MAX || minVal == 0.0f) {
             return;
         }
-        for (float& v : curve.linear) {
+        float* outData = curve.linear.data();
+        const float* const outEnd = outData + curve.linear.size();
+        for (; outData < outEnd; ++outData) {
+            float& v = *outData;
             // agx-emulsion parity (density curves): preserve authored NaNs through sampling; do not
             // convert NaN -> 0 density (which would lift shadows). agx does `curve -= nanmin(curve)`.
             if (std::isfinite(v)) {
@@ -1626,7 +1709,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     (void)mutationScope;
 
     auto sanitize_curve = [](Spectral::Curve& c) {
-        for (float& v : c.linear) {
+        float* values = c.linear.data();
+        const float* const valuesEnd = values + c.linear.size();
+        for (; values < valuesEnd; ++values) {
+            float& v = *values;
             if (!std::isfinite(v)) v = 0.0f;
             if (v < 0.0f) v = 0.0f;
         }
@@ -1646,11 +1732,15 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             double ATA[3][3] = { {0.0,0.0,0.0}, {0.0,0.0,0.0}, {0.0,0.0,0.0} };
             double ATb[3] = { 0.0, 0.0, 0.0 };
 
-            for (size_t i = 0; i < K; ++i) {
-                const double ay = epsY.linear[i];
-                const double am = epsM.linear[i];
-                const double ac = epsC.linear[i];
-                const double b = baseCurve.linear[i];
+            const float* yData = epsY.linear.data();
+            const float* mData = epsM.linear.data();
+            const float* cData = epsC.linear.data();
+            const float* bData = baseCurve.linear.data();
+            for (size_t i = 0; i < K; ++i, ++yData, ++mData, ++cData, ++bData) {
+                const double ay = *yData;
+                const double am = *mData;
+                const double ac = *cData;
+                const double b = *bData;
                 if (!std::isfinite(ay) || !std::isfinite(am) || !std::isfinite(ac) || !std::isfinite(b)) {
                     continue;
                 }
@@ -1702,12 +1792,13 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 }
             }
 
-            for (int i = 0; i < 3; ++i) {
+            float* outData = result.data();
+            for (int i = 0; i < 3; ++i, ++outData) {
                 float v = static_cast<float>(mat[i][3]);
                 if (!std::isfinite(v) || v < 0.0f) {
                     v = 0.0f;
                 }
-                result[i] = v;
+                *outData = v;
             }
 
             return result;
@@ -1741,13 +1832,26 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const char* filmLabel = filmKey ? filmKey : "<null>";
         const char* printRef = target->printRT ? target->printRT->referenceIlluminant.c_str() : "<null>";
         const char* printView = target->printRT ? target->printRT->viewingIlluminant.c_str() : "<null>";
-        std::string msg = std::string("working state commit build=") + std::to_string(target->buildCounter)
-            + " paper=" + paperLabel
-            + " film=" + filmLabel
-            + " printRT=" + std::to_string(prtPtr)
-            + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
-            + " printRef=" + printRef
-            + " printView=" + printView;
+        std::string msg;
+        msg.reserve(256);
+        msg = "working state commit build=";
+        msg += std::to_string(target->buildCounter);
+        msg += " paper=";
+        msg += paperLabel;
+        msg += " film=";
+        msg += filmLabel;
+        msg += " printRT=";
+        msg += std::to_string(prtPtr);
+        msg += " neutralY/M/C=";
+        msg += std::to_string(neutralY);
+        msg += "/";
+        msg += std::to_string(neutralM);
+        msg += "/";
+        msg += std::to_string(neutralC);
+        msg += " printRef=";
+        msg += printRef;
+        msg += " printView=";
+        msg += printView;
         JTRACE_VERBOSE("PRINTDBG", msg);
     };
 
@@ -1837,7 +1941,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         ? S.base.dyeDensityMinFactor
         : 1.0f;
     if (hasBaseline && !approx_equal(dyeDensityMinScale, 1.0f)) {
-        for (float& v : baseMin.linear) {
+        float* baseMinData = baseMin.linear.data();
+        const float* const baseMinEnd = baseMinData + baseMin.linear.size();
+        for (; baseMinData < baseMinEnd; ++baseMinData) {
+            float& v = *baseMinData;
             if (std::isfinite(v)) {
                 v *= dyeDensityMinScale;
                 if (v < 0.0f) {
@@ -1847,12 +1954,18 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         }
     }
     if (hasBaseline) {
-        for (float& v : baseMin.linear) {
+        float* baseMinData = baseMin.linear.data();
+        const float* const baseMinEnd = baseMinData + baseMin.linear.size();
+        for (; baseMinData < baseMinEnd; ++baseMinData) {
+            float& v = *baseMinData;
             if (std::isfinite(v) && v < 0.0f) {
                 v = 0.0f;
             }
         }
-        for (float& v : baseMid.linear) {
+        float* baseMidData = baseMid.linear.data();
+        const float* const baseMidEnd = baseMidData + baseMid.linear.size();
+        for (; baseMidData < baseMidEnd; ++baseMidData) {
+            float& v = *baseMidData;
             if (std::isfinite(v) && v < 0.0f) {
                 v = 0.0f;
             }
@@ -1899,10 +2012,13 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     {
         auto to_triplet = [](const std::array<double, 3>& src, const std::array<float, 3>& fallback) {
             std::array<float, 3> out = fallback;
-            for (size_t i = 0; i < out.size(); ++i) {
-                const double v = src[i];
+            const double* srcData = src.data();
+            float* outData = out.data();
+            const double* const srcEnd = srcData + out.size();
+            for (; srcData < srcEnd; ++srcData, ++outData) {
+                const double v = *srcData;
                 if (std::isfinite(v)) {
-                    out[i] = static_cast<float>(v);
+                    *outData = static_cast<float>(v);
                 }
             }
             return out;
@@ -1920,12 +2036,16 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         if (ampUV > 0.0f || ampIR > 0.0f) {
             const std::vector<float> bandPass = Spectral::compute_band_pass_filter(filterUV, filterIR);
             if (bandPass.size() == static_cast<size_t>(Spectral::gShape.K)) {
-                auto applyFilter = [&bandPass](Spectral::Curve& curve) {
-                    if (curve.linear.size() != bandPass.size()) {
+                const size_t bandPassCount = bandPass.size();
+                const float* bandPassData = bandPass.data();
+                auto applyFilter = [bandPassCount, bandPassData](Spectral::Curve& curve) {
+                    if (curve.linear.size() != bandPassCount) {
                         return;
                     }
-                    for (size_t i = 0; i < bandPass.size(); ++i) {
-                        curve.linear[i] *= bandPass[i];
+                    float* curveData = curve.linear.data();
+                    const float* bandData = bandPassData;
+                    for (size_t i = 0; i < bandPassCount; ++i, ++curveData, ++bandData) {
+                        *curveData *= *bandData;
                     }
                     };
 
@@ -1946,7 +2066,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     Spectral::Curve densRForCalibration = densR;
     auto compute_curve_max = [](const Spectral::Curve& c) {
         float m = 0.0f;
-        for (float v : c.linear) {
+        const float* values = c.linear.data();
+        const float* const valuesEnd = values + c.linear.size();
+        for (; values < valuesEnd; ++values) {
+            const float v = *values;
             if (std::isfinite(v) && v > m) {
                 m = v;
             }
@@ -2045,46 +2168,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 #ifdef JUICER_ENABLE_COUPLERS
         Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #else
-        auto build_dir_matrix_stub = [](float M[3][3], const float amountValues[3], float layerSigma) {
-            const float sigma = std::isfinite(layerSigma) ? std::max(0.0f, layerSigma) : 0.0f;
-            float amt[3] = { amountValues[0], amountValues[1], amountValues[2] };
-            const float sigmaCapped = std::min(sigma, 3.0f);
-            for (int i = 0; i < 3; ++i) {
-                if (!std::isfinite(amt[i])) amt[i] = 0.0f;
-                amt[i] = std::clamp(amt[i], 0.0f, 1.0f);
-            }
-            auto gauss = [sigmaCapped](int dx) -> float {
-                if (sigmaCapped <= 0.0f) {
-                    return (dx == 0) ? 1.0f : 0.0f;
-                }
-                const float s2 = sigmaCapped * sigmaCapped;
-                return std::exp(-0.5f * (dx * dx) / s2);
-                };
-            for (int r = 0; r < 3; ++r) {
-                float row[3];
-                float wsum = 0.0f;
-                for (int c = 0; c < 3; ++c) {
-                    row[c] = gauss(c - r);
-                    wsum += row[c];
-                }
-                if (wsum > 0.0f) {
-                    for (int c = 0; c < 3; ++c) {
-                        row[c] /= wsum;
-                    }
-                }
-                for (int c = 0; c < 3; ++c) {
-                    M[r][c] = amt[r] * row[c];
-                }
-            }
-            for (int r = 0; r < 3; ++r) {
-                for (int c = 0; c < 3; ++c) {
-                    if (!std::isfinite(M[r][c])) {
-                        M[r][c] = 0.0f;
-                    }
-                }
-            }
-            };
-        build_dir_matrix_stub(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
+        build_dir_matrix_fallback(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #endif
         dirRT.highShift = static_cast<float>(effectiveCouplersHigh);
         dirRT.spatialSigmaMicrometers = static_cast<float>(effectiveSpatialSigma);
@@ -2093,7 +2177,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 #ifdef JUICER_ENABLE_COUPLERS
         if (dirRT.active) {
             auto has_nonfinite_density = [](const Spectral::Curve& c) -> bool {
-                for (float v : c.linear) {
+                const float* values = c.linear.data();
+                const float* const valuesEnd = values + c.linear.size();
+                for (; values < valuesEnd; ++values) {
+                    const float v = *values;
                     if (!std::isfinite(v)) {
                         return true;
                     }
@@ -2124,9 +2211,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         (void)dirRT;
 #endif
 
-        dirRT.dMax[0] = densityMaxPostDir[0];
-        dirRT.dMax[1] = densityMaxPostDir[1];
-        dirRT.dMax[2] = densityMaxPostDir[2];
+        copy_float3(dirRT.dMax, densityMaxPostDir.data());
         if (buildTraceEnabled) {
             std::ostringstream oss;
             oss << "DIR active=" << (dirRT.active ? 1 : 0)
@@ -2136,9 +2221,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             JTRACE("BUILD", oss.str());
         }
     }
-    dirRT.dMax[0] = densityMaxPostDir[0];
-    dirRT.dMax[1] = densityMaxPostDir[1];
-    dirRT.dMax[2] = densityMaxPostDir[2];
+    copy_float3(dirRT.dMax, densityMaxPostDir.data());
 
     Spectral::NegativeCouplerParams negParams;
     negParams.DmaxY = dirRT.dMax[0];
@@ -2184,13 +2267,17 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     if (dirCfg.hasData || hasMaskingData) {
         float amountRGB[3] = { 1.0f, 1.0f, 1.0f };
         if (dirCfg.hasData) {
-            for (int i = 0; i < 3; ++i) {
-                float ratio = dirCfg.ratioRGB[i];
+            const float amountRaw = std::isfinite(dirCfg.amount)
+                ? static_cast<float>(dirCfg.amount)
+                : 1.0f;
+            const float amount = std::max(0.0f, amountRaw);
+            float* amountRgbIt = amountRGB;
+            const float* ratioIt = dirCfg.ratioRGB.data();
+            for (int i = 0; i < 3; ++i, ++amountRgbIt, ++ratioIt) {
+                float ratio = *ratioIt;
                 if (!std::isfinite(ratio)) ratio = 1.0f;
                 if (ratio < 0.0f) ratio = 0.0f;
-                float amount = std::isfinite(dirCfg.amount) ? dirCfg.amount : 1.0f;
-                if (amount < 0.0f) amount = 0.0f;
-                amountRGB[i] = std::clamp(amount * ratio, 0.0f, 1.0f);
+                *amountRgbIt = std::clamp(amount * ratio, 0.0f, 1.0f);
             }
         }
 
@@ -2198,46 +2285,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 #ifdef JUICER_ENABLE_COUPLERS
         Couplers::build_dir_matrix(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
 #else
-        auto build_dir_matrix_local = [](float M[3][3], const float amountValues[3], float layerSigma) {
-            const float sigma = std::isfinite(layerSigma) ? std::max(0.0f, layerSigma) : 0.0f;
-            float amt[3] = { amountValues[0], amountValues[1], amountValues[2] };
-            const float sigmaCapped = std::min(sigma, 3.0f);
-            for (int i = 0; i < 3; ++i) {
-                if (!std::isfinite(amt[i])) amt[i] = 0.0f;
-                amt[i] = std::clamp(amt[i], 0.0f, 1.0f);
-            }
-            auto gauss = [sigmaCapped](int dx) -> float {
-                if (sigmaCapped <= 0.0f) {
-                    return (dx == 0) ? 1.0f : 0.0f;
-                }
-                const float s2 = sigmaCapped * sigmaCapped;
-                return std::exp(-0.5f * (dx * dx) / s2);
-                };
-            for (int r = 0; r < 3; ++r) {
-                float row[3];
-                float wsum = 0.0f;
-                for (int c = 0; c < 3; ++c) {
-                    row[c] = gauss(c - r);
-                    wsum += row[c];
-                }
-                if (wsum > 0.0f) {
-                    for (int c = 0; c < 3; ++c) {
-                        row[c] /= wsum;
-                    }
-                }
-                for (int c = 0; c < 3; ++c) {
-                    M[r][c] = amt[r] * row[c];
-                }
-            }
-            for (int r = 0; r < 3; ++r) {
-                for (int c = 0; c < 3; ++c) {
-                    if (!std::isfinite(M[r][c])) {
-                        M[r][c] = 0.0f;
-                    }
-                }
-            }
-            };
-        build_dir_matrix_local(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
+        build_dir_matrix_fallback(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
 #endif
 
         std::array<float, 3> maskScaleCh{ {1.0f, 1.0f, 1.0f} };
@@ -2266,12 +2314,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 double weightSum = 0.0;
                 double scaleSum = 0.0;
                 double offsetSum = 0.0;
-                for (size_t i = 0; i < K; ++i) {
-                    const float weight = eps->linear[i];
+                const float* epsData = eps->linear.data();
+                const float* lambdaData = lambda.data();
+                for (size_t i = 0; i < K; ++i, ++epsData, ++lambdaData) {
+                    const float weight = *epsData;
                     if (!std::isfinite(weight) || weight <= 0.0f) {
                         continue;
                     }
-                    const float lambda_nm = lambda[i];
+                    const float lambda_nm = *lambdaData;
                     float scaleSpectral = 1.0f;
                     if (std::isfinite(cross) && std::isfinite(width)) {
                         const float t = (lambda_nm - cross) / width;
@@ -2279,10 +2329,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                     }
                     double gaussSpectral = 0.0;
                     const auto& gaussians = maskProfile.gaussianModel[ch];
-                    for (const auto& tri : gaussians) {
-                        float mu = tri[0];
-                        float sigma = tri[1];
-                        float amp = tri[2];
+                    const std::array<float, 3>* triData = gaussians.data();
+                    const size_t triCount = gaussians.size();
+                    for (size_t triIdx = 0; triIdx < triCount; ++triIdx, ++triData) {
+                        float mu = (*triData)[0];
+                        float sigma = (*triData)[1];
+                        float amp = (*triData)[2];
                         if (!std::isfinite(mu) || !std::isfinite(sigma) || !std::isfinite(amp)) {
                             continue;
                         }
@@ -2312,13 +2364,17 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             }
         }
 
-        for (int i = 0; i < 3; ++i) {
-            float scale = maskScaleCh[i];
+        float* scaleSrc = maskScaleCh.data();
+        float* offsetSrc = maskOffsetCh.data();
+        float* scaleDst = negParams.maskScale;
+        float* offsetDst = negParams.maskOffset;
+        for (int i = 0; i < 3; ++i, ++scaleSrc, ++offsetSrc, ++scaleDst, ++offsetDst) {
+            float scale = *scaleSrc;
             if (!std::isfinite(scale) || scale <= 0.0f) scale = 1.0f;
-            float offset = maskOffsetCh[i];
+            float offset = *offsetSrc;
             if (!std::isfinite(offset) || offset < 0.0f) offset = 0.0f;
-            negParams.maskScale[i] = scale;
-            negParams.maskOffset[i] = offset;
+            *scaleDst = scale;
+            *offsetDst = offset;
         }
 
         const float maskScaleBase = 0.25f;
@@ -2335,8 +2391,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 scale *= amountRow;
             }
             scale = std::clamp(scale, 0.0f, 0.25f);
-            for (int c = 0; c < 3; ++c) {
-                float val = dirMatrix[r][c];
+            const float* dirRow = dirMatrix[r];
+            float* maskRow = negParams.mask + static_cast<size_t>(r) * 3u;
+            for (int c = 0; c < 3; ++c, ++dirRow, ++maskRow) {
+                float val = *dirRow;
                 if (!std::isfinite(val)) {
                     val = (r == c) ? 1.0f : 0.0f;
                 }
@@ -2345,13 +2403,13 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                     float diag = 1.0f - delta;
                     if (!std::isfinite(diag)) diag = 1.0f;
                     if (diag < 0.0f) diag = 0.0f;
-                    negParams.mask[r * 3 + c] = diag;
+                    *maskRow = diag;
                 }
                 else {
                     float off = -delta;
                     if (!std::isfinite(off)) off = 0.0f;
                     off = std::clamp(off, -1.0f, 1.0f);
-                    negParams.mask[r * 3 + c] = off;
+                    *maskRow = off;
                 }
             }
         }
@@ -2366,13 +2424,19 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->halation = S.base.halation;
     target->negativeGlare = S.base.glare;
     target->hasDensityCurvesLayers = S.base.hasDensityCurvesLayers;
-    for (size_t layer = 0; layer < target->densityCurvesLayers.size(); ++layer) {
-        for (size_t ch = 0; ch < target->densityCurvesLayers[layer].size(); ++ch) {
+    const size_t layerCount = target->densityCurvesLayers.size();
+    for (size_t layer = 0; layer < layerCount; ++layer) {
+        auto& dstLayer = target->densityCurvesLayers[layer];
+        const auto& srcLayer = S.base.densityCurvesLayers[layer];
+        const size_t channelCount = dstLayer.size();
+        auto* dstChannel = dstLayer.data();
+        const auto* srcChannel = srcLayer.data();
+        for (size_t ch = 0; ch < channelCount; ++ch, ++dstChannel, ++srcChannel) {
             if (target->hasDensityCurvesLayers) {
-                target->densityCurvesLayers[layer][ch] = S.base.densityCurvesLayers[layer][ch];
+                *dstChannel = *srcChannel;
             }
             else {
-                target->densityCurvesLayers[layer][ch].clear();
+                dstChannel->clear();
             }
         }
     }
@@ -2380,7 +2444,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     auto average_positive = [](const auto& values) -> float {
         float sum = 0.0f;
         int count = 0;
-        for (float v : values) {
+        const float* data = values.data();
+        const float* const dataEnd = data + values.size();
+        for (; data < dataEnd; ++data) {
+            const float v = *data;
             if (std::isfinite(v) && v > 1e-6f) {
                 sum += v;
                 ++count;
@@ -2482,19 +2549,28 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             ? static_cast<float>(std::clamp(P.printDminFactor, 0.0, 1.0))
             : 0.4f;
         if (printProfile.hasBaseline && !approx_equal(printDminFactor, 1.0f)) {
-            for (float& v : printProfile.baseMin.linear) {
+            float* baseMinData = printProfile.baseMin.linear.data();
+            const float* const baseMinEnd = baseMinData + printProfile.baseMin.linear.size();
+            for (; baseMinData < baseMinEnd; ++baseMinData) {
+                float& v = *baseMinData;
                 if (std::isfinite(v)) {
                     v *= printDminFactor;
                 }
             }
         }
         if (printProfile.hasBaseline) {
-            for (float& v : printProfile.baseMin.linear) {
+            float* baseMinData = printProfile.baseMin.linear.data();
+            const float* const baseMinEnd = baseMinData + printProfile.baseMin.linear.size();
+            for (; baseMinData < baseMinEnd; ++baseMinData) {
+                float& v = *baseMinData;
                 if (std::isfinite(v) && v < 0.0f) {
                     v = 0.0f;
                 }
             }
-            for (float& v : printProfile.baseMid.linear) {
+            float* baseMidData = printProfile.baseMid.linear.data();
+            const float* const baseMidEnd = baseMidData + printProfile.baseMid.linear.size();
+            for (; baseMidData < baseMidEnd; ++baseMidData) {
+                float& v = *baseMidData;
                 if (std::isfinite(v) && v < 0.0f) {
                     v = 0.0f;
                 }
@@ -2581,7 +2657,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     {
         auto all_finite_curve = [](const Spectral::Curve& c)->bool {
-            for (float v : c.linear) {
+            const float* values = c.linear.data();
+            const float* const valuesEnd = values + c.linear.size();
+            for (; values < valuesEnd; ++values) {
+                const float v = *values;
                 if (!std::isfinite(v)) {
                     return false;
                 }
@@ -2592,7 +2671,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             // agx-emulsion parity: density curves may contain toe NaNs; allow NaNs but reject
             // infinities and require at least one finite sample for calibration.
             bool anyFinite = false;
-            for (float v : c.linear) {
+            const float* values = c.linear.data();
+            const float* const valuesEnd = values + c.linear.size();
+            for (; values < valuesEnd; ++values) {
+                const float v = *values;
                 if (std::isinf(v)) {
                     return false;
                 }
@@ -2632,8 +2714,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     {
         bool ok_spd = true;
-        for (int i = 0; i < 9; ++i) {
-            if (!std::isfinite(target->spdSInv[i])) { ok_spd = false; break; }
+        const float* spdInvIt = target->spdSInv;
+        const float* const spdInvEnd = spdInvIt + 9;
+        for (; spdInvIt != spdInvEnd; ++spdInvIt) {
+            if (!std::isfinite(*spdInvIt)) { ok_spd = false; break; }
         }
         const bool ok_invYn =
             std::isfinite(target->tablesView.invYn) && target->tablesView.invYn > 0.0f &&
@@ -2662,10 +2746,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         }
         densityMidRGB.fill(seed);
         const size_t count = std::min<size_t>(static_cast<size_t>(3), S.base.densityMidNeutral.size());
-        for (size_t i = 0; i < count; ++i) {
-            const float v = S.base.densityMidNeutral[i];
+        const float* midNeutralData = S.base.densityMidNeutral.data();
+        float* densityMidData = densityMidRGB.data();
+        for (size_t i = 0; i < count; ++i, ++midNeutralData, ++densityMidData) {
+            const float v = *midNeutralData;
             if (std::isfinite(v)) {
-                densityMidRGB[i] = v;
+                *densityMidData = v;
             }
         }
     }
@@ -2687,10 +2773,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         logMidRGB.fill(seed);
         size_t finiteCount = seedValid ? 1u : 0u;
         const size_t count = std::min<size_t>(static_cast<size_t>(3), S.base.logExposureMidNeutral.size());
-        for (size_t i = 0; i < count; ++i) {
-            const float v = S.base.logExposureMidNeutral[i];
+        const float* logMidData = S.base.logExposureMidNeutral.data();
+        float* outLogMidData = logMidRGB.data();
+        for (size_t i = 0; i < count; ++i, ++logMidData, ++outLogMidData) {
+            const float v = *logMidData;
             if (std::isfinite(v)) {
-                logMidRGB[i] = v;
+                *outLogMidData = v;
                 ++finiteCount;
             }
         }
@@ -2769,9 +2857,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     target->dirRT = dirRT;
     target->dirPrecorrected = precorrectApplied;
-    target->dMax[0] = dirRT.dMax[0];
-    target->dMax[1] = dirRT.dMax[1];
-    target->dMax[2] = dirRT.dMax[2];
+    copy_float3(target->dMax, dirRT.dMax);
 
     negativeRangeOk = compute_negative_density_range(
         target->densB, target->densG, target->densR, target->grain, negativeDensityRange);
@@ -2799,22 +2885,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     {
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                float v = target->dirRT.M[r][c];
-                if (!std::isfinite(v)) v = 0.0f;
-                if (v < -10.0f) v = -10.0f;
-                if (v > 10.0f)  v = 10.0f;
-                target->dirRT.M[r][c] = v;
-            }
-        }
-        for (int i = 0; i < 3; ++i) {
-            float v = target->dMax[i];
-            if (!std::isfinite(v) || v <= 1e-4f) v = 1.0f;
-            if (v > 1000.0f) v = 1000.0f;
-            target->dMax[i] = v;
-            target->dirRT.dMax[i] = v;
-        }
+        sanitize_dir_matrix(target->dirRT.M);
+        sanitize_dir_dmax(target->dMax, target->dirRT.dMax);
     }
 
     target->filmRaw = Spectral::FilmRawConfig{};
@@ -2824,15 +2896,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     Spectral::prepare_film_raw_config(target->filmRaw);
 
     if (target->spdReady && target->tablesRef.K > 0) {
-        for (int i = 0; i < 3; ++i) {
-            target->filmRaw.refIllumWhiteXYZ[i] = target->tablesRef.refIllumWhiteXYZ[i];
-        }
+        std::memcpy(
+            target->filmRaw.refIllumWhiteXYZ,
+            target->tablesRef.refIllumWhiteXYZ,
+            3u * sizeof(float));
         target->filmRaw.hasRefIllumWhite = true;
     }
     else {
-        target->filmRaw.refIllumWhiteXYZ[0] = Spectral::gDWG_WhitePoint_XYZ[0];
-        target->filmRaw.refIllumWhiteXYZ[1] = Spectral::gDWG_WhitePoint_XYZ[1];
-        target->filmRaw.refIllumWhiteXYZ[2] = Spectral::gDWG_WhitePoint_XYZ[2];
+        copy_float3(target->filmRaw.refIllumWhiteXYZ, Spectral::gDWG_WhitePoint_XYZ);
         target->filmRaw.hasRefIllumWhite = false;
     }
 

@@ -119,6 +119,34 @@ namespace Spectral {
         } };
     }
 
+    inline void copy_triplet(float dst[3], const float src[3]) {
+        float* dstIt = dst;
+        const float* srcIt = src;
+        for (int i = 0; i < 3; ++i, ++dstIt, ++srcIt) {
+            *dstIt = *srcIt;
+        }
+    }
+
+    inline void assign_triplet(float dst[3], float v0, float v1, float v2) {
+        dst[0] = v0;
+        dst[1] = v1;
+        dst[2] = v2;
+    }
+
+    inline void scale_triplet_nonnegative_inplace(float values[3], float scale) {
+        float* valueIt = values;
+        for (int i = 0; i < 3; ++i, ++valueIt) {
+            *valueIt = std::max(0.0f, *valueIt * scale);
+        }
+    }
+
+    inline void clamp_triplet_nonnegative_inplace(float values[3]) {
+        float* valueIt = values;
+        for (int i = 0; i < 3; ++i, ++valueIt) {
+            *valueIt = std::max(0.0f, *valueIt);
+        }
+    }
+
     // Canonical RGB�XYZ matrices
     inline constexpr Mat3 kRGB_to_XYZ_DWG = { {
         0.70062239f,  0.14877482f,  0.10105872f,
@@ -176,23 +204,18 @@ namespace Spectral {
     }
 
     inline void input_colorspace_white_xyz(InputColorSpace cs, float whiteXYZ[3]) {
+        static constexpr float kACES2065WhiteXYZ[3] = { 0.95264608f, 1.0f, 1.00882518f };
         switch (cs) {
         case InputColorSpace::DaVinciWideGamut:
         case InputColorSpace::ITU_R_BT2020:
         case InputColorSpace::SRGB_Rec709:
-            whiteXYZ[0] = gDWG_WhitePoint_XYZ[0];
-            whiteXYZ[1] = gDWG_WhitePoint_XYZ[1];
-            whiteXYZ[2] = gDWG_WhitePoint_XYZ[2];
+            copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
             break;
         case InputColorSpace::ACES2065_1:
-            whiteXYZ[0] = 0.95264608f;
-            whiteXYZ[1] = 1.0f;
-            whiteXYZ[2] = 1.00882518f;
+            copy_triplet(whiteXYZ, kACES2065WhiteXYZ);
             break;
         default:
-            whiteXYZ[0] = gDWG_WhitePoint_XYZ[0];
-            whiteXYZ[1] = gDWG_WhitePoint_XYZ[1];
-            whiteXYZ[2] = gDWG_WhitePoint_XYZ[2];
+            copy_triplet(whiteXYZ, gDWG_WhitePoint_XYZ);
             break;
         }
     }
@@ -236,37 +259,34 @@ namespace Spectral {
         const float c1 = sanitize_channel(in[1]);
         const float c2 = sanitize_channel(in[2]);
         if (!decode) {
-            out[0] = c0;
-            out[1] = c1;
-            out[2] = c2;
+            assign_triplet(out, c0, c1, c2);
             return;
         }
+        const float n0 = std::max(0.0f, c0);
+        const float n1 = std::max(0.0f, c1);
+        const float n2 = std::max(0.0f, c2);
 
         switch (cs) {
         case InputColorSpace::ITU_R_BT2020: {
-            const float n0 = std::max(0.0f, c0);
-            const float n1 = std::max(0.0f, c1);
-            const float n2 = std::max(0.0f, c2);
-            out[0] = decode_BT2020_nonnegative(n0);
-            out[1] = decode_BT2020_nonnegative(n1);
-            out[2] = decode_BT2020_nonnegative(n2);
+            assign_triplet(
+                out,
+                decode_BT2020_nonnegative(n0),
+                decode_BT2020_nonnegative(n1),
+                decode_BT2020_nonnegative(n2));
             break;
         }
         case InputColorSpace::SRGB_Rec709: {
-            const float n0 = std::max(0.0f, c0);
-            const float n1 = std::max(0.0f, c1);
-            const float n2 = std::max(0.0f, c2);
-            out[0] = decode_sRGB_nonnegative(n0);
-            out[1] = decode_sRGB_nonnegative(n1);
-            out[2] = decode_sRGB_nonnegative(n2);
+            assign_triplet(
+                out,
+                decode_sRGB_nonnegative(n0),
+                decode_sRGB_nonnegative(n1),
+                decode_sRGB_nonnegative(n2));
             break;
         }
         case InputColorSpace::DaVinciWideGamut:
         case InputColorSpace::ACES2065_1:
         default:
-            out[0] = c0;
-            out[1] = c1;
-            out[2] = c2;
+            assign_triplet(out, c0, c1, c2);
             break;
         }
     }
@@ -303,23 +323,29 @@ namespace Spectral {
             return std::isfinite(v) ? std::max(0.0f, v) : 0.0f;
             };
 
-        float srcWhite[3] = {
-            sanitize(srcWhiteXYZ[0]),
-            sanitize(srcWhiteXYZ[1]),
-            sanitize(srcWhiteXYZ[2])
-        };
-        float dstWhite[3] = {
-            sanitize(dstWhiteXYZ[0]),
-            sanitize(dstWhiteXYZ[1]),
-            sanitize(dstWhiteXYZ[2])
-        };
+        float srcWhite[3];
+        float dstWhite[3];
+        const float* srcWhiteIn = srcWhiteXYZ;
+        const float* dstWhiteIn = dstWhiteXYZ;
+        float* srcWhiteOut = srcWhite;
+        float* dstWhiteOut = dstWhite;
+        for (int i = 0; i < 3; ++i, ++srcWhiteIn, ++dstWhiteIn, ++srcWhiteOut, ++dstWhiteOut) {
+            *srcWhiteOut = sanitize(*srcWhiteIn);
+            *dstWhiteOut = sanitize(*dstWhiteIn);
+        }
 
         const float srcY = (srcWhite[1] > 0.0f) ? srcWhite[1] : 1.0f;
         const float dstY = (dstWhite[1] > 0.0f) ? dstWhite[1] : 1.0f;
         const float srcScale = 1.0f / srcY;
         const float dstScale = 1.0f / dstY;
-        srcWhite[0] *= srcScale; srcWhite[1] = 1.0f; srcWhite[2] *= srcScale;
-        dstWhite[0] *= dstScale; dstWhite[1] = 1.0f; dstWhite[2] *= dstScale;
+        float* srcWhiteIt = srcWhite;
+        float* dstWhiteIt = dstWhite;
+        for (int i = 0; i < 3; ++i, ++srcWhiteIt, ++dstWhiteIt) {
+            *srcWhiteIt *= srcScale;
+            *dstWhiteIt *= dstScale;
+        }
+        srcWhite[1] = 1.0f;
+        dstWhite[1] = 1.0f;
 
         float srcLMS[3];
         float dstLMS[3];
@@ -328,16 +354,15 @@ namespace Spectral {
         mul3(M, dstWhite, dstLMS);
         mul3(M, XYZ, XYZ_LMS);
 
-        float scale[3];
-        scale[0] = (srcLMS[0] > 1e-6f) ? (dstLMS[0] / srcLMS[0]) : 1.0f;
-        scale[1] = (srcLMS[1] > 1e-6f) ? (dstLMS[1] / srcLMS[1]) : 1.0f;
-        scale[2] = (srcLMS[2] > 1e-6f) ? (dstLMS[2] / srcLMS[2]) : 1.0f;
-
-        float adaptedLMS[3] = {
-            scale[0] * XYZ_LMS[0],
-            scale[1] * XYZ_LMS[1],
-            scale[2] * XYZ_LMS[2]
-        };
+        float adaptedLMS[3];
+        const float* srcLMSIt = srcLMS;
+        const float* dstLMSIt = dstLMS;
+        const float* xyzLMSIt = XYZ_LMS;
+        float* adaptedIt = adaptedLMS;
+        for (int i = 0; i < 3; ++i, ++srcLMSIt, ++dstLMSIt, ++xyzLMSIt, ++adaptedIt) {
+            const float scale = (*srcLMSIt > 1e-6f) ? (*dstLMSIt / *srcLMSIt) : 1.0f;
+            *adaptedIt = scale * *xyzLMSIt;
+        }
 
         mul3(M_inv, adaptedLMS, outXYZ);
     }
@@ -394,9 +419,13 @@ namespace Spectral {
         auto scale = [](float v) {
             return std::max(1.0f, std::fabs(v));
             };
-        for (int i = 0; i < 3; ++i) {
-            const float diff = std::fabs(a[i] - b[i]);
-            if (diff > 1e-4f * scale(a[i]) || diff > 1e-4f * scale(b[i])) {
+        const float* aIt = a;
+        const float* bIt = b;
+        for (int i = 0; i < 3; ++i, ++aIt, ++bIt) {
+            const float av = *aIt;
+            const float bv = *bIt;
+            const float diff = std::fabs(av - bv);
+            if (diff > 1e-4f * scale(av) || diff > 1e-4f * scale(bv)) {
                 return false;
             }
         }
@@ -406,15 +435,16 @@ namespace Spectral {
     inline void prepare_film_raw_config(FilmRawConfig& cfg) {
         cfg.inputRGBToXYZ = matrix_input_rgb_to_xyz(cfg.inputColorSpace);
         input_colorspace_white_xyz(cfg.inputColorSpace, cfg.inputWhiteXYZ);
-        cfg.workingWhiteXYZ[0] = gDWG_WhitePoint_XYZ[0];
-        cfg.workingWhiteXYZ[1] = gDWG_WhitePoint_XYZ[1];
-        cfg.workingWhiteXYZ[2] = gDWG_WhitePoint_XYZ[2];
+        copy_triplet(cfg.workingWhiteXYZ, gDWG_WhitePoint_XYZ);
 
         cfg.applyInputChromaticAdapt = !whites_approximately_equal(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
         if (cfg.applyInputChromaticAdapt) {
             cfg.inputXYZAdapt = build_chromatic_adaptation_matrix(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
             bool finite = true;
-            for (float m : cfg.inputXYZAdapt.m) {
+            const float* matrixData = cfg.inputXYZAdapt.m;
+            const float* matrixEnd = matrixData + 9;
+            for (const float* mIt = matrixData; mIt < matrixEnd; ++mIt) {
+                const float m = *mIt;
                 if (!std::isfinite(m)) {
                     finite = false;
                     break;
@@ -454,14 +484,18 @@ namespace Spectral {
 
         if (outXYZ) {
             if (clampNonNegative) {
-                outXYZ[0] = std::max(0.0f, xyzPtr[0]);
-                outXYZ[1] = std::max(0.0f, xyzPtr[1]);
-                outXYZ[2] = std::max(0.0f, xyzPtr[2]);
+                float* outIt = outXYZ;
+                const float* xyzIt = xyzPtr;
+                for (int i = 0; i < 3; ++i, ++outIt, ++xyzIt) {
+                    *outIt = std::max(0.0f, *xyzIt);
+                }
             }
             else {
-                outXYZ[0] = (std::isfinite(xyzPtr[0])) ? xyzPtr[0] : 0.0f;
-                outXYZ[1] = (std::isfinite(xyzPtr[1])) ? xyzPtr[1] : 0.0f;
-                outXYZ[2] = (std::isfinite(xyzPtr[2])) ? xyzPtr[2] : 0.0f;
+                float* outIt = outXYZ;
+                const float* xyzIt = xyzPtr;
+                for (int i = 0; i < 3; ++i, ++outIt, ++xyzIt) {
+                    *outIt = std::isfinite(*xyzIt) ? *xyzIt : 0.0f;
+                }
             }
         }
 
@@ -473,15 +507,17 @@ namespace Spectral {
             gDWG_XYZ_to_RGB.mul(xyzPtr, dwgLinear);
         }
 
-        for (int i = 0; i < 3; ++i) {
-            float v = dwgLinear[i];
+        const float* dwgLinearIt = dwgLinear;
+        float* rgbDWGIt = rgbDWG;
+        for (int i = 0; i < 3; ++i, ++dwgLinearIt, ++rgbDWGIt) {
+            float v = *dwgLinearIt;
             if (!std::isfinite(v)) {
                 v = 0.0f;
             }
             if (clampNonNegative && v < 0.0f) {
                 v = 0.0f;
             }
-            rgbDWG[i] = v;
+            *rgbDWGIt = v;
         }
     }
 
@@ -505,20 +541,24 @@ namespace Spectral {
         }
 
         if (outXYZ) {
-            outXYZ[0] = sanitize_channel(xyzPtr[0]);
-            outXYZ[1] = sanitize_channel(xyzPtr[1]);
-            outXYZ[2] = sanitize_channel(xyzPtr[2]);
+            const float* xyzRead = xyzPtr;
+            float* xyzWrite = outXYZ;
+            for (int i = 0; i < 3; ++i, ++xyzRead, ++xyzWrite) {
+                *xyzWrite = sanitize_channel(*xyzRead);
+            }
         }
 
         static const Mat3 kXYZ_to_sRGB = kRGB_to_XYZ_sRGB_Rec709.inverse();
         float rgbLinear[3];
         kXYZ_to_sRGB.mul(xyzPtr, rgbLinear);
-        for (int i = 0; i < 3; ++i) {
-            float v = rgbLinear[i];
+        const float* linearIt = rgbLinear;
+        float* srgbIt = rgbSRGB;
+        for (int i = 0; i < 3; ++i, ++linearIt, ++srgbIt) {
+            float v = *linearIt;
             if (!std::isfinite(v)) {
                 v = 0.0f;
             }
-            rgbSRGB[i] = v;
+            *srgbIt = v;
         }
     }
 
@@ -566,29 +606,34 @@ namespace Spectral {
         const float g = std::max(0.0f, std::isfinite(lrgb[1]) ? lrgb[1] : 0.0f);
         const float b = std::max(0.0f, std::isfinite(lrgb[2]) ? lrgb[2] : 0.0f);
         const float* basis = gMallettBasis.data.data();
+        const float* illumIt = tables.illum.data();
+        const float* sensBIt = sB.linear.data();
+        const float* sensGIt = sG.linear.data();
+        const float* sensRIt = sR.linear.data();
 
-        for (int i = 0; i < K; ++i) {
-            const float illum = tables.illum[i];
-            const float b0 = basis[i * 3 + 0];
-            const float b1 = basis[i * 3 + 1];
-            const float b2 = basis[i * 3 + 2];
+        for (int i = 0; i < K; ++i, ++illumIt, ++sensBIt, ++sensGIt, ++sensRIt, basis += 3) {
+            const float illum = *illumIt;
+            const float b0 = basis[0];
+            const float b1 = basis[1];
+            const float b2 = basis[2];
             const float spd = (r * b0 + g * b1 + b * b2) * illum;
             if (!std::isfinite(spd)) {
                 continue;
             }
             const double e64 = static_cast<double>(spd);
-
-            const float sb = sB.linear[i];
-            const float sg = sG.linear[i];
-            const float sr = sR.linear[i];
+            const float sb = *sensBIt;
+            const float sg = *sensGIt;
+            const float sr = *sensRIt;
             if (std::isfinite(sb)) Eb += e64 * static_cast<double>(sb);
             if (std::isfinite(sg)) Eg += e64 * static_cast<double>(sg);
             if (std::isfinite(sr)) Er += e64 * static_cast<double>(sr);
         }
 
-        E[0] = std::isfinite(Eb) ? static_cast<float>(Eb) : 0.0f;
-        E[1] = std::isfinite(Eg) ? static_cast<float>(Eg) : 0.0f;
-        E[2] = std::isfinite(Er) ? static_cast<float>(Er) : 0.0f;
+        assign_triplet(
+            E,
+            std::isfinite(Eb) ? static_cast<float>(Eb) : 0.0f,
+            std::isfinite(Eg) ? static_cast<float>(Eg) : 0.0f,
+            std::isfinite(Er) ? static_cast<float>(Er) : 0.0f);
     }
 
     inline void compute_film_raw_midgray(
@@ -608,13 +653,11 @@ namespace Spectral {
             (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::ForceMallett) &&
             mallett_basis_ready_for_tables(tablesSPD, sB, sG, sR);
         convert_input_rgb_to_DWG(cfg, rgbMid, rgbMidDWG, nullptr, !useHanatos);
-        cfg.midgrayDWG[0] = rgbMidDWG[0];
-        cfg.midgrayDWG[1] = rgbMidDWG[1];
-        cfg.midgrayDWG[2] = rgbMidDWG[2];
+        copy_triplet(cfg.midgrayDWG, rgbMidDWG);
 
         float E[3] = { 0.0f, 0.0f, 0.0f };
         if (!spdReady) {
-            cfg.rawMidgray[0] = cfg.rawMidgray[1] = cfg.rawMidgray[2] = 0.0f;
+            std::fill_n(cfg.rawMidgray, 3, 0.0f);
             cfg.rawMidgrayGreen = 1.0f;
             cfg.midgrayScale = 1.0f;
             return;
@@ -635,9 +678,7 @@ namespace Spectral {
                 cfg.refIllumWhiteXYZ);
         }
 
-        cfg.rawMidgray[0] = E[0];
-        cfg.rawMidgray[1] = E[1];
-        cfg.rawMidgray[2] = E[2];
+        copy_triplet(cfg.rawMidgray, E);
         const float safeGreen = (std::isfinite(E[1]) && E[1] > 1e-9f) ? E[1] : 1.0f;
         cfg.rawMidgrayGreen = safeGreen;
         cfg.midgrayScale = (std::isfinite(safeGreen) && safeGreen > 1e-9f) ? (1.0f / safeGreen) : 1.0f;
@@ -690,12 +731,10 @@ namespace Spectral {
             }
 
             normScale = cfg.midgrayScale;
-            E[0] = std::max(0.0f, E[0] * normScale);
-            E[1] = std::max(0.0f, E[1] * normScale);
-            E[2] = std::max(0.0f, E[2] * normScale);
+            scale_triplet_nonnegative_inplace(E, normScale);
         }
         else {
-            E[0] = E[1] = E[2] = 0.0f;
+            std::fill_n(E, 3, 0.0f);
         }
 
 #if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
@@ -704,9 +743,7 @@ namespace Spectral {
 
         const float sExp = (std::isfinite(exposureScale) && exposureScale > 0.0f) ? exposureScale : 1.0f;
         if (sExp != 1.0f) {
-            E[0] = std::max(0.0f, E[0] * sExp);
-            E[1] = std::max(0.0f, E[1] * sExp);
-            E[2] = std::max(0.0f, E[2] * sExp);
+            scale_triplet_nonnegative_inplace(E, sExp);
         }
     }
 
@@ -726,9 +763,7 @@ namespace Spectral {
         };
         const float sum = srcWhite[0] + srcWhite[1] + srcWhite[2];
         if (!std::isfinite(sum) || sum <= 0.0f) {
-            srcWhite[0] = gDWG_WhitePoint_XYZ[0];
-            srcWhite[1] = gDWG_WhitePoint_XYZ[1];
-            srcWhite[2] = gDWG_WhitePoint_XYZ[2];
+            copy_triplet(srcWhite, gDWG_WhitePoint_XYZ);
         }
 
         float adaptedXYZ[3];
@@ -738,9 +773,7 @@ namespace Spectral {
 
     inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]) {
         gDWG_XYZ_to_RGB.mul(XYZ, RGB);
-        RGB[0] = std::max(0.0f, RGB[0]);
-        RGB[1] = std::max(0.0f, RGB[1]);
-        RGB[2] = std::max(0.0f, RGB[2]);
+        clamp_triplet_nonnegative_inplace(RGB);
     }
 
     inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]) {

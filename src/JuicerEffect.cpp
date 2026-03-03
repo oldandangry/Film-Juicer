@@ -62,9 +62,12 @@ namespace {
     }
 
     std::string profile_json_path_for_key_or_empty(const char* jsonKey) {
-        return jsonKey
-            ? data_dir_string("profiles", std::string(jsonKey) + ".json")
-            : std::string();
+        if (!jsonKey) {
+            return {};
+        }
+        std::string profileName(jsonKey);
+        profileName += ".json";
+        return data_dir_string("profiles", profileName);
     }
 
     void trace_dichroic_load_failure(
@@ -77,9 +80,16 @@ namespace {
             return;
         }
         const char* errorDetail = detail ? detail : "unknown error";
-        JTRACE("PRINT", std::string(operation ? operation : "dichroic load failed")
-            + " at '" + dichroicDir + "' (" + errorDetail + "); "
-            + (fallbackState ? fallbackState : "using identity filters"));
+        std::string msg;
+        msg.reserve(160 + dichroicDir.size());
+        msg = operation ? operation : "dichroic load failed";
+        msg += " at '";
+        msg += dichroicDir;
+        msg += "' (";
+        msg += errorDetail;
+        msg += "); ";
+        msg += (fallbackState ? fallbackState : "using identity filters");
+        JTRACE("PRINT", msg);
     }
 
     inline bool nearly_equal_double(double a, double b) {
@@ -95,6 +105,35 @@ namespace {
         case OFX::ePixelComponentAlpha: return 1;
         default: return 0;
         }
+    }
+
+    inline float finite_exp2_scale(double ev) {
+        const float scale = static_cast<float>(std::exp2(ev));
+        return std::isfinite(scale) ? scale : 1.0f;
+    }
+
+    inline void sanitize_dir_matrix(float matrix[3][3]) {
+        float* valueIt = &matrix[0][0];
+        const float* const valueEnd = valueIt + 9;
+        for (; valueIt < valueEnd; ++valueIt) {
+            float value = *valueIt;
+            if (!std::isfinite(value)) value = 0.0f;
+            if (value < -10.0f) value = -10.0f;
+            if (value > 10.0f) value = 10.0f;
+            *valueIt = value;
+        }
+    }
+
+    inline bool has_nonzero_finite_dir_matrix(const float matrix[3][3]) {
+        const float* valueIt = &matrix[0][0];
+        const float* const valueEnd = valueIt + 9;
+        for (; valueIt < valueEnd; ++valueIt) {
+            const float value = *valueIt;
+            if (std::isfinite(value) && value != 0.0f) {
+                return true;
+            }
+        }
+        return false;
     }
 
     constexpr std::uint64_t kAutoExposureMaskCacheMaxBytes = 96ull * 1024ull * 1024ull;
@@ -162,15 +201,26 @@ namespace {
         }
         const std::uint64_t residentBytes =
             gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed);
-        std::string msg = std::string("event=") + (event ? event : "unknown")
-            + " instance_token=" + std::to_string(state ? state->instanceToken : 0)
-            + " width=" + std::to_string(width)
-            + " height=" + std::to_string(height)
-            + " requested_bytes=" + std::to_string(requestedBytes)
-            + " previous_cached_bytes=" + std::to_string(previousCachedBytes)
-            + " cached_bytes=" + std::to_string(cachedBytes)
-            + " resident_bytes=" + std::to_string(residentBytes)
-            + " cap_bytes=" + std::to_string(kAutoExposureMaskCacheMaxBytes);
+        std::string msg;
+        msg.reserve(256);
+        msg = "event=";
+        msg += (event ? event : "unknown");
+        msg += " instance_token=";
+        msg += std::to_string(state ? state->instanceToken : 0);
+        msg += " width=";
+        msg += std::to_string(width);
+        msg += " height=";
+        msg += std::to_string(height);
+        msg += " requested_bytes=";
+        msg += std::to_string(requestedBytes);
+        msg += " previous_cached_bytes=";
+        msg += std::to_string(previousCachedBytes);
+        msg += " cached_bytes=";
+        msg += std::to_string(cachedBytes);
+        msg += " resident_bytes=";
+        msg += std::to_string(residentBytes);
+        msg += " cap_bytes=";
+        msg += std::to_string(kAutoExposureMaskCacheMaxBytes);
         if (reason && reason[0] != '\0') {
             msg += " reason=";
             msg += reason;
@@ -584,7 +634,6 @@ namespace {
         std::vector<float>& values = *valuesPtr;
 
         const int xStart = bounds.x1;
-        const int xEnd = bounds.x2;
         for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
             const float* rowPix = reinterpret_cast<const float*>(img->getPixelAddress(xStart, yy));
             if (rowPix) {
@@ -607,8 +656,9 @@ namespace {
                 }
                 continue;
             }
-            for (int xx = xStart; xx < xEnd; ++xx) {
-                const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
+            int x = xStart;
+            for (int xOff = 0; xOff < width; ++xOff, ++x) {
+                const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(x, yy));
                 if (!pix) {
                     continue;
                 }
@@ -719,8 +769,10 @@ namespace {
         constexpr int kIlluminantChoiceCount = 7;
         for (int choice = 0; choice < kIlluminantChoiceCount; ++choice) {
             const auto keys = enlarger_illuminant_keys_for_choice(choice);
-            for (const std::string& key : keys) {
-                if (IlluminantKeys::normalize(key) == normalized) {
+            const std::string* keyData = keys.data();
+            const size_t keyCount = keys.size();
+            for (size_t i = 0; i < keyCount; ++i, ++keyData) {
+                if (IlluminantKeys::normalize(*keyData) == normalized) {
                     return choice;
                 }
             }
@@ -740,10 +792,7 @@ JuicerEffect::ExposureParams JuicerEffect::gatherExposureParams() const {
         exposureSliderEV = 0.0;
     }
     params.sliderEV = exposureSliderEV;
-    params.sliderScale = static_cast<float>(std::exp2(exposureSliderEV));
-    if (!std::isfinite(params.sliderScale)) {
-        params.sliderScale = 1.0f;
-    }
+    params.sliderScale = finite_exp2_scale(exposureSliderEV);
     bool cameraAuto = true;
     if (_pCameraAutoExposure) {
         _pCameraAutoExposure->getValue(cameraAuto);
@@ -851,8 +900,10 @@ Profiles::HalationMetadata JuicerEffect::gatherHalationUi() const {
         if (param) {
             param->getValue(values[0], values[1], values[2]);
         }
-        for (int i = 0; i < 3; ++i) {
-            values[i] = sanitize(values[i], defaults[i], minValue, maxValue);
+        double* valueIt = values.data();
+        const double* defaultIt = defaults.data();
+        for (int i = 0; i < 3; ++i, ++valueIt, ++defaultIt) {
+            *valueIt = sanitize(*valueIt, *defaultIt, minValue, maxValue);
         }
         return values;
     };
@@ -862,11 +913,21 @@ Profiles::HalationMetadata JuicerEffect::gatherHalationUi() const {
     const std::array<double, 3> scatterStrengthPercent = read3(_pHalationScatteringStrength, { {1.0, 2.0, 4.0} }, 0.0, 100.0);
     const std::array<double, 3> scatterSizeUm = read3(_pHalationScatteringSizeUm, { {30.0, 20.0, 15.0} }, 0.0, 1000.0);
 
-    for (int i = 0; i < 3; ++i) {
-        halation.strength[i] = static_cast<float>(strengthPercent[i] * 0.01);
-        halation.sizeUm[i] = static_cast<float>(sizeUm[i]);
-        halation.scatteringStrength[i] = static_cast<float>(scatterStrengthPercent[i] * 0.01);
-        halation.scatteringSizeUm[i] = static_cast<float>(scatterSizeUm[i]);
+    float* strengthIt = halation.strength.data();
+    float* sizeIt = halation.sizeUm.data();
+    float* scatterStrengthIt = halation.scatteringStrength.data();
+    float* scatterSizeIt = halation.scatteringSizeUm.data();
+    const double* strengthSrc = strengthPercent.data();
+    const double* sizeSrc = sizeUm.data();
+    const double* scatterStrengthSrc = scatterStrengthPercent.data();
+    const double* scatterSizeSrc = scatterSizeUm.data();
+    for (int i = 0; i < 3; ++i,
+         ++strengthIt, ++sizeIt, ++scatterStrengthIt, ++scatterSizeIt,
+         ++strengthSrc, ++sizeSrc, ++scatterStrengthSrc, ++scatterSizeSrc) {
+        *strengthIt = static_cast<float>((*strengthSrc) * 0.01);
+        *sizeIt = static_cast<float>(*sizeSrc);
+        *scatterStrengthIt = static_cast<float>((*scatterStrengthSrc) * 0.01);
+        *scatterSizeIt = static_cast<float>(*scatterSizeSrc);
     }
 
     return halation;
@@ -1040,8 +1101,11 @@ namespace {
     }
 
     static void normalize_ratio(std::array<double, 3>& values) {
+        double* data = values.data();
         double sum = 0.0;
-        for (double v : values) {
+        const double* const dataEnd = data + values.size();
+        for (; data < dataEnd; ++data) {
+            const double v = *data;
             if (!std::isfinite(v) || !(v > 0.0)) {
                 values = { {1.0, 1.0, 1.0} };
                 return;
@@ -1053,8 +1117,10 @@ namespace {
             values = { {1.0, 1.0, 1.0} };
             return;
         }
-        for (double& v : values) {
-            v /= mean;
+        double* outData = values.data();
+        const double* const outEnd = outData + values.size();
+        for (; outData < outEnd; ++outData) {
+            *outData /= mean;
         }
     }
 }
@@ -1090,8 +1156,10 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         if (param) {
             param->getValue(values[0], values[1], values[2]);
         }
-        for (int i = 0; i < 3; ++i) {
-            values[i] = sanitize(values[i], defaults[i], minValue, maxValue);
+        double* valueIt = values.data();
+        const double* defaultIt = defaults.data();
+        for (int i = 0; i < 3; ++i, ++valueIt, ++defaultIt) {
+            *valueIt = sanitize(*valueIt, *defaultIt, minValue, maxValue);
         }
         return values;
     };
@@ -1100,8 +1168,10 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         if (param) {
             param->getValue(values[0], values[1]);
         }
-        for (int i = 0; i < 2; ++i) {
-            values[i] = sanitize(values[i], defaults[i], minValue, maxValue);
+        double* valueIt = values.data();
+        const double* defaultIt = defaults.data();
+        for (int i = 0; i < 2; ++i, ++valueIt, ++defaultIt) {
+            *valueIt = sanitize(*valueIt, *defaultIt, minValue, maxValue);
         }
         return values;
     };
@@ -1216,11 +1286,21 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     const std::array<double, 3> particleScaleLayers = read3(_pGrainParticleScaleLayers, defaultParticleScaleLayers, 0.0, 10.0);
     const std::array<double, 3> densityMin = read3(_pGrainDensityMin, defaultDensityMin, 0.0, 1.0);
     const std::array<double, 3> uniformity = read3(_pGrainUniformity, defaultUniformity, 0.0, 1.0);
-    for (int i = 0; i < 3; ++i) {
-        grain.agxParticleScale[i] = static_cast<float>(particleScale[i]);
-        grain.agxParticleScaleLayers[i] = static_cast<float>(particleScaleLayers[i]);
-        grain.densityMin[i] = static_cast<float>(densityMin[i]);
-        grain.uniformity[i] = static_cast<float>(uniformity[i]);
+    float* particleScaleDst = grain.agxParticleScale.data();
+    float* particleScaleLayerDst = grain.agxParticleScaleLayers.data();
+    float* densityMinDst = grain.densityMin.data();
+    float* uniformityDst = grain.uniformity.data();
+    const double* particleScaleSrc = particleScale.data();
+    const double* particleScaleLayerSrc = particleScaleLayers.data();
+    const double* densityMinSrc = densityMin.data();
+    const double* uniformitySrc = uniformity.data();
+    for (int i = 0; i < 3; ++i,
+         ++particleScaleDst, ++particleScaleLayerDst, ++densityMinDst, ++uniformityDst,
+         ++particleScaleSrc, ++particleScaleLayerSrc, ++densityMinSrc, ++uniformitySrc) {
+        *particleScaleDst = static_cast<float>(*particleScaleSrc);
+        *particleScaleLayerDst = static_cast<float>(*particleScaleLayerSrc);
+        *densityMinDst = static_cast<float>(*densityMinSrc);
+        *uniformityDst = static_cast<float>(*uniformitySrc);
     }
 
     double clumpTemporalMix = 0.30;
@@ -1239,8 +1319,11 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
 
     std::array<double, 2> microStructure = { {microCellBase, microSigmaBase} };
     microStructure = read2(_pGrainMicroStructure, microStructure, 0.0, 1000.0);
-    grain.microStructure[0] = static_cast<float>(microStructure[0]);
-    grain.microStructure[1] = static_cast<float>(microStructure[1]);
+    float* microDst = grain.microStructure.data();
+    const double* microSrc = microStructure.data();
+    for (int i = 0; i < 2; ++i, ++microDst, ++microSrc) {
+        *microDst = static_cast<float>(*microSrc);
+    }
 
     bool breathingDebug = false;
     if (_pGrainBreathingDebug) {
@@ -1658,17 +1741,11 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     result.autoEV = 0.0;
 
     if (!srcImg) {
-        result.exposureScale = static_cast<float>(std::exp2(exposureParams.sliderEV));
-        if (!std::isfinite(result.exposureScale)) {
-            result.exposureScale = 1.0f;
-        }
+        result.exposureScale = finite_exp2_scale(exposureParams.sliderEV);
         return result;
     }
     if (!exposureParams.cameraAutoEnabled) {
-        result.exposureScale = static_cast<float>(std::exp2(exposureParams.sliderEV));
-        if (!std::isfinite(result.exposureScale)) {
-            result.exposureScale = 1.0f;
-        }
+        result.exposureScale = finite_exp2_scale(exposureParams.sliderEV);
         return result;
     }
 
@@ -1821,10 +1898,7 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     const double sliderEV = exposureParams.sliderEV;
     const double totalEV = autoEV + sliderEV;
     result.autoEV = autoEV;
-    result.exposureScale = static_cast<float>(std::exp2(totalEV));
-    if (!std::isfinite(result.exposureScale)) {
-        result.exposureScale = 1.0f;
-    }
+    result.exposureScale = finite_exp2_scale(totalEV);
     return result;
 }
 
@@ -1843,21 +1917,14 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
     const std::shared_ptr<const WorkingState> wsCur = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
     if (wsCur && wsCur->buildCounter > 0) {
         dirRT = wsCur->dirRT;
-        for (int i = 0; i < 3; ++i) {
-            float v = dirRT.dMax[i];
+        float* dMaxIt = dirRT.dMax;
+        for (int i = 0; i < 3; ++i, ++dMaxIt) {
+            float v = *dMaxIt;
             if (!std::isfinite(v) || v <= 0.0f) v = 1.0f;
             if (v > 1000.0f) v = 1000.0f;
-            dirRT.dMax[i] = v;
+            *dMaxIt = v;
         }
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                float m = dirRT.M[r][c];
-                if (!std::isfinite(m)) m = 0.0f;
-                if (m < -10.0f) m = -10.0f;
-                if (m > 10.0f)  m = 10.0f;
-                dirRT.M[r][c] = m;
-            }
-        }
+        sanitize_dir_matrix(dirRT.M);
     }
 
     auto valid_positive = [](double v) -> bool { return std::isfinite(v) && v > 0.0; };
@@ -1902,18 +1969,7 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         if (!rt.active) {
             return false;
         }
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                const float v = rt.M[r][c];
-                if (!std::isfinite(v)) {
-                    continue;
-                }
-                if (v != 0.0f) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return has_nonzero_finite_dir_matrix(rt.M);
     };
 
     if (!dir_has_effect(dirRT)) {
@@ -2179,18 +2235,26 @@ JuicerEffect::~JuicerEffect() {
                 keys.emplace_back(entry.first);
             }
         }
-        for (const auto& key : keys) {
+        const JuicerCuda::ResourceManager::DeviceContextKey* keyData = keys.data();
+        const size_t keyCount = keys.size();
+        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
+            const auto& key = *keyData;
             std::string retireError;
             const bool retireOk = JuicerCuda::ResourceManager::command_retire_context_idle(key, retireError);
             if (!retireOk || !retireError.empty()) {
                 if (traceInfo) {
                     const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-                    std::string msg = std::string("teardown_retire_idle_failed device_id=")
-                        + std::to_string(key.deviceId)
-                        + " context=" + std::to_string(contextBits)
-                        + " accepted=" + std::to_string(retireOk ? 1 : 0);
+                    std::string msg;
+                    msg.reserve(192);
+                    msg = "teardown_retire_idle_failed device_id=";
+                    msg += std::to_string(key.deviceId);
+                    msg += " context=";
+                    msg += std::to_string(contextBits);
+                    msg += " accepted=";
+                    msg += std::to_string(retireOk ? 1 : 0);
                     if (!retireError.empty()) {
-                        msg += " error=" + retireError;
+                        msg += " error=";
+                        msg += retireError;
                     }
                     JTRACE("MSLCY", msg);
                 }
@@ -2220,10 +2284,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const OFX::PixelComponentEnum comps = srcImg->getPixelComponents();
     const OFX::BitDepthEnum depth = srcImg->getPixelDepth();
 
-    const int nComponents =
-        (comps == OFX::ePixelComponentRGBA) ? 4 :
-        (comps == OFX::ePixelComponentRGB) ? 3 :
-        (comps == OFX::ePixelComponentAlpha) ? 1 : 0;
+    const int nComponents = pixel_component_count(comps);
     const bool traceVerbose = JTRACE_ENABLED(3);
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -2391,15 +2452,30 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         const float neutralC = prt ? prt->neutralC : 0.0f;
         const char* paperLabel = paperKey ? paperKey : "<null>";
         const char* filmLabel = filmKey ? filmKey : "<null>";
-        std::string msg = std::string("render print state build=") + std::to_string(buildCounter)
-            + " paper=" + paperLabel
-            + " film=" + filmLabel
-            + " printRT=" + std::to_string(prtPtr)
-            + " neutralY/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM) + "/" + std::to_string(neutralC)
-            + " yFilter=" + std::to_string(printParams.yFilter)
-            + " mFilter=" + std::to_string(printParams.mFilter)
-            + " cFilter=" + std::to_string(printParams.cFilter)
-            + " bypass=" + std::to_string(printParams.bypass ? 1 : 0);
+        std::string msg;
+        msg.reserve(256);
+        msg = "render print state build=";
+        msg += std::to_string(buildCounter);
+        msg += " paper=";
+        msg += paperLabel;
+        msg += " film=";
+        msg += filmLabel;
+        msg += " printRT=";
+        msg += std::to_string(prtPtr);
+        msg += " neutralY/M/C=";
+        msg += std::to_string(neutralY);
+        msg += "/";
+        msg += std::to_string(neutralM);
+        msg += "/";
+        msg += std::to_string(neutralC);
+        msg += " yFilter=";
+        msg += std::to_string(printParams.yFilter);
+        msg += " mFilter=";
+        msg += std::to_string(printParams.mFilter);
+        msg += " cFilter=";
+        msg += std::to_string(printParams.cFilter);
+        msg += " bypass=";
+        msg += std::to_string(printParams.bypass ? 1 : 0);
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
     if (!wsReady) {
@@ -2467,9 +2543,11 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         if (!traceInfo) {
             return;
         }
-        std::string msg = prefix;
+        std::string msg;
+        msg.reserve((prefix ? std::strlen(prefix) : 0u) + paramName.size() + 1);
+        msg = prefix;
         msg += paramName;
-        msg += "'";
+        msg.push_back('\'');
         JTRACE("BUILD", msg);
     };
 
@@ -2514,12 +2592,16 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         return std::clamp(value, lo, hi);
     };
 
+    auto has_master_triplet_params = [this](OFX::DoubleParam* masterParam, OFX::Double3DParam* advParam) -> bool {
+        return masterParam && advParam && _state;
+    };
+
     auto apply_master_delta = [&](OFX::DoubleParam* masterParam,
         OFX::Double3DParam* advParam,
         double& masterCache,
         double lo,
         double hi) {
-        if (!masterParam || !advParam || !_state) {
+        if (!has_master_triplet_params(masterParam, advParam)) {
             return;
         }
         double master = 0.0;
@@ -2533,18 +2615,18 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             prev = master;
         }
         const double delta = master - prev;
-        double r = 0.0, g = 0.0, b = 0.0;
-        advParam->getValue(r, g, b);
-        r = sanitize_scalar(r, master, lo, hi);
-        g = sanitize_scalar(g, master, lo, hi);
-        b = sanitize_scalar(b, master, lo, hi);
+        std::array<double, 3> values{ {0.0, 0.0, 0.0} };
+        advParam->getValue(values[0], values[1], values[2]);
+        for (double& value : values) {
+            value = sanitize_scalar(value, master, lo, hi);
+        }
         if (delta != 0.0) {
-            r = std::clamp(r + delta, lo, hi);
-            g = std::clamp(g + delta, lo, hi);
-            b = std::clamp(b + delta, lo, hi);
+            for (double& value : values) {
+                value = std::clamp(value + delta, lo, hi);
+            }
             const bool wasSuppressed = _state->suppressParamEvents;
             _state->suppressParamEvents = true;
-            advParam->setValue(r, g, b);
+            advParam->setValue(values[0], values[1], values[2]);
             _state->suppressParamEvents = wasSuppressed;
         }
         masterCache = master;
@@ -2556,7 +2638,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         double& masterCache,
         double lo,
         double hi) {
-        if (!masterParam || !advParam || !_state) {
+        if (!has_master_triplet_params(masterParam, advParam)) {
             return;
         }
         double master = 0.0;
@@ -2566,26 +2648,30 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         }
         master = std::clamp(master, lo, hi);
 
-        double r = 0.0, g = 0.0, b = 0.0;
-        advParam->getValue(r, g, b);
-        r = sanitize_scalar(r, master, lo, hi);
-        g = sanitize_scalar(g, master, lo, hi);
-        b = sanitize_scalar(b, master, lo, hi);
-
-        std::array<double, 3> ratio = fallbackRatio;
-        const double mean = (r + g + b) / 3.0;
-        if (std::isfinite(mean) && mean > 0.0) {
-            ratio[0] = r / mean;
-            ratio[1] = g / mean;
-            ratio[2] = b / mean;
+        std::array<double, 3> values{ {0.0, 0.0, 0.0} };
+        advParam->getValue(values[0], values[1], values[2]);
+        for (double& value : values) {
+            value = sanitize_scalar(value, master, lo, hi);
         }
 
-        r = std::clamp(master * ratio[0], lo, hi);
-        g = std::clamp(master * ratio[1], lo, hi);
-        b = std::clamp(master * ratio[2], lo, hi);
+        std::array<double, 3> ratio = fallbackRatio;
+        const double mean = (values[0] + values[1] + values[2]) / 3.0;
+        if (std::isfinite(mean) && mean > 0.0) {
+            double* ratioIt = ratio.data();
+            const double* valueIt = values.data();
+            for (int i = 0; i < 3; ++i, ++ratioIt, ++valueIt) {
+                *ratioIt = *valueIt / mean;
+            }
+        }
+
+        double* valueIt = values.data();
+        const double* ratioIt = ratio.data();
+        for (int i = 0; i < 3; ++i, ++valueIt, ++ratioIt) {
+            *valueIt = std::clamp(master * *ratioIt, lo, hi);
+        }
         const bool wasSuppressed = _state->suppressParamEvents;
         _state->suppressParamEvents = true;
-        advParam->setValue(r, g, b);
+        advParam->setValue(values[0], values[1], values[2]);
         _state->suppressParamEvents = wasSuppressed;
         masterCache = master;
     };
@@ -2823,11 +2909,19 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
 
     auto join_illum_keys = [&]() -> std::string {
         std::string combined;
-        for (const std::string& key : illumKeys) {
+        size_t reserveHint = 0;
+        const std::string* keyData = illumKeys.data();
+        const size_t keyCount = illumKeys.size();
+        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
+            reserveHint += keyData->size() + 1;
+        }
+        combined.reserve(reserveHint);
+        keyData = illumKeys.data();
+        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
             if (!combined.empty()) {
                 combined += ",";
             }
-            combined += key;
+            combined += *keyData;
         }
         if (combined.empty()) {
             combined = "<none>";
@@ -2854,7 +2948,10 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
     const std::string jsonPathFallback = data_dir_string("profiles", "enlarger_neutral_ymc_filters.json");
     std::tuple<float, float, float> ymc{};
     std::string selectedDbVersionHash;
-    for (const std::string& illumKey : illumKeys) {
+    const std::string* illumKeyData = illumKeys.data();
+    const size_t illumKeyCount = illumKeys.size();
+    for (size_t i = 0; i < illumKeyCount; ++i, ++illumKeyData) {
+        const std::string& illumKey = *illumKeyData;
         if (illumKey.empty()) {
             continue;
         }
@@ -2866,10 +2963,17 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
             loaded = true;
             if (traceInfo) {
-                std::string msg = "Neutral filters loaded for " + illumKey
-                    + " Y/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM)
-                    + "/" + std::to_string(neutralC)
-                    + " db_version_hash=";
+                std::string msg;
+                msg.reserve(192);
+                msg = "Neutral filters loaded for ";
+                msg += illumKey;
+                msg += " Y/M/C=";
+                msg += std::to_string(neutralY);
+                msg += "/";
+                msg += std::to_string(neutralM);
+                msg += "/";
+                msg += std::to_string(neutralC);
+                msg += " db_version_hash=";
                 msg += selectedDbVersionHash.empty() ? "none" : selectedDbVersionHash;
                 JTRACE("PRINT", msg);
             }
@@ -3066,13 +3170,22 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         const std::uint64_t lastHash = _state->lastHash.load(std::memory_order_acquire);
         const char* paperLabel = paperKey ? paperKey : "<null>";
         const char* filmLabel = filmKey ? filmKey : "<null>";
-        std::string msg = std::string("params change name=") + (changedNameOrNull ? changedNameOrNull : "<null>")
-            + " printIndex=" + std::to_string(P.printPaperIndex)
-            + " printKey=" + paperLabel
-            + " filmIndex=" + std::to_string(P.filmStockIndex)
-            + " filmKey=" + filmLabel
-            + " activeBuild=" + std::to_string(activeBuild)
-            + " lastHash=" + std::to_string(lastHash);
+        std::string msg;
+        msg.reserve(224);
+        msg = "params change name=";
+        msg += (changedNameOrNull ? changedNameOrNull : "<null>");
+        msg += " printIndex=";
+        msg += std::to_string(P.printPaperIndex);
+        msg += " printKey=";
+        msg += paperLabel;
+        msg += " filmIndex=";
+        msg += std::to_string(P.filmStockIndex);
+        msg += " filmKey=";
+        msg += filmLabel;
+        msg += " activeBuild=";
+        msg += std::to_string(activeBuild);
+        msg += " lastHash=";
+        msg += std::to_string(lastHash);
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 #ifdef JUICER_ENABLE_COUPLERS
@@ -3146,13 +3259,20 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
         const char* paperLabel = paperKey ? paperKey : "<null>";
         const char* filmLabel = filmKey ? filmKey : "<null>";
-        std::string msg = std::string("neutral filters applied (")
-            + (reloadSource ? reloadSource : "unspecified")
-            + ") paper=" + paperLabel
-            + " film=" + filmLabel
-            + " Y/M/C=" + std::to_string(_state->printRT.neutralY)
-            + "/" + std::to_string(_state->printRT.neutralM)
-            + "/" + std::to_string(_state->printRT.neutralC);
+        std::string msg;
+        msg.reserve(192);
+        msg = "neutral filters applied (";
+        msg += (reloadSource ? reloadSource : "unspecified");
+        msg += ") paper=";
+        msg += paperLabel;
+        msg += " film=";
+        msg += filmLabel;
+        msg += " Y/M/C=";
+        msg += std::to_string(_state->printRT.neutralY);
+        msg += "/";
+        msg += std::to_string(_state->printRT.neutralM);
+        msg += "/";
+        msg += std::to_string(_state->printRT.neutralC);
         JTRACE_VERBOSE("PRINTDBG", msg);
     };
 
@@ -3168,11 +3288,18 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
         if (traceVerbose) {
             const char* paperLabel = paperKey ? paperKey : "<null>";
-            std::string msg = std::string("print reload key=") + paperLabel
-                + " dir=" + printDir
-                + " json=" + printProfileJson
-                + " ref=" + _state->printRT.referenceIlluminant
-                + " view=" + _state->printRT.viewingIlluminant;
+            std::string msg;
+            msg.reserve(256);
+            msg = "print reload key=";
+            msg += paperLabel;
+            msg += " dir=";
+            msg += printDir;
+            msg += " json=";
+            msg += printProfileJson;
+            msg += " ref=";
+            msg += _state->printRT.referenceIlluminant;
+            msg += " view=";
+            msg += _state->printRT.viewingIlluminant;
             JTRACE_VERBOSE("PRINTDBG", msg);
         }
 

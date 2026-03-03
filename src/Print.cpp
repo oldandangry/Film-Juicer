@@ -5,6 +5,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <limits>
@@ -22,6 +23,17 @@ namespace Print {
         using FloatPairs = std::vector<std::pair<float, float>>;
         using DoublePairs = std::vector<std::pair<double, double>>;
 
+        inline bool any_true_triplet(const std::array<bool, 3>& values) {
+            const bool* valueIt = values.data();
+            const bool* const valueEnd = valueIt + 3;
+            for (; valueIt < valueEnd; ++valueIt) {
+                if (*valueIt) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         Spectral::Curve build_blackbody_curve(double temperature)
         {
             Spectral::Curve c;
@@ -30,11 +42,14 @@ namespace Print {
                 c.linear.clear();
                 return c;
             }
+            const int K = Spectral::gShape.K;
             Spectral::assign_reference_axis(c.lambda_nm);
-            c.linear.resize(Spectral::gShape.K);
+            c.linear.resize(static_cast<size_t>(K));
+            const float* wavelengths = Spectral::gShape.wavelengths.data();
+            float* outLinear = c.linear.data();
             const float tempF = static_cast<float>(temperature);
-            for (int i = 0; i < Spectral::gShape.K; ++i) {
-                c.linear[i] = Spectral::planck_blackbody(Spectral::gShape.wavelengths[i], tempF);
+            for (int i = 0; i < K; ++i) {
+                outLinear[i] = Spectral::planck_blackbody(wavelengths[i], tempF);
             }
             Spectral::mean_power_normalize(c.linear);
             return c;
@@ -51,7 +66,7 @@ namespace Print {
 
             auto illuminantPath = [&](const char* file) -> std::string {
                 if (!hasDataDir) {
-                    return std::string();
+                    return {};
                 }
                 // Note: agx-emulsion uses colour-science library for illuminants, not CSVs
                 // We keep CSV loading for backward compatibility; verify data matches colour-science
@@ -61,7 +76,7 @@ namespace Print {
                 };
             auto filterPath = [&](const char* file) -> std::string {
                 if (!hasDataDir) {
-                    return std::string();
+                    return {};
                 }
                 std::filesystem::path p = base / "filters" / "heat_absorbing" / "schott" / file;
                 p.make_preferred();
@@ -69,7 +84,7 @@ namespace Print {
                 };
             auto lensPath = [&](const char* file) -> std::string {
                 if (!hasDataDir) {
-                    return std::string();
+                    return {};
                 }
                 // Using Canon 24mm f/2.8 IS lens transmission data from agx-emulsion
                 std::filesystem::path p = base / "filters" / "lens_transmission" / "canon" / file;
@@ -130,9 +145,12 @@ namespace Print {
             if (normalized.rfind("BB", 0) == 0 && normalized.size() > 2) {
                 std::string tempStr;
                 tempStr.reserve(normalized.size() - 2);
-                for (size_t i = 2; i < normalized.size(); ++i) {
-                    if (normalized[i] != '-') {
-                        tempStr.push_back(normalized[i]);
+                const size_t normalizedCount = normalized.size();
+                const char* normalizedData = normalized.data();
+                for (size_t i = 2; i < normalizedCount; ++i) {
+                    const char ch = normalizedData[i];
+                    if (ch != '-') {
+                        tempStr.push_back(ch);
                     }
                 }
                 try {
@@ -175,11 +193,13 @@ namespace Print {
                     return std::numeric_limits<double>::quiet_NaN();
                 }
                 const size_t count = std::min(resampled.size(), illuminant.linear.size());
+                const std::pair<float, float>* resampledData = resampled.data();
+                const float* illuminantData = illuminant.linear.data();
                 double sum = 0.0;
                 bool any = false;
-                for (size_t i = 0; i < count; ++i) {
-                    const float logSens = resampled[i].second;
-                    const float illumVal = illuminant.linear[i];
+                for (size_t i = 0; i < count; ++i, ++resampledData, ++illuminantData) {
+                    const float logSens = resampledData->second;
+                    const float illumVal = *illuminantData;
                     if (!std::isfinite(illumVal)) {
                         continue;
                     }
@@ -204,33 +224,47 @@ namespace Print {
                 integrate_channel(g_sens),
                 integrate_channel(b_sens)
             };
+            const double* exposureData = exposures.data();
+            const size_t exposureCount = exposures.size();
 
-            for (double v : exposures) {
+            const double* exposureIt = exposureData;
+            for (size_t i = 0; i < exposureCount; ++i, ++exposureIt) {
+                const double v = *exposureIt;
                 if (!(v > 0.0) || !std::isfinite(v)) {
                     return false;
                 }
             }
 
             std::array<float, 3> corrections{};
-            for (size_t i = 0; i < corrections.size(); ++i) {
-                corrections[i] = static_cast<float>(exposures[1] / exposures[i]);
+            const size_t correctionCount = corrections.size();
+            const double midExposure = exposureData[1];
+            float* correctionData = corrections.data();
+            for (size_t i = 0; i < correctionCount; ++i, ++correctionData) {
+                const double channelExposure = exposureData[i];
+                *correctionData = static_cast<float>(midExposure / channelExposure);
             }
 
             std::array<float, 3> logCorr{};
-            for (size_t i = 0; i < corrections.size(); ++i) {
-                if (!(corrections[i] > 0.0f) || !std::isfinite(corrections[i])) {
+            const float* correctionRead = corrections.data();
+            float* logCorrData = logCorr.data();
+            for (size_t i = 0; i < correctionCount; ++i, ++correctionRead, ++logCorrData) {
+                const float corr = *correctionRead;
+                if (!(corr > 0.0f) || !std::isfinite(corr)) {
                     return false;
                 }
-                logCorr[i] = static_cast<float>(std::log10(corrections[i]));
+                *logCorrData = static_cast<float>(std::log10(corr));
             }
 
             auto apply = [](FloatPairs& samples, float logOffset) {
                 if (logOffset == 0.0f) {
                     return;
                 }
-                for (auto& sample : samples) {
-                    if (std::isfinite(sample.second)) {
-                        sample.second += logOffset;
+                std::pair<float, float>* sampleData = samples.data();
+                const size_t sampleCount = samples.size();
+                for (size_t i = 0; i < sampleCount; ++i, ++sampleData) {
+                    float& y = sampleData->second;
+                    if (std::isfinite(y)) {
+                        y += logOffset;
                     }
                 }
                 };
@@ -319,8 +353,10 @@ namespace Print {
             const auto& profileJson = ctx.profile;
             auto channel_has_finite = [](const FloatPairs& pairs)->bool {
                 size_t finiteCount = 0;
-                for (const auto& sample : pairs) {
-                    if (std::isfinite(sample.second)) {
+                const std::pair<float, float>* sampleData = pairs.data();
+                const size_t sampleCount = pairs.size();
+                for (size_t i = 0; i < sampleCount; ++i, ++sampleData) {
+                    if (std::isfinite(sampleData->second)) {
                         if (++finiteCount >= 4) {
                             return true;
                         }
@@ -385,20 +421,24 @@ namespace Print {
                 }
                 else {
                     const size_t count = std::min<size_t>(out.midNeutralDensity.size(), profileJson.densityMidNeutral.size());
-                    for (size_t i = 0; i < count; ++i) {
-                        const float v = profileJson.densityMidNeutral[i];
+                    const float* midNeutralData = profileJson.densityMidNeutral.data();
+                    float* outMidNeutralData = out.midNeutralDensity.data();
+                    for (size_t i = 0; i < count; ++i, ++midNeutralData, ++outMidNeutralData) {
+                        const float v = *midNeutralData;
                         if (std::isfinite(v)) {
-                            out.midNeutralDensity[i] = v;
+                            *outMidNeutralData = v;
                             updated = true;
                         }
                     }
 
                     if (std::isfinite(out.midNeutralDensity[0])) {
-                        if (!std::isfinite(out.midNeutralDensity[1])) {
-                            out.midNeutralDensity[1] = out.midNeutralDensity[0];
-                        }
-                        if (!std::isfinite(out.midNeutralDensity[2])) {
-                            out.midNeutralDensity[2] = out.midNeutralDensity[0];
+                        float* outMidNeutralData = out.midNeutralDensity.data();
+                        const float fallback = *outMidNeutralData;
+                        ++outMidNeutralData;
+                        for (int i = 1; i < 3; ++i, ++outMidNeutralData) {
+                            if (!std::isfinite(*outMidNeutralData)) {
+                                *outMidNeutralData = fallback;
+                            }
                         }
                     }
                 }
@@ -464,9 +504,9 @@ namespace Print {
 
             // Ensure remaining wavelengths and dye samples are finite.
             pairs.erase(std::remove_if(pairs.begin(), pairs.end(),
-                [](const auto& p) { return !std::isfinite(p.first); }), pairs.end());
-            pairs.erase(std::remove_if(pairs.begin(), pairs.end(),
-                [](const auto& p) { return !std::isfinite(p.second); }), pairs.end());
+                [](const auto& p) {
+                    return !std::isfinite(p.first) || !std::isfinite(p.second);
+                }), pairs.end());
             if (pairs.empty()) {
                 return;
             }
@@ -529,9 +569,12 @@ namespace Print {
         DoublePairs promote_pairs(const FloatPairs& in)
         {
             DoublePairs out;
-            out.reserve(in.size());
-            for (const auto& p : in) {
-                out.emplace_back(static_cast<double>(p.first), static_cast<double>(p.second));
+            const size_t count = in.size();
+            out.reserve(count);
+            const std::pair<float, float>* input = in.data();
+            const std::pair<float, float>* const inputEnd = input + count;
+            for (; input != inputEnd; ++input) {
+                out.emplace_back(static_cast<double>(input->first), static_cast<double>(input->second));
             }
             return out;
         }
@@ -539,9 +582,12 @@ namespace Print {
         FloatPairs demote_pairs(const DoublePairs& in)
         {
             FloatPairs out;
-            out.reserve(in.size());
-            for (const auto& p : in) {
-                out.emplace_back(static_cast<float>(p.first), static_cast<float>(p.second));
+            const size_t count = in.size();
+            out.reserve(count);
+            const std::pair<double, double>* input = in.data();
+            const std::pair<double, double>* const inputEnd = input + count;
+            for (; input != inputEnd; ++input) {
+                out.emplace_back(static_cast<float>(input->first), static_cast<float>(input->second));
             }
             return out;
         }
@@ -563,10 +609,18 @@ namespace Print {
                     curves.yellow = promote_pairs(jsonB); // B -> Y
                     curves.usedJson = true;
                     if (traceInfo) {
+                        std::string msg;
+                        msg.reserve(128 + jsonProfilePath.size());
+                        msg = "PROFILE_LOAD density curves from JSON '";
+                        msg += jsonProfilePath;
+                        msg += "' samples C/M/Y=";
+                        msg += std::to_string(jsonR.size());
+                        msg += "/";
+                        msg += std::to_string(jsonG.size());
+                        msg += "/";
+                        msg += std::to_string(jsonB.size());
                         JTRACE("PRINT",
-                            "PROFILE_LOAD density curves from JSON '" + jsonProfilePath +
-                            "' samples C/M/Y=" + std::to_string(jsonR.size()) + "/" +
-                            std::to_string(jsonG.size()) + "/" + std::to_string(jsonB.size()));
+                            msg);
                     }
                 }
                 else if (traceInfo) {
@@ -618,13 +672,15 @@ namespace Print {
 
         bool find_logE_for_density(const DoublePairs& curve, double targetDensity, double& outLogE)
         {
-            if (curve.empty()) {
+            const size_t curveSize = curve.size();
+            if (curveSize == 0) {
                 outLogE = 0.0;
                 return false;
             }
+            const std::pair<double, double>* curveData = curve.data();
 
             if (!std::isfinite(targetDensity)) {
-                outLogE = curve.front().first;
+                outLogE = curveData[0].first;
                 return false;
             }
 
@@ -634,8 +690,9 @@ namespace Print {
             size_t maxIndex = 0;
             bool anyFinite = false;
 
-            for (size_t i = 0; i < curve.size(); ++i) {
-                const double y = curve[i].second;
+            const std::pair<double, double>* sampleIt = curveData;
+            for (size_t i = 0; i < curveSize; ++i, ++sampleIt) {
+                const double y = sampleIt->second;
                 if (!std::isfinite(y)) {
                     continue;
                 }
@@ -656,32 +713,34 @@ namespace Print {
             }
 
             if (!anyFinite) {
-                outLogE = curve.front().first;
+                outLogE = curveData[0].first;
                 return false;
             }
 
-            const double xAtMin = curve[minIndex].first;
-            const double xAtMax = curve[maxIndex].first;
+            const double xAtMin = curveData[minIndex].first;
+            const double xAtMax = curveData[maxIndex].first;
 
             if (targetDensity <= yMin) {
                 outLogE = xAtMin;
                 return true;
             }
             if (targetDensity >= yMax) {
-                outLogE = curve.back().first;
+                outLogE = curveData[curveSize - 1].first;
                 return true;
             }
 
-            for (size_t i = 1; i < curve.size(); ++i) {
-                const double y0 = curve[i - 1].second;
-                const double y1 = curve[i].second;
+            const std::pair<double, double>* prev = curveData;
+            const std::pair<double, double>* curr = curveData + 1;
+            for (size_t i = 1; i < curveSize; ++i, ++prev, ++curr) {
+                const double y0 = prev->second;
+                const double y1 = curr->second;
                 if (!std::isfinite(y0) || !std::isfinite(y1)) {
                     continue;
                 }
                 if ((targetDensity >= y0 && targetDensity <= y1) ||
                     (targetDensity >= y1 && targetDensity <= y0)) {
-                    const double x0 = curve[i - 1].first;
-                    const double x1 = curve[i].first;
+                    const double x0 = prev->first;
+                    const double x1 = curr->first;
                     const double t = (y1 == y0) ? 0.0 : (targetDensity - y0) / (y1 - y0);
                     outLogE = x0 + t * (x1 - x0);
                     return true;
@@ -697,9 +756,12 @@ namespace Print {
             if (!std::isfinite(shift) || shift == 0.0) {
                 return;
             }
-            for (auto& sample : curve) {
-                if (std::isfinite(sample.first)) {
-                    sample.first -= shift;
+            std::pair<double, double>* samples = curve.data();
+            const size_t count = curve.size();
+            for (size_t i = 0; i < count; ++i, ++samples) {
+                double& x = samples->first;
+                if (std::isfinite(x)) {
+                    x -= shift;
                 }
             }
         }
@@ -766,7 +828,10 @@ namespace Print {
                 DoublePairs source = channel;
                 sort_curve(source);
                 DoublePairs adjusted = channel;
-                for (auto& sample : adjusted) {
+                std::pair<double, double>* adjustedData = adjusted.data();
+                const size_t adjustedCount = adjusted.size();
+                for (size_t i = 0; i < adjustedCount; ++i, ++adjustedData) {
+                    auto& sample = *adjustedData;
                     if (!std::isfinite(sample.first)) {
                         continue;
                     }
@@ -791,48 +856,59 @@ namespace Print {
             std::array<double, 3> measured{ {0.0, 0.0, 0.0} };
             std::array<bool, 3> measuredValid{ {false, false, false} };
             const DoublePairs* channels[3] = { &curves.cyan, &curves.magenta, &curves.yellow };
-            for (int i = 0; i < 3; ++i) {
-                const DoublePairs& channel = *channels[i];
+            const DoublePairs* const* channelData = channels;
+            const DoublePairs* const* const channelEnd = channelData + 3;
+            size_t channelIndex = 0;
+            for (; channelData < channelEnd; ++channelData, ++channelIndex) {
+                const DoublePairs& channel = **channelData;
                 if (channel.empty()) {
                     continue;
                 }
-                const float density = neutralDensity[static_cast<size_t>(i)];
+                const float density = neutralDensity[channelIndex];
                 if (!std::isfinite(density)) {
                     continue;
                 }
                 double logE = 0.0;
                 if (find_logE_for_density(channel, static_cast<double>(density), logE)) {
-                    measured[static_cast<size_t>(i)] = logE;
-                    measuredValid[static_cast<size_t>(i)] = true;
+                    measured[channelIndex] = logE;
+                    measuredValid[channelIndex] = true;
                 }
             }
 
-            bool anyMeasured = measuredValid[0] || measuredValid[1] || measuredValid[2];
-            if (!anyMeasured) {
+            if (!any_true_triplet(measuredValid)) {
                 return;
             }
 
             std::array<double, 3> reference{ {0.0, 0.0, 0.0} };
             std::array<bool, 3> referenceValid{ {false, false, false} };
-            for (size_t i = 0; i < std::min<size_t>(3, referenceLogExposure.size()); ++i) {
-                const float refVal = referenceLogExposure[i];
+            const size_t referenceCount = std::min<size_t>(3, referenceLogExposure.size());
+            const float* referenceData = referenceLogExposure.data();
+            for (size_t i = 0; i < referenceCount; ++i, ++referenceData) {
+                const float refVal = *referenceData;
                 if (std::isfinite(refVal)) {
                     reference[i] = static_cast<double>(refVal);
                     referenceValid[i] = true;
                 }
             }
 
-            bool anyReference = referenceValid[0] || referenceValid[1] || referenceValid[2];
-            if (!anyReference) {
+            if (!any_true_triplet(referenceValid)) {
                 return;
             }
 
             std::array<double, 3> delta{ {0.0, 0.0, 0.0} };
             std::array<bool, 3> deltaValid{ {false, false, false} };
-            for (int i = 0; i < 3; ++i) {
-                if (measuredValid[static_cast<size_t>(i)] && referenceValid[static_cast<size_t>(i)]) {
-                    delta[static_cast<size_t>(i)] = measured[static_cast<size_t>(i)] - reference[static_cast<size_t>(i)];
-                    deltaValid[static_cast<size_t>(i)] = true;
+            const bool* measuredValidIt = measuredValid.data();
+            const bool* referenceValidIt = referenceValid.data();
+            const double* measuredIt = measured.data();
+            const double* referenceIt = reference.data();
+            double* deltaIt = delta.data();
+            bool* deltaValidIt = deltaValid.data();
+            for (int i = 0; i < 3; ++i,
+                 ++measuredValidIt, ++referenceValidIt, ++measuredIt, ++referenceIt,
+                 ++deltaIt, ++deltaValidIt) {
+                if (*measuredValidIt && *referenceValidIt) {
+                    *deltaIt = *measuredIt - *referenceIt;
+                    *deltaValidIt = true;
                 }
             }
 
@@ -841,12 +917,14 @@ namespace Print {
                 const std::array<double, 3>& values,
                 const std::array<bool, 3>& validFlags) {
                     oss << label << '[';
-                    for (int i = 0; i < 3; ++i) {
+                    const double* valueData = values.data();
+                    const bool* validData = validFlags.data();
+                    for (size_t i = 0; i < 3; ++i, ++valueData, ++validData) {
                         if (i > 0) {
                             oss << ", ";
                         }
-                        if (validFlags[static_cast<size_t>(i)]) {
-                            oss << values[static_cast<size_t>(i)];
+                        if (*validData) {
+                            oss << *valueData;
                         }
                         else {
                             oss << "nan";
@@ -889,7 +967,10 @@ namespace Print {
                 constexpr float kDedupEps = 1e-6f;
                 FloatPairs deduped;
                 deduped.reserve(pairs.size());
-                for (const auto& p : pairs) {
+                const std::pair<float, float>* pairData = pairs.data();
+                const size_t pairCount = pairs.size();
+                for (size_t i = 0; i < pairCount; ++i, ++pairData) {
+                    const auto& p = *pairData;
                     if (!deduped.empty() && std::fabs(p.first - deduped.back().first) <= kDedupEps) {
                         deduped.back().second = p.second;
                         continue;
@@ -986,9 +1067,11 @@ namespace Print {
                 return true;
             }
 
-            for (size_t i = 1; i < samples.size(); ++i) {
-                const Sample& prev = samples[i - 1];
-                const Sample& cur = samples[i];
+            const size_t sampleCount = samples.size();
+            const Sample* sampleData = samples.data();
+            for (size_t i = 1; i < sampleCount; ++i) {
+                const Sample& prev = sampleData[i - 1];
+                const Sample& cur = sampleData[i];
                 if (!(cur.y >= prev.y)) {
                     continue;
                 }
@@ -1032,8 +1115,10 @@ namespace Print {
             if (!(norm > 0.0)) {
                 return input;
             }
-            for (double& w : kernel) {
-                w /= norm;
+            double* kernelWeights = kernel.data();
+            const size_t kernelCount = kernel.size();
+            for (size_t i = 0; i < kernelCount; ++i, ++kernelWeights) {
+                *kernelWeights /= norm;
             }
 
             auto reflect_index = [size](int idx) {
@@ -1115,41 +1200,49 @@ namespace Print {
 
             const size_t sampleCount = reference->size();
             std::vector<double> logExposures(sampleCount, 0.0);
-            for (size_t i = 0; i < sampleCount; ++i) {
-                logExposures[i] = (*reference)[i].first;
+            const std::pair<double, double>* referenceData = reference->data();
+            double* logExposureWrite = logExposures.data();
+            for (size_t i = 0; i < sampleCount; ++i, ++referenceData, ++logExposureWrite) {
+                *logExposureWrite = referenceData->first;
             }
+            const size_t logExposureCount = logExposures.size();
+            const double* const logExposureData = logExposures.data();
             const DoublePairs* const cyanCurve = &curves.cyan;
             const DoublePairs* const magentaCurve = &curves.magenta;
             const DoublePairs* const yellowCurve = &curves.yellow;
             const size_t cyanCount = cyanCurve->size();
             const size_t magentaCount = magentaCurve->size();
             const size_t yellowCount = yellowCurve->size();
+            const std::pair<double, double>* cyanData = cyanCurve->data();
+            const std::pair<double, double>* magentaData = magentaCurve->data();
+            const std::pair<double, double>* yellowData = yellowCurve->data();
 
             DoublePairs meanCurve;
             meanCurve.reserve(sampleCount);
-            for (size_t i = 0; i < sampleCount; ++i) {
-                const double le = logExposures[i];
+            const double* logExposureRead = logExposureData;
+            for (size_t i = 0; i < logExposureCount; ++i, ++logExposureRead) {
+                const double le = *logExposureRead;
                 if (!std::isfinite(le)) {
                     continue;
                 }
                 double sum = 0.0;
                 int count = 0;
                 if (i < cyanCount) {
-                    const double v = (*cyanCurve)[i].second;
+                    const double v = cyanData[i].second;
                     if (std::isfinite(v)) {
                         sum += v;
                         ++count;
                     }
                 }
                 if (i < magentaCount) {
-                    const double v = (*magentaCurve)[i].second;
+                    const double v = magentaData[i].second;
                     if (std::isfinite(v)) {
                         sum += v;
                         ++count;
                     }
                 }
                 if (i < yellowCount) {
-                    const double v = (*yellowCurve)[i].second;
+                    const double v = yellowData[i].second;
                     if (std::isfinite(v)) {
                         sum += v;
                         ++count;
@@ -1166,7 +1259,9 @@ namespace Print {
             }
 
             double leCenter = std::numeric_limits<double>::quiet_NaN();
-            for (double le : logExposures) {
+            const double* leCenterRead = logExposureData;
+            for (size_t i = 0; i < logExposureCount; ++i, ++leCenterRead) {
+                const double le = *leCenterRead;
                 if (std::isfinite(le)) {
                     leCenter = le;
                     break;
@@ -1187,14 +1282,18 @@ namespace Print {
 
             double leStep = 0.0;
             int stepCount = 0;
-            for (size_t i = 1; i < logExposures.size(); ++i) {
-                const double a = logExposures[i];
-                const double b = logExposures[i - 1];
-                if (std::isfinite(a) && std::isfinite(b)) {
-                    const double diff = a - b;
-                    if (std::isfinite(diff) && diff != 0.0) {
-                        leStep += std::fabs(diff);
-                        ++stepCount;
+            if (logExposureCount > 1) {
+                const double* prev = logExposureData;
+                const double* curr = prev + 1;
+                for (size_t i = 1; i < logExposureCount; ++i, ++prev, ++curr) {
+                    const double a = *curr;
+                    const double b = *prev;
+                    if (std::isfinite(a) && std::isfinite(b)) {
+                        const double diff = a - b;
+                        if (std::isfinite(diff) && diff != 0.0) {
+                            leStep += std::fabs(diff);
+                            ++stepCount;
+                        }
                     }
                 }
             }
@@ -1208,7 +1307,10 @@ namespace Print {
             const double factor = static_cast<double>(profile.glareCompensationFactor);
             const double transitionDensity = static_cast<double>(profile.glareCompensationTransition);
             std::vector<double> leAdjusted = logExposures;
-            for (double& le : leAdjusted) {
+            double* adjustedData = leAdjusted.data();
+            const size_t adjustedCount = leAdjusted.size();
+            for (size_t i = 0; i < adjustedCount; ++i, ++adjustedData) {
+                double& le = *adjustedData;
                 if (!std::isfinite(le)) {
                     le = leCenter;
                 }
@@ -1226,6 +1328,7 @@ namespace Print {
             }
             const double sigmaSamples = std::fabs(leTransition) / leStep;
             std::vector<double> leFiltered = gaussian_filter_reflect(leAdjusted, sigmaSamples);
+            const double* filteredData = leFiltered.data();
 
             const DoublePairs originalCyan = curves.cyan;
             const DoublePairs originalMagenta = curves.magenta;
@@ -1233,18 +1336,18 @@ namespace Print {
 
             auto rebuild_curve = [&](const DoublePairs& source) {
                 DoublePairs rebuilt;
-                const size_t exposureCount = logExposures.size();
-                rebuilt.reserve(exposureCount);
+                rebuilt.reserve(logExposureCount);
                 if (source.empty()) {
                     return rebuilt;
                 }
-                for (size_t i = 0; i < exposureCount; ++i) {
-                    const double le = logExposures[i];
+                const double* exposureRead = logExposureData;
+                const double* queryRead = filteredData;
+                for (size_t i = 0; i < logExposureCount; ++i, ++exposureRead, ++queryRead) {
+                    const double le = *exposureRead;
                     if (!std::isfinite(le)) {
                         continue;
                     }
-                    const double query = leFiltered[i];
-                    const double density = sample_curve_at(source, query);
+                    const double density = sample_curve_at(source, *queryRead);
                     rebuilt.emplace_back(le, density);
                 }
                 return rebuilt;
@@ -1415,10 +1518,12 @@ namespace Print {
             if (!traceInfo) {
                 return;
             }
-            std::string msg = prefix ? prefix : "";
-            msg += "'";
+            std::string msg;
+            msg.reserve((prefix ? std::strlen(prefix) : 0u) + jsonProfilePath.size() + (suffix ? std::strlen(suffix) : 0u) + 2);
+            msg = prefix ? prefix : "";
+            msg.push_back('\'');
             msg += jsonProfilePath;
-            msg += "'";
+            msg.push_back('\'');
             if (suffix) {
                 msg += suffix;
             }

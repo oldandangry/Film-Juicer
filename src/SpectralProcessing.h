@@ -102,6 +102,14 @@ namespace Spectral {
         spd_probe_buffer().active = false;
     }
 
+    inline void copy_triplet_or_zero(const float* src, float dst[3]) {
+        float* dstIt = dst;
+        const float* srcIt = src;
+        for (int i = 0; i < 3; ++i, ++dstIt) {
+            *dstIt = srcIt ? *srcIt++ : 0.0f;
+        }
+    }
+
     inline bool spd_probe_begin_capture(const float rgbIn[3], const float rgbDWG[3], bool spdEnabled) {
         if (!spdEnabled) {
             return false;
@@ -123,10 +131,8 @@ namespace Spectral {
         auto& buf = spd_probe_buffer();
         buf.active = true;
         buf.sampleIndex = sampleIndex;
-        for (int i = 0; i < 3; ++i) {
-            buf.rgbInput[i] = rgbIn ? rgbIn[i] : 0.0f;
-            buf.rgbDWG[i] = rgbDWG ? rgbDWG[i] : 0.0f;
-        }
+        copy_triplet_or_zero(rgbIn, buf.rgbInput);
+        copy_triplet_or_zero(rgbDWG, buf.rgbDWG);
         buf.targetScale = 0.0f;
         buf.hasTargetScale = false;
         buf.midgrayScale = 0.0f;
@@ -195,12 +201,10 @@ namespace Spectral {
         if (!buf.active) {
             return;
         }
-        for (int i = 0; i < 3; ++i) {
-            buf.cat02InputXYZ[i] = XYZ_in ? XYZ_in[i] : 0.0f;
-            buf.cat02OutputXYZ[i] = XYZ_out ? XYZ_out[i] : 0.0f;
-            buf.cat02SrcWhite[i] = srcWhite ? srcWhite[i] : 0.0f;
-            buf.cat02DstWhite[i] = dstWhite ? dstWhite[i] : 0.0f;
-        }
+        copy_triplet_or_zero(XYZ_in, buf.cat02InputXYZ);
+        copy_triplet_or_zero(XYZ_out, buf.cat02OutputXYZ);
+        copy_triplet_or_zero(srcWhite, buf.cat02SrcWhite);
+        copy_triplet_or_zero(dstWhite, buf.cat02DstWhite);
         buf.hasCat02 = true;
     }
 
@@ -256,16 +260,28 @@ namespace Spectral {
         }
         if (!buf.rawLUT.empty()) {
             oss << " rawLUT=[";
-            for (size_t i = 0; i < buf.rawLUT.size(); ++i) {
-                if (i > 0) oss << ",";
-                oss << buf.rawLUT[i];
+            const size_t rawCount = buf.rawLUT.size();
+            const float* rawData = buf.rawLUT.data();
+            bool first = true;
+            for (size_t i = 0; i < rawCount; ++i, ++rawData) {
+                if (!first) {
+                    oss << ",";
+                }
+                first = false;
+                oss << *rawData;
             }
             oss << "]";
         }
         oss << " Ee=[";
-        for (size_t i = 0; i < buf.Ee.size(); ++i) {
-            if (i > 0) oss << ",";
-            oss << buf.Ee[i];
+        const size_t eeCount = buf.Ee.size();
+        const float* eeData = buf.Ee.data();
+        bool firstEe = true;
+        for (size_t i = 0; i < eeCount; ++i, ++eeData) {
+            if (!firstEe) {
+                oss << ",";
+            }
+            firstEe = false;
+            oss << *eeData;
         }
         oss << "]";
         JTRACE("SPDDBG", oss.str());
@@ -284,6 +300,43 @@ namespace Spectral {
     inline void spd_probe_finalize(float, const float[3]) {}
     inline void spd_probe_reset() {}
 #endif
+
+    inline void sanitize_nonfinite_triplet(float values[3]) {
+        float* valueIt = values;
+        for (int i = 0; i < 3; ++i, ++valueIt) {
+            if (!std::isfinite(*valueIt)) {
+                *valueIt = 0.0f;
+            }
+        }
+    }
+
+    inline void copy_triplet3(const float src[3], float dst[3]) {
+        float* dstIt = dst;
+        const float* srcIt = src;
+        for (int i = 0; i < 3; ++i, ++dstIt, ++srcIt) {
+            *dstIt = *srcIt;
+        }
+    }
+
+    inline void clamp_triplet_nonnegative(float values[3]) {
+        float* valueIt = values;
+        for (int i = 0; i < 3; ++i, ++valueIt) {
+            *valueIt = std::max(0.0f, *valueIt);
+        }
+    }
+
+    inline void set_identity_3x3(float matrix[9]) {
+        std::fill_n(matrix, 9, 0.0f);
+        matrix[0] = 1.0f;
+        matrix[4] = 1.0f;
+        matrix[8] = 1.0f;
+    }
+
+    inline void store_scaled_xyz(double X, double Y, double Z, float scale, float XYZ[3]) {
+        XYZ[0] = static_cast<float>(X * scale);
+        XYZ[1] = static_cast<float>(Y * scale);
+        XYZ[2] = static_cast<float>(Z * scale);
+    }
 
     // -------------------------------------------------------------------------
     // 1. MATH UTILITIES (~100 lines)
@@ -343,12 +396,13 @@ namespace Spectral {
         const float widthUV = safe_width(filterUV[2]);
         const float widthIR = -std::fabs(safe_width(filterIR[2]));
         const float* wavelengths = gShape.wavelengths.data();
+        float* outData = bandPass.data();
 
         for (int i = 0; i < K; ++i) {
             const float wl = wavelengths[i];
             const float filter_uv = 1.0f - ampUV + ampUV * sigmoid_erf(wl, wlUV, widthUV);
             const float filter_ir = 1.0f - ampIR + ampIR * sigmoid_erf(wl, wlIR, widthIR);
-            bandPass[static_cast<size_t>(i)] = filter_uv * filter_ir;
+            outData[i] = filter_uv * filter_ir;
         }
 
         return bandPass;
@@ -357,8 +411,11 @@ namespace Spectral {
     inline float compute_delta_from_shape(const SpectralShape& s) {
         if (s.K <= 1 || s.wavelengths.size() < 2) return kDelta;
         // Estimate mean Δλ to be robust to tiny non-uniformities
+        const float* wavelengths = s.wavelengths.data();
         double sum = 0.0;
-        for (int i = 1; i < s.K; ++i) sum += static_cast<double>(s.wavelengths[i] - s.wavelengths[i - 1]);
+        for (int i = 1; i < s.K; ++i) {
+            sum += static_cast<double>(wavelengths[i] - wavelengths[i - 1]);
+        }
         const double mean = sum / static_cast<double>(s.K - 1);
         return (mean > 0.0) ? static_cast<float>(mean) : kDelta;
     }
@@ -432,9 +489,7 @@ namespace Spectral {
 
         // Robustness: if ill‑conditioned, fall back to identity
         if (std::fabs(det) < 1e-20) {
-            gS_inv[0] = 1; gS_inv[1] = 0; gS_inv[2] = 0;
-            gS_inv[3] = 0; gS_inv[4] = 1; gS_inv[5] = 0;
-            gS_inv[6] = 0; gS_inv[7] = 0; gS_inv[8] = 1;
+            set_identity_3x3(gS_inv);
             gSPDInit.store(true, std::memory_order_release);
             return;
         }
@@ -481,9 +536,7 @@ namespace Spectral {
 
         const double det = Sxx * (Syy * Szz - Syz * Szy) - Sxy * (Syx * Szz - Syz * Szx) + Sxz * (Syx * Szy - Syy * Szx);
         if (std::fabs(det) < 1e-20) {
-            S_inv_out[0] = 1; S_inv_out[1] = 0; S_inv_out[2] = 0;
-            S_inv_out[3] = 0; S_inv_out[4] = 1; S_inv_out[5] = 0;
-            S_inv_out[6] = 0; S_inv_out[7] = 0; S_inv_out[8] = 1;
+            set_identity_3x3(S_inv_out);
             return;
         }
         const double invDet = 1.0 / det;
@@ -505,9 +558,7 @@ namespace Spectral {
 
         float XYZ[3];
         DWG_linear_to_XYZ(rgbDWG, XYZ);
-        XYZ[0] = std::max(0.0f, XYZ[0]);
-        XYZ[1] = std::max(0.0f, XYZ[1]);
-        XYZ[2] = std::max(0.0f, XYZ[2]);
+        clamp_triplet_nonnegative(XYZ);
 
         const float targetScale = XYZ[1];
         spd_probe_record_target_scale(targetScale);
@@ -742,11 +793,7 @@ namespace Spectral {
         float XYZ[3];
         DWG_linear_to_XYZ(rgbDWG, XYZ);
         // agx-emulsion parity: keep signed XYZ; only sanitize non-finite components.
-        for (int i = 0; i < 3; ++i) {
-            if (!std::isfinite(XYZ[i])) {
-                XYZ[i] = 0.0f;
-            }
-        }
+        sanitize_nonfinite_triplet(XYZ);
 
         auto sanitize_white = [](const float* white, float dst[3]) {
             const float fallback[3] = {
@@ -755,14 +802,15 @@ namespace Spectral {
                 gDWG_WhitePoint_XYZ[2]
             };
             const float* src = white ? white : fallback;
-            for (int i = 0; i < 3; ++i) {
-                const float v = src[i];
-                dst[i] = (std::isfinite(v)) ? v : fallback[i];
+            float* dstIt = dst;
+            const float* srcIt = src;
+            const float* fallbackIt = fallback;
+            for (int i = 0; i < 3; ++i, ++dstIt, ++srcIt, ++fallbackIt) {
+                const float v = *srcIt;
+                *dstIt = (std::isfinite(v)) ? v : *fallbackIt;
             }
             if (!(dst[1] > 0.0f)) {
-                dst[0] = fallback[0];
-                dst[1] = fallback[1];
-                dst[2] = fallback[2];
+                copy_triplet3(fallback, dst);
             }
             };
 
@@ -779,11 +827,7 @@ namespace Spectral {
         // - sanitize adaptedXYZ (non-finite -> 0), do not clamp negatives
         // - b = sum(adaptedXYZ) (signed)
         // - xy uses denom = max(b, 1e-10) and is then clamped to [0, 1]
-        for (int i = 0; i < 3; ++i) {
-            if (!std::isfinite(adaptedXYZ[i])) {
-                adaptedXYZ[i] = 0.0f;
-            }
-        }
+        sanitize_nonfinite_triplet(adaptedXYZ);
         const float b = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
         const float bSafe = std::isfinite(b) ? b : 0.0f;
         spd_probe_record_target_scale(bSafe);
@@ -1100,14 +1144,10 @@ namespace Spectral {
         }
         T.invYn = (Yn > 0.0) ? (1.0f / (float)Yn) : 1.0f;
         const double scale = static_cast<double>(T.invYn);
-        T.whiteXYZ[0] = static_cast<float>(scale * sumAx);
-        T.whiteXYZ[1] = static_cast<float>(scale * sumAy);
-        T.whiteXYZ[2] = static_cast<float>(scale * sumAz);
+        store_scaled_xyz(sumAx, sumAy, sumAz, static_cast<float>(scale), T.whiteXYZ);
 
         // Illuminant white point used for chromatic adaptation (normalized to Y=1).
-        T.refIllumWhiteXYZ[0] = T.whiteXYZ[0];
-        T.refIllumWhiteXYZ[1] = T.whiteXYZ[1];
-        T.refIllumWhiteXYZ[2] = T.whiteXYZ[2];
+        copy_triplet3(T.whiteXYZ, T.refIllumWhiteXYZ);
 
         T.hasBaseline = hasBaseline &&
             (int)baseMin.linear.size() == K;
@@ -1197,18 +1237,14 @@ namespace Spectral {
             sanitize_component(T.refIllumWhiteXYZ[2])
         };
         if (refWhite[1] <= 0.0f) {
-            refWhite[0] = gDWG_WhitePoint_XYZ[0];
-            refWhite[1] = gDWG_WhitePoint_XYZ[1];
-            refWhite[2] = gDWG_WhitePoint_XYZ[2];
+            copy_triplet3(gDWG_WhitePoint_XYZ, refWhite);
         }
 
         float adaptedXYZ[3];
         chromatic_adapt_XYZ_CAT02(sanitizedXYZ, gDWG_WhitePoint_XYZ, refWhite, adaptedXYZ);
         spd_probe_record_cat02(sanitizedXYZ, adaptedXYZ, gDWG_WhitePoint_XYZ, refWhite);
 
-        adaptedXYZ[0] = std::max(0.0f, adaptedXYZ[0]);
-        adaptedXYZ[1] = std::max(0.0f, adaptedXYZ[1]);
-        adaptedXYZ[2] = std::max(0.0f, adaptedXYZ[2]);
+        clamp_triplet_nonnegative(adaptedXYZ);
 
         const float targetScale = (adaptedXYZ[1] > 0.0f) ? adaptedXYZ[1] : sanitizedXYZ[1];
         spd_probe_record_target_scale(targetScale);
@@ -1237,8 +1273,9 @@ namespace Spectral {
         }
         if (Y_recon > 1e-20 && targetScale > 0.0f) {
             const float s = static_cast<float>(static_cast<double>(targetScale) / Y_recon);
-            for (int i = 0; i < K; ++i) {
-                eeData[i] = std::max(0.0f, s * eeData[i]);
+            float* eeIt = eeData;
+            for (int i = 0; i < K; ++i, ++eeIt) {
+                *eeIt = std::max(0.0f, s * (*eeIt));
             }
         }
         else if (targetScale <= 0.0f) {
@@ -1311,18 +1348,15 @@ namespace Spectral {
         const float* xData = xbar.linear.data();
         const float* yData = ybar.linear.data();
         const float* zData = zbar.linear.data();
-        for (size_t i = 0; i < count; ++i) {
-            const double E = eeData[i];
-            X += E * xData[i];
-            Y += E * yData[i];
-            Z += E * zData[i];
+        for (size_t i = 0; i < count; ++i, ++eeData, ++xData, ++yData, ++zData) {
+            const double E = *eeData;
+            X += E * (*xData);
+            Y += E * (*yData);
+            Z += E * (*zData);
         }
 
         const float s = Spectral::gInvYn;
-
-        XYZ[0] = static_cast<float>(X * s);
-        XYZ[1] = static_cast<float>(Y * s);
-        XYZ[2] = static_cast<float>(Z * s);
+        store_scaled_xyz(X, Y, Z, s, XYZ);
     }
 
     // Integrate spectral irradiance with per-instance tables (viewing axis and normalization)
@@ -1339,16 +1373,14 @@ namespace Spectral {
         const float* xData = T.Xbar.data();
         const float* yData = T.Ybar.data();
         const float* zData = T.Zbar.data();
-        for (int i = 0; i < count; ++i) {
-            const float e = eeData[i];
-            X += static_cast<double>(e) * static_cast<double>(xData[i]);
-            Y += static_cast<double>(e) * static_cast<double>(yData[i]);
-            Z += static_cast<double>(e) * static_cast<double>(zData[i]);
+        for (int i = 0; i < count; ++i, ++eeData, ++xData, ++yData, ++zData) {
+            const float e = *eeData;
+            X += static_cast<double>(e) * static_cast<double>(*xData);
+            Y += static_cast<double>(e) * static_cast<double>(*yData);
+            Z += static_cast<double>(e) * static_cast<double>(*zData);
         }
         const float s = T.invYn;
-        XYZ[0] = static_cast<float>(X * s);
-        XYZ[1] = static_cast<float>(Y * s);
-        XYZ[2] = static_cast<float>(Z * s);
+        store_scaled_xyz(X, Y, Z, s, XYZ);
     }
 
     // -------------------------------------------------------------------------
@@ -1391,10 +1423,11 @@ namespace Spectral {
     // Effective layer gain helper
     inline float effective_layer_gain(const Curve& c) {
         if (c.lambda_nm.empty()) return 1.0f;
+        const int K = gShape.K;
         float num = 0.0f, den = 0.0f;
         const float* illumData = gIllumTable.data();
         const float* lambdaData = gLambda.data();
-        for (int i = 0; i < gShape.K; ++i) {
+        for (int i = 0; i < K; ++i) {
             const float Ee = illumData[i];
             const float s = c.sample(lambdaData[i]);
             num += Ee * s;
