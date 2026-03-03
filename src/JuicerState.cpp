@@ -15,6 +15,7 @@ void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) co
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <cctype>
 #include <cfloat>
@@ -91,7 +92,8 @@ namespace {
         std::uint64_t buildCounter,
         const char* path)
     {
-        if (!JTRACE_ENABLED(2) || result.keyHash == 0) {
+        const bool traceLevel2 = JTRACE_ENABLED(2);
+        if (!traceLevel2 || result.keyHash == 0) {
             return;
         }
         const char* pathLabel = path ? path : "unknown";
@@ -443,7 +445,7 @@ namespace {
         for (size_t i = 0; i < a.size(); ++i) {
             if (std::tolower(static_cast<unsigned char>(a[i])) !=
                 std::tolower(static_cast<unsigned char>(b[i]))) {
-                return false;;
+                return false;
             }
         }
         return true;
@@ -465,6 +467,11 @@ namespace {
         if (root.is_discarded() || !root.is_object()) {
             return catalog;
         }
+        const size_t paperCount = root.size();
+        catalog.paperKeys.reserve(paperCount);
+        catalog.paperKeySet.reserve(paperCount);
+        catalog.filmKeys.reserve(paperCount * 4);
+        catalog.filmKeySet.reserve(paperCount * 4);
 
         for (auto it = root.begin(); it != root.end(); ++it) {
             if (!it.value().is_object()) {
@@ -472,7 +479,7 @@ namespace {
             }
             const std::string paperKey = it.key();
             if (catalog.paperKeySet.insert(paperKey).second) {
-                catalog.paperKeys.push_back(paperKey);
+                catalog.paperKeys.emplace_back(paperKey);
             }
             for (auto illumIt = it.value().begin(); illumIt != it.value().end(); ++illumIt) {
                 if (!illumIt.value().is_object()) {
@@ -481,7 +488,7 @@ namespace {
                 for (auto filmIt = illumIt.value().begin(); filmIt != illumIt.value().end(); ++filmIt) {
                     const std::string filmKey = filmIt.key();
                     if (catalog.filmKeySet.insert(filmKey).second) {
-                        catalog.filmKeys.push_back(filmKey);
+                        catalog.filmKeys.emplace_back(filmKey);
                     }
                 }
             }
@@ -492,6 +499,7 @@ namespace {
     void populate_profile_catalogs() {
         auto& filmDefs = film_stock_definitions();
         auto& paperDefs = print_paper_definitions();
+        const bool traceCatalog = JTRACE_ENABLED(1);
         filmDefs.clear();
         paperDefs.clear();
 
@@ -518,22 +526,32 @@ namespace {
                 }
             }
         }
+        filmDefs.reserve(infoByKey.size());
+        paperDefs.reserve(infoByKey.size());
 
         FilterCatalog filters = load_filter_catalog(profilesDir / "enlarger_neutral_ymc_filters.json");
+        if (traceCatalog) {
+            missingFilmKeys.reserve(filters.filmKeys.size());
+            missingPaperKeys.reserve(filters.paperKeys.size());
+        }
 
         auto pushFilm = [&](const std::string& key) {
             auto it = infoByKey.find(key);
             if (it == infoByKey.end()) {
-                missingFilmKeys.push_back(key + " (profile missing)");
+                if (traceCatalog) {
+                    missingFilmKeys.push_back(key + " (profile missing)");
+                }
                 return;
             }
             if (!equals_ignore_case(it->second.type, "negative")) {
-                std::string reason = key + " (type='" + it->second.type + "')";
-                missingFilmKeys.push_back(std::move(reason));
+                if (traceCatalog) {
+                    std::string reason = key + " (type='" + it->second.type + "')";
+                    missingFilmKeys.push_back(std::move(reason));
+                }
                 return;
             }
             std::string label = it->second.name.empty() ? it->second.stock : it->second.name;
-            filmDefs.push_back({ std::move(label), it->second.stock });
+            filmDefs.emplace_back(FilmStockDefinition{ std::move(label), it->second.stock });
             };
 
         for (const std::string& key : filters.filmKeys) {
@@ -546,7 +564,7 @@ namespace {
                     continue;
                 }
                 std::string label = pair.second.name.empty() ? pair.second.stock : pair.second.name;
-                filmDefs.push_back({ std::move(label), pair.second.stock });
+                filmDefs.emplace_back(FilmStockDefinition{ std::move(label), pair.second.stock });
             }
             std::sort(filmDefs.begin(), filmDefs.end(),
                 [](const FilmStockDefinition& a, const FilmStockDefinition& b) {
@@ -555,19 +573,21 @@ namespace {
         }
 
         if (filmDefs.empty()) {
-            if (!missingFilmKeys.empty()) {
-                std::ostringstream oss;
-                oss << "catalog fallback: film profiles unavailable for keys: ";
-                for (size_t i = 0; i < missingFilmKeys.size(); ++i) {
-                    if (i > 0) {
-                        oss << ", ";
+            if (traceCatalog) {
+                if (!missingFilmKeys.empty()) {
+                    std::ostringstream oss;
+                    oss << "catalog fallback: film profiles unavailable for keys: ";
+                    for (size_t i = 0; i < missingFilmKeys.size(); ++i) {
+                        if (i > 0) {
+                            oss << ", ";
+                        }
+                        oss << missingFilmKeys[i];
                     }
-                    oss << missingFilmKeys[i];
+                    JTRACE("CATALOG", oss.str());
                 }
-                JTRACE("CATALOG", oss.str());
-            }
-            else {
-                JTRACE("CATALOG", "catalog fallback: no film profiles discovered; using defaults");
+                else {
+                    JTRACE("CATALOG", "catalog fallback: no film profiles discovered; using defaults");
+                }
             }
             filmDefs.assign(kFallbackFilmStocks.begin(), kFallbackFilmStocks.end());
         }
@@ -584,7 +604,7 @@ namespace {
                 if (it->is_directory(ec)) {
                     std::string folder = it->path().filename().string();
                     if (!folder.empty()) {
-                        folders.push_back({ folder, sanitize_identifier(folder), false });
+                        folders.emplace_back(PrintFolderInfo{ folder, sanitize_identifier(folder), false });
                     }
                 }
             }
@@ -636,18 +656,22 @@ namespace {
         auto pushPaper = [&](const std::string& key) {
             auto it = infoByKey.find(key);
             if (it == infoByKey.end()) {
-                missingPaperKeys.push_back(key + " (profile missing)");
+                if (traceCatalog) {
+                    missingPaperKeys.push_back(key + " (profile missing)");
+                }
                 return;
             }
             const auto& info = it->second;
             if (!equals_ignore_case(info.type, "paper")) {
-                std::string reason = key + " (type='" + info.type + "')";
-                missingPaperKeys.push_back(std::move(reason));
+                if (traceCatalog) {
+                    std::string reason = key + " (type='" + info.type + "')";
+                    missingPaperKeys.push_back(std::move(reason));
+                }
                 return;
             }
             std::string folder = claimFolder(info, key);
             std::string label = info.name.empty() ? key : info.name;
-            paperDefs.push_back({ std::move(label), std::move(folder), key });
+            paperDefs.emplace_back(PrintPaperDefinition{ std::move(label), std::move(folder), key });
             };
 
         for (const std::string& key : filters.paperKeys) {
@@ -695,25 +719,27 @@ namespace {
                 if (!bestKey.empty()) {
                     folderInfo.used = true;
                     std::string label = folderInfo.name;
-                    paperDefs.push_back({ std::move(label), folderInfo.name, bestKey });
+                    paperDefs.emplace_back(PrintPaperDefinition{ std::move(label), folderInfo.name, bestKey });
                 }
             }
         }
 
         if (paperDefs.empty()) {
-            if (!missingPaperKeys.empty()) {
-                std::ostringstream oss;
-                oss << "catalog fallback: print profiles unavailable for keys: ";
-                for (size_t i = 0; i < missingPaperKeys.size(); ++i) {
-                    if (i > 0) {
-                        oss << ", ";
+            if (traceCatalog) {
+                if (!missingPaperKeys.empty()) {
+                    std::ostringstream oss;
+                    oss << "catalog fallback: print profiles unavailable for keys: ";
+                    for (size_t i = 0; i < missingPaperKeys.size(); ++i) {
+                        if (i > 0) {
+                            oss << ", ";
+                        }
+                        oss << missingPaperKeys[i];
                     }
-                    oss << missingPaperKeys[i];
+                    JTRACE("CATALOG", oss.str());
                 }
-                JTRACE("CATALOG", oss.str());
-            }
-            else {
-                JTRACE("CATALOG", "catalog fallback: no print profiles discovered; using defaults");
+                else {
+                    JTRACE("CATALOG", "catalog fallback: no print profiles discovered; using defaults");
+                }
             }
             paperDefs.assign(kFallbackPrintPapers.begin(), kFallbackPrintPapers.end());
         }
@@ -768,8 +794,12 @@ namespace {
         }
         Spectral::assign_reference_axis(curve.lambda_nm);
         curve.linear.resize(static_cast<size_t>(Spectral::gShape.K));
+        const float* wavelengths = Spectral::gShape.wavelengths.data();
+        float* outLinear = curve.linear.data();
         for (int i = 0; i < Spectral::gShape.K; ++i) {
-            curve.linear[static_cast<size_t>(i)] = Spectral::planck_blackbody(curve.lambda_nm[static_cast<size_t>(i)], temperature);
+            outLinear[i] = Spectral::planck_blackbody(
+                wavelengths[static_cast<size_t>(i)],
+                temperature);
         }
         Spectral::mean_power_normalize(curve.linear);
         return curve;
@@ -934,11 +964,15 @@ namespace {
         double sumX = 0.0;
         double sumY = 0.0;
         double sumZ = 0.0;
+        const float* spdData = curve.linear.data();
+        const float* xData = xBar.data();
+        const float* yData = yBar.data();
+        const float* zData = zBar.data();
         for (int i = 0; i < K; ++i) {
-            const float spd = curve.linear[static_cast<size_t>(i)];
-            const float xb = xBar[static_cast<size_t>(i)];
-            const float yb = yBar[static_cast<size_t>(i)];
-            const float zb = zBar[static_cast<size_t>(i)];
+            const float spd = spdData[i];
+            const float xb = xData[i];
+            const float yb = yData[i];
+            const float zb = zData[i];
             if (!(std::isfinite(spd) && std::isfinite(xb) && std::isfinite(yb) && std::isfinite(zb))) {
                 std::ostringstream oss;
                 oss << "FATAL: non-finite CMF/SPD sample in " << label << " illuminant";
@@ -975,16 +1009,23 @@ namespace {
         constexpr int kReferenceAxisSamples = 81;
         if (K == kReferenceAxisSamples && out.curve.linear.size() == static_cast<size_t>(kReferenceAxisSamples)) {
             float hashSamples[kReferenceAxisSamples + 1];
-            std::copy(
-                out.curve.linear.begin(),
-                out.curve.linear.end(),
-                hashSamples);
+            std::memcpy(
+                hashSamples,
+                out.curve.linear.data(),
+                static_cast<size_t>(kReferenceAxisSamples) * sizeof(float));
             hashSamples[kReferenceAxisSamples] = out.normalization;
             out.hash = Hash::hash_float_span(hashSamples, static_cast<size_t>(kReferenceAxisSamples + 1));
         }
         else {
-            std::vector<float> hashSamples = out.curve.linear;
-            hashSamples.push_back(out.normalization);
+            std::vector<float> hashSamples;
+            hashSamples.resize(out.curve.linear.size() + 1);
+            if (!out.curve.linear.empty()) {
+                std::memcpy(
+                    hashSamples.data(),
+                    out.curve.linear.data(),
+                    out.curve.linear.size() * sizeof(float));
+            }
+            hashSamples[out.curve.linear.size()] = out.normalization;
             out.hash = Hash::hash_float_span(hashSamples.data(), hashSamples.size());
         }
         if (out.hash == 0) {
@@ -1242,7 +1283,7 @@ uint64_t hash_params_dir(const ParamSnapshot& p) {
 std::string print_dir_for_index(int index) {
     const PrintPaperDefinition& paper = print_paper_for_index(index);
     if (paper.folderName.empty() || gDataDir.empty()) {
-        return std::string();
+        return {};
     }
 
     std::filesystem::path base = std::filesystem::path(gDataDir);
@@ -1396,7 +1437,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
                 S.base.densityCurvesLayers[layer][ch].clear();
                 S.base.densityCurvesLayers[layer][ch].reserve(dc_layers[layer][ch].size());
                 for (const auto& sample : dc_layers[layer][ch]) {
-                    S.base.densityCurvesLayers[layer][ch].push_back(sample.second);
+                    S.base.densityCurvesLayers[layer][ch].emplace_back(sample.second);
                 }
             }
         }
@@ -1678,6 +1719,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
     const bool buildTraceEnabled = JTRACE_ENABLED(1);
+    const bool printTraceEnabled = JTRACE_ENABLED(3);
 
     if (buildTraceEnabled) {
         std::ostringstream oss;
@@ -1686,7 +1728,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     auto trace_print_working_state_commit = [&]() {
-        if (!JTRACE_ENABLED(3)) {
+        if (!printTraceEnabled) {
             return;
         }
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);

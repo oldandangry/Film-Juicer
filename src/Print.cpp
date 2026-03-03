@@ -456,9 +456,7 @@ namespace Print {
 
             FloatPairs trimmed;
             trimmed.reserve(static_cast<size_t>(std::distance(firstFinite, lastFinite)));
-            for (auto it = firstFinite; it != lastFinite; ++it) {
-                trimmed.push_back(*it);
-            }
+            trimmed.insert(trimmed.end(), firstFinite, lastFinite);
             pairs = std::move(trimmed);
             if (pairs.empty()) {
                 return;
@@ -473,23 +471,18 @@ namespace Print {
                 return;
             }
 
-            auto has_lambda = [](const FloatPairs& in, float lambda) {
-                constexpr float kEps = 1e-3f;
-                return std::any_of(in.begin(), in.end(),
-                    [lambda](const auto& p) { return std::fabs(p.first - lambda) <= kEps; });
-                };
-
             const float firstL = pairs.front().first;
             const float lastL = pairs.back().first;
             const float firstV = pairs.front().second;
             const float lastV = pairs.back().second;
             const float padMin = padMinValue.has_value() ? *padMinValue : firstV;
             const float padMax = padMaxValue.has_value() ? *padMaxValue : lastV;
+            constexpr float kEndpointEps = 1e-3f;
 
-            if (!has_lambda(pairs, Lmin) && firstL > Lmin) {
+            if (std::fabs(firstL - Lmin) > kEndpointEps && firstL > Lmin) {
                 pairs.insert(pairs.begin(), { Lmin, padMin });
             }
-            if (!has_lambda(pairs, Lmax) && lastL < Lmax) {
+            if (std::fabs(lastL - Lmax) > kEndpointEps && lastL < Lmax) {
                 pairs.emplace_back(Lmax, padMax);
             }
 
@@ -558,6 +551,7 @@ namespace Print {
             const std::string& jsonProfilePath)
         {
             DensityCurves curves;
+            const bool traceInfo = JTRACE_ENABLED(1);
             if (ctx.hasProfile) {
                 const auto& profileJson = ctx.profile;
                 const auto& jsonR = profileJson.densityCurveR;
@@ -568,17 +562,19 @@ namespace Print {
                     curves.magenta = promote_pairs(jsonG); // G -> M
                     curves.yellow = promote_pairs(jsonB); // B -> Y
                     curves.usedJson = true;
-                    JTRACE("PRINT",
-                        "PROFILE_LOAD density curves from JSON '" + jsonProfilePath +
-                        "' samples C/M/Y=" + std::to_string(jsonR.size()) + "/" +
-                        std::to_string(jsonG.size()) + "/" + std::to_string(jsonB.size()));
+                    if (traceInfo) {
+                        JTRACE("PRINT",
+                            "PROFILE_LOAD density curves from JSON '" + jsonProfilePath +
+                            "' samples C/M/Y=" + std::to_string(jsonR.size()) + "/" +
+                            std::to_string(jsonG.size()) + "/" + std::to_string(jsonB.size()));
+                    }
                 }
-                else {
+                else if (traceInfo) {
                     JTRACE("PRINT",
                         "PROFILE_LOAD missing JSON density curves in '" + jsonProfilePath + "'");
                 }
             }
-            else {
+            else if (traceInfo) {
                 JTRACE("PRINT",
                     "PROFILE_LOAD no JSON profile for density curves in '" + dir + "'");
             }
@@ -596,16 +592,27 @@ namespace Print {
         {
             const size_t n = curve.size();
             if (n == 0) return 0.0;
+            if (n == 1 || !std::isfinite(x)) return curve.front().second;
             if (x <= curve.front().first) return curve.front().second;
             if (x >= curve.back().first) return curve.back().second;
-            size_t i1 = 1;
-            while (i1 < n && curve[i1].first < x) ++i1;
-            const size_t i0 = i1 - 1;
-            const double x0 = curve[i0].first;
-            const double x1 = curve[i1].first;
-            const double y0 = curve[i0].second;
-            const double y1 = curve[i1].second;
-            const double t = (x - x0) / (x1 - x0);
+            const auto upper = std::lower_bound(
+                curve.begin() + 1,
+                curve.end(),
+                x,
+                [](const std::pair<double, double>& sample, double value) {
+                    return sample.first < value;
+                });
+            const auto& hi = *upper;
+            const auto& lo = *(upper - 1);
+            const double x0 = lo.first;
+            const double x1 = hi.first;
+            const double y0 = lo.second;
+            const double y1 = hi.second;
+            const double span = x1 - x0;
+            if (!(span > 0.0)) {
+                return y1;
+            }
+            const double t = (x - x0) / span;
             return y0 + t * (y1 - y0);
         }
 
@@ -887,7 +894,7 @@ namespace Print {
                         deduped.back().second = p.second;
                         continue;
                     }
-                    deduped.push_back(p);
+                    deduped.emplace_back(p);
                 }
 
                 const bool ok = Spectral::build_curve_on_log_exposure_axis(dst, deduped, /*clampNegative*/false);
@@ -957,7 +964,7 @@ namespace Print {
                     samples.back().y = std::max(samples.back().y, y);
                     continue;
                 }
-                samples.push_back({ x, y });
+                samples.emplace_back(Sample{ x, y });
             }
 
             if (samples.empty()) {
@@ -1045,21 +1052,21 @@ namespace Print {
                 };
 
             std::vector<double> output(input.size(), 0.0);
+            const double* inputData = input.data();
+            const double* kernelData = kernel.data();
+            double* outputData = output.data();
             for (int i = 0; i < size; ++i) {
                 double accum = 0.0;
-                double weightSum = 0.0;
+                const double* kernelIt = kernelData;
                 for (int k = -radius; k <= radius; ++k) {
-                    const double weight = kernel[static_cast<size_t>(k + radius)];
-                    const int idx = reflect_index(i + k);
-                    accum += input[static_cast<size_t>(idx)] * weight;
-                    weightSum += weight;
+                    const double weight = *kernelIt++;
+                    const int candidate = i + k;
+                    const int idx = (candidate >= 0 && candidate < size)
+                        ? candidate
+                        : reflect_index(candidate);
+                    accum += inputData[static_cast<size_t>(idx)] * weight;
                 }
-                if (weightSum > 0.0) {
-                    output[static_cast<size_t>(i)] = accum / weightSum;
-                }
-                else {
-                    output[static_cast<size_t>(i)] = input[static_cast<size_t>(i)];
-                }
+                outputData[static_cast<size_t>(i)] = accum;
             }
             return output;
         }
@@ -1069,7 +1076,8 @@ namespace Print {
             if (curve.size() < 2) {
                 return 0.0;
             }
-            const double leDelta = std::log10(std::pow(2.0, rangeEv)) * 0.5;
+            constexpr double kHalfLog10_2 = 0.15051499783199059761; // 0.5 * log10(2)
+            const double leDelta = rangeEv * kHalfLog10_2;
             const double le0 = leCenter - leDelta;
             const double le1 = leCenter + leDelta;
             if (!std::isfinite(le0) || !std::isfinite(le1) || !(le1 > le0)) {
@@ -1110,6 +1118,12 @@ namespace Print {
             for (size_t i = 0; i < sampleCount; ++i) {
                 logExposures[i] = (*reference)[i].first;
             }
+            const DoublePairs* const cyanCurve = &curves.cyan;
+            const DoublePairs* const magentaCurve = &curves.magenta;
+            const DoublePairs* const yellowCurve = &curves.yellow;
+            const size_t cyanCount = cyanCurve->size();
+            const size_t magentaCount = magentaCurve->size();
+            const size_t yellowCount = yellowCurve->size();
 
             DoublePairs meanCurve;
             meanCurve.reserve(sampleCount);
@@ -1120,22 +1134,22 @@ namespace Print {
                 }
                 double sum = 0.0;
                 int count = 0;
-                if (curves.cyan.size() > i) {
-                    const double v = curves.cyan[i].second;
+                if (i < cyanCount) {
+                    const double v = (*cyanCurve)[i].second;
                     if (std::isfinite(v)) {
                         sum += v;
                         ++count;
                     }
                 }
-                if (curves.magenta.size() > i) {
-                    const double v = curves.magenta[i].second;
+                if (i < magentaCount) {
+                    const double v = (*magentaCurve)[i].second;
                     if (std::isfinite(v)) {
                         sum += v;
                         ++count;
                     }
                 }
-                if (curves.yellow.size() > i) {
-                    const double v = curves.yellow[i].second;
+                if (i < yellowCount) {
+                    const double v = (*yellowCurve)[i].second;
                     if (std::isfinite(v)) {
                         sum += v;
                         ++count;
@@ -1219,11 +1233,12 @@ namespace Print {
 
             auto rebuild_curve = [&](const DoublePairs& source) {
                 DoublePairs rebuilt;
-                rebuilt.reserve(logExposures.size());
+                const size_t exposureCount = logExposures.size();
+                rebuilt.reserve(exposureCount);
                 if (source.empty()) {
                     return rebuilt;
                 }
-                for (size_t i = 0; i < logExposures.size(); ++i) {
+                for (size_t i = 0; i < exposureCount; ++i) {
                     const double le = logExposures[i];
                     if (!std::isfinite(le)) {
                         continue;
@@ -1395,13 +1410,19 @@ namespace Print {
         using Spectral::build_curve_on_reference_axis_from_log10_pairs;
 
         reset_profile_state(out, runtime);
+        const bool traceInfo = JTRACE_ENABLED(1);
         auto trace_print_json_profile = [&](const char* prefix, const char* suffix) {
-            if (!JTRACE_ENABLED(1)) {
+            if (!traceInfo) {
                 return;
             }
-            std::ostringstream oss;
-            oss << prefix << "'" << jsonProfilePath << "'" << suffix;
-            JTRACE("PRINT", oss.str());
+            std::string msg = prefix ? prefix : "";
+            msg += "'";
+            msg += jsonProfilePath;
+            msg += "'";
+            if (suffix) {
+                msg += suffix;
+            }
+            JTRACE("PRINT", msg);
         };
 
         JsonProfileContext jsonCtx = load_json_profile(jsonProfilePath);

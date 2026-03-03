@@ -201,51 +201,72 @@ namespace Spectral {
         return std::isfinite(v) ? v : 0.0f;
     }
 
-    inline float decode_BT2020_channel(float v) {
-        const float x = std::max(0.0f, sanitize_channel(v));
+    inline float decode_BT2020_nonnegative(float x) {
         constexpr float a = 1.09929681f;
-        constexpr float b = 0.01805397f;
+        constexpr float invA = 1.0f / a;
         constexpr float threshold = 0.0812428791f; // Precomputed from a * pow(b, 0.45f) - (a - 1.0f)
+        constexpr float invGamma = 2.2222222222f;  // 1 / 0.45
         if (x < threshold) {
             return x / 4.5f;
         }
-        return static_cast<float>(std::pow((x + (a - 1.0f)) / a, 1.0f / 0.45f));
+        return static_cast<float>(std::pow((x + (a - 1.0f)) * invA, invGamma));
+    }
+
+    inline float decode_BT2020_channel(float v) {
+        const float x = std::max(0.0f, sanitize_channel(v));
+        return decode_BT2020_nonnegative(x);
+    }
+
+    inline float decode_sRGB_nonnegative(float x) {
+        constexpr float threshold = 0.04045f;
+        constexpr float invScale = 1.0f / 1.055f;
+        if (x <= threshold) {
+            return x / 12.92f;
+        }
+        return static_cast<float>(std::pow((x + 0.055f) * invScale, 2.4f));
     }
 
     inline float decode_sRGB_channel(float v) {
         const float x = std::max(0.0f, sanitize_channel(v));
-        constexpr float threshold = 0.04045f;
-        if (x <= threshold) {
-            return x / 12.92f;
-        }
-        return static_cast<float>(std::pow((x + 0.055f) / 1.055f, 2.4f));
+        return decode_sRGB_nonnegative(x);
     }
 
     inline void apply_input_cctf_decoding(InputColorSpace cs, bool decode, const float in[3], float out[3]) {
+        const float c0 = sanitize_channel(in[0]);
+        const float c1 = sanitize_channel(in[1]);
+        const float c2 = sanitize_channel(in[2]);
         if (!decode) {
-            out[0] = sanitize_channel(in[0]);
-            out[1] = sanitize_channel(in[1]);
-            out[2] = sanitize_channel(in[2]);
+            out[0] = c0;
+            out[1] = c1;
+            out[2] = c2;
             return;
         }
 
         switch (cs) {
-        case InputColorSpace::ITU_R_BT2020:
-            out[0] = decode_BT2020_channel(in[0]);
-            out[1] = decode_BT2020_channel(in[1]);
-            out[2] = decode_BT2020_channel(in[2]);
+        case InputColorSpace::ITU_R_BT2020: {
+            const float n0 = std::max(0.0f, c0);
+            const float n1 = std::max(0.0f, c1);
+            const float n2 = std::max(0.0f, c2);
+            out[0] = decode_BT2020_nonnegative(n0);
+            out[1] = decode_BT2020_nonnegative(n1);
+            out[2] = decode_BT2020_nonnegative(n2);
             break;
-        case InputColorSpace::SRGB_Rec709:
-            out[0] = decode_sRGB_channel(in[0]);
-            out[1] = decode_sRGB_channel(in[1]);
-            out[2] = decode_sRGB_channel(in[2]);
+        }
+        case InputColorSpace::SRGB_Rec709: {
+            const float n0 = std::max(0.0f, c0);
+            const float n1 = std::max(0.0f, c1);
+            const float n2 = std::max(0.0f, c2);
+            out[0] = decode_sRGB_nonnegative(n0);
+            out[1] = decode_sRGB_nonnegative(n1);
+            out[2] = decode_sRGB_nonnegative(n2);
             break;
+        }
         case InputColorSpace::DaVinciWideGamut:
         case InputColorSpace::ACES2065_1:
         default:
-            out[0] = sanitize_channel(in[0]);
-            out[1] = sanitize_channel(in[1]);
-            out[2] = sanitize_channel(in[2]);
+            out[0] = c0;
+            out[1] = c1;
+            out[2] = c2;
             break;
         }
     }

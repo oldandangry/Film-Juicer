@@ -11,10 +11,12 @@
 #include <atomic>
 #include <cassert>
 #include <string>
-#include <sstream>
 #include <fstream>
 #include <stdexcept>
 #include <cstdint>
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
+#include <sstream>
+#endif
 #include "SpectralData.h"
 #include "SpectralContext.h"
 #include "NpyLoader.h"
@@ -322,6 +324,10 @@ namespace Spectral {
         const float ampIR = std::clamp(filterIR[0], 0.0f, 1.0f);
         const float wlUV = filterUV[1];
         const float wlIR = filterIR[1];
+        if (ampUV <= 0.0f && ampIR <= 0.0f) {
+            std::fill(bandPass.begin(), bandPass.end(), 1.0f);
+            return bandPass;
+        }
 
         auto safe_width = [](float w) {
             const float minMag = 1e-6f;
@@ -336,9 +342,10 @@ namespace Spectral {
 
         const float widthUV = safe_width(filterUV[2]);
         const float widthIR = -std::fabs(safe_width(filterIR[2]));
+        const float* wavelengths = gShape.wavelengths.data();
 
         for (int i = 0; i < K; ++i) {
-            const float wl = gShape.wavelengths[static_cast<size_t>(i)];
+            const float wl = wavelengths[i];
             const float filter_uv = 1.0f - ampUV + ampUV * sigmoid_erf(wl, wlUV, widthUV);
             const float filter_ir = 1.0f - ampIR + ampIR * sigmoid_erf(wl, wlIR, widthIR);
             bandPass[static_cast<size_t>(i)] = filter_uv * filter_ir;
@@ -361,8 +368,10 @@ namespace Spectral {
     inline void fill_viewing_illuminant_Ee(float gain, std::vector<float>& Ee_out) {
         const int K = gShape.K;
         Ee_out.resize(K);
+        const float* illumData = gIllumTable.data();
+        float* outData = Ee_out.data();
         for (int i = 0; i < K; ++i) {
-            Ee_out[i] = std::max(0.0f, gain * gIllumTable[i]);
+            outData[i] = std::max(0.0f, gain * illumData[i]);
         }
     }
 
@@ -851,9 +860,7 @@ namespace Spectral {
             gAz.resize(K);
 
             // 1) Wavelength axis from gShape
-            for (int i = 0; i < K; ++i) {
-                gLambda[i] = gShape.wavelengths[i];
-            }
+            gLambda.assign(gShape.wavelengths.begin(), gShape.wavelengths.end());
 
             // 2) Sample all curves on the working grid (size-safe)
             const bool illumSizeMismatch = !gIlluminantCurve.linear.empty() &&
@@ -873,57 +880,87 @@ namespace Spectral {
             if ((illumSizeMismatch || illumAxisMismatch) && !gIlluminantCurve.linear.empty()) {
                 JTRACE("SPECTRAL", "Illuminant axis/size mismatch; falling back to equal-energy for precompute");
             }
+            const bool hasEpsYDirect = !gEpsY.linear.empty() && (int)gEpsY.linear.size() == K;
+            const bool hasEpsMDirect = !gEpsM.linear.empty() && (int)gEpsM.linear.size() == K;
+            const bool hasEpsCDirect = !gEpsC.linear.empty() && (int)gEpsC.linear.size() == K;
+            const bool hasXbarDirect = !gXBar.linear.empty() && (int)gXBar.linear.size() == K;
+            const bool hasYbarDirect = !gYBar.linear.empty() && (int)gYBar.linear.size() == K;
+            const bool hasZbarDirect = !gZBar.linear.empty() && (int)gZBar.linear.size() == K;
+            const bool hasBaseMinDirect = gHasBaseline && (int)gBaseMin.linear.size() == K;
+            const bool hasBaseMidDirect = gHasBaseline && (int)gBaseMid.linear.size() == K;
+            const bool hasIllumDirect = !gIlluminantCurve.linear.empty() && illumUseDirect;
+            const float* epsYDirect = hasEpsYDirect ? gEpsY.linear.data() : nullptr;
+            const float* epsMDirect = hasEpsMDirect ? gEpsM.linear.data() : nullptr;
+            const float* epsCDirect = hasEpsCDirect ? gEpsC.linear.data() : nullptr;
+            const float* xbarDirect = hasXbarDirect ? gXBar.linear.data() : nullptr;
+            const float* ybarDirect = hasYbarDirect ? gYBar.linear.data() : nullptr;
+            const float* zbarDirect = hasZbarDirect ? gZBar.linear.data() : nullptr;
+            const float* baseMinDirect = hasBaseMinDirect ? gBaseMin.linear.data() : nullptr;
+            const float* baseMidDirect = hasBaseMidDirect ? gBaseMid.linear.data() : nullptr;
+            const float* illumDirect = hasIllumDirect ? gIlluminantCurve.linear.data() : nullptr;
+            const float* lambdaData = gLambda.data();
+            float* epsYTableData = gEpsYTable.data();
+            float* epsMTableData = gEpsMTable.data();
+            float* epsCTableData = gEpsCTable.data();
+            float* xbarTableData = gXbarTable.data();
+            float* ybarTableData = gYbarTable.data();
+            float* zbarTableData = gZbarTable.data();
+            float* baseMinTableData = gBaselineMinTable.data();
+            float* baseMidTableData = gBaselineMidTable.data();
+            float* illumTableData = gIllumTable.data();
 
             for (int i = 0; i < K; ++i) {
-                const float l = gLambda[i];
+                const float l = lambdaData[i];
 
                 // Measured dye extinctions: if pinned exactly to K, use direct indexing; otherwise sample by wavelength.
-                if (!gEpsY.linear.empty() && (int)gEpsY.linear.size() == K) gEpsYTable[i] = gEpsY.linear[i];
-                else gEpsYTable[i] = eps_yellow(l);
+                if (epsYDirect) epsYTableData[i] = epsYDirect[i];
+                else epsYTableData[i] = eps_yellow(l);
 
-                if (!gEpsM.linear.empty() && (int)gEpsM.linear.size() == K) gEpsMTable[i] = gEpsM.linear[i];
-                else gEpsMTable[i] = eps_magenta(l);
+                if (epsMDirect) epsMTableData[i] = epsMDirect[i];
+                else epsMTableData[i] = eps_magenta(l);
 
-                if (!gEpsC.linear.empty() && (int)gEpsC.linear.size() == K) gEpsCTable[i] = gEpsC.linear[i];
-                else gEpsCTable[i] = eps_cyan(l);
+                if (epsCDirect) epsCTableData[i] = epsCDirect[i];
+                else epsCTableData[i] = eps_cyan(l);
 
                 // CMFs with the same size-safe rule
-                if (!gXBar.linear.empty() && (int)gXBar.linear.size() == K) gXbarTable[i] = gXBar.linear[i];
-                else gXbarTable[i] = cie_xbar(l);
+                if (xbarDirect) xbarTableData[i] = xbarDirect[i];
+                else xbarTableData[i] = cie_xbar(l);
 
-                if (!gYBar.linear.empty() && (int)gYBar.linear.size() == K) gYbarTable[i] = gYBar.linear[i];
-                else gYbarTable[i] = cie_ybar(l);
+                if (ybarDirect) ybarTableData[i] = ybarDirect[i];
+                else ybarTableData[i] = cie_ybar(l);
 
-                if (!gZBar.linear.empty() && (int)gZBar.linear.size() == K) gZbarTable[i] = gZBar.linear[i];
-                else gZbarTable[i] = cie_zbar(l);
+                if (zbarDirect) zbarTableData[i] = zbarDirect[i];
+                else zbarTableData[i] = cie_zbar(l);
 
                 // Baseline (size-safe: only direct index if sizes match)
-                gBaselineMinTable[i] = (gHasBaseline && (int)gBaseMin.linear.size() == K) ? gBaseMin.linear[i] : 0.0f;
-                gBaselineMidTable[i] = (gHasBaseline && (int)gBaseMid.linear.size() == K) ? gBaseMid.linear[i] : 0.0f;
+                baseMinTableData[i] = baseMinDirect ? baseMinDirect[i] : 0.0f;
+                baseMidTableData[i] = baseMidDirect ? baseMidDirect[i] : 0.0f;
 
                 // Illuminant: only direct index if axis/size match; otherwise fallback to equal-energy for this sample
-                if (!gIlluminantCurve.linear.empty() && illumUseDirect) {
-                    gIllumTable[i] = gIlluminantCurve.linear[i];
-                }
-                else {
-                    gIllumTable[i] = illuminant_E(l); // equal-energy fallback
-                }
+                illumTableData[i] = illumDirect ? illumDirect[i] : 1.0f; // equal-energy fallback
             }
 
 
             // 3) Precompute Ee*CMFs and Yn normalization
             float Yn = 0.0f;
+            const float* illumData = gIllumTable.data();
+            const float* xbarData = gXbarTable.data();
+            const float* ybarData = gYbarTable.data();
+            const float* zbarData = gZbarTable.data();
+            float* axData = gAx.data();
+            float* ayData = gAy.data();
+            float* azData = gAz.data();
             for (int i = 0; i < K; ++i) {
-                const float Ee = gIllumTable[i];
-                const float x = gXbarTable[i];
-                const float y = gYbarTable[i];
-                const float z = gZbarTable[i];
+                const float Ee = illumData[i];
+                const float x = xbarData[i];
+                const float y = ybarData[i];
+                const float z = zbarData[i];
 
-                gAx[i] = Ee * x;
-                gAy[i] = Ee * y;
-                gAz[i] = Ee * z;
+                axData[i] = Ee * x;
+                ayData[i] = Ee * y;
+                azData[i] = Ee * z;
 
-                Yn += gAy[i];
+                Yn += ayData[i];
 
             }
 
@@ -991,6 +1028,7 @@ namespace Spectral {
         SpectralTables& T,
         std::uint64_t illuminantHash = 0)
     {
+        (void)baselineMixReference;
         const int K = gShape.K;
         T.K = K;
         T.lambda.assign(gShape.wavelengths.begin(), gShape.wavelengths.end());
@@ -1015,29 +1053,50 @@ namespace Spectral {
         const bool hasEpsY = (!epsY.linear.empty() && (int)epsY.linear.size() == K);
         const bool hasEpsM = (!epsM.linear.empty() && (int)epsM.linear.size() == K);
         const bool hasEpsC = (!epsC.linear.empty() && (int)epsC.linear.size() == K);
+        const bool hasXbar = (!xbar.linear.empty() && (int)xbar.linear.size() == K);
+        const bool hasYbar = (!ybar.linear.empty() && (int)ybar.linear.size() == K);
+        const bool hasZbar = (!zbar.linear.empty() && (int)zbar.linear.size() == K);
+        const float* epsYData = hasEpsY ? epsY.linear.data() : nullptr;
+        const float* epsMData = hasEpsM ? epsM.linear.data() : nullptr;
+        const float* epsCData = hasEpsC ? epsC.linear.data() : nullptr;
+        const float* xbarData = hasXbar ? xbar.linear.data() : nullptr;
+        const float* ybarData = hasYbar ? ybar.linear.data() : nullptr;
+        const float* zbarData = hasZbar ? zbar.linear.data() : nullptr;
+        const float* illumData = hasIll ? illumView.linear.data() : nullptr;
+        const float* lambdaData = T.lambda.data();
+        float* outEpsY = T.epsY.data();
+        float* outEpsM = T.epsM.data();
+        float* outEpsC = T.epsC.data();
+        float* outXbar = T.Xbar.data();
+        float* outYbar = T.Ybar.data();
+        float* outZbar = T.Zbar.data();
+        float* outIllum = T.illum.data();
+        float* outAx = T.Ax.data();
+        float* outAy = T.Ay.data();
+        float* outAz = T.Az.data();
         for (int i = 0; i < K; ++i) {
-            const float l = T.lambda[i];
+            const float l = lambdaData[i];
 
-            const float ey = hasEpsY ? epsY.linear[i] : eps_yellow(l);
-            const float em = hasEpsM ? epsM.linear[i] : eps_magenta(l);
-            const float ec = hasEpsC ? epsC.linear[i] : eps_cyan(l);
-            T.epsY[i] = ey;
-            T.epsM[i] = em;
-            T.epsC[i] = ec;
+            const float ey = epsYData ? epsYData[i] : eps_yellow(l);
+            const float em = epsMData ? epsMData[i] : eps_magenta(l);
+            const float ec = epsCData ? epsCData[i] : eps_cyan(l);
+            outEpsY[i] = ey;
+            outEpsM[i] = em;
+            outEpsC[i] = ec;
 
-            T.Xbar[i] = (!xbar.linear.empty() && (int)xbar.linear.size() == K) ? xbar.linear[i] : cie_xbar(l);
-            T.Ybar[i] = (!ybar.linear.empty() && (int)ybar.linear.size() == K) ? ybar.linear[i] : cie_ybar(l);
-            T.Zbar[i] = (!zbar.linear.empty() && (int)zbar.linear.size() == K) ? zbar.linear[i] : cie_zbar(l);
+            outXbar[i] = xbarData ? xbarData[i] : cie_xbar(l);
+            outYbar[i] = ybarData ? ybarData[i] : cie_ybar(l);
+            outZbar[i] = zbarData ? zbarData[i] : cie_zbar(l);
 
-            const float Ee = hasIll ? illumView.linear[i] : 1.0f;
-            T.illum[i] = Ee;
-            T.Ax[i] = Ee * T.Xbar[i];
-            T.Ay[i] = Ee * T.Ybar[i];
-            T.Az[i] = Ee * T.Zbar[i];
-            Yn += T.Ay[i];
-            sumAx += T.Ax[i];
-            sumAy += T.Ay[i];
-            sumAz += T.Az[i];
+            const float Ee = illumData ? illumData[i] : 1.0f;
+            outIllum[i] = Ee;
+            outAx[i] = Ee * outXbar[i];
+            outAy[i] = Ee * outYbar[i];
+            outAz[i] = Ee * outZbar[i];
+            Yn += outAy[i];
+            sumAx += outAx[i];
+            sumAy += outAy[i];
+            sumAz += outAz[i];
         }
         T.invYn = (Yn > 0.0) ? (1.0f / (float)Yn) : 1.0f;
         const double scale = static_cast<double>(T.invYn);
@@ -1054,24 +1113,16 @@ namespace Spectral {
             (int)baseMin.linear.size() == K;
         T.baseMin.assign(K, 0.0f);
         T.baseMid.assign(K, 0.0f);
+        T.baselineMixReference = 0.0f;
         if (T.hasBaseline) {
-            for (int i = 0; i < K; ++i) {
-                T.baseMin[i] = baseMin.linear[i];
-            }
+            T.baseMin.assign(baseMin.linear.begin(), baseMin.linear.end());
             if ((int)baseMid.linear.size() == K) {
-                for (int i = 0; i < K; ++i) {
-                    T.baseMid[i] = baseMid.linear[i];
-                }
+                T.baseMid.assign(baseMid.linear.begin(), baseMid.linear.end());
             }
-            T.baselineMixReference = 0.0f;
-        }
-        else {
-            T.baselineMixReference = 0.0f;
         }
 
         T.illuminantHash = illuminantHash;
-        if (T.illuminantHash == 0 && hasIll &&
-            static_cast<int>(illumView.linear.size()) == K) {
+        if (T.illuminantHash == 0 && hasIll) {
             const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(
                 illumView.linear.data(), illumView.linear.size());
             const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
@@ -1171,19 +1222,23 @@ namespace Spectral {
 
         const int K = T.K;
         Ee_out.resize(K);
+        float* eeData = Ee_out.data();
+        const float* axData = T.Ax.data();
+        const float* ayData = T.Ay.data();
+        const float* azData = T.Az.data();
         double Y_recon = 0.0;
         for (int i = 0; i < K; ++i) {
-            const float bx = std::max(0.0f, T.Ax[i]);
-            const float by = std::max(0.0f, T.Ay[i]);
-            const float bz = std::max(0.0f, T.Az[i]);
+            const float bx = std::max(0.0f, axData[i]);
+            const float by = std::max(0.0f, ayData[i]);
+            const float bz = std::max(0.0f, azData[i]);
             const float Ei = std::max(1e-6f, cx * bx + cy * by + cz * bz);
-            Ee_out[i] = Ei;
-            Y_recon += static_cast<double>(Ei) * static_cast<double>(T.Ay[i]);
+            eeData[i] = Ei;
+            Y_recon += static_cast<double>(Ei) * static_cast<double>(ayData[i]);
         }
         if (Y_recon > 1e-20 && targetScale > 0.0f) {
             const float s = static_cast<float>(static_cast<double>(targetScale) / Y_recon);
             for (int i = 0; i < K; ++i) {
-                Ee_out[i] = std::max(0.0f, s * Ee_out[i]);
+                eeData[i] = std::max(0.0f, s * eeData[i]);
             }
         }
         else if (targetScale <= 0.0f) {
@@ -1251,16 +1306,18 @@ namespace Spectral {
             Ee.size() == zbar.linear.size());
 
         double X = 0.0, Y = 0.0, Z = 0.0;
-        for (size_t i = 0; i < Ee.size(); ++i) {
-            const double E = Ee[i];
-            X += E * xbar.linear[i];
-            Y += E * ybar.linear[i];
-            Z += E * zbar.linear[i];
+        const size_t count = Ee.size();
+        const float* eeData = Ee.data();
+        const float* xData = xbar.linear.data();
+        const float* yData = ybar.linear.data();
+        const float* zData = zbar.linear.data();
+        for (size_t i = 0; i < count; ++i) {
+            const double E = eeData[i];
+            X += E * xData[i];
+            Y += E * yData[i];
+            Z += E * zData[i];
         }
 
-        // Compute Δλ from the global spectral shape
-        const float deltaLambda = (Spectral::gShape.lambdaMax - Spectral::gShape.lambdaMin)
-            / float(Spectral::gShape.K - 1);
         const float s = Spectral::gInvYn;
 
         XYZ[0] = static_cast<float>(X * s);
@@ -1277,11 +1334,16 @@ namespace Spectral {
         double X = 0.0, Y = 0.0, Z = 0.0;
         const int K = T.K;
         const int N = static_cast<int>(Ee.size());
-        for (int i = 0; i < K; ++i) {
-            const float e = (i < N) ? Ee[i] : 0.0f;
-            X += static_cast<double>(e) * static_cast<double>(T.Xbar[i]);
-            Y += static_cast<double>(e) * static_cast<double>(T.Ybar[i]);
-            Z += static_cast<double>(e) * static_cast<double>(T.Zbar[i]);
+        const int count = std::min(K, N);
+        const float* eeData = Ee.data();
+        const float* xData = T.Xbar.data();
+        const float* yData = T.Ybar.data();
+        const float* zData = T.Zbar.data();
+        for (int i = 0; i < count; ++i) {
+            const float e = eeData[i];
+            X += static_cast<double>(e) * static_cast<double>(xData[i]);
+            Y += static_cast<double>(e) * static_cast<double>(yData[i]);
+            Z += static_cast<double>(e) * static_cast<double>(zData[i]);
         }
         const float s = T.invYn;
         XYZ[0] = static_cast<float>(X * s);
@@ -1330,9 +1392,11 @@ namespace Spectral {
     inline float effective_layer_gain(const Curve& c) {
         if (c.lambda_nm.empty()) return 1.0f;
         float num = 0.0f, den = 0.0f;
+        const float* illumData = gIllumTable.data();
+        const float* lambdaData = gLambda.data();
         for (int i = 0; i < gShape.K; ++i) {
-            const float Ee = gIllumTable[i];
-            const float s = c.sample(gLambda[i]);
+            const float Ee = illumData[i];
+            const float s = c.sample(lambdaData[i]);
             num += Ee * s;
             den += Ee;
         }

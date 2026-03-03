@@ -88,6 +88,15 @@ namespace {
         return diff <= scale * 1e-9;
     }
 
+    inline int pixel_component_count(OFX::PixelComponentEnum comps) {
+        switch (comps) {
+        case OFX::ePixelComponentRGBA: return 4;
+        case OFX::ePixelComponentRGB: return 3;
+        case OFX::ePixelComponentAlpha: return 1;
+        default: return 0;
+        }
+    }
+
     constexpr std::uint64_t kAutoExposureMaskCacheMaxBytes = 96ull * 1024ull * 1024ull;
     constexpr std::size_t kAutoExposureMedianScratchMaxSamples =
         static_cast<std::size_t>(kAutoExposureMaskCacheMaxBytes / sizeof(float));
@@ -151,6 +160,8 @@ namespace {
         if (!JTRACE_ENABLED(2)) {
             return;
         }
+        const std::uint64_t residentBytes =
+            gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed);
         std::string msg = std::string("event=") + (event ? event : "unknown")
             + " instance_token=" + std::to_string(state ? state->instanceToken : 0)
             + " width=" + std::to_string(width)
@@ -158,7 +169,7 @@ namespace {
             + " requested_bytes=" + std::to_string(requestedBytes)
             + " previous_cached_bytes=" + std::to_string(previousCachedBytes)
             + " cached_bytes=" + std::to_string(cachedBytes)
-            + " resident_bytes=" + std::to_string(gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed))
+            + " resident_bytes=" + std::to_string(residentBytes)
             + " cap_bytes=" + std::to_string(kAutoExposureMaskCacheMaxBytes);
         if (reason && reason[0] != '\0') {
             msg += " reason=";
@@ -180,18 +191,20 @@ namespace {
         const double scaleX = static_cast<double>(width) * invMax;
         const double scaleY = static_cast<double>(height) * invMax;
         const double sigmaDenom = 2.0 * sigma * sigma;
+        const double invSigmaDenom = 1.0 / sigmaDenom;
 
         double sumMask = 0.0;
         for (int y = 0; y < height; ++y) {
             double* row = outMask.data() + static_cast<size_t>(y) * static_cast<size_t>(width);
+            double* rowIt = row;
             const double ny = static_cast<double>(y) * invHeight - 0.5;
             const double normY = ny * scaleY;
             for (int x = 0; x < width; ++x) {
                 const double nx = static_cast<double>(x) * invWidth - 0.5;
                 const double normX = nx * scaleX;
                 const double r2 = normX * normX + normY * normY;
-                const double w = std::exp(-r2 / sigmaDenom);
-                row[static_cast<size_t>(x)] = w;
+                const double w = std::exp(-r2 * invSigmaDenom);
+                *rowIt++ = w;
                 sumMask += w;
             }
         }
@@ -219,6 +232,21 @@ namespace {
         if (width <= 0 || height <= 0) {
             return 0.0;
         }
+        const int nComponents = pixel_component_count(img->getPixelComponents());
+        if (nComponents <= 0) {
+            return 0.0;
+        }
+        const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
+        const bool singleComponent = (nComponents == 1);
+        auto decode_pixel_linear = [&](const float* pix, float linear[3]) {
+            if (singleComponent) {
+                const float gray = pix[0];
+                const float grayRgb[3] = { gray, gray, gray };
+                Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                return;
+            }
+            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+        };
 
         auto accumulateYFromMask = [&](const std::vector<double>& mask, double* outSumMask) {
             double sumY = 0.0;
@@ -228,15 +256,35 @@ namespace {
             for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
                 const size_t rowOffset = static_cast<size_t>(yy - bounds.y1) * static_cast<size_t>(width);
                 const double* maskRow = mask.data() + rowOffset;
-                int localX = 0;
-                for (int xx = xStart; xx < xEnd; ++xx, ++localX) {
+                const float* rowPix = reinterpret_cast<const float*>(img->getPixelAddress(xStart, yy));
+                const double* maskIt = maskRow;
+                if (rowPix) {
+                    const float* rowPixIt = rowPix;
+                    for (int xOff = 0; xOff < width; ++xOff) {
+                        const float* pix = rowPixIt;
+                        rowPixIt += pixelStride;
+                        const double w = *maskIt++;
+                        float linear[3];
+                        decode_pixel_linear(pix, linear);
+                        float XYZ[3];
+                        rgbToXYZ.mul(linear, XYZ);
+                        const double Y = static_cast<double>(XYZ[1]);
+                        if (!std::isfinite(Y)) {
+                            continue;
+                        }
+                        sumY += Y * w;
+                        sumMask += w;
+                    }
+                    continue;
+                }
+                for (int xx = xStart; xx < xEnd; ++xx) {
                     const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
+                    const double w = *maskIt++;
                     if (!pix) {
                         continue;
                     }
-                    const double w = maskRow[static_cast<size_t>(localX)];
                     float linear[3];
-                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+                    decode_pixel_linear(pix, linear);
                     float XYZ[3];
                     rgbToXYZ.mul(linear, XYZ);
                     const double Y = static_cast<double>(XYZ[1]);
@@ -277,6 +325,7 @@ namespace {
                 }
                 return 0.0;
             }
+            const double invSigmaDenom = 1.0 / sigmaDenom;
 
             double sumY = 0.0;
             double sumMask = 0.0;
@@ -286,26 +335,46 @@ namespace {
                 const int localY = yy - bounds.y1;
                 const double ny = static_cast<double>(localY) * invHeight - 0.5;
                 const double normY = ny * scaleY;
-                int localX = 0;
-                for (int xx = xStart; xx < xEnd; ++xx, ++localX) {
+                const float* rowPix = reinterpret_cast<const float*>(img->getPixelAddress(xStart, yy));
+                double nx = -0.5;
+                if (rowPix) {
+                    const float* rowPixIt = rowPix;
+                    for (int xOff = 0; xOff < width; ++xOff) {
+                        const float* pix = rowPixIt;
+                        rowPixIt += pixelStride;
+                        const double normX = nx * scaleX;
+                        const double r2 = normX * normX + normY * normY;
+                        const double w = std::exp(-r2 * invSigmaDenom);
+                        float linear[3];
+                        decode_pixel_linear(pix, linear);
+                        float XYZ[3];
+                        rgbToXYZ.mul(linear, XYZ);
+                        const double Y = static_cast<double>(XYZ[1]);
+                        if (std::isfinite(Y)) {
+                            sumY += Y * w;
+                            sumMask += w;
+                        }
+                        nx += invWidth;
+                    }
+                    continue;
+                }
+                for (int xx = xStart; xx < xEnd; ++xx) {
                     const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
-                    if (!pix) {
-                        continue;
+                    if (pix) {
+                        const double normX = nx * scaleX;
+                        const double r2 = normX * normX + normY * normY;
+                        const double w = std::exp(-r2 * invSigmaDenom);
+                        float linear[3];
+                        decode_pixel_linear(pix, linear);
+                        float XYZ[3];
+                        rgbToXYZ.mul(linear, XYZ);
+                        const double Y = static_cast<double>(XYZ[1]);
+                        if (std::isfinite(Y)) {
+                            sumY += Y * w;
+                            sumMask += w;
+                        }
                     }
-                    const double nx = static_cast<double>(localX) * invWidth - 0.5;
-                    const double normX = nx * scaleX;
-                    const double r2 = normX * normX + normY * normY;
-                    const double w = std::exp(-r2 / sigmaDenom);
-                    float linear[3];
-                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-                    float XYZ[3];
-                    rgbToXYZ.mul(linear, XYZ);
-                    const double Y = static_cast<double>(XYZ[1]);
-                    if (!std::isfinite(Y)) {
-                        continue;
-                    }
-                    sumY += Y * w;
-                    sumMask += w;
+                    nx += invWidth;
                 }
             }
             if (outSumMask) {
@@ -485,6 +554,21 @@ namespace {
         }
 
         const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
+        const int nComponents = pixel_component_count(img->getPixelComponents());
+        if (nComponents <= 0) {
+            return 0.0;
+        }
+        const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
+        const bool singleComponent = (nComponents == 1);
+        auto decode_pixel_linear = [&](const float* pix, float linear[3]) {
+            if (singleComponent) {
+                const float gray = pix[0];
+                const float grayRgb[3] = { gray, gray, gray };
+                Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                return;
+            }
+            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+        };
         std::vector<float>* valuesPtr = nullptr;
         std::vector<float> localValues;
         if (total <= kAutoExposureMedianScratchMaxSamples) {
@@ -499,14 +583,37 @@ namespace {
         }
         std::vector<float>& values = *valuesPtr;
 
+        const int xStart = bounds.x1;
+        const int xEnd = bounds.x2;
         for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-            for (int xx = bounds.x1; xx < bounds.x2; ++xx) {
+            const float* rowPix = reinterpret_cast<const float*>(img->getPixelAddress(xStart, yy));
+            if (rowPix) {
+                const float* rowPixIt = rowPix;
+                for (int xOff = 0; xOff < width; ++xOff) {
+                    const float* pix = rowPixIt;
+                    rowPixIt += pixelStride;
+                    float linear[3];
+                    decode_pixel_linear(pix, linear);
+                    float XYZ[3];
+                    rgbToXYZ.mul(linear, XYZ);
+                    float Y = XYZ[1];
+                    if (!std::isfinite(Y)) {
+                        continue;
+                    }
+                    if (Y < 0.0f) {
+                        Y = 0.0f;
+                    }
+                    values.emplace_back(Y);
+                }
+                continue;
+            }
+            for (int xx = xStart; xx < xEnd; ++xx) {
                 const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
                 if (!pix) {
                     continue;
                 }
                 float linear[3];
-                Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+                decode_pixel_linear(pix, linear);
                 float XYZ[3];
                 rgbToXYZ.mul(linear, XYZ);
                 float Y = XYZ[1];
@@ -516,7 +623,7 @@ namespace {
                 if (Y < 0.0f) {
                     Y = 0.0f;
                 }
-                values.push_back(Y);
+                values.emplace_back(Y);
             }
         }
 
@@ -533,9 +640,7 @@ namespace {
             return static_cast<double>(high);
         }
 
-        auto lowIt = values.begin() + static_cast<std::ptrdiff_t>(mid - 1);
-        std::nth_element(values.begin(), lowIt, values.end());
-        const float low = *lowIt;
+        const float low = *std::max_element(values.begin(), midIt);
         return static_cast<double>((low + high) * 0.5f);
     }
 
@@ -635,7 +740,7 @@ JuicerEffect::ExposureParams JuicerEffect::gatherExposureParams() const {
         exposureSliderEV = 0.0;
     }
     params.sliderEV = exposureSliderEV;
-    params.sliderScale = static_cast<float>(std::pow(2.0, exposureSliderEV));
+    params.sliderScale = static_cast<float>(std::exp2(exposureSliderEV));
     if (!std::isfinite(params.sliderScale)) {
         params.sliderScale = 1.0f;
     }
@@ -1006,7 +1111,7 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         _pGrainAmplitude->getValue(amountEV);
     }
     amountEV = sanitize(amountEV, preset.amountEV, -3.0, 3.0);
-    double amplitude = std::pow(2.0, amountEV);
+    double amplitude = std::exp2(amountEV);
     if (!std::isfinite(amplitude) || amplitude < 0.0) {
         amplitude = 1.0;
     }
@@ -1553,12 +1658,22 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     result.autoEV = 0.0;
 
     if (!srcImg) {
-        result.exposureScale = static_cast<float>(std::pow(2.0, exposureParams.sliderEV));
+        result.exposureScale = static_cast<float>(std::exp2(exposureParams.sliderEV));
         if (!std::isfinite(result.exposureScale)) {
             result.exposureScale = 1.0f;
         }
         return result;
     }
+    if (!exposureParams.cameraAutoEnabled) {
+        result.exposureScale = static_cast<float>(std::exp2(exposureParams.sliderEV));
+        if (!std::isfinite(result.exposureScale)) {
+            result.exposureScale = 1.0f;
+        }
+        return result;
+    }
+
+    InstanceState* state = _state.get();
+    const bool isCudaRender = args.isEnabledCudaRender;
 
     auto rect_equal = [](const OfxRectI& a, const OfxRectI& b) {
         return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
@@ -1583,27 +1698,28 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         }
     }
 
-    if (_state) {
-        std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
-        _state->autoExposureCanonicalBounds = meterBounds;
-        _state->autoExposureCanonicalValid = true;
+    if (state) {
+        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
+        state->autoExposureCanonicalBounds = meterBounds;
+        state->autoExposureCanonicalValid = true;
     }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     // CUDA path: metering + exposure scale are computed and applied entirely on the GPU to avoid
     // forcing a stream synchronization just to read back Y/EV on the CPU.
-    if (exposureParams.cameraAutoEnabled && args.isEnabledCudaRender) {
+    if (isCudaRender) {
         result.autoEV = 0.0;
         result.exposureScale = 1.0f;
         return result;
     }
 #endif
 
-    const std::shared_ptr<const WorkingState> wsCur = (_state ? JuicerAtomic::load_shared_ptr(&_state->activeWorkingState) : nullptr);
+    const std::shared_ptr<const WorkingState> wsCur = (state ? JuicerAtomic::load_shared_ptr(&state->activeWorkingState) : nullptr);
     const uint64_t wsBuildCounter = wsCur ? wsCur->buildCounter : 0;
 
     // Camera auto-exposure always meters against AgX's fixed 18.4% target (independent of scanner target tweaks).
     constexpr double kCameraMeterTargetY = 0.184;
+    constexpr double kInvLn2 = 1.44269504088896340736;
 
     const double sigma = 0.2;
     const double renderScaleX = (std::isfinite(args.renderScale.x) && args.renderScale.x > 0.0)
@@ -1622,100 +1738,90 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     if (_pInputCctfDecoding) {
         _pInputCctfDecoding->getValue(applyInputCctfDecoding);
     }
-    const Spectral::InputColorSpace inputColorSpace =
-        Spectral::inputColorSpaceFromIndex(inputColorSpaceIndex);
-    const Spectral::Mat3 inputRgbToXYZ = Spectral::matrix_input_rgb_to_xyz(inputColorSpace);
 
     double autoEV = 0.0;
     bool haveCachedAutoEV = false;
-    const bool cameraAutoEnabled = exposureParams.cameraAutoEnabled;
     const int meteringMethod = exposureParams.meteringMethod;
-    if (_state) {
-        std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
-        if (_state->autoExposureCacheValid &&
-            _state->autoExposureCacheIsCudaRender == args.isEnabledCudaRender &&
-            _state->autoExposureCacheAutoEnabled == cameraAutoEnabled &&
-            _state->autoExposureCacheMeteringMethod == meteringMethod &&
-            nearly_equal_double(_state->autoExposureCacheTime, args.time) &&
-            _state->autoExposureCacheBuildCounter == wsBuildCounter &&
-            rect_equal(_state->autoExposureCacheBounds, meterBounds) &&
-            nearly_equal_double(_state->autoExposureCacheRenderScaleX, renderScaleX) &&
-            nearly_equal_double(_state->autoExposureCacheRenderScaleY, renderScaleY) &&
-            _state->autoExposureCacheClipToken == clipToken &&
-            _state->autoExposureCacheInputColorSpaceIndex == inputColorSpaceIndex &&
-            _state->autoExposureCacheApplyCctfDecoding == applyInputCctfDecoding) {
-            autoEV = _state->autoExposureCacheEV;
+    if (state) {
+        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
+        if (state->autoExposureCacheValid &&
+            state->autoExposureCacheIsCudaRender == isCudaRender &&
+            state->autoExposureCacheAutoEnabled &&
+            state->autoExposureCacheMeteringMethod == meteringMethod &&
+            nearly_equal_double(state->autoExposureCacheTime, args.time) &&
+            state->autoExposureCacheBuildCounter == wsBuildCounter &&
+            rect_equal(state->autoExposureCacheBounds, meterBounds) &&
+            nearly_equal_double(state->autoExposureCacheRenderScaleX, renderScaleX) &&
+            nearly_equal_double(state->autoExposureCacheRenderScaleY, renderScaleY) &&
+            state->autoExposureCacheClipToken == clipToken &&
+            state->autoExposureCacheInputColorSpaceIndex == inputColorSpaceIndex &&
+            state->autoExposureCacheApplyCctfDecoding == applyInputCctfDecoding) {
+            autoEV = state->autoExposureCacheEV;
             haveCachedAutoEV = true;
         }
     }
 
     if (!haveCachedAutoEV) {
-        bool measurementValid = !cameraAutoEnabled;
+        bool measurementValid = false;
         double evComp = 0.0;
-        if (cameraAutoEnabled) {
-            double Yexp = 0.0;
-            bool haveY = false;
-            if (meteringMethod == static_cast<int>(MeteringMethod::Median)) {
-                Yexp = measure_median_Y_DWG(
-                    srcImg,
-                    meterBounds,
-                    inputColorSpace,
-                    inputRgbToXYZ,
-                    applyInputCctfDecoding);
-            }
-            else {
-                Yexp = measure_center_weighted_Y_DWG_cached(
-                    srcImg,
-                    meterBounds,
-                    sigma,
-                    _state.get(),
-                    renderScaleX,
-                    renderScaleY,
-                    clipToken,
-                    inputColorSpace,
-                    inputRgbToXYZ,
-                    applyInputCctfDecoding);
-            }
-            haveY = true;
-
-            if (haveY) {
-                if (Yexp > 0.0 && kCameraMeterTargetY > 0.0) {
-                    const double exposureRatio = Yexp / kCameraMeterTargetY;
-                    evComp = -std::log(exposureRatio) / std::log(2.0);
-                    measurementValid = std::isfinite(evComp);
-                }
-                if (!std::isfinite(evComp)) {
-                    evComp = 0.0;
-                    measurementValid = false;
-                }
-            }
+        double Yexp = 0.0;
+        const Spectral::InputColorSpace inputColorSpace =
+            Spectral::inputColorSpaceFromIndex(inputColorSpaceIndex);
+        const Spectral::Mat3 inputRgbToXYZ = Spectral::matrix_input_rgb_to_xyz(inputColorSpace);
+        if (meteringMethod == static_cast<int>(MeteringMethod::Median)) {
+            Yexp = measure_median_Y_DWG(
+                srcImg,
+                meterBounds,
+                inputColorSpace,
+                inputRgbToXYZ,
+                applyInputCctfDecoding);
+        }
+        else {
+            Yexp = measure_center_weighted_Y_DWG_cached(
+                srcImg,
+                meterBounds,
+                sigma,
+                state,
+                renderScaleX,
+                renderScaleY,
+                clipToken,
+                inputColorSpace,
+                inputRgbToXYZ,
+                applyInputCctfDecoding);
+        }
+        if (Yexp > 0.0 && kCameraMeterTargetY > 0.0) {
+            const double exposureRatio = Yexp / kCameraMeterTargetY;
+            evComp = -std::log(exposureRatio) * kInvLn2;
+            measurementValid = std::isfinite(evComp);
+        }
+        if (!std::isfinite(evComp)) {
+            evComp = 0.0;
+            measurementValid = false;
         }
         autoEV = evComp;
 
-        if (_state) {
-            std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
-            _state->autoExposureCacheValid = measurementValid;
-            _state->autoExposureCacheIsCudaRender = args.isEnabledCudaRender;
-            _state->autoExposureCacheTime = args.time;
-            _state->autoExposureCacheAutoEnabled = cameraAutoEnabled;
-            _state->autoExposureCacheMeteringMethod = meteringMethod;
-            _state->autoExposureCacheBuildCounter = wsBuildCounter;
-            _state->autoExposureCacheBounds = meterBounds;
-            _state->autoExposureCacheEV = autoEV;
-            _state->autoExposureCacheRenderScaleX = renderScaleX;
-            _state->autoExposureCacheRenderScaleY = renderScaleY;
-            _state->autoExposureCacheClipToken = clipToken;
-            _state->autoExposureCacheInputColorSpaceIndex = inputColorSpaceIndex;
-            _state->autoExposureCacheApplyCctfDecoding = applyInputCctfDecoding;
-            _state->autoExposureCanonicalBounds = meterBounds;
-            _state->autoExposureCanonicalValid = true;
+        if (state) {
+            std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
+            state->autoExposureCacheValid = measurementValid;
+            state->autoExposureCacheIsCudaRender = isCudaRender;
+            state->autoExposureCacheTime = args.time;
+            state->autoExposureCacheAutoEnabled = true;
+            state->autoExposureCacheMeteringMethod = meteringMethod;
+            state->autoExposureCacheBuildCounter = wsBuildCounter;
+            state->autoExposureCacheBounds = meterBounds;
+            state->autoExposureCacheEV = autoEV;
+            state->autoExposureCacheRenderScaleX = renderScaleX;
+            state->autoExposureCacheRenderScaleY = renderScaleY;
+            state->autoExposureCacheClipToken = clipToken;
+            state->autoExposureCacheInputColorSpaceIndex = inputColorSpaceIndex;
+            state->autoExposureCacheApplyCctfDecoding = applyInputCctfDecoding;
         }
     }
 
     const double sliderEV = exposureParams.sliderEV;
     const double totalEV = autoEV + sliderEV;
     result.autoEV = autoEV;
-    result.exposureScale = static_cast<float>(std::pow(2.0, totalEV));
+    result.exposureScale = static_cast<float>(std::exp2(totalEV));
     if (!std::isfinite(result.exposureScale)) {
         result.exposureScale = 1.0f;
     }
@@ -2064,19 +2170,20 @@ JuicerEffect::~JuicerEffect() {
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (_state) {
+        const bool traceInfo = JTRACE_ENABLED(1);
         std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
         {
             std::lock_guard<std::mutex> lock(_state->cudaMutex);
             keys.reserve(_state->cudaByDevice.size());
             for (const auto& entry : _state->cudaByDevice) {
-                keys.push_back(entry.first);
+                keys.emplace_back(entry.first);
             }
         }
         for (const auto& key : keys) {
             std::string retireError;
             const bool retireOk = JuicerCuda::ResourceManager::command_retire_context_idle(key, retireError);
             if (!retireOk || !retireError.empty()) {
-                if (JTRACE_ENABLED(1)) {
+                if (traceInfo) {
                     const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
                     std::string msg = std::string("teardown_retire_idle_failed device_id=")
                         + std::to_string(key.deviceId)
@@ -2117,6 +2224,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         (comps == OFX::ePixelComponentRGBA) ? 4 :
         (comps == OFX::ePixelComponentRGB) ? 3 :
         (comps == OFX::ePixelComponentAlpha) ? 1 : 0;
+    const bool traceVerbose = JTRACE_ENABLED(3);
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (args.isEnabledCudaRender) {
@@ -2272,7 +2380,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const Print::Runtime* prt = wsInfo.printRuntime;
     const bool wsReady = wsInfo.workingStateReady;
     const bool printReady = wsInfo.printRuntimeReady;
-    if (JTRACE_ENABLED(3)) {
+    if (traceVerbose) {
         ParamSnapshot Pdbg = snapshotParams();
         const char* paperKey = print_paper_json_key_for_index(Pdbg.printPaperIndex);
         const char* filmKey = negative_json_key_for_stock_index(Pdbg.filmStockIndex);
@@ -2354,8 +2462,9 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 }
 
 void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName) {
+    const bool traceInfo = JTRACE_ENABLED(1);
     auto trace_changed_param_gate = [&](const char* prefix) {
-        if (!JTRACE_ENABLED(1)) {
+        if (!traceInfo) {
             return;
         }
         std::string msg = prefix;
@@ -2706,6 +2815,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
     if (!_state) {
         return;
     }
+    const bool traceInfo = JTRACE_ENABLED(1);
 
     const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
     const char* negativeKey = negative_json_key_for_stock_index(P.filmStockIndex);
@@ -2726,7 +2836,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
         };
 
     if (!(paperKey && negativeKey && !illumKeys.empty())) {
-        if (JTRACE_ENABLED(1)) {
+        if (traceInfo) {
             const std::string paperStr = paperKey ? paperKey : "<unset>";
             const std::string negStr = negativeKey ? negativeKey : "<unset>";
             JTRACE("PRINT", "Neutral filter lookup prerequisites missing: paper="
@@ -2755,7 +2865,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
             loaded = true;
-            if (JTRACE_ENABLED(1)) {
+            if (traceInfo) {
                 std::string msg = "Neutral filters loaded for " + illumKey
                     + " Y/M/C=" + std::to_string(neutralY) + "/" + std::to_string(neutralM)
                     + "/" + std::to_string(neutralC)
@@ -2768,7 +2878,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
     }
 
     if (!loaded) {
-        if (JTRACE_ENABLED(1)) {
+        if (traceInfo) {
             const std::string paperStr = paperKey ? paperKey : "<unset>";
             const std::string negStr = negativeKey ? negativeKey : "<unset>";
             JTRACE("PRINT", "Neutral filters missing for paper=" + paperStr
@@ -2935,6 +3045,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
 
 void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     if (!_state) return;
+    const bool traceVerbose = JTRACE_ENABLED(3);
     // Suppress re-entrant param handling while programmatic changes are in flight
     if (_state->suppressParamEvents) {
         JTRACE("BUILD", "onParamsPossiblyChanged suppressed");
@@ -2947,7 +3058,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     ParamSnapshot P = snapshotParams();
-    if (JTRACE_ENABLED(3)) {
+    if (traceVerbose) {
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
         const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
         const std::shared_ptr<const WorkingState> wsDbg = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
@@ -3028,7 +3139,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     };
 
     auto trace_neutral_filters_applied = [&](const char* reloadSource) {
-        if (!JTRACE_ENABLED(3)) {
+        if (!traceVerbose) {
             return;
         }
         const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
@@ -3055,7 +3166,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         _state->printRT.midNeutralDensity = std::move(_state->printRT.profile.midNeutralDensity);
         _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
         _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
-        if (JTRACE_ENABLED(3)) {
+        if (traceVerbose) {
             const char* paperLabel = paperKey ? paperKey : "<null>";
             std::string msg = std::string("print reload key=") + paperLabel
                 + " dir=" + printDir
