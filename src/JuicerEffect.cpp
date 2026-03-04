@@ -207,9 +207,37 @@ namespace {
         return reinterpret_cast<T*>(image->getPixelAddress(xStart, y));
     }
 
+    inline const float* row_start_if_covered(
+        OFX::Image* image,
+        const OfxRectI& srcBounds,
+        const OfxRectI& meterBounds,
+        int y) {
+        return row_ptr_if_fully_covered<const float>(
+            image,
+            srcBounds,
+            meterBounds.x1,
+            meterBounds.x2,
+            y);
+    }
+
     template <typename T>
     inline T* pixel_ptr(OFX::Image* image, int x, int y) {
         return reinterpret_cast<T*>(image->getPixelAddress(x, y));
+    }
+
+    inline void decode_input_pixel_linear(
+        const float* pix,
+        bool singleComponent,
+        Spectral::InputColorSpace inputColorSpace,
+        bool applyCctfDecoding,
+        float linear[3]) {
+        if (singleComponent) {
+            const float gray = pix[0];
+            const float grayRgb[3] = { gray, gray, gray };
+            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+            return;
+        }
+        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
     }
 
     inline void set_optional_sum_mask(double* outSumMask, double value) {
@@ -414,26 +442,14 @@ namespace {
         const bool singleComponent = (nComponents == 1);
         const int xStart = bounds.x1;
         const int xEnd = bounds.x2;
-        auto row_start_if_covered = [&](int y) -> const float* {
-            return row_ptr_if_fully_covered<const float>(
-                img,
-                srcBounds,
-                xStart,
-                xEnd,
-                y);
-        };
-        auto decode_pixel_linear = [&](const float* pix, float linear[3]) {
-            if (singleComponent) {
-                const float gray = pix[0];
-                const float grayRgb[3] = { gray, gray, gray };
-                Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                return;
-            }
-            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-        };
         auto accumulate_weighted_Y = [&](const float* pix, double weight, double& sumY, double& sumMask) {
             float linear[3];
-            decode_pixel_linear(pix, linear);
+            decode_input_pixel_linear(
+                pix,
+                singleComponent,
+                inputColorSpace,
+                applyCctfDecoding,
+                linear);
             float XYZ[3];
             rgbToXYZ.mul(linear, XYZ);
             const double Y = static_cast<double>(XYZ[1]);
@@ -462,7 +478,7 @@ namespace {
             for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
                 const size_t rowOffset = static_cast<size_t>(yy - bounds.y1) * static_cast<size_t>(width);
                 const double* maskRow = mask.data() + rowOffset;
-                const float* rowPix = row_start_if_covered(yy);
+                const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
                 const double* maskIt = maskRow;
                 if (rowPix) {
                     const float* rowPixIt = rowPix;
@@ -508,7 +524,7 @@ namespace {
                 const int localY = yy - bounds.y1;
                 const double ny = static_cast<double>(localY) * invHeight - 0.5;
                 const double normY = ny * scaleY;
-                const float* rowPix = row_start_if_covered(yy);
+                const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
                 auto accumulate_sigma_weighted_pixel_if_present = [&](
                     int x,
                     double nxValue,
@@ -719,15 +735,6 @@ namespace {
         }
         const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
         const bool singleComponent = (nComponents == 1);
-        auto decode_pixel_linear = [&](const float* pix, float linear[3]) {
-            if (singleComponent) {
-                const float gray = pix[0];
-                const float grayRgb[3] = { gray, gray, gray };
-                Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                return;
-            }
-            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-        };
         std::vector<float>* valuesPtr = nullptr;
         std::vector<float> localValues;
         if (total <= kAutoExposureMedianScratchMaxSamples) {
@@ -743,7 +750,12 @@ namespace {
         std::vector<float>& values = *valuesPtr;
         auto append_finite_luma = [&](const float* pix) {
             float linear[3];
-            decode_pixel_linear(pix, linear);
+            decode_input_pixel_linear(
+                pix,
+                singleComponent,
+                inputColorSpace,
+                applyCctfDecoding,
+                linear);
             float XYZ[3];
             rgbToXYZ.mul(linear, XYZ);
             float Y = XYZ[1];
@@ -762,16 +774,8 @@ namespace {
 
         const int xStart = bounds.x1;
         const int xEnd = bounds.x2;
-        auto row_start_if_covered = [&](int y) -> const float* {
-            return row_ptr_if_fully_covered<const float>(
-                img,
-                srcBounds,
-                xStart,
-                xEnd,
-                y);
-        };
         for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-            const float* rowPix = row_start_if_covered(yy);
+            const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
             if (rowPix) {
                 const float* rowPixIt = rowPix;
                 for (int xOff = 0; xOff < width; ++xOff) {

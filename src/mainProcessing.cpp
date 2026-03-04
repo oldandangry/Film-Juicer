@@ -2246,6 +2246,123 @@ void JuicerProcessor::processImagesCUDA() {
         return true;
     };
 
+    auto throw_cuda_mode_fallback = [&]() {
+#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+#else
+        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+#endif
+    };
+
+    auto throw_cuda_stage_fatal = [&](const char* stageTag,
+                                      const char* failurePrefix,
+                                      cudaError_t errorCode,
+                                      bool useModeFallback = false) {
+        const char* errorMsg = cudaGetErrorString(errorCode);
+        const char* detail = errorMsg ? errorMsg : "(unknown)";
+        mark_context_loss_recovery(stageTag ? stageTag : "cuda_stage", errorCode, detail);
+        if (traceInfo) {
+            std::string traceMsg;
+            traceMsg.reserve(96);
+            traceMsg = "FATAL: ";
+            traceMsg += (failurePrefix ? failurePrefix : "CUDA stage failed");
+            traceMsg += ": ";
+            traceMsg += detail;
+            JTRACE("CUDA", traceMsg);
+        }
+        if (useModeFallback) {
+            throw_cuda_mode_fallback();
+        }
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    };
+
+    auto trace_and_throw_cuda_mode_fallback = [&](const char* prefix, const char* detail) {
+        if (traceInfo) {
+            std::string msg;
+            msg.reserve(128);
+            msg = (prefix && prefix[0] != '\0') ? prefix : "CUDA operation failed";
+            if (detail && detail[0] != '\0') {
+                msg += ": ";
+                msg += detail;
+            }
+            JTRACE("CUDA", msg);
+        }
+        throw_cuda_mode_fallback();
+    };
+
+    auto mark_context_and_throw_cuda_mode_fallback = [&](const char* stageTag,
+                                                         const char* prefix,
+                                                         const std::string& detail) {
+        mark_context_loss_recovery(
+            stageTag ? stageTag : "cuda_stage",
+            cudaErrorUnknown,
+            detail);
+        trace_and_throw_cuda_mode_fallback(prefix, detail.c_str());
+    };
+
+    auto trace_contention_and_throw_cuda_mode_fallback = [&](const char* prefix,
+                                                             const std::string& detail) {
+        if (traceInfo) {
+            std::string msg;
+            msg.reserve(96 + detail.size());
+            msg = (prefix && prefix[0] != '\0')
+                ? prefix
+                : "CUDA work deferred by contention policy";
+            if (!detail.empty()) {
+                msg += ": ";
+                msg += detail;
+            }
+            JTRACE("CUDA", msg);
+        }
+        throw_cuda_mode_fallback();
+    };
+
+    auto throw_submission_fatal = [&](const char* stageTag,
+                                      const char* failurePrefix,
+                                      const std::string& error) {
+        mark_context_loss_recovery(
+            stageTag ? stageTag : "submission_stage",
+            cudaErrorUnknown,
+            error);
+        if (traceInfo) {
+            std::string msg;
+            msg.reserve(48 + error.size());
+            msg = "FATAL: ";
+            msg += (failurePrefix && failurePrefix[0] != '\0') ? failurePrefix : "submission stage failed";
+            msg += ": ";
+            msg += error;
+            JTRACE("CUDA", msg);
+        }
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    };
+
+    auto copy_scan_tables_payload = [&](auto& dstTables,
+                                        auto& dstMediumIsNegative,
+                                        float* dstMinCmy,
+                                        float* dstInvMaxCmy,
+                                        const JuicerCuda::Resources::DeviceScanMedium& scanMedium) {
+        dstTables.epsC = scanMedium.tables.epsC;
+        dstTables.epsM = scanMedium.tables.epsM;
+        dstTables.epsY = scanMedium.tables.epsY;
+        dstTables.Ax = scanMedium.tables.Ax;
+        dstTables.Ay = scanMedium.tables.Ay;
+        dstTables.Az = scanMedium.tables.Az;
+        dstTables.baseMin = scanMedium.tables.baseMin;
+        dstTables.K = scanMedium.tables.K;
+        dstTables.hasBaseline = scanMedium.tables.hasBaseline;
+        dstTables.invYn = scanMedium.tables.invYn;
+        dstMediumIsNegative = scanMedium.mediumIsNegative;
+        copy_float3(dstMinCmy, scanMedium.min_cmy);
+        copy_float3(dstInvMaxCmy, scanMedium.inv_max_cmy);
+    };
+
+    auto make_cuda_prefixed_failure = [&](const char* label, const char* suffix) {
+        std::string msg = "CUDA ";
+        msg += (label && label[0] != '\0') ? label : "operation";
+        msg += (suffix && suffix[0] != '\0') ? suffix : " failed";
+        return msg;
+    };
+
     if (should_abort_effect()) {
         return;
     }
@@ -2337,26 +2454,10 @@ void JuicerProcessor::processImagesCUDA() {
 
         std::string submissionError;
         if (!JuicerCuda::ResourceManager::begin_submission(submissionTxn, snapshot, submissionError)) {
-            mark_context_loss_recovery("begin_submission", cudaErrorUnknown, submissionError);
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(40 + submissionError.size());
-                msg = "FATAL: begin_submission failed: ";
-                msg += submissionError;
-                JTRACE("CUDA", msg);
-            }
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
+            throw_submission_fatal("begin_submission", "begin_submission failed", submissionError);
         }
         if (!JuicerCuda::ResourceManager::acquire_plan(submissionTxn, submissionError)) {
-            mark_context_loss_recovery("acquire_plan", cudaErrorUnknown, submissionError);
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(34 + submissionError.size());
-                msg = "FATAL: acquire_plan failed: ";
-                msg += submissionError;
-                JTRACE("CUDA", msg);
-            }
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
+            throw_submission_fatal("acquire_plan", "acquire_plan failed", submissionError);
         }
     }
 
@@ -2372,19 +2473,10 @@ void JuicerProcessor::processImagesCUDA() {
             _scannerSettings.useLut,
             _pCudaStream,
             uploadError)) {
-        mark_context_loss_recovery("command_ensure_uploaded", cudaErrorUnknown, uploadError);
-        if (traceInfo) {
-            std::string msg;
-            msg.reserve(40 + uploadError.size());
-            msg = "CUDA WorkingState upload failed: ";
-            msg += uploadError;
-            JTRACE("CUDA", msg);
-        }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+        mark_context_and_throw_cuda_mode_fallback(
+            "command_ensure_uploaded",
+            "CUDA WorkingState upload failed",
+            uploadError);
     }
     if (traceVerbose) {
         std::lock_guard<std::mutex> resLock(cudaResources->m);
@@ -2511,16 +2603,7 @@ void JuicerProcessor::processImagesCUDA() {
             cudaMemcpyDeviceToDevice,
             stream);
         if (err != cudaSuccess) {
-            const char* msg = cudaGetErrorString(err);
-            mark_context_loss_recovery("copy_alpha_memcpy2d", err, msg ? msg : "");
-            if (traceInfo) {
-                std::string traceMsg;
-                traceMsg.reserve(64);
-                traceMsg = "FATAL: cudaMemcpy2DAsync failed: ";
-                traceMsg += (msg ? msg : "(unknown)");
-                JTRACE("CUDA", traceMsg);
-            }
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
+            throw_cuda_stage_fatal("copy_alpha_memcpy2d", "cudaMemcpy2DAsync failed", err);
         }
         record_cuda_use(cudaResources);
         return;
@@ -2576,6 +2659,18 @@ void JuicerProcessor::processImagesCUDA() {
             return;
         }
 
+        auto throw_auto_exposure_mode_fallback = [&](const char* prefix, const char* detail) {
+            if (traceInfo) {
+                std::string msg;
+                msg.reserve(128);
+                msg = (prefix && prefix[0] != '\0') ? prefix : "CUDA auto-exposure failed";
+                msg += ": ";
+                msg += (detail && detail[0] != '\0') ? detail : "(unknown)";
+                JTRACE("CUDA", msg);
+            }
+            throw_cuda_mode_fallback();
+        };
+
         std::string aeError;
         if (!JuicerCuda::ResourceManager::command_ensure_auto_exposure_buffers(
                 submissionTxn,
@@ -2585,18 +2680,9 @@ void JuicerProcessor::processImagesCUDA() {
                 autoExposureReusableKeyHash,
                 _pCudaStream,
                 aeError)) {
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(56 + aeError.size());
-                msg = "CUDA auto-exposure buffer allocation failed: ";
-                msg += aeError;
-                JTRACE("CUDA", msg);
-            }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            throw_auto_exposure_mode_fallback(
+                "CUDA auto-exposure buffer allocation failed",
+                aeError.c_str());
         }
 
         JuicerCudaAutoExposureScratch scratch{};
@@ -2652,18 +2738,9 @@ void JuicerProcessor::processImagesCUDA() {
                         _pCudaStream,
                         &errMsg);
                     if (rcW != 0) {
-                        if (traceInfo) {
-                            std::string msg;
-                            msg.reserve(128);
-                            msg = "CUDA auto-exposure weight build failed: ";
-                            msg += (errMsg ? errMsg : "(unknown)");
-                            JTRACE("CUDA", msg);
-                        }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                        throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+                        throw_auto_exposure_mode_fallback(
+                            "CUDA auto-exposure weight build failed",
+                            errMsg);
                     }
                     cudaResources->autoExposureScratch.weightsWidth = meterWidth;
                     cudaResources->autoExposureScratch.weightsHeight = meterHeight;
@@ -2692,18 +2769,9 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 &errMsg);
             if (rc != 0) {
-                if (traceInfo) {
-                    std::string msg;
-                    msg.reserve(128);
-                    msg = "CUDA auto-exposure metering failed: ";
-                    msg += (errMsg ? errMsg : "(unknown)");
-                    JTRACE("CUDA", msg);
-                }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+                throw_auto_exposure_mode_fallback(
+                    "CUDA auto-exposure metering failed",
+                    errMsg);
             }
             cudaResources->autoExposureKeyHash = meterStateKey;
             cudaResources->autoExposureSliderEV = _cameraSliderEV;
@@ -2715,18 +2783,9 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 &errMsg);
             if (rc != 0) {
-                if (traceInfo) {
-                    std::string msg;
-                    msg.reserve(128);
-                    msg = "CUDA auto-exposure slider update failed: ";
-                    msg += (errMsg ? errMsg : "(unknown)");
-                    JTRACE("CUDA", msg);
-                }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+                throw_auto_exposure_mode_fallback(
+                    "CUDA auto-exposure slider update failed",
+                    errMsg);
             }
             cudaResources->autoExposureSliderEV = _cameraSliderEV;
         }
@@ -3273,19 +3332,10 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 graphErrCode,
                 graphError)) {
-            mark_context_loss_recovery("command_launch_base_pipeline_graph", cudaErrorUnknown, graphError);
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(56 + graphError.size());
-                msg = "CUDA base graph launch command failed: ";
-                msg += graphError;
-                JTRACE("CUDA", msg);
-            }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            mark_context_and_throw_cuda_mode_fallback(
+                "command_launch_base_pipeline_graph",
+                "CUDA base graph launch command failed",
+                graphError);
         }
         return static_cast<cudaError_t>(graphErrCode);
     };
@@ -3299,19 +3349,10 @@ void JuicerProcessor::processImagesCUDA() {
                 *resources,
                 _pCudaStream,
                 scanFlagError)) {
-            mark_context_loss_recovery("command_ensure_scan_error_flag", cudaErrorUnknown, scanFlagError);
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(56 + scanFlagError.size());
-                msg = "CUDA scan error flag allocation failed: ";
-                msg += scanFlagError;
-                JTRACE("CUDA", msg);
-            }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            mark_context_and_throw_cuda_mode_fallback(
+                "command_ensure_scan_error_flag",
+                "CUDA scan error flag allocation failed",
+                scanFlagError);
         }
         run.scanStage.scanErrorFlag = resources->scanErrorFlag;
         if (!run.scanStage.scanErrorFlag) {
@@ -3336,49 +3377,22 @@ void JuicerProcessor::processImagesCUDA() {
                 // and reuse the staging/event on this submission.
                 const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
                 if (waitErr != cudaSuccess) {
-                    const char* msg = cudaGetErrorString(waitErr);
-                    mark_context_loss_recovery("scan_error_stream_wait", waitErr, msg ? msg : "");
-                    if (traceInfo) {
-                        std::string traceMsg;
-                        traceMsg.reserve(64);
-                        traceMsg = "CUDA scan error stream wait failed: ";
-                        traceMsg += (msg ? msg : "(unknown)");
-                        JTRACE("CUDA", traceMsg);
-                    }
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
+                    throw_cuda_stage_fatal("scan_error_stream_wait", "CUDA scan error stream wait failed", waitErr);
                 }
                 resources->scanErrorPending = 0;
             }
             else {
-                const char* msg = cudaGetErrorString(pollErr);
-                mark_context_loss_recovery("scan_error_event_query", pollErr, msg ? msg : "");
-                if (traceInfo) {
-                    std::string traceMsg;
-                    traceMsg.reserve(64);
-                    traceMsg = "CUDA scan error event query failed: ";
-                    traceMsg += (msg ? msg : "(unknown)");
-                    JTRACE("CUDA", traceMsg);
-                }
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
+                throw_cuda_stage_fatal("scan_error_event_query", "CUDA scan error event query failed", pollErr);
             }
         }
 
         cudaError_t flagErr = cudaMemsetAsync(run.scanStage.scanErrorFlag, 0, sizeof(int), stream);
         if (flagErr != cudaSuccess) {
-            const char* msg = cudaGetErrorString(flagErr);
-            mark_context_loss_recovery("scan_error_flag_memset", flagErr, msg ? msg : "");
-            if (traceInfo) {
-                std::string traceMsg;
-                traceMsg.reserve(64);
-                traceMsg = "CUDA scan error flag memset failed: ";
-                traceMsg += (msg ? msg : "(unknown)");
-                JTRACE("CUDA", traceMsg);
-            }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            throw_cuda_stage_fatal(
+                "scan_error_flag_memset",
+                "CUDA scan error flag memset failed",
+                flagErr,
+                true);
         }
 
         return scanEvent;
@@ -3394,33 +3408,15 @@ void JuicerProcessor::processImagesCUDA() {
         if (resources->scanErrorHost && scanEvent) {
             flagErr = cudaMemcpyAsync(resources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
             if (flagErr != cudaSuccess) {
-                const char* msg = cudaGetErrorString(flagErr);
-                mark_context_loss_recovery("scan_error_flag_readback", flagErr, msg ? msg : "");
-                if (traceInfo) {
-                    std::string traceMsg;
-                    traceMsg.reserve(64);
-                    traceMsg = "CUDA scan error flag readback failed: ";
-                    traceMsg += (msg ? msg : "(unknown)");
-                    JTRACE("CUDA", traceMsg);
-                }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+                throw_cuda_stage_fatal(
+                    "scan_error_flag_readback",
+                    "CUDA scan error flag readback failed",
+                    flagErr,
+                    true);
             }
             cudaError_t evErr = cudaEventRecord(scanEvent, stream);
             if (evErr != cudaSuccess) {
-                const char* msg = cudaGetErrorString(evErr);
-                mark_context_loss_recovery("scan_error_event_record", evErr, msg ? msg : "");
-                if (traceInfo) {
-                    std::string traceMsg;
-                    traceMsg.reserve(64);
-                    traceMsg = "CUDA scan error event record failed: ";
-                    traceMsg += (msg ? msg : "(unknown)");
-                    JTRACE("CUDA", traceMsg);
-                }
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
+                throw_cuda_stage_fatal("scan_error_event_record", "CUDA scan error event record failed", evErr);
             }
             resources->scanErrorPending = 1;
             cudaError_t pollErr = cudaEventQuery(scanEvent);
@@ -3439,16 +3435,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
             else if (pollErr != cudaErrorNotReady) {
-                const char* msg = cudaGetErrorString(pollErr);
-                mark_context_loss_recovery("scan_error_event_query", pollErr, msg ? msg : "");
-                if (traceInfo) {
-                    std::string traceMsg;
-                    traceMsg.reserve(64);
-                    traceMsg = "CUDA scan error event query failed: ";
-                    traceMsg += (msg ? msg : "(unknown)");
-                    JTRACE("CUDA", traceMsg);
-                }
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
+                throw_cuda_stage_fatal("scan_error_event_query", "CUDA scan error event query failed", pollErr);
             }
         }
         else {
@@ -3475,15 +3462,7 @@ void JuicerProcessor::processImagesCUDA() {
     auto commit_submission_or_throw = [&]() {
         std::string commitError;
         if (!JuicerCuda::ResourceManager::commit_submission(submissionTxn, _pCudaStream, commitError)) {
-            mark_context_loss_recovery("commit_submission", cudaErrorUnknown, commitError);
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(40 + commitError.size());
-                msg = "FATAL: commit_submission failed: ";
-                msg += commitError;
-                JTRACE("CUDA", msg);
-            }
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
+            throw_submission_fatal("commit_submission", "commit_submission failed", commitError);
         }
         submissionTxnScope.committed = true;
     };
@@ -3509,24 +3488,11 @@ void JuicerProcessor::processImagesCUDA() {
                     negativeMedium,
                     _pCudaStream,
                     lutError)) {
-                mark_context_loss_recovery(
+                const std::string prefix = make_cuda_prefixed_failure(scanLabel, " LUT upload failed");
+                mark_context_and_throw_cuda_mode_fallback(
                     negativeMedium ? "command_ensure_scan_lut_negative" : "command_ensure_scan_lut_print",
-                    cudaErrorUnknown,
+                    prefix.c_str(),
                     lutError);
-                if (traceInfo) {
-                    std::string msg;
-                    msg.reserve(48 + lutError.size());
-                    msg = "CUDA ";
-                    msg += scanLabel;
-                    msg += " LUT upload failed: ";
-                    msg += lutError;
-                    JTRACE("CUDA", msg);
-                }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
             }
             const JuicerCuda::Resources::DeviceSpectralLut& scanLut =
                 negativeMedium ? resources->scanNegativeLut : resources->scanPrintLut;
@@ -3547,19 +3513,12 @@ void JuicerProcessor::processImagesCUDA() {
 
         const JuicerCuda::Resources::DeviceScanMedium& scanMedium =
             negativeMedium ? resources->scanNegative : resources->scanPrint;
-        run.scanStage.scanTables.epsC = scanMedium.tables.epsC;
-        run.scanStage.scanTables.epsM = scanMedium.tables.epsM;
-        run.scanStage.scanTables.epsY = scanMedium.tables.epsY;
-        run.scanStage.scanTables.Ax = scanMedium.tables.Ax;
-        run.scanStage.scanTables.Ay = scanMedium.tables.Ay;
-        run.scanStage.scanTables.Az = scanMedium.tables.Az;
-        run.scanStage.scanTables.baseMin = scanMedium.tables.baseMin;
-        run.scanStage.scanTables.K = scanMedium.tables.K;
-        run.scanStage.scanTables.hasBaseline = scanMedium.tables.hasBaseline;
-        run.scanStage.scanTables.invYn = scanMedium.tables.invYn;
-        run.scanStage.scanTables.mediumIsNegative = scanMedium.mediumIsNegative;
-        copy_float3(run.scanStage.scanTables.min_cmy, scanMedium.min_cmy);
-        copy_float3(run.scanStage.scanTables.inv_max_cmy, scanMedium.inv_max_cmy);
+        copy_scan_tables_payload(
+            run.scanStage.scanTables,
+            run.scanStage.scanTables.mediumIsNegative,
+            run.scanStage.scanTables.min_cmy,
+            run.scanStage.scanTables.inv_max_cmy,
+            scanMedium);
 
         return prepare_scan_error_stage(resources, run, stream);
     };
@@ -3589,32 +3548,14 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 dirError)) {
             if (is_scratch_contention_exhausted(dirError)) {
-                if (traceInfo) {
-                    std::string msg;
-                    msg.reserve(72 + dirError.size());
-                    msg = "CUDA spatial DIR scratch deferred by contention policy: ";
-                    msg += dirError;
-                    JTRACE("CUDA", msg);
-                }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+                trace_contention_and_throw_cuda_mode_fallback(
+                    "CUDA spatial DIR scratch deferred by contention policy",
+                    dirError);
             }
-            mark_context_loss_recovery("command_ensure_spatial_dir_scratch", cudaErrorUnknown, dirError);
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(56 + dirError.size());
-                msg = "CUDA spatial DIR scratch allocation failed: ";
-                msg += dirError;
-                JTRACE("CUDA", msg);
-            }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            mark_context_and_throw_cuda_mode_fallback(
+                "command_ensure_spatial_dir_scratch",
+                "CUDA spatial DIR scratch allocation failed",
+                dirError);
         }
         if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
                 submissionTxn,
@@ -3623,19 +3564,10 @@ void JuicerProcessor::processImagesCUDA() {
                 _dirRT.spatialSigmaPixels,
                 _pCudaStream,
                 dirError)) {
-            mark_context_loss_recovery("command_ensure_spatial_dir_kernel", cudaErrorUnknown, dirError);
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(56 + dirError.size());
-                msg = "CUDA spatial DIR kernel upload failed: ";
-                msg += dirError;
-                JTRACE("CUDA", msg);
-            }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            mark_context_and_throw_cuda_mode_fallback(
+                "command_ensure_spatial_dir_kernel",
+                "CUDA spatial DIR kernel upload failed",
+                dirError);
         }
 
         run.filmDevelop.spatialDir.corrY = resources->spatialDirScratch.corrY;
@@ -3652,16 +3584,7 @@ void JuicerProcessor::processImagesCUDA() {
             resources->spatialDirKernel.radius,
             _pCudaStream);
         if (dirErr != cudaSuccess) {
-            const char* msg = cudaGetErrorString(dirErr);
-            mark_context_loss_recovery("build_spatial_dir", dirErr, msg ? msg : "");
-            if (traceInfo) {
-                std::string traceMsg;
-                traceMsg.reserve(64);
-                traceMsg = "FATAL: spatial DIR build failed: ";
-                traceMsg += (msg ? msg : "(unknown)");
-                JTRACE("CUDA", traceMsg);
-            }
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
+            throw_cuda_stage_fatal("build_spatial_dir", "spatial DIR build failed", dirErr);
         }
         return true;
     };
@@ -3716,34 +3639,103 @@ void JuicerProcessor::processImagesCUDA() {
         return scannerPreflight;
     };
 
+    auto ensure_print_illuminant_filtered_or_throw = [&](JuicerCuda::Resources* resources) {
+        std::string illumError;
+        if (JuicerCuda::ResourceManager::command_ensure_print_illuminant_filtered(
+                submissionTxn,
+                *resources,
+                *_ws,
+                *_prt,
+                _printParams,
+                _pCudaStream,
+                illumError)) {
+            return;
+        }
+        mark_context_and_throw_cuda_mode_fallback(
+            "command_ensure_print_illuminant_filtered",
+            "CUDA print illuminant upload failed",
+            illumError);
+    };
+
+    auto apply_print_glare_override_if_requested = [&](Scanner::ScannerMediumRuntime& printMedium) {
+        if (!_hasPrintGlareOverride) {
+            return;
+        }
+        printMedium.glare.active = _printGlareOverride.active;
+        printMedium.glare.percent = _printGlareOverride.percent;
+        printMedium.glare.roughness = _printGlareOverride.roughness;
+        printMedium.glare.blur = _printGlareOverride.blur;
+        printMedium.glare.compensationRemovalFactor = 0.0f;
+        printMedium.glare.compensationRemovalDensity = 0.0f;
+        printMedium.glare.compensationRemovalTransition = 0.0f;
+        const std::uint64_t glareHash = Scanner::hash_glare(printMedium.glare);
+        if (glareHash == 0) {
+            JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        printMedium.staticKey.glareHash = glareHash;
+    };
+
+    auto resolve_print_medium_runtime_for_cuda = [&]() -> Scanner::ScannerMediumRuntime {
+        Scanner::ScannerMediumRuntime printMedium = _ws->printMediumRuntime;
+        apply_print_glare_override_if_requested(printMedium);
+        return printMedium;
+    };
+
+    auto trace_print_payload_verbose = [&](JuicerCuda::Resources* resources) {
+        if (!traceVerbose || !resources) {
+            return;
+        }
+        std::lock_guard<std::mutex> resLock(resources->m);
+        const std::uint64_t uploadCoreHash =
+            (_ws->uploadCoreHash != 0) ? _ws->uploadCoreHash : _ws->coreHash;
+        std::string msg;
+        msg.reserve(384);
+        msg = "cuda print payload build=";
+        msg += std::to_string(_ws->buildCounter);
+        msg += " uploadCoreHash=";
+        msg += std::to_string(uploadCoreHash);
+        msg += " neutralY/M/C=";
+        msg += std::to_string(_prt->neutralY);
+        msg += "/";
+        msg += std::to_string(_prt->neutralM);
+        msg += "/";
+        msg += std::to_string(_prt->neutralC);
+        msg += " yFilter=";
+        msg += std::to_string(_printParams.yFilter);
+        msg += " mFilter=";
+        msg += std::to_string(_printParams.mFilter);
+        msg += " cFilter=";
+        msg += std::to_string(_printParams.cFilter);
+        msg += " illumBuild=";
+        msg += std::to_string(resources->printIllumBuildCounter);
+        msg += " illumCoreHash=";
+        msg += std::to_string(resources->printIllumCoreHash);
+        msg += " illumNeutralHash=";
+        msg += std::to_string(resources->printIllumNeutralFilterHash);
+        msg += " illumY/M/Csteps=";
+        msg += std::to_string(resources->printIllumYShiftSteps);
+        msg += "/";
+        msg += std::to_string(resources->printIllumMShiftSteps);
+        msg += "/";
+        msg += std::to_string(resources->printIllumCShiftSteps);
+        msg += " preflashValid=";
+        msg += std::to_string(resources->printPreflashValid ? 1 : 0);
+        msg += " preflashBuild=";
+        msg += std::to_string(resources->printPreflashBuildCounter);
+        JTRACE_VERBOSE("PRINTDBG", msg);
+    };
+
     auto throw_cuda_optics_scratch_failure = [&](const std::string& opticsError) {
         if (is_scratch_contention_exhausted(opticsError)) {
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(64 + opticsError.size());
-                msg = "CUDA optics scratch deferred by contention policy: ";
-                msg += opticsError;
-                JTRACE("CUDA", msg);
-            }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            trace_contention_and_throw_cuda_mode_fallback(
+                "CUDA optics scratch deferred by contention policy",
+                opticsError);
         }
-        mark_context_loss_recovery("command_ensure_optics_scratch", cudaErrorUnknown, opticsError);
-        if (traceInfo) {
-            std::string msg;
-            msg.reserve(56 + opticsError.size());
-            msg = "CUDA optics scratch allocation failed: ";
-            msg += opticsError;
-            JTRACE("CUDA", msg);
-        }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+        mark_context_and_throw_cuda_mode_fallback(
+            "command_ensure_optics_scratch",
+            "CUDA optics scratch allocation failed",
+            opticsError);
     };
 
     auto ensure_optics_scratch_or_throw = [&](JuicerCuda::Resources* resources,
@@ -3771,16 +3763,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto throw_cuda_gate_mask_build_failure = [&](const char* stageTag, cudaError_t gateErr) {
-        const char* msg = cudaGetErrorString(gateErr);
-        mark_context_loss_recovery(stageTag ? stageTag : "build_gate_mask", gateErr, msg ? msg : "");
-        if (traceInfo) {
-            std::string traceMsg;
-            traceMsg.reserve(64);
-            traceMsg = "FATAL: gate defect mask build failed: ";
-            traceMsg += (msg ? msg : "(unknown)");
-            JTRACE("CUDA", traceMsg);
-        }
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
+        throw_cuda_stage_fatal(stageTag ? stageTag : "build_gate_mask", "gate defect mask build failed", gateErr);
     };
 
     auto setup_gate_mask_if_needed = [&](JuicerCuda::PipelineRunParams& run,
@@ -3838,20 +3821,9 @@ void JuicerProcessor::processImagesCUDA() {
                 opticsError)) {
             return;
         }
-        if (traceInfo) {
-            std::string msg;
-            msg.reserve(48 + opticsError.size());
-            msg = "CUDA ";
-            msg += (kernelLabel ? kernelLabel : "gaussian");
-            msg += " kernel upload failed: ";
-            msg += opticsError;
-            JTRACE("CUDA", msg);
-        }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+        std::string prefix = make_cuda_prefixed_failure(kernelLabel ? kernelLabel : "gaussian",
+                                                        " kernel upload failed");
+        trace_and_throw_cuda_mode_fallback(prefix.c_str(), opticsError.c_str());
     };
 
     auto ensure_halation_kernel_or_throw = [&](auto& kernel,
@@ -3867,20 +3839,9 @@ void JuicerProcessor::processImagesCUDA() {
                 opticsError)) {
             return;
         }
-        if (traceInfo) {
-            std::string msg;
-            msg.reserve(48 + opticsError.size());
-            msg = "CUDA ";
-            msg += (kernelLabel ? kernelLabel : "halation");
-            msg += " kernel upload failed: ";
-            msg += opticsError;
-            JTRACE("CUDA", msg);
-        }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+        std::string prefix = make_cuda_prefixed_failure(kernelLabel ? kernelLabel : "halation",
+                                                        " kernel upload failed");
+        trace_and_throw_cuda_mode_fallback(prefix.c_str(), opticsError.c_str());
     };
 
     auto ensure_grain_dye_kernel_or_throw = [&](auto& kernel,
@@ -3892,18 +3853,10 @@ void JuicerProcessor::processImagesCUDA() {
     auto throw_pipeline_launch_failure = [&](const char* stageTag,
                                              const char* failurePrefix,
                                              cudaError_t pipelineErr) {
-        const char* msg = cudaGetErrorString(pipelineErr);
-        mark_context_loss_recovery(stageTag ? stageTag : "pipeline_kernel_launch", pipelineErr, msg ? msg : "");
-        if (traceInfo) {
-            std::string traceMsg;
-            traceMsg.reserve(96);
-            traceMsg = "FATAL: ";
-            traceMsg += (failurePrefix ? failurePrefix : "pipeline kernel launch failed");
-            traceMsg += ": ";
-            traceMsg += (msg ? msg : "(unknown)");
-            JTRACE("CUDA", traceMsg);
-        }
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
+        throw_cuda_stage_fatal(
+            stageTag ? stageTag : "pipeline_kernel_launch",
+            failurePrefix ? failurePrefix : "pipeline kernel launch failed",
+            pipelineErr);
     };
 
     auto throw_if_pipeline_launch_failed = [&](cudaError_t pipelineErr,
@@ -4087,6 +4040,11 @@ void JuicerProcessor::processImagesCUDA() {
         bool wantOptics = false;
     };
 
+    struct PipelineLaunchResult {
+        bool shouldReturnEarly = false;
+        cudaError_t error = cudaSuccess;
+    };
+
     struct ScannerOpticsParams {
         float lensBlurSigmaPx = 0.0f;
         float unsharpSigmaPx = 0.0f;
@@ -4147,6 +4105,70 @@ void JuicerProcessor::processImagesCUDA() {
             wantWeave,
             wantDefects);
         return intent;
+    };
+
+    auto launch_pipeline_with_optional_optics = [&](JuicerCuda::PipelineRunParams& run,
+                                                    const ScannerOpticsParams& scannerOptics,
+                                                    const OpticsIntent& opticsIntent,
+                                                    const GrainOpticsState& grainState,
+                                                    const GrainSetupResult& grainSetup,
+                                                    const HalationSetupResult& halationSetup,
+                                                    bool wantGlare,
+                                                    float glareBlurSigmaPx,
+                                                    std::uint64_t glareSeed,
+                                                    float glarePercent,
+                                                    float glareRoughness,
+                                                    const char* gateStageTag,
+                                                    auto&& launchOpticsKernel) -> PipelineLaunchResult {
+        PipelineLaunchResult result{};
+        if (!opticsIntent.wantOptics) {
+            result.error = launch_base_pipeline_graph(
+                static_cast<int>(renderMode),
+                run);
+            return result;
+        }
+
+        std::string opticsError;
+        const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs_for_stage(
+            opticsIntent.wantGlareBlur,
+            grainState);
+        ensure_optics_scratch_or_throw(
+            cudaResources,
+            width,
+            height,
+            scratchNeeds,
+            grainState.needGrainShared,
+            opticsIntent.needGateMask,
+            opticsError);
+        if (!setup_gate_mask_if_needed(
+                run,
+                cudaResources,
+                opticsIntent.needGateMask,
+                gateStageTag)) {
+            result.shouldReturnEarly = true;
+            return result;
+        }
+        bind_optics_kernels_or_throw(
+            run,
+            wantGlare,
+            glareBlurSigmaPx,
+            scannerOptics.lensBlurSigmaPx,
+            scannerOptics.unsharpSigmaPx,
+            grainState.wantGrain,
+            grainState.wantGrainBlur,
+            grainState.wantGrainMix,
+            grainState.wantGrainSublayers,
+            grainState.grainBlurSigmaPx,
+            grainState.grainBlurSigmaMidPx,
+            grainSetup,
+            halationSetup.wantHalation,
+            halationSetup.strengthBGR,
+            halationSetup.sigmaPx,
+            halationSetup.scatterStrengthBGR,
+            halationSetup.scatterSigmaPx,
+            opticsError);
+        result.error = launchOpticsKernel(glareSeed, glarePercent, glareRoughness);
+        return result;
     };
 
     auto resolve_scanner_optics_params = [&]() -> ScannerOpticsParams {
@@ -4257,6 +4279,37 @@ void JuicerProcessor::processImagesCUDA() {
     const ScannerOpticsParams scannerOptics = resolve_scanner_optics_params();
     const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
     const bool useSpatialDIR = spatial_dir_enabled(_dirRT);
+
+    struct OpticsLaunchInputs {
+        GlareSetupResult glare{};
+        HalationSetupResult halation{};
+        GrainSetupResult grain{};
+        GrainOpticsState grainState{};
+        OpticsIntent intent{};
+    };
+
+    auto build_optics_launch_inputs = [&](JuicerCuda::PipelineRunParams& run,
+                                          const Scanner::ScannerMediumRuntime& mediumRuntime,
+                                          Scanner::ScannerMedium mediumType,
+                                          bool includeDefects) -> OpticsLaunchInputs {
+        OpticsLaunchInputs inputs{};
+        inputs.glare = setup_glare_payload(mediumRuntime, mediumType);
+        const OpticsFeatureSetup featureSetup = setup_optics_feature_payloads(run, includeDefects);
+        inputs.halation = featureSetup.halation;
+        inputs.grain = featureSetup.grain;
+        inputs.grainState = resolve_grain_optics_state(featureSetup);
+        inputs.intent = build_optics_intent(
+            run,
+            scannerOptics.lensBlurSigmaPx,
+            scannerOptics.unsharpSigmaPx,
+            scannerOptics.unsharpAmount,
+            inputs.glare.wantGlare,
+            inputs.glare.blurSigmaPx,
+            inputs.halation.wantHalation,
+            inputs.grainState.wantGrain);
+        return inputs;
+    };
+
     auto prepare_common_cuda_pipeline_stages = [&](JuicerCuda::PipelineRunParams& run,
                                                    JuicerCuda::Resources* resources,
                                                    bool useSpatialDIR,
@@ -4268,162 +4321,265 @@ void JuicerProcessor::processImagesCUDA() {
         return setup_spatial_dir_stage(resources, run, width, height, useSpatialDIR);
     };
 
+    auto initialize_medium_pipeline_run = [&](JuicerCuda::PipelineRunParams& run,
+                                              const ScannerPreflightResult& scannerPreflight) {
+        initialize_pipeline_run(run);
+        populate_common_pipeline_payload(run, scannerPreflight);
+    };
+
+    auto prepare_common_cuda_pipeline_stages_for_medium = [&](JuicerCuda::PipelineRunParams& run,
+                                                              JuicerCuda::Resources* resources,
+                                                              bool negativeMedium,
+                                                              cudaEvent_t& outScanEvent) -> bool {
+        return prepare_common_cuda_pipeline_stages(
+            run,
+            resources,
+            useSpatialDIR,
+            negativeMedium,
+            outScanEvent);
+    };
+
+    auto launch_negative_optics_kernel = [&](JuicerCuda::PipelineRunParams& run,
+                                             std::uint64_t glareSeedValue,
+                                             float glarePercentValue,
+                                             float glareRoughnessValue) -> cudaError_t {
+        return juicer_cuda_negative_pipeline_optics(
+            &run,
+            cudaResources->scannerScratch.rgbR,
+            cudaResources->scannerScratch.rgbG,
+            cudaResources->scannerScratch.rgbB,
+            cudaResources->scannerScratch.tmp,
+            cudaResources->scannerScratch.blurred,
+            cudaResources->scannerScratch.aux,
+            cudaResources->scannerScratch.grainTmp,
+            cudaResources->scannerScratch.grainTmpShared,
+            cudaResources->scannerScratch.grainTmpMid,
+            cudaResources->scannerScratch.grainTmpCoarse,
+            cudaResources->scannerLensBlurKernel.weights,
+            cudaResources->scannerLensBlurKernel.radius,
+            cudaResources->scannerUnsharpKernel.weights,
+            cudaResources->scannerUnsharpKernel.radius,
+            scannerOptics.unsharpAmount,
+            win.x1,
+            win.y1,
+            glareSeedValue,
+            glarePercentValue,
+            glareRoughnessValue,
+            cudaResources->scannerGlareKernel.weights,
+            cudaResources->scannerGlareKernel.radius,
+            _pCudaStream);
+    };
+
+    auto launch_print_optics_kernel = [&](JuicerCuda::PipelineRunParams& run,
+                                          std::uint64_t glareSeedValue,
+                                          float glarePercentValue,
+                                          float glareRoughnessValue) -> cudaError_t {
+        return juicer_cuda_print_pipeline_optics(
+            &run,
+            cudaResources->scannerScratch.rgbR,
+            cudaResources->scannerScratch.rgbG,
+            cudaResources->scannerScratch.rgbB,
+            cudaResources->scannerScratch.tmp,
+            cudaResources->scannerScratch.blurred,
+            cudaResources->scannerScratch.aux,
+            cudaResources->scannerScratch.grainTmp,
+            cudaResources->scannerScratch.grainTmpShared,
+            cudaResources->scannerScratch.grainTmpMid,
+            cudaResources->scannerScratch.grainTmpCoarse,
+            cudaResources->scannerLensBlurKernel.weights,
+            cudaResources->scannerLensBlurKernel.radius,
+            cudaResources->scannerUnsharpKernel.weights,
+            cudaResources->scannerUnsharpKernel.radius,
+            scannerOptics.unsharpAmount,
+            win.x1,
+            win.y1,
+            glareSeedValue,
+            glarePercentValue,
+            glareRoughnessValue,
+            cudaResources->scannerGlareKernel.weights,
+            cudaResources->scannerGlareKernel.radius,
+            _pCudaStream);
+    };
+
+    auto populate_print_pipeline_payload = [&](JuicerCuda::PipelineRunParams& run,
+                                               JuicerCuda::Resources* resources,
+                                               float midgrayFactor) {
+        run.printExpose.active = 1;
+        copy_scan_tables_payload(
+            run.printExpose.negTables,
+            run.printExpose.negTables.mediumIsNegative,
+            run.printExpose.negTables.min_cmy,
+            run.printExpose.negTables.inv_max_cmy,
+            resources->scanNegative);
+
+        run.printExpose.printIllumFiltered = resources->printIllumFiltered;
+        run.printExpose.printIllumK = resources->printIllumK;
+        run.printExpose.printSensC = { resources->printSensC.x, resources->printSensC.y, resources->printSensC.n, resources->printSensC.domainBegin, resources->printSensC.domainEnd };
+        run.printExpose.printSensM = { resources->printSensM.x, resources->printSensM.y, resources->printSensM.n, resources->printSensM.domainBegin, resources->printSensM.domainEnd };
+        run.printExpose.printSensY = { resources->printSensY.x, resources->printSensY.y, resources->printSensY.n, resources->printSensY.domainBegin, resources->printSensY.domainEnd };
+        run.printDevelop.printDcC = { resources->printDcC.x, resources->printDcC.y, resources->printDcC.n, resources->printDcC.domainBegin, resources->printDcC.domainEnd };
+        run.printDevelop.printDcM = { resources->printDcM.x, resources->printDcM.y, resources->printDcM.n, resources->printDcM.domainBegin, resources->printDcM.domainEnd };
+        run.printDevelop.printDcY = { resources->printDcY.x, resources->printDcY.y, resources->printDcY.n, resources->printDcY.domainBegin, resources->printDcY.domainEnd };
+        run.printDevelop.printGammaC = resources->printGammaC;
+        run.printDevelop.printGammaM = resources->printGammaM;
+        run.printDevelop.printGammaY = resources->printGammaY;
+        run.printExpose.printExposure = _printParams.exposure;
+        run.printExpose.printPreflashExposure = _printParams.preflashExposure;
+        run.printExpose.printMidgrayFactor = midgrayFactor;
+        copy_float3(run.printExpose.printPreflashRaw, resources->printPreflashRaw);
+    };
+
+    auto print_pipeline_payloads_ready = [&](const JuicerCuda::PipelineRunParams& run) -> bool {
+        return run.printExpose.printIllumFiltered && run.printExpose.printIllumK > 0 &&
+            run.printExpose.printSensC.y && run.printExpose.printSensM.y && run.printExpose.printSensY.y &&
+            run.printDevelop.printDcC.y && run.printDevelop.printDcM.y && run.printDevelop.printDcY.y;
+    };
+
+    auto throw_if_print_payloads_missing = [&](const JuicerCuda::PipelineRunParams& run) {
+        if (print_pipeline_payloads_ready(run)) {
+            return;
+        }
+        JTRACE("CUDA", "CUDA print payloads missing; cannot render print pipeline");
+        throw_cuda_mode_fallback();
+    };
+
+    auto begin_medium_pipeline_or_abort = [&](const char* stageLabel) -> bool {
+        ensure_cuda_resources_or_throw(cudaResources, stageLabel);
+        return !abort_cuda_path_if_requested(cudaResources);
+    };
+
+    auto validate_medium_scanner_preflight_or_throw = [&](bool negativeMedium) -> ScannerPreflightResult {
+        const char* mediumLabel = negativeMedium ? "negative" : "print";
+        const bool scannerValid = negativeMedium ? _ws->negativeScannerValid : _ws->printScannerValid;
+        const Scanner::ScannerMediumRuntime* mediumRuntime =
+            negativeMedium ? &_ws->negativeMediumRuntime : &_ws->printMediumRuntime;
+        return validate_cuda_scanner_preflight_or_throw(
+            scannerValid,
+            mediumLabel,
+            mediumRuntime);
+    };
+
+    auto finalize_pipeline_launch_or_abort = [&](const PipelineLaunchResult& launchResult,
+                                                 JuicerCuda::PipelineRunParams& run,
+                                                 cudaEvent_t scanEvent,
+                                                 const char* launchStageTag,
+                                                 const char* launchFailurePrefix,
+                                                 const char* stageLabel) -> bool {
+        if (launchResult.shouldReturnEarly) {
+            return false;
+        }
+        throw_if_pipeline_launch_failed(
+            launchResult.error,
+            launchStageTag,
+            launchFailurePrefix);
+        return finalize_cuda_pipeline_tail_or_abort(
+            cudaResources,
+            run,
+            stream,
+            scanEvent,
+            stageLabel);
+    };
+
+    auto launch_and_finalize_medium_pipeline_or_abort = [&](JuicerCuda::PipelineRunParams& run,
+                                                            const OpticsLaunchInputs& opticsInputs,
+                                                            const char* gateStageTag,
+                                                            const char* launchStageTag,
+                                                            const char* launchFailurePrefix,
+                                                            const char* stageLabel,
+                                                            auto&& launchOpticsKernel,
+                                                            cudaEvent_t scanEvent) -> bool {
+        if (abort_cuda_path_if_requested(cudaResources)) {
+            return false;
+        }
+        const PipelineLaunchResult launchResult = launch_pipeline_with_optional_optics(
+            run,
+            scannerOptics,
+            opticsInputs.intent,
+            opticsInputs.grainState,
+            opticsInputs.grain,
+            opticsInputs.halation,
+            opticsInputs.glare.wantGlare,
+            opticsInputs.glare.blurSigmaPx,
+            opticsInputs.glare.seed,
+            opticsInputs.glare.percent,
+            opticsInputs.glare.roughness,
+            gateStageTag,
+            [&](std::uint64_t glareSeedValue, float glarePercentValue, float glareRoughnessValue) {
+                return launchOpticsKernel(
+                    run,
+                    glareSeedValue,
+                    glarePercentValue,
+                    glareRoughnessValue);
+            });
+        return finalize_pipeline_launch_or_abort(
+            launchResult,
+            run,
+            scanEvent,
+            launchStageTag,
+            launchFailurePrefix,
+            stageLabel);
+    };
+
+    auto run_medium_optics_pipeline_or_abort = [&](JuicerCuda::PipelineRunParams& run,
+                                                   const Scanner::ScannerMediumRuntime& mediumRuntime,
+                                                   Scanner::ScannerMedium mediumType,
+                                                   bool includeDefects,
+                                                   const char* gateStageTag,
+                                                   const char* launchStageTag,
+                                                   const char* launchFailurePrefix,
+                                                   const char* stageLabel,
+                                                   auto&& launchOpticsKernel,
+                                                   cudaEvent_t scanEvent) -> bool {
+        const OpticsLaunchInputs opticsInputs = build_optics_launch_inputs(
+            run,
+            mediumRuntime,
+            mediumType,
+            includeDefects);
+        return launch_and_finalize_medium_pipeline_or_abort(
+            run,
+            opticsInputs,
+            gateStageTag,
+            launchStageTag,
+            launchFailurePrefix,
+            stageLabel,
+            launchOpticsKernel,
+            scanEvent);
+    };
+
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
-        constexpr const char* kCudaNegativeMediumLabel = "negative";
-        ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
-            _ws->negativeScannerValid,
-            kCudaNegativeMediumLabel,
-            &_ws->negativeMediumRuntime);
+        ScannerPreflightResult scannerPreflight =
+            validate_medium_scanner_preflight_or_throw(true);
         const Scanner::ScannerMediumRuntime& negativeMediumRuntime = *scannerPreflight.mediumRuntime;
 
         JuicerCuda::PipelineRunParams run{};
-        initialize_pipeline_run(run);
-        populate_common_pipeline_payload(run, scannerPreflight);
+        initialize_medium_pipeline_run(run, scannerPreflight);
 
         {
-            ensure_cuda_resources_or_throw(cudaResources, "negative pipeline");
-
-            if (abort_cuda_path_if_requested(cudaResources)) {
+            if (!begin_medium_pipeline_or_abort("negative pipeline")) {
                 return;
             }
 
             cudaEvent_t scanEvent = nullptr;
-            if (!prepare_common_cuda_pipeline_stages(
+            if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
                     cudaResources,
-                    useSpatialDIR,
                     true,
                     scanEvent)) {
                 return;
             }
 
-            const GlareSetupResult glareSetup =
-                setup_glare_payload(negativeMediumRuntime, Scanner::ScannerMedium::Negative);
-            const bool wantGlare = glareSetup.wantGlare;
-            const float glarePercent = glareSetup.percent;
-            const float glareRoughness = glareSetup.roughness;
-            const float glareBlurSigmaPx = glareSetup.blurSigmaPx;
-            const std::uint64_t glareSeed = glareSetup.seed;
-
-            const OpticsFeatureSetup featureSetup = setup_optics_feature_payloads(run, true);
-            const HalationSetupResult& halationSetup = featureSetup.halation;
-            const float* halationStrengthBGR = halationSetup.strengthBGR;
-            const float* halationScatterStrengthBGR = halationSetup.scatterStrengthBGR;
-            const float* halationSigmaPx = halationSetup.sigmaPx;
-            const float* halationScatterSigmaPx = halationSetup.scatterSigmaPx;
-            const bool wantHalation = halationSetup.wantHalation;
-
-            const GrainSetupResult& grainSetup = featureSetup.grain;
-            const GrainOpticsState grainState = resolve_grain_optics_state(featureSetup);
-            const bool wantGrain = grainState.wantGrain;
-            const bool wantGrainSublayers = grainState.wantGrainSublayers;
-            const bool wantGrainBlur = grainState.wantGrainBlur;
-            const bool wantGrainMix = grainState.wantGrainMix;
-            const float grainBlurSigmaPx = grainState.grainBlurSigmaPx;
-            const float grainBlurSigmaMidPx = grainState.grainBlurSigmaMidPx;
-            const bool needGrainShared = grainState.needGrainShared;
-
-            const OpticsIntent opticsIntent = build_optics_intent(
-                run,
-                scannerOptics.lensBlurSigmaPx,
-                scannerOptics.unsharpSigmaPx,
-                scannerOptics.unsharpAmount,
-                wantGlare,
-                glareBlurSigmaPx,
-                wantHalation,
-                wantGrain);
-            const bool wantGlareBlur = opticsIntent.wantGlareBlur;
-            const bool needGateMask = opticsIntent.needGateMask;
-            const bool wantOptics = opticsIntent.wantOptics;
-
-            if (abort_cuda_path_if_requested(cudaResources)) {
-                return;
-            }
-
-            cudaError_t err = cudaSuccess;
-            if (!wantOptics) {
-                err = launch_base_pipeline_graph(
-                    static_cast<int>(renderMode),
-                    run);
-            }
-            else {
-                std::string opticsError;
-                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs_for_stage(
-                    wantGlareBlur,
-                    grainState);
-                ensure_optics_scratch_or_throw(
-                    cudaResources,
-                    width,
-                    height,
-                    scratchNeeds,
-                    needGrainShared,
-                    needGateMask,
-                    opticsError);
-                if (!setup_gate_mask_if_needed(
-                        run,
-                        cudaResources,
-                        needGateMask,
-                        "build_gate_mask_negative")) {
-                    return;
-                }
-                bind_optics_kernels_or_throw(
+            if (!run_medium_optics_pipeline_or_abort(
                     run,
-                    wantGlare,
-                    glareBlurSigmaPx,
-                    scannerOptics.lensBlurSigmaPx,
-                    scannerOptics.unsharpSigmaPx,
-                    wantGrain,
-                    wantGrainBlur,
-                    wantGrainMix,
-                    wantGrainSublayers,
-                    grainBlurSigmaPx,
-                    grainBlurSigmaMidPx,
-                    grainSetup,
-                    wantHalation,
-                    halationStrengthBGR,
-                    halationSigmaPx,
-                    halationScatterStrengthBGR,
-                    halationScatterSigmaPx,
-                    opticsError);
-
-                err = juicer_cuda_negative_pipeline_optics(
-                    &run,
-                    cudaResources->scannerScratch.rgbR,
-                    cudaResources->scannerScratch.rgbG,
-                    cudaResources->scannerScratch.rgbB,
-                    cudaResources->scannerScratch.tmp,
-                    cudaResources->scannerScratch.blurred,
-                    cudaResources->scannerScratch.aux,
-                    cudaResources->scannerScratch.grainTmp,
-                    cudaResources->scannerScratch.grainTmpShared,
-                    cudaResources->scannerScratch.grainTmpMid,
-                    cudaResources->scannerScratch.grainTmpCoarse,
-                    cudaResources->scannerLensBlurKernel.weights,
-                    cudaResources->scannerLensBlurKernel.radius,
-                    cudaResources->scannerUnsharpKernel.weights,
-                    cudaResources->scannerUnsharpKernel.radius,
-                    scannerOptics.unsharpAmount,
-                    win.x1,
-                    win.y1,
-                    glareSeed,
-                    glarePercent,
-                    glareRoughness,
-                    cudaResources->scannerGlareKernel.weights,
-                    cudaResources->scannerGlareKernel.radius,
-                    _pCudaStream);
-            }
-            throw_if_pipeline_launch_failed(
-                err,
-                "negative_pipeline_kernel_launch",
-                "negative pipeline kernel launch failed");
-
-            if (!finalize_cuda_pipeline_tail_or_abort(
-                    cudaResources,
-                    run,
-                    stream,
-                    scanEvent,
-                    "negative")) {
+                    negativeMediumRuntime,
+                    Scanner::ScannerMedium::Negative,
+                    true,
+                    "build_gate_mask_negative",
+                    "negative_pipeline_kernel_launch",
+                    "negative pipeline kernel launch failed",
+                    "negative",
+                    launch_negative_optics_kernel,
+                    scanEvent)) {
                 return;
             }
         }
@@ -4434,18 +4590,11 @@ void JuicerProcessor::processImagesCUDA() {
     // RenderMode::Print (PrintBypass=false).
     {
         if (!_printReady || !_prt) {
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
+            throw_cuda_mode_fallback();
         }
 
-        constexpr const char* kCudaPrintMediumLabel = "print";
-        ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
-            _ws->printScannerValid,
-            kCudaPrintMediumLabel,
-            &_ws->printMediumRuntime);
+        ScannerPreflightResult scannerPreflight =
+            validate_medium_scanner_preflight_or_throw(false);
 
         // Print exposure compensation factor is computed on CPU (no image reads; safe for CUDA renders).
         const float kMidSpectral = compute_print_midgray_factor_cached(
@@ -4456,278 +4605,44 @@ void JuicerProcessor::processImagesCUDA() {
             _dirRT);
 
         JuicerCuda::PipelineRunParams run{};
-        initialize_pipeline_run(run);
-        populate_common_pipeline_payload(run, scannerPreflight);
+        initialize_medium_pipeline_run(run, scannerPreflight);
 
         {
-            ensure_cuda_resources_or_throw(cudaResources, "print pipeline");
-
-            if (abort_cuda_path_if_requested(cudaResources)) {
+            if (!begin_medium_pipeline_or_abort("print pipeline")) {
                 return;
             }
 
             // Ensure the print illuminant filtered is available for current print params.
-            std::string illumError;
-            if (!JuicerCuda::ResourceManager::command_ensure_print_illuminant_filtered(
-                    submissionTxn,
-                    *cudaResources,
-                    *_ws,
-                    *_prt,
-                    _printParams,
-                    _pCudaStream,
-                    illumError)) {
-                mark_context_loss_recovery("command_ensure_print_illuminant_filtered", cudaErrorUnknown, illumError);
-                if (traceInfo) {
-                    std::string msg;
-                    msg.reserve(48 + illumError.size());
-                    msg = "CUDA print illuminant upload failed: ";
-                    msg += illumError;
-                    JTRACE("CUDA", msg);
-                }
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-            }
-            if (traceVerbose) {
-                std::lock_guard<std::mutex> resLock(cudaResources->m);
-                const std::uint64_t uploadCoreHash =
-                    (_ws->uploadCoreHash != 0) ? _ws->uploadCoreHash : _ws->coreHash;
-                std::string msg;
-                msg.reserve(384);
-                msg = "cuda print payload build=";
-                msg += std::to_string(_ws->buildCounter);
-                msg += " uploadCoreHash=";
-                msg += std::to_string(uploadCoreHash);
-                msg += " neutralY/M/C=";
-                msg += std::to_string(_prt->neutralY);
-                msg += "/";
-                msg += std::to_string(_prt->neutralM);
-                msg += "/";
-                msg += std::to_string(_prt->neutralC);
-                msg += " yFilter=";
-                msg += std::to_string(_printParams.yFilter);
-                msg += " mFilter=";
-                msg += std::to_string(_printParams.mFilter);
-                msg += " cFilter=";
-                msg += std::to_string(_printParams.cFilter);
-                msg += " illumBuild=";
-                msg += std::to_string(cudaResources->printIllumBuildCounter);
-                msg += " illumCoreHash=";
-                msg += std::to_string(cudaResources->printIllumCoreHash);
-                msg += " illumNeutralHash=";
-                msg += std::to_string(cudaResources->printIllumNeutralFilterHash);
-                msg += " illumY/M/Csteps=";
-                msg += std::to_string(cudaResources->printIllumYShiftSteps);
-                msg += "/";
-                msg += std::to_string(cudaResources->printIllumMShiftSteps);
-                msg += "/";
-                msg += std::to_string(cudaResources->printIllumCShiftSteps);
-                msg += " preflashValid=";
-                msg += std::to_string(cudaResources->printPreflashValid ? 1 : 0);
-                msg += " preflashBuild=";
-                msg += std::to_string(cudaResources->printPreflashBuildCounter);
-                JTRACE_VERBOSE("PRINTDBG", msg);
-            }
+            ensure_print_illuminant_filtered_or_throw(cudaResources);
+            trace_print_payload_verbose(cudaResources);
 
             cudaEvent_t scanEvent = nullptr;
-            if (!prepare_common_cuda_pipeline_stages(
+            if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
                     cudaResources,
-                    useSpatialDIR,
                     false,
                     scanEvent)) {
                 return;
             }
 
             // Print pipeline payloads.
-            run.printExpose.active = 1;
-            run.printExpose.negTables.epsC = cudaResources->scanNegative.tables.epsC;
-            run.printExpose.negTables.epsM = cudaResources->scanNegative.tables.epsM;
-            run.printExpose.negTables.epsY = cudaResources->scanNegative.tables.epsY;
-            run.printExpose.negTables.Ax = cudaResources->scanNegative.tables.Ax;
-            run.printExpose.negTables.Ay = cudaResources->scanNegative.tables.Ay;
-            run.printExpose.negTables.Az = cudaResources->scanNegative.tables.Az;
-            run.printExpose.negTables.baseMin = cudaResources->scanNegative.tables.baseMin;
-            run.printExpose.negTables.K = cudaResources->scanNegative.tables.K;
-            run.printExpose.negTables.hasBaseline = cudaResources->scanNegative.tables.hasBaseline;
-            run.printExpose.negTables.invYn = cudaResources->scanNegative.tables.invYn;
-            run.printExpose.negTables.mediumIsNegative = cudaResources->scanNegative.mediumIsNegative;
-            copy_float3(run.printExpose.negTables.min_cmy, cudaResources->scanNegative.min_cmy);
-            copy_float3(run.printExpose.negTables.inv_max_cmy, cudaResources->scanNegative.inv_max_cmy);
-
-            run.printExpose.printIllumFiltered = cudaResources->printIllumFiltered;
-            run.printExpose.printIllumK = cudaResources->printIllumK;
-            run.printExpose.printSensC = { cudaResources->printSensC.x, cudaResources->printSensC.y, cudaResources->printSensC.n, cudaResources->printSensC.domainBegin, cudaResources->printSensC.domainEnd };
-            run.printExpose.printSensM = { cudaResources->printSensM.x, cudaResources->printSensM.y, cudaResources->printSensM.n, cudaResources->printSensM.domainBegin, cudaResources->printSensM.domainEnd };
-            run.printExpose.printSensY = { cudaResources->printSensY.x, cudaResources->printSensY.y, cudaResources->printSensY.n, cudaResources->printSensY.domainBegin, cudaResources->printSensY.domainEnd };
-            run.printDevelop.printDcC = { cudaResources->printDcC.x, cudaResources->printDcC.y, cudaResources->printDcC.n, cudaResources->printDcC.domainBegin, cudaResources->printDcC.domainEnd };
-            run.printDevelop.printDcM = { cudaResources->printDcM.x, cudaResources->printDcM.y, cudaResources->printDcM.n, cudaResources->printDcM.domainBegin, cudaResources->printDcM.domainEnd };
-            run.printDevelop.printDcY = { cudaResources->printDcY.x, cudaResources->printDcY.y, cudaResources->printDcY.n, cudaResources->printDcY.domainBegin, cudaResources->printDcY.domainEnd };
-            run.printDevelop.printGammaC = cudaResources->printGammaC;
-            run.printDevelop.printGammaM = cudaResources->printGammaM;
-            run.printDevelop.printGammaY = cudaResources->printGammaY;
-            run.printExpose.printExposure = _printParams.exposure;
-            run.printExpose.printPreflashExposure = _printParams.preflashExposure;
-            run.printExpose.printMidgrayFactor = kMidSpectral;
-            copy_float3(run.printExpose.printPreflashRaw, cudaResources->printPreflashRaw);
-
-            if (!run.printExpose.printIllumFiltered || run.printExpose.printIllumK <= 0 ||
-                !run.printExpose.printSensC.y || !run.printExpose.printSensM.y || !run.printExpose.printSensY.y ||
-                !run.printDevelop.printDcC.y || !run.printDevelop.printDcM.y || !run.printDevelop.printDcY.y) {
-                JTRACE("CUDA", "CUDA print payloads missing; cannot render print pipeline");
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-                throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
-            }
+            populate_print_pipeline_payload(run, cudaResources, kMidSpectral);
+            throw_if_print_payloads_missing(run);
 
             // Scanner optics/glare for the print medium.
-            Scanner::ScannerMediumRuntime printMedium = _ws->printMediumRuntime;
-            if (_hasPrintGlareOverride) {
-                printMedium.glare.active = _printGlareOverride.active;
-                printMedium.glare.percent = _printGlareOverride.percent;
-                printMedium.glare.roughness = _printGlareOverride.roughness;
-                printMedium.glare.blur = _printGlareOverride.blur;
-                printMedium.glare.compensationRemovalFactor = 0.0f;
-                printMedium.glare.compensationRemovalDensity = 0.0f;
-                printMedium.glare.compensationRemovalTransition = 0.0f;
-                const std::uint64_t glareHash = Scanner::hash_glare(printMedium.glare);
-                if (glareHash == 0) {
-                    JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-                printMedium.staticKey.glareHash = glareHash;
-            }
+            Scanner::ScannerMediumRuntime printMedium = resolve_print_medium_runtime_for_cuda();
 
-            const GlareSetupResult glareSetup =
-                setup_glare_payload(printMedium, Scanner::ScannerMedium::Print);
-            const bool wantGlare = glareSetup.wantGlare;
-            const float glarePercent = glareSetup.percent;
-            const float glareRoughness = glareSetup.roughness;
-            const float glareBlurSigmaPx = glareSetup.blurSigmaPx;
-            const std::uint64_t glareSeed = glareSetup.seed;
-
-            const OpticsFeatureSetup featureSetup = setup_optics_feature_payloads(run, false);
-            const HalationSetupResult& halationSetup = featureSetup.halation;
-            const float* halationStrengthBGR = halationSetup.strengthBGR;
-            const float* halationScatterStrengthBGR = halationSetup.scatterStrengthBGR;
-            const float* halationSigmaPx = halationSetup.sigmaPx;
-            const float* halationScatterSigmaPx = halationSetup.scatterSigmaPx;
-            const bool wantHalation = halationSetup.wantHalation;
-
-            const GrainSetupResult& grainSetup = featureSetup.grain;
-            const GrainOpticsState grainState = resolve_grain_optics_state(featureSetup);
-            const bool wantGrain = grainState.wantGrain;
-            const bool wantGrainSublayers = grainState.wantGrainSublayers;
-            const bool wantGrainBlur = grainState.wantGrainBlur;
-            const bool wantGrainMix = grainState.wantGrainMix;
-            const float grainBlurSigmaPx = grainState.grainBlurSigmaPx;
-            const float grainBlurSigmaMidPx = grainState.grainBlurSigmaMidPx;
-            const bool needGrainShared = grainState.needGrainShared;
-
-            const OpticsIntent opticsIntent = build_optics_intent(
-                run,
-                scannerOptics.lensBlurSigmaPx,
-                scannerOptics.unsharpSigmaPx,
-                scannerOptics.unsharpAmount,
-                wantGlare,
-                glareBlurSigmaPx,
-                wantHalation,
-                wantGrain);
-            const bool wantGlareBlur = opticsIntent.wantGlareBlur;
-            const bool needGateMask = opticsIntent.needGateMask;
-            const bool wantOptics = opticsIntent.wantOptics;
-
-            if (abort_cuda_path_if_requested(cudaResources)) {
-                return;
-            }
-
-            cudaError_t err = cudaSuccess;
-            if (!wantOptics) {
-                err = launch_base_pipeline_graph(
-                    static_cast<int>(renderMode),
-                    run);
-            }
-            else {
-                std::string opticsError;
-                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs_for_stage(
-                    wantGlareBlur,
-                    grainState);
-                ensure_optics_scratch_or_throw(
-                    cudaResources,
-                    width,
-                    height,
-                    scratchNeeds,
-                    needGrainShared,
-                    needGateMask,
-                    opticsError);
-                if (!setup_gate_mask_if_needed(
-                        run,
-                        cudaResources,
-                        needGateMask,
-                        "build_gate_mask_print")) {
-                    return;
-                }
-                bind_optics_kernels_or_throw(
+            if (!run_medium_optics_pipeline_or_abort(
                     run,
-                    wantGlare,
-                    glareBlurSigmaPx,
-                    scannerOptics.lensBlurSigmaPx,
-                    scannerOptics.unsharpSigmaPx,
-                    wantGrain,
-                    wantGrainBlur,
-                    wantGrainMix,
-                    wantGrainSublayers,
-                    grainBlurSigmaPx,
-                    grainBlurSigmaMidPx,
-                    grainSetup,
-                    wantHalation,
-                    halationStrengthBGR,
-                    halationSigmaPx,
-                    halationScatterStrengthBGR,
-                    halationScatterSigmaPx,
-                    opticsError);
-
-                err = juicer_cuda_print_pipeline_optics(
-                    &run,
-                    cudaResources->scannerScratch.rgbR,
-                    cudaResources->scannerScratch.rgbG,
-                    cudaResources->scannerScratch.rgbB,
-                    cudaResources->scannerScratch.tmp,
-                    cudaResources->scannerScratch.blurred,
-                    cudaResources->scannerScratch.aux,
-                    cudaResources->scannerScratch.grainTmp,
-                    cudaResources->scannerScratch.grainTmpShared,
-                    cudaResources->scannerScratch.grainTmpMid,
-                    cudaResources->scannerScratch.grainTmpCoarse,
-                    cudaResources->scannerLensBlurKernel.weights,
-                    cudaResources->scannerLensBlurKernel.radius,
-                    cudaResources->scannerUnsharpKernel.weights,
-                    cudaResources->scannerUnsharpKernel.radius,
-                    scannerOptics.unsharpAmount,
-                    win.x1,
-                    win.y1,
-                    glareSeed,
-                    glarePercent,
-                    glareRoughness,
-                    cudaResources->scannerGlareKernel.weights,
-                    cudaResources->scannerGlareKernel.radius,
-                    _pCudaStream);
-            }
-            throw_if_pipeline_launch_failed(
-                err,
-                "print_pipeline_kernel_launch",
-                "print pipeline kernel launch failed");
-
-            if (!finalize_cuda_pipeline_tail_or_abort(
-                    cudaResources,
-                    run,
-                    stream,
-                    scanEvent,
-                    "print")) {
+                    printMedium,
+                    Scanner::ScannerMedium::Print,
+                    false,
+                    "build_gate_mask_print",
+                    "print_pipeline_kernel_launch",
+                    "print pipeline kernel launch failed",
+                    "print",
+                    launch_print_optics_kernel,
+                    scanEvent)) {
                 return;
             }
         }

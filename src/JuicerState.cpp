@@ -2224,10 +2224,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     if (dirCfg.hasData) {
         auto computeK = [&](int idx) -> float {
-            float amount = is_finite(dirCfg.amount) ? static_cast<float>(dirCfg.amount) : 1.0f;
-            if (amount <= 0.0f) {
-                amount = 0.1f;
-            }
+            const float amount = std::max(0.1f, sanitize_positive_or(dirCfg.amount, 1.0f));
             const float ratio = sanitize_positive_or(dirCfg.ratioRGB[idx], 1.0f);
             float k = 6.0f * amount * ratio;
             k = sanitize_positive_or(k, 6.0f);
