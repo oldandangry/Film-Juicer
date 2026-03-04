@@ -185,6 +185,52 @@ namespace {
         }
     }
 
+    inline bool span_x_within_bounds(int xStart, int xEnd, const OfxRectI& bounds) {
+        return xStart >= bounds.x1 && xEnd <= bounds.x2;
+    }
+
+    inline bool row_has_full_coverage(const OfxRectI& bounds, int xStart, int xEnd, int y) {
+        return span_x_within_bounds(xStart, xEnd, bounds) &&
+            y >= bounds.y1 && y < bounds.y2;
+    }
+
+    template <typename T>
+    inline T* row_ptr_if_fully_covered(
+        OFX::Image* image,
+        const OfxRectI& bounds,
+        int xStart,
+        int xEnd,
+        int y) {
+        if (!row_has_full_coverage(bounds, xStart, xEnd, y)) {
+            return nullptr;
+        }
+        return reinterpret_cast<T*>(image->getPixelAddress(xStart, y));
+    }
+
+    template <typename T>
+    inline T* pixel_ptr(OFX::Image* image, int x, int y) {
+        return reinterpret_cast<T*>(image->getPixelAddress(x, y));
+    }
+
+    inline void set_optional_sum_mask(double* outSumMask, double value) {
+        if (outSumMask) {
+            *outSumMask = value;
+        }
+    }
+
+    inline double weighted_mean_or_zero(double sumY, double sumMask) {
+        return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
+    }
+
+    inline float clamp_nonnegative(float value) {
+        return (value < 0.0f) ? 0.0f : value;
+    }
+
+    inline double gaussian_weight(double normX, double normY, double invSigmaDenom) {
+        const double r2 = normX * normX + normY * normY;
+        return std::exp(-r2 * invSigmaDenom);
+    }
+
     inline float finite_exp2_scale(double ev) {
         const float scale = static_cast<float>(std::exp2(ev));
         return is_finite(scale) ? scale : 1.0f;
@@ -330,8 +376,7 @@ namespace {
             for (int x = 0; x < width; ++x) {
                 const double nx = static_cast<double>(x) * invWidth - 0.5;
                 const double normX = nx * scaleX;
-                const double r2 = normX * normX + normY * normY;
-                const double w = std::exp(-r2 * invSigmaDenom);
+                const double w = gaussian_weight(normX, normY, invSigmaDenom);
                 *rowIt++ = w;
                 sumMask += w;
             }
@@ -360,12 +405,23 @@ namespace {
         if (width <= 0 || height <= 0) {
             return 0.0;
         }
+        const OfxRectI srcBounds = img->getBounds();
         const int nComponents = pixel_component_count(img->getPixelComponents());
         if (nComponents <= 0) {
             return 0.0;
         }
         const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
         const bool singleComponent = (nComponents == 1);
+        const int xStart = bounds.x1;
+        const int xEnd = bounds.x2;
+        auto row_start_if_covered = [&](int y) -> const float* {
+            return row_ptr_if_fully_covered<const float>(
+                img,
+                srcBounds,
+                xStart,
+                xEnd,
+                y);
+        };
         auto decode_pixel_linear = [&](const float* pix, float linear[3]) {
             if (singleComponent) {
                 const float gray = pix[0];
@@ -375,16 +431,38 @@ namespace {
             }
             Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
         };
+        auto accumulate_weighted_Y = [&](const float* pix, double weight, double& sumY, double& sumMask) {
+            float linear[3];
+            decode_pixel_linear(pix, linear);
+            float XYZ[3];
+            rgbToXYZ.mul(linear, XYZ);
+            const double Y = static_cast<double>(XYZ[1]);
+            if (!is_finite(Y)) {
+                return;
+            }
+            sumY += Y * weight;
+            sumMask += weight;
+            };
+        auto accumulate_weighted_pixel_if_present = [&](
+            int x,
+            int y,
+            double weight,
+            double& sumY,
+            double& sumMask) {
+            const float* pix = pixel_ptr<const float>(img, x, y);
+            if (!pix) {
+                return;
+            }
+            accumulate_weighted_Y(pix, weight, sumY, sumMask);
+            };
 
         auto accumulateYFromMask = [&](const std::vector<double>& mask, double* outSumMask) {
             double sumY = 0.0;
             double sumMask = 0.0;
-            const int xStart = bounds.x1;
-            const int xEnd = bounds.x2;
             for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
                 const size_t rowOffset = static_cast<size_t>(yy - bounds.y1) * static_cast<size_t>(width);
                 const double* maskRow = mask.data() + rowOffset;
-                const float* rowPix = reinterpret_cast<const float*>(img->getPixelAddress(xStart, yy));
+                const float* rowPix = row_start_if_covered(yy);
                 const double* maskIt = maskRow;
                 if (rowPix) {
                     const float* rowPixIt = rowPix;
@@ -392,51 +470,22 @@ namespace {
                         const float* pix = rowPixIt;
                         rowPixIt += pixelStride;
                         const double w = *maskIt++;
-                        float linear[3];
-                        decode_pixel_linear(pix, linear);
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const double Y = static_cast<double>(XYZ[1]);
-                        if (!is_finite(Y)) {
-                            continue;
-                        }
-                        sumY += Y * w;
-                        sumMask += w;
+                        accumulate_weighted_Y(pix, w, sumY, sumMask);
                     }
                     continue;
                 }
                 for (int xx = xStart; xx < xEnd; ++xx) {
-                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
                     const double w = *maskIt++;
-                    if (!pix) {
-                        continue;
-                    }
-                    float linear[3];
-                    decode_pixel_linear(pix, linear);
-                    float XYZ[3];
-                    rgbToXYZ.mul(linear, XYZ);
-                    const double Y = static_cast<double>(XYZ[1]);
-                    if (!is_finite(Y)) {
-                        continue;
-                    }
-                    sumY += Y * w;
-                    sumMask += w;
+                    accumulate_weighted_pixel_if_present(xx, yy, w, sumY, sumMask);
                 }
             }
-            if (outSumMask) {
-                *outSumMask = sumMask;
-            }
-            if (sumMask <= 0.0) {
-                return 0.0;
-            }
-            return sumY / sumMask;
+            set_optional_sum_mask(outSumMask, sumMask);
+            return weighted_mean_or_zero(sumY, sumMask);
         };
 
         auto accumulateYUncached = [&](double* outSumMask) {
             if (!is_finite(sigma) || sigma <= 0.0) {
-                if (outSumMask) {
-                    *outSumMask = 0.0;
-                }
+                set_optional_sum_mask(outSumMask, 0.0);
                 return 0.0;
             }
 
@@ -448,22 +497,31 @@ namespace {
             const double scaleY = static_cast<double>(height) * invMax;
             const double sigmaDenom = 2.0 * sigma * sigma;
             if (!is_finite(sigmaDenom) || sigmaDenom <= 0.0) {
-                if (outSumMask) {
-                    *outSumMask = 0.0;
-                }
+                set_optional_sum_mask(outSumMask, 0.0);
                 return 0.0;
             }
             const double invSigmaDenom = 1.0 / sigmaDenom;
 
             double sumY = 0.0;
             double sumMask = 0.0;
-            const int xStart = bounds.x1;
-            const int xEnd = bounds.x2;
             for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
                 const int localY = yy - bounds.y1;
                 const double ny = static_cast<double>(localY) * invHeight - 0.5;
                 const double normY = ny * scaleY;
-                const float* rowPix = reinterpret_cast<const float*>(img->getPixelAddress(xStart, yy));
+                const float* rowPix = row_start_if_covered(yy);
+                auto accumulate_sigma_weighted_pixel_if_present = [&](
+                    int x,
+                    double nxValue,
+                    double& sumYRef,
+                    double& sumMaskRef) {
+                    const float* pix = pixel_ptr<const float>(img, x, yy);
+                    if (!pix) {
+                        return;
+                    }
+                    const double normX = nxValue * scaleX;
+                    const double w = gaussian_weight(normX, normY, invSigmaDenom);
+                    accumulate_weighted_Y(pix, w, sumYRef, sumMaskRef);
+                    };
                 double nx = -0.5;
                 if (rowPix) {
                     const float* rowPixIt = rowPix;
@@ -471,47 +529,19 @@ namespace {
                         const float* pix = rowPixIt;
                         rowPixIt += pixelStride;
                         const double normX = nx * scaleX;
-                        const double r2 = normX * normX + normY * normY;
-                        const double w = std::exp(-r2 * invSigmaDenom);
-                        float linear[3];
-                        decode_pixel_linear(pix, linear);
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const double Y = static_cast<double>(XYZ[1]);
-                        if (is_finite(Y)) {
-                            sumY += Y * w;
-                            sumMask += w;
-                        }
+                        const double w = gaussian_weight(normX, normY, invSigmaDenom);
+                        accumulate_weighted_Y(pix, w, sumY, sumMask);
                         nx += invWidth;
                     }
                     continue;
                 }
                 for (int xx = xStart; xx < xEnd; ++xx) {
-                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
-                    if (pix) {
-                        const double normX = nx * scaleX;
-                        const double r2 = normX * normX + normY * normY;
-                        const double w = std::exp(-r2 * invSigmaDenom);
-                        float linear[3];
-                        decode_pixel_linear(pix, linear);
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const double Y = static_cast<double>(XYZ[1]);
-                        if (is_finite(Y)) {
-                            sumY += Y * w;
-                            sumMask += w;
-                        }
-                    }
+                    accumulate_sigma_weighted_pixel_if_present(xx, nx, sumY, sumMask);
                     nx += invWidth;
                 }
             }
-            if (outSumMask) {
-                *outSumMask = sumMask;
-            }
-            if (sumMask <= 0.0) {
-                return 0.0;
-            }
-            return sumY / sumMask;
+            set_optional_sum_mask(outSumMask, sumMask);
+            return weighted_mean_or_zero(sumY, sumMask);
         };
 
         if (!state) {
@@ -680,6 +710,7 @@ namespace {
         if (width <= 0 || height <= 0) {
             return 0.0;
         }
+        const OfxRectI srcBounds = img->getBounds();
 
         const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
         const int nComponents = pixel_component_count(img->getPixelComponents());
@@ -710,48 +741,49 @@ namespace {
             valuesPtr = &localValues;
         }
         std::vector<float>& values = *valuesPtr;
+        auto append_finite_luma = [&](const float* pix) {
+            float linear[3];
+            decode_pixel_linear(pix, linear);
+            float XYZ[3];
+            rgbToXYZ.mul(linear, XYZ);
+            float Y = XYZ[1];
+            if (!is_finite(Y)) {
+                return;
+            }
+            values.emplace_back(clamp_nonnegative(Y));
+            };
+        auto append_luma_if_pixel_present = [&](int x, int y) {
+            const float* pix = pixel_ptr<const float>(img, x, y);
+            if (!pix) {
+                return;
+            }
+            append_finite_luma(pix);
+            };
 
         const int xStart = bounds.x1;
+        const int xEnd = bounds.x2;
+        auto row_start_if_covered = [&](int y) -> const float* {
+            return row_ptr_if_fully_covered<const float>(
+                img,
+                srcBounds,
+                xStart,
+                xEnd,
+                y);
+        };
         for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-            const float* rowPix = reinterpret_cast<const float*>(img->getPixelAddress(xStart, yy));
+            const float* rowPix = row_start_if_covered(yy);
             if (rowPix) {
                 const float* rowPixIt = rowPix;
                 for (int xOff = 0; xOff < width; ++xOff) {
                     const float* pix = rowPixIt;
                     rowPixIt += pixelStride;
-                    float linear[3];
-                    decode_pixel_linear(pix, linear);
-                    float XYZ[3];
-                    rgbToXYZ.mul(linear, XYZ);
-                    float Y = XYZ[1];
-                    if (!is_finite(Y)) {
-                        continue;
-                    }
-                    if (Y < 0.0f) {
-                        Y = 0.0f;
-                    }
-                    values.emplace_back(Y);
+                    append_finite_luma(pix);
                 }
                 continue;
             }
             int x = xStart;
             for (int xOff = 0; xOff < width; ++xOff, ++x) {
-                const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(x, yy));
-                if (!pix) {
-                    continue;
-                }
-                float linear[3];
-                decode_pixel_linear(pix, linear);
-                float XYZ[3];
-                rgbToXYZ.mul(linear, XYZ);
-                float Y = XYZ[1];
-                if (!is_finite(Y)) {
-                    continue;
-                }
-                if (Y < 0.0f) {
-                    Y = 0.0f;
-                }
-                values.emplace_back(Y);
+                append_luma_if_pixel_present(x, yy);
             }
         }
 

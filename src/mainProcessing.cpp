@@ -163,6 +163,136 @@ namespace {
         }
     }
 
+    inline bool span_x_within_bounds(int xStart, int xEnd, const OfxRectI& bounds) {
+        return xStart >= bounds.x1 && xEnd <= bounds.x2;
+    }
+
+    inline bool row_has_full_coverage(const OfxRectI& bounds, int xStart, int xEnd, int y) {
+        return span_x_within_bounds(xStart, xEnd, bounds) &&
+            y >= bounds.y1 && y < bounds.y2;
+    }
+
+    template <typename T>
+    inline T* row_ptr_if_fully_covered(
+        OFX::Image* image,
+        const OfxRectI& bounds,
+        int xStart,
+        int xEnd,
+        int y) {
+        if (!row_has_full_coverage(bounds, xStart, xEnd, y)) {
+            return nullptr;
+        }
+        return reinterpret_cast<T*>(image->getPixelAddress(xStart, y));
+    }
+
+    template <typename T>
+    inline T* pixel_ptr(OFX::Image* image, int x, int y) {
+        return reinterpret_cast<T*>(image->getPixelAddress(x, y));
+    }
+
+    inline void copy_row_bytes_with_fallback(
+        OFX::Image* src,
+        OFX::Image* dst,
+        int xStart,
+        int xEnd,
+        int y,
+        size_t bytesPerPixel,
+        const std::uint8_t* srcRow,
+        std::uint8_t* dstRow) {
+        const int width = xEnd - xStart;
+        if (width <= 0) {
+            return;
+        }
+        if (srcRow && dstRow) {
+            const size_t rowBytes = static_cast<size_t>(width) * bytesPerPixel;
+            std::memcpy(dstRow, srcRow, rowBytes);
+            return;
+        }
+        if (srcRow) {
+            const std::uint8_t* srcPixIt = srcRow;
+            int x = xStart;
+            for (int xOff = 0; xOff < width; ++xOff, ++x, srcPixIt += bytesPerPixel) {
+                std::uint8_t* dstPix = pixel_ptr<std::uint8_t>(dst, x, y);
+                if (!dstPix) {
+                    continue;
+                }
+                std::memcpy(dstPix, srcPixIt, bytesPerPixel);
+            }
+            return;
+        }
+        if (dstRow) {
+            std::uint8_t* dstPixIt = dstRow;
+            int x = xStart;
+            for (int xOff = 0; xOff < width; ++xOff, ++x, dstPixIt += bytesPerPixel) {
+                const std::uint8_t* srcPix = pixel_ptr<const std::uint8_t>(src, x, y);
+                if (!srcPix) {
+                    continue;
+                }
+                std::memcpy(dstPixIt, srcPix, bytesPerPixel);
+            }
+            return;
+        }
+        for (int x = xStart; x < xEnd; ++x) {
+            const std::uint8_t* srcPix = pixel_ptr<const std::uint8_t>(src, x, y);
+            std::uint8_t* dstPix = pixel_ptr<std::uint8_t>(dst, x, y);
+            if (!srcPix || !dstPix) {
+                continue;
+            }
+            std::memcpy(dstPix, srcPix, bytesPerPixel);
+        }
+    }
+
+    inline void copy_row_float_scalar_with_fallback(
+        OFX::Image* src,
+        OFX::Image* dst,
+        int xStart,
+        int xEnd,
+        int y,
+        const float* srcRow,
+        float* dstRow) {
+        const int width = xEnd - xStart;
+        if (width <= 0) {
+            return;
+        }
+        if (srcRow && dstRow) {
+            const size_t rowBytes = static_cast<size_t>(width) * sizeof(float);
+            std::memcpy(dstRow, srcRow, rowBytes);
+            return;
+        }
+        if (dstRow) {
+            float* dstPixIt = dstRow;
+            int x = xStart;
+            for (int xOff = 0; xOff < width; ++xOff, ++x, ++dstPixIt) {
+                const float* srcPix = pixel_ptr<const float>(src, x, y);
+                if (!srcPix) {
+                    continue;
+                }
+                *dstPixIt = *srcPix;
+            }
+            return;
+        }
+        if (srcRow) {
+            const float* srcPixIt = srcRow;
+            int x = xStart;
+            for (int xOff = 0; xOff < width; ++xOff, ++x, ++srcPixIt) {
+                float* dstPix = pixel_ptr<float>(dst, x, y);
+                if (!dstPix) {
+                    continue;
+                }
+                *dstPix = *srcPixIt;
+            }
+            return;
+        }
+        for (int x = xStart; x < xEnd; ++x) {
+            float* dstPix = pixel_ptr<float>(dst, x, y);
+            const float* srcPix = pixel_ptr<const float>(src, x, y);
+            if (!dstPix || !srcPix) {
+                continue;
+            }
+            *dstPix = *srcPix;
+        }
+    }
+
     inline void copy_float3(float dst[3], const float src[3]) {
         std::memcpy(dst, src, 3u * sizeof(float));
     }
@@ -206,6 +336,39 @@ namespace {
 
     inline void copy_float2(float dst[2], const float src[2]) {
         std::memcpy(dst, src, 2u * sizeof(float));
+    }
+
+    inline void store_density_triplet(
+        float* densityC,
+        float* densityM,
+        float* densityY,
+        size_t idx,
+        const float values[3]) {
+        densityC[idx] = values[0];
+        densityM[idx] = values[1];
+        densityY[idx] = values[2];
+    }
+
+    inline void store_zero_density_triplet(
+        float* densityC,
+        float* densityM,
+        float* densityY,
+        size_t idx) {
+        static constexpr float kZeroDensity[3] = { 0.0f, 0.0f, 0.0f };
+        store_density_triplet(densityC, densityM, densityY, idx, kZeroDensity);
+    }
+
+    inline bool should_abort_relaxed(const std::atomic<bool>& abortFlag) {
+        return abortFlag.load(std::memory_order_relaxed);
+    }
+
+    inline void mark_abort(std::atomic<bool>& abortFlag) {
+        abortFlag.store(true, std::memory_order_relaxed);
+    }
+
+    inline void mark_failure_and_abort(std::atomic<bool>& failure, std::atomic<bool>& abortFlag) {
+        failure.store(true, std::memory_order_relaxed);
+        mark_abort(abortFlag);
     }
 
     inline float sanitize_amount_0_10(float value) {
@@ -855,11 +1018,12 @@ namespace JuicerProc {
         if (!src || !dst) {
             return;
         }
-        const OfxRectI bounds = src->getBounds();
-        const int xStart = bounds.x1;
-        const int xEnd = bounds.x2;
-        const int yStart = bounds.y1;
-        const int yEnd = bounds.y2;
+        const OfxRectI srcBounds = src->getBounds();
+        const OfxRectI dstBounds = dst->getBounds();
+        const int xStart = srcBounds.x1;
+        const int xEnd = srcBounds.x2;
+        const int yStart = srcBounds.y1;
+        const int yEnd = srcBounds.y2;
         const OFX::PixelComponentEnum comps = src->getPixelComponents();
         const OFX::BitDepthEnum depth = src->getPixelDepth();
 
@@ -879,40 +1043,20 @@ namespace JuicerProc {
         if (yStart >= yEnd) {
             return;
         }
-        const size_t rowBytes = static_cast<size_t>(width) * bytesPerPixel;
         for (int y = yStart; y < yEnd; ++y) {
-            const std::uint8_t* sRow = reinterpret_cast<const std::uint8_t*>(src->getPixelAddress(xStart, y));
-            std::uint8_t* dRow = reinterpret_cast<std::uint8_t*>(dst->getPixelAddress(xStart, y));
-            if (sRow && dRow) {
-                std::memcpy(dRow, sRow, rowBytes);
-                continue;
-            }
-            if (sRow && !dRow) {
-                const std::uint8_t* sPix = sRow;
-                int x = xStart;
-                for (int xOff = 0; xOff < width; ++xOff, ++x, sPix += bytesPerPixel) {
-                    void* d = dst->getPixelAddress(x, y);
-                    if (!d) continue;
-                    std::memcpy(d, sPix, bytesPerPixel);
-                }
-                continue;
-            }
-            if (!sRow && dRow) {
-                std::uint8_t* dPix = dRow;
-                int x = xStart;
-                for (int xOff = 0; xOff < width; ++xOff, ++x, dPix += bytesPerPixel) {
-                    const void* s = src->getPixelAddress(x, y);
-                    if (!s) continue;
-                    std::memcpy(dPix, s, bytesPerPixel);
-                }
-                continue;
-            }
-            for (int x = xStart; x < xEnd; ++x) {
-                const void* s = src->getPixelAddress(x, y);
-                void* d = dst->getPixelAddress(x, y);
-                if (!s || !d) continue;
-                std::memcpy(d, s, bytesPerPixel);
-            }
+            const std::uint8_t* sRow = row_ptr_if_fully_covered<const std::uint8_t>(
+                src, srcBounds, xStart, xEnd, y);
+            std::uint8_t* dRow = row_ptr_if_fully_covered<std::uint8_t>(
+                dst, dstBounds, xStart, xEnd, y);
+            copy_row_bytes_with_fallback(
+                src,
+                dst,
+                xStart,
+                xEnd,
+                y,
+                bytesPerPixel,
+                sRow,
+                dRow);
         }
     }
 
@@ -1294,6 +1438,9 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             OFX::ImageEffect* effect = nullptr;
             OFX::Image* srcImg = nullptr;
             OfxRectI window{};
+            OfxRectI srcBounds{};
+            int windowWidth = 0;
+            int windowHeight = 0;
             int srcComponents = 0;
             size_t srcStride = 0;
             bool canReadRowRgb = false;
@@ -1304,6 +1451,9 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
         user.effect = &_effect;
         user.srcImg = _srcImg;
         user.window = ctx.window;
+        user.srcBounds = _srcImg->getBounds();
+        user.windowWidth = std::max(0, ctx.window.x2 - ctx.window.x1);
+        user.windowHeight = std::max(0, ctx.window.y2 - ctx.window.y1);
         user.srcComponents = _nComponents;
         user.srcStride = static_cast<size_t>(std::max(_nComponents, 0));
         user.canReadRowRgb = (_nComponents >= 3);
@@ -1312,10 +1462,18 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
         callbacks.user = &user;
         callbacks.fetchRGB = [](void* u, int xx, int yy, float rgb[3]) -> bool {
             auto* self = static_cast<SpatialDIRUser*>(u);
+            if (xx < 0 || yy < 0 || xx >= self->windowWidth || yy >= self->windowHeight) {
+                return false;
+            }
             const int y = self->window.y1 + yy;
             if (self->cachedY != y) {
                 self->cachedY = y;
-                self->cachedRow = reinterpret_cast<const float*>(self->srcImg->getPixelAddress(self->window.x1, y));
+                self->cachedRow = row_ptr_if_fully_covered<const float>(
+                    self->srcImg,
+                    self->srcBounds,
+                    self->window.x1,
+                    self->window.x2,
+                    y);
             }
             const float* srcPix = nullptr;
             if (self->cachedRow && self->canReadRowRgb) {
@@ -1324,7 +1482,7 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             }
             else {
                 const int x = self->window.x1 + xx;
-                srcPix = reinterpret_cast<const float*>(self->srcImg->getPixelAddress(x, y));
+                srcPix = pixel_ptr<const float>(self->srcImg, x, y);
             }
             if (!srcPix) return false;
             copy_float3(rgb, srcPix);
@@ -1371,7 +1529,10 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
         const int width;
         const int height;
         const int originX;
+        const int originXEnd;
         const int originY;
+        const OfxRectI srcBounds;
+        const size_t srcStride;
 
         DensityProcessor(
             JuicerProcessor& self_,
@@ -1391,7 +1552,10 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             , width(width_)
             , height(height_)
             , originX(originX_)
+            , originXEnd(originX_ + width_)
             , originY(originY_)
+            , srcBounds(self_._srcImg->getBounds())
+            , srcStride(static_cast<size_t>(self_._nComponents))
         {
         }
 
@@ -1437,41 +1601,35 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             float* densityC = self._density.c.data();
             float* densityM = self._density.m.data();
             float* densityY = self._density.y.data();
-            const size_t srcStride = static_cast<size_t>(self._nComponents);
+            auto store_zero_density = [&](size_t idx) {
+                store_zero_density_triplet(densityC, densityM, densityY, idx);
+                };
             auto run_and_store_density = [&](size_t idx) -> bool {
                 if (!runner.run_density_pixel(wsRef, pxIn, pxOut)) {
                     if (printActive) {
-                        failure.store(true, std::memory_order_relaxed);
-                        abortFlag.store(true, std::memory_order_relaxed);
+                        mark_failure_and_abort(failure, abortFlag);
                         return false;
                     }
-                    densityC[idx] = 0.0f;
-                    densityM[idx] = 0.0f;
-                    densityY[idx] = 0.0f;
+                    store_zero_density(idx);
                     return true;
                 }
 
                 if (printActive) {
                     if (pxOut.medium != Pipeline::DensityMedium::Print) {
-                        failure.store(true, std::memory_order_relaxed);
-                        abortFlag.store(true, std::memory_order_relaxed);
+                        mark_failure_and_abort(failure, abortFlag);
                         return false;
                     }
-                    densityC[idx] = pxOut.printDensity.v[0];
-                    densityM[idx] = pxOut.printDensity.v[1];
-                    densityY[idx] = pxOut.printDensity.v[2];
+                    store_density_triplet(densityC, densityM, densityY, idx, pxOut.printDensity.v);
                     return true;
                 }
 
-                densityC[idx] = pxOut.negativeDensity.v[0];
-                densityM[idx] = pxOut.negativeDensity.v[1];
-                densityY[idx] = pxOut.negativeDensity.v[2];
+                store_density_triplet(densityC, densityM, densityY, idx, pxOut.negativeDensity.v);
                 return true;
             };
 
-            for (int yOff = yStart; yOff < yEnd && !abortFlag.load(std::memory_order_relaxed); ++yOff) {
+            for (int yOff = yStart; yOff < yEnd && !should_abort_relaxed(abortFlag); ++yOff) {
                 if (self._effect.abort()) {
-                    abortFlag.store(true, std::memory_order_relaxed);
+                    mark_abort(abortFlag);
                     break;
                 }
                 const int y = originY + yOff;
@@ -1485,7 +1643,7 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                     const float* corrMIt = corrM + rowOffset;
                     const float* corrCIt = corrC + rowOffset;
                     for (int xOff = 0; xOff < width; ++xOff, ++idx) {
-                        if (abortFlag.load(std::memory_order_relaxed)) {
+                        if (should_abort_relaxed(abortFlag)) {
                             break;
                         }
                         load_float3_from_planar(pxIn.filmRawOverride.v, filmRawBIt, filmRawGIt, filmRawRIt);
@@ -1497,16 +1655,21 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                     continue;
                 }
 
-                const float* srcRow = reinterpret_cast<const float*>(self._srcImg->getPixelAddress(originX, y));
+                const float* srcRow = row_ptr_if_fully_covered<const float>(
+                    self._srcImg,
+                    srcBounds,
+                    originX,
+                    originXEnd,
+                    y);
                 if (srcRow) {
                     const float* srcPixIt = srcRow;
                     size_t idx = rowOffset;
                     for (int xOff = 0; xOff < width; ++xOff, ++idx) {
-                        if (abortFlag.load(std::memory_order_relaxed)) {
+                        if (should_abort_relaxed(abortFlag)) {
                             break;
                         }
                         const float* srcPix = srcPixIt;
-                        srcPixIt += srcStride;
+                        srcPixIt += this->srcStride;
                         copy_float3(pxIn.rgb.v, srcPix);
                         if (!run_and_store_density(idx)) {
                             break;
@@ -1518,15 +1681,12 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                 size_t idx = rowOffset;
                 int x = originX;
                 for (int xOff = 0; xOff < width; ++xOff, ++idx, ++x) {
-                    if (abortFlag.load(std::memory_order_relaxed)) {
+                    if (should_abort_relaxed(abortFlag)) {
                         break;
                     }
-                    const float* srcPix =
-                        reinterpret_cast<const float*>(self._srcImg->getPixelAddress(x, y));
+                    const float* srcPix = pixel_ptr<const float>(self._srcImg, x, y);
                     if (!srcPix) {
-                        densityC[idx] = 0.0f;
-                        densityM[idx] = 0.0f;
-                        densityY[idx] = 0.0f;
+                        store_zero_density(idx);
                         continue;
                     }
                     copy_float3(pxIn.rgb.v, srcPix);
@@ -1553,7 +1713,7 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
     if (failure.load(std::memory_order_relaxed)) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    if (abortFlag.load(std::memory_order_relaxed)) {
+    if (should_abort_relaxed(abortFlag)) {
         return;
     }
 }
@@ -1565,6 +1725,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     }
     const bool traceInfo = JTRACE_ENABLED(1);
     const bool traceVerbose = JTRACE_ENABLED(3);
+    const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
 
     // The scanner now consumes only the staged CMY density slab; legacy RGB entry points are removed.
     Scanner::ScannerMediumRuntime printMediumOverride{};
@@ -1703,7 +1864,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     const auto leaseDeadline = leaseWaitStart + std::chrono::microseconds(kScannerRuntimeLeaseMaxWaitUs);
     while (!opticsRuntime) {
         waitedForLease = true;
-        if (_effect.abort()) {
+        if (should_abort_effect()) {
             JTRACE_VERBOSE("MSSRL", "event=runtime_lease outcome=abort");
             return;
         }
@@ -1772,13 +1933,14 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     optCtx.hasBaseline = (_ws ? _ws->hasBaseline : false);
     const unsigned int scannerThreadCount = std::max(1u, threadCount);
     optCtx.threadCount = scannerThreadCount;
-    optCtx.abort.shouldAbort = [this]() -> bool { return _effect.abort(); };
+    optCtx.abort.shouldAbort = should_abort_effect;
 
     ScannerOptics::render_density_to_rgb(optCtx);
 }
 
 void JuicerProcessor::processImpl() {
     if (!_srcImg || !_dstImg) return;
+    const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
 
     if (is_gpu_render_requested(_isEnabledOpenCLRender, _isEnabledCudaRender, _isEnabledMetalRender)) {
         // CPU-only staging layer: GPU/device paths are intentionally disabled until parity lands.
@@ -1808,46 +1970,21 @@ void JuicerProcessor::processImpl() {
         if (width <= 0) {
             return;
         }
-        const size_t rowBytes = static_cast<size_t>(width) * sizeof(float);
+        const OfxRectI srcBounds = _srcImg->getBounds();
+        const OfxRectI dstBounds = _dstImg->getBounds();
         for (int y = yStart; y < yEnd; ++y) {
-            float* dstRow = reinterpret_cast<float*>(_dstImg->getPixelAddress(xStart, y));
-            const float* srcRow = reinterpret_cast<const float*>(_srcImg->getPixelAddress(xStart, y));
-            if (dstRow && srcRow) {
-                std::memcpy(dstRow, srcRow, rowBytes);
-                continue;
-            }
-            if (dstRow && !srcRow) {
-                float* dstPixIt = dstRow;
-                int x = xStart;
-                for (int xOff = 0; xOff < width; ++xOff, ++x, ++dstPixIt) {
-                    const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-                    if (!srcPix) {
-                        continue;
-                    }
-                    *dstPixIt = *srcPix;
-                }
-                continue;
-            }
-            if (!dstRow && srcRow) {
-                const float* srcPixIt = srcRow;
-                int x = xStart;
-                for (int xOff = 0; xOff < width; ++xOff, ++x, ++srcPixIt) {
-                    float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
-                    if (!dstPix) {
-                        continue;
-                    }
-                    *dstPix = *srcPixIt;
-                }
-                continue;
-            }
-            for (int x = xStart; x < xEnd; ++x) {
-                float* dstPix = reinterpret_cast<float*>(_dstImg->getPixelAddress(x, y));
-                const float* srcPix = reinterpret_cast<const float*>(_srcImg->getPixelAddress(x, y));
-                if (!dstPix || !srcPix) {
-                    continue;
-                }
-                *dstPix = *srcPix;
-            }
+            float* dstRow = row_ptr_if_fully_covered<float>(
+                _dstImg, dstBounds, xStart, xEnd, y);
+            const float* srcRow = row_ptr_if_fully_covered<const float>(
+                _srcImg, srcBounds, xStart, xEnd, y);
+            copy_row_float_scalar_with_fallback(
+                _srcImg,
+                _dstImg,
+                xStart,
+                xEnd,
+                y,
+                srcRow,
+                dstRow);
         }
         return;
     }
@@ -1864,7 +2001,7 @@ void JuicerProcessor::processImpl() {
     const unsigned int threadCount = compute_thread_count(ctx.width, ctx.height);
     ensureDensityCapacity(ctx.width, ctx.height);
     writeMediumDensities(ctx, threadCount);
-    if (_effect.abort()) {
+    if (should_abort_effect()) {
         return;
     }
     renderScannerFromDensity(ctx, threadCount);
@@ -1915,6 +2052,7 @@ void JuicerProcessor::processImagesCUDA() {
     }
     const bool traceInfo = JTRACE_ENABLED(1);
     const bool traceVerbose = JTRACE_ENABLED(3);
+    const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
 
     const int bytesPerPixel = _nComponents * static_cast<int>(sizeof(float));
     const std::ptrdiff_t srcRowBytes = _srcImg->getRowBytes();
@@ -2000,7 +2138,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
     }
 
-    if (_effect.abort()) {
+    if (should_abort_effect()) {
         return;
     }
 
@@ -2093,7 +2231,22 @@ void JuicerProcessor::processImagesCUDA() {
         cudaResources = slot.get();
     }
 
-    if (_effect.abort()) {
+    auto record_cuda_use = [&](JuicerCuda::Resources* resources) {
+        if (!resources) {
+            return;
+        }
+        JuicerCuda::record_use(*resources, _pCudaStream);
+    };
+
+    auto abort_cuda_path_if_requested = [&](JuicerCuda::Resources* resources) -> bool {
+        if (!should_abort_effect()) {
+            return false;
+        }
+        record_cuda_use(resources);
+        return true;
+    };
+
+    if (should_abort_effect()) {
         return;
     }
 
@@ -2248,10 +2401,7 @@ void JuicerProcessor::processImagesCUDA() {
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
-    if (_effect.abort()) {
-        if (cudaResources) {
-            JuicerCuda::record_use(*cudaResources, _pCudaStream);
-        }
+    if (abort_cuda_path_if_requested(cudaResources)) {
         return;
     }
 
@@ -2300,7 +2450,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
 
-            JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            record_cuda_use(cudaResources);
         }
     }
 #endif
@@ -2372,7 +2522,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        JuicerCuda::record_use(*cudaResources, _pCudaStream);
+        record_cuda_use(cudaResources);
         return;
     }
 
@@ -2413,7 +2563,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!_cameraAutoEnabled || !cudaResources) {
             return;
         }
-        if (_effect.abort()) {
+        if (should_abort_effect()) {
             return;
         }
         if (!(run.nComponents == 3 || run.nComponents == 4)) {
@@ -3054,6 +3204,64 @@ void JuicerProcessor::processImagesCUDA() {
         return result;
     };
 
+    auto resolve_halation_metadata = [&]() -> Profiles::HalationMetadata {
+        return _hasHalationOverride ? _halationOverride : Profiles::HalationMetadata{};
+    };
+
+    auto resolve_grain_metadata = [&]() -> Profiles::GrainMetadata {
+        return _hasGrainOverride ? _grainOverride : _ws->grain;
+    };
+
+    struct OpticsFeatureSetup {
+        HalationSetupResult halation{};
+        GrainSetupResult grain{};
+        bool needGrainShared = false;
+    };
+
+    struct GrainOpticsState {
+        bool wantGrain = false;
+        bool wantGrainSublayers = false;
+        bool wantGrainBlur = false;
+        bool wantGrainMix = false;
+        float grainBlurSigmaPx = 0.0f;
+        float grainBlurSigmaMidPx = 0.0f;
+        bool needGrainShared = false;
+    };
+
+    auto setup_optics_feature_payloads = [&](JuicerCuda::PipelineRunParams& run,
+                                             bool includeDefects) -> OpticsFeatureSetup {
+        OpticsFeatureSetup setup{};
+        setup.halation = setup_halation_payload(resolve_halation_metadata());
+        setup.grain = setup_grain_payload(run, resolve_grain_metadata(), includeDefects);
+        setup.needGrainShared = needs_grain_shared(
+            setup.grain.wantGrain,
+            run.grain.debugView,
+            run.grain.chromaMix);
+        return setup;
+    };
+
+    auto resolve_grain_optics_state = [&](const OpticsFeatureSetup& featureSetup) -> GrainOpticsState {
+        GrainOpticsState state{};
+        const GrainSetupResult& grainSetup = featureSetup.grain;
+        state.wantGrain = grainSetup.wantGrain;
+        state.wantGrainSublayers = grainSetup.wantGrainSublayers;
+        state.wantGrainBlur = grainSetup.wantGrainBlur;
+        state.wantGrainMix = grainSetup.wantGrainMix;
+        state.grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
+        state.grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
+        state.needGrainShared = featureSetup.needGrainShared;
+        return state;
+    };
+
+    auto build_optics_scratch_needs_for_stage = [&](bool wantGlareBlur,
+                                                    const GrainOpticsState& grainState) -> OpticsScratchNeeds {
+        return build_optics_scratch_needs(
+            wantGlareBlur,
+            grainState.wantGrainBlur,
+            grainState.wantGrainSublayers,
+            grainState.wantGrainMix);
+    };
+
     auto launch_base_pipeline_graph = [&](int renderModeKey,
                                           JuicerCuda::PipelineRunParams& run) -> cudaError_t {
         std::string graphError;
@@ -3251,6 +3459,19 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
+    auto finalize_cuda_pipeline_tail_or_abort = [&](JuicerCuda::Resources* resources,
+                                                    const JuicerCuda::PipelineRunParams& run,
+                                                    cudaStream_t pipelineStream,
+                                                    cudaEvent_t scanEvent,
+                                                    const char* stageLabel) -> bool {
+        if (abort_cuda_path_if_requested(resources)) {
+            return false;
+        }
+        finalize_scan_error_stage(resources, run, pipelineStream, scanEvent, stageLabel);
+        record_cuda_use(resources);
+        return true;
+    };
+
     auto commit_submission_or_throw = [&]() {
         std::string commitError;
         if (!JuicerCuda::ResourceManager::commit_submission(submissionTxn, _pCudaStream, commitError)) {
@@ -3355,8 +3576,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!useSpatialDir) {
             return true;
         }
-        if (_effect.abort()) {
-            JuicerCuda::record_use(*resources, _pCudaStream);
+        if (abort_cuda_path_if_requested(resources)) {
             return false;
         }
 
@@ -3477,6 +3697,25 @@ void JuicerProcessor::processImagesCUDA() {
         JTRACE_VERBOSE("MSSKV", msg);
     };
 
+    auto validate_cuda_scanner_preflight_or_throw = [&](bool scannerRuntimeValid,
+                                                         const char* mediumLabel,
+                                                         const Scanner::ScannerMediumRuntime* mediumRuntime)
+        -> ScannerPreflightResult {
+        ScannerPreflightResult scannerPreflight{};
+        std::string scannerPreflightError;
+        if (!validate_scanner_preflight_runtime(
+                scannerRuntimeValid,
+                mediumLabel,
+                mediumRuntime,
+                scannerPreflight,
+                scannerPreflightError)) {
+            trace_cuda_scanner_preflight_fail(mediumLabel, scannerPreflightError);
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        trace_cuda_scanner_preflight_ok(mediumLabel, scannerPreflight.staticKey.hash);
+        return scannerPreflight;
+    };
+
     auto throw_cuda_optics_scratch_failure = [&](const std::string& opticsError) {
         if (is_scratch_contention_exhausted(opticsError)) {
             if (traceInfo) {
@@ -3507,6 +3746,30 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
     };
 
+    auto ensure_optics_scratch_or_throw = [&](JuicerCuda::Resources* resources,
+                                              int frameWidth,
+                                              int frameHeight,
+                                              const OpticsScratchNeeds& scratchNeeds,
+                                              bool needGrainShared,
+                                              bool needGateMask,
+                                              std::string& opticsError) {
+        if (JuicerCuda::ResourceManager::command_ensure_optics_scratch(
+                submissionTxn,
+                *resources,
+                frameWidth,
+                frameHeight,
+                scratchNeeds.blurred,
+                scratchNeeds.aux,
+                scratchNeeds.grain,
+                needGrainShared,
+                needGateMask,
+                _pCudaStream,
+                opticsError)) {
+            return;
+        }
+        throw_cuda_optics_scratch_failure(opticsError);
+    };
+
     auto throw_cuda_gate_mask_build_failure = [&](const char* stageTag, cudaError_t gateErr) {
         const char* msg = cudaGetErrorString(gateErr);
         mark_context_loss_recovery(stageTag ? stageTag : "build_gate_mask", gateErr, msg ? msg : "");
@@ -3518,6 +3781,48 @@ void JuicerProcessor::processImagesCUDA() {
             JTRACE("CUDA", traceMsg);
         }
         throw OFX::Exception::Suite(kOfxStatErrFatal);
+    };
+
+    auto setup_gate_mask_if_needed = [&](JuicerCuda::PipelineRunParams& run,
+                                         JuicerCuda::Resources* resources,
+                                         bool needGateMask,
+                                         const char* stageTag) -> bool {
+        run.grain.gateMask = nullptr;
+        run.grain.gateMaskWidth = 0;
+        run.grain.gateMaskHeight = 0;
+        if (!(needGateMask && resources && resources->scannerScratch.gateMask)) {
+            return true;
+        }
+
+        const std::uint64_t gateHash = make_gate_mask_hash(
+            run.grain.stbnSessionSeed,
+            run.grain.originX,
+            run.grain.originY,
+            width,
+            height,
+            run.grain.pixelSizeUm,
+            run.grain.gateDustAmount,
+            run.grain.gateScratchAmount);
+        if (gateHash != resources->scannerScratch.gateMaskHash) {
+            if (abort_cuda_path_if_requested(resources)) {
+                return false;
+            }
+            cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
+                &run,
+                resources->scannerScratch.gateMask,
+                resources->scannerScratch.gateWidth,
+                resources->scannerScratch.gateHeight,
+                _pCudaStream);
+            if (gateErr != cudaSuccess) {
+                throw_cuda_gate_mask_build_failure(stageTag, gateErr);
+            }
+            resources->scannerScratch.gateMaskHash = gateHash;
+        }
+
+        run.grain.gateMask = resources->scannerScratch.gateMask;
+        run.grain.gateMaskWidth = resources->scannerScratch.gateWidth;
+        run.grain.gateMaskHeight = resources->scannerScratch.gateHeight;
+        return true;
     };
 
     auto ensure_gaussian_kernel_or_throw = [&](auto& kernel,
@@ -3599,6 +3904,15 @@ void JuicerProcessor::processImagesCUDA() {
             JTRACE("CUDA", traceMsg);
         }
         throw OFX::Exception::Suite(kOfxStatErrFatal);
+    };
+
+    auto throw_if_pipeline_launch_failed = [&](cudaError_t pipelineErr,
+                                               const char* stageTag,
+                                               const char* failurePrefix) {
+        if (pipelineErr == cudaSuccess) {
+            return;
+        }
+        throw_pipeline_launch_failure(stageTag, failurePrefix, pipelineErr);
     };
 
     auto reset_grain_kernel_slots = [&](JuicerCuda::PipelineRunParams& run) {
@@ -3686,6 +4000,175 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
+    auto bind_optics_kernels_or_throw = [&](JuicerCuda::PipelineRunParams& run,
+                                            bool wantGlare,
+                                            float glareBlurSigmaPx,
+                                            float lensBlurSigmaPx,
+                                            float unsharpSigmaPx,
+                                            bool wantGrain,
+                                            bool wantGrainBlur,
+                                            bool wantGrainMix,
+                                            bool wantGrainSublayers,
+                                            float grainBlurSigmaPx,
+                                            float grainBlurSigmaMidPx,
+                                            const GrainSetupResult& grainSetup,
+                                            bool wantHalation,
+                                            const float* halationStrengthBGR,
+                                            const float* halationSigmaPx,
+                                            const float* halationScatterStrengthBGR,
+                                            const float* halationScatterSigmaPx,
+                                            std::string& opticsError) {
+        ensure_gaussian_kernel_or_throw(cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, "lens blur", opticsError);
+        ensure_gaussian_kernel_or_throw(cudaResources->scannerUnsharpKernel, unsharpSigmaPx, "unsharp", opticsError);
+        ensure_gaussian_kernel_or_throw(
+            cudaResources->scannerGlareKernel,
+            wantGlare ? glareBlurSigmaPx : 0.0f,
+            "glare",
+            opticsError);
+
+        reset_grain_kernel_slots(run);
+        if (wantGrain) {
+            ensure_gaussian_kernel_or_throw(
+                cudaResources->grainBlurKernel,
+                wantGrainBlur ? grainBlurSigmaPx : 0.0f,
+                "grain blur",
+                opticsError);
+            if (wantGrainBlur) {
+                run.grainKernels.blurKernel = cudaResources->grainBlurKernel.weights;
+                run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
+            }
+            if (wantGrainMix) {
+                ensure_gaussian_kernel_or_throw(
+                    cudaResources->grainBlurKernelMid,
+                    grainBlurSigmaMidPx,
+                    "grain mid blur",
+                    opticsError);
+                ensure_gaussian_kernel_or_throw(
+                    cudaResources->grainBlurKernelCoarse,
+                    grainSetup.grainBlurSigmaCoarsePx,
+                    "grain coarse blur",
+                    opticsError);
+                run.grainKernels.blurKernelMid = cudaResources->grainBlurKernelMid.weights;
+                run.grainKernels.blurRadiusMid = cudaResources->grainBlurKernelMid.radius;
+                run.grainKernels.blurKernelCoarse = cudaResources->grainBlurKernelCoarse.weights;
+                run.grainKernels.blurRadiusCoarse = cudaResources->grainBlurKernelCoarse.radius;
+            }
+
+            if (wantGrainSublayers) {
+                bind_grain_dye_kernels_or_throw(run, grainSetup, opticsError);
+            }
+        }
+
+        reset_halation_kernel_slots(run, wantHalation, halationStrengthBGR, halationScatterStrengthBGR);
+        if (wantHalation) {
+            bind_halation_kernels_or_throw(
+                run,
+                halationStrengthBGR,
+                halationSigmaPx,
+                halationScatterStrengthBGR,
+                halationScatterSigmaPx,
+                    opticsError);
+        }
+    };
+
+    struct GlareSetupResult {
+        bool wantGlare = false;
+        float percent = 0.0f;
+        float roughness = 0.0f;
+        float blurSigmaPx = 0.0f;
+        std::uint64_t seed = 0;
+    };
+
+    struct OpticsIntent {
+        bool wantLensBlur = false;
+        bool wantUnsharp = false;
+        bool wantGlareBlur = false;
+        bool needGateMask = false;
+        bool wantOptics = false;
+    };
+
+    struct ScannerOpticsParams {
+        float lensBlurSigmaPx = 0.0f;
+        float unsharpSigmaPx = 0.0f;
+        float unsharpAmount = 0.0f;
+    };
+
+    auto setup_glare_payload = [&](const Scanner::ScannerMediumRuntime& medium,
+                                   Scanner::ScannerMedium mediumType) -> GlareSetupResult {
+        GlareSetupResult result{};
+        result.wantGlare = medium.glare.active && (medium.glare.percent > 0.0f);
+        if (!result.wantGlare) {
+            return result;
+        }
+
+        result.percent = medium.glare.percent;
+        result.roughness = medium.glare.roughness;
+        result.blurSigmaPx = medium.glare.blur;
+
+        const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+        const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
+        const std::uint64_t glareFields[4] = {
+            seedBase,
+            static_cast<std::uint64_t>(_frameBoundsVersion),
+            medium.staticKey.glareHash,
+            static_cast<std::uint64_t>(mediumType)
+        };
+        result.seed = Hash::hash_bytes(glareFields, sizeof(glareFields));
+        return result;
+    };
+
+    auto build_optics_intent = [&](const JuicerCuda::PipelineRunParams& run,
+                                   float lensBlurSigmaPx,
+                                   float unsharpSigmaPx,
+                                   float unsharpAmount,
+                                   bool wantGlare,
+                                   float glareBlurSigmaPx,
+                                   bool wantHalation,
+                                   bool wantGrain) -> OpticsIntent {
+        OpticsIntent intent{};
+        intent.wantLensBlur = is_positive_finite(lensBlurSigmaPx);
+        intent.wantUnsharp = wants_unsharp(unsharpSigmaPx, unsharpAmount);
+        intent.wantGlareBlur = wantGlare && is_positive_finite(glareBlurSigmaPx);
+        intent.needGateMask = needs_gate_mask_for_defects(
+            run.grain.gateDustAmount,
+            run.grain.gateScratchAmount);
+        const bool wantWeave = (run.gateWeave.active != 0);
+        const bool wantDefects = has_grain_defects(
+            run.grain.filmDustAmount,
+            run.grain.gateDustAmount,
+            run.grain.filmScratchAmount,
+            run.grain.gateScratchAmount);
+        intent.wantOptics = wants_optics_stage(
+            intent.wantLensBlur,
+            intent.wantUnsharp,
+            wantGlare,
+            wantHalation,
+            wantGrain,
+            wantWeave,
+            wantDefects);
+        return intent;
+    };
+
+    auto resolve_scanner_optics_params = [&]() -> ScannerOpticsParams {
+        ScannerOpticsParams params{};
+        params.lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
+        params.unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
+        params.unsharpAmount = _scannerOptions.unsharpAmount;
+        return params;
+    };
+
+    auto ensure_cuda_resources_or_throw = [&](JuicerCuda::Resources* resources, const char* stageLabel) {
+        if (resources) {
+            return;
+        }
+        std::string msg;
+        msg.reserve(48);
+        msg = "FATAL: CUDA resources missing for ";
+        msg += (stageLabel ? stageLabel : "pipeline");
+        JTRACE("CUDA", msg);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    };
+
     auto initialize_pipeline_run = [&](JuicerCuda::PipelineRunParams& run) {
         run.src = srcPtr;
         run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
@@ -3771,113 +4254,90 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
     };
 
+    const ScannerOpticsParams scannerOptics = resolve_scanner_optics_params();
+    const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
+    const bool useSpatialDIR = spatial_dir_enabled(_dirRT);
+    auto prepare_common_cuda_pipeline_stages = [&](JuicerCuda::PipelineRunParams& run,
+                                                   JuicerCuda::Resources* resources,
+                                                   bool useSpatialDIR,
+                                                   bool negativeMedium,
+                                                   cudaEvent_t& outScanEvent) -> bool {
+        setup_camera_auto_exposure(run, resources);
+        populate_film_runtime_payload(run);
+        outScanEvent = setup_scan_stage_resources(resources, run, stream, negativeMedium);
+        return setup_spatial_dir_stage(resources, run, width, height, useSpatialDIR);
+    };
+
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
         constexpr const char* kCudaNegativeMediumLabel = "negative";
-        ScannerPreflightResult scannerPreflight{};
-        std::string scannerPreflightError;
-        if (!validate_scanner_preflight_runtime(
-                _ws->negativeScannerValid,
-                kCudaNegativeMediumLabel,
-                &_ws->negativeMediumRuntime,
-                scannerPreflight,
-                scannerPreflightError)) {
-            trace_cuda_scanner_preflight_fail(kCudaNegativeMediumLabel, scannerPreflightError);
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        trace_cuda_scanner_preflight_ok(kCudaNegativeMediumLabel, scannerPreflight.staticKey.hash);
+        ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
+            _ws->negativeScannerValid,
+            kCudaNegativeMediumLabel,
+            &_ws->negativeMediumRuntime);
         const Scanner::ScannerMediumRuntime& negativeMediumRuntime = *scannerPreflight.mediumRuntime;
-
-        const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
-        const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
-        const float unsharpAmount = _scannerOptions.unsharpAmount;
-        const bool glareActive = negativeMediumRuntime.glare.active && (negativeMediumRuntime.glare.percent > 0.0f);
-        const bool useSpatialDIR = spatial_dir_enabled(_dirRT);
 
         JuicerCuda::PipelineRunParams run{};
         initialize_pipeline_run(run);
         populate_common_pipeline_payload(run, scannerPreflight);
 
-        const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
-
         {
-            if (!cudaResources) {
-                JTRACE("CUDA", "FATAL: CUDA resources missing for negative pipeline");
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-            }
+            ensure_cuda_resources_or_throw(cudaResources, "negative pipeline");
 
-            if (_effect.abort()) {
-                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            if (abort_cuda_path_if_requested(cudaResources)) {
                 return;
             }
 
-            setup_camera_auto_exposure(run, cudaResources);
-
-            populate_film_runtime_payload(run);
-
-            cudaEvent_t scanEvent = setup_scan_stage_resources(cudaResources, run, stream, true);
-            if (!setup_spatial_dir_stage(cudaResources, run, width, height, useSpatialDIR)) {
+            cudaEvent_t scanEvent = nullptr;
+            if (!prepare_common_cuda_pipeline_stages(
+                    run,
+                    cudaResources,
+                    useSpatialDIR,
+                    true,
+                    scanEvent)) {
                 return;
             }
 
-            const bool wantGlare = glareActive;
-            float glarePercent = 0.0f;
-            float glareRoughness = 0.0f;
-            float glareBlurSigmaPx = 0.0f;
-            std::uint64_t glareSeed = 0;
-            if (wantGlare && _ws) {
-                glarePercent = _ws->negativeMediumRuntime.glare.percent;
-                glareRoughness = _ws->negativeMediumRuntime.glare.roughness;
-                glareBlurSigmaPx = _ws->negativeMediumRuntime.glare.blur;
+            const GlareSetupResult glareSetup =
+                setup_glare_payload(negativeMediumRuntime, Scanner::ScannerMedium::Negative);
+            const bool wantGlare = glareSetup.wantGlare;
+            const float glarePercent = glareSetup.percent;
+            const float glareRoughness = glareSetup.roughness;
+            const float glareBlurSigmaPx = glareSetup.blurSigmaPx;
+            const std::uint64_t glareSeed = glareSetup.seed;
 
-                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-                const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
-
-                const std::uint64_t glareFields[4] = {
-                    seedBase,
-                    static_cast<std::uint64_t>(_frameBoundsVersion),
-                    _ws->negativeMediumRuntime.staticKey.glareHash,
-                    static_cast<std::uint64_t>(Scanner::ScannerMedium::Negative)
-                };
-                glareSeed = Hash::hash_bytes(glareFields, sizeof(glareFields));
-            }
-
-            const Profiles::HalationMetadata halationUi = _hasHalationOverride ? _halationOverride : Profiles::HalationMetadata{};
-            const HalationSetupResult halationSetup = setup_halation_payload(halationUi);
+            const OpticsFeatureSetup featureSetup = setup_optics_feature_payloads(run, true);
+            const HalationSetupResult& halationSetup = featureSetup.halation;
             const float* halationStrengthBGR = halationSetup.strengthBGR;
             const float* halationScatterStrengthBGR = halationSetup.scatterStrengthBGR;
             const float* halationSigmaPx = halationSetup.sigmaPx;
             const float* halationScatterSigmaPx = halationSetup.scatterSigmaPx;
             const bool wantHalation = halationSetup.wantHalation;
 
-            const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
-            const GrainSetupResult grainSetup = setup_grain_payload(run, grainUi, true);
-            const bool wantGrain = grainSetup.wantGrain;
-            const bool wantGrainSublayers = grainSetup.wantGrainSublayers;
-            const bool wantGrainBlur = grainSetup.wantGrainBlur;
-            const bool wantGrainMix = grainSetup.wantGrainMix;
-            const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
-            const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
-            const bool needGrainShared = needs_grain_shared(
-                wantGrain, run.grain.debugView, run.grain.chromaMix);
+            const GrainSetupResult& grainSetup = featureSetup.grain;
+            const GrainOpticsState grainState = resolve_grain_optics_state(featureSetup);
+            const bool wantGrain = grainState.wantGrain;
+            const bool wantGrainSublayers = grainState.wantGrainSublayers;
+            const bool wantGrainBlur = grainState.wantGrainBlur;
+            const bool wantGrainMix = grainState.wantGrainMix;
+            const float grainBlurSigmaPx = grainState.grainBlurSigmaPx;
+            const float grainBlurSigmaMidPx = grainState.grainBlurSigmaMidPx;
+            const bool needGrainShared = grainState.needGrainShared;
 
-            const bool wantLensBlur = is_positive_finite(lensBlurSigmaPx);
-            const bool wantUnsharp = wants_unsharp(unsharpSigmaPx, unsharpAmount);
-            const bool wantGlareBlur = wantGlare && is_positive_finite(glareBlurSigmaPx);
-            const bool wantWeave = (run.gateWeave.active != 0);
-            const bool wantDefects = has_grain_defects(
-                run.grain.filmDustAmount,
-                run.grain.gateDustAmount,
-                run.grain.filmScratchAmount,
-                run.grain.gateScratchAmount);
-            const bool needGateMask = needs_gate_mask_for_defects(
-                run.grain.gateDustAmount,
-                run.grain.gateScratchAmount);
-            const bool wantOptics = wants_optics_stage(
-                wantLensBlur, wantUnsharp, wantGlare, wantHalation, wantGrain, wantWeave, wantDefects);
+            const OpticsIntent opticsIntent = build_optics_intent(
+                run,
+                scannerOptics.lensBlurSigmaPx,
+                scannerOptics.unsharpSigmaPx,
+                scannerOptics.unsharpAmount,
+                wantGlare,
+                glareBlurSigmaPx,
+                wantHalation,
+                wantGrain);
+            const bool wantGlareBlur = opticsIntent.wantGlareBlur;
+            const bool needGateMask = opticsIntent.needGateMask;
+            const bool wantOptics = opticsIntent.wantOptics;
 
-            if (_effect.abort()) {
-                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            if (abort_cuda_path_if_requested(cudaResources)) {
                 return;
             }
 
@@ -3889,106 +4349,43 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs(
+                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs_for_stage(
                     wantGlareBlur,
-                    wantGrainBlur,
-                    wantGrainSublayers,
-                    wantGrainMix);
-                if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
-                        submissionTxn,
-                        *cudaResources,
-                        width,
-                        height,
-                        scratchNeeds.blurred,
-                        scratchNeeds.aux,
-                        scratchNeeds.grain,
-                        needGrainShared,
-                        needGateMask,
-                        _pCudaStream,
-                        opticsError)) {
-                    throw_cuda_optics_scratch_failure(opticsError);
-                }
-                if (needGateMask && cudaResources->scannerScratch.gateMask) {
-                    const std::uint64_t gateHash = make_gate_mask_hash(
-                        run.grain.stbnSessionSeed,
-                        run.grain.originX,
-                        run.grain.originY,
-                        width,
-                        height,
-                        run.grain.pixelSizeUm,
-                        run.grain.gateDustAmount,
-                        run.grain.gateScratchAmount);
-                    if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
-                        if (_effect.abort()) {
-                            JuicerCuda::record_use(*cudaResources, _pCudaStream);
-                            return;
-                        }
-                        cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
-                            &run,
-                            cudaResources->scannerScratch.gateMask,
-                            cudaResources->scannerScratch.gateWidth,
-                            cudaResources->scannerScratch.gateHeight,
-                            _pCudaStream);
-                        if (gateErr != cudaSuccess) {
-                            throw_cuda_gate_mask_build_failure("build_gate_mask_negative", gateErr);
-                        }
-                        cudaResources->scannerScratch.gateMaskHash = gateHash;
-                    }
-                    run.grain.gateMask = cudaResources->scannerScratch.gateMask;
-                    run.grain.gateMaskWidth = cudaResources->scannerScratch.gateWidth;
-                    run.grain.gateMaskHeight = cudaResources->scannerScratch.gateHeight;
-                }
-                ensure_gaussian_kernel_or_throw(cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, "lens blur", opticsError);
-                ensure_gaussian_kernel_or_throw(cudaResources->scannerUnsharpKernel, unsharpSigmaPx, "unsharp", opticsError);
-                ensure_gaussian_kernel_or_throw(
-                    cudaResources->scannerGlareKernel,
-                    wantGlare ? glareBlurSigmaPx : 0.0f,
-                    "glare",
+                    grainState);
+                ensure_optics_scratch_or_throw(
+                    cudaResources,
+                    width,
+                    height,
+                    scratchNeeds,
+                    needGrainShared,
+                    needGateMask,
                     opticsError);
-
-                reset_grain_kernel_slots(run);
-                if (wantGrain) {
-                    ensure_gaussian_kernel_or_throw(
-                        cudaResources->grainBlurKernel,
-                        wantGrainBlur ? grainBlurSigmaPx : 0.0f,
-                        "grain blur",
-                        opticsError);
-                    if (wantGrainBlur) {
-                        run.grainKernels.blurKernel = cudaResources->grainBlurKernel.weights;
-                        run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
-                    }
-                    if (wantGrainMix) {
-                        ensure_gaussian_kernel_or_throw(
-                            cudaResources->grainBlurKernelMid,
-                            grainBlurSigmaMidPx,
-                            "grain mid blur",
-                            opticsError);
-                        ensure_gaussian_kernel_or_throw(
-                            cudaResources->grainBlurKernelCoarse,
-                            grainSetup.grainBlurSigmaCoarsePx,
-                            "grain coarse blur",
-                            opticsError);
-                        run.grainKernels.blurKernelMid = cudaResources->grainBlurKernelMid.weights;
-                        run.grainKernels.blurRadiusMid = cudaResources->grainBlurKernelMid.radius;
-                        run.grainKernels.blurKernelCoarse = cudaResources->grainBlurKernelCoarse.weights;
-                        run.grainKernels.blurRadiusCoarse = cudaResources->grainBlurKernelCoarse.radius;
-                    }
-
-                    if (wantGrainSublayers) {
-                        bind_grain_dye_kernels_or_throw(run, grainSetup, opticsError);
-                    }
-                }
-
-                reset_halation_kernel_slots(run, wantHalation, halationStrengthBGR, halationScatterStrengthBGR);
-                if (wantHalation) {
-                    bind_halation_kernels_or_throw(
+                if (!setup_gate_mask_if_needed(
                         run,
-                        halationStrengthBGR,
-                        halationSigmaPx,
-                        halationScatterStrengthBGR,
-                        halationScatterSigmaPx,
-                        opticsError);
+                        cudaResources,
+                        needGateMask,
+                        "build_gate_mask_negative")) {
+                    return;
                 }
+                bind_optics_kernels_or_throw(
+                    run,
+                    wantGlare,
+                    glareBlurSigmaPx,
+                    scannerOptics.lensBlurSigmaPx,
+                    scannerOptics.unsharpSigmaPx,
+                    wantGrain,
+                    wantGrainBlur,
+                    wantGrainMix,
+                    wantGrainSublayers,
+                    grainBlurSigmaPx,
+                    grainBlurSigmaMidPx,
+                    grainSetup,
+                    wantHalation,
+                    halationStrengthBGR,
+                    halationSigmaPx,
+                    halationScatterStrengthBGR,
+                    halationScatterSigmaPx,
+                    opticsError);
 
                 err = juicer_cuda_negative_pipeline_optics(
                     &run,
@@ -4006,7 +4403,7 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerLensBlurKernel.radius,
                     cudaResources->scannerUnsharpKernel.weights,
                     cudaResources->scannerUnsharpKernel.radius,
-                    unsharpAmount,
+                    scannerOptics.unsharpAmount,
                     win.x1,
                     win.y1,
                     glareSeed,
@@ -4016,21 +4413,19 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerGlareKernel.radius,
                     _pCudaStream);
             }
-            if (err != cudaSuccess) {
-                throw_pipeline_launch_failure(
-                    "negative_pipeline_kernel_launch",
-                    "negative pipeline kernel launch failed",
-                    err);
-            }
+            throw_if_pipeline_launch_failed(
+                err,
+                "negative_pipeline_kernel_launch",
+                "negative pipeline kernel launch failed");
 
-            if (_effect.abort()) {
-                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            if (!finalize_cuda_pipeline_tail_or_abort(
+                    cudaResources,
+                    run,
+                    stream,
+                    scanEvent,
+                    "negative")) {
                 return;
             }
-
-            finalize_scan_error_stage(cudaResources, run, stream, scanEvent, "negative");
-
-            JuicerCuda::record_use(*cudaResources, _pCudaStream);
         }
         commit_submission_or_throw();
         return;
@@ -4046,21 +4441,11 @@ void JuicerProcessor::processImagesCUDA() {
 #endif
         }
 
-        ScannerPreflightResult scannerPreflight{};
-        std::string scannerPreflightError;
         constexpr const char* kCudaPrintMediumLabel = "print";
-        if (!validate_scanner_preflight_runtime(
-                _ws->printScannerValid,
-                kCudaPrintMediumLabel,
-                &_ws->printMediumRuntime,
-                scannerPreflight,
-                scannerPreflightError)) {
-            trace_cuda_scanner_preflight_fail(kCudaPrintMediumLabel, scannerPreflightError);
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        trace_cuda_scanner_preflight_ok(kCudaPrintMediumLabel, scannerPreflight.staticKey.hash);
-
-        const bool useSpatialDIR = spatial_dir_enabled(_dirRT);
+        ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
+            _ws->printScannerValid,
+            kCudaPrintMediumLabel,
+            &_ws->printMediumRuntime);
 
         // Print exposure compensation factor is computed on CPU (no image reads; safe for CUDA renders).
         const float kMidSpectral = compute_print_midgray_factor_cached(
@@ -4074,20 +4459,12 @@ void JuicerProcessor::processImagesCUDA() {
         initialize_pipeline_run(run);
         populate_common_pipeline_payload(run, scannerPreflight);
 
-        const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
-
         {
-            if (!cudaResources) {
-                JTRACE("CUDA", "FATAL: CUDA resources missing for print pipeline");
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-            }
+            ensure_cuda_resources_or_throw(cudaResources, "print pipeline");
 
-            if (_effect.abort()) {
-                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            if (abort_cuda_path_if_requested(cudaResources)) {
                 return;
             }
-
-            setup_camera_auto_exposure(run, cudaResources);
 
             // Ensure the print illuminant filtered is available for current print params.
             std::string illumError;
@@ -4154,11 +4531,13 @@ void JuicerProcessor::processImagesCUDA() {
                 JTRACE_VERBOSE("PRINTDBG", msg);
             }
 
-            // Film density curves + sensitivities + SPD reconstruction tables.
-            populate_film_runtime_payload(run);
-
-            cudaEvent_t scanEvent = setup_scan_stage_resources(cudaResources, run, stream, false);
-            if (!setup_spatial_dir_stage(cudaResources, run, width, height, useSpatialDIR)) {
+            cudaEvent_t scanEvent = nullptr;
+            if (!prepare_common_cuda_pipeline_stages(
+                    run,
+                    cudaResources,
+                    useSpatialDIR,
+                    false,
+                    scanEvent)) {
                 return;
             }
 
@@ -4223,68 +4602,46 @@ void JuicerProcessor::processImagesCUDA() {
                 printMedium.staticKey.glareHash = glareHash;
             }
 
-            const bool wantGlare = printMedium.glare.active && (printMedium.glare.percent > 0.0f);
-            float glarePercent = 0.0f;
-            float glareRoughness = 0.0f;
-            float glareBlurSigmaPx = 0.0f;
-            std::uint64_t glareSeed = 0;
-            if (wantGlare) {
-                glarePercent = printMedium.glare.percent;
-                glareRoughness = printMedium.glare.roughness;
-                glareBlurSigmaPx = printMedium.glare.blur;
+            const GlareSetupResult glareSetup =
+                setup_glare_payload(printMedium, Scanner::ScannerMedium::Print);
+            const bool wantGlare = glareSetup.wantGlare;
+            const float glarePercent = glareSetup.percent;
+            const float glareRoughness = glareSetup.roughness;
+            const float glareBlurSigmaPx = glareSetup.blurSigmaPx;
+            const std::uint64_t glareSeed = glareSetup.seed;
 
-                const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-                const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
-
-                const std::uint64_t glareFields[4] = {
-                    seedBase,
-                    static_cast<std::uint64_t>(_frameBoundsVersion),
-                    printMedium.staticKey.glareHash,
-                    static_cast<std::uint64_t>(Scanner::ScannerMedium::Print)
-                };
-                glareSeed = Hash::hash_bytes(glareFields, sizeof(glareFields));
-            }
-
-            const Profiles::HalationMetadata halationUi = _hasHalationOverride ? _halationOverride : Profiles::HalationMetadata{};
-            const HalationSetupResult halationSetup = setup_halation_payload(halationUi);
+            const OpticsFeatureSetup featureSetup = setup_optics_feature_payloads(run, false);
+            const HalationSetupResult& halationSetup = featureSetup.halation;
             const float* halationStrengthBGR = halationSetup.strengthBGR;
             const float* halationScatterStrengthBGR = halationSetup.scatterStrengthBGR;
             const float* halationSigmaPx = halationSetup.sigmaPx;
             const float* halationScatterSigmaPx = halationSetup.scatterSigmaPx;
             const bool wantHalation = halationSetup.wantHalation;
 
-            const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
-            const GrainSetupResult grainSetup = setup_grain_payload(run, grainUi, false);
-            const bool wantGrain = grainSetup.wantGrain;
-            const bool wantGrainSublayers = grainSetup.wantGrainSublayers;
-            const bool wantGrainBlur = grainSetup.wantGrainBlur;
-            const bool wantGrainMix = grainSetup.wantGrainMix;
-            const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
-            const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
-            const bool needGrainShared = needs_grain_shared(
-                wantGrain, run.grain.debugView, run.grain.chromaMix);
+            const GrainSetupResult& grainSetup = featureSetup.grain;
+            const GrainOpticsState grainState = resolve_grain_optics_state(featureSetup);
+            const bool wantGrain = grainState.wantGrain;
+            const bool wantGrainSublayers = grainState.wantGrainSublayers;
+            const bool wantGrainBlur = grainState.wantGrainBlur;
+            const bool wantGrainMix = grainState.wantGrainMix;
+            const float grainBlurSigmaPx = grainState.grainBlurSigmaPx;
+            const float grainBlurSigmaMidPx = grainState.grainBlurSigmaMidPx;
+            const bool needGrainShared = grainState.needGrainShared;
 
-            const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
-            const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
-            const float unsharpAmount = _scannerOptions.unsharpAmount;
+            const OpticsIntent opticsIntent = build_optics_intent(
+                run,
+                scannerOptics.lensBlurSigmaPx,
+                scannerOptics.unsharpSigmaPx,
+                scannerOptics.unsharpAmount,
+                wantGlare,
+                glareBlurSigmaPx,
+                wantHalation,
+                wantGrain);
+            const bool wantGlareBlur = opticsIntent.wantGlareBlur;
+            const bool needGateMask = opticsIntent.needGateMask;
+            const bool wantOptics = opticsIntent.wantOptics;
 
-            const bool wantLensBlur = is_positive_finite(lensBlurSigmaPx);
-            const bool wantUnsharp = wants_unsharp(unsharpSigmaPx, unsharpAmount);
-            const bool wantGlareBlur = wantGlare && is_positive_finite(glareBlurSigmaPx);
-            const bool wantWeave = (run.gateWeave.active != 0);
-            const bool wantDefects = has_grain_defects(
-                run.grain.filmDustAmount,
-                run.grain.gateDustAmount,
-                run.grain.filmScratchAmount,
-                run.grain.gateScratchAmount);
-            const bool needGateMask = needs_gate_mask_for_defects(
-                run.grain.gateDustAmount,
-                run.grain.gateScratchAmount);
-            const bool wantOptics = wants_optics_stage(
-                wantLensBlur, wantUnsharp, wantGlare, wantHalation, wantGrain, wantWeave, wantDefects);
-
-            if (_effect.abort()) {
-                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            if (abort_cuda_path_if_requested(cudaResources)) {
                 return;
             }
 
@@ -4296,106 +4653,43 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs(
+                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs_for_stage(
                     wantGlareBlur,
-                    wantGrainBlur,
-                    wantGrainSublayers,
-                    wantGrainMix);
-                if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
-                        submissionTxn,
-                        *cudaResources,
-                        width,
-                        height,
-                        scratchNeeds.blurred,
-                        scratchNeeds.aux,
-                        scratchNeeds.grain,
-                        needGrainShared,
-                        needGateMask,
-                        _pCudaStream,
-                        opticsError)) {
-                    throw_cuda_optics_scratch_failure(opticsError);
-                }
-                if (needGateMask && cudaResources->scannerScratch.gateMask) {
-                    const std::uint64_t gateHash = make_gate_mask_hash(
-                        run.grain.stbnSessionSeed,
-                        run.grain.originX,
-                        run.grain.originY,
-                        width,
-                        height,
-                        run.grain.pixelSizeUm,
-                        run.grain.gateDustAmount,
-                        run.grain.gateScratchAmount);
-                    if (gateHash != cudaResources->scannerScratch.gateMaskHash) {
-                        if (_effect.abort()) {
-                            JuicerCuda::record_use(*cudaResources, _pCudaStream);
-                            return;
-                        }
-                        cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
-                            &run,
-                            cudaResources->scannerScratch.gateMask,
-                            cudaResources->scannerScratch.gateWidth,
-                            cudaResources->scannerScratch.gateHeight,
-                            _pCudaStream);
-                        if (gateErr != cudaSuccess) {
-                            throw_cuda_gate_mask_build_failure("build_gate_mask_print", gateErr);
-                        }
-                        cudaResources->scannerScratch.gateMaskHash = gateHash;
-                    }
-                    run.grain.gateMask = cudaResources->scannerScratch.gateMask;
-                    run.grain.gateMaskWidth = cudaResources->scannerScratch.gateWidth;
-                    run.grain.gateMaskHeight = cudaResources->scannerScratch.gateHeight;
-                }
-                ensure_gaussian_kernel_or_throw(cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, "lens blur", opticsError);
-                ensure_gaussian_kernel_or_throw(cudaResources->scannerUnsharpKernel, unsharpSigmaPx, "unsharp", opticsError);
-                ensure_gaussian_kernel_or_throw(
-                    cudaResources->scannerGlareKernel,
-                    wantGlare ? glareBlurSigmaPx : 0.0f,
-                    "glare",
+                    grainState);
+                ensure_optics_scratch_or_throw(
+                    cudaResources,
+                    width,
+                    height,
+                    scratchNeeds,
+                    needGrainShared,
+                    needGateMask,
                     opticsError);
-
-                reset_grain_kernel_slots(run);
-                if (wantGrain) {
-                    ensure_gaussian_kernel_or_throw(
-                        cudaResources->grainBlurKernel,
-                        wantGrainBlur ? grainBlurSigmaPx : 0.0f,
-                        "grain blur",
-                        opticsError);
-                    if (wantGrainBlur) {
-                        run.grainKernels.blurKernel = cudaResources->grainBlurKernel.weights;
-                        run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
-                    }
-                    if (wantGrainMix) {
-                        ensure_gaussian_kernel_or_throw(
-                            cudaResources->grainBlurKernelMid,
-                            grainBlurSigmaMidPx,
-                            "grain mid blur",
-                            opticsError);
-                        ensure_gaussian_kernel_or_throw(
-                            cudaResources->grainBlurKernelCoarse,
-                            grainSetup.grainBlurSigmaCoarsePx,
-                            "grain coarse blur",
-                            opticsError);
-                        run.grainKernels.blurKernelMid = cudaResources->grainBlurKernelMid.weights;
-                        run.grainKernels.blurRadiusMid = cudaResources->grainBlurKernelMid.radius;
-                        run.grainKernels.blurKernelCoarse = cudaResources->grainBlurKernelCoarse.weights;
-                        run.grainKernels.blurRadiusCoarse = cudaResources->grainBlurKernelCoarse.radius;
-                    }
-
-                    if (wantGrainSublayers) {
-                        bind_grain_dye_kernels_or_throw(run, grainSetup, opticsError);
-                    }
-                }
-
-                reset_halation_kernel_slots(run, wantHalation, halationStrengthBGR, halationScatterStrengthBGR);
-                if (wantHalation) {
-                    bind_halation_kernels_or_throw(
+                if (!setup_gate_mask_if_needed(
                         run,
-                        halationStrengthBGR,
-                        halationSigmaPx,
-                        halationScatterStrengthBGR,
-                        halationScatterSigmaPx,
-                        opticsError);
+                        cudaResources,
+                        needGateMask,
+                        "build_gate_mask_print")) {
+                    return;
                 }
+                bind_optics_kernels_or_throw(
+                    run,
+                    wantGlare,
+                    glareBlurSigmaPx,
+                    scannerOptics.lensBlurSigmaPx,
+                    scannerOptics.unsharpSigmaPx,
+                    wantGrain,
+                    wantGrainBlur,
+                    wantGrainMix,
+                    wantGrainSublayers,
+                    grainBlurSigmaPx,
+                    grainBlurSigmaMidPx,
+                    grainSetup,
+                    wantHalation,
+                    halationStrengthBGR,
+                    halationSigmaPx,
+                    halationScatterStrengthBGR,
+                    halationScatterSigmaPx,
+                    opticsError);
 
                 err = juicer_cuda_print_pipeline_optics(
                     &run,
@@ -4413,7 +4707,7 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerLensBlurKernel.radius,
                     cudaResources->scannerUnsharpKernel.weights,
                     cudaResources->scannerUnsharpKernel.radius,
-                    unsharpAmount,
+                    scannerOptics.unsharpAmount,
                     win.x1,
                     win.y1,
                     glareSeed,
@@ -4423,21 +4717,19 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->scannerGlareKernel.radius,
                     _pCudaStream);
             }
-            if (err != cudaSuccess) {
-                throw_pipeline_launch_failure(
-                    "print_pipeline_kernel_launch",
-                    "print pipeline kernel launch failed",
-                    err);
-            }
+            throw_if_pipeline_launch_failed(
+                err,
+                "print_pipeline_kernel_launch",
+                "print pipeline kernel launch failed");
 
-            if (_effect.abort()) {
-                JuicerCuda::record_use(*cudaResources, _pCudaStream);
+            if (!finalize_cuda_pipeline_tail_or_abort(
+                    cudaResources,
+                    run,
+                    stream,
+                    scanEvent,
+                    "print")) {
                 return;
             }
-
-            finalize_scan_error_stage(cudaResources, run, stream, scanEvent, "print");
-
-            JuicerCuda::record_use(*cudaResources, _pCudaStream);
         }
         commit_submission_or_throw();
         return;
