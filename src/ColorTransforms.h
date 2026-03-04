@@ -9,6 +9,8 @@
 
 // Forward declarations
 namespace Spectral {
+    inline bool is_finite(float v);
+    inline bool is_finite(double v);
     struct SpectralTables;
     struct Curve;
     inline void rgbDWG_to_layerExposures(const float rgbDWG[3], float E[3], float exposureScale);
@@ -73,12 +75,16 @@ namespace Spectral {
     // Matrix Operations
     // ============================================================================
 
+    inline void mul_3x3_vec3(const float m[9], const float v[3], float out[3]) {
+        out[0] = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
+        out[1] = m[3] * v[0] + m[4] * v[1] + m[5] * v[2];
+        out[2] = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
+    }
+
     struct Mat3 {
         float m[9];
         inline void mul(const float v[3], float out[3]) const {
-            out[0] = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
-            out[1] = m[3] * v[0] + m[4] * v[1] + m[5] * v[2];
-            out[2] = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
+            mul_3x3_vec3(m, v, out);
         }
         inline Mat3 inverse(float fallback = 1.0f) const {
             const float det =
@@ -87,7 +93,7 @@ namespace Spectral {
                 m[2] * (m[3] * m[7] - m[4] * m[6]);
 
             const float eps = 1e-6f;
-            if (!std::isfinite(det) || std::fabs(det) <= eps) {
+            if (!is_finite(det) || std::fabs(det) <= eps) {
                 return Mat3{ {
                     fallback, 0.0f,    0.0f,
                     0.0f,    fallback, 0.0f,
@@ -110,6 +116,17 @@ namespace Spectral {
             return inv;
         }
     };
+
+    inline bool mat3_has_only_finite(const Mat3& matrix) {
+        const float* mIt = matrix.m;
+        const float* const mEnd = mIt + 9;
+        for (; mIt < mEnd; ++mIt) {
+            if (!is_finite(*mIt)) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     inline Mat3 make_identity_mat3(float diag = 1.0f) {
         return Mat3{ {
@@ -144,6 +161,19 @@ namespace Spectral {
         float* valueIt = values;
         for (int i = 0; i < 3; ++i, ++valueIt) {
             *valueIt = std::max(0.0f, *valueIt);
+        }
+    }
+
+    inline void copy_triplet_sanitized(float dst[3], const float src[3], bool clampNonNegative) {
+        const float* srcIt = src;
+        float* dstIt = dst;
+        for (int i = 0; i < 3; ++i, ++srcIt, ++dstIt) {
+            const float value = *srcIt;
+            float out = is_finite(value) ? value : 0.0f;
+            if (clampNonNegative && out < 0.0f) {
+                out = 0.0f;
+            }
+            *dstIt = out;
         }
     }
 
@@ -220,8 +250,39 @@ namespace Spectral {
         }
     }
 
+    inline bool is_finite(float v) {
+        return std::isfinite(v);
+    }
+
+    inline bool is_finite(double v) {
+        return std::isfinite(v);
+    }
+
     inline float sanitize_channel(float v) {
-        return std::isfinite(v) ? v : 0.0f;
+        return is_finite(v) ? v : 0.0f;
+    }
+
+    inline float sanitize_nonnegative_channel(float v) {
+        return std::max(0.0f, sanitize_channel(v));
+    }
+
+    inline float sanitize_min_positive_channel_or(float v, float minValue, float fallback) {
+        const float value = sanitize_channel(v);
+        return (value > minValue) ? value : fallback;
+    }
+
+    inline bool is_positive_finite(float v) {
+        return is_finite(v) && v > 0.0f;
+    }
+
+    inline float finite_to_float_or_zero(double v) {
+        return is_finite(v) ? static_cast<float>(v) : 0.0f;
+    }
+
+    inline void accumulate_if_finite(double& acc, double lhs, float rhs) {
+        if (is_finite(rhs)) {
+            acc += lhs * static_cast<double>(rhs);
+        }
     }
 
     inline float decode_BT2020_nonnegative(float x) {
@@ -236,7 +297,7 @@ namespace Spectral {
     }
 
     inline float decode_BT2020_channel(float v) {
-        const float x = std::max(0.0f, sanitize_channel(v));
+        const float x = sanitize_nonnegative_channel(v);
         return decode_BT2020_nonnegative(x);
     }
 
@@ -250,7 +311,7 @@ namespace Spectral {
     }
 
     inline float decode_sRGB_channel(float v) {
-        const float x = std::max(0.0f, sanitize_channel(v));
+        const float x = sanitize_nonnegative_channel(v);
         return decode_sRGB_nonnegative(x);
     }
 
@@ -262,9 +323,9 @@ namespace Spectral {
             assign_triplet(out, c0, c1, c2);
             return;
         }
-        const float n0 = std::max(0.0f, c0);
-        const float n1 = std::max(0.0f, c1);
-        const float n2 = std::max(0.0f, c2);
+        const float n0 = sanitize_nonnegative_channel(c0);
+        const float n1 = sanitize_nonnegative_channel(c1);
+        const float n2 = sanitize_nonnegative_channel(c2);
 
         switch (cs) {
         case InputColorSpace::ITU_R_BT2020: {
@@ -313,16 +374,6 @@ namespace Spectral {
            -0.0096276f, -0.0056980f,  1.0153256f
         };
 
-        auto mul3 = [](const float m[9], const float v[3], float dst[3]) {
-            dst[0] = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
-            dst[1] = m[3] * v[0] + m[4] * v[1] + m[5] * v[2];
-            dst[2] = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
-            };
-
-        auto sanitize = [](float v) -> float {
-            return std::isfinite(v) ? std::max(0.0f, v) : 0.0f;
-            };
-
         float srcWhite[3];
         float dstWhite[3];
         const float* srcWhiteIn = srcWhiteXYZ;
@@ -330,8 +381,8 @@ namespace Spectral {
         float* srcWhiteOut = srcWhite;
         float* dstWhiteOut = dstWhite;
         for (int i = 0; i < 3; ++i, ++srcWhiteIn, ++dstWhiteIn, ++srcWhiteOut, ++dstWhiteOut) {
-            *srcWhiteOut = sanitize(*srcWhiteIn);
-            *dstWhiteOut = sanitize(*dstWhiteIn);
+            *srcWhiteOut = sanitize_nonnegative_channel(*srcWhiteIn);
+            *dstWhiteOut = sanitize_nonnegative_channel(*dstWhiteIn);
         }
 
         const float srcY = (srcWhite[1] > 0.0f) ? srcWhite[1] : 1.0f;
@@ -350,9 +401,9 @@ namespace Spectral {
         float srcLMS[3];
         float dstLMS[3];
         float XYZ_LMS[3];
-        mul3(M, srcWhite, srcLMS);
-        mul3(M, dstWhite, dstLMS);
-        mul3(M, XYZ, XYZ_LMS);
+        mul_3x3_vec3(M, srcWhite, srcLMS);
+        mul_3x3_vec3(M, dstWhite, dstLMS);
+        mul_3x3_vec3(M, XYZ, XYZ_LMS);
 
         float adaptedLMS[3];
         const float* srcLMSIt = srcLMS;
@@ -364,7 +415,7 @@ namespace Spectral {
             *adaptedIt = scale * *xyzLMSIt;
         }
 
-        mul3(M_inv, adaptedLMS, outXYZ);
+        mul_3x3_vec3(M_inv, adaptedLMS, outXYZ);
     }
 
     inline Mat3 build_chromatic_adaptation_matrix(const float srcWhite[3], const float dstWhite[3]) {
@@ -440,17 +491,7 @@ namespace Spectral {
         cfg.applyInputChromaticAdapt = !whites_approximately_equal(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
         if (cfg.applyInputChromaticAdapt) {
             cfg.inputXYZAdapt = build_chromatic_adaptation_matrix(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
-            bool finite = true;
-            const float* matrixData = cfg.inputXYZAdapt.m;
-            const float* matrixEnd = matrixData + 9;
-            for (const float* mIt = matrixData; mIt < matrixEnd; ++mIt) {
-                const float m = *mIt;
-                if (!std::isfinite(m)) {
-                    finite = false;
-                    break;
-                }
-            }
-            if (!finite) {
+            if (!mat3_has_only_finite(cfg.inputXYZAdapt)) {
                 cfg.inputXYZAdapt = make_identity_mat3();
                 cfg.applyInputChromaticAdapt = false;
             }
@@ -483,20 +524,7 @@ namespace Spectral {
         }
 
         if (outXYZ) {
-            if (clampNonNegative) {
-                float* outIt = outXYZ;
-                const float* xyzIt = xyzPtr;
-                for (int i = 0; i < 3; ++i, ++outIt, ++xyzIt) {
-                    *outIt = std::max(0.0f, *xyzIt);
-                }
-            }
-            else {
-                float* outIt = outXYZ;
-                const float* xyzIt = xyzPtr;
-                for (int i = 0; i < 3; ++i, ++outIt, ++xyzIt) {
-                    *outIt = std::isfinite(*xyzIt) ? *xyzIt : 0.0f;
-                }
-            }
+            copy_triplet_sanitized(outXYZ, xyzPtr, clampNonNegative);
         }
 
         float dwgLinear[3];
@@ -506,19 +534,7 @@ namespace Spectral {
         else {
             gDWG_XYZ_to_RGB.mul(xyzPtr, dwgLinear);
         }
-
-        const float* dwgLinearIt = dwgLinear;
-        float* rgbDWGIt = rgbDWG;
-        for (int i = 0; i < 3; ++i, ++dwgLinearIt, ++rgbDWGIt) {
-            float v = *dwgLinearIt;
-            if (!std::isfinite(v)) {
-                v = 0.0f;
-            }
-            if (clampNonNegative && v < 0.0f) {
-                v = 0.0f;
-            }
-            *rgbDWGIt = v;
-        }
+        copy_triplet_sanitized(rgbDWG, dwgLinear, clampNonNegative);
     }
 
     inline void convert_input_rgb_to_sRGB_linear(
@@ -541,25 +557,13 @@ namespace Spectral {
         }
 
         if (outXYZ) {
-            const float* xyzRead = xyzPtr;
-            float* xyzWrite = outXYZ;
-            for (int i = 0; i < 3; ++i, ++xyzRead, ++xyzWrite) {
-                *xyzWrite = sanitize_channel(*xyzRead);
-            }
+            copy_triplet_sanitized(outXYZ, xyzPtr, false);
         }
 
         static const Mat3 kXYZ_to_sRGB = kRGB_to_XYZ_sRGB_Rec709.inverse();
         float rgbLinear[3];
         kXYZ_to_sRGB.mul(xyzPtr, rgbLinear);
-        const float* linearIt = rgbLinear;
-        float* srgbIt = rgbSRGB;
-        for (int i = 0; i < 3; ++i, ++linearIt, ++srgbIt) {
-            float v = *linearIt;
-            if (!std::isfinite(v)) {
-                v = 0.0f;
-            }
-            *srgbIt = v;
-        }
+        copy_triplet_sanitized(rgbSRGB, rgbLinear, false);
     }
 
     inline bool mallett_basis_ready_for_tables(
@@ -602,9 +606,9 @@ namespace Spectral {
         double Eb = 0.0;
         double Eg = 0.0;
         double Er = 0.0;
-        const float r = std::max(0.0f, std::isfinite(lrgb[0]) ? lrgb[0] : 0.0f);
-        const float g = std::max(0.0f, std::isfinite(lrgb[1]) ? lrgb[1] : 0.0f);
-        const float b = std::max(0.0f, std::isfinite(lrgb[2]) ? lrgb[2] : 0.0f);
+        const float r = sanitize_nonnegative_channel(lrgb[0]);
+        const float g = sanitize_nonnegative_channel(lrgb[1]);
+        const float b = sanitize_nonnegative_channel(lrgb[2]);
         const float* basis = gMallettBasis.data.data();
         const float* illumIt = tables.illum.data();
         const float* sensBIt = sB.linear.data();
@@ -617,23 +621,23 @@ namespace Spectral {
             const float b1 = basis[1];
             const float b2 = basis[2];
             const float spd = (r * b0 + g * b1 + b * b2) * illum;
-            if (!std::isfinite(spd)) {
+            if (!is_finite(spd)) {
                 continue;
             }
             const double e64 = static_cast<double>(spd);
             const float sb = *sensBIt;
             const float sg = *sensGIt;
             const float sr = *sensRIt;
-            if (std::isfinite(sb)) Eb += e64 * static_cast<double>(sb);
-            if (std::isfinite(sg)) Eg += e64 * static_cast<double>(sg);
-            if (std::isfinite(sr)) Er += e64 * static_cast<double>(sr);
+            accumulate_if_finite(Eb, e64, sb);
+            accumulate_if_finite(Eg, e64, sg);
+            accumulate_if_finite(Er, e64, sr);
         }
 
         assign_triplet(
             E,
-            std::isfinite(Eb) ? static_cast<float>(Eb) : 0.0f,
-            std::isfinite(Eg) ? static_cast<float>(Eg) : 0.0f,
-            std::isfinite(Er) ? static_cast<float>(Er) : 0.0f);
+            finite_to_float_or_zero(Eb),
+            finite_to_float_or_zero(Eg),
+            finite_to_float_or_zero(Er));
     }
 
     inline void compute_film_raw_midgray(
@@ -679,10 +683,10 @@ namespace Spectral {
         }
 
         copy_triplet(cfg.rawMidgray, E);
-        const float safeGreen = (std::isfinite(E[1]) && E[1] > 1e-9f) ? E[1] : 1.0f;
+        const float safeGreen = sanitize_min_positive_channel_or(E[1], 1e-9f, 1.0f);
         cfg.rawMidgrayGreen = safeGreen;
-        cfg.midgrayScale = (std::isfinite(safeGreen) && safeGreen > 1e-9f) ? (1.0f / safeGreen) : 1.0f;
-        if (!std::isfinite(cfg.midgrayScale) || cfg.midgrayScale <= 0.0f) {
+        cfg.midgrayScale = 1.0f / safeGreen;
+        if (!is_positive_finite(cfg.midgrayScale)) {
             cfg.midgrayScale = 1.0f;
         }
     }
@@ -741,7 +745,7 @@ namespace Spectral {
         spd_probe_finalize(normScale, E);
 #endif
 
-        const float sExp = (std::isfinite(exposureScale) && exposureScale > 0.0f) ? exposureScale : 1.0f;
+        const float sExp = sanitize_min_positive_channel_or(exposureScale, 0.0f, 1.0f);
         if (sExp != 1.0f) {
             scale_triplet_nonnegative_inplace(E, sExp);
         }
@@ -762,7 +766,7 @@ namespace Spectral {
             tables.whiteXYZ[2]
         };
         const float sum = srcWhite[0] + srcWhite[1] + srcWhite[2];
-        if (!std::isfinite(sum) || sum <= 0.0f) {
+        if (!is_positive_finite(sum)) {
             copy_triplet(srcWhite, gDWG_WhitePoint_XYZ);
         }
 

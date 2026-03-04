@@ -125,12 +125,213 @@ namespace {
         std::memcpy(dst, src, 3u * sizeof(float));
     }
 
+    inline bool is_finite(float value) {
+        return std::isfinite(value);
+    }
+
+    inline bool is_finite(double value) {
+        return std::isfinite(value);
+    }
+
+    inline double sanitize_profile_value(float value, double fallback, double lo, double hi) {
+        double out = static_cast<double>(value);
+        if (!is_finite(out)) {
+            return fallback;
+        }
+        if (out < lo) out = lo;
+        if (out > hi) out = hi;
+        return out;
+    }
+
+    inline double clamp_finite_or(double value, double fallback, double lo, double hi) {
+        const double candidate = is_finite(value) ? value : fallback;
+        return std::clamp(candidate, lo, hi);
+    }
+
+    inline float clamp_coupler_ratio(double value) {
+        return static_cast<float>(clamp_finite_or(value, 0.0, 0.0, 1.0));
+    }
+
+    inline float clamp_coupler_amount(double value) {
+        return static_cast<float>(clamp_finite_or(value, 0.0, 0.0, 2.0));
+    }
+
+    inline bool is_positive_finite(float value);
+    inline bool is_positive_finite(double value);
+
+    inline float sanitize_positive_or(float value, float fallback) {
+        return is_positive_finite(value) ? value : fallback;
+    }
+
+    inline bool is_positive_finite(float value) {
+        return is_finite(value) && value > 0.0f;
+    }
+
+    inline bool is_positive_finite(double value) {
+        return is_finite(value) && value > 0.0;
+    }
+
+    inline float sanitize_nonnegative_or(float value, float fallback) {
+        if (!is_finite(value)) {
+            return fallback;
+        }
+        return std::max(0.0f, value);
+    }
+
+    inline float sanitize_nonnegative_clamped_or(float value, float fallback, float hi) {
+        return std::clamp(sanitize_nonnegative_or(value, fallback), 0.0f, hi);
+    }
+
+    inline float finite_or_fallback(float value, float fallback) {
+        return is_finite(value) ? value : fallback;
+    }
+
+    inline float sanitize_abs_positive_or_nan(float value, float minMagnitude = 1e-6f) {
+        if (!is_finite(value)) {
+            return std::numeric_limits<float>::quiet_NaN();
+        }
+        const float magnitude = std::fabs(value);
+        return (magnitude > minMagnitude) ? magnitude : std::numeric_limits<float>::quiet_NaN();
+    }
+
+    inline bool curve_has_nonfinite_samples(const Spectral::Curve& curve) {
+        const float* valueIt = curve.linear.data();
+        const float* const valueEnd = valueIt + curve.linear.size();
+        for (; valueIt < valueEnd; ++valueIt) {
+            if (!is_finite(*valueIt)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    inline float curve_max_clamped_or_default(
+        const Spectral::Curve& curve,
+        float fallback = 1.0f,
+        float minValue = 1e-4f,
+        float maxValue = 1000.0f) {
+        float maximum = 0.0f;
+        const float* values = curve.linear.data();
+        const float* const valuesEnd = values + curve.linear.size();
+        for (; values < valuesEnd; ++values) {
+            const float value = *values;
+            if (is_finite(value) && value > maximum) {
+                maximum = value;
+            }
+        }
+        if (!is_finite(maximum) || maximum <= minValue) {
+            maximum = fallback;
+        }
+        return std::min(maximum, maxValue);
+    }
+
+    inline void clamp_negative_finite_curve_samples(Spectral::Curve& curve) {
+        float* sample = curve.linear.data();
+        const float* const sampleEnd = sample + curve.linear.size();
+        for (; sample < sampleEnd; ++sample) {
+            if (is_finite(*sample) && *sample < 0.0f) {
+                *sample = 0.0f;
+            }
+        }
+    }
+
+    inline void scale_finite_curve_samples(Spectral::Curve& curve, float scale, bool clampNonnegative = false) {
+        float* sample = curve.linear.data();
+        const float* const sampleEnd = sample + curve.linear.size();
+        for (; sample < sampleEnd; ++sample) {
+            if (!is_finite(*sample)) {
+                continue;
+            }
+            *sample *= scale;
+            if (clampNonnegative && *sample < 0.0f) {
+                *sample = 0.0f;
+            }
+        }
+    }
+
+    inline void copy_3x3_and_append_rhs(const double matrix3x3[3][3], const double rhs[3], double augmented[3][4]) {
+        const double* rhsIt = rhs;
+        double(*dstRow)[4] = augmented;
+        const double(*srcRow)[3] = matrix3x3;
+        for (int r = 0; r < 3; ++r, ++rhsIt, ++dstRow, ++srcRow) {
+            std::memcpy(*dstRow, *srcRow, 3u * sizeof(double));
+            (*dstRow)[3] = *rhsIt;
+        }
+    }
+
+    inline uint64_t hash_mix(uint64_t h, uint64_t v) {
+        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+
+    template <typename MixFn>
+    inline void mix_glare_print_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
+    }
+
+    template <typename MixFn>
+    inline void mix_camera_filter_hash(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
+        if (!p.cameraFilterOverride) {
+            return;
+        }
+
+        auto mix_triplet = [&](const std::array<double, 3>& triplet) {
+            const double* values = triplet.data();
+            const double* const valuesEnd = values + triplet.size();
+            for (; values < valuesEnd; ++values) {
+                const double v = *values;
+                if (is_finite(v)) {
+                    const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
+                    h = mix(h, static_cast<uint64_t>(scaled));
+                }
+            }
+        };
+        mix_triplet(p.cameraFilterUV);
+        mix_triplet(p.cameraFilterIR);
+    }
+
+    template <typename MixFn>
+    inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
+        h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
+        h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
+        h = mix(h, static_cast<uint64_t>(p.refIll));
+        h = mix(h, static_cast<uint64_t>(p.enlIll));
+        h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
+    }
+
+    template <typename MixFn>
+    inline void mix_output_encoding_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
+        h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
+        h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
+        h = mix(h, static_cast<uint64_t>(p.outputColorSpace));
+        h = mix(h, static_cast<uint64_t>(p.outputCctfEncoding));
+        h = mix(h, static_cast<uint64_t>(p.outputLinearPassThrough));
+    }
+
+    template <typename MixFn>
+    inline void mix_coupler_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(p.couplersActive));
+        h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.ratioG * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.ratioB * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.sigma * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.high * 10000.0));
+        h = mix(h, static_cast<uint64_t>(p.spatialSigmaMicrometers * 10000.0));
+    }
+
     inline void sanitize_dir_matrix(float matrix[3][3]) {
         float* valueIt = &matrix[0][0];
         const float* const valueEnd = valueIt + 9;
         for (; valueIt < valueEnd; ++valueIt) {
             float value = *valueIt;
-            if (!std::isfinite(value)) value = 0.0f;
+            if (!is_finite(value)) value = 0.0f;
             if (value < -10.0f) value = -10.0f;
             if (value > 10.0f) value = 10.0f;
             *valueIt = value;
@@ -143,7 +344,7 @@ namespace {
         const float* const valueEnd = valueIt + 3;
         for (; valueIt < valueEnd; ++valueIt, ++mirrorIt) {
             float value = *valueIt;
-            if (!std::isfinite(value) || value <= 1e-4f) value = 1.0f;
+            if (!is_finite(value) || value <= 1e-4f) value = 1.0f;
             if (value > 1000.0f) value = 1000.0f;
             *valueIt = value;
             *mirrorIt = value;
@@ -151,13 +352,12 @@ namespace {
     }
 
     inline void build_dir_matrix_fallback(float matrix[3][3], const float amountValues[3], float layerSigma) {
-        const float sigma = std::isfinite(layerSigma) ? std::max(0.0f, layerSigma) : 0.0f;
+        const float sigma = sanitize_nonnegative_or(layerSigma, 0.0f);
         float amount[3] = { amountValues[0], amountValues[1], amountValues[2] };
         const float sigmaCapped = std::min(sigma, 3.0f);
         float* amountIt = amount;
         for (int i = 0; i < 3; ++i, ++amountIt) {
-            if (!std::isfinite(*amountIt)) *amountIt = 0.0f;
-            *amountIt = std::clamp(*amountIt, 0.0f, 1.0f);
+            *amountIt = sanitize_nonnegative_clamped_or(*amountIt, 0.0f, 1.0f);
         }
 
         auto gauss = [sigmaCapped](int dx) -> float {
@@ -192,24 +392,6 @@ namespace {
     }
 
     void recompute_working_state_dir_overlay(InstanceState& S, const ParamSnapshot& P, WorkingState& target) {
-        auto compute_curve_max = [](const Spectral::Curve& c) {
-            float m = 0.0f;
-            const float* values = c.linear.data();
-            const float* const valuesEnd = values + c.linear.size();
-            for (; values < valuesEnd; ++values) {
-                const float v = *values;
-                if (std::isfinite(v) && v > m) {
-                    m = v;
-                }
-            }
-            if (!std::isfinite(m) || m <= 1e-4f) {
-                m = 1.0f;
-            }
-            if (m > 1000.0f) {
-                m = 1000.0f;
-            }
-            return m;
-            };
         auto approx_equal_local = [](double a, double b, double eps = 1e-6) {
             return std::fabs(a - b) <= eps;
             };
@@ -231,71 +413,51 @@ namespace {
 
 #ifdef JUICER_ENABLE_COUPLERS
         if (dirCfg.hasData) {
-            auto sanitize_profile = [](float value, double fallback, double lo, double hi) -> double {
-                double v = static_cast<double>(value);
-                if (!std::isfinite(v)) {
-                    return fallback;
-                }
-                if (v < lo) v = lo;
-                if (v > hi) v = hi;
-                return v;
-                };
-
             if (!S.couplerDirty.active.load(std::memory_order_acquire) && effectiveCouplersActive == kFactoryCouplersActive) {
                 effectiveCouplersActive = dirCfg.active ? 1 : 0;
             }
             if (!S.couplerDirty.amount.load(std::memory_order_acquire) && approx_equal_local(effectiveCouplersAmount, kFactoryCouplersAmount)) {
-                effectiveCouplersAmount = sanitize_profile(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
+                effectiveCouplersAmount = sanitize_profile_value(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
             }
             if (!S.couplerDirty.ratioB.load(std::memory_order_acquire) && approx_equal_local(effectiveRatioB, kFactoryCouplersRatioB)) {
-                effectiveRatioB = sanitize_profile(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
+                effectiveRatioB = sanitize_profile_value(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
             }
             if (!S.couplerDirty.ratioG.load(std::memory_order_acquire) && approx_equal_local(effectiveRatioG, kFactoryCouplersRatioG)) {
-                effectiveRatioG = sanitize_profile(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
+                effectiveRatioG = sanitize_profile_value(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
             }
             if (!S.couplerDirty.ratioR.load(std::memory_order_acquire) && approx_equal_local(effectiveRatioR, kFactoryCouplersRatioR)) {
-                effectiveRatioR = sanitize_profile(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
+                effectiveRatioR = sanitize_profile_value(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
             }
             if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal_local(effectiveCouplersSigma, kFactoryCouplersSigma)) {
-                effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
+                effectiveCouplersSigma = sanitize_profile_value(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
             }
             if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal_local(effectiveCouplersHigh, kFactoryCouplersHigh)) {
-                effectiveCouplersHigh = sanitize_profile(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
+                effectiveCouplersHigh = sanitize_profile_value(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
             }
             if (!S.couplerDirty.spatialSigma.load(std::memory_order_acquire) && spatialSigmaIsUiDefault) {
                 const double profileSpatialSigma = S.couplerProfileSpatialSigmaValid
                     ? S.couplerProfileSpatialSigmaMicrometers
                     : static_cast<double>(dirCfg.diffusionSizeUm);
-                effectiveSpatialSigma = sanitize_profile(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
+                effectiveSpatialSigma = sanitize_profile_value(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
             }
         }
 #endif
 
         const std::array<float, 3> densityMaxPostDir{
-            compute_curve_max(target.densB),
-            compute_curve_max(target.densG),
-            compute_curve_max(target.densR)
+            curve_max_clamped_or_default(target.densB),
+            curve_max_clamped_or_default(target.densG),
+            curve_max_clamped_or_default(target.densR)
         };
 
         bool precorrectApplied = false;
         Couplers::Runtime dirRT{};
         dirRT.active = (effectiveCouplersActive != 0);
         {
-            auto clampRatio = [](double v) -> float {
-                if (!std::isfinite(v) || v < 0.0) return 0.0f;
-                if (v > 1.0) return 1.0f;
-                return static_cast<float>(v);
-                };
-            auto clampAmount = [](double v) -> float {
-                if (!std::isfinite(v) || v < 0.0) return 0.0f;
-                if (v > 2.0) return 2.0f;
-                return static_cast<float>(v);
-                };
-            const float amountScale = clampAmount(effectiveCouplersAmount);
+            const float amountScale = clamp_coupler_amount(effectiveCouplersAmount);
             const float amount[3] = {
-                amountScale * clampRatio(effectiveRatioB),
-                amountScale * clampRatio(effectiveRatioG),
-                amountScale * clampRatio(effectiveRatioR)
+                amountScale * clamp_coupler_ratio(effectiveRatioB),
+                amountScale * clamp_coupler_ratio(effectiveRatioG),
+                amountScale * clamp_coupler_ratio(effectiveRatioR)
             };
 #ifdef JUICER_ENABLE_COUPLERS
             Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
@@ -308,19 +470,9 @@ namespace {
 
 #ifdef JUICER_ENABLE_COUPLERS
             if (dirRT.active) {
-                auto has_nonfinite_density = [](const Spectral::Curve& c) -> bool {
-                    const float* values = c.linear.data();
-                    const float* const valuesEnd = values + c.linear.size();
-                    for (; values < valuesEnd; ++values) {
-                        const float v = *values;
-                        if (!std::isfinite(v)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                    };
-
-                if (has_nonfinite_density(target.densB) || has_nonfinite_density(target.densG) || has_nonfinite_density(target.densR)) {
+                if (curve_has_nonfinite_samples(target.densB) ||
+                    curve_has_nonfinite_samples(target.densG) ||
+                    curve_has_nonfinite_samples(target.densR)) {
                     precorrectApplied = false;
                 }
                 else {
@@ -829,6 +981,18 @@ namespace {
         return std::fabs(a - b) <= eps;
     }
 
+    inline bool triplet_is_finite(const float values[3]) {
+        return is_finite(values[0]) &&
+            is_finite(values[1]) &&
+            is_finite(values[2]);
+    }
+
+    inline bool normalized_white_triplet_is_valid(const float whiteXYZ[3], double yTolerance = 1e-4) {
+        return triplet_is_finite(whiteXYZ) &&
+            whiteXYZ[1] > 0.0f &&
+            approx_equal(static_cast<double>(whiteXYZ[1]), 1.0, yTolerance);
+    }
+
     static Spectral::Curve build_blackbody_curve(float temperature) {
         Spectral::Curve curve;
         if (!(temperature > 0.0f)) {
@@ -963,7 +1127,7 @@ namespace {
         const float* const lambdaEnd = lambdaData + expected;
         for (; lambdaData < lambdaEnd; ++lambdaData, ++axisData) {
             const float lambda = *lambdaData;
-            if (!std::isfinite(lambda) ||
+            if (!is_finite(lambda) ||
                 std::abs(lambda - *axisData) > kAxisMatchTolerance) {
                 return false;
             }
@@ -1019,7 +1183,7 @@ namespace {
             const float xb = xData[i];
             const float yb = yData[i];
             const float zb = zData[i];
-            if (!(std::isfinite(spd) && std::isfinite(xb) && std::isfinite(yb) && std::isfinite(zb))) {
+            if (!(is_finite(spd) && is_finite(xb) && is_finite(yb) && is_finite(zb))) {
                 std::ostringstream oss;
                 oss << "FATAL: non-finite CMF/SPD sample in " << label << " illuminant";
                 JTRACE("ILLUM", oss.str());
@@ -1030,7 +1194,7 @@ namespace {
             sumZ += static_cast<double>(spd) * static_cast<double>(zb);
         }
 
-        if (!(std::isfinite(sumY) && sumY > 0.0)) {
+        if (!is_positive_finite(sumY)) {
             std::ostringstream oss;
             oss << "FATAL: invalid luminance sum for " << label << " (Yn=" << sumY << ")";
             JTRACE("ILLUM", oss.str());
@@ -1048,7 +1212,7 @@ namespace {
         copy_float3(out.whiteXYZ, whiteXYZ);
 
         const double whiteSum = sumX + sumY + sumZ;
-        if (!(std::isfinite(whiteSum) && whiteSum > 0.0)) {
+        if (!is_positive_finite(whiteSum)) {
             JTRACE("ILLUM", "FATAL: invalid white sum while building scanner illuminant");
             return false;
         }
@@ -1096,16 +1260,16 @@ namespace {
         const float* const valuesEnd = values + curve.linear.size();
         for (; values < valuesEnd; ++values) {
             const float v = *values;
-            if (std::isfinite(v)) {
+            if (is_finite(v)) {
                 m = std::max(m, static_cast<double>(v));
                 found = true;
             }
         }
-        if (!found || !std::isfinite(m)) {
+        if (!found || !is_finite(m)) {
             return false;
         }
         outMax = static_cast<float>(m);
-        return std::isfinite(outMax);
+        return is_finite(outMax);
     }
 
     inline void add_triplet(float dst[3], const float lhs[3], const float rhs[3]) {
@@ -1125,7 +1289,7 @@ namespace {
         float* invMaxCmyIt = range.inv_max_cmy;
         for (int i = 0; i < 3; ++i, ++maxCmyIt, ++invMaxCmyIt) {
             const float v = *maxCmyIt;
-            if (!(std::isfinite(v) && v > 0.0f)) {
+            if (!is_positive_finite(v)) {
                 JTRACE("BUILD", invalidRangeMessage);
                 return false;
             }
@@ -1156,7 +1320,7 @@ namespace {
         float* minCmyIt = outRange.min_cmy;
         for (int i = 0; i < 3; ++i, ++densityMinIt, ++minCmyIt) {
             const float v = *densityMinIt;
-            if (!std::isfinite(v)) {
+            if (!is_finite(v)) {
                 JTRACE("BUILD", "FATAL: non-finite grain density_min for negative medium");
                 return false;
             }
@@ -1204,144 +1368,35 @@ namespace {
 }
 
 uint64_t hash_params(const ParamSnapshot& p) {
-    auto mix = [](uint64_t h, uint64_t v) {
-        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-        };
     uint64_t h = 0;
-    h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
-    h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
-    h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
-    h = mix(h, static_cast<uint64_t>(p.refIll));
-    h = mix(h, static_cast<uint64_t>(p.enlIll));
-    h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.couplersActive));
-    h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.ratioG * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.ratioB * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.sigma * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.high * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.spatialSigmaMicrometers * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
-    h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
-    h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
-    h = mix(h, static_cast<uint64_t>(p.outputColorSpace));
-    h = mix(h, static_cast<uint64_t>(p.outputCctfEncoding));
-    h = mix(h, static_cast<uint64_t>(p.outputLinearPassThrough));
-    h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
-    if (p.cameraFilterOverride) {
-        auto mix_triplet = [&](const std::array<double, 3>& triplet) {
-            const double* values = triplet.data();
-            const double* const valuesEnd = values + triplet.size();
-            for (; values < valuesEnd; ++values) {
-                const double v = *values;
-                if (std::isfinite(v)) {
-                    const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
-                    h = mix(h, static_cast<uint64_t>(scaled));
-                }
-            }
-            };
-        mix_triplet(p.cameraFilterUV);
-        mix_triplet(p.cameraFilterIR);
-    }
+    mix_profile_selection_hash_fields(h, p, hash_mix);
+    mix_glare_print_hash_fields(h, p, hash_mix);
+    mix_coupler_hash_fields(h, p, hash_mix);
+    mix_output_encoding_hash_fields(h, p, hash_mix);
+    mix_camera_filter_hash(h, p, hash_mix);
     return h;
 }
 
 uint64_t hash_params_core(const ParamSnapshot& p) {
-    auto mix = [](uint64_t h, uint64_t v) {
-        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-        };
     uint64_t h = 0;
-    h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
-    h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
-    h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
-    h = mix(h, static_cast<uint64_t>(p.refIll));
-    h = mix(h, static_cast<uint64_t>(p.enlIll));
-    h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
-    h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
-    h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
-    h = mix(h, static_cast<uint64_t>(p.outputColorSpace));
-    h = mix(h, static_cast<uint64_t>(p.outputCctfEncoding));
-    h = mix(h, static_cast<uint64_t>(p.outputLinearPassThrough));
-    h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
-    if (p.cameraFilterOverride) {
-        auto mix_triplet = [&](const std::array<double, 3>& triplet) {
-            const double* values = triplet.data();
-            const double* const valuesEnd = values + triplet.size();
-            for (; values < valuesEnd; ++values) {
-                const double v = *values;
-                if (std::isfinite(v)) {
-                    const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
-                    h = mix(h, static_cast<uint64_t>(scaled));
-                }
-            }
-            };
-        mix_triplet(p.cameraFilterUV);
-        mix_triplet(p.cameraFilterIR);
-    }
+    mix_profile_selection_hash_fields(h, p, hash_mix);
+    mix_glare_print_hash_fields(h, p, hash_mix);
+    mix_output_encoding_hash_fields(h, p, hash_mix);
+    mix_camera_filter_hash(h, p, hash_mix);
     return h;
 }
 
 static uint64_t hash_params_upload_core(const ParamSnapshot& p) {
-    auto mix = [](uint64_t h, uint64_t v) {
-        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-        };
     uint64_t h = 0;
-    h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
-    h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
-    h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
-    h = mix(h, static_cast<uint64_t>(p.refIll));
-    h = mix(h, static_cast<uint64_t>(p.enlIll));
-    h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
-    if (p.cameraFilterOverride) {
-        auto mix_triplet = [&](const std::array<double, 3>& triplet) {
-            const double* values = triplet.data();
-            const double* const valuesEnd = values + triplet.size();
-            for (; values < valuesEnd; ++values) {
-                const double v = *values;
-                if (std::isfinite(v)) {
-                    const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
-                    h = mix(h, static_cast<uint64_t>(scaled));
-                }
-            }
-            };
-        mix_triplet(p.cameraFilterUV);
-        mix_triplet(p.cameraFilterIR);
-    }
+    mix_profile_selection_hash_fields(h, p, hash_mix);
+    mix_glare_print_hash_fields(h, p, hash_mix);
+    mix_camera_filter_hash(h, p, hash_mix);
     return h;
 }
 
 uint64_t hash_params_dir(const ParamSnapshot& p) {
-    auto mix = [](uint64_t h, uint64_t v) {
-        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-        };
     uint64_t h = 0;
-    h = mix(h, static_cast<uint64_t>(p.couplersActive));
-    h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.ratioG * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.ratioB * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.sigma * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.high * 10000.0));
-    h = mix(h, static_cast<uint64_t>(p.spatialSigmaMicrometers * 10000.0));
+    mix_coupler_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -1471,7 +1526,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     dmin = std::move(profile.baseMin);
     dmid = std::move(profile.baseMid);
     dc_layers = std::move(profile.densityCurvesLayers);
-    if (std::isfinite(profile.dyeDensityMinFactor) && profile.dyeDensityMinFactor >= 0.0f) {
+    if (is_finite(profile.dyeDensityMinFactor) && profile.dyeDensityMinFactor >= 0.0f) {
         S.base.dyeDensityMinFactor = profile.dyeDensityMinFactor;
     }
     if (profile.hasGammaFactor) {
@@ -1486,7 +1541,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.cameraFilterUV = profile.cameraFilterUV;
     S.base.cameraFilterIR = profile.cameraFilterIR;
     S.base.cameraFilterDefined = profile.hasCameraFilterUV || profile.hasCameraFilterIR;
-    if (profile.dirCouplers.hasData && std::isfinite(profile.dirCouplers.diffusionSizeUm)) {
+    if (profile.dirCouplers.hasData && is_finite(profile.dirCouplers.diffusionSizeUm)) {
         const float spatialSigmaUm = std::clamp(profile.dirCouplers.diffusionSizeUm, 0.0f, 50.0f);
         S.couplerProfileSpatialSigmaMicrometers = static_cast<double>(spatialSigmaUm);
         S.couplerProfileSpatialSigmaValid = true;
@@ -1617,11 +1672,11 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         const float* const inEnd = inData + curve.linear.size();
         for (; inData < inEnd; ++inData) {
             const float v = *inData;
-            if (std::isfinite(v) && v < minVal) {
+            if (is_finite(v) && v < minVal) {
                 minVal = v;
             }
         }
-        if (!std::isfinite(minVal) || minVal == FLT_MAX || minVal == 0.0f) {
+        if (!is_finite(minVal) || minVal == FLT_MAX || minVal == 0.0f) {
             return;
         }
         float* outData = curve.linear.data();
@@ -1630,7 +1685,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             float& v = *outData;
             // agx-emulsion parity (density curves): preserve authored NaNs through sampling; do not
             // convert NaN -> 0 density (which would lift shadows). agx does `curve -= nanmin(curve)`.
-            if (std::isfinite(v)) {
+            if (is_finite(v)) {
                 v -= minVal;
                 // Guard against tiny negatives from float error; keep NaNs untouched.
                 if (v < 0.0f) {
@@ -1713,8 +1768,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float* const valuesEnd = values + c.linear.size();
         for (; values < valuesEnd; ++values) {
             float& v = *values;
-            if (!std::isfinite(v)) v = 0.0f;
-            if (v < 0.0f) v = 0.0f;
+            v = sanitize_nonnegative_or(v, 0.0f);
         }
         };
 
@@ -1741,7 +1795,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 const double am = *mData;
                 const double ac = *cData;
                 const double b = *bData;
-                if (!std::isfinite(ay) || !std::isfinite(am) || !std::isfinite(ac) || !std::isfinite(b)) {
+                if (!is_finite(ay) || !is_finite(am) || !is_finite(ac) || !is_finite(b)) {
                     continue;
                 }
                 const double vec[3] = { ay, am, ac };
@@ -1754,12 +1808,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             }
 
             double mat[3][4];
-            for (int r = 0; r < 3; ++r) {
-                for (int c = 0; c < 3; ++c) {
-                    mat[r][c] = ATA[r][c];
-                }
-                mat[r][3] = ATb[r];
-            }
+            copy_3x3_and_append_rhs(ATA, ATb, mat);
 
             for (int i = 0; i < 3; ++i) {
                 int pivot = i;
@@ -1795,10 +1844,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             float* outData = result.data();
             for (int i = 0; i < 3; ++i, ++outData) {
                 float v = static_cast<float>(mat[i][3]);
-                if (!std::isfinite(v) || v < 0.0f) {
-                    v = 0.0f;
-                }
-                *outData = v;
+                *outData = sanitize_nonnegative_or(v, 0.0f);
             }
 
             return result;
@@ -1937,39 +1983,15 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     bool hasRefIlluminant = false;
     const bool hasBaseline = S.base.hasBaseline;
     const float dyeDensityMinScale =
-        (std::isfinite(S.base.dyeDensityMinFactor) && S.base.dyeDensityMinFactor >= 0.0f)
+        (is_finite(S.base.dyeDensityMinFactor) && S.base.dyeDensityMinFactor >= 0.0f)
         ? S.base.dyeDensityMinFactor
         : 1.0f;
     if (hasBaseline && !approx_equal(dyeDensityMinScale, 1.0f)) {
-        float* baseMinData = baseMin.linear.data();
-        const float* const baseMinEnd = baseMinData + baseMin.linear.size();
-        for (; baseMinData < baseMinEnd; ++baseMinData) {
-            float& v = *baseMinData;
-            if (std::isfinite(v)) {
-                v *= dyeDensityMinScale;
-                if (v < 0.0f) {
-                    v = 0.0f;
-                }
-            }
-        }
+        scale_finite_curve_samples(baseMin, dyeDensityMinScale, true);
     }
     if (hasBaseline) {
-        float* baseMinData = baseMin.linear.data();
-        const float* const baseMinEnd = baseMinData + baseMin.linear.size();
-        for (; baseMinData < baseMinEnd; ++baseMinData) {
-            float& v = *baseMinData;
-            if (std::isfinite(v) && v < 0.0f) {
-                v = 0.0f;
-            }
-        }
-        float* baseMidData = baseMid.linear.data();
-        const float* const baseMidEnd = baseMidData + baseMid.linear.size();
-        for (; baseMidData < baseMidEnd; ++baseMidData) {
-            float& v = *baseMidData;
-            if (std::isfinite(v) && v < 0.0f) {
-                v = 0.0f;
-            }
-        }
+        clamp_negative_finite_curve_samples(baseMin);
+        clamp_negative_finite_curve_samples(baseMid);
     }
     // agx-emulsion parity: baseline NaNs are preserved in working-state curves and handled as
     // "0 contribution" during integration via SpectralTables baseline validity masks.
@@ -2017,7 +2039,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             const double* const srcEnd = srcData + out.size();
             for (; srcData < srcEnd; ++srcData, ++outData) {
                 const double v = *srcData;
-                if (std::isfinite(v)) {
+                if (is_finite(v)) {
                     *outData = static_cast<float>(v);
                 }
             }
@@ -2064,28 +2086,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     Spectral::Curve densBForCalibration = densB;
     Spectral::Curve densGForCalibration = densG;
     Spectral::Curve densRForCalibration = densR;
-    auto compute_curve_max = [](const Spectral::Curve& c) {
-        float m = 0.0f;
-        const float* values = c.linear.data();
-        const float* const valuesEnd = values + c.linear.size();
-        for (; values < valuesEnd; ++values) {
-            const float v = *values;
-            if (std::isfinite(v) && v > m) {
-                m = v;
-            }
-        }
-        if (!std::isfinite(m) || m <= 1e-4f) {
-            m = 1.0f;
-        }
-        if (m > 1000.0f) {
-            m = 1000.0f;
-        }
-        return m;
-        };
     std::array<float, 3> densityMaxPostDir{
-        compute_curve_max(densBForCalibration),
-        compute_curve_max(densGForCalibration),
-        compute_curve_max(densRForCalibration)
+        curve_max_clamped_or_default(densBForCalibration),
+        curve_max_clamped_or_default(densGForCalibration),
+        curve_max_clamped_or_default(densRForCalibration)
     };
 
     const Profiles::DirCouplersProfile& dirCfg = S.base.dirCouplers;
@@ -2105,42 +2109,32 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
 #ifdef JUICER_ENABLE_COUPLERS
     if (dirCfg.hasData) {
-        auto sanitize_profile = [](float value, double fallback, double lo, double hi) -> double {
-            double v = static_cast<double>(value);
-            if (!std::isfinite(v)) {
-                return fallback;
-            }
-            if (v < lo) v = lo;
-            if (v > hi) v = hi;
-            return v;
-            };
-
         if (!S.couplerDirty.active.load(std::memory_order_acquire) && effectiveCouplersActive == kFactoryCouplersActive) {
             effectiveCouplersActive = dirCfg.active ? 1 : 0;
         }
         if (!S.couplerDirty.amount.load(std::memory_order_acquire) && approx_equal(effectiveCouplersAmount, kFactoryCouplersAmount)) {
-            effectiveCouplersAmount = sanitize_profile(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
+            effectiveCouplersAmount = sanitize_profile_value(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
         }
         if (!S.couplerDirty.ratioB.load(std::memory_order_acquire) && approx_equal(effectiveRatioB, kFactoryCouplersRatioB)) {
-            effectiveRatioB = sanitize_profile(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
+            effectiveRatioB = sanitize_profile_value(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
         }
         if (!S.couplerDirty.ratioG.load(std::memory_order_acquire) && approx_equal(effectiveRatioG, kFactoryCouplersRatioG)) {
-            effectiveRatioG = sanitize_profile(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
+            effectiveRatioG = sanitize_profile_value(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
         }
         if (!S.couplerDirty.ratioR.load(std::memory_order_acquire) && approx_equal(effectiveRatioR, kFactoryCouplersRatioR)) {
-            effectiveRatioR = sanitize_profile(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
+            effectiveRatioR = sanitize_profile_value(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
         }
         if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
-            effectiveCouplersSigma = sanitize_profile(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
+            effectiveCouplersSigma = sanitize_profile_value(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
         }
         if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
-            effectiveCouplersHigh = sanitize_profile(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
+            effectiveCouplersHigh = sanitize_profile_value(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
         }
         if (!S.couplerDirty.spatialSigma.load(std::memory_order_acquire) && spatialSigmaIsUiDefault) {
             const double profileSpatialSigma = S.couplerProfileSpatialSigmaValid
                 ? S.couplerProfileSpatialSigmaMicrometers
                 : static_cast<double>(dirCfg.diffusionSizeUm);
-            effectiveSpatialSigma = sanitize_profile(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
+            effectiveSpatialSigma = sanitize_profile_value(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
         }
     }
 #endif
@@ -2149,21 +2143,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     Couplers::Runtime dirRT{};
     dirRT.active = (effectiveCouplersActive != 0);
     {
-        auto clampRatio = [](double v) -> float {
-            if (!std::isfinite(v) || v < 0.0) return 0.0f;
-            if (v > 1.0) return 1.0f;
-            return static_cast<float>(v);
-            };
-        auto clampAmount = [](double v) -> float {
-            if (!std::isfinite(v) || v < 0.0) return 0.0f;
-            if (v > 2.0) return 2.0f;
-            return static_cast<float>(v);
-            };
-        const float amountScale = clampAmount(effectiveCouplersAmount);
+        const float amountScale = clamp_coupler_amount(effectiveCouplersAmount);
         const float amount[3] = {
-            amountScale * clampRatio(effectiveRatioB),
-            amountScale * clampRatio(effectiveRatioG),
-            amountScale * clampRatio(effectiveRatioR)
+            amountScale * clamp_coupler_ratio(effectiveRatioB),
+            amountScale * clamp_coupler_ratio(effectiveRatioG),
+            amountScale * clamp_coupler_ratio(effectiveRatioR)
         };
 #ifdef JUICER_ENABLE_COUPLERS
         Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
@@ -2176,22 +2160,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
 #ifdef JUICER_ENABLE_COUPLERS
         if (dirRT.active) {
-            auto has_nonfinite_density = [](const Spectral::Curve& c) -> bool {
-                const float* values = c.linear.data();
-                const float* const valuesEnd = values + c.linear.size();
-                for (; values < valuesEnd; ++values) {
-                    const float v = *values;
-                    if (!std::isfinite(v)) {
-                        return true;
-                    }
-                }
-                return false;
-                };
-
             // agx-emulsion parity: density curves may contain intentional toe NaNs. DIR pre-correction
             // must not "heal" them into 0 densities; if authored NaNs exist, skip pre-correction and
             // let NaNs propagate through sampling to "0 transmitted light" downstream.
-            if (has_nonfinite_density(densB) || has_nonfinite_density(densG) || has_nonfinite_density(densR)) {
+            if (curve_has_nonfinite_samples(densB) ||
+                curve_has_nonfinite_samples(densG) ||
+                curve_has_nonfinite_samples(densR)) {
                 precorrectApplied = false;
                 JTRACE("BUILD", "precorrect: skipped (density curves contain non-finite samples; NaN toe parity)");
             }
@@ -2250,12 +2224,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     if (dirCfg.hasData) {
         auto computeK = [&](int idx) -> float {
-            float amount = std::isfinite(dirCfg.amount) ? dirCfg.amount : 1.0f;
-            if (amount <= 0.0f) amount = 0.1f;
-            float ratio = dirCfg.ratioRGB[idx];
-            if (!std::isfinite(ratio) || ratio <= 0.0f) ratio = 1.0f;
+            const float amount = std::max(0.1f, sanitize_positive_or(dirCfg.amount, 1.0f));
+            const float ratio = sanitize_positive_or(dirCfg.ratioRGB[idx], 1.0f);
             float k = 6.0f * amount * ratio;
-            if (!std::isfinite(k) || k <= 0.0f) k = 6.0f;
+            k = sanitize_positive_or(k, 6.0f);
             return std::clamp(k, 1.0f, 24.0f);
             };
         negParams.kB = computeK(0);
@@ -2267,16 +2239,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     if (dirCfg.hasData || hasMaskingData) {
         float amountRGB[3] = { 1.0f, 1.0f, 1.0f };
         if (dirCfg.hasData) {
-            const float amountRaw = std::isfinite(dirCfg.amount)
-                ? static_cast<float>(dirCfg.amount)
-                : 1.0f;
-            const float amount = std::max(0.0f, amountRaw);
+            const float amount = sanitize_nonnegative_or(static_cast<float>(dirCfg.amount), 1.0f);
             float* amountRgbIt = amountRGB;
             const float* ratioIt = dirCfg.ratioRGB.data();
             for (int i = 0; i < 3; ++i, ++amountRgbIt, ++ratioIt) {
-                float ratio = *ratioIt;
-                if (!std::isfinite(ratio)) ratio = 1.0f;
-                if (ratio < 0.0f) ratio = 0.0f;
+                const float ratio = sanitize_nonnegative_or(*ratioIt, 1.0f);
                 *amountRgbIt = std::clamp(amount * ratio, 0.0f, 1.0f);
             }
         }
@@ -2307,9 +2274,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 const float widthRaw = (maskProfile.transitionWidths.size() > static_cast<size_t>(ch))
                     ? maskProfile.transitionWidths[ch]
                     : std::numeric_limits<float>::quiet_NaN();
-                const float width = (std::isfinite(widthRaw) && std::fabs(widthRaw) > 1e-6f)
-                    ? std::fabs(widthRaw)
-                    : std::numeric_limits<float>::quiet_NaN();
+                const float width = sanitize_abs_positive_or_nan(widthRaw);
 
                 double weightSum = 0.0;
                 double scaleSum = 0.0;
@@ -2318,12 +2283,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 const float* lambdaData = lambda.data();
                 for (size_t i = 0; i < K; ++i, ++epsData, ++lambdaData) {
                     const float weight = *epsData;
-                    if (!std::isfinite(weight) || weight <= 0.0f) {
+                    if (!is_finite(weight) || weight <= 0.0f) {
                         continue;
                     }
                     const float lambda_nm = *lambdaData;
                     float scaleSpectral = 1.0f;
-                    if (std::isfinite(cross) && std::isfinite(width)) {
+                    if (is_finite(cross) && is_finite(width)) {
                         const float t = (lambda_nm - cross) / width;
                         scaleSpectral = (std::erf(t) + 1.0f + effectiveness) / (2.0f + effectiveness);
                     }
@@ -2335,11 +2300,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                         float mu = (*triData)[0];
                         float sigma = (*triData)[1];
                         float amp = (*triData)[2];
-                        if (!std::isfinite(mu) || !std::isfinite(sigma) || !std::isfinite(amp)) {
+                        if (!is_finite(mu) || !is_finite(sigma) || !is_finite(amp)) {
                             continue;
                         }
-                        sigma = std::fabs(sigma);
-                        if (sigma <= 1e-6f) {
+                        sigma = sanitize_abs_positive_or_nan(sigma);
+                        if (!is_finite(sigma)) {
                             continue;
                         }
                         const float s = (lambda_nm - mu) / sigma;
@@ -2352,12 +2317,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 if (weightSum > 0.0) {
                     float scaleAvg = static_cast<float>(scaleSum / weightSum);
                     float offsetAvg = static_cast<float>(offsetSum / weightSum);
-                    if (!std::isfinite(scaleAvg) || scaleAvg <= 0.0f) {
-                        scaleAvg = 1.0f;
-                    }
-                    if (!std::isfinite(offsetAvg) || offsetAvg < 0.0f) {
-                        offsetAvg = 0.0f;
-                    }
+                    scaleAvg = sanitize_positive_or(scaleAvg, 1.0f);
+                    offsetAvg = sanitize_nonnegative_or(offsetAvg, 0.0f);
                     maskScaleCh[ch] = scaleAvg;
                     maskOffsetCh[ch] = offsetAvg;
                 }
@@ -2369,10 +2330,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         float* scaleDst = negParams.maskScale;
         float* offsetDst = negParams.maskOffset;
         for (int i = 0; i < 3; ++i, ++scaleSrc, ++offsetSrc, ++scaleDst, ++offsetDst) {
-            float scale = *scaleSrc;
-            if (!std::isfinite(scale) || scale <= 0.0f) scale = 1.0f;
-            float offset = *offsetSrc;
-            if (!std::isfinite(offset) || offset < 0.0f) offset = 0.0f;
+            float scale = sanitize_positive_or(*scaleSrc, 1.0f);
+            float offset = sanitize_nonnegative_or(*offsetSrc, 0.0f);
             *scaleDst = scale;
             *offsetDst = offset;
         }
@@ -2383,9 +2342,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             float maskStrength = hasMaskingData
                 ? ((1.0f - maskScaleCh[r]) + maskOffsetCh[r])
                 : 0.0f;
-            if (!std::isfinite(maskStrength)) maskStrength = 0.0f;
-            float amountRow = dirCfg.hasData ? amountRGB[r] : 1.0f;
-            if (!std::isfinite(amountRow) || amountRow < 0.0f) amountRow = 0.0f;
+            maskStrength = sanitize_nonnegative_or(maskStrength, 0.0f);
+            float amountRow = sanitize_nonnegative_clamped_or(
+                dirCfg.hasData ? amountRGB[r] : 1.0f, 0.0f, 1.0f);
             float scale = maskScaleBase * (maskStrength + maskScaleOffset);
             if (dirCfg.hasData) {
                 scale *= amountRow;
@@ -2394,21 +2353,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             const float* dirRow = dirMatrix[r];
             float* maskRow = negParams.mask + static_cast<size_t>(r) * 3u;
             for (int c = 0; c < 3; ++c, ++dirRow, ++maskRow) {
-                float val = *dirRow;
-                if (!std::isfinite(val)) {
-                    val = (r == c) ? 1.0f : 0.0f;
-                }
+                const float val = finite_or_fallback(*dirRow, (r == c) ? 1.0f : 0.0f);
                 const float delta = scale * val;
                 if (r == c) {
-                    float diag = 1.0f - delta;
-                    if (!std::isfinite(diag)) diag = 1.0f;
-                    if (diag < 0.0f) diag = 0.0f;
+                    const float diag = sanitize_nonnegative_or(1.0f - delta, 1.0f);
                     *maskRow = diag;
                 }
                 else {
-                    float off = -delta;
-                    if (!std::isfinite(off)) off = 0.0f;
-                    off = std::clamp(off, -1.0f, 1.0f);
+                    const float off = std::clamp(finite_or_fallback(-delta, 0.0f), -1.0f, 1.0f);
                     *maskRow = off;
                 }
             }
@@ -2448,7 +2400,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float* const dataEnd = data + values.size();
         for (; data < dataEnd; ++data) {
             const float v = *data;
-            if (std::isfinite(v) && v > 1e-6f) {
+            if (is_finite(v) && v > 1e-6f) {
                 sum += v;
                 ++count;
             }
@@ -2483,9 +2435,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             target->tablesRef);
 
         const bool validWhite =
-            std::isfinite(target->tablesRef.whiteXYZ[0]) &&
-            std::isfinite(target->tablesRef.whiteXYZ[1]) &&
-            std::isfinite(target->tablesRef.whiteXYZ[2]) &&
+            triplet_is_finite(target->tablesRef.whiteXYZ) &&
             target->tablesRef.whiteXYZ[1] > 0.0f;
         if (!validWhite) {
             JTRACE("BUILD", "reference illuminant produced invalid white XYZ; disabling SPD for safety");
@@ -2507,12 +2457,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         !printCurves.yellow.empty();
     bool printRuntimeOk = false;
     if (printDensityOk) {
-        const float factor = static_cast<float>(
-            std::clamp(std::isfinite(P.glareCompRemovalFactor) ? P.glareCompRemovalFactor : 0.0, 0.0, 1.0));
-        const float density = static_cast<float>(
-            std::clamp(std::isfinite(P.glareCompRemovalDensity) ? P.glareCompRemovalDensity : 1.2, 0.0, 3.0));
-        const float transition = static_cast<float>(
-            std::clamp(std::isfinite(P.glareCompRemovalTransition) ? P.glareCompRemovalTransition : 0.3, 0.0, 2.0));
+        const float factor = static_cast<float>(clamp_finite_or(P.glareCompRemovalFactor, 0.0, 0.0, 1.0));
+        const float density = static_cast<float>(clamp_finite_or(P.glareCompRemovalDensity, 1.2, 0.0, 3.0));
+        const float transition = static_cast<float>(clamp_finite_or(P.glareCompRemovalTransition, 0.3, 0.0, 2.0));
 
         printProfile.glare.compensationRemovalFactor = factor;
         printProfile.glare.compensationRemovalDensity = density;
@@ -2545,36 +2492,13 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         Print::profile_is_valid(printProfile) &&
         printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K))
     {
-        const float printDminFactor = std::isfinite(P.printDminFactor)
-            ? static_cast<float>(std::clamp(P.printDminFactor, 0.0, 1.0))
-            : 0.4f;
+        const float printDminFactor = static_cast<float>(clamp_finite_or(P.printDminFactor, 0.4, 0.0, 1.0));
         if (printProfile.hasBaseline && !approx_equal(printDminFactor, 1.0f)) {
-            float* baseMinData = printProfile.baseMin.linear.data();
-            const float* const baseMinEnd = baseMinData + printProfile.baseMin.linear.size();
-            for (; baseMinData < baseMinEnd; ++baseMinData) {
-                float& v = *baseMinData;
-                if (std::isfinite(v)) {
-                    v *= printDminFactor;
-                }
-            }
+            scale_finite_curve_samples(printProfile.baseMin, printDminFactor);
         }
         if (printProfile.hasBaseline) {
-            float* baseMinData = printProfile.baseMin.linear.data();
-            const float* const baseMinEnd = baseMinData + printProfile.baseMin.linear.size();
-            for (; baseMinData < baseMinEnd; ++baseMinData) {
-                float& v = *baseMinData;
-                if (std::isfinite(v) && v < 0.0f) {
-                    v = 0.0f;
-                }
-            }
-            float* baseMidData = printProfile.baseMid.linear.data();
-            const float* const baseMidEnd = baseMidData + printProfile.baseMid.linear.size();
-            for (; baseMidData < baseMidEnd; ++baseMidData) {
-                float& v = *baseMidData;
-                if (std::isfinite(v) && v < 0.0f) {
-                    v = 0.0f;
-                }
-            }
+            clamp_negative_finite_curve_samples(printProfile.baseMin);
+            clamp_negative_finite_curve_samples(printProfile.baseMid);
         }
         printRuntimeCopy->profile = printProfile;
         Spectral::build_tables_from_curves_non_global(
@@ -2617,18 +2541,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     if (hasRefIlluminant && target->tablesRef.K > 0) {
         const bool validWhite =
-            std::isfinite(target->tablesRef.whiteXYZ[0]) &&
-            std::isfinite(target->tablesRef.whiteXYZ[1]) &&
-            std::isfinite(target->tablesRef.whiteXYZ[2]) &&
-            target->tablesRef.whiteXYZ[1] > 0.0f &&
-            approx_equal(static_cast<double>(target->tablesRef.whiteXYZ[1]), 1.0, 1e-4);
+            normalized_white_triplet_is_valid(target->tablesRef.whiteXYZ);
 
         const bool validRefWhite =
-            std::isfinite(target->tablesRef.refIllumWhiteXYZ[0]) &&
-            std::isfinite(target->tablesRef.refIllumWhiteXYZ[1]) &&
-            std::isfinite(target->tablesRef.refIllumWhiteXYZ[2]) &&
-            target->tablesRef.refIllumWhiteXYZ[1] > 0.0f &&
-            approx_equal(static_cast<double>(target->tablesRef.refIllumWhiteXYZ[1]), 1.0, 1e-4);
+            normalized_white_triplet_is_valid(target->tablesRef.refIllumWhiteXYZ);
 
         if (validWhite && validRefWhite) {
             Spectral::compute_S_inverse_from_tables(target->tablesRef, target->spdSInv);
@@ -2661,7 +2577,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             const float* const valuesEnd = values + c.linear.size();
             for (; values < valuesEnd; ++values) {
                 const float v = *values;
-                if (!std::isfinite(v)) {
+                if (!is_finite(v)) {
                     return false;
                 }
             }
@@ -2678,7 +2594,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 if (std::isinf(v)) {
                     return false;
                 }
-                if (std::isfinite(v)) {
+                if (is_finite(v)) {
                     anyFinite = true;
                 }
             }
@@ -2717,12 +2633,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float* spdInvIt = target->spdSInv;
         const float* const spdInvEnd = spdInvIt + 9;
         for (; spdInvIt != spdInvEnd; ++spdInvIt) {
-            if (!std::isfinite(*spdInvIt)) { ok_spd = false; break; }
+            if (!is_finite(*spdInvIt)) { ok_spd = false; break; }
         }
         const bool ok_invYn =
-            std::isfinite(target->tablesView.invYn) && target->tablesView.invYn > 0.0f &&
-            std::isfinite(target->tablesScan.invYn) && target->tablesScan.invYn > 0.0f &&
-            (!target->spdReady || (std::isfinite(target->tablesRef.invYn) && target->tablesRef.invYn > 0.0f));
+            is_positive_finite(target->tablesView.invYn) &&
+            is_positive_finite(target->tablesScan.invYn) &&
+            (!target->spdReady || is_positive_finite(target->tablesRef.invYn));
 
         if (buildTraceEnabled) {
             std::ostringstream oss;
@@ -2741,7 +2657,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     bool hasDensityMid = !S.base.densityMidNeutral.empty();
     if (hasDensityMid) {
         float seed = 0.0f;
-        if (std::isfinite(S.base.densityMidNeutral.front())) {
+        if (is_finite(S.base.densityMidNeutral.front())) {
             seed = S.base.densityMidNeutral.front();
         }
         densityMidRGB.fill(seed);
@@ -2750,7 +2666,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         float* densityMidData = densityMidRGB.data();
         for (size_t i = 0; i < count; ++i, ++midNeutralData, ++densityMidData) {
             const float v = *midNeutralData;
-            if (std::isfinite(v)) {
+            if (is_finite(v)) {
                 *densityMidData = v;
             }
         }
@@ -2766,7 +2682,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     if (hasLogEMid) {
         float seed = 0.0f;
         bool seedValid = false;
-        if (std::isfinite(S.base.logExposureMidNeutral.front())) {
+        if (is_finite(S.base.logExposureMidNeutral.front())) {
             seed = S.base.logExposureMidNeutral.front();
             seedValid = true;
         }
@@ -2777,7 +2693,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         float* outLogMidData = logMidRGB.data();
         for (size_t i = 0; i < count; ++i, ++logMidData, ++outLogMidData) {
             const float v = *logMidData;
-            if (std::isfinite(v)) {
+            if (is_finite(v)) {
                 *outLogMidData = v;
                 ++finiteCount;
             }

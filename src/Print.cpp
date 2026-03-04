@@ -23,6 +23,13 @@ namespace Print {
         using FloatPairs = std::vector<std::pair<float, float>>;
         using DoublePairs = std::vector<std::pair<double, double>>;
 
+        inline bool is_finite(double value);
+
+        template <typename PairT>
+        inline bool pair_has_finite_components(const PairT& p) {
+            return is_finite(p.first) && is_finite(p.second);
+        }
+
         inline bool any_true_triplet(const std::array<bool, 3>& values) {
             const bool* valueIt = values.data();
             const bool* const valueEnd = valueIt + 3;
@@ -32,6 +39,26 @@ namespace Print {
                 }
             }
             return false;
+        }
+
+        inline bool has_effective_shift(double shift, double epsilon) {
+            return is_finite(shift) && std::fabs(shift) >= epsilon;
+        }
+
+        inline bool is_nonzero_finite(double value) {
+            return is_finite(value) && value != 0.0;
+        }
+
+        inline bool is_finite(double value) {
+            return std::isfinite(value);
+        }
+
+        inline void accumulate_if_finite(double value, double& sum, int& count) {
+            if (!is_finite(value)) {
+                return;
+            }
+            sum += value;
+            ++count;
         }
 
         Spectral::Curve build_blackbody_curve(double temperature)
@@ -200,13 +227,13 @@ namespace Print {
                 for (size_t i = 0; i < count; ++i, ++resampledData, ++illuminantData) {
                     const float logSens = resampledData->second;
                     const float illumVal = *illuminantData;
-                    if (!std::isfinite(illumVal)) {
+                    if (!is_finite(illumVal)) {
                         continue;
                     }
                     double linearSens = 0.0;
-                    if (std::isfinite(logSens)) {
+                    if (is_finite(logSens)) {
                         linearSens = std::pow(10.0, static_cast<double>(logSens));
-                        if (!std::isfinite(linearSens) || linearSens < 0.0) {
+                        if (!is_finite(linearSens) || linearSens < 0.0) {
                             linearSens = 0.0;
                         }
                     }
@@ -230,7 +257,7 @@ namespace Print {
             const double* exposureIt = exposureData;
             for (size_t i = 0; i < exposureCount; ++i, ++exposureIt) {
                 const double v = *exposureIt;
-                if (!(v > 0.0) || !std::isfinite(v)) {
+                if (!(v > 0.0) || !is_finite(v)) {
                     return false;
                 }
             }
@@ -249,7 +276,7 @@ namespace Print {
             float* logCorrData = logCorr.data();
             for (size_t i = 0; i < correctionCount; ++i, ++correctionRead, ++logCorrData) {
                 const float corr = *correctionRead;
-                if (!(corr > 0.0f) || !std::isfinite(corr)) {
+                if (!(corr > 0.0f) || !is_finite(corr)) {
                     return false;
                 }
                 *logCorrData = static_cast<float>(std::log10(corr));
@@ -263,7 +290,7 @@ namespace Print {
                 const size_t sampleCount = samples.size();
                 for (size_t i = 0; i < sampleCount; ++i, ++sampleData) {
                     float& y = sampleData->second;
-                    if (std::isfinite(y)) {
+                    if (is_finite(y)) {
                         y += logOffset;
                     }
                 }
@@ -356,7 +383,7 @@ namespace Print {
                 const std::pair<float, float>* sampleData = pairs.data();
                 const size_t sampleCount = pairs.size();
                 for (size_t i = 0; i < sampleCount; ++i, ++sampleData) {
-                    if (std::isfinite(sampleData->second)) {
+                    if (is_finite(sampleData->second)) {
                         if (++finiteCount >= 4) {
                             return true;
                         }
@@ -414,7 +441,7 @@ namespace Print {
                 bool updated = false;
                 if (profileJson.densityMidNeutral.size() == 1) {
                     const float v = profileJson.densityMidNeutral[0];
-                    if (std::isfinite(v)) {
+                    if (is_finite(v)) {
                         out.midNeutralDensity = { v, v, v };
                         updated = true;
                     }
@@ -425,18 +452,18 @@ namespace Print {
                     float* outMidNeutralData = out.midNeutralDensity.data();
                     for (size_t i = 0; i < count; ++i, ++midNeutralData, ++outMidNeutralData) {
                         const float v = *midNeutralData;
-                        if (std::isfinite(v)) {
+                        if (is_finite(v)) {
                             *outMidNeutralData = v;
                             updated = true;
                         }
                     }
 
-                    if (std::isfinite(out.midNeutralDensity[0])) {
+                    if (is_finite(out.midNeutralDensity[0])) {
                         float* outMidNeutralData = out.midNeutralDensity.data();
                         const float fallback = *outMidNeutralData;
                         ++outMidNeutralData;
                         for (int i = 1; i < 3; ++i, ++outMidNeutralData) {
-                            if (!std::isfinite(*outMidNeutralData)) {
+                            if (!is_finite(*outMidNeutralData)) {
                                 *outMidNeutralData = fallback;
                             }
                         }
@@ -446,7 +473,7 @@ namespace Print {
                 const bool allFinite = std::all_of(
                     out.midNeutralDensity.begin(),
                     out.midNeutralDensity.end(),
-                    [](float x) { return std::isfinite(x); });
+                    [](float x) { return is_finite(x); });
 
                 out.hasMidNeutralDensity = updated && allFinite;
                 if (runtime) {
@@ -486,13 +513,13 @@ namespace Print {
 
             // Trim leading/trailing samples without finite data.
             const auto firstFinite = std::find_if(pairs.begin(), pairs.end(),
-                [](const auto& p) { return std::isfinite(p.first) && std::isfinite(p.second); });
+                [](const auto& p) { return pair_has_finite_components(p); });
             if (firstFinite == pairs.end()) {
                 pairs.clear();
                 return;
             }
             const auto lastFinite = std::find_if(pairs.rbegin(), pairs.rend(),
-                [](const auto& p) { return std::isfinite(p.first) && std::isfinite(p.second); }).base();
+                [](const auto& p) { return pair_has_finite_components(p); }).base();
 
             FloatPairs trimmed;
             trimmed.reserve(static_cast<size_t>(std::distance(firstFinite, lastFinite)));
@@ -505,7 +532,7 @@ namespace Print {
             // Ensure remaining wavelengths and dye samples are finite.
             pairs.erase(std::remove_if(pairs.begin(), pairs.end(),
                 [](const auto& p) {
-                    return !std::isfinite(p.first) || !std::isfinite(p.second);
+                    return !pair_has_finite_components(p);
                 }), pairs.end());
             if (pairs.empty()) {
                 return;
@@ -566,30 +593,31 @@ namespace Print {
             return cOk && mOk && yOk;
         }
 
-        DoublePairs promote_pairs(const FloatPairs& in)
+        template <typename OutPairs, typename InPairs>
+        OutPairs cast_pairs(const InPairs& in)
         {
-            DoublePairs out;
+            using OutScalar = typename OutPairs::value_type::first_type;
+            OutPairs out;
             const size_t count = in.size();
             out.reserve(count);
-            const std::pair<float, float>* input = in.data();
-            const std::pair<float, float>* const inputEnd = input + count;
+            const typename InPairs::value_type* input = in.data();
+            const typename InPairs::value_type* const inputEnd = input + count;
             for (; input != inputEnd; ++input) {
-                out.emplace_back(static_cast<double>(input->first), static_cast<double>(input->second));
+                out.emplace_back(
+                    static_cast<OutScalar>(input->first),
+                    static_cast<OutScalar>(input->second));
             }
             return out;
         }
 
+        DoublePairs promote_pairs(const FloatPairs& in)
+        {
+            return cast_pairs<DoublePairs>(in);
+        }
+
         FloatPairs demote_pairs(const DoublePairs& in)
         {
-            FloatPairs out;
-            const size_t count = in.size();
-            out.reserve(count);
-            const std::pair<double, double>* input = in.data();
-            const std::pair<double, double>* const inputEnd = input + count;
-            for (; input != inputEnd; ++input) {
-                out.emplace_back(static_cast<float>(input->first), static_cast<float>(input->second));
-            }
-            return out;
+            return cast_pairs<FloatPairs>(in);
         }
 
         DensityCurves load_density_curves(const JsonProfileContext& ctx,
@@ -646,7 +674,7 @@ namespace Print {
         {
             const size_t n = curve.size();
             if (n == 0) return 0.0;
-            if (n == 1 || !std::isfinite(x)) return curve.front().second;
+            if (n == 1 || !is_finite(x)) return curve.front().second;
             if (x <= curve.front().first) return curve.front().second;
             if (x >= curve.back().first) return curve.back().second;
             const auto upper = std::lower_bound(
@@ -678,10 +706,14 @@ namespace Print {
                 return false;
             }
             const std::pair<double, double>* curveData = curve.data();
-
-            if (!std::isfinite(targetDensity)) {
-                outLogE = curveData[0].first;
+            const double firstLogE = curveData[0].first;
+            auto fail_with_first_logE = [&]() -> bool {
+                outLogE = firstLogE;
                 return false;
+            };
+
+            if (!is_finite(targetDensity)) {
+                return fail_with_first_logE();
             }
 
             double yMin = std::numeric_limits<double>::infinity();
@@ -693,7 +725,7 @@ namespace Print {
             const std::pair<double, double>* sampleIt = curveData;
             for (size_t i = 0; i < curveSize; ++i, ++sampleIt) {
                 const double y = sampleIt->second;
-                if (!std::isfinite(y)) {
+                if (!is_finite(y)) {
                     continue;
                 }
                 if (!anyFinite) {
@@ -713,8 +745,7 @@ namespace Print {
             }
 
             if (!anyFinite) {
-                outLogE = curveData[0].first;
-                return false;
+                return fail_with_first_logE();
             }
 
             const double xAtMin = curveData[minIndex].first;
@@ -734,7 +765,7 @@ namespace Print {
             for (size_t i = 1; i < curveSize; ++i, ++prev, ++curr) {
                 const double y0 = prev->second;
                 const double y1 = curr->second;
-                if (!std::isfinite(y0) || !std::isfinite(y1)) {
+                if (!is_finite(y0) || !is_finite(y1)) {
                     continue;
                 }
                 if ((targetDensity >= y0 && targetDensity <= y1) ||
@@ -753,14 +784,14 @@ namespace Print {
 
         void apply_channel_shift(DoublePairs& curve, double shift)
         {
-            if (!std::isfinite(shift) || shift == 0.0) {
+            if (!has_effective_shift(shift, 1e-12)) {
                 return;
             }
             std::pair<double, double>* samples = curve.data();
             const size_t count = curve.size();
             for (size_t i = 0; i < count; ++i, ++samples) {
                 double& x = samples->first;
-                if (std::isfinite(x)) {
+                if (is_finite(x)) {
                     x -= shift;
                 }
             }
@@ -785,7 +816,7 @@ namespace Print {
             if (!m_dc.empty()) {
                 const double greenDensityAtZero = sample_curve_at(m_dc, 0.0);
 
-                if (std::isfinite(greenDensityAtZero)) {
+                if (is_finite(greenDensityAtZero)) {
                     double tmpShift = 0.0;
                     if (find_logE_for_density(c_dc, greenDensityAtZero, tmpShift)) {
                         leShiftC = tmpShift;
@@ -822,7 +853,7 @@ namespace Print {
             const std::array<float, 3>& logExposureOffsets)
         {
             auto apply = [](DoublePairs& channel, double offset) {
-                if (channel.empty() || !std::isfinite(offset) || std::fabs(offset) < 1e-7) {
+                if (channel.empty()) {
                     return;
                 }
                 DoublePairs source = channel;
@@ -832,7 +863,7 @@ namespace Print {
                 const size_t adjustedCount = adjusted.size();
                 for (size_t i = 0; i < adjustedCount; ++i, ++adjustedData) {
                     auto& sample = *adjustedData;
-                    if (!std::isfinite(sample.first)) {
+                    if (!is_finite(sample.first)) {
                         continue;
                     }
                     const double query = sample.first + offset;
@@ -841,9 +872,18 @@ namespace Print {
                 channel = std::move(adjusted);
                 };
 
-            apply(c_dc, static_cast<double>(logExposureOffsets[0]));
-            apply(m_dc, static_cast<double>(logExposureOffsets[1]));
-            apply(y_dc, static_cast<double>(logExposureOffsets[2]));
+            const double shiftC = static_cast<double>(logExposureOffsets[0]);
+            const double shiftM = static_cast<double>(logExposureOffsets[1]);
+            const double shiftY = static_cast<double>(logExposureOffsets[2]);
+            if (has_effective_shift(shiftC, 1e-7)) {
+                apply(c_dc, shiftC);
+            }
+            if (has_effective_shift(shiftM, 1e-7)) {
+                apply(m_dc, shiftM);
+            }
+            if (has_effective_shift(shiftY, 1e-7)) {
+                apply(y_dc, shiftY);
+            }
         }
 
         // DEPRECATED: This diagnostic function was used to emit a neutral exposure probe after
@@ -865,7 +905,7 @@ namespace Print {
                     continue;
                 }
                 const float density = neutralDensity[channelIndex];
-                if (!std::isfinite(density)) {
+                if (!is_finite(density)) {
                     continue;
                 }
                 double logE = 0.0;
@@ -885,7 +925,7 @@ namespace Print {
             const float* referenceData = referenceLogExposure.data();
             for (size_t i = 0; i < referenceCount; ++i, ++referenceData) {
                 const float refVal = *referenceData;
-                if (std::isfinite(refVal)) {
+                if (is_finite(refVal)) {
                     reference[i] = static_cast<double>(refVal);
                     referenceValid[i] = true;
                 }
@@ -1008,12 +1048,12 @@ namespace Print {
         bool invert_density_curve_at_target(const Spectral::Curve& curve, float targetDensity, float& outLogE)
         {
             const size_t n = curve.lambda_nm.size();
-            if (n == 0 || curve.linear.size() != n || !std::isfinite(targetDensity)) {
+            if (n == 0 || curve.linear.size() != n || !is_finite(targetDensity)) {
                 return false;
             }
 
             size_t domainBegin = 0;
-            while (domainBegin < n && (!std::isfinite(curve.lambda_nm[domainBegin]) || !std::isfinite(curve.linear[domainBegin]))) {
+            while (domainBegin < n && (!is_finite(curve.lambda_nm[domainBegin]) || !is_finite(curve.linear[domainBegin]))) {
                 ++domainBegin;
             }
             if (domainBegin >= n) {
@@ -1021,7 +1061,7 @@ namespace Print {
             }
 
             size_t domainEnd = n - 1;
-            while (domainEnd > domainBegin && (!std::isfinite(curve.lambda_nm[domainEnd]) || !std::isfinite(curve.linear[domainEnd]))) {
+            while (domainEnd > domainBegin && (!is_finite(curve.lambda_nm[domainEnd]) || !is_finite(curve.linear[domainEnd]))) {
                 --domainEnd;
             }
             if (domainEnd < domainBegin) {
@@ -1038,7 +1078,7 @@ namespace Print {
             for (size_t i = domainBegin; i <= domainEnd; ++i) {
                 const float x = curve.lambda_nm[i];
                 const float y = curve.linear[i];
-                if (!std::isfinite(x) || !std::isfinite(y)) {
+                if (!is_finite(x) || !is_finite(y)) {
                     continue;
                 }
                 if (!samples.empty() && std::fabs(samples.back().x - x) <= eps) {
@@ -1054,7 +1094,7 @@ namespace Print {
 
             const float yMin = samples.front().y;
             const float yMax = samples.back().y;
-            if (!std::isfinite(yMin) || !std::isfinite(yMax)) {
+            if (!is_finite(yMin) || !is_finite(yMax)) {
                 return false;
             }
 
@@ -1077,13 +1117,13 @@ namespace Print {
                 }
                 if (targetDensity <= cur.y) {
                     const float dy = cur.y - prev.y;
-                    if (!(dy > 0.0f) || !std::isfinite(dy)) {
+                    if (!(dy > 0.0f) || !is_finite(dy)) {
                         outLogE = cur.x;
                         return true;
                     }
                     const float t = std::clamp((targetDensity - prev.y) / dy, 0.0f, 1.0f);
                     outLogE = prev.x + t * (cur.x - prev.x);
-                    return std::isfinite(outLogE);
+                    return is_finite(outLogE);
                 }
             }
 
@@ -1165,13 +1205,13 @@ namespace Print {
             const double leDelta = rangeEv * kHalfLog10_2;
             const double le0 = leCenter - leDelta;
             const double le1 = leCenter + leDelta;
-            if (!std::isfinite(le0) || !std::isfinite(le1) || !(le1 > le0)) {
+            if (!is_finite(le0) || !is_finite(le1) || !(le1 > le0)) {
                 return 0.0;
             }
             const double density0 = sample_curve_at(curve, le0);
             const double density1 = sample_curve_at(curve, le1);
             const double denom = le1 - le0;
-            if (!std::isfinite(density0) || !std::isfinite(density1) || std::fabs(denom) < 1e-8) {
+            if (!is_finite(density0) || !is_finite(density1) || std::fabs(denom) < 1e-8) {
                 return 0.0;
             }
             return (density1 - density0) / denom;
@@ -1222,31 +1262,19 @@ namespace Print {
             const double* logExposureRead = logExposureData;
             for (size_t i = 0; i < logExposureCount; ++i, ++logExposureRead) {
                 const double le = *logExposureRead;
-                if (!std::isfinite(le)) {
+                if (!is_finite(le)) {
                     continue;
                 }
                 double sum = 0.0;
                 int count = 0;
                 if (i < cyanCount) {
-                    const double v = cyanData[i].second;
-                    if (std::isfinite(v)) {
-                        sum += v;
-                        ++count;
-                    }
+                    accumulate_if_finite(cyanData[i].second, sum, count);
                 }
                 if (i < magentaCount) {
-                    const double v = magentaData[i].second;
-                    if (std::isfinite(v)) {
-                        sum += v;
-                        ++count;
-                    }
+                    accumulate_if_finite(magentaData[i].second, sum, count);
                 }
                 if (i < yellowCount) {
-                    const double v = yellowData[i].second;
-                    if (std::isfinite(v)) {
-                        sum += v;
-                        ++count;
-                    }
+                    accumulate_if_finite(yellowData[i].second, sum, count);
                 }
                 if (count > 0) {
                     const double mean = sum / static_cast<double>(count);
@@ -1262,16 +1290,16 @@ namespace Print {
             const double* leCenterRead = logExposureData;
             for (size_t i = 0; i < logExposureCount; ++i, ++leCenterRead) {
                 const double le = *leCenterRead;
-                if (std::isfinite(le)) {
+                if (is_finite(le)) {
                     leCenter = le;
                     break;
                 }
             }
-            if (!std::isfinite(leCenter)) {
+            if (!is_finite(leCenter)) {
                 return false;
             }
             const double targetDensity = static_cast<double>(profile.glareCompensationDensity);
-            if (std::isfinite(targetDensity)) {
+            if (is_finite(targetDensity)) {
                 find_logE_for_density(meanCurve, targetDensity, leCenter);
             }
 
@@ -1288,9 +1316,9 @@ namespace Print {
                 for (size_t i = 1; i < logExposureCount; ++i, ++prev, ++curr) {
                     const double a = *curr;
                     const double b = *prev;
-                    if (std::isfinite(a) && std::isfinite(b)) {
+                    if (is_finite(a) && is_finite(b)) {
                         const double diff = a - b;
-                        if (std::isfinite(diff) && diff != 0.0) {
+                        if (is_nonzero_finite(diff)) {
                             leStep += std::fabs(diff);
                             ++stepCount;
                         }
@@ -1311,7 +1339,7 @@ namespace Print {
             const size_t adjustedCount = leAdjusted.size();
             for (size_t i = 0; i < adjustedCount; ++i, ++adjustedData) {
                 double& le = *adjustedData;
-                if (!std::isfinite(le)) {
+                if (!is_finite(le)) {
                     le = leCenter;
                 }
                 else if (le > leCenter) {
@@ -1320,10 +1348,10 @@ namespace Print {
             }
 
             double leTransition = 0.0;
-            if (std::isfinite(transitionDensity)) {
+            if (is_finite(transitionDensity)) {
                 leTransition = transitionDensity / slope;
             }
-            if (!std::isfinite(leTransition)) {
+            if (!is_finite(leTransition)) {
                 leTransition = 0.0;
             }
             const double sigmaSamples = std::fabs(leTransition) / leStep;
@@ -1344,7 +1372,7 @@ namespace Print {
                 const double* queryRead = filteredData;
                 for (size_t i = 0; i < logExposureCount; ++i, ++exposureRead, ++queryRead) {
                     const double le = *exposureRead;
-                    if (!std::isfinite(le)) {
+                    if (!is_finite(le)) {
                         continue;
                     }
                     const double density = sample_curve_at(source, *queryRead);
@@ -1488,10 +1516,18 @@ namespace Print {
         profile.midNeutralLogE = { nanLogE, nanLogE, nanLogE };
         if (profile.hasMidNeutralDensity) {
             std::array<float, 3> logE{ nanLogE, nanLogE, nanLogE };
-            bool okC = invert_density_curve_at_target(profile.dcC, profile.midNeutralDensity[0], logE[0]);
-            bool okM = invert_density_curve_at_target(profile.dcM, profile.midNeutralDensity[1], logE[1]);
-            bool okY = invert_density_curve_at_target(profile.dcY, profile.midNeutralDensity[2], logE[2]);
-            profile.hasMidNeutralLogE = okC && okM && okY;
+            const Spectral::Curve* curvesByChannel[3] = { &profile.dcC, &profile.dcM, &profile.dcY };
+            const float* densityIt = profile.midNeutralDensity.data();
+            float* logEIt = logE.data();
+            bool allChannelsOk = true;
+            for (const Spectral::Curve* const* curveIt = curvesByChannel;
+                 curveIt < curvesByChannel + 3;
+                 ++curveIt, ++densityIt, ++logEIt) {
+                if (!invert_density_curve_at_target(**curveIt, *densityIt, *logEIt)) {
+                    allChannelsOk = false;
+                }
+            }
+            profile.hasMidNeutralLogE = allChannelsOk;
             if (profile.hasMidNeutralLogE) {
                 profile.midNeutralLogE = logE;
             }

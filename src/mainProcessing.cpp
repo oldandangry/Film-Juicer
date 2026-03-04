@@ -140,6 +140,10 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 namespace {
     constexpr std::uint64_t kSeedPassGrain = 1;
     constexpr std::uint64_t kSeedPassGlare = 2;
+    inline float sanitize_nonnegative_or(float value, float fallback);
+    inline float sanitize_unit_or(float value, float fallback);
+    inline bool is_finite(float value);
+    inline bool is_finite(double value);
 
     inline int pixel_component_count(OFX::PixelComponentEnum comps) {
         switch (comps) {
@@ -183,22 +187,55 @@ namespace {
 
     inline void sanitize_nonnegative_triplet(float values[3]) {
         for (float* valueIt = values; valueIt != values + 3; ++valueIt) {
-            float value = *valueIt;
-            if (!std::isfinite(value) || value < 0.0f) {
-                value = 0.0f;
-            }
-            *valueIt = value;
+            *valueIt = sanitize_nonnegative_or(*valueIt, 0.0f);
         }
     }
 
     inline void sanitize_unit_triplet(float values[3]) {
         for (float* valueIt = values; valueIt != values + 3; ++valueIt) {
-            float value = *valueIt;
-            if (!std::isfinite(value)) {
-                value = 0.0f;
-            }
-            *valueIt = std::clamp(value, 0.0f, 1.0f);
+            *valueIt = sanitize_unit_or(*valueIt, 0.0f);
         }
+    }
+
+    inline void zero_float2(float values[2]) {
+        float* valueIt = values;
+        for (int i = 0; i < 2; ++i, ++valueIt) {
+            *valueIt = 0.0f;
+        }
+    }
+
+    inline void copy_float2(float dst[2], const float src[2]) {
+        std::memcpy(dst, src, 2u * sizeof(float));
+    }
+
+    inline float sanitize_amount_0_10(float value) {
+        return is_finite(value) ? std::clamp(value, 0.0f, 10.0f) : 0.0f;
+    }
+
+    inline float sanitize_nonnegative_or(float value, float fallback) {
+        if (!is_finite(value)) {
+            return fallback;
+        }
+        return std::max(0.0f, value);
+    }
+
+    inline float sanitize_unit_or(float value, float fallback) {
+        if (!is_finite(value)) {
+            return fallback;
+        }
+        return std::clamp(value, 0.0f, 1.0f);
+    }
+
+    inline float finite_or_zero(float value) {
+        return is_finite(value) ? value : 0.0f;
+    }
+
+    inline double finite_or(double value, double fallback) {
+        return is_finite(value) ? value : fallback;
+    }
+
+    inline double sanitize_finite_clamped_or(double value, double fallback, double lo, double hi) {
+        return is_finite(value) ? std::clamp(value, lo, hi) : fallback;
     }
 
     inline void divide_triplet(float dst[3], const float src[3], float denominator) {
@@ -241,8 +278,74 @@ namespace {
         return wantGlareBlur || wantGrainBlur || wantGrainSublayers;
     }
 
+    inline bool needs_independent_grain_path(int debugView, float chromaMix) {
+        return (debugView == 0 || debugView == 1) &&
+            (is_finite(chromaMix) && chromaMix < 0.999f);
+    }
+
+    inline bool is_positive_finite(float value) {
+        return is_finite(value) && value > 0.0f;
+    }
+
+    inline bool is_positive_finite(double value) {
+        return is_finite(value) && value > 0.0;
+    }
+
+    inline bool is_nonzero_finite(float value) {
+        return is_finite(value) && value != 0.0f;
+    }
+
+    inline bool is_finite(float value) {
+        return std::isfinite(value);
+    }
+
+    inline bool is_finite(double value) {
+        return std::isfinite(value);
+    }
+
+    inline bool wants_unsharp(float sigmaPx, float amount) {
+        return is_positive_finite(sigmaPx) && is_nonzero_finite(amount);
+    }
+
+    inline bool needs_grain_shared(bool wantGrain, int debugView, float chromaMix) {
+        return wantGrain && needs_independent_grain_path(debugView, chromaMix);
+    }
+
+    inline bool wants_optics_stage(
+        bool wantLensBlur,
+        bool wantUnsharp,
+        bool wantGlare,
+        bool wantHalation,
+        bool wantGrain,
+        bool wantWeave,
+        bool wantDefects) {
+        return wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
+    }
+
+    struct OpticsScratchNeeds {
+        bool blurred = false;
+        bool aux = false;
+        bool grain = false;
+    };
+
+    inline OpticsScratchNeeds build_optics_scratch_needs(
+        bool wantGlareBlur,
+        bool wantGrainBlur,
+        bool wantGrainSublayers,
+        bool wantGrainMix) {
+        OpticsScratchNeeds needs{};
+        needs.blurred = needs_blurred_optics_scratch(wantGlareBlur, wantGrainBlur, wantGrainSublayers);
+        needs.aux = wantGrainSublayers;
+        needs.grain = wantGrainMix;
+        return needs;
+    }
+
+    inline bool spatial_dir_enabled(const Couplers::Runtime& dirRT) {
+        return dirRT.active && is_positive_finite(dirRT.spatialSigmaPixels);
+    }
+
     inline float sanitize_dir_dmax_value(float value) {
-        if (!std::isfinite(value) || value <= 1e-4f) {
+        if (!is_finite(value) || value <= 1e-4f) {
             return 1.0f;
         }
         return value;
@@ -420,10 +523,7 @@ namespace {
 #endif
 
     std::int64_t frame_index_from_time(double time) {
-        if (!std::isfinite(time)) {
-            return 0;
-        }
-        return static_cast<std::int64_t>(std::floor(time));
+        return static_cast<std::int64_t>(std::floor(finite_or(time, 0.0)));
     }
 
     std::uint64_t safe_session_seed(const InstanceState* state) {
@@ -584,9 +684,9 @@ namespace {
         const Print::Params& printParams,
         const Couplers::Runtime& dirRT)
     {
-        const float yKey = std::isfinite(printParams.yFilter) ? printParams.yFilter : 0.0f;
-        const float mKey = std::isfinite(printParams.mFilter) ? printParams.mFilter : 0.0f;
-        const float cKey = std::isfinite(printParams.cFilter) ? printParams.cFilter : 0.0f;
+        const float yKey = finite_or_zero(printParams.yFilter);
+        const float mKey = finite_or_zero(printParams.mFilter);
+        const float cKey = finite_or_zero(printParams.cFilter);
         const std::uint64_t neutralFilterHash =
             (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
         const float exposureCompScale = printParams.exposureCompensationEnabled
@@ -612,7 +712,7 @@ namespace {
             printParams,
             dirRT,
             exposureCompScale);
-        if (!std::isfinite(kMid) || !(kMid > 0.0f)) {
+        if (!is_positive_finite(kMid)) {
             kMid = 1.0f;
         }
 
@@ -703,7 +803,7 @@ namespace {
         double amount)
     {
         GateWeaveSignal out{};
-        if (!(amount > 0.0) || !(pixelSizeUm > 0.0) || !std::isfinite(pixelSizeUm)) {
+        if (!(amount > 0.0) || !is_positive_finite(pixelSizeUm)) {
             return out;
         }
 
@@ -997,10 +1097,10 @@ bool curve_ok(const Spectral::Curve& c) {
     if (N < 2 || c.linear.size() != N) return false;
     const float* lambdaData = c.lambda_nm.data();
     float prev = lambdaData[0];
-    if (!std::isfinite(prev)) return false;
+    if (!is_finite(prev)) return false;
     for (size_t i = 1; i < N; ++i) {
         const float xi = lambdaData[i];
-        if (!std::isfinite(xi)) return false;
+        if (!is_finite(xi)) return false;
         if (xi < prev) return false; // allow duplicates (xi == prev), but never decreasing
         prev = xi;
     }
@@ -1077,7 +1177,7 @@ void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
 }
 void JuicerProcessor::setPrintRuntime(const Print::Runtime* prt, bool printReady) { _prt = prt; _printReady = printReady; }
 void JuicerProcessor::setExposure(float exposureScale) {
-    _exposureScale = exposureScale;
+    _exposureScale = is_positive_finite(exposureScale) ? exposureScale : 1.0f;
 }
 
 void JuicerProcessor::setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV) {
@@ -1099,14 +1199,12 @@ void JuicerProcessor::setClipToken(std::uintptr_t token) {
 }
 
 void JuicerProcessor::setGateWeaveAmount(double amount) {
-    if (std::isfinite(amount)) {
-        _gateWeaveAmount = amount;
-    }
+    _gateWeaveAmount = finite_or(amount, _gateWeaveAmount);
 }
 
 void JuicerProcessor::setFrameTime(double time) {
-    _timeFrames = time;
-    _frameIndex = frame_index_from_time(time);
+    _timeFrames = finite_or(time, 0.0);
+    _frameIndex = frame_index_from_time(_timeFrames);
     _frameTimeHash = Hash::hash_bytes(&_frameIndex, sizeof(_frameIndex));
     if (_frameTimeHash == 0) {
         _frameTimeHash = 1;
@@ -1114,7 +1212,7 @@ void JuicerProcessor::setFrameTime(double time) {
 }
 
 void JuicerProcessor::setFrameRate(double frameRate) {
-    if (std::isfinite(frameRate) && frameRate > 0.0) {
+    if (is_positive_finite(frameRate)) {
         _frameRate = frameRate;
     }
     else {
@@ -1127,7 +1225,7 @@ void JuicerProcessor::setFrameBoundsVersion(std::uint32_t v) {
 }
 
 void JuicerProcessor::setPixelSizeUm(float pixelSizeUm) {
-    _pixelSizeUm = pixelSizeUm;
+    _pixelSizeUm = sanitize_nonnegative_or(pixelSizeUm, 0.0f);
 }
 
 void JuicerProcessor::setRenderHints(bool interactiveRenderStatus, bool renderQualityDraft, bool sequentialRenderStatus) {
@@ -1141,11 +1239,9 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
     ctx.window = _renderWindow;
     ctx.width = _renderWindow.x2 - _renderWindow.x1;
     ctx.height = _renderWindow.y2 - _renderWindow.y1;
-    ctx.exposureScaleSafe = (std::isfinite(_exposureScale) && _exposureScale > 0.0f)
-        ? _exposureScale
-        : 1.0f;
-    ctx.useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) &&
-        _dirRT.spatialSigmaPixels > 0.0f && _nComponents >= 3 && _wsReady && _ws);
+    ctx.exposureScaleSafe = is_positive_finite(_exposureScale) ? _exposureScale : 1.0f;
+    ctx.useSpatialDIR = (spatial_dir_enabled(_dirRT) &&
+        _nComponents >= 3 && _wsReady && _ws);
     ctx.printActive = (_wsReady && _ws && _printReady && _prt && !_printParams.bypass);
 
     ctx.kMidSpectral = 1.0f;
@@ -1158,7 +1254,7 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
             _dirRT);
     }
 
-    ctx.pixelSizeUm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? _pixelSizeUm : 0.0f;
+    ctx.pixelSizeUm = is_positive_finite(_pixelSizeUm) ? _pixelSizeUm : 0.0f;
     return ctx;
 }
 
@@ -2368,7 +2464,7 @@ void JuicerProcessor::processImagesCUDA() {
         state.valid = cudaResources->autoExposureValid;
 
         std::uint64_t meterStateKey = Hash::kFnvOffset;
-        const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : 0.0;
+        const double timeFrames = finite_or(_timeFrames, 0.0);
         Hash::hash_bytes_update(meterStateKey, &timeFrames, sizeof(timeFrames));
         Hash::hash_bytes_update(meterStateKey, &_clipToken, sizeof(_clipToken));
         Hash::hash_bytes_update(meterStateKey, &meterBounds, sizeof(meterBounds));
@@ -2384,7 +2480,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         auto slider_equal = [](double a, double b) -> bool {
-            if (!(std::isfinite(a) && std::isfinite(b))) {
+            if (!(is_finite(a) && is_finite(b))) {
                 return false;
             }
             return std::abs(a - b) <= 1e-12;
@@ -2500,6 +2596,59 @@ void JuicerProcessor::processImagesCUDA() {
         float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
     };
 
+    struct HalationSetupResult {
+        float strengthBGR[3] = { 0.0f, 0.0f, 0.0f };
+        float scatterStrengthBGR[3] = { 0.0f, 0.0f, 0.0f };
+        float sigmaPx[3] = { 0.0f, 0.0f, 0.0f };
+        float scatterSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
+        bool wantHalation = false;
+    };
+
+    auto setup_halation_payload = [&](const Profiles::HalationMetadata& halationUi) -> HalationSetupResult {
+        HalationSetupResult result{};
+
+        const float strengthBGR[3] = {
+            halationUi.strength[2],
+            halationUi.strength[1],
+            halationUi.strength[0]
+        };
+        const float scatterStrengthBGR[3] = {
+            halationUi.scatteringStrength[2],
+            halationUi.scatteringStrength[1],
+            halationUi.scatteringStrength[0]
+        };
+        const float sizeBGR[3] = {
+            halationUi.sizeUm[2],
+            halationUi.sizeUm[1],
+            halationUi.sizeUm[0]
+        };
+        const float scatterSizeBGR[3] = {
+            halationUi.scatteringSizeUm[2],
+            halationUi.scatteringSizeUm[1],
+            halationUi.scatteringSizeUm[0]
+        };
+
+        copy_float3(result.strengthBGR, strengthBGR);
+        copy_float3(result.scatterStrengthBGR, scatterStrengthBGR);
+        copy_float3(result.sigmaPx, sizeBGR);
+        copy_float3(result.scatterSigmaPx, scatterSizeBGR);
+        sanitize_nonnegative_triplet(result.strengthBGR);
+        sanitize_nonnegative_triplet(result.scatterStrengthBGR);
+        sanitize_nonnegative_triplet(result.sigmaPx);
+        sanitize_nonnegative_triplet(result.scatterSigmaPx);
+        const bool hasPixelSize = is_positive_finite(_pixelSizeUm);
+
+        if (hasPixelSize) {
+            divide_triplet(result.sigmaPx, result.sigmaPx, _pixelSizeUm);
+            divide_triplet(result.scatterSigmaPx, result.scatterSigmaPx, _pixelSizeUm);
+        }
+
+        result.wantHalation = halationUi.active &&
+            (any_positive_triplet(result.strengthBGR) || any_positive_triplet(result.scatterStrengthBGR)) &&
+            hasPixelSize;
+        return result;
+    };
+
     auto setup_grain_payload = [&](JuicerCuda::PipelineRunParams& run,
                                    const Profiles::GrainMetadata& grainUi,
                                    bool includeDefects) -> GrainSetupResult {
@@ -2512,22 +2661,22 @@ void JuicerProcessor::processImagesCUDA() {
             const float* const dataEnd = data + values.size();
             for (; data < dataEnd; ++data) {
                 const float v = *data;
-                if (std::isfinite(v)) {
+                if (is_finite(v)) {
                     m = std::max(m, static_cast<double>(v));
                     found = true;
                 }
             }
-            if (!found || !std::isfinite(m)) {
+            if (!found || !is_finite(m)) {
                 return false;
             }
             outMax = static_cast<float>(m);
-            return std::isfinite(outMax);
+            return is_finite(outMax);
         };
         auto nanmax_curve = [&](const Spectral::Curve& curve, float& outMax) -> bool {
             return nanmax_vector(curve.linear, outMax);
         };
 
-        bool wantGrain = grainUi.active && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f;
+        bool wantGrain = grainUi.active && is_positive_finite(_pixelSizeUm);
         bool wantGrainSublayers = false;
         bool wantGrainBlur = false;
         bool wantGrainMix = false;
@@ -2540,16 +2689,13 @@ void JuicerProcessor::processImagesCUDA() {
         run.grainKernels = JuicerCuda::GrainKernelPayload{};
         {
             const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-            const double fps = (std::isfinite(_frameRate) && _frameRate > 0.0) ? _frameRate : 24.0;
-            const double timeFrames = std::isfinite(_timeFrames) ? _timeFrames : static_cast<double>(_frameIndex);
-            const double alphaFrames = std::isfinite(timeFrames)
-                ? (timeFrames - static_cast<double>(_frameIndex))
-                : 0.0;
+            const double fps = is_positive_finite(_frameRate) ? _frameRate : 24.0;
+            const double timeFrames = finite_or(_timeFrames, static_cast<double>(_frameIndex));
+            const double alphaFrames = timeFrames - static_cast<double>(_frameIndex);
             const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
-            const double timeSeconds = (fps > 0.0) ? (timeFrames / fps) : 0.0;
-            const double weaveAmount = std::isfinite(_gateWeaveAmount)
-                ? std::clamp(_gateWeaveAmount, 0.0, 10.0)
-                : 0.0;
+            const double timeSeconds = timeFrames / fps;
+            const double weaveAmount = sanitize_finite_clamped_or(_gateWeaveAmount, 0.0, 0.0, 10.0);
+            const bool hasPixelSize = is_positive_finite(_pixelSizeUm);
             const GateWeaveSignal weave = compute_gate_weave(
                 sessionSeed,
                 timeSeconds,
@@ -2557,33 +2703,34 @@ void JuicerProcessor::processImagesCUDA() {
                 0.005,
                 static_cast<double>(_pixelSizeUm),
                 weaveAmount);
-            const double debugScalePx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0)
+            const double debugScalePx = hasPixelSize
                 ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
                 : 1.0;
             const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
-            const double clumpPeriodSec = std::isfinite(grainUi.clumpMorphPeriodSec)
-                ? std::clamp(static_cast<double>(grainUi.clumpMorphPeriodSec), 5.0, 60.0)
-                : 25.0;
-            const double clumpFps = (fps > 0.0) ? fps : 24.0;
-            const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(clumpFps * clumpPeriodSec)));
+            const double clumpPeriodSec = sanitize_finite_clamped_or(
+                static_cast<double>(grainUi.clumpMorphPeriodSec),
+                25.0,
+                5.0,
+                60.0);
+            const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * clumpPeriodSec)));
             const double longEdgePx = static_cast<double>(std::max(width, height));
-            const double filmFormatMm = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && longEdgePx > 0.0)
+            const double filmFormatMm = (hasPixelSize && longEdgePx > 0.0)
                 ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
                 : 0.0;
-            const double pitchMm = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0)
+            const double pitchMm = is_positive_finite(filmFormatMm)
                 ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
                 : 0.0;
-            const int pitchPx = (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f && pitchMm > 0.0)
+            const int pitchPx = (hasPixelSize && is_positive_finite(pitchMm))
                 ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
                 : height;
-            const double filmScale = (std::isfinite(filmFormatMm) && filmFormatMm > 0.0) ? (filmFormatMm / 10.0) : 1.0;
+            const double filmScale = is_positive_finite(filmFormatMm) ? (filmFormatMm / 10.0) : 1.0;
             run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
             run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
             run.grain.frameIndex = _frameIndex;
             run.grain.stbnSessionSeed = sessionSeed;
             run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
             run.grain.timeAlpha = timeAlpha;
-            run.gateWeave.active = (weaveAmount > 0.0 && std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) ? 1 : 0;
+            run.gateWeave.active = (weaveAmount > 0.0 && hasPixelSize) ? 1 : 0;
             run.gateWeave.dxPx = weave.dxPx;
             run.gateWeave.dyPx = weave.dyPx;
             run.gateWeave.cosRot = weave.cosRot;
@@ -2598,7 +2745,8 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.breathingDriftUmPerFrame = 1.0f;
             run.grain.sizeMixWeight = 0.30f;
             run.grain.sizeMixScale = 3.0f;
-            run.grain.clumpTemporalMix = std::clamp(grainUi.clumpTemporalMix, 0.0f, 0.30f);
+            run.grain.clumpTemporalMix = static_cast<float>(
+                sanitize_finite_clamped_or(static_cast<double>(grainUi.clumpTemporalMix), 0.0, 0.0, 0.30));
             run.grain.clumpMorphPeriodFrames = clumpMorphPeriodFrames;
             run.grain.wangCellMm = 2.0f;
             if (cudaResources && cudaResources->stbnData &&
@@ -2642,7 +2790,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             const float pixelAreaUm2 = _pixelSizeUm * _pixelSizeUm;
-            if (!std::isfinite(pixelAreaUm2) || !(pixelAreaUm2 > 0.0f)) {
+            if (!is_positive_finite(pixelAreaUm2)) {
                 wantGrain = false;
             }
 
@@ -2651,38 +2799,24 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.originX = win.x1;
             run.grain.originY = win.y1;
             run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
-            run.grain.blurSigmaPx = std::isfinite(grainUi.blur) ? std::max(0.0f, grainUi.blur) : 0.0f;
-            run.grain.blurDyeCloudsUm = std::isfinite(grainUi.blurDyeCloudsUm) ? std::max(0.0f, grainUi.blurDyeCloudsUm) : 0.0f;
-            run.grain.sizeMixWeight = (std::isfinite(grainUi.sizeMixWeight)) ? std::clamp(grainUi.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
-            run.grain.sizeMixWeightMid = (std::isfinite(grainUi.sizeMixWeightMid)) ? std::clamp(grainUi.sizeMixWeightMid, 0.0f, 1.0f) : 0.0f;
-            run.grain.sizeMixScale = (std::isfinite(grainUi.sizeMixScale)) ? std::max(1.0f, grainUi.sizeMixScale) : 1.0f;
+            run.grain.blurSigmaPx = sanitize_nonnegative_or(grainUi.blur, 0.0f);
+            run.grain.blurDyeCloudsUm = sanitize_nonnegative_or(grainUi.blurDyeCloudsUm, 0.0f);
+            run.grain.sizeMixWeight = sanitize_unit_or(grainUi.sizeMixWeight, 0.0f);
+            run.grain.sizeMixWeightMid = sanitize_unit_or(grainUi.sizeMixWeightMid, 0.0f);
+            run.grain.sizeMixScale = std::max(1.0f, sanitize_nonnegative_or(grainUi.sizeMixScale, 1.0f));
             run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
             run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
-            run.grain.amplitude = std::isfinite(grainUi.amplitude) ? std::max(0.0f, grainUi.amplitude) : 1.0f;
-            const float chromaMix = (std::isfinite(grainUi.chroma))
-                ? std::clamp(grainUi.chroma, 0.0f, 1.0f)
-                : 1.0f;
+            run.grain.amplitude = sanitize_nonnegative_or(grainUi.amplitude, 1.0f);
+            const float chromaMix = sanitize_unit_or(grainUi.chroma, 1.0f);
             run.grain.chromaMix = chromaMix;
             run.grain.chromaSharedWeight = std::sqrt(std::max(0.0f, 1.0f - chromaMix));
             run.grain.chromaIndWeight = std::sqrt(std::max(0.0f, chromaMix));
-            float* microDst = run.grain.microStructure;
-            const float* microSrc = grainUi.microStructure.data();
-            for (int i = 0; i < 2; ++i, ++microDst, ++microSrc) {
-                *microDst = *microSrc;
-            }
+            copy_float2(run.grain.microStructure, grainUi.microStructure.data());
             if (includeDefects) {
-                run.grain.filmDustAmount = std::isfinite(grainUi.filmDustAmount)
-                    ? std::clamp(grainUi.filmDustAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.gateDustAmount = std::isfinite(grainUi.gateDustAmount)
-                    ? std::clamp(grainUi.gateDustAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.filmScratchAmount = std::isfinite(grainUi.filmScratchAmount)
-                    ? std::clamp(grainUi.filmScratchAmount, 0.0f, 10.0f)
-                    : 0.0f;
-                run.grain.gateScratchAmount = std::isfinite(grainUi.gateScratchAmount)
-                    ? std::clamp(grainUi.gateScratchAmount, 0.0f, 10.0f)
-                    : 0.0f;
+                run.grain.filmDustAmount = sanitize_amount_0_10(grainUi.filmDustAmount);
+                run.grain.gateDustAmount = sanitize_amount_0_10(grainUi.gateDustAmount);
+                run.grain.filmScratchAmount = sanitize_amount_0_10(grainUi.filmScratchAmount);
+                run.grain.gateScratchAmount = sanitize_amount_0_10(grainUi.gateScratchAmount);
             }
             copy_float3(run.grain.densityMin, densityMin);
             copy_float3(run.grain.uniformity, uniformity);
@@ -2707,12 +2841,12 @@ void JuicerProcessor::processImagesCUDA() {
                      ++densityMaxOutIt, ++nParticlesOutIt, ++odParticleOutIt) {
                     const float densityMax = *densityMaxCurveIt + *densityMinIt;
                     const float particleArea = grainUi.agxParticleAreaUm2 * (*grainScaleIt);
-                    if (!std::isfinite(particleArea) || !(particleArea > 0.0f)) {
+                    if (!is_positive_finite(particleArea)) {
                         paramsOk = false;
                         break;
                     }
                     const float particleAreaRef = kDefaultParticleAreaUm2 * (*defaultScaleIt);
-                    if (std::isfinite(particleAreaRef) && particleAreaRef > 0.0f) {
+                    if (is_positive_finite(particleAreaRef)) {
                         blurRatioSum += particleArea / particleAreaRef;
                         blurRatioCount += 1;
                     }
@@ -2720,14 +2854,14 @@ void JuicerProcessor::processImagesCUDA() {
                     if (nSubLayers > 1) {
                         nParticles /= static_cast<float>(nSubLayers);
                     }
-                    if (!std::isfinite(nParticles) || !(nParticles > 0.0f)) {
+                    if (!is_positive_finite(nParticles)) {
                         paramsOk = false;
                         break;
                     }
                     const float odParticle = densityMax / nParticles;
                     *densityMaxOutIt = densityMax;
                     *nParticlesOutIt = nParticles;
-                    *odParticleOutIt = std::isfinite(odParticle) ? odParticle : 0.0f;
+                    *odParticleOutIt = finite_or_zero(odParticle);
                 }
             }
             if (!paramsOk) {
@@ -2739,13 +2873,12 @@ void JuicerProcessor::processImagesCUDA() {
                     blurAreaRatio = blurRatioSum / static_cast<float>(blurRatioCount);
                 }
                 grainBlurSigmaPx = run.grain.blurSigmaPx;
-                if (std::isfinite(grainBlurSigmaPx)) {
+                if (is_positive_finite(grainBlurSigmaPx)) {
                     grainBlurSigmaPx *= std::sqrt(std::max(blurAreaRatio, 0.0f));
                 }
 
-                if (!std::isfinite(run.grain.microStructure[1]) || !(run.grain.microStructure[1] > 0.0f)) {
-                    run.grain.microStructure[0] = 0.0f;
-                    run.grain.microStructure[1] = 0.0f;
+                if (!is_positive_finite(run.grain.microStructure[1])) {
+                    zero_float2(run.grain.microStructure);
                 }
 
                 if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
@@ -2767,7 +2900,7 @@ void JuicerProcessor::processImagesCUDA() {
                             for (int layer = 0; layer < 3; ++layer) {
                                 total += densityMaxLayers[layer][ch];
                             }
-                            if (!(std::isfinite(total) && total > 0.0f)) {
+                            if (!is_positive_finite(total)) {
                                 layersOk = false;
                                 break;
                             }
@@ -2777,7 +2910,7 @@ void JuicerProcessor::processImagesCUDA() {
                                 const float minLayer = fraction * densityMin[ch];
                                 const float maxLayer = densityMaxLayers[layer][ch] + minLayer;
                                 const float particleAreaLayer = grainUi.agxParticleAreaUm2 * grainUi.agxParticleScale[ch] * grainUi.agxParticleScaleLayers[layer];
-                                if (!std::isfinite(particleAreaLayer) || !(particleAreaLayer > 0.0f)) {
+                                if (!is_positive_finite(particleAreaLayer)) {
                                     layersOk = false;
                                     break;
                                 }
@@ -2785,11 +2918,11 @@ void JuicerProcessor::processImagesCUDA() {
                                 const float odParticle = (nParticlesLayer > 0.0f) ? (maxLayer / nParticlesLayer) : 0.0f;
                                 run.grain.densityMinLayers[layer][ch] = minLayer;
                                 run.grain.densityMaxLayers[layer][ch] = maxLayer;
-                                run.grain.nParticlesLayers[layer][ch] = std::isfinite(nParticlesLayer) ? nParticlesLayer : 0.0f;
-                                run.grain.odParticleLayers[layer][ch] = std::isfinite(odParticle) ? odParticle : 0.0f;
+                                run.grain.nParticlesLayers[layer][ch] = finite_or_zero(nParticlesLayer);
+                                run.grain.odParticleLayers[layer][ch] = finite_or_zero(odParticle);
                                 run.grain.densityCurvesLayers[layer][ch] = cudaResources->densityCurvesLayers[layer][ch];
                                 const float dyeSigma = run.grain.blurDyeCloudsUm * std::sqrt(std::max(0.0f, run.grain.odParticleLayers[layer][ch]));
-                                grainDyeSigmaPx[layer][ch] = std::isfinite(dyeSigma) ? dyeSigma : 0.0f;
+                                grainDyeSigmaPx[layer][ch] = finite_or_zero(dyeSigma);
                             }
                             if (!layersOk) {
                                 break;
@@ -2799,7 +2932,7 @@ void JuicerProcessor::processImagesCUDA() {
                     wantGrainSublayers = layersOk;
                 }
             }
-            if (std::isfinite(grainBlurSigmaPx)) {
+            if (is_positive_finite(grainBlurSigmaPx)) {
                 wantGrainBlur = wantGrainSublayers ? (grainBlurSigmaPx > 0.0f) : (grainBlurSigmaPx > 0.4f);
             }
         }
@@ -2809,7 +2942,7 @@ void JuicerProcessor::processImagesCUDA() {
         // Debug view scaling: stable linear mapping for signed delta fields.
         {
             float densityMaxAvg = (run.grain.densityMax[0] + run.grain.densityMax[1] + run.grain.densityMax[2]) * (1.0f / 3.0f);
-            if (!std::isfinite(densityMaxAvg) || densityMaxAvg <= 0.0f) {
+            if (!is_positive_finite(densityMaxAvg)) {
                 densityMaxAvg = 1.0f;
             }
             run.grain.debugScale = 0.25f / std::max(1e-6f, densityMaxAvg);
@@ -2817,8 +2950,8 @@ void JuicerProcessor::processImagesCUDA() {
 
         // Phase 3: three-scale mix configuration (fine + mid + coarse).
         {
-            float wC = std::isfinite(run.grain.sizeMixWeight) ? std::clamp(run.grain.sizeMixWeight, 0.0f, 1.0f) : 0.0f;
-            float wM = std::isfinite(run.grain.sizeMixWeightMid) ? std::clamp(run.grain.sizeMixWeightMid, 0.0f, 1.0f) : 0.0f;
+            float wC = sanitize_unit_or(run.grain.sizeMixWeight, 0.0f);
+            float wM = sanitize_unit_or(run.grain.sizeMixWeightMid, 0.0f);
             float wF = 1.0f - wM - wC;
             if (wF < 0.0f) {
                 wF = 0.0f;
@@ -2838,21 +2971,21 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.sizeMixWeight = wC;
             run.grain.sizeMixWeightMid = wM;
 
-            const float scale = std::isfinite(run.grain.sizeMixScale) ? std::max(1.0f, run.grain.sizeMixScale) : 1.0f;
-            const bool canMix = wantGrain && wantGrainBlur && (grainBlurSigmaPx > 0.0f) && (scale > 1.0f);
+            const float scale = std::max(1.0f, sanitize_nonnegative_or(run.grain.sizeMixScale, 1.0f));
+            const bool canMix = wantGrain && wantGrainBlur && is_positive_finite(grainBlurSigmaPx) && (scale > 1.0f);
             wantGrainMix = canMix && ((wM > 0.0f) || (wC > 0.0f));
 
             if (wantGrainMix) {
                 const float sigmaF = grainBlurSigmaPx;
                 const float sigmaCRaw = sigmaF * std::sqrt(scale);
                 grainBlurSigmaCoarsePx = std::max(sigmaF, std::min(sigmaCRaw, sigmaF * 4.0f));
-                if (!(std::isfinite(grainBlurSigmaCoarsePx) && grainBlurSigmaCoarsePx > 0.0f)) {
+                if (!is_positive_finite(grainBlurSigmaCoarsePx)) {
                     wantGrainMix = false;
                     grainBlurSigmaCoarsePx = 0.0f;
                 }
                 if (wantGrainMix) {
                     grainBlurSigmaMidPx = std::sqrt(std::max(0.0f, sigmaF * grainBlurSigmaCoarsePx));
-                    if (!(std::isfinite(grainBlurSigmaMidPx) && grainBlurSigmaMidPx > 0.0f)) {
+                    if (!is_positive_finite(grainBlurSigmaMidPx)) {
                         wantGrainMix = false;
                         grainBlurSigmaMidPx = 0.0f;
                     }
@@ -2867,7 +3000,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 auto kernel_energy_2d = [](float sigma) -> float {
-                    if (!(std::isfinite(sigma) && sigma > 0.0f)) {
+                    if (!is_positive_finite(sigma)) {
                         return 1.0f;
                     }
                     const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f);
@@ -3553,6 +3686,91 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
+    auto initialize_pipeline_run = [&](JuicerCuda::PipelineRunParams& run) {
+        run.src = srcPtr;
+        run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
+        run.dst = dstPtr;
+        run.dstRowBytes = static_cast<std::size_t>(dstRowBytes);
+        run.width = width;
+        run.height = height;
+        run.nComponents = _nComponents;
+    };
+
+    auto populate_scan_color_payload = [&](JuicerCuda::PipelineRunParams& run,
+                                           const Scanner::ColorRuntime& color) {
+        copy_float9(run.scanStage.scanColor.cat02, color.cat02);
+        copy_float9(run.scanStage.scanColor.xyzToRgb, color.xyzToRgb);
+        copy_float3(run.scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
+
+        run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
+        run.scanStage.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
+        run.scanStage.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
+        run.scanStage.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
+
+        const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
+        run.scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
+        run.scanStage.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
+        run.scanStage.scanColor.encoding.cctf.a = outSpace.cctf.a;
+        run.scanStage.scanColor.encoding.cctf.b = outSpace.cctf.b;
+        run.scanStage.scanColor.encoding.cctf.c = outSpace.cctf.c;
+        run.scanStage.scanColor.encoding.cctf.d = outSpace.cctf.d;
+        run.scanStage.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
+
+        const OutputEncoding::Matrix3x3 dwgToOutput = OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
+        copy_float9(run.scanStage.scanColor.encoding.dwgToOutput, dwgToOutput.m);
+    };
+
+    auto populate_common_pipeline_payload = [&](JuicerCuda::PipelineRunParams& run,
+                                                const ScannerPreflightResult& scannerPreflight) {
+        run.filmRaw.inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(_ws->filmRaw.inputColorSpace);
+        run.filmRaw.applyCctfDecoding = _ws->filmRaw.applyCctfDecoding ? 1 : 0;
+        run.filmRaw.applyInputChromaticAdapt = _ws->filmRaw.applyInputChromaticAdapt ? 1 : 0;
+        run.filmRaw.spectralUpsamplingMode = static_cast<int>(_ws->filmRaw.spectralUpsamplingMode);
+        copy_float9(run.filmRaw.inputRGBToXYZ, _ws->filmRaw.inputRGBToXYZ.m);
+        copy_float9(run.filmRaw.inputXYZAdapt, _ws->filmRaw.inputXYZAdapt.m);
+        run.filmRaw.midgrayScale = _ws->filmRaw.midgrayScale;
+        copy_float3(run.filmRaw.refIllumWhiteXYZ, _ws->filmRaw.refIllumWhiteXYZ);
+
+        run.filmExpose.exposureScale = _exposureScale;
+        run.filmDevelop.gammaFactorB = _ws->gammaFactorB;
+        run.filmDevelop.gammaFactorG = _ws->gammaFactorG;
+        run.filmDevelop.gammaFactorR = _ws->gammaFactorR;
+        run.filmDevelop.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
+
+        run.filmDevelop.dir.active = _dirRT.active ? 1 : 0;
+        run.filmDevelop.dir.highShift = _dirRT.highShift;
+        copy_float9(run.filmDevelop.dir.M, &_dirRT.M[0][0]);
+        copy_float3(run.filmDevelop.dir.dMax, _dirRT.dMax);
+
+        populate_scan_color_payload(run, *scannerPreflight.colorRuntime);
+    };
+
+    auto populate_film_runtime_payload = [&](JuicerCuda::PipelineRunParams& run) {
+        run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n, cudaResources->densB.domainBegin, cudaResources->densB.domainEnd };
+        run.filmDevelop.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n, cudaResources->densG.domainBegin, cudaResources->densG.domainEnd };
+        run.filmDevelop.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n, cudaResources->densR.domainBegin, cudaResources->densR.domainEnd };
+        run.filmDevelop.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n, cudaResources->dirDensB.domainBegin, cudaResources->dirDensB.domainEnd };
+        run.filmDevelop.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n, cudaResources->dirDensG.domainBegin, cudaResources->dirDensG.domainEnd };
+        run.filmDevelop.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n, cudaResources->dirDensR.domainBegin, cudaResources->dirDensR.domainEnd };
+        run.filmExpose.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n, cudaResources->sensB.domainBegin, cudaResources->sensB.domainEnd };
+        run.filmExpose.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n, cudaResources->sensG.domainBegin, cudaResources->sensG.domainEnd };
+        run.filmExpose.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n, cudaResources->sensR.domainBegin, cudaResources->sensR.domainEnd };
+
+        run.filmExpose.tablesAx = cudaResources->tablesAx;
+        run.filmExpose.tablesAy = cudaResources->tablesAy;
+        run.filmExpose.tablesAz = cudaResources->tablesAz;
+        run.filmExpose.tablesIllum = cudaResources->tablesIllum;
+        run.filmExpose.tablesK = cudaResources->tablesK;
+        copy_float9(run.filmExpose.spdSInv, cudaResources->spdSInv);
+
+        run.filmExpose.hanatosLut = cudaResources->hanatosLut;
+        run.filmExpose.hanatosN = cudaResources->hanatosN;
+        run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
+        run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
+        run.filmExpose.mallettBasis = cudaResources->mallettBasis;
+        run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
+    };
+
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
         constexpr const char* kCudaNegativeMediumLabel = "negative";
@@ -3574,65 +3792,11 @@ void JuicerProcessor::processImagesCUDA() {
         const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
         const float unsharpAmount = _scannerOptions.unsharpAmount;
         const bool glareActive = negativeMediumRuntime.glare.active && (negativeMediumRuntime.glare.percent > 0.0f);
-        const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
+        const bool useSpatialDIR = spatial_dir_enabled(_dirRT);
 
         JuicerCuda::PipelineRunParams run{};
-        run.src = srcPtr;
-        run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
-        run.dst = dstPtr;
-        run.dstRowBytes = static_cast<std::size_t>(dstRowBytes);
-        run.width = width;
-        run.height = height;
-        run.nComponents = _nComponents;
-
-        // Film raw conversion payload
-        run.filmRaw.inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(_ws->filmRaw.inputColorSpace);
-        run.filmRaw.applyCctfDecoding = _ws->filmRaw.applyCctfDecoding ? 1 : 0;
-        run.filmRaw.applyInputChromaticAdapt = _ws->filmRaw.applyInputChromaticAdapt ? 1 : 0;
-        run.filmRaw.spectralUpsamplingMode = static_cast<int>(_ws->filmRaw.spectralUpsamplingMode);
-        copy_float9(run.filmRaw.inputRGBToXYZ, _ws->filmRaw.inputRGBToXYZ.m);
-        copy_float9(run.filmRaw.inputXYZAdapt, _ws->filmRaw.inputXYZAdapt.m);
-        run.filmRaw.midgrayScale = _ws->filmRaw.midgrayScale;
-        copy_float3(run.filmRaw.refIllumWhiteXYZ, _ws->filmRaw.refIllumWhiteXYZ);
-
-        run.filmExpose.exposureScale = _exposureScale;
-        run.filmDevelop.gammaFactorB = _ws->gammaFactorB;
-        run.filmDevelop.gammaFactorG = _ws->gammaFactorG;
-        run.filmDevelop.gammaFactorR = _ws->gammaFactorR;
-        run.filmDevelop.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
-
-        // DIR runtime payload.
-        run.filmDevelop.dir.active = _dirRT.active ? 1 : 0;
-        run.filmDevelop.dir.highShift = _dirRT.highShift;
-        for (int r = 0; r < 3; ++r) {
-            copy_float3(&run.filmDevelop.dir.M[r * 3], _dirRT.M[r]);
-        }
-        copy_float3(run.filmDevelop.dir.dMax, _dirRT.dMax);
-
-        // Scan color payload + output encoding
-        {
-            const Scanner::ColorRuntime& color = *scannerPreflight.colorRuntime;
-            copy_float9(run.scanStage.scanColor.cat02, color.cat02);
-            copy_float9(run.scanStage.scanColor.xyzToRgb, color.xyzToRgb);
-            copy_float3(run.scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
-
-            run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
-            run.scanStage.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
-            run.scanStage.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
-            run.scanStage.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
-
-            const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
-            run.scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
-            run.scanStage.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
-            run.scanStage.scanColor.encoding.cctf.a = outSpace.cctf.a;
-            run.scanStage.scanColor.encoding.cctf.b = outSpace.cctf.b;
-            run.scanStage.scanColor.encoding.cctf.c = outSpace.cctf.c;
-            run.scanStage.scanColor.encoding.cctf.d = outSpace.cctf.d;
-            run.scanStage.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
-
-            const OutputEncoding::Matrix3x3 dwgToOutput = OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
-            copy_float9(run.scanStage.scanColor.encoding.dwgToOutput, dwgToOutput.m);
-        }
+        initialize_pipeline_run(run);
+        populate_common_pipeline_payload(run, scannerPreflight);
 
         const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
 
@@ -3649,29 +3813,7 @@ void JuicerProcessor::processImagesCUDA() {
 
             setup_camera_auto_exposure(run, cudaResources);
 
-            run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n, cudaResources->densB.domainBegin, cudaResources->densB.domainEnd };
-            run.filmDevelop.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n, cudaResources->densG.domainBegin, cudaResources->densG.domainEnd };
-            run.filmDevelop.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n, cudaResources->densR.domainBegin, cudaResources->densR.domainEnd };
-            run.filmDevelop.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n, cudaResources->dirDensB.domainBegin, cudaResources->dirDensB.domainEnd };
-            run.filmDevelop.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n, cudaResources->dirDensG.domainBegin, cudaResources->dirDensG.domainEnd };
-            run.filmDevelop.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n, cudaResources->dirDensR.domainBegin, cudaResources->dirDensR.domainEnd };
-            run.filmExpose.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n, cudaResources->sensB.domainBegin, cudaResources->sensB.domainEnd };
-            run.filmExpose.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n, cudaResources->sensG.domainBegin, cudaResources->sensG.domainEnd };
-            run.filmExpose.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n, cudaResources->sensR.domainBegin, cudaResources->sensR.domainEnd };
-
-            run.filmExpose.tablesAx = cudaResources->tablesAx;
-            run.filmExpose.tablesAy = cudaResources->tablesAy;
-            run.filmExpose.tablesAz = cudaResources->tablesAz;
-            run.filmExpose.tablesIllum = cudaResources->tablesIllum;
-            run.filmExpose.tablesK = cudaResources->tablesK;
-            copy_float9(run.filmExpose.spdSInv, cudaResources->spdSInv);
-
-            run.filmExpose.hanatosLut = cudaResources->hanatosLut;
-            run.filmExpose.hanatosN = cudaResources->hanatosN;
-            run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
-            run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
-            run.filmExpose.mallettBasis = cudaResources->mallettBasis;
-            run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
+            populate_film_runtime_payload(run);
 
             cudaEvent_t scanEvent = setup_scan_stage_resources(cudaResources, run, stream, true);
             if (!setup_spatial_dir_stage(cudaResources, run, width, height, useSpatialDIR)) {
@@ -3701,39 +3843,12 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             const Profiles::HalationMetadata halationUi = _hasHalationOverride ? _halationOverride : Profiles::HalationMetadata{};
-            float halationStrengthBGR[3] = {
-                halationUi.strength[2],
-                halationUi.strength[1],
-                halationUi.strength[0]
-            };
-            float halationScatterStrengthBGR[3] = {
-                halationUi.scatteringStrength[2],
-                halationUi.scatteringStrength[1],
-                halationUi.scatteringStrength[0]
-            };
-            float halationSizeBGR[3] = {
-                halationUi.sizeUm[2],
-                halationUi.sizeUm[1],
-                halationUi.sizeUm[0]
-            };
-            float halationScatterSizeBGR[3] = {
-                halationUi.scatteringSizeUm[2],
-                halationUi.scatteringSizeUm[1],
-                halationUi.scatteringSizeUm[0]
-            };
-            sanitize_nonnegative_triplet(halationStrengthBGR);
-            sanitize_nonnegative_triplet(halationScatterStrengthBGR);
-            sanitize_nonnegative_triplet(halationSizeBGR);
-            sanitize_nonnegative_triplet(halationScatterSizeBGR);
-            float halationSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
-            float halationScatterSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
-            if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
-                divide_triplet(halationSigmaPx, halationSizeBGR, _pixelSizeUm);
-                divide_triplet(halationScatterSigmaPx, halationScatterSizeBGR, _pixelSizeUm);
-            }
-            const bool wantHalation = halationUi.active &&
-                (any_positive_triplet(halationStrengthBGR) || any_positive_triplet(halationScatterStrengthBGR)) &&
-                (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
+            const HalationSetupResult halationSetup = setup_halation_payload(halationUi);
+            const float* halationStrengthBGR = halationSetup.strengthBGR;
+            const float* halationScatterStrengthBGR = halationSetup.scatterStrengthBGR;
+            const float* halationSigmaPx = halationSetup.sigmaPx;
+            const float* halationScatterSigmaPx = halationSetup.scatterSigmaPx;
+            const bool wantHalation = halationSetup.wantHalation;
 
             const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
             const GrainSetupResult grainSetup = setup_grain_payload(run, grainUi, true);
@@ -3743,14 +3858,12 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantGrainMix = grainSetup.wantGrainMix;
             const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
             const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
-            const bool needGrainShared = wantGrain &&
-                (run.grain.debugView == 0 || run.grain.debugView == 1) &&
-                (std::isfinite(run.grain.chromaMix) && run.grain.chromaMix < 0.999f);
+            const bool needGrainShared = needs_grain_shared(
+                wantGrain, run.grain.debugView, run.grain.chromaMix);
 
-            const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
-            const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
-                std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
-            const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
+            const bool wantLensBlur = is_positive_finite(lensBlurSigmaPx);
+            const bool wantUnsharp = wants_unsharp(unsharpSigmaPx, unsharpAmount);
+            const bool wantGlareBlur = wantGlare && is_positive_finite(glareBlurSigmaPx);
             const bool wantWeave = (run.gateWeave.active != 0);
             const bool wantDefects = has_grain_defects(
                 run.grain.filmDustAmount,
@@ -3760,7 +3873,8 @@ void JuicerProcessor::processImagesCUDA() {
             const bool needGateMask = needs_gate_mask_for_defects(
                 run.grain.gateDustAmount,
                 run.grain.gateScratchAmount);
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
+            const bool wantOptics = wants_optics_stage(
+                wantLensBlur, wantUnsharp, wantGlare, wantHalation, wantGrain, wantWeave, wantDefects);
 
             if (_effect.abort()) {
                 JuicerCuda::record_use(*cudaResources, _pCudaStream);
@@ -3775,17 +3889,19 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = needs_blurred_optics_scratch(wantGlareBlur, wantGrainBlur, wantGrainSublayers);
-                const bool needAuxScratch = wantGrainSublayers;
-                const bool needGrainScratch = wantGrainMix;
+                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs(
+                    wantGlareBlur,
+                    wantGrainBlur,
+                    wantGrainSublayers,
+                    wantGrainMix);
                 if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
                         submissionTxn,
                         *cudaResources,
                         width,
                         height,
-                        needBlurredScratch,
-                        needAuxScratch,
-                        needGrainScratch,
+                        scratchNeeds.blurred,
+                        scratchNeeds.aux,
+                        scratchNeeds.grain,
                         needGrainShared,
                         needGateMask,
                         _pCudaStream,
@@ -3944,7 +4060,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
         trace_cuda_scanner_preflight_ok(kCudaPrintMediumLabel, scannerPreflight.staticKey.hash);
 
-        const bool useSpatialDIR = (_dirRT.active && std::isfinite(_dirRT.spatialSigmaPixels) && _dirRT.spatialSigmaPixels > 0.0f);
+        const bool useSpatialDIR = spatial_dir_enabled(_dirRT);
 
         // Print exposure compensation factor is computed on CPU (no image reads; safe for CUDA renders).
         const float kMidSpectral = compute_print_midgray_factor_cached(
@@ -3955,62 +4071,8 @@ void JuicerProcessor::processImagesCUDA() {
             _dirRT);
 
         JuicerCuda::PipelineRunParams run{};
-        run.src = srcPtr;
-        run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
-        run.dst = dstPtr;
-        run.dstRowBytes = static_cast<std::size_t>(dstRowBytes);
-        run.width = width;
-        run.height = height;
-        run.nComponents = _nComponents;
-
-        // Film raw conversion payload
-        run.filmRaw.inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(_ws->filmRaw.inputColorSpace);
-        run.filmRaw.applyCctfDecoding = _ws->filmRaw.applyCctfDecoding ? 1 : 0;
-        run.filmRaw.applyInputChromaticAdapt = _ws->filmRaw.applyInputChromaticAdapt ? 1 : 0;
-        run.filmRaw.spectralUpsamplingMode = static_cast<int>(_ws->filmRaw.spectralUpsamplingMode);
-        copy_float9(run.filmRaw.inputRGBToXYZ, _ws->filmRaw.inputRGBToXYZ.m);
-        copy_float9(run.filmRaw.inputXYZAdapt, _ws->filmRaw.inputXYZAdapt.m);
-        run.filmRaw.midgrayScale = _ws->filmRaw.midgrayScale;
-        copy_float3(run.filmRaw.refIllumWhiteXYZ, _ws->filmRaw.refIllumWhiteXYZ);
-
-        run.filmExpose.exposureScale = _exposureScale;
-        run.filmDevelop.gammaFactorB = _ws->gammaFactorB;
-        run.filmDevelop.gammaFactorG = _ws->gammaFactorG;
-        run.filmDevelop.gammaFactorR = _ws->gammaFactorR;
-        run.filmDevelop.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
-
-        // DIR runtime payload.
-        run.filmDevelop.dir.active = _dirRT.active ? 1 : 0;
-        run.filmDevelop.dir.highShift = _dirRT.highShift;
-        for (int r = 0; r < 3; ++r) {
-            copy_float3(&run.filmDevelop.dir.M[r * 3], _dirRT.M[r]);
-        }
-        copy_float3(run.filmDevelop.dir.dMax, _dirRT.dMax);
-
-        // Print scan color payload + output encoding (print medium).
-        {
-            const Scanner::ColorRuntime& color = *scannerPreflight.colorRuntime;
-            copy_float9(run.scanStage.scanColor.cat02, color.cat02);
-            copy_float9(run.scanStage.scanColor.xyzToRgb, color.xyzToRgb);
-            copy_float3(run.scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
-
-            run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
-            run.scanStage.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
-            run.scanStage.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
-            run.scanStage.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
-
-            const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
-            run.scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
-            run.scanStage.scanColor.encoding.cctf.gamma = outSpace.cctf.gamma;
-            run.scanStage.scanColor.encoding.cctf.a = outSpace.cctf.a;
-            run.scanStage.scanColor.encoding.cctf.b = outSpace.cctf.b;
-            run.scanStage.scanColor.encoding.cctf.c = outSpace.cctf.c;
-            run.scanStage.scanColor.encoding.cctf.d = outSpace.cctf.d;
-            run.scanStage.scanColor.encoding.cctf.linearCutoff = outSpace.cctf.linearCutoff;
-
-            const OutputEncoding::Matrix3x3 dwgToOutput = OutputEncoding::dwg_to_output_matrix(color.encoding.colorSpace);
-            copy_float9(run.scanStage.scanColor.encoding.dwgToOutput, dwgToOutput.m);
-        }
+        initialize_pipeline_run(run);
+        populate_common_pipeline_payload(run, scannerPreflight);
 
         const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
 
@@ -4093,29 +4155,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             // Film density curves + sensitivities + SPD reconstruction tables.
-            run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n, cudaResources->densB.domainBegin, cudaResources->densB.domainEnd };
-            run.filmDevelop.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n, cudaResources->densG.domainBegin, cudaResources->densG.domainEnd };
-            run.filmDevelop.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n, cudaResources->densR.domainBegin, cudaResources->densR.domainEnd };
-            run.filmDevelop.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n, cudaResources->dirDensB.domainBegin, cudaResources->dirDensB.domainEnd };
-            run.filmDevelop.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n, cudaResources->dirDensG.domainBegin, cudaResources->dirDensG.domainEnd };
-            run.filmDevelop.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n, cudaResources->dirDensR.domainBegin, cudaResources->dirDensR.domainEnd };
-            run.filmExpose.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n, cudaResources->sensB.domainBegin, cudaResources->sensB.domainEnd };
-            run.filmExpose.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n, cudaResources->sensG.domainBegin, cudaResources->sensG.domainEnd };
-            run.filmExpose.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n, cudaResources->sensR.domainBegin, cudaResources->sensR.domainEnd };
-
-            run.filmExpose.tablesAx = cudaResources->tablesAx;
-            run.filmExpose.tablesAy = cudaResources->tablesAy;
-            run.filmExpose.tablesAz = cudaResources->tablesAz;
-            run.filmExpose.tablesIllum = cudaResources->tablesIllum;
-            run.filmExpose.tablesK = cudaResources->tablesK;
-            copy_float9(run.filmExpose.spdSInv, cudaResources->spdSInv);
-
-            run.filmExpose.hanatosLut = cudaResources->hanatosLut;
-            run.filmExpose.hanatosN = cudaResources->hanatosN;
-            run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
-            run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
-            run.filmExpose.mallettBasis = cudaResources->mallettBasis;
-            run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
+            populate_film_runtime_payload(run);
 
             cudaEvent_t scanEvent = setup_scan_stage_resources(cudaResources, run, stream, false);
             if (!setup_spatial_dir_stage(cudaResources, run, width, height, useSpatialDIR)) {
@@ -4206,39 +4246,12 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             const Profiles::HalationMetadata halationUi = _hasHalationOverride ? _halationOverride : Profiles::HalationMetadata{};
-            float halationStrengthBGR[3] = {
-                halationUi.strength[2],
-                halationUi.strength[1],
-                halationUi.strength[0]
-            };
-            float halationScatterStrengthBGR[3] = {
-                halationUi.scatteringStrength[2],
-                halationUi.scatteringStrength[1],
-                halationUi.scatteringStrength[0]
-            };
-            float halationSizeBGR[3] = {
-                halationUi.sizeUm[2],
-                halationUi.sizeUm[1],
-                halationUi.sizeUm[0]
-            };
-            float halationScatterSizeBGR[3] = {
-                halationUi.scatteringSizeUm[2],
-                halationUi.scatteringSizeUm[1],
-                halationUi.scatteringSizeUm[0]
-            };
-            sanitize_nonnegative_triplet(halationStrengthBGR);
-            sanitize_nonnegative_triplet(halationScatterStrengthBGR);
-            sanitize_nonnegative_triplet(halationSizeBGR);
-            sanitize_nonnegative_triplet(halationScatterSizeBGR);
-            float halationSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
-            float halationScatterSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
-            if (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f) {
-                divide_triplet(halationSigmaPx, halationSizeBGR, _pixelSizeUm);
-                divide_triplet(halationScatterSigmaPx, halationScatterSizeBGR, _pixelSizeUm);
-            }
-            const bool wantHalation = halationUi.active &&
-                (any_positive_triplet(halationStrengthBGR) || any_positive_triplet(halationScatterStrengthBGR)) &&
-                (std::isfinite(_pixelSizeUm) && _pixelSizeUm > 0.0f);
+            const HalationSetupResult halationSetup = setup_halation_payload(halationUi);
+            const float* halationStrengthBGR = halationSetup.strengthBGR;
+            const float* halationScatterStrengthBGR = halationSetup.scatterStrengthBGR;
+            const float* halationSigmaPx = halationSetup.sigmaPx;
+            const float* halationScatterSigmaPx = halationSetup.scatterSigmaPx;
+            const bool wantHalation = halationSetup.wantHalation;
 
             const Profiles::GrainMetadata grainUi = _hasGrainOverride ? _grainOverride : _ws->grain;
             const GrainSetupResult grainSetup = setup_grain_payload(run, grainUi, false);
@@ -4248,18 +4261,16 @@ void JuicerProcessor::processImagesCUDA() {
             const bool wantGrainMix = grainSetup.wantGrainMix;
             const float grainBlurSigmaPx = grainSetup.grainBlurSigmaPx;
             const float grainBlurSigmaMidPx = grainSetup.grainBlurSigmaMidPx;
-            const bool needGrainShared = wantGrain &&
-                (run.grain.debugView == 0 || run.grain.debugView == 1) &&
-                (std::isfinite(run.grain.chromaMix) && run.grain.chromaMix < 0.999f);
+            const bool needGrainShared = needs_grain_shared(
+                wantGrain, run.grain.debugView, run.grain.chromaMix);
 
             const float lensBlurSigmaPx = _scannerOptions.lensBlurSigmaPx;
             const float unsharpSigmaPx = _scannerOptions.unsharpSigmaPx;
             const float unsharpAmount = _scannerOptions.unsharpAmount;
 
-            const bool wantLensBlur = std::isfinite(lensBlurSigmaPx) && lensBlurSigmaPx > 0.0f;
-            const bool wantUnsharp = std::isfinite(unsharpSigmaPx) && unsharpSigmaPx > 0.0f &&
-                std::isfinite(unsharpAmount) && unsharpAmount != 0.0f;
-            const bool wantGlareBlur = wantGlare && std::isfinite(glareBlurSigmaPx) && glareBlurSigmaPx > 0.0f;
+            const bool wantLensBlur = is_positive_finite(lensBlurSigmaPx);
+            const bool wantUnsharp = wants_unsharp(unsharpSigmaPx, unsharpAmount);
+            const bool wantGlareBlur = wantGlare && is_positive_finite(glareBlurSigmaPx);
             const bool wantWeave = (run.gateWeave.active != 0);
             const bool wantDefects = has_grain_defects(
                 run.grain.filmDustAmount,
@@ -4269,7 +4280,8 @@ void JuicerProcessor::processImagesCUDA() {
             const bool needGateMask = needs_gate_mask_for_defects(
                 run.grain.gateDustAmount,
                 run.grain.gateScratchAmount);
-            const bool wantOptics = wantLensBlur || wantUnsharp || wantGlare || wantHalation || wantGrain || wantWeave || wantDefects;
+            const bool wantOptics = wants_optics_stage(
+                wantLensBlur, wantUnsharp, wantGlare, wantHalation, wantGrain, wantWeave, wantDefects);
 
             if (_effect.abort()) {
                 JuicerCuda::record_use(*cudaResources, _pCudaStream);
@@ -4284,17 +4296,19 @@ void JuicerProcessor::processImagesCUDA() {
             }
             else {
                 std::string opticsError;
-                const bool needBlurredScratch = needs_blurred_optics_scratch(wantGlareBlur, wantGrainBlur, wantGrainSublayers);
-                const bool needAuxScratch = wantGrainSublayers;
-                const bool needGrainScratch = wantGrainMix;
+                const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs(
+                    wantGlareBlur,
+                    wantGrainBlur,
+                    wantGrainSublayers,
+                    wantGrainMix);
                 if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
                         submissionTxn,
                         *cudaResources,
                         width,
                         height,
-                        needBlurredScratch,
-                        needAuxScratch,
-                        needGrainScratch,
+                        scratchNeeds.blurred,
+                        scratchNeeds.aux,
+                        scratchNeeds.grain,
                         needGrainShared,
                         needGateMask,
                         _pCudaStream,

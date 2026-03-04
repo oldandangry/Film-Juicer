@@ -301,13 +301,38 @@ namespace Spectral {
     inline void spd_probe_reset() {}
 #endif
 
+    inline bool is_finite_sp(float value) {
+        return std::isfinite(value);
+    }
+
+    inline bool is_finite_sp(double value) {
+        return std::isfinite(value);
+    }
+
+    inline float sanitize_nonnegative_component(float value) {
+        return (is_finite_sp(value) && value > 0.0f) ? value : 0.0f;
+    }
+
+    inline float sanitize_nonfinite_component(float value) {
+        return is_finite_sp(value) ? value : 0.0f;
+    }
+
     inline void sanitize_nonfinite_triplet(float values[3]) {
         float* valueIt = values;
         for (int i = 0; i < 3; ++i, ++valueIt) {
-            if (!std::isfinite(*valueIt)) {
-                *valueIt = 0.0f;
-            }
+            *valueIt = sanitize_nonfinite_component(*valueIt);
         }
+    }
+
+    inline float sanitize_signed_width(float width, float minMagnitude = 1e-6f) {
+        float safeWidth = width;
+        if (!is_finite_sp(safeWidth)) {
+            safeWidth = (safeWidth < 0.0f) ? -minMagnitude : minMagnitude;
+        }
+        if (std::fabs(safeWidth) < minMagnitude) {
+            safeWidth = (safeWidth < 0.0f) ? -minMagnitude : minMagnitude;
+        }
+        return safeWidth;
     }
 
     inline void copy_triplet3(const float src[3], float dst[3]) {
@@ -325,6 +350,24 @@ namespace Spectral {
         }
     }
 
+    inline void sanitize_ref_white_or_dwg(const float* white, float dst[3]) {
+        const float fallback[3] = {
+            gDWG_WhitePoint_XYZ[0],
+            gDWG_WhitePoint_XYZ[1],
+            gDWG_WhitePoint_XYZ[2]
+        };
+        const float* src = white ? white : fallback;
+        float* dstIt = dst;
+        const float* srcIt = src;
+        const float* fallbackIt = fallback;
+        for (int i = 0; i < 3; ++i, ++dstIt, ++srcIt, ++fallbackIt) {
+            *dstIt = is_finite_sp(*srcIt) ? *srcIt : *fallbackIt;
+        }
+        if (!(dst[1] > 0.0f)) {
+            copy_triplet3(fallback, dst);
+        }
+    }
+
     inline void set_identity_3x3(float matrix[9]) {
         std::fill_n(matrix, 9, 0.0f);
         matrix[0] = 1.0f;
@@ -338,19 +381,33 @@ namespace Spectral {
         XYZ[2] = static_cast<float>(Z * scale);
     }
 
+    inline void store_3x3_rowmajor(
+        float matrix[9],
+        double m00, double m01, double m02,
+        double m10, double m11, double m12,
+        double m20, double m21, double m22)
+    {
+        matrix[0] = static_cast<float>(m00);
+        matrix[1] = static_cast<float>(m01);
+        matrix[2] = static_cast<float>(m02);
+        matrix[3] = static_cast<float>(m10);
+        matrix[4] = static_cast<float>(m11);
+        matrix[5] = static_cast<float>(m12);
+        matrix[6] = static_cast<float>(m20);
+        matrix[7] = static_cast<float>(m21);
+        matrix[8] = static_cast<float>(m22);
+    }
+
+    inline bool determinant_near_zero(double determinant, double epsilon = 1e-20) {
+        return std::fabs(determinant) < epsilon;
+    }
+
     // -------------------------------------------------------------------------
     // 1. MATH UTILITIES (~100 lines)
     // -------------------------------------------------------------------------
 
     inline float sigmoid_erf(float x, float center, float width) {
-        const float minMag = 1e-6f;
-        float w = width;
-        if (!std::isfinite(w)) {
-            w = (w < 0.0f) ? -minMag : minMag;
-        }
-        if (std::fabs(w) < minMag) {
-            w = (w < 0.0f) ? -minMag : minMag;
-        }
+        const float w = sanitize_signed_width(width);
         const float arg = (x - center) / w;
         const float val = static_cast<float>(std::erf(static_cast<double>(arg)));
         return val * 0.5f + 0.5f;
@@ -382,19 +439,8 @@ namespace Spectral {
             return bandPass;
         }
 
-        auto safe_width = [](float w) {
-            const float minMag = 1e-6f;
-            if (!std::isfinite(w)) {
-                return (w < 0.0f) ? -minMag : minMag;
-            }
-            if (std::fabs(w) < minMag) {
-                return (w < 0.0f) ? -minMag : minMag;
-            }
-            return w;
-            };
-
-        const float widthUV = safe_width(filterUV[2]);
-        const float widthIR = -std::fabs(safe_width(filterIR[2]));
+        const float widthUV = sanitize_signed_width(filterUV[2]);
+        const float widthIR = -std::fabs(sanitize_signed_width(filterIR[2]));
         const float* wavelengths = gShape.wavelengths.data();
         float* outData = bandPass.data();
 
@@ -488,7 +534,7 @@ namespace Spectral {
             Sxx * (Syy * Szz - Syz * Szy) - Sxy * (Syx * Szz - Syz * Szx) + Sxz * (Syx * Szy - Syy * Szx);
 
         // Robustness: if ill‑conditioned, fall back to identity
-        if (std::fabs(det) < 1e-20) {
+        if (determinant_near_zero(det)) {
             set_identity_3x3(gS_inv);
             gSPDInit.store(true, std::memory_order_release);
             return;
@@ -505,15 +551,11 @@ namespace Spectral {
         const double invSzy = (Sxy * Szx - Sxx * Szy) * invDet;
         const double invSzz = (Sxx * Syy - Sxy * Syx) * invDet;
 
-        gS_inv[0] = static_cast<float>(invSxx);
-        gS_inv[1] = static_cast<float>(invSxy);
-        gS_inv[2] = static_cast<float>(invSxz);
-        gS_inv[3] = static_cast<float>(invSyx);
-        gS_inv[4] = static_cast<float>(invSyy);
-        gS_inv[5] = static_cast<float>(invSyz);
-        gS_inv[6] = static_cast<float>(invSzx);
-        gS_inv[7] = static_cast<float>(invSzy);
-        gS_inv[8] = static_cast<float>(invSzz);
+        store_3x3_rowmajor(
+            gS_inv,
+            invSxx, invSxy, invSxz,
+            invSyx, invSyy, invSyz,
+            invSzx, invSzy, invSzz);
 
         gSPDInit.store(true, std::memory_order_release);
     }
@@ -535,20 +577,22 @@ namespace Spectral {
         Sxx *= dl; Sxy *= dl; Sxz *= dl; Syx *= dl; Syy *= dl; Syz *= dl; Szx *= dl; Szy *= dl; Szz *= dl;
 
         const double det = Sxx * (Syy * Szz - Syz * Szy) - Sxy * (Syx * Szz - Syz * Szx) + Sxz * (Syx * Szy - Syy * Szx);
-        if (std::fabs(det) < 1e-20) {
+        if (determinant_near_zero(det)) {
             set_identity_3x3(S_inv_out);
             return;
         }
         const double invDet = 1.0 / det;
-        S_inv_out[0] = static_cast<float>((Syy * Szz - Syz * Szy) * invDet);
-        S_inv_out[1] = static_cast<float>((Sxz * Szy - Sxy * Szz) * invDet);
-        S_inv_out[2] = static_cast<float>((Sxy * Syz - Sxz * Syy) * invDet);
-        S_inv_out[3] = static_cast<float>((Syz * Szx - Syx * Szz) * invDet);
-        S_inv_out[4] = static_cast<float>((Sxx * Szz - Sxz * Szx) * invDet);
-        S_inv_out[5] = static_cast<float>((Sxz * Syx - Sxx * Syz) * invDet);
-        S_inv_out[6] = static_cast<float>((Syx * Szy - Syy * Szx) * invDet);
-        S_inv_out[7] = static_cast<float>((Sxy * Szx - Sxx * Szy) * invDet);
-        S_inv_out[8] = static_cast<float>((Sxx * Syy - Sxy * Syx) * invDet);
+        store_3x3_rowmajor(
+            S_inv_out,
+            (Syy * Szz - Syz * Szy) * invDet,
+            (Sxz * Szy - Sxy * Szz) * invDet,
+            (Sxy * Syz - Sxz * Syy) * invDet,
+            (Syz * Szx - Syx * Szz) * invDet,
+            (Sxx * Szz - Sxz * Szx) * invDet,
+            (Sxz * Syx - Sxx * Syz) * invDet,
+            (Syx * Szy - Syy * Szx) * invDet,
+            (Sxy * Szx - Sxx * Szy) * invDet,
+            (Sxx * Syy - Sxy * Syx) * invDet);
     }
 
     // --- CMF-based SPD reconstruction (global) ---
@@ -795,27 +839,8 @@ namespace Spectral {
         // agx-emulsion parity: keep signed XYZ; only sanitize non-finite components.
         sanitize_nonfinite_triplet(XYZ);
 
-        auto sanitize_white = [](const float* white, float dst[3]) {
-            const float fallback[3] = {
-                gDWG_WhitePoint_XYZ[0],
-                gDWG_WhitePoint_XYZ[1],
-                gDWG_WhitePoint_XYZ[2]
-            };
-            const float* src = white ? white : fallback;
-            float* dstIt = dst;
-            const float* srcIt = src;
-            const float* fallbackIt = fallback;
-            for (int i = 0; i < 3; ++i, ++dstIt, ++srcIt, ++fallbackIt) {
-                const float v = *srcIt;
-                *dstIt = (std::isfinite(v)) ? v : *fallbackIt;
-            }
-            if (!(dst[1] > 0.0f)) {
-                copy_triplet3(fallback, dst);
-            }
-            };
-
         float refWhiteXYZ[3];
-        sanitize_white(refIllumWhiteXYZ, refWhiteXYZ);
+        sanitize_ref_white_or_dwg(refIllumWhiteXYZ, refWhiteXYZ);
 
         // Apply CAT02 chromatic adaptation from D65 to reference illuminant.
         // This matches Python: colour.RGB_to_XYZ(..., illuminant=ref_illum, chromatic_adaptation_transform='CAT02')
@@ -829,7 +854,7 @@ namespace Spectral {
         // - xy uses denom = max(b, 1e-10) and is then clamped to [0, 1]
         sanitize_nonfinite_triplet(adaptedXYZ);
         const float b = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
-        const float bSafe = std::isfinite(b) ? b : 0.0f;
+        const float bSafe = sanitize_nonfinite_component(b);
         spd_probe_record_target_scale(bSafe);
 
         const float denom = std::max(bSafe, 1e-10f);
@@ -847,11 +872,7 @@ namespace Spectral {
 
         // Multiply by b to get final Ee spectrum (signed; matches Python).
         for (int i = 0; i < K; ++i) {
-            float v = bSafe * Ee_out[i];
-            if (!std::isfinite(v)) {
-                v = 0.0f;
-            }
-            Ee_out[i] = v;
+            Ee_out[i] = sanitize_nonfinite_component(bSafe * Ee_out[i]);
         }
 
         // Compute Y_recon for diagnostic logging (should match Python's ~3.95 for mid-gray)
@@ -1218,23 +1239,16 @@ namespace Spectral {
         float XYZ[3];
         DWG_linear_to_XYZ(rgbDWG, XYZ);
 
-        auto sanitize_component = [](float v) -> float {
-            if (!std::isfinite(v)) {
-                return 0.0f;
-            }
-            return std::max(0.0f, v);
-            };
-
         float sanitizedXYZ[3] = {
-            sanitize_component(XYZ[0]),
-            sanitize_component(XYZ[1]),
-            sanitize_component(XYZ[2])
+            sanitize_nonnegative_component(XYZ[0]),
+            sanitize_nonnegative_component(XYZ[1]),
+            sanitize_nonnegative_component(XYZ[2])
         };
 
         float refWhite[3] = {
-            sanitize_component(T.refIllumWhiteXYZ[0]),
-            sanitize_component(T.refIllumWhiteXYZ[1]),
-            sanitize_component(T.refIllumWhiteXYZ[2])
+            sanitize_nonnegative_component(T.refIllumWhiteXYZ[0]),
+            sanitize_nonnegative_component(T.refIllumWhiteXYZ[1]),
+            sanitize_nonnegative_component(T.refIllumWhiteXYZ[2])
         };
         if (refWhite[1] <= 0.0f) {
             copy_triplet3(gDWG_WhitePoint_XYZ, refWhite);

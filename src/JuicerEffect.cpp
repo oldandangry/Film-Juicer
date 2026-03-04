@@ -98,6 +98,84 @@ namespace {
         return diff <= scale * 1e-9;
     }
 
+    inline bool is_finite(float value) {
+        return std::isfinite(value);
+    }
+
+    inline bool is_finite(double value) {
+        return std::isfinite(value);
+    }
+
+    inline double sanitize_finite_clamped(double value, double fallback, double minValue, double maxValue) {
+        if (!is_finite(value)) return fallback;
+        return std::clamp(value, minValue, maxValue);
+    }
+
+    inline double sanitize_finite_or(double value, double fallback) {
+        return is_finite(value) ? value : fallback;
+    }
+
+    inline double sanitize_positive_finite_or(double value, double fallback) {
+        return (is_finite(value) && value > 0.0) ? value : fallback;
+    }
+
+    inline bool is_positive_finite(double value) {
+        return is_finite(value) && value > 0.0;
+    }
+
+    inline float sanitize_nonnegative_finite_or(float value, float fallback) {
+        return (is_finite(value) && value >= 0.0f) ? value : fallback;
+    }
+
+    inline double read_sanitized_double(
+        OFX::DoubleParam* param,
+        double fallback,
+        double minValue,
+        double maxValue)
+    {
+        double value = fallback;
+        if (param) {
+            param->getValue(value);
+        }
+        return sanitize_finite_clamped(value, fallback, minValue, maxValue);
+    }
+
+    inline std::array<double, 3> read_sanitized_double3(
+        OFX::Double3DParam* param,
+        const std::array<double, 3>& defaults,
+        double minValue,
+        double maxValue)
+    {
+        std::array<double, 3> values = defaults;
+        if (param) {
+            param->getValue(values[0], values[1], values[2]);
+        }
+        double* valueIt = values.data();
+        const double* defaultIt = defaults.data();
+        for (int i = 0; i < 3; ++i, ++valueIt, ++defaultIt) {
+            *valueIt = sanitize_finite_clamped(*valueIt, *defaultIt, minValue, maxValue);
+        }
+        return values;
+    }
+
+    inline std::array<double, 2> read_sanitized_double2(
+        OFX::Double2DParam* param,
+        const std::array<double, 2>& defaults,
+        double minValue,
+        double maxValue)
+    {
+        std::array<double, 2> values = defaults;
+        if (param) {
+            param->getValue(values[0], values[1]);
+        }
+        double* valueIt = values.data();
+        const double* defaultIt = defaults.data();
+        for (int i = 0; i < 2; ++i, ++valueIt, ++defaultIt) {
+            *valueIt = sanitize_finite_clamped(*valueIt, *defaultIt, minValue, maxValue);
+        }
+        return values;
+    }
+
     inline int pixel_component_count(OFX::PixelComponentEnum comps) {
         switch (comps) {
         case OFX::ePixelComponentRGBA: return 4;
@@ -109,7 +187,7 @@ namespace {
 
     inline float finite_exp2_scale(double ev) {
         const float scale = static_cast<float>(std::exp2(ev));
-        return std::isfinite(scale) ? scale : 1.0f;
+        return is_finite(scale) ? scale : 1.0f;
     }
 
     inline void sanitize_dir_matrix(float matrix[3][3]) {
@@ -117,7 +195,7 @@ namespace {
         const float* const valueEnd = valueIt + 9;
         for (; valueIt < valueEnd; ++valueIt) {
             float value = *valueIt;
-            if (!std::isfinite(value)) value = 0.0f;
+            if (!is_finite(value)) value = 0.0f;
             if (value < -10.0f) value = -10.0f;
             if (value > 10.0f) value = 10.0f;
             *valueIt = value;
@@ -129,7 +207,7 @@ namespace {
         const float* const valueEnd = valueIt + 9;
         for (; valueIt < valueEnd; ++valueIt) {
             const float value = *valueIt;
-            if (std::isfinite(value) && value != 0.0f) {
+            if (is_finite(value) && value != 0.0f) {
                 return true;
             }
         }
@@ -230,7 +308,7 @@ namespace {
 
     static double build_center_weight_mask(int width, int height, double sigma, std::vector<double>& outMask) {
         outMask.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
-        if (!(std::isfinite(sigma)) || sigma <= 0.0) {
+        if (!is_finite(sigma) || sigma <= 0.0) {
             std::fill(outMask.begin(), outMask.end(), 0.0);
             return 0.0;
         }
@@ -319,7 +397,7 @@ namespace {
                         float XYZ[3];
                         rgbToXYZ.mul(linear, XYZ);
                         const double Y = static_cast<double>(XYZ[1]);
-                        if (!std::isfinite(Y)) {
+                        if (!is_finite(Y)) {
                             continue;
                         }
                         sumY += Y * w;
@@ -338,7 +416,7 @@ namespace {
                     float XYZ[3];
                     rgbToXYZ.mul(linear, XYZ);
                     const double Y = static_cast<double>(XYZ[1]);
-                    if (!std::isfinite(Y)) {
+                    if (!is_finite(Y)) {
                         continue;
                     }
                     sumY += Y * w;
@@ -355,7 +433,7 @@ namespace {
         };
 
         auto accumulateYUncached = [&](double* outSumMask) {
-            if (!(std::isfinite(sigma)) || sigma <= 0.0) {
+            if (!is_finite(sigma) || sigma <= 0.0) {
                 if (outSumMask) {
                     *outSumMask = 0.0;
                 }
@@ -369,7 +447,7 @@ namespace {
             const double scaleX = static_cast<double>(width) * invMax;
             const double scaleY = static_cast<double>(height) * invMax;
             const double sigmaDenom = 2.0 * sigma * sigma;
-            if (!(std::isfinite(sigmaDenom)) || sigmaDenom <= 0.0) {
+            if (!is_finite(sigmaDenom) || sigmaDenom <= 0.0) {
                 if (outSumMask) {
                     *outSumMask = 0.0;
                 }
@@ -400,7 +478,7 @@ namespace {
                         float XYZ[3];
                         rgbToXYZ.mul(linear, XYZ);
                         const double Y = static_cast<double>(XYZ[1]);
-                        if (std::isfinite(Y)) {
+                        if (is_finite(Y)) {
                             sumY += Y * w;
                             sumMask += w;
                         }
@@ -419,7 +497,7 @@ namespace {
                         float XYZ[3];
                         rgbToXYZ.mul(linear, XYZ);
                         const double Y = static_cast<double>(XYZ[1]);
-                        if (std::isfinite(Y)) {
+                        if (is_finite(Y)) {
                             sumY += Y * w;
                             sumMask += w;
                         }
@@ -646,7 +724,7 @@ namespace {
                     float XYZ[3];
                     rgbToXYZ.mul(linear, XYZ);
                     float Y = XYZ[1];
-                    if (!std::isfinite(Y)) {
+                    if (!is_finite(Y)) {
                         continue;
                     }
                     if (Y < 0.0f) {
@@ -667,7 +745,7 @@ namespace {
                 float XYZ[3];
                 rgbToXYZ.mul(linear, XYZ);
                 float Y = XYZ[1];
-                if (!std::isfinite(Y)) {
+                if (!is_finite(Y)) {
                     continue;
                 }
                 if (Y < 0.0f) {
@@ -788,9 +866,7 @@ JuicerEffect::ExposureParams JuicerEffect::gatherExposureParams() const {
     if (_pExposure) {
         _pExposure->getValue(exposureSliderEV);
     }
-    if (!std::isfinite(exposureSliderEV)) {
-        exposureSliderEV = 0.0;
-    }
+    exposureSliderEV = sanitize_finite_or(exposureSliderEV, 0.0);
     params.sliderEV = exposureSliderEV;
     params.sliderScale = finite_exp2_scale(exposureSliderEV);
     bool cameraAuto = true;
@@ -812,9 +888,7 @@ Scanner::Options JuicerEffect::gatherScannerOptions() const {
     if (_pScannerLensBlur) {
         _pScannerLensBlur->getValue(blurSigma);
     }
-    if (!std::isfinite(blurSigma)) {
-        blurSigma = 0.55;
-    }
+    blurSigma = sanitize_finite_or(blurSigma, 0.55);
     blurSigma = std::clamp(blurSigma, 0.0, 10.0);
     opts.lensBlurSigmaPx = static_cast<float>(blurSigma);
 
@@ -823,12 +897,8 @@ Scanner::Options JuicerEffect::gatherScannerOptions() const {
     if (_pScannerUnsharp) {
         _pScannerUnsharp->getValue(unsharpSigma, unsharpAmount);
     }
-    if (!std::isfinite(unsharpSigma)) {
-        unsharpSigma = 0.7;
-    }
-    if (!std::isfinite(unsharpAmount)) {
-        unsharpAmount = 1.0;
-    }
+    unsharpSigma = sanitize_finite_or(unsharpSigma, 0.7);
+    unsharpAmount = sanitize_finite_or(unsharpAmount, 1.0);
     unsharpSigma = std::clamp(unsharpSigma, 0.0, 5.0);
     unsharpAmount = std::clamp(unsharpAmount, 0.0, 3.0);
     opts.unsharpSigmaPx = static_cast<float>(unsharpSigma);
@@ -869,7 +939,7 @@ Print::Params JuicerEffect::gatherPrintParams() const {
     if (_pEnlargerM) _pEnlargerM->getValue(m);
     if (_pEnlargerC) _pEnlargerC->getValue(c);
     auto clampShift = [](double v) -> double {
-        if (!std::isfinite(v)) return 0.0;
+        if (!is_finite(v)) return 0.0;
         const double limit = static_cast<double>(Print::kEnlargerSteps);
         return std::clamp(v, -limit, limit);
         };
@@ -891,27 +961,14 @@ Profiles::HalationMetadata JuicerEffect::gatherHalationUi() const {
     }
     halation.active = active;
 
-    auto sanitize = [](double value, double fallback, double minValue, double maxValue) -> double {
-        if (!std::isfinite(value)) return fallback;
-        return std::clamp(value, minValue, maxValue);
-    };
-    auto read3 = [&](OFX::Double3DParam* param, const std::array<double, 3>& defaults, double minValue, double maxValue) {
-        std::array<double, 3> values = defaults;
-        if (param) {
-            param->getValue(values[0], values[1], values[2]);
-        }
-        double* valueIt = values.data();
-        const double* defaultIt = defaults.data();
-        for (int i = 0; i < 3; ++i, ++valueIt, ++defaultIt) {
-            *valueIt = sanitize(*valueIt, *defaultIt, minValue, maxValue);
-        }
-        return values;
-    };
-
-    const std::array<double, 3> strengthPercent = read3(_pHalationStrength, { {3.0, 0.30, 0.10} }, 0.0, 100.0);
-    const std::array<double, 3> sizeUm = read3(_pHalationSizeUm, { {200.0, 200.0, 200.0} }, 0.0, 1000.0);
-    const std::array<double, 3> scatterStrengthPercent = read3(_pHalationScatteringStrength, { {1.0, 2.0, 4.0} }, 0.0, 100.0);
-    const std::array<double, 3> scatterSizeUm = read3(_pHalationScatteringSizeUm, { {30.0, 20.0, 15.0} }, 0.0, 1000.0);
+    const std::array<double, 3> strengthPercent =
+        read_sanitized_double3(_pHalationStrength, { {3.0, 0.30, 0.10} }, 0.0, 100.0);
+    const std::array<double, 3> sizeUm =
+        read_sanitized_double3(_pHalationSizeUm, { {200.0, 200.0, 200.0} }, 0.0, 1000.0);
+    const std::array<double, 3> scatterStrengthPercent =
+        read_sanitized_double3(_pHalationScatteringStrength, { {1.0, 2.0, 4.0} }, 0.0, 100.0);
+    const std::array<double, 3> scatterSizeUm =
+        read_sanitized_double3(_pHalationScatteringSizeUm, { {30.0, 20.0, 15.0} }, 0.0, 1000.0);
 
     float* strengthIt = halation.strength.data();
     float* sizeIt = halation.sizeUm.data();
@@ -943,13 +1000,6 @@ void JuicerEffect::applyHalationProfileDefaults() {
 
     const Profiles::HalationMetadata& halationCfg = _state->base.halation;
 
-    auto sanitize_range = [](double value, double fallback, double lo, double hi) -> double {
-        if (!std::isfinite(value)) {
-            value = fallback;
-        }
-        return std::clamp(value, lo, hi);
-    };
-
     double strengthR = 0.0, strengthG = 0.0, strengthB = 0.0;
     double sizeR = 0.0, sizeG = 0.0, sizeB = 0.0;
     double scatterStrengthR = 0.0, scatterStrengthG = 0.0, scatterStrengthB = 0.0;
@@ -968,18 +1018,18 @@ void JuicerEffect::applyHalationProfileDefaults() {
         _pHalationScatteringSizeUm->getValue(scatterSizeR, scatterSizeG, scatterSizeB);
     }
 
-    const double strengthPctR = sanitize_range(static_cast<double>(halationCfg.strength[0]) * 100.0, strengthR, 0.0, 100.0);
-    const double strengthPctG = sanitize_range(static_cast<double>(halationCfg.strength[1]) * 100.0, strengthG, 0.0, 100.0);
-    const double strengthPctB = sanitize_range(static_cast<double>(halationCfg.strength[2]) * 100.0, strengthB, 0.0, 100.0);
-    const double sizeUmR = sanitize_range(static_cast<double>(halationCfg.sizeUm[0]), sizeR, 0.0, 1000.0);
-    const double sizeUmG = sanitize_range(static_cast<double>(halationCfg.sizeUm[1]), sizeG, 0.0, 1000.0);
-    const double sizeUmB = sanitize_range(static_cast<double>(halationCfg.sizeUm[2]), sizeB, 0.0, 1000.0);
-    const double scatterStrengthPctR = sanitize_range(static_cast<double>(halationCfg.scatteringStrength[0]) * 100.0, scatterStrengthR, 0.0, 100.0);
-    const double scatterStrengthPctG = sanitize_range(static_cast<double>(halationCfg.scatteringStrength[1]) * 100.0, scatterStrengthG, 0.0, 100.0);
-    const double scatterStrengthPctB = sanitize_range(static_cast<double>(halationCfg.scatteringStrength[2]) * 100.0, scatterStrengthB, 0.0, 100.0);
-    const double scatterSizeUmR = sanitize_range(static_cast<double>(halationCfg.scatteringSizeUm[0]), scatterSizeR, 0.0, 1000.0);
-    const double scatterSizeUmG = sanitize_range(static_cast<double>(halationCfg.scatteringSizeUm[1]), scatterSizeG, 0.0, 1000.0);
-    const double scatterSizeUmB = sanitize_range(static_cast<double>(halationCfg.scatteringSizeUm[2]), scatterSizeB, 0.0, 1000.0);
+    const double strengthPctR = sanitize_finite_clamped(static_cast<double>(halationCfg.strength[0]) * 100.0, strengthR, 0.0, 100.0);
+    const double strengthPctG = sanitize_finite_clamped(static_cast<double>(halationCfg.strength[1]) * 100.0, strengthG, 0.0, 100.0);
+    const double strengthPctB = sanitize_finite_clamped(static_cast<double>(halationCfg.strength[2]) * 100.0, strengthB, 0.0, 100.0);
+    const double sizeUmR = sanitize_finite_clamped(static_cast<double>(halationCfg.sizeUm[0]), sizeR, 0.0, 1000.0);
+    const double sizeUmG = sanitize_finite_clamped(static_cast<double>(halationCfg.sizeUm[1]), sizeG, 0.0, 1000.0);
+    const double sizeUmB = sanitize_finite_clamped(static_cast<double>(halationCfg.sizeUm[2]), sizeB, 0.0, 1000.0);
+    const double scatterStrengthPctR = sanitize_finite_clamped(static_cast<double>(halationCfg.scatteringStrength[0]) * 100.0, scatterStrengthR, 0.0, 100.0);
+    const double scatterStrengthPctG = sanitize_finite_clamped(static_cast<double>(halationCfg.scatteringStrength[1]) * 100.0, scatterStrengthG, 0.0, 100.0);
+    const double scatterStrengthPctB = sanitize_finite_clamped(static_cast<double>(halationCfg.scatteringStrength[2]) * 100.0, scatterStrengthB, 0.0, 100.0);
+    const double scatterSizeUmR = sanitize_finite_clamped(static_cast<double>(halationCfg.scatteringSizeUm[0]), scatterSizeR, 0.0, 1000.0);
+    const double scatterSizeUmG = sanitize_finite_clamped(static_cast<double>(halationCfg.scatteringSizeUm[1]), scatterSizeG, 0.0, 1000.0);
+    const double scatterSizeUmB = sanitize_finite_clamped(static_cast<double>(halationCfg.scatteringSizeUm[2]), scatterSizeB, 0.0, 1000.0);
 
     const double strengthMaster = (strengthPctR + strengthPctG + strengthPctB) / 3.0;
     const double sizeMaster = (sizeUmR + sizeUmG + sizeUmB) / 3.0;
@@ -1106,14 +1156,14 @@ namespace {
         const double* const dataEnd = data + values.size();
         for (; data < dataEnd; ++data) {
             const double v = *data;
-            if (!std::isfinite(v) || !(v > 0.0)) {
+            if (!is_positive_finite(v)) {
                 values = { {1.0, 1.0, 1.0} };
                 return;
             }
             sum += v;
         }
         const double mean = sum / 3.0;
-        if (!std::isfinite(mean) || !(mean > 0.0)) {
+        if (!is_positive_finite(mean)) {
             values = { {1.0, 1.0, 1.0} };
             return;
         }
@@ -1147,118 +1197,39 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     }
     grain.sublayersActive = sublayers;
 
-    auto sanitize = [](double value, double fallback, double minValue, double maxValue) -> double {
-        if (!std::isfinite(value)) return fallback;
-        return std::clamp(value, minValue, maxValue);
-    };
-    auto read3 = [&](OFX::Double3DParam* param, const std::array<double, 3>& defaults, double minValue, double maxValue) {
-        std::array<double, 3> values = defaults;
-        if (param) {
-            param->getValue(values[0], values[1], values[2]);
-        }
-        double* valueIt = values.data();
-        const double* defaultIt = defaults.data();
-        for (int i = 0; i < 3; ++i, ++valueIt, ++defaultIt) {
-            *valueIt = sanitize(*valueIt, *defaultIt, minValue, maxValue);
-        }
-        return values;
-    };
-    auto read2 = [&](OFX::Double2DParam* param, const std::array<double, 2>& defaults, double minValue, double maxValue) {
-        std::array<double, 2> values = defaults;
-        if (param) {
-            param->getValue(values[0], values[1]);
-        }
-        double* valueIt = values.data();
-        const double* defaultIt = defaults.data();
-        for (int i = 0; i < 2; ++i, ++valueIt, ++defaultIt) {
-            *valueIt = sanitize(*valueIt, *defaultIt, minValue, maxValue);
-        }
-        return values;
-    };
-
-    double amountEV = preset.amountEV;
-    if (_pGrainAmplitude) {
-        _pGrainAmplitude->getValue(amountEV);
-    }
-    amountEV = sanitize(amountEV, preset.amountEV, -3.0, 3.0);
-    double amplitude = std::exp2(amountEV);
-    if (!std::isfinite(amplitude) || amplitude < 0.0) {
-        amplitude = 1.0;
-    }
+    double amountEV = read_sanitized_double(_pGrainAmplitude, preset.amountEV, -3.0, 3.0);
+    const double amplitude = std::exp2(amountEV);
     grain.amplitude = static_cast<float>(amplitude);
 
-    double sizePx = preset.sizePx;
-    if (_pGrainBlur) {
-        _pGrainBlur->getValue(sizePx);
-    }
-    sizePx = sanitize(sizePx, preset.sizePx, 0.20, 2.00);
+    double sizePx = read_sanitized_double(_pGrainBlur, preset.sizePx, 0.20, 2.00);
     grain.blur = static_cast<float>(sizePx);
 
-    double sharpness = preset.sharpness;
-    if (_pGrainSharpness) {
-        _pGrainSharpness->getValue(sharpness);
-    }
-    sharpness = sanitize(sharpness, preset.sharpness, 0.0, 1.0);
+    double sharpness = read_sanitized_double(_pGrainSharpness, preset.sharpness, 0.0, 1.0);
 
-    double chroma = preset.chroma;
-    if (_pGrainChroma) {
-        _pGrainChroma->getValue(chroma);
-    }
-    chroma = sanitize(chroma, preset.chroma, 0.0, 1.0);
+    double chroma = read_sanitized_double(_pGrainChroma, preset.chroma, 0.0, 1.0);
 
-    double texture = preset.texture;
-    if (_pGrainTexture) {
-        _pGrainTexture->getValue(texture);
-    }
-    texture = sanitize(texture, preset.texture, 0.0, 1.0);
+    double texture = read_sanitized_double(_pGrainTexture, preset.texture, 0.0, 1.0);
 
     double blurDyeCloudsBase = grain_lerp(1.40, 0.60, sharpness);
-    double sizeMixWeightBase = std::isfinite(preset.sizeMixWeight)
-        ? preset.sizeMixWeight
-        : grain_lerp(0.072, 0.38, texture);
-    double microCellBase = std::isfinite(preset.microCell)
-        ? preset.microCell
-        : grain_lerp(50.0, 70.0, texture);
-    double microSigmaBase = std::isfinite(preset.microSigma)
-        ? preset.microSigma
-        : grain_lerp(140.0, 200.0, texture);
+    double sizeMixWeightBase = sanitize_finite_or(preset.sizeMixWeight, grain_lerp(0.072, 0.38, texture));
+    double microCellBase = sanitize_finite_or(preset.microCell, grain_lerp(50.0, 70.0, texture));
+    double microSigmaBase = sanitize_finite_or(preset.microSigma, grain_lerp(140.0, 200.0, texture));
 
-    double particleArea = preset.particleAreaUm2;
-    if (_pGrainParticleAreaUm2) {
-        _pGrainParticleAreaUm2->getValue(particleArea);
-    }
-    particleArea = sanitize(particleArea, preset.particleAreaUm2, 0.0, 10.0);
+    double particleArea = read_sanitized_double(_pGrainParticleAreaUm2, preset.particleAreaUm2, 0.0, 10.0);
     grain.agxParticleAreaUm2 = static_cast<float>(particleArea);
 
-    double sizeMixScale = preset.sizeMixScale;
-    if (_pGrainSizeMixScale) {
-        _pGrainSizeMixScale->getValue(sizeMixScale);
-    }
-    sizeMixScale = sanitize(sizeMixScale, preset.sizeMixScale, 1.0, 50.0);
+    double sizeMixScale = read_sanitized_double(_pGrainSizeMixScale, preset.sizeMixScale, 1.0, 50.0);
     grain.sizeMixScale = static_cast<float>(sizeMixScale);
 
-    double sizeMixWeight = sizeMixWeightBase;
-    if (_pGrainSizeMixWeight) {
-        _pGrainSizeMixWeight->getValue(sizeMixWeight);
-    }
-    sizeMixWeight = sanitize(sizeMixWeight, sizeMixWeightBase, 0.0, 1.0);
+    double sizeMixWeight = read_sanitized_double(_pGrainSizeMixWeight, sizeMixWeightBase, 0.0, 1.0);
     grain.sizeMixWeight = static_cast<float>(sizeMixWeight);
 
-    double sizeMixWeightMid = 0.0;
-    if (_pGrainSizeMixWeightMid) {
-        _pGrainSizeMixWeightMid->getValue(sizeMixWeightMid);
-    }
-    sizeMixWeightMid = sanitize(sizeMixWeightMid, 0.0, 0.0, 1.0);
+    double sizeMixWeightMid = read_sanitized_double(_pGrainSizeMixWeightMid, 0.0, 0.0, 1.0);
     grain.sizeMixWeightMid = static_cast<float>(sizeMixWeightMid);
 
-    double blurDyeClouds = blurDyeCloudsBase;
-    if (_pGrainBlurDyeCloudsUm) {
-        _pGrainBlurDyeCloudsUm->getValue(blurDyeClouds);
-    }
-    blurDyeClouds = sanitize(blurDyeClouds, blurDyeCloudsBase, 0.0, 10.0);
+    double blurDyeClouds = read_sanitized_double(_pGrainBlurDyeCloudsUm, blurDyeCloudsBase, 0.0, 10.0);
     grain.blurDyeCloudsUm = static_cast<float>(blurDyeClouds);
 
-    chroma = sanitize(chroma, chroma, 0.0, 1.0);
     grain.chroma = static_cast<float>(chroma);
     grain.chromaSharedWeight = static_cast<float>(std::sqrt(std::max(0.0, 1.0 - chroma)));
     grain.chromaIndWeight = static_cast<float>(std::sqrt(std::max(0.0, chroma)));
@@ -1282,10 +1253,14 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         preset.uniformityMaster,
         preset.uniformityMaster
     } };
-    const std::array<double, 3> particleScale = read3(_pGrainParticleScale, defaultParticleScale, 0.0, 10.0);
-    const std::array<double, 3> particleScaleLayers = read3(_pGrainParticleScaleLayers, defaultParticleScaleLayers, 0.0, 10.0);
-    const std::array<double, 3> densityMin = read3(_pGrainDensityMin, defaultDensityMin, 0.0, 1.0);
-    const std::array<double, 3> uniformity = read3(_pGrainUniformity, defaultUniformity, 0.0, 1.0);
+    const std::array<double, 3> particleScale =
+        read_sanitized_double3(_pGrainParticleScale, defaultParticleScale, 0.0, 10.0);
+    const std::array<double, 3> particleScaleLayers =
+        read_sanitized_double3(_pGrainParticleScaleLayers, defaultParticleScaleLayers, 0.0, 10.0);
+    const std::array<double, 3> densityMin =
+        read_sanitized_double3(_pGrainDensityMin, defaultDensityMin, 0.0, 1.0);
+    const std::array<double, 3> uniformity =
+        read_sanitized_double3(_pGrainUniformity, defaultUniformity, 0.0, 1.0);
     float* particleScaleDst = grain.agxParticleScale.data();
     float* particleScaleLayerDst = grain.agxParticleScaleLayers.data();
     float* densityMinDst = grain.densityMin.data();
@@ -1303,22 +1278,14 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
         *uniformityDst = static_cast<float>(*uniformitySrc);
     }
 
-    double clumpTemporalMix = 0.30;
-    if (_pGrainClumpTemporalMix) {
-        _pGrainClumpTemporalMix->getValue(clumpTemporalMix);
-    }
-    clumpTemporalMix = sanitize(clumpTemporalMix, 0.30, 0.0, 0.30);
+    double clumpTemporalMix = read_sanitized_double(_pGrainClumpTemporalMix, 0.30, 0.0, 0.30);
     grain.clumpTemporalMix = static_cast<float>(clumpTemporalMix);
 
-    double clumpMorphPeriodSec = 8.0;
-    if (_pGrainClumpMorphPeriodSec) {
-        _pGrainClumpMorphPeriodSec->getValue(clumpMorphPeriodSec);
-    }
-    clumpMorphPeriodSec = sanitize(clumpMorphPeriodSec, 8.0, 5.0, 60.0);
+    double clumpMorphPeriodSec = read_sanitized_double(_pGrainClumpMorphPeriodSec, 8.0, 5.0, 60.0);
     grain.clumpMorphPeriodSec = static_cast<float>(clumpMorphPeriodSec);
 
     std::array<double, 2> microStructure = { {microCellBase, microSigmaBase} };
-    microStructure = read2(_pGrainMicroStructure, microStructure, 0.0, 1000.0);
+    microStructure = read_sanitized_double2(_pGrainMicroStructure, microStructure, 0.0, 1000.0);
     float* microDst = grain.microStructure.data();
     const double* microSrc = microStructure.data();
     for (int i = 0; i < 2; ++i, ++microDst, ++microSrc) {
@@ -1337,32 +1304,16 @@ Profiles::GrainMetadata JuicerEffect::gatherGrainUi() const {
     }
     grain.debugView = std::clamp(debugView, 0, 6);
 
-    double filmDust = 0.0;
-    if (_pFilmDustAmount) {
-        _pFilmDustAmount->getValue(filmDust);
-    }
-    filmDust = sanitize(filmDust, 0.0, 0.0, 10.0);
+    double filmDust = read_sanitized_double(_pFilmDustAmount, 0.0, 0.0, 10.0);
     grain.filmDustAmount = static_cast<float>(filmDust);
 
-    double gateDust = 0.0;
-    if (_pGateDustAmount) {
-        _pGateDustAmount->getValue(gateDust);
-    }
-    gateDust = sanitize(gateDust, 0.0, 0.0, 10.0);
+    double gateDust = read_sanitized_double(_pGateDustAmount, 0.0, 0.0, 10.0);
     grain.gateDustAmount = static_cast<float>(gateDust);
 
-    double filmScratch = 0.0;
-    if (_pFilmScratchAmount) {
-        _pFilmScratchAmount->getValue(filmScratch);
-    }
-    filmScratch = sanitize(filmScratch, 0.0, 0.0, 10.0);
+    double filmScratch = read_sanitized_double(_pFilmScratchAmount, 0.0, 0.0, 10.0);
     grain.filmScratchAmount = static_cast<float>(filmScratch);
 
-    double gateScratch = 0.0;
-    if (_pGateScratchAmount) {
-        _pGateScratchAmount->getValue(gateScratch);
-    }
-    gateScratch = sanitize(gateScratch, 0.0, 0.0, 10.0);
+    double gateScratch = read_sanitized_double(_pGateScratchAmount, 0.0, 0.0, 10.0);
     grain.gateScratchAmount = static_cast<float>(gateScratch);
 
     grain.nSubLayers = 1;
@@ -1378,15 +1329,9 @@ void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
     }
 
     const double blurDyeClouds = grain_lerp(1.40, 0.60, preset.sharpness);
-    const double sizeMixWeight = std::isfinite(preset.sizeMixWeight)
-        ? preset.sizeMixWeight
-        : grain_lerp(0.072, 0.38, preset.texture);
-    const double microCell = std::isfinite(preset.microCell)
-        ? preset.microCell
-        : grain_lerp(50.0, 70.0, preset.texture);
-    const double microSigma = std::isfinite(preset.microSigma)
-        ? preset.microSigma
-        : grain_lerp(140.0, 200.0, preset.texture);
+    const double sizeMixWeight = sanitize_finite_or(preset.sizeMixWeight, grain_lerp(0.072, 0.38, preset.texture));
+    const double microCell = sanitize_finite_or(preset.microCell, grain_lerp(50.0, 70.0, preset.texture));
+    const double microSigma = sanitize_finite_or(preset.microSigma, grain_lerp(140.0, 200.0, preset.texture));
 
     std::array<double, 3> scaleRatio = default_particle_scale_ratio();
     std::array<double, 3> scaleLayersRatio = default_particle_scale_layers_ratio();
@@ -1396,6 +1341,20 @@ void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
     normalize_ratio(scaleLayersRatio);
     normalize_ratio(densityMinRatio);
     normalize_ratio(uniformityRatio);
+
+    auto set_scaled_triplet = [](OFX::Double3DParam* param,
+                                 double master,
+                                 const std::array<double, 3>& ratio,
+                                 double lo,
+                                 double hi) {
+        if (!param) {
+            return;
+        }
+        param->setValue(
+            std::clamp(master * ratio[0], lo, hi),
+            std::clamp(master * ratio[1], lo, hi),
+            std::clamp(master * ratio[2], lo, hi));
+    };
 
     if (_pGrainAmplitude) {
         _pGrainAmplitude->setValue(preset.amountEV);
@@ -1423,42 +1382,22 @@ void JuicerEffect::applyGrainPresetDefaults(int presetIndex) {
         _pGrainParticleScaleMaster->setValue(preset.particleScaleMaster);
         _grainParticleScaleMasterLast = preset.particleScaleMaster;
     }
-    if (_pGrainParticleScale) {
-        _pGrainParticleScale->setValue(
-            std::clamp(preset.particleScaleMaster * scaleRatio[0], 0.0, 10.0),
-            std::clamp(preset.particleScaleMaster * scaleRatio[1], 0.0, 10.0),
-            std::clamp(preset.particleScaleMaster * scaleRatio[2], 0.0, 10.0));
-    }
+    set_scaled_triplet(_pGrainParticleScale, preset.particleScaleMaster, scaleRatio, 0.0, 10.0);
     if (_pGrainParticleScaleLayersMaster) {
         _pGrainParticleScaleLayersMaster->setValue(preset.particleScaleLayersMaster);
         _grainParticleScaleLayersMasterLast = preset.particleScaleLayersMaster;
     }
-    if (_pGrainParticleScaleLayers) {
-        _pGrainParticleScaleLayers->setValue(
-            std::clamp(preset.particleScaleLayersMaster * scaleLayersRatio[0], 0.0, 10.0),
-            std::clamp(preset.particleScaleLayersMaster * scaleLayersRatio[1], 0.0, 10.0),
-            std::clamp(preset.particleScaleLayersMaster * scaleLayersRatio[2], 0.0, 10.0));
-    }
+    set_scaled_triplet(_pGrainParticleScaleLayers, preset.particleScaleLayersMaster, scaleLayersRatio, 0.0, 10.0);
     if (_pGrainDensityMinMaster) {
         _pGrainDensityMinMaster->setValue(preset.densityMinMaster);
         _grainDensityMinMasterLast = preset.densityMinMaster;
     }
-    if (_pGrainDensityMin) {
-        _pGrainDensityMin->setValue(
-            std::clamp(preset.densityMinMaster * densityMinRatio[0], 0.0, 1.0),
-            std::clamp(preset.densityMinMaster * densityMinRatio[1], 0.0, 1.0),
-            std::clamp(preset.densityMinMaster * densityMinRatio[2], 0.0, 1.0));
-    }
+    set_scaled_triplet(_pGrainDensityMin, preset.densityMinMaster, densityMinRatio, 0.0, 1.0);
     if (_pGrainUniformityMaster) {
         _pGrainUniformityMaster->setValue(preset.uniformityMaster);
         _grainUniformityMasterLast = preset.uniformityMaster;
     }
-    if (_pGrainUniformity) {
-        _pGrainUniformity->setValue(
-            std::clamp(preset.uniformityMaster * uniformityRatio[0], 0.0, 1.0),
-            std::clamp(preset.uniformityMaster * uniformityRatio[1], 0.0, 1.0),
-            std::clamp(preset.uniformityMaster * uniformityRatio[2], 0.0, 1.0));
-    }
+    set_scaled_triplet(_pGrainUniformity, preset.uniformityMaster, uniformityRatio, 0.0, 1.0);
     if (_pGrainBlurDyeCloudsUm) {
         _pGrainBlurDyeCloudsUm->setValue(std::clamp(blurDyeClouds, 0.0, 10.0));
     }
@@ -1498,33 +1437,14 @@ void JuicerEffect::resetGrainAdvancedControls() {
     presetIndex = std::clamp(presetIndex, 0, 2);
     const GrainPresetDefaults preset = grain_preset_defaults(presetIndex);
 
-    auto sanitize = [](double value, double fallback, double minValue, double maxValue) -> double {
-        if (!std::isfinite(value)) return fallback;
-        return std::clamp(value, minValue, maxValue);
-    };
+    const double sharpness = read_sanitized_double(_pGrainSharpness, preset.sharpness, 0.0, 1.0);
 
-    double sharpness = preset.sharpness;
-    if (_pGrainSharpness) {
-        _pGrainSharpness->getValue(sharpness);
-    }
-    sharpness = sanitize(sharpness, preset.sharpness, 0.0, 1.0);
-
-    double texture = preset.texture;
-    if (_pGrainTexture) {
-        _pGrainTexture->getValue(texture);
-    }
-    texture = sanitize(texture, preset.texture, 0.0, 1.0);
+    const double texture = read_sanitized_double(_pGrainTexture, preset.texture, 0.0, 1.0);
 
     const double blurDyeClouds = grain_lerp(1.40, 0.60, sharpness);
-    const double sizeMixWeight = std::isfinite(preset.sizeMixWeight)
-        ? preset.sizeMixWeight
-        : grain_lerp(0.072, 0.38, texture);
-    const double microCell = std::isfinite(preset.microCell)
-        ? preset.microCell
-        : grain_lerp(50.0, 70.0, texture);
-    const double microSigma = std::isfinite(preset.microSigma)
-        ? preset.microSigma
-        : grain_lerp(140.0, 200.0, texture);
+    const double sizeMixWeight = sanitize_finite_or(preset.sizeMixWeight, grain_lerp(0.072, 0.38, texture));
+    const double microCell = sanitize_finite_or(preset.microCell, grain_lerp(50.0, 70.0, texture));
+    const double microSigma = sanitize_finite_or(preset.microSigma, grain_lerp(140.0, 200.0, texture));
 
     const double particleArea = preset.particleAreaUm2;
     const double sizeMixScale = preset.sizeMixScale;
@@ -1653,64 +1573,22 @@ Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
     }
     glare.active = active;
 
-    double percent = 0.10;
-    if (_pGlarePercent) {
-        _pGlarePercent->getValue(percent);
-    }
-    if (!std::isfinite(percent)) {
-        percent = 0.10;
-    }
-    percent = std::clamp(percent, 0.0, 1.0);
+    double percent = read_sanitized_double(_pGlarePercent, 0.10, 0.0, 1.0);
     glare.percent = static_cast<float>(percent);
 
-    double roughness = 0.4;
-    if (_pGlareRoughness) {
-        _pGlareRoughness->getValue(roughness);
-    }
-    if (!std::isfinite(roughness)) {
-        roughness = 0.4;
-    }
-    roughness = std::clamp(roughness, 0.0, 1.0);
+    double roughness = read_sanitized_double(_pGlareRoughness, 0.4, 0.0, 1.0);
     glare.roughness = static_cast<float>(roughness);
 
-    double blur = 0.5;
-    if (_pGlareBlurSigmaPx) {
-        _pGlareBlurSigmaPx->getValue(blur);
-    }
-    if (!std::isfinite(blur)) {
-        blur = 0.5;
-    }
-    blur = std::clamp(blur, 0.0, 10.0);
+    double blur = read_sanitized_double(_pGlareBlurSigmaPx, 0.5, 0.0, 10.0);
     glare.blur = static_cast<float>(blur);
 
-    double factor = 0.0;
-    if (_pGlareCompRemovalFactor) {
-        _pGlareCompRemovalFactor->getValue(factor);
-    }
-    if (!std::isfinite(factor)) {
-        factor = 0.0;
-    }
-    factor = std::clamp(factor, 0.0, 1.0);
+    double factor = read_sanitized_double(_pGlareCompRemovalFactor, 0.0, 0.0, 1.0);
     glare.compensationRemovalFactor = static_cast<float>(factor);
 
-    double density = 1.2;
-    if (_pGlareCompRemovalDensity) {
-        _pGlareCompRemovalDensity->getValue(density);
-    }
-    if (!std::isfinite(density)) {
-        density = 1.2;
-    }
-    density = std::clamp(density, 0.0, 3.0);
+    double density = read_sanitized_double(_pGlareCompRemovalDensity, 1.2, 0.0, 3.0);
     glare.compensationRemovalDensity = static_cast<float>(density);
 
-    double transition = 0.3;
-    if (_pGlareCompRemovalTransition) {
-        _pGlareCompRemovalTransition->getValue(transition);
-    }
-    if (!std::isfinite(transition)) {
-        transition = 0.3;
-    }
-    transition = std::clamp(transition, 0.0, 2.0);
+    double transition = read_sanitized_double(_pGlareCompRemovalTransition, 0.3, 0.0, 2.0);
     glare.compensationRemovalTransition = static_cast<float>(transition);
 
     return glare;
@@ -1762,8 +1640,10 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
             const OfxRectD rod = _src->getRegionOfDefinition(args.time);
             const double rodWidth = rod.x2 - rod.x1;
             const double rodHeight = rod.y2 - rod.y1;
-            if (std::isfinite(rodWidth) && rodWidth > 0.0 &&
-                std::isfinite(rodHeight) && rodHeight > 0.0) {
+            const bool hasRodDimensions =
+                sanitize_positive_finite_or(rodWidth, 0.0) > 0.0 &&
+                sanitize_positive_finite_or(rodHeight, 0.0) > 0.0;
+            if (hasRodDimensions) {
                 meterBounds.x1 = static_cast<int>(std::floor(rod.x1));
                 meterBounds.y1 = static_cast<int>(std::floor(rod.y1));
                 meterBounds.x2 = static_cast<int>(std::ceil(rod.x2));
@@ -1799,12 +1679,8 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     constexpr double kInvLn2 = 1.44269504088896340736;
 
     const double sigma = 0.2;
-    const double renderScaleX = (std::isfinite(args.renderScale.x) && args.renderScale.x > 0.0)
-        ? args.renderScale.x
-        : 1.0;
-    const double renderScaleY = (std::isfinite(args.renderScale.y) && args.renderScale.y > 0.0)
-        ? args.renderScale.y
-        : 1.0;
+    const double renderScaleX = sanitize_positive_finite_or(args.renderScale.x, 1.0);
+    const double renderScaleY = sanitize_positive_finite_or(args.renderScale.y, 1.0);
     const std::uintptr_t clipToken = reinterpret_cast<std::uintptr_t>(_src);
 
     int inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
@@ -1866,14 +1742,17 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
                 inputRgbToXYZ,
                 applyInputCctfDecoding);
         }
-        if (Yexp > 0.0 && kCameraMeterTargetY > 0.0) {
+        const bool canComputeEv = (Yexp > 0.0 && kCameraMeterTargetY > 0.0);
+        if (canComputeEv) {
             const double exposureRatio = Yexp / kCameraMeterTargetY;
             evComp = -std::log(exposureRatio) * kInvLn2;
-            measurementValid = std::isfinite(evComp);
         }
-        if (!std::isfinite(evComp)) {
+        if (!is_finite(evComp)) {
             evComp = 0.0;
             measurementValid = false;
+        }
+        else {
+            measurementValid = canComputeEv;
         }
         autoEV = evComp;
 
@@ -1919,23 +1798,19 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         dirRT = wsCur->dirRT;
         float* dMaxIt = dirRT.dMax;
         for (int i = 0; i < 3; ++i, ++dMaxIt) {
-            float v = *dMaxIt;
-            if (!std::isfinite(v) || v <= 0.0f) v = 1.0f;
+            float v = static_cast<float>(sanitize_positive_finite_or(*dMaxIt, 1.0));
             if (v > 1000.0f) v = 1000.0f;
             *dMaxIt = v;
         }
         sanitize_dir_matrix(dirRT.M);
     }
 
-    auto valid_positive = [](double v) -> bool { return std::isfinite(v) && v > 0.0; };
-
     float sigmaPixels = 0.0f;
     const float sigmaMicrometers = dirRT.spatialSigmaMicrometers;
-    if (sigmaMicrometers > 0.0f && valid_positive(pixelSizeUm)) {
+    const bool hasPixelSize = sanitize_positive_finite_or(pixelSizeUm, 0.0) > 0.0;
+    if (sigmaMicrometers > 0.0f && hasPixelSize) {
         sigmaPixels = sigmaMicrometers / pixelSizeUm;
-        if (!std::isfinite(sigmaPixels) || sigmaPixels < 0.0f) {
-            sigmaPixels = 0.0f;
-        }
+        sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
     }
     else {
         // Fallback to legacy geometry if pixelSizeUm was not available
@@ -1943,24 +1818,20 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         if (_pCameraFilmFormat) {
             double filmFormat = 35.0;
             _pCameraFilmFormat->getValue(filmFormat);
-            if (std::isfinite(filmFormat) && filmFormat > 0.0) {
-                filmLongEdgeMm = filmFormat;
-            }
+            filmLongEdgeMm = sanitize_positive_finite_or(filmFormat, filmLongEdgeMm);
         }
 
         const double widthPx = static_cast<double>(fullWidth);
         const double heightPx = static_cast<double>(fullHeight);
         const double longEdgePx = std::max(widthPx, heightPx);
 
-        if (sigmaMicrometers > 0.0f && valid_positive(longEdgePx) && valid_positive(filmLongEdgeMm)) {
+        if (sigmaMicrometers > 0.0f && longEdgePx > 0.0 && filmLongEdgeMm > 0.0) {
             sigmaPixels = Couplers::spatial_sigma_pixels_from_micrometers(
                 sigmaMicrometers,
                 filmLongEdgeMm,
                 widthPx,
                 heightPx);
-            if (!std::isfinite(sigmaPixels) || sigmaPixels < 0.0f) {
-                sigmaPixels = 0.0f;
-            }
+            sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
         }
     }
     dirRT.spatialSigmaPixels = sigmaPixels;
@@ -2348,13 +2219,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (_pCameraFilmFormat) {
         double filmFormat = 35.0;
         _pCameraFilmFormat->getValue(filmFormat);
-        if (std::isfinite(filmFormat) && filmFormat > 0.0) {
-            filmFormatMm = filmFormat;
-        }
+        filmFormatMm = sanitize_positive_finite_or(filmFormat, filmFormatMm);
     }
     const double longEdgePx = static_cast<double>(std::max(fullWidth, fullHeight));
     float pixelSizeUm = 0.0f;
-    if (std::isfinite(filmFormatMm) && filmFormatMm > 0.0 && longEdgePx > 0.0) {
+    if (filmFormatMm > 0.0 && longEdgePx > 0.0) {
         pixelSizeUm = static_cast<float>((filmFormatMm * 1000.0) / longEdgePx);
     }
 
@@ -2517,11 +2386,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         : 0;
     proc.setFrameBoundsVersion(frameVersion);
     proc.setPixelSizeUm(pixelSizeUm);
-    float filmExposureScale = autoExposure.exposureScale;
     // Per agx-emulsion parity: autoExposure.exposureScale already encodes 2^(autoEV + sliderEV).
-    if (!std::isfinite(filmExposureScale) || filmExposureScale <= 0.0f) {
-        filmExposureScale = 1.0f;
-    }
+    float filmExposureScale = static_cast<float>(sanitize_positive_finite_or(autoExposure.exposureScale, 1.0));
     proc.setExposure(filmExposureScale);
     proc.setCameraAutoExposure(exposureParams.cameraAutoEnabled, exposureParams.meteringMethod, exposureParams.sliderEV);
     proc.setOutputEncoding(outputEncodingParams);
@@ -2587,13 +2453,20 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         return;
     }
 
-    auto sanitize_scalar = [](double value, double fallback, double lo, double hi) -> double {
-        if (!std::isfinite(value)) value = fallback;
-        return std::clamp(value, lo, hi);
-    };
-
     auto has_master_triplet_params = [this](OFX::DoubleParam* masterParam, OFX::Double3DParam* advParam) -> bool {
         return masterParam && advParam && _state;
+    };
+
+    auto read_master_value = [&](OFX::DoubleParam* masterParam, double lo, double hi, double& master) -> bool {
+        if (!masterParam) {
+            return false;
+        }
+        masterParam->getValue(master);
+        if (!is_finite(master)) {
+            return false;
+        }
+        master = std::clamp(master, lo, hi);
+        return true;
     };
 
     auto apply_master_delta = [&](OFX::DoubleParam* masterParam,
@@ -2605,20 +2478,18 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             return;
         }
         double master = 0.0;
-        masterParam->getValue(master);
-        if (!std::isfinite(master)) {
+        if (!read_master_value(masterParam, lo, hi, master)) {
             return;
         }
-        master = std::clamp(master, lo, hi);
         double prev = masterCache;
-        if (!std::isfinite(prev)) {
+        if (!is_finite(prev)) {
             prev = master;
         }
         const double delta = master - prev;
         std::array<double, 3> values{ {0.0, 0.0, 0.0} };
         advParam->getValue(values[0], values[1], values[2]);
         for (double& value : values) {
-            value = sanitize_scalar(value, master, lo, hi);
+            value = sanitize_finite_clamped(value, master, lo, hi);
         }
         if (delta != 0.0) {
             for (double& value : values) {
@@ -2642,21 +2513,19 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             return;
         }
         double master = 0.0;
-        masterParam->getValue(master);
-        if (!std::isfinite(master)) {
+        if (!read_master_value(masterParam, lo, hi, master)) {
             return;
         }
-        master = std::clamp(master, lo, hi);
 
         std::array<double, 3> values{ {0.0, 0.0, 0.0} };
         advParam->getValue(values[0], values[1], values[2]);
         for (double& value : values) {
-            value = sanitize_scalar(value, master, lo, hi);
+            value = sanitize_finite_clamped(value, master, lo, hi);
         }
 
         std::array<double, 3> ratio = fallbackRatio;
         const double mean = (values[0] + values[1] + values[2]) / 3.0;
-        if (std::isfinite(mean) && mean > 0.0) {
+        if (is_positive_finite(mean)) {
             double* ratioIt = ratio.data();
             const double* valueIt = values.data();
             for (int i = 0; i < 3; ++i, ++ratioIt, ++valueIt) {
@@ -2747,8 +2616,8 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     if (userEdit && paramName == JuicerParams::kGrainSharpness && _pGrainSharpness && _pGrainBlurDyeCloudsUm && _state) {
         double sharpness = 0.5;
         _pGrainSharpness->getValue(sharpness);
-        if (std::isfinite(sharpness)) {
-            sharpness = std::clamp(sharpness, 0.0, 1.0);
+        if (is_finite(sharpness)) {
+            sharpness = sanitize_finite_clamped(sharpness, 0.5, 0.0, 1.0);
             const double blurDyeClouds = std::clamp(grain_lerp(1.40, 0.60, sharpness), 0.0, 10.0);
             const bool wasSuppressed = _state->suppressParamEvents;
             _state->suppressParamEvents = true;
@@ -2759,8 +2628,8 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     if (userEdit && paramName == JuicerParams::kGrainTexture && _pGrainTexture && _pGrainSizeMixWeight && _pGrainMicroStructure && _state) {
         double texture = 0.55;
         _pGrainTexture->getValue(texture);
-        if (std::isfinite(texture)) {
-            texture = std::clamp(texture, 0.0, 1.0);
+        if (is_finite(texture)) {
+            texture = sanitize_finite_clamped(texture, 0.55, 0.0, 1.0);
             const double sizeMixWeight = std::clamp(grain_lerp(0.072, 0.38, texture), 0.0, 1.0);
             const double microCell = std::clamp(grain_lerp(50.0, 70.0, texture), 0.0, 1000.0);
             const double microSigma = std::clamp(grain_lerp(140.0, 200.0, texture), 0.0, 1000.0);
@@ -2776,6 +2645,14 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
 ParamSnapshot JuicerEffect::snapshotParams() const {
     ParamSnapshot P;
+    auto read_bool_as_int = [](auto* param, bool fallback) -> int {
+        bool value = fallback;
+        if (param) {
+            param->getValue(value);
+        }
+        return value ? 1 : 0;
+    };
+
     if (_pFilmStock)      _pFilmStock->getValue(P.filmStockIndex);
     if (_pPrintPaper)     _pPrintPaper->getValue(P.printPaperIndex);
     if (_pSpectralMode)   _pSpectralMode->getValue(P.spectralUpsamplingMode);
@@ -2783,33 +2660,25 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     if (_pEnlIll)         _pEnlIll->getValue(P.enlIll);
     if (_pEnlDichroicSet) _pEnlDichroicSet->getValue(P.enlDichroicSet);
     if (_pGlareCompRemovalFactor) {
-        double v = P.glareCompRemovalFactor;
-        _pGlareCompRemovalFactor->getValue(v);
-        if (!std::isfinite(v)) v = 0.0;
-        P.glareCompRemovalFactor = std::clamp(v, 0.0, 1.0);
+        P.glareCompRemovalFactor =
+            read_sanitized_double(_pGlareCompRemovalFactor, P.glareCompRemovalFactor, 0.0, 1.0);
     }
     if (_pGlareCompRemovalDensity) {
-        double v = P.glareCompRemovalDensity;
-        _pGlareCompRemovalDensity->getValue(v);
-        if (!std::isfinite(v)) v = 1.2;
-        P.glareCompRemovalDensity = std::clamp(v, 0.0, 3.0);
+        P.glareCompRemovalDensity =
+            read_sanitized_double(_pGlareCompRemovalDensity, P.glareCompRemovalDensity, 0.0, 3.0);
     }
     if (_pGlareCompRemovalTransition) {
-        double v = P.glareCompRemovalTransition;
-        _pGlareCompRemovalTransition->getValue(v);
-        if (!std::isfinite(v)) v = 0.3;
-        P.glareCompRemovalTransition = std::clamp(v, 0.0, 2.0);
+        P.glareCompRemovalTransition =
+            read_sanitized_double(_pGlareCompRemovalTransition, P.glareCompRemovalTransition, 0.0, 2.0);
     }
     if (_pPrintDminFactor) {
-        double v = P.printDminFactor;
-        _pPrintDminFactor->getValue(v);
-        if (!std::isfinite(v)) v = 0.4;
-        P.printDminFactor = std::clamp(v, 0.0, 1.0);
+        P.printDminFactor =
+            read_sanitized_double(_pPrintDminFactor, P.printDminFactor, 0.0, 1.0);
     }
     if (_pInputColorSpace) _pInputColorSpace->getValue(P.inputColorSpace);
-    if (_pInputCctfDecoding) { bool v = false; _pInputCctfDecoding->getValue(v); P.inputCctfDecoding = v ? 1 : 0; }
+    P.inputCctfDecoding = read_bool_as_int(_pInputCctfDecoding, false);
 #ifdef JUICER_ENABLE_COUPLERS
-    if (_pCouplersActive) { bool v = true; _pCouplersActive->getValue(v); P.couplersActive = v ? 1 : 0; }
+    P.couplersActive = read_bool_as_int(_pCouplersActive, true);
     if (_pCouplersAmount)  _pCouplersAmount->getValue(P.couplersAmount);
     if (_pCouplersAmountR) _pCouplersAmountR->getValue(P.ratioR);
     if (_pCouplersAmountG) _pCouplersAmountG->getValue(P.ratioG);
@@ -2827,11 +2696,11 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
         _pScannerUnsharp->getValue(sigma, amount);
         P.scannerUnsharpMask = { sigma, amount };
     }
-    if (_pScannerUseLut) { bool v = true; _pScannerUseLut->getValue(v); P.scannerUseLut = v ? 1 : 0; }
+    P.scannerUseLut = read_bool_as_int(_pScannerUseLut, true);
     if (_pScannerLutResolution) _pScannerLutResolution->getValue(P.scannerLutResolution);
     if (_pOutputColorSpace) _pOutputColorSpace->getValue(P.outputColorSpace);
-    if (_pOutputCctfEncoding) { bool v = true; _pOutputCctfEncoding->getValue(v); P.outputCctfEncoding = v ? 1 : 0; }
-    if (_pOutputLinearPassThrough) { bool v = false; _pOutputLinearPassThrough->getValue(v); P.outputLinearPassThrough = v ? 1 : 0; }
+    P.outputCctfEncoding = read_bool_as_int(_pOutputCctfEncoding, true);
+    P.outputLinearPassThrough = read_bool_as_int(_pOutputLinearPassThrough, false);
     return P;
 }
 
@@ -3063,18 +2932,25 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         return;
     }
 
-    auto sanitize_range = [](float value, double fallback, double lo, double hi) -> double {
-        double v = static_cast<double>(value);
-        if (!std::isfinite(v)) {
-            return fallback;
-        }
-        if (v < lo) v = lo;
-        if (v > hi) v = hi;
-        return v;
-        };
-
     const bool wasSuppressed = _state->suppressParamEvents;
     _state->suppressParamEvents = true;
+
+    auto apply_clean_double = [&](bool dirty,
+                                  double source,
+                                  double fallback,
+                                  double lo,
+                                  double hi,
+                                  OFX::DoubleParam* param,
+                                  double& target) {
+        if (dirty) {
+            return;
+        }
+        const double value = sanitize_finite_clamped(source, fallback, lo, hi);
+        if (param) {
+            param->setValue(value);
+        }
+        target = value;
+    };
 
     if (!_state->couplerDirty.active.load(std::memory_order_acquire)) {
         const bool active = dirCfg.active;
@@ -3084,64 +2960,71 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         P.couplersActive = active ? 1 : 0;
     }
 
-    if (!_state->couplerDirty.amount.load(std::memory_order_acquire)) {
-        const double amount = sanitize_range(dirCfg.amount, P.couplersAmount, 0.0, 2.0);
-        if (_pCouplersAmount) {
-            _pCouplersAmount->setValue(amount);
-        }
-        P.couplersAmount = amount;
-    }
+    apply_clean_double(
+        _state->couplerDirty.amount.load(std::memory_order_acquire),
+        static_cast<double>(dirCfg.amount),
+        P.couplersAmount,
+        0.0,
+        2.0,
+        _pCouplersAmount,
+        P.couplersAmount);
 
-    if (!_state->couplerDirty.ratioB.load(std::memory_order_acquire)) {
-        const double ratioB = sanitize_range(dirCfg.ratioRGB[0], P.ratioB, 0.0, 1.0);
-        if (_pCouplersAmountB) {
-            _pCouplersAmountB->setValue(ratioB);
-        }
-        P.ratioB = ratioB;
-    }
+    apply_clean_double(
+        _state->couplerDirty.ratioB.load(std::memory_order_acquire),
+        static_cast<double>(dirCfg.ratioRGB[0]),
+        P.ratioB,
+        0.0,
+        1.0,
+        _pCouplersAmountB,
+        P.ratioB);
 
-    if (!_state->couplerDirty.ratioG.load(std::memory_order_acquire)) {
-        const double ratioG = sanitize_range(dirCfg.ratioRGB[1], P.ratioG, 0.0, 1.0);
-        if (_pCouplersAmountG) {
-            _pCouplersAmountG->setValue(ratioG);
-        }
-        P.ratioG = ratioG;
-    }
+    apply_clean_double(
+        _state->couplerDirty.ratioG.load(std::memory_order_acquire),
+        static_cast<double>(dirCfg.ratioRGB[1]),
+        P.ratioG,
+        0.0,
+        1.0,
+        _pCouplersAmountG,
+        P.ratioG);
 
-    if (!_state->couplerDirty.ratioR.load(std::memory_order_acquire)) {
-        const double ratioR = sanitize_range(dirCfg.ratioRGB[2], P.ratioR, 0.0, 1.0);
-        if (_pCouplersAmountR) {
-            _pCouplersAmountR->setValue(ratioR);
-        }
-        P.ratioR = ratioR;
-    }
+    apply_clean_double(
+        _state->couplerDirty.ratioR.load(std::memory_order_acquire),
+        static_cast<double>(dirCfg.ratioRGB[2]),
+        P.ratioR,
+        0.0,
+        1.0,
+        _pCouplersAmountR,
+        P.ratioR);
 
-    if (!_state->couplerDirty.sigma.load(std::memory_order_acquire)) {
-        const double sigma = sanitize_range(dirCfg.diffusionInterlayer, P.sigma, 0.0, 4.0);
-        if (_pCouplersSigma) {
-            _pCouplersSigma->setValue(sigma);
-        }
-        P.sigma = sigma;
-    }
+    apply_clean_double(
+        _state->couplerDirty.sigma.load(std::memory_order_acquire),
+        static_cast<double>(dirCfg.diffusionInterlayer),
+        P.sigma,
+        0.0,
+        4.0,
+        _pCouplersSigma,
+        P.sigma);
 
-    if (!_state->couplerDirty.high.load(std::memory_order_acquire)) {
-        const double high = sanitize_range(dirCfg.highExposureShift, P.high, 0.0, 1.0);
-        if (_pCouplersHigh) {
-            _pCouplersHigh->setValue(high);
-        }
-        P.high = high;
-    }
+    apply_clean_double(
+        _state->couplerDirty.high.load(std::memory_order_acquire),
+        static_cast<double>(dirCfg.highExposureShift),
+        P.high,
+        0.0,
+        1.0,
+        _pCouplersHigh,
+        P.high);
 
-    if (!_state->couplerDirty.spatialSigma.load(std::memory_order_acquire)) {
-        const float profileSpatialSigma = _state->couplerProfileSpatialSigmaValid
-            ? static_cast<float>(_state->couplerProfileSpatialSigmaMicrometers)
-            : dirCfg.diffusionSizeUm;
-        const double spatial = sanitize_range(profileSpatialSigma, P.spatialSigmaMicrometers, 0.0, 50.0);
-        if (_pCouplersSpatialSigma) {
-            _pCouplersSpatialSigma->setValue(spatial);
-        }
-        P.spatialSigmaMicrometers = spatial;
-    }
+    const float profileSpatialSigma = _state->couplerProfileSpatialSigmaValid
+        ? static_cast<float>(_state->couplerProfileSpatialSigmaMicrometers)
+        : dirCfg.diffusionSizeUm;
+    apply_clean_double(
+        _state->couplerDirty.spatialSigma.load(std::memory_order_acquire),
+        static_cast<double>(profileSpatialSigma),
+        P.spatialSigmaMicrometers,
+        0.0,
+        50.0,
+        _pCouplersSpatialSigma,
+        P.spatialSigmaMicrometers);
 
     _state->suppressParamEvents = wasSuppressed;
 }
