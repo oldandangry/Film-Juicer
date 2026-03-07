@@ -184,6 +184,60 @@ namespace {
         return printActive ? "print" : "negative";
     }
 
+    inline Scanner::ScannerMedium scanner_medium_from_print_active(bool printActive) {
+        return printActive
+            ? Scanner::ScannerMedium::Print
+            : Scanner::ScannerMedium::Negative;
+    }
+
+    inline bool print_pipeline_active(
+        bool wsAvailable,
+        const WorkingState* ws,
+        bool printReady,
+        const Print::Runtime* prt,
+        bool printBypass) {
+        return wsAvailable && ws && printReady && prt && !printBypass;
+    }
+
+    inline const char* scan_stage_label_from_negative_medium(bool negativeMedium) {
+        return negativeMedium ? "scan" : "print scan";
+    }
+
+    inline const char* scan_lut_stage_tag_from_negative_medium(bool negativeMedium) {
+        return negativeMedium
+            ? "command_ensure_scan_lut_negative"
+            : "command_ensure_scan_lut_print";
+    }
+
+    template <typename T>
+    inline const T* ptr_if_enabled(bool enabled, const T* ptr) {
+        return enabled ? ptr : nullptr;
+    }
+
+    template <typename T>
+    inline const T* negative_or_print_ptr(
+        bool negativeMedium,
+        const T& negativeValue,
+        const T& printValue) {
+        return negativeMedium ? &negativeValue : &printValue;
+    }
+
+    inline int row_bytes_or_zero(const OFX::Image* image) {
+        return image ? image->getRowBytes() : 0;
+    }
+
+    inline float* float_pixel_ptr_or_null(OFX::Image* image, int x, int y) {
+        return image ? reinterpret_cast<float*>(image->getPixelAddress(x, y)) : nullptr;
+    }
+
+    inline float* alpha_channel_ptr_if_rgba(float* rgbPtr, int nComponents) {
+        return (rgbPtr && nComponents == 4) ? (rgbPtr + 3) : nullptr;
+    }
+
+    inline bool has_baseline_or_false(const WorkingState* ws) {
+        return ws ? ws->hasBaseline : false;
+    }
+
     template <typename T>
     inline T* row_ptr_if_fully_covered(
         OFX::Image* image,
@@ -356,6 +410,22 @@ namespace {
         std::memcpy(dst, src, 3u * sizeof(float));
     }
 
+    inline const char* nonempty_cstr_or(const char* value, const char* fallback) {
+        return (value && value[0] != '\0') ? value : fallback;
+    }
+
+    inline const char* detail_or_unknown(const char* detail) {
+        return nonempty_cstr_or(detail, "(unknown)");
+    }
+
+    inline const char* cstr_or_null_if_empty(const std::string& value) {
+        return value.empty() ? nullptr : value.c_str();
+    }
+
+    inline int bool_to_i32(bool value) {
+        return value ? 1 : 0;
+    }
+
     inline void clear_glare_compensation_fields(Profiles::ProfileGlare& glare) {
         glare.compensationRemovalFactor = 0.0f;
         glare.compensationRemovalDensity = 0.0f;
@@ -388,9 +458,7 @@ namespace {
         if (!traceEnabled) {
             return;
         }
-        const char* safePrefix = (prefix && prefix[0] != '\0')
-            ? prefix
-            : "CUDA operation failed";
+        const char* safePrefix = nonempty_cstr_or(prefix, "CUDA operation failed");
         const bool hasDetail = detail && detail[0] != '\0';
         std::string traceMsg;
         traceMsg.reserve(
@@ -411,9 +479,7 @@ namespace {
         if (!traceEnabled) {
             return;
         }
-        const char* safePrefix = (prefix && prefix[0] != '\0')
-            ? prefix
-            : "CUDA operation failed";
+        const char* safePrefix = nonempty_cstr_or(prefix, "CUDA operation failed");
         const bool hasDetail = detail && detail[0] != '\0';
         std::string traceMsg;
         traceMsg.reserve(
@@ -529,6 +595,30 @@ namespace {
         return is_finite(value) ? std::clamp(value, 0.0f, 10.0f) : 0.0f;
     }
 
+    inline float divide_or_zero_if_positive(float numerator, float denominator) {
+        return (denominator > 0.0f) ? (numerator / denominator) : 0.0f;
+    }
+
+    inline double reciprocal_or_zero(double denominator) {
+        return (denominator != 0.0) ? (1.0 / denominator) : 0.0;
+    }
+
+    inline float reciprocal_sqrt_or_one(float value, float minValue) {
+        return (value > minValue) ? (1.0f / std::sqrt(value)) : 1.0f;
+    }
+
+    inline float float_if_enabled(bool enabled, float enabledValue, float fallbackValue) {
+        return enabled ? enabledValue : fallbackValue;
+    }
+
+    inline float sigma_if_enabled(bool enabled, float sigma) {
+        return float_if_enabled(enabled, sigma, 0.0f);
+    }
+
+    inline bool grain_blur_enabled(bool wantSublayers, float sigmaPx) {
+        return wantSublayers ? (sigmaPx > 0.0f) : (sigmaPx > 0.4f);
+    }
+
     inline float sanitize_nonnegative_or(float value, float fallback) {
         if (!is_finite(value)) {
             return fallback;
@@ -606,6 +696,14 @@ namespace {
 
     inline bool is_positive_finite(double value) {
         return is_finite(value) && value > 0.0;
+    }
+
+    inline float positive_finite_or(float value, float fallback) {
+        return is_positive_finite(value) ? value : fallback;
+    }
+
+    inline double positive_finite_or(double value, double fallback) {
+        return is_positive_finite(value) ? value : fallback;
     }
 
     inline bool is_nonzero_finite(float value) {
@@ -709,7 +807,7 @@ namespace {
 
         const CudaDriverDispatch& dispatch = cuda_driver_dispatch();
         if (!dispatch.cuCtxGetCurrent) {
-            outError = dispatch.loadError ? dispatch.loadError : "driver dispatch unavailable";
+            outError = nonempty_cstr_or(dispatch.loadError, "driver dispatch unavailable");
             return false;
         }
 
@@ -784,7 +882,7 @@ namespace {
             return;
         }
 
-        const char* stageName = (stage && *stage) ? stage : "unknown_stage";
+        const char* stageName = nonempty_cstr_or(stage, "unknown_stage");
         const bool traceInfo = JTRACE_ENABLED(1);
         std::string retireError;
         const bool retireAccepted = JuicerCuda::ResourceManager::command_retire_context_reset(
@@ -825,11 +923,11 @@ namespace {
             msg += " error_code=";
             msg += std::to_string(static_cast<int>(error));
             msg += " retire_accepted=";
-            msg += std::to_string(retireAccepted ? 1 : 0);
+            msg += std::to_string(bool_to_i32(retireAccepted));
             msg += " slot_erased=";
-            msg += std::to_string(slotErased ? 1 : 0);
+            msg += std::to_string(bool_to_i32(slotErased));
             msg += " latch_cleared=";
-            msg += std::to_string(latchCleared ? 1 : 0);
+            msg += std::to_string(bool_to_i32(latchCleared));
             if (!retireError.empty()) {
                 msg += " retire_error=";
                 msg += retireError;
@@ -850,6 +948,21 @@ namespace {
         return 1;
     }
 
+    std::uint64_t instance_token_or_session_seed(const InstanceState* state) {
+        if (state && state->instanceToken != 0) {
+            return state->instanceToken;
+        }
+        return safe_session_seed(state);
+    }
+
+    const char* runtime_lease_outcome_label(bool waitedForLease) {
+        return waitedForLease ? "wait_acquired" : "acquired";
+    }
+
+    const char* submission_snapshot_action_label(bool reusingSnapshotLatch) {
+        return reusingSnapshotLatch ? "reuse" : "new";
+    }
+
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     struct DiagnosticsHookPolicy {
         bool diagnosticsMode = false;
@@ -857,8 +970,12 @@ namespace {
         bool runtimeSelfCheck = false;
     };
 
+    inline const char* diagnostics_mode_label(bool modeEnabled) {
+        return modeEnabled ? "diagnostics" : "serving";
+    }
+
     bool parse_env_toggle(const char* name, bool fallback) {
-        return JuicerLogging::parse_env_int(name, fallback ? 1 : 0) != 0;
+        return JuicerLogging::parse_env_int(name, bool_to_i32(fallback)) != 0;
     }
 
     const DiagnosticsHookPolicy& diagnostics_hook_policy() {
@@ -901,15 +1018,15 @@ namespace {
             msg = "event=diagnostics_hook";
             msg += " hook=validation";
             msg += " mode=";
-            msg += (modeEnabled ? "diagnostics" : "serving");
+            msg += diagnostics_mode_label(modeEnabled);
             msg += " compiled=";
-            msg += std::to_string(compiled ? 1 : 0);
+            msg += std::to_string(bool_to_i32(compiled));
             msg += " toggle_enabled=";
-            msg += std::to_string(toggleEnabled ? 1 : 0);
+            msg += std::to_string(bool_to_i32(toggleEnabled));
             msg += " verbose_enabled=";
-            msg += std::to_string(verboseEnabled ? 1 : 0);
+            msg += std::to_string(bool_to_i32(verboseEnabled));
             msg += " active=";
-            msg += std::to_string(active ? 1 : 0);
+            msg += std::to_string(bool_to_i32(active));
             msg += " reason=";
             msg += reason;
             JTRACE("MSDBG", msg);
@@ -941,13 +1058,13 @@ namespace {
             msg = "event=diagnostics_hook";
             msg += " hook=self_check";
             msg += " mode=";
-            msg += (modeEnabled ? "diagnostics" : "serving");
+            msg += diagnostics_mode_label(modeEnabled);
             msg += " compiled=";
-            msg += std::to_string(compiled ? 1 : 0);
+            msg += std::to_string(bool_to_i32(compiled));
             msg += " toggle_enabled=";
-            msg += std::to_string(toggleEnabled ? 1 : 0);
+            msg += std::to_string(bool_to_i32(toggleEnabled));
             msg += " active=";
-            msg += std::to_string(active ? 1 : 0);
+            msg += std::to_string(bool_to_i32(active));
             msg += " reason=";
             msg += reason;
             JTRACE("MSDBG", msg);
@@ -972,6 +1089,18 @@ namespace {
         return h;
     }
 
+    std::uint64_t seed_base_for_pass(
+        const InstanceState* state,
+        std::uintptr_t clipToken,
+        std::int64_t frameIndex,
+        std::uint64_t passId) {
+        return make_seed_base(
+            clipToken,
+            frameIndex,
+            safe_session_seed(state),
+            passId);
+    }
+
     std::uint64_t make_auto_exposure_reusable_key_hash(
         const OfxRectI& meterBounds,
         const OfxRectI& srcBounds,
@@ -994,6 +1123,10 @@ namespace {
         return h;
     }
 
+    inline std::uint64_t neutral_filter_hash_or_default(const Print::Runtime& prt) {
+        return (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+    }
+
     float compute_print_midgray_factor_cached(
         InstanceState* instanceState,
         const WorkingState& ws,
@@ -1004,8 +1137,7 @@ namespace {
         const float yKey = finite_or_zero(printParams.yFilter);
         const float mKey = finite_or_zero(printParams.mFilter);
         const float cKey = finite_or_zero(printParams.cFilter);
-        const std::uint64_t neutralFilterHash =
-            (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+        const std::uint64_t neutralFilterHash = neutral_filter_hash_or_default(prt);
         const float exposureCompScale = printParams.exposureCompensationEnabled
             ? printParams.exposureCompensationScale
             : 1.0f;
@@ -1218,6 +1350,9 @@ namespace JuicerProc {
 
 // --- Spatial DIR: defensive curve utilities (monotonic + robust interpolation) ---
 
+inline unsigned int positive_u32_or(unsigned int value, unsigned int fallback);
+inline int positive_i32_or(int value, int fallback);
+
 static unsigned int compute_thread_count(int width, int height) {
     if (width <= 0 || height <= 0) {
         return 1u;
@@ -1232,7 +1367,7 @@ static unsigned int compute_thread_count(int width, int height) {
     }
     static const unsigned int maxThreads = []() -> unsigned int {
         const unsigned int value = OFX::MultiThread::getNumCPUs();
-        return (value > 0) ? value : 1u;
+        return positive_u32_or(value, 1u);
     }();
     nCPUs = std::min(nCPUs, maxThreads);
     return std::max(1u, nCPUs);
@@ -1242,8 +1377,24 @@ inline std::uint64_t bool_to_u64(bool value) {
     return value ? 1ull : 0ull;
 }
 
+inline unsigned int positive_u32_or(unsigned int value, unsigned int fallback) {
+    return (value > 0) ? value : fallback;
+}
+
+inline int positive_i32_or(int value, int fallback) {
+    return (value > 0) ? value : fallback;
+}
+
+inline std::uint64_t upload_core_hash_or_core_hash(const WorkingState& ws) {
+    return (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
+}
+
 inline std::uint64_t clamped_lut_resolution_hash_value(std::uint32_t lutResolution) {
     return static_cast<std::uint64_t>(std::clamp(lutResolution, 17u, 128u));
+}
+
+inline std::uint64_t hash_or_zero_if(bool enabled, std::uint64_t hashValue) {
+    return enabled ? hashValue : 0;
 }
 
 static std::uint64_t hash_scanner_settings(const Scanner::Settings& settings, const Scanner::Options& options) {
@@ -1278,10 +1429,10 @@ static std::uint64_t hash_scanner_runtime_lane(
     const std::uint64_t negColorHash = ws->negativeStaticKey.colorRuntimeHash;
     const std::uint64_t negLutRes = clamped_lut_resolution_hash_value(ws->negativeStaticKey.lutResolution);
     const bool printValid = ws->printScannerValid;
-    const std::uint64_t printColorHash = printValid ? ws->printStaticKey.colorRuntimeHash : 0;
-    const std::uint64_t printLutRes = printValid
-        ? clamped_lut_resolution_hash_value(ws->printStaticKey.lutResolution)
-        : 0;
+    const std::uint64_t printColorHash = hash_or_zero_if(printValid, ws->printStaticKey.colorRuntimeHash);
+    const std::uint64_t printLutRes = hash_or_zero_if(
+        printValid,
+        clamped_lut_resolution_hash_value(ws->printStaticKey.lutResolution));
 
     const std::uint64_t fields[] = {
         settingsHash,
@@ -1342,7 +1493,7 @@ struct ScannerMediumSelection {
 };
 
 static const char* scanner_medium_label_or_default(const char* mediumLabel) {
-    return (mediumLabel && *mediumLabel) ? mediumLabel : "scanner";
+    return nonempty_cstr_or(mediumLabel, "scanner");
 }
 
 static ScannerMediumSelection select_scanner_medium(
@@ -1373,7 +1524,7 @@ static void trace_scanner_preflight_fail_if_enabled(
     std::string msg;
     msg.reserve(96 + error.size());
     msg = "path=";
-    msg += (path ? path : "unspecified");
+    msg += nonempty_cstr_or(path, "unspecified");
     msg += " result=fail medium=";
     msg += label;
     msg += " reason=";
@@ -1383,7 +1534,7 @@ static void trace_scanner_preflight_fail_if_enabled(
     fatalMsg.reserve(8 + error.size());
     fatalMsg = "FATAL: ";
     fatalMsg += error;
-    JTRACE(fatalTag ? fatalTag : "SCAN", fatalMsg);
+    JTRACE(nonempty_cstr_or(fatalTag, "SCAN"), fatalMsg);
 }
 
 static void trace_scanner_preflight_ok_if_enabled(
@@ -1398,7 +1549,7 @@ static void trace_scanner_preflight_ok_if_enabled(
     std::string msg;
     msg.reserve(96);
     msg = "path=";
-    msg += (path ? path : "unspecified");
+    msg += nonempty_cstr_or(path, "unspecified");
     msg += " result=ok medium=";
     msg += label;
     msg += " static_key_hash=";
@@ -1659,7 +1810,7 @@ void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
 }
 void JuicerProcessor::setPrintRuntime(const Print::Runtime* prt, bool printReady) { _prt = prt; _printReady = printReady; }
 void JuicerProcessor::setExposure(float exposureScale) {
-    _exposureScale = is_positive_finite(exposureScale) ? exposureScale : 1.0f;
+    _exposureScale = positive_finite_or(exposureScale, 1.0f);
 }
 
 void JuicerProcessor::setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV) {
@@ -1694,12 +1845,7 @@ void JuicerProcessor::setFrameTime(double time) {
 }
 
 void JuicerProcessor::setFrameRate(double frameRate) {
-    if (is_positive_finite(frameRate)) {
-        _frameRate = frameRate;
-    }
-    else {
-        _frameRate = 0.0;
-    }
+    _frameRate = positive_finite_or(frameRate, 0.0);
 }
 
 void JuicerProcessor::setFrameBoundsVersion(std::uint32_t v) {
@@ -1721,10 +1867,15 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
     ctx.window = _renderWindow;
     ctx.width = _renderWindow.x2 - _renderWindow.x1;
     ctx.height = _renderWindow.y2 - _renderWindow.y1;
-    ctx.exposureScaleSafe = is_positive_finite(_exposureScale) ? _exposureScale : 1.0f;
+    ctx.exposureScaleSafe = positive_finite_or(_exposureScale, 1.0f);
     ctx.useSpatialDIR = (spatial_dir_enabled(_dirRT) &&
         _nComponents >= 3 && _wsReady && _ws);
-    ctx.printActive = (_wsReady && _ws && _printReady && _prt && !_printParams.bypass);
+    ctx.printActive = print_pipeline_active(
+        _wsReady,
+        _ws,
+        _printReady,
+        _prt,
+        _printParams.bypass);
 
     ctx.kMidSpectral = 1.0f;
     if (ctx.printActive) {
@@ -1736,7 +1887,7 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
             _dirRT);
     }
 
-    ctx.pixelSizeUm = is_positive_finite(_pixelSizeUm) ? _pixelSizeUm : 0.0f;
+    ctx.pixelSizeUm = positive_finite_or(_pixelSizeUm, 0.0f);
     return ctx;
 }
 
@@ -1767,9 +1918,7 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
         return;
     }
 
-    _density.medium = ctx.printActive
-        ? Scanner::ScannerMedium::Print
-        : Scanner::ScannerMedium::Negative;
+    _density.medium = scanner_medium_from_print_active(ctx.printActive);
 
     if (ctx.useSpatialDIR) {
         struct SpatialDIRUser {
@@ -1909,12 +2058,12 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             }
 
             const auto& dirWorkspace = self._scratch.dirWorkspace;
-            const float* filmRawB = useSpatialDIR ? dirWorkspace.filmRaw_B.data() : nullptr;
-            const float* filmRawG = useSpatialDIR ? dirWorkspace.filmRaw_G.data() : nullptr;
-            const float* filmRawR = useSpatialDIR ? dirWorkspace.filmRaw_R.data() : nullptr;
-            const float* corrY = useSpatialDIR ? dirWorkspace.corrYBlur.data() : nullptr;
-            const float* corrM = useSpatialDIR ? dirWorkspace.corrMBlur.data() : nullptr;
-            const float* corrC = useSpatialDIR ? dirWorkspace.corrCBlur.data() : nullptr;
+            const float* filmRawB = ptr_if_enabled(useSpatialDIR, dirWorkspace.filmRaw_B.data());
+            const float* filmRawG = ptr_if_enabled(useSpatialDIR, dirWorkspace.filmRaw_G.data());
+            const float* filmRawR = ptr_if_enabled(useSpatialDIR, dirWorkspace.filmRaw_R.data());
+            const float* corrY = ptr_if_enabled(useSpatialDIR, dirWorkspace.corrYBlur.data());
+            const float* corrM = ptr_if_enabled(useSpatialDIR, dirWorkspace.corrMBlur.data());
+            const float* corrC = ptr_if_enabled(useSpatialDIR, dirWorkspace.corrCBlur.data());
 
             Pipeline::DensityPixelInputs pxIn{};
             pxIn.exposureScale = ctx.exposureScaleSafe;
@@ -2184,7 +2333,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         std::string msg;
         msg.reserve(96);
         msg = "event=runtime_lease outcome=";
-        msg += (waitedForLease ? "wait_acquired" : "acquired");
+        msg += runtime_lease_outcome_label(waitedForLease);
         msg += " wait_us=";
         msg += std::to_string(leaseWaitUs);
         msg += " slot=";
@@ -2192,8 +2341,11 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         JTRACE_VERBOSE("MSSRL", msg);
     }
 
-    const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-    const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
+    const std::uint64_t seedBase = seed_base_for_pass(
+        _instanceState,
+        _clipToken,
+        _frameIndex,
+        kSeedPassGlare);
 
     ScannerOptics::RenderContext optCtx{};
     optCtx.medium = mediumRuntime;
@@ -2208,19 +2360,17 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     optCtx.dstView.originY = ctx.window.y1;
     optCtx.dstView.width = ctx.width;
     optCtx.dstView.height = ctx.height;
-    optCtx.dstView.strideBytes = _dstImg ? _dstImg->getRowBytes() : 0;
-    optCtx.dstView.r = (_dstImg)
-        ? reinterpret_cast<float*>(_dstImg->getPixelAddress(ctx.window.x1, ctx.window.y1))
-        : nullptr;
+    optCtx.dstView.strideBytes = row_bytes_or_zero(_dstImg);
+    optCtx.dstView.r = float_pixel_ptr_or_null(_dstImg, ctx.window.x1, ctx.window.y1);
     optCtx.dstView.g = optCtx.dstView.r;
     optCtx.dstView.b = optCtx.dstView.r;
-    optCtx.dstView.a = (_dstImg && _nComponents == 4) ? optCtx.dstView.r + 3 : nullptr;
+    optCtx.dstView.a = alpha_channel_ptr_if_rgba(optCtx.dstView.r, _nComponents);
     optCtx.options = _scannerOptions;
     optCtx.settings = _scannerSettings;
     optCtx.runtimeKey = runtimeKey;
     optCtx.scannerKey = scannerKey;
     optCtx.seedBase = seedBase;
-    optCtx.hasBaseline = (_ws ? _ws->hasBaseline : false);
+    optCtx.hasBaseline = has_baseline_or_false(_ws);
     const unsigned int scannerThreadCount = std::max(1u, threadCount);
     optCtx.threadCount = scannerThreadCount;
     optCtx.abort.shouldAbort = should_abort_effect;
@@ -2404,11 +2554,11 @@ void JuicerProcessor::processImagesCUDA() {
 
         cudaError_t setErr = cudaSetDevice(deviceId);
         if (setErr != cudaSuccess) {
-            const char* msg = cudaGetErrorString(setErr);
+            const char* msg = detail_or_unknown(cudaGetErrorString(setErr));
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
                 "cudaSetDevice failed",
-                msg ? msg : "(unknown)");
+                msg);
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
 
@@ -2417,7 +2567,7 @@ void JuicerProcessor::processImagesCUDA() {
             trace_cuda_fatal_prefixed_if(
                 traceInfo,
                 "failed to capture CUDA context identity",
-                contextError.c_str());
+                cstr_or_null_if_empty(contextError));
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
     }
@@ -2543,11 +2693,11 @@ void JuicerProcessor::processImagesCUDA() {
                                       cudaError_t errorCode,
                                       bool useModeFallback = false) {
         const char* errorMsg = cudaGetErrorString(errorCode);
-        const char* detail = errorMsg ? errorMsg : "(unknown)";
-        mark_context_loss_recovery(stageTag ? stageTag : "cuda_stage", errorCode, detail);
+        const char* detail = detail_or_unknown(errorMsg);
+        mark_context_loss_recovery(nonempty_cstr_or(stageTag, "cuda_stage"), errorCode, detail);
         trace_cuda_fatal_prefixed_if(
             traceInfo,
-            failurePrefix ? failurePrefix : "CUDA stage failed",
+            nonempty_cstr_or(failurePrefix, "CUDA stage failed"),
             detail);
         if (useModeFallback) {
             throw_cuda_mode_fallback();
@@ -2564,20 +2714,18 @@ void JuicerProcessor::processImagesCUDA() {
                                                          const char* prefix,
                                                          const std::string& detail) {
         mark_context_loss_recovery(
-            stageTag ? stageTag : "cuda_stage",
+            nonempty_cstr_or(stageTag, "cuda_stage"),
             cudaErrorUnknown,
             detail);
-        trace_and_throw_cuda_mode_fallback(prefix, detail.c_str());
+        trace_and_throw_cuda_mode_fallback(prefix, cstr_or_null_if_empty(detail));
     };
 
     auto trace_contention_and_throw_cuda_mode_fallback = [&](const char* prefix,
                                                              const std::string& detail) {
         trace_cuda_prefixed_if(
             traceInfo,
-            (prefix && prefix[0] != '\0')
-                ? prefix
-                : "CUDA work deferred by contention policy",
-            detail.empty() ? nullptr : detail.c_str());
+            nonempty_cstr_or(prefix, "CUDA work deferred by contention policy"),
+            cstr_or_null_if_empty(detail));
         throw_cuda_mode_fallback();
     };
 
@@ -2585,13 +2733,13 @@ void JuicerProcessor::processImagesCUDA() {
                                       const char* failurePrefix,
                                       const std::string& error) {
         mark_context_loss_recovery(
-            stageTag ? stageTag : "submission_stage",
+            nonempty_cstr_or(stageTag, "submission_stage"),
             cudaErrorUnknown,
             error);
         trace_cuda_fatal_prefixed_if(
             traceInfo,
-            (failurePrefix && failurePrefix[0] != '\0') ? failurePrefix : "submission stage failed",
-            error.c_str());
+            nonempty_cstr_or(failurePrefix, "submission stage failed"),
+            cstr_or_null_if_empty(error));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     };
 
@@ -2617,8 +2765,8 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto make_cuda_prefixed_failure = [&](const char* label, const char* suffix) {
         std::string msg = "CUDA ";
-        msg += (label && label[0] != '\0') ? label : "operation";
-        msg += (suffix && suffix[0] != '\0') ? suffix : " failed";
+        msg += nonempty_cstr_or(label, "operation");
+        msg += nonempty_cstr_or(suffix, " failed");
         return msg;
     };
 
@@ -2647,12 +2795,10 @@ void JuicerProcessor::processImagesCUDA() {
     } submissionTxnScope{ &submissionTxn, false };
     {
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
-        snapshot.instanceToken.value =
-            (_instanceState->instanceToken != 0) ? _instanceState->instanceToken : safe_session_seed(_instanceState);
+        snapshot.instanceToken.value = instance_token_or_session_seed(_instanceState);
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
-        const std::uint64_t uploadCoreHash =
-            (_ws->uploadCoreHash != 0) ? _ws->uploadCoreHash : _ws->coreHash;
+        const std::uint64_t uploadCoreHash = upload_core_hash_or_core_hash(*_ws);
         const std::uint64_t scannerRuntimeHash = hash_scanner_runtime_lane(
             _ws,
             _scannerSettings,
@@ -2701,7 +2847,7 @@ void JuicerProcessor::processImagesCUDA() {
             std::string msg;
             msg.reserve(128);
             msg = "path=cuda action=";
-            msg += (reusingSnapshotLatch ? "reuse" : "new");
+            msg += submission_snapshot_action_label(reusingSnapshotLatch);
             msg += " frame_token=";
             msg += std::to_string(snapshot.frameToken.value);
             msg += " snapshot_id=";
@@ -2784,7 +2930,12 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
-            if (_ws && _printReady && _prt && !_printParams.bypass) {
+            if (print_pipeline_active(
+                    true,
+                    _ws,
+                    _printReady,
+                    _prt,
+                    _printParams.bypass)) {
                 const float kMidSpectral = compute_print_midgray_factor_cached(
                     _instanceState,
                     *_ws,
@@ -2832,7 +2983,7 @@ void JuicerProcessor::processImagesCUDA() {
                         std::string msg;
                         msg.reserve(96);
                         msg = "CUDA self-check failed; forcing CPU fallback. Error: ";
-                        msg += (sSelfCheckErr ? sSelfCheckErr : "(unknown)");
+                        msg += detail_or_unknown(sSelfCheckErr);
                         JTRACE("CUDA", msg);
                     }
                 }
@@ -2868,7 +3019,10 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    const RenderMode renderMode = _printParams.bypass ? RenderMode::NegativeOnly : RenderMode::Print;
+    auto render_mode_from_print_bypass = [](bool bypass) -> RenderMode {
+        return bypass ? RenderMode::NegativeOnly : RenderMode::Print;
+    };
+    const RenderMode renderMode = render_mode_from_print_bypass(_printParams.bypass);
 
     OfxRectI meterBounds = srcBounds;
     if (_cameraAutoEnabled && _instanceState) {
@@ -2919,15 +3073,9 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         auto throw_auto_exposure_mode_fallback = [&](const char* prefix, const char* detail) {
-            if (traceInfo) {
-                std::string msg;
-                msg.reserve(128);
-                msg = (prefix && prefix[0] != '\0') ? prefix : "CUDA auto-exposure failed";
-                msg += ": ";
-                msg += (detail && detail[0] != '\0') ? detail : "(unknown)";
-                JTRACE("CUDA", msg);
-            }
-            throw_cuda_mode_fallback();
+            trace_and_throw_cuda_mode_fallback(
+                nonempty_cstr_or(prefix, "CUDA auto-exposure failed"),
+                detail_or_unknown(detail));
         };
 
         std::string aeError;
@@ -2941,7 +3089,7 @@ void JuicerProcessor::processImagesCUDA() {
                 aeError)) {
             throw_auto_exposure_mode_fallback(
                 "CUDA auto-exposure buffer allocation failed",
-                aeError.c_str());
+                cstr_or_null_if_empty(aeError));
         }
 
         JuicerCudaAutoExposureScratch scratch{};
@@ -3157,7 +3305,7 @@ void JuicerProcessor::processImagesCUDA() {
         run.grainKernels = JuicerCuda::GrainKernelPayload{};
         {
             const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-            const double fps = is_positive_finite(_frameRate) ? _frameRate : 24.0;
+            const double fps = positive_finite_or(_frameRate, 24.0);
             const double timeFrames = finite_or(_timeFrames, static_cast<double>(_frameIndex));
             const double alphaFrames = timeFrames - static_cast<double>(_frameIndex);
             const float timeAlpha = static_cast<float>(std::clamp(alphaFrames, 0.0, 1.0));
@@ -3191,14 +3339,14 @@ void JuicerProcessor::processImagesCUDA() {
             const int pitchPx = (hasPixelSize && is_positive_finite(pitchMm))
                 ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
                 : height;
-            const double filmScale = is_positive_finite(filmFormatMm) ? (filmFormatMm / 10.0) : 1.0;
-            run.grain.seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGrain);
-            run.grain.seedBaseNext = make_seed_base(_clipToken, _frameIndex + 1, sessionSeed, kSeedPassGrain);
+            const double filmScale = positive_finite_or(filmFormatMm, 10.0) / 10.0;
+            run.grain.seedBase = seed_base_for_pass(_instanceState, _clipToken, _frameIndex, kSeedPassGrain);
+            run.grain.seedBaseNext = seed_base_for_pass(_instanceState, _clipToken, _frameIndex + 1, kSeedPassGrain);
             run.grain.frameIndex = _frameIndex;
             run.grain.stbnSessionSeed = sessionSeed;
             run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
             run.grain.timeAlpha = timeAlpha;
-            run.gateWeave.active = (weaveAmount > 0.0 && hasPixelSize) ? 1 : 0;
+            run.gateWeave.active = bool_to_i32(weaveAmount > 0.0 && hasPixelSize);
             run.gateWeave.dxPx = weave.dxPx;
             run.gateWeave.dyPx = weave.dyPx;
             run.gateWeave.cosRot = weave.cosRot;
@@ -3262,7 +3410,7 @@ void JuicerProcessor::processImagesCUDA() {
                 wantGrain = false;
             }
 
-            const int nSubLayers = (grainUi.nSubLayers > 0) ? grainUi.nSubLayers : 1;
+            const int nSubLayers = positive_i32_or(grainUi.nSubLayers, 1);
             run.grain.nSubLayers = nSubLayers;
             run.grain.originX = win.x1;
             run.grain.originY = win.y1;
@@ -3272,7 +3420,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.sizeMixWeight = sanitize_unit_or(grainUi.sizeMixWeight, 0.0f);
             run.grain.sizeMixWeightMid = sanitize_unit_or(grainUi.sizeMixWeightMid, 0.0f);
             run.grain.sizeMixScale = std::max(1.0f, sanitize_nonnegative_or(grainUi.sizeMixScale, 1.0f));
-            run.grain.breathingDebug = grainUi.breathingDebug ? 1 : 0;
+            run.grain.breathingDebug = bool_to_i32(grainUi.breathingDebug);
             run.grain.debugView = std::clamp(grainUi.debugView, 0, 6);
             run.grain.amplitude = sanitize_nonnegative_or(grainUi.amplitude, 1.0f);
             const float chromaMix = sanitize_unit_or(grainUi.chroma, 1.0f);
@@ -3383,7 +3531,7 @@ void JuicerProcessor::processImagesCUDA() {
                                     break;
                                 }
                                 const float nParticlesLayer = pixelAreaUm2 * fraction / particleAreaLayer;
-                                const float odParticle = (nParticlesLayer > 0.0f) ? (maxLayer / nParticlesLayer) : 0.0f;
+                                const float odParticle = divide_or_zero_if_positive(maxLayer, nParticlesLayer);
                                 run.grain.densityMinLayers[layer][ch] = minLayer;
                                 run.grain.densityMaxLayers[layer][ch] = maxLayer;
                                 run.grain.nParticlesLayers[layer][ch] = finite_or_zero(nParticlesLayer);
@@ -3401,11 +3549,11 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
             if (is_positive_finite(grainBlurSigmaPx)) {
-                wantGrainBlur = wantGrainSublayers ? (grainBlurSigmaPx > 0.0f) : (grainBlurSigmaPx > 0.4f);
+                wantGrainBlur = grain_blur_enabled(wantGrainSublayers, grainBlurSigmaPx);
             }
         }
-        run.grain.active = wantGrain ? 1 : 0;
-        run.grain.sublayersActive = wantGrainSublayers ? 1 : 0;
+        run.grain.active = bool_to_i32(wantGrain);
+        run.grain.sublayersActive = bool_to_i32(wantGrainSublayers);
 
         // Debug view scaling: stable linear mapping for signed delta fields.
         {
@@ -3485,7 +3633,7 @@ void JuicerProcessor::processImagesCUDA() {
                         w[i + radius] = wi;
                         wsum += wi;
                     }
-                    const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
+                    const double invW = reciprocal_or_zero(wsum);
                     double sumSq = 0.0;
                     for (int i = -radius; i <= radius; ++i) {
                         const double wn = w[i + radius] * invW;
@@ -3506,7 +3654,7 @@ void JuicerProcessor::processImagesCUDA() {
                 const float rM = midScale * (eM / std::max(1e-12f, eF));
                 const float rC = scale * (eC / std::max(1e-12f, eF));
                 const float denom = wF * wF + wM * wM * rM + wC * wC * rC;
-                run.grain.sizeMixGain = (denom > 1e-12f) ? (1.0f / std::sqrt(denom)) : 1.0f;
+                run.grain.sizeMixGain = reciprocal_sqrt_or_one(denom, 1e-12f);
             }
         }
 
@@ -3662,7 +3810,7 @@ void JuicerProcessor::processImagesCUDA() {
                                          cudaStream_t stream,
                                          cudaEvent_t scanEvent,
                                          const char* stageLabel) {
-        const char* stage = (stageLabel && *stageLabel) ? stageLabel : "pipeline";
+        const char* stage = nonempty_cstr_or(stageLabel, "pipeline");
         cudaError_t flagErr = cudaSuccess;
         if (resources->scanErrorHost && scanEvent) {
             flagErr = cudaMemcpyAsync(resources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
@@ -3725,12 +3873,36 @@ void JuicerProcessor::processImagesCUDA() {
         return JuicerCuda::ResourceManager::error_is_scratch_exhausted(error);
     };
 
+    struct ScanStageMediumSelection {
+        const char* scanLabel = "scan";
+        const char* ensureLutStageTag = "command_ensure_scan_lut_negative";
+        const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
+        const JuicerCuda::Resources::DeviceScanMedium* scanMedium = nullptr;
+    };
+
+    auto select_scan_stage_medium = [&](JuicerCuda::Resources* resources,
+                                        bool negativeMedium) -> ScanStageMediumSelection {
+        ScanStageMediumSelection selection{};
+        selection.scanLabel = scan_stage_label_from_negative_medium(negativeMedium);
+        selection.ensureLutStageTag = scan_lut_stage_tag_from_negative_medium(negativeMedium);
+        selection.scanLut = negative_or_print_ptr(
+            negativeMedium,
+            resources->scanNegativeLut,
+            resources->scanPrintLut);
+        selection.scanMedium = negative_or_print_ptr(
+            negativeMedium,
+            resources->scanNegative,
+            resources->scanPrint);
+        return selection;
+    };
+
     auto setup_scan_stage_resources = [&](JuicerCuda::Resources* resources,
                                           JuicerCuda::PipelineRunParams& run,
                                           cudaStream_t stream,
                                           bool negativeMedium) -> cudaEvent_t {
-        const char* scanLabel = negativeMedium ? "scan" : "print scan";
-        run.scanStage.scannerUseLut = _scannerSettings.useLut ? 1 : 0;
+        const ScanStageMediumSelection selection = select_scan_stage_medium(resources, negativeMedium);
+        const char* scanLabel = selection.scanLabel;
+        run.scanStage.scannerUseLut = bool_to_i32(_scannerSettings.useLut);
         run.scanStage.scanLutLog2XYZ = nullptr;
         run.scanStage.scanLutRes = 0;
         if (run.scanStage.scannerUseLut) {
@@ -3744,12 +3916,11 @@ void JuicerProcessor::processImagesCUDA() {
                     lutError)) {
                 const std::string prefix = make_cuda_prefixed_failure(scanLabel, " LUT upload failed");
                 mark_context_and_throw_cuda_mode_fallback(
-                    negativeMedium ? "command_ensure_scan_lut_negative" : "command_ensure_scan_lut_print",
+                    selection.ensureLutStageTag,
                     prefix.c_str(),
                     lutError);
             }
-            const JuicerCuda::Resources::DeviceSpectralLut& scanLut =
-                negativeMedium ? resources->scanNegativeLut : resources->scanPrintLut;
+            const JuicerCuda::Resources::DeviceSpectralLut& scanLut = *selection.scanLut;
             run.scanStage.scanLutLog2XYZ = scanLut.log2XYZ;
             run.scanStage.scanLutRes = static_cast<int>(scanLut.res);
             if (!run.scanStage.scanLutLog2XYZ || run.scanStage.scanLutRes <= 0) {
@@ -3760,8 +3931,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
         }
 
-        const JuicerCuda::Resources::DeviceScanMedium& scanMedium =
-            negativeMedium ? resources->scanNegative : resources->scanPrint;
+        const JuicerCuda::Resources::DeviceScanMedium& scanMedium = *selection.scanMedium;
         copy_scan_tables_payload(
             run.scanStage.scanTables,
             run.scanStage.scanTables.mediumIsNegative,
@@ -3777,7 +3947,7 @@ void JuicerProcessor::processImagesCUDA() {
                                        int frameWidth,
                                        int frameHeight,
                                        bool useSpatialDir) -> bool {
-        run.filmDevelop.spatialDir.active = useSpatialDir ? 1 : 0;
+        run.filmDevelop.spatialDir.active = bool_to_i32(useSpatialDir);
         run.filmDevelop.spatialDir.corrY = nullptr;
         run.filmDevelop.spatialDir.corrM = nullptr;
         run.filmDevelop.spatialDir.corrC = nullptr;
@@ -3885,8 +4055,7 @@ void JuicerProcessor::processImagesCUDA() {
             return;
         }
         std::lock_guard<std::mutex> resLock(resources->m);
-        const std::uint64_t uploadCoreHash =
-            (_ws->uploadCoreHash != 0) ? _ws->uploadCoreHash : _ws->coreHash;
+        const std::uint64_t uploadCoreHash = upload_core_hash_or_core_hash(*_ws);
         std::string msg;
         msg.reserve(384);
         msg = "cuda print payload build=";
@@ -3918,7 +4087,7 @@ void JuicerProcessor::processImagesCUDA() {
         msg += "/";
         msg += std::to_string(resources->printIllumCShiftSteps);
         msg += " preflashValid=";
-        msg += std::to_string(resources->printPreflashValid ? 1 : 0);
+        msg += std::to_string(bool_to_i32(resources->printPreflashValid));
         msg += " preflashBuild=";
         msg += std::to_string(resources->printPreflashBuildCounter);
         JTRACE_VERBOSE("PRINTDBG", msg);
@@ -3961,7 +4130,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto throw_cuda_gate_mask_build_failure = [&](const char* stageTag, cudaError_t gateErr) {
-        throw_cuda_stage_fatal(stageTag ? stageTag : "build_gate_mask", "gate defect mask build failed", gateErr);
+        throw_cuda_stage_fatal(stageTag, "gate defect mask build failed", gateErr);
     };
 
     auto setup_gate_mask_if_needed = [&](JuicerCuda::PipelineRunParams& run,
@@ -4019,9 +4188,9 @@ void JuicerProcessor::processImagesCUDA() {
                 opticsError)) {
             return;
         }
-        std::string prefix = make_cuda_prefixed_failure(kernelLabel ? kernelLabel : "gaussian",
+        std::string prefix = make_cuda_prefixed_failure(nonempty_cstr_or(kernelLabel, "gaussian"),
                                                         " kernel upload failed");
-        trace_and_throw_cuda_mode_fallback(prefix.c_str(), opticsError.c_str());
+        trace_and_throw_cuda_mode_fallback(prefix.c_str(), cstr_or_null_if_empty(opticsError));
     };
 
     auto ensure_halation_kernel_or_throw = [&](auto& kernel,
@@ -4037,9 +4206,9 @@ void JuicerProcessor::processImagesCUDA() {
                 opticsError)) {
             return;
         }
-        std::string prefix = make_cuda_prefixed_failure(kernelLabel ? kernelLabel : "halation",
+        std::string prefix = make_cuda_prefixed_failure(nonempty_cstr_or(kernelLabel, "halation"),
                                                         " kernel upload failed");
-        trace_and_throw_cuda_mode_fallback(prefix.c_str(), opticsError.c_str());
+        trace_and_throw_cuda_mode_fallback(prefix.c_str(), cstr_or_null_if_empty(opticsError));
     };
 
     auto ensure_grain_dye_kernel_or_throw = [&](auto& kernel,
@@ -4052,8 +4221,8 @@ void JuicerProcessor::processImagesCUDA() {
                                              const char* failurePrefix,
                                              cudaError_t pipelineErr) {
         throw_cuda_stage_fatal(
-            stageTag ? stageTag : "pipeline_kernel_launch",
-            failurePrefix ? failurePrefix : "pipeline kernel launch failed",
+            stageTag,
+            failurePrefix,
             pipelineErr);
     };
 
@@ -4081,7 +4250,7 @@ void JuicerProcessor::processImagesCUDA() {
                                            bool wantHalation,
                                            const float* halationStrengthBGR,
                                            const float* halationScatterStrengthBGR) {
-        run.halation.active = wantHalation ? 1 : 0;
+        run.halation.active = bool_to_i32(wantHalation);
         float* strengthIt = run.halation.strength;
         float* scatterStrengthIt = run.halation.scatteringStrength;
         const float* srcStrengthIt = halationStrengthBGR;
@@ -4090,8 +4259,8 @@ void JuicerProcessor::processImagesCUDA() {
         const float fillValue = 0.0f;
         for (; srcStrengthIt != srcStrengthEnd;
              ++strengthIt, ++scatterStrengthIt, ++srcStrengthIt, ++srcScatterStrengthIt) {
-            *strengthIt = wantHalation ? *srcStrengthIt : fillValue;
-            *scatterStrengthIt = wantHalation ? *srcScatterStrengthIt : fillValue;
+            *strengthIt = float_if_enabled(wantHalation, *srcStrengthIt, fillValue);
+            *scatterStrengthIt = float_if_enabled(wantHalation, *srcScatterStrengthIt, fillValue);
         }
         std::fill_n(run.halationKernels.halationKernel, 3, nullptr);
         std::fill_n(run.halationKernels.halationRadius, 3, 0);
@@ -4173,7 +4342,7 @@ void JuicerProcessor::processImagesCUDA() {
         ensure_gaussian_kernel_or_throw(cudaResources->scannerUnsharpKernel, unsharpSigmaPx, "unsharp", opticsError);
         ensure_gaussian_kernel_or_throw(
             cudaResources->scannerGlareKernel,
-            wantGlare ? glareBlurSigmaPx : 0.0f,
+            sigma_if_enabled(wantGlare, glareBlurSigmaPx),
             "glare",
             opticsError);
 
@@ -4181,7 +4350,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (wantGrain) {
             ensure_gaussian_kernel_or_throw(
                 cudaResources->grainBlurKernel,
-                wantGrainBlur ? grainBlurSigmaPx : 0.0f,
+                sigma_if_enabled(wantGrainBlur, grainBlurSigmaPx),
                 "grain blur",
                 opticsError);
             if (wantGrainBlur) {
@@ -4261,8 +4430,11 @@ void JuicerProcessor::processImagesCUDA() {
         result.roughness = medium.glare.roughness;
         result.blurSigmaPx = medium.glare.blur;
 
-        const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
-        const std::uint64_t seedBase = make_seed_base(_clipToken, _frameIndex, sessionSeed, kSeedPassGlare);
+        const std::uint64_t seedBase = seed_base_for_pass(
+            _instanceState,
+            _clipToken,
+            _frameIndex,
+            kSeedPassGlare);
         const std::uint64_t glareFields[4] = {
             seedBase,
             static_cast<std::uint64_t>(_frameBoundsVersion),
@@ -4381,11 +4553,9 @@ void JuicerProcessor::processImagesCUDA() {
         if (resources) {
             return;
         }
-        std::string msg;
-        msg.reserve(48);
-        msg = "FATAL: CUDA resources missing for ";
-        msg += (stageLabel ? stageLabel : "pipeline");
-        JTRACE("CUDA", msg);
+        std::string prefix = "CUDA resources missing for ";
+        prefix += nonempty_cstr_or(stageLabel, "pipeline");
+        trace_cuda_fatal_prefixed_if(true, prefix.c_str());
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     };
 
@@ -4406,9 +4576,9 @@ void JuicerProcessor::processImagesCUDA() {
         copy_float3(run.scanStage.scanColor.illuminantXYZ, color.illuminantXYZ);
 
         run.scanStage.scanColor.encoding.outputColorSpaceIndex = OutputEncoding::toIndex(color.encoding.colorSpace);
-        run.scanStage.scanColor.encoding.applyCctfEncoding = color.encoding.applyCctfEncoding ? 1 : 0;
-        run.scanStage.scanColor.encoding.preserveLinearRange = color.encoding.preserveLinearRange ? 1 : 0;
-        run.scanStage.scanColor.encoding.inputIsOutputSpace = color.encoding.inputIsOutputSpace ? 1 : 0;
+        run.scanStage.scanColor.encoding.applyCctfEncoding = bool_to_i32(color.encoding.applyCctfEncoding);
+        run.scanStage.scanColor.encoding.preserveLinearRange = bool_to_i32(color.encoding.preserveLinearRange);
+        run.scanStage.scanColor.encoding.inputIsOutputSpace = bool_to_i32(color.encoding.inputIsOutputSpace);
 
         const auto& outSpace = GeneratedColorSpaces::get(color.encoding.colorSpace);
         run.scanStage.scanColor.encoding.cctf.kind = static_cast<int>(outSpace.cctf.kind);
@@ -4426,8 +4596,8 @@ void JuicerProcessor::processImagesCUDA() {
     auto populate_common_pipeline_payload = [&](JuicerCuda::PipelineRunParams& run,
                                                 const ScannerPreflightResult& scannerPreflight) {
         run.filmRaw.inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(_ws->filmRaw.inputColorSpace);
-        run.filmRaw.applyCctfDecoding = _ws->filmRaw.applyCctfDecoding ? 1 : 0;
-        run.filmRaw.applyInputChromaticAdapt = _ws->filmRaw.applyInputChromaticAdapt ? 1 : 0;
+        run.filmRaw.applyCctfDecoding = bool_to_i32(_ws->filmRaw.applyCctfDecoding);
+        run.filmRaw.applyInputChromaticAdapt = bool_to_i32(_ws->filmRaw.applyInputChromaticAdapt);
         run.filmRaw.spectralUpsamplingMode = static_cast<int>(_ws->filmRaw.spectralUpsamplingMode);
         copy_float9(run.filmRaw.inputRGBToXYZ, _ws->filmRaw.inputRGBToXYZ.m);
         copy_float9(run.filmRaw.inputXYZAdapt, _ws->filmRaw.inputXYZAdapt.m);
@@ -4438,9 +4608,9 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmDevelop.gammaFactorB = _ws->gammaFactorB;
         run.filmDevelop.gammaFactorG = _ws->gammaFactorG;
         run.filmDevelop.gammaFactorR = _ws->gammaFactorR;
-        run.filmDevelop.dirPrecorrected = _ws->dirPrecorrected ? 1 : 0;
+        run.filmDevelop.dirPrecorrected = bool_to_i32(_ws->dirPrecorrected);
 
-        run.filmDevelop.dir.active = _dirRT.active ? 1 : 0;
+        run.filmDevelop.dir.active = bool_to_i32(_dirRT.active);
         run.filmDevelop.dir.highShift = _dirRT.highShift;
         copy_float9(run.filmDevelop.dir.M, &_dirRT.M[0][0]);
         copy_float3(run.filmDevelop.dir.dMax, _dirRT.dMax);
@@ -4637,7 +4807,9 @@ void JuicerProcessor::processImagesCUDA() {
         if (print_pipeline_payloads_ready(run)) {
             return;
         }
-        JTRACE("CUDA", "CUDA print payloads missing; cannot render print pipeline");
+        trace_cuda_prefixed_if(
+            true,
+            "CUDA print payloads missing; cannot render print pipeline");
         throw_cuda_mode_fallback();
     };
 
