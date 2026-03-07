@@ -172,6 +172,18 @@ namespace {
             y >= bounds.y1 && y < bounds.y2;
     }
 
+    inline int offset_from_start(int start, int offset) {
+        return start + offset;
+    }
+
+    inline std::size_t linear_row_offset(int rowOffset, int rowWidth) {
+        return static_cast<std::size_t>(rowOffset) * static_cast<std::size_t>(rowWidth);
+    }
+
+    inline const char* scanner_medium_label_from_print_active(bool printActive) {
+        return printActive ? "print" : "negative";
+    }
+
     template <typename T>
     inline T* row_ptr_if_fully_covered(
         OFX::Image* image,
@@ -183,6 +195,51 @@ namespace {
             return nullptr;
         }
         return reinterpret_cast<T*>(image->getPixelAddress(xStart, y));
+    }
+
+    inline const float* read_rgb_row_if_fully_covered(
+        OFX::Image* image,
+        const OfxRectI& bounds,
+        int xStart,
+        int xEnd,
+        int y) {
+        return row_ptr_if_fully_covered<const float>(image, bounds, xStart, xEnd, y);
+    }
+
+    inline const std::uint8_t* read_u8_row_if_fully_covered(
+        OFX::Image* image,
+        const OfxRectI& bounds,
+        int xStart,
+        int xEnd,
+        int y) {
+        return row_ptr_if_fully_covered<const std::uint8_t>(image, bounds, xStart, xEnd, y);
+    }
+
+    inline std::uint8_t* write_u8_row_if_fully_covered(
+        OFX::Image* image,
+        const OfxRectI& bounds,
+        int xStart,
+        int xEnd,
+        int y) {
+        return row_ptr_if_fully_covered<std::uint8_t>(image, bounds, xStart, xEnd, y);
+    }
+
+    inline const float* read_float_row_if_fully_covered(
+        OFX::Image* image,
+        const OfxRectI& bounds,
+        int xStart,
+        int xEnd,
+        int y) {
+        return read_rgb_row_if_fully_covered(image, bounds, xStart, xEnd, y);
+    }
+
+    inline float* write_float_row_if_fully_covered(
+        OFX::Image* image,
+        const OfxRectI& bounds,
+        int xStart,
+        int xEnd,
+        int y) {
+        return row_ptr_if_fully_covered<float>(image, bounds, xStart, xEnd, y);
     }
 
     template <typename T>
@@ -210,8 +267,8 @@ namespace {
         }
         if (srcRow) {
             const std::uint8_t* srcPixIt = srcRow;
-            int x = xStart;
-            for (int xOff = 0; xOff < width; ++xOff, ++x, srcPixIt += bytesPerPixel) {
+            for (int xOff = 0; xOff < width; ++xOff, srcPixIt += bytesPerPixel) {
+                const int x = offset_from_start(xStart, xOff);
                 std::uint8_t* dstPix = pixel_ptr<std::uint8_t>(dst, x, y);
                 if (!dstPix) {
                     continue;
@@ -222,8 +279,8 @@ namespace {
         }
         if (dstRow) {
             std::uint8_t* dstPixIt = dstRow;
-            int x = xStart;
-            for (int xOff = 0; xOff < width; ++xOff, ++x, dstPixIt += bytesPerPixel) {
+            for (int xOff = 0; xOff < width; ++xOff, dstPixIt += bytesPerPixel) {
+                const int x = offset_from_start(xStart, xOff);
                 const std::uint8_t* srcPix = pixel_ptr<const std::uint8_t>(src, x, y);
                 if (!srcPix) {
                     continue;
@@ -232,7 +289,8 @@ namespace {
             }
             return;
         }
-        for (int x = xStart; x < xEnd; ++x) {
+        for (int xOff = 0; xOff < width; ++xOff) {
+            const int x = offset_from_start(xStart, xOff);
             const std::uint8_t* srcPix = pixel_ptr<const std::uint8_t>(src, x, y);
             std::uint8_t* dstPix = pixel_ptr<std::uint8_t>(dst, x, y);
             if (!srcPix || !dstPix) {
@@ -261,8 +319,8 @@ namespace {
         }
         if (dstRow) {
             float* dstPixIt = dstRow;
-            int x = xStart;
-            for (int xOff = 0; xOff < width; ++xOff, ++x, ++dstPixIt) {
+            for (int xOff = 0; xOff < width; ++xOff, ++dstPixIt) {
+                const int x = offset_from_start(xStart, xOff);
                 const float* srcPix = pixel_ptr<const float>(src, x, y);
                 if (!srcPix) {
                     continue;
@@ -273,8 +331,8 @@ namespace {
         }
         if (srcRow) {
             const float* srcPixIt = srcRow;
-            int x = xStart;
-            for (int xOff = 0; xOff < width; ++xOff, ++x, ++srcPixIt) {
+            for (int xOff = 0; xOff < width; ++xOff, ++srcPixIt) {
+                const int x = offset_from_start(xStart, xOff);
                 float* dstPix = pixel_ptr<float>(dst, x, y);
                 if (!dstPix) {
                     continue;
@@ -283,7 +341,8 @@ namespace {
             }
             return;
         }
-        for (int x = xStart; x < xEnd; ++x) {
+        for (int xOff = 0; xOff < width; ++xOff) {
+            const int x = offset_from_start(xStart, xOff);
             float* dstPix = pixel_ptr<float>(dst, x, y);
             const float* srcPix = pixel_ptr<const float>(src, x, y);
             if (!dstPix || !srcPix) {
@@ -297,6 +356,89 @@ namespace {
         std::memcpy(dst, src, 3u * sizeof(float));
     }
 
+    inline void clear_glare_compensation_fields(Profiles::ProfileGlare& glare) {
+        glare.compensationRemovalFactor = 0.0f;
+        glare.compensationRemovalDensity = 0.0f;
+        glare.compensationRemovalTransition = 0.0f;
+    }
+
+    inline void apply_glare_override_fields(
+        Profiles::ProfileGlare& dstGlare,
+        const Profiles::ProfileGlare& srcGlare) {
+        dstGlare.active = srcGlare.active;
+        dstGlare.percent = srcGlare.percent;
+        dstGlare.roughness = srcGlare.roughness;
+        dstGlare.blur = srcGlare.blur;
+        clear_glare_compensation_fields(dstGlare);
+    }
+
+    inline bool assign_glare_hash(Scanner::ScannerMediumRuntime& mediumRuntime) {
+        const std::uint64_t glareHash = Scanner::hash_glare(mediumRuntime.glare);
+        if (glareHash == 0) {
+            return false;
+        }
+        mediumRuntime.staticKey.glareHash = glareHash;
+        return true;
+    }
+
+    inline void trace_cuda_fatal_prefixed_if(
+        bool traceEnabled,
+        const char* prefix,
+        const char* detail = nullptr) {
+        if (!traceEnabled) {
+            return;
+        }
+        const char* safePrefix = (prefix && prefix[0] != '\0')
+            ? prefix
+            : "CUDA operation failed";
+        const bool hasDetail = detail && detail[0] != '\0';
+        std::string traceMsg;
+        traceMsg.reserve(
+            8 + std::strlen(safePrefix) + (hasDetail ? (2 + std::strlen(detail)) : 0));
+        traceMsg = "FATAL: ";
+        traceMsg += safePrefix;
+        if (hasDetail) {
+            traceMsg += ": ";
+            traceMsg += detail;
+        }
+        JTRACE("CUDA", traceMsg);
+    }
+
+    inline void trace_cuda_prefixed_if(
+        bool traceEnabled,
+        const char* prefix,
+        const char* detail = nullptr) {
+        if (!traceEnabled) {
+            return;
+        }
+        const char* safePrefix = (prefix && prefix[0] != '\0')
+            ? prefix
+            : "CUDA operation failed";
+        const bool hasDetail = detail && detail[0] != '\0';
+        std::string traceMsg;
+        traceMsg.reserve(
+            std::strlen(safePrefix) + (hasDetail ? (2 + std::strlen(detail)) : 0));
+        traceMsg = safePrefix;
+        if (hasDetail) {
+            traceMsg += ": ";
+            traceMsg += detail;
+        }
+        JTRACE("CUDA", traceMsg);
+    }
+
+    inline bool read_rgb_pixel_if_present(
+        OFX::Image* src,
+        int x,
+        int y,
+        float rgb[3]) {
+        const float* srcPix = pixel_ptr<const float>(src, x, y);
+        if (!srcPix) {
+            return false;
+        }
+        copy_float3(rgb, srcPix);
+        return true;
+    }
+
     inline void load_float3_from_planar(
         float dst[3],
         const float*& c0,
@@ -305,6 +447,18 @@ namespace {
         dst[0] = *c0++;
         dst[1] = *c1++;
         dst[2] = *c2++;
+    }
+
+    inline void load_spatial_dir_density_inputs(
+        Pipeline::DensityPixelInputs& pxIn,
+        const float*& filmRawB,
+        const float*& filmRawG,
+        const float*& filmRawR,
+        const float*& corrY,
+        const float*& corrM,
+        const float*& corrC) {
+        load_float3_from_planar(pxIn.filmRawOverride.v, filmRawB, filmRawG, filmRawR);
+        load_float3_from_planar(pxIn.spatialLogECorrectionsYMC, corrY, corrM, corrC);
     }
 
     inline void copy_float9(float dst[9], const float src[9]) {
@@ -1044,9 +1198,9 @@ namespace JuicerProc {
             return;
         }
         for (int y = yStart; y < yEnd; ++y) {
-            const std::uint8_t* sRow = row_ptr_if_fully_covered<const std::uint8_t>(
+            const std::uint8_t* sRow = read_u8_row_if_fully_covered(
                 src, srcBounds, xStart, xEnd, y);
-            std::uint8_t* dRow = row_ptr_if_fully_covered<std::uint8_t>(
+            std::uint8_t* dRow = write_u8_row_if_fully_covered(
                 dst, dstBounds, xStart, xEnd, y);
             copy_row_bytes_with_fallback(
                 src,
@@ -1084,6 +1238,14 @@ static unsigned int compute_thread_count(int width, int height) {
     return std::max(1u, nCPUs);
 }
 
+inline std::uint64_t bool_to_u64(bool value) {
+    return value ? 1ull : 0ull;
+}
+
+inline std::uint64_t clamped_lut_resolution_hash_value(std::uint32_t lutResolution) {
+    return static_cast<std::uint64_t>(std::clamp(lutResolution, 17u, 128u));
+}
+
 static std::uint64_t hash_scanner_settings(const Scanner::Settings& settings, const Scanner::Options& options) {
     const std::uint64_t lutHash = Hash::hash_bytes(&settings.useLut, sizeof(settings.useLut));
     const float fields[3] = {
@@ -1114,21 +1276,20 @@ static std::uint64_t hash_scanner_runtime_lane(
     }
 
     const std::uint64_t negColorHash = ws->negativeStaticKey.colorRuntimeHash;
-    const std::uint64_t negLutRes = static_cast<std::uint64_t>(
-        std::clamp(ws->negativeStaticKey.lutResolution, 17u, 128u));
+    const std::uint64_t negLutRes = clamped_lut_resolution_hash_value(ws->negativeStaticKey.lutResolution);
     const bool printValid = ws->printScannerValid;
     const std::uint64_t printColorHash = printValid ? ws->printStaticKey.colorRuntimeHash : 0;
     const std::uint64_t printLutRes = printValid
-        ? static_cast<std::uint64_t>(std::clamp(ws->printStaticKey.lutResolution, 17u, 128u))
+        ? clamped_lut_resolution_hash_value(ws->printStaticKey.lutResolution)
         : 0;
 
     const std::uint64_t fields[] = {
         settingsHash,
         static_cast<std::uint64_t>(frameBoundsVersion),
-        static_cast<std::uint64_t>(ws->negativeScannerValid ? 1 : 0),
+        bool_to_u64(ws->negativeScannerValid),
         negColorHash,
         negLutRes,
-        static_cast<std::uint64_t>(printValid ? 1 : 0),
+        bool_to_u64(printValid),
         printColorHash,
         printLutRes
     };
@@ -1169,6 +1330,125 @@ struct ScannerPreflightResult {
     Scanner::ScannerStaticKey staticKey{};
 };
 
+struct ScannerKeyBundle {
+    Scanner::ScannerRuntimeKey runtimeKey{};
+    Scanner::ScannerKey scannerKey{};
+};
+
+struct ScannerMediumSelection {
+    const Scanner::ScannerMediumRuntime* runtime = nullptr;
+    bool valid = false;
+    const char* label = "scanner";
+};
+
+static const char* scanner_medium_label_or_default(const char* mediumLabel) {
+    return (mediumLabel && *mediumLabel) ? mediumLabel : "scanner";
+}
+
+static ScannerMediumSelection select_scanner_medium(
+    const WorkingState& ws,
+    bool printActive) {
+    ScannerMediumSelection selection{};
+    selection.label = scanner_medium_label_from_print_active(printActive);
+    if (printActive) {
+        selection.runtime = &ws.printMediumRuntime;
+        selection.valid = ws.printScannerValid;
+        return selection;
+    }
+    selection.runtime = &ws.negativeMediumRuntime;
+    selection.valid = ws.negativeScannerValid;
+    return selection;
+}
+
+static void trace_scanner_preflight_fail_if_enabled(
+    bool traceInfoEnabled,
+    const char* path,
+    const char* mediumLabel,
+    const std::string& error,
+    const char* fatalTag) {
+    if (!traceInfoEnabled) {
+        return;
+    }
+    const char* label = scanner_medium_label_or_default(mediumLabel);
+    std::string msg;
+    msg.reserve(96 + error.size());
+    msg = "path=";
+    msg += (path ? path : "unspecified");
+    msg += " result=fail medium=";
+    msg += label;
+    msg += " reason=";
+    msg += error;
+    JTRACE("MSSKV", msg);
+    std::string fatalMsg;
+    fatalMsg.reserve(8 + error.size());
+    fatalMsg = "FATAL: ";
+    fatalMsg += error;
+    JTRACE(fatalTag ? fatalTag : "SCAN", fatalMsg);
+}
+
+static void trace_scanner_preflight_ok_if_enabled(
+    bool traceVerboseEnabled,
+    const char* path,
+    const char* mediumLabel,
+    std::uint64_t staticKeyHash) {
+    if (!traceVerboseEnabled) {
+        return;
+    }
+    const char* label = scanner_medium_label_or_default(mediumLabel);
+    std::string msg;
+    msg.reserve(96);
+    msg = "path=";
+    msg += (path ? path : "unspecified");
+    msg += " result=ok medium=";
+    msg += label;
+    msg += " static_key_hash=";
+    msg += std::to_string(staticKeyHash);
+    JTRACE_VERBOSE("MSSKV", msg);
+}
+
+static void assign_glare_hash_or_throw(Scanner::ScannerMediumRuntime& mediumRuntime) {
+    if (assign_glare_hash(mediumRuntime)) {
+        return;
+    }
+    JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
+    throw OFX::Exception::Suite(kOfxStatErrFatal);
+}
+
+struct ScannerMediumRuntimeBinding {
+    ScannerMediumSelection selection{};
+    Scanner::ScannerMediumRuntime printOverride{};
+    const Scanner::ScannerMediumRuntime* runtime = nullptr;
+    bool valid = false;
+    const char* label = "scanner";
+};
+
+static ScannerMediumRuntimeBinding bind_scanner_medium_runtime(
+    const WorkingState& ws,
+    bool printActive,
+    bool hasPrintGlareOverride,
+    const Profiles::ProfileGlare* printGlareOverride,
+    bool forcePrintGlareHash)
+{
+    ScannerMediumRuntimeBinding binding{};
+    binding.selection = select_scanner_medium(ws, printActive);
+    binding.runtime = binding.selection.runtime;
+    binding.valid = binding.selection.valid;
+    binding.label = binding.selection.label;
+    if (!printActive) {
+        return binding;
+    }
+
+    binding.printOverride = ws.printMediumRuntime;
+    if (hasPrintGlareOverride && printGlareOverride) {
+        apply_glare_override_fields(binding.printOverride.glare, *printGlareOverride);
+    }
+    if (forcePrintGlareHash || hasPrintGlareOverride) {
+        assign_glare_hash_or_throw(binding.printOverride);
+    }
+    binding.runtime = &binding.printOverride;
+    return binding;
+}
+
 static bool validate_scanner_preflight_runtime(
     bool runtimeValid,
     const char* mediumLabel,
@@ -1178,7 +1458,7 @@ static bool validate_scanner_preflight_runtime(
     out = ScannerPreflightResult{};
     outError.clear();
 
-    const char* label = (mediumLabel && *mediumLabel) ? mediumLabel : "scanner";
+    const char* label = scanner_medium_label_or_default(mediumLabel);
     auto set_error = [&](const char* suffix) {
         outError = label;
         outError += suffix;
@@ -1234,6 +1514,62 @@ static bool validate_scanner_preflight_runtime(
     out.colorRuntime = colorPtr;
     out.staticKey = staticKey;
     return true;
+}
+
+static ScannerPreflightResult validate_scanner_preflight_or_throw(
+    bool runtimeValid,
+    const char* mediumLabel,
+    const Scanner::ScannerMediumRuntime* mediumRuntime,
+    bool traceInfoEnabled,
+    bool traceVerboseEnabled,
+    const char* path,
+    const char* fatalTag) {
+    ScannerPreflightResult scannerPreflight{};
+    std::string scannerPreflightError;
+    if (!validate_scanner_preflight_runtime(
+            runtimeValid,
+            mediumLabel,
+            mediumRuntime,
+            scannerPreflight,
+            scannerPreflightError)) {
+        trace_scanner_preflight_fail_if_enabled(
+            traceInfoEnabled,
+            path,
+            mediumLabel,
+            scannerPreflightError,
+            fatalTag);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    trace_scanner_preflight_ok_if_enabled(
+        traceVerboseEnabled,
+        path,
+        mediumLabel,
+        scannerPreflight.staticKey.hash);
+    return scannerPreflight;
+}
+
+static ScannerKeyBundle make_scanner_key_bundle_or_throw(
+    const Scanner::ScannerStaticKey& staticKey,
+    const Scanner::Settings& settings,
+    const Scanner::Options& options,
+    std::uint32_t frameBoundsVersion) {
+    ScannerKeyBundle bundle{};
+    bundle.runtimeKey.settingsHash = hash_scanner_settings(settings, options);
+    bundle.runtimeKey.frameBoundsVersion = frameBoundsVersion;
+    if (bundle.runtimeKey.settingsHash == 0) {
+        JTRACE("HASH", "FATAL: scanner runtime settings hash invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    Scanner::finalize_runtime_key(bundle.runtimeKey);
+
+    bundle.scannerKey.staticKey = staticKey;
+    bundle.scannerKey.runtimeKey = bundle.runtimeKey;
+    Scanner::finalize_scanner_key(bundle.scannerKey);
+    if (bundle.scannerKey.hash == 0) {
+        JTRACE("HASH", "FATAL: scanner combined key invalid");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    return bundle;
 }
 
 bool curve_ok(const Spectral::Curve& c) {
@@ -1301,9 +1637,7 @@ void JuicerProcessor::setGrainOverride(const Profiles::GrainMetadata& grain) {
 }
 void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare) {
     _printGlareOverride = glare;
-    _printGlareOverride.compensationRemovalFactor = 0.0f;
-    _printGlareOverride.compensationRemovalDensity = 0.0f;
-    _printGlareOverride.compensationRemovalTransition = 0.0f;
+    clear_glare_compensation_fields(_printGlareOverride);
     _hasPrintGlareOverride = true;
 }
 void JuicerProcessor::setDirRuntime(const Couplers::Runtime& rt) { _dirRT = rt; }
@@ -1465,28 +1799,24 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             if (xx < 0 || yy < 0 || xx >= self->windowWidth || yy >= self->windowHeight) {
                 return false;
             }
-            const int y = self->window.y1 + yy;
+            const int y = offset_from_start(self->window.y1, yy);
             if (self->cachedY != y) {
                 self->cachedY = y;
-                self->cachedRow = row_ptr_if_fully_covered<const float>(
+                self->cachedRow = read_rgb_row_if_fully_covered(
                     self->srcImg,
                     self->srcBounds,
                     self->window.x1,
                     self->window.x2,
                     y);
             }
-            const float* srcPix = nullptr;
             if (self->cachedRow && self->canReadRowRgb) {
                 const size_t xOffset = static_cast<size_t>(xx);
-                srcPix = self->cachedRow + xOffset * self->srcStride;
+                const float* srcPix = self->cachedRow + xOffset * self->srcStride;
+                copy_float3(rgb, srcPix);
+                return true;
             }
-            else {
-                const int x = self->window.x1 + xx;
-                srcPix = pixel_ptr<const float>(self->srcImg, x, y);
-            }
-            if (!srcPix) return false;
-            copy_float3(rgb, srcPix);
-            return true;
+            const int x = offset_from_start(self->window.x1, xx);
+            return read_rgb_pixel_if_present(self->srcImg, x, y, rgb);
             };
         callbacks.abortCheck = [](void* u) -> bool {
             auto* self = static_cast<SpatialDIRUser*>(u);
@@ -1601,6 +1931,8 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             float* densityC = self._density.c.data();
             float* densityM = self._density.m.data();
             float* densityY = self._density.y.data();
+            OFX::Image* srcImg = self._srcImg;
+            const size_t srcStride = this->srcStride;
             auto store_zero_density = [&](size_t idx) {
                 store_zero_density_triplet(densityC, densityM, densityY, idx);
                 };
@@ -1626,14 +1958,18 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                 store_density_triplet(densityC, densityM, densityY, idx, pxOut.negativeDensity.v);
                 return true;
             };
+            auto copy_and_run_density = [&](const float* srcPix, size_t idx) -> bool {
+                copy_float3(pxIn.rgb.v, srcPix);
+                return run_and_store_density(idx);
+                };
 
             for (int yOff = yStart; yOff < yEnd && !should_abort_relaxed(abortFlag); ++yOff) {
                 if (self._effect.abort()) {
                     mark_abort(abortFlag);
                     break;
                 }
-                const int y = originY + yOff;
-                const size_t rowOffset = size_t(yOff) * size_t(width);
+                const int y = offset_from_start(originY, yOff);
+                const std::size_t rowOffset = linear_row_offset(yOff, width);
                 if (useSpatialDIR) {
                     size_t idx = rowOffset;
                     const float* filmRawBIt = filmRawB + rowOffset;
@@ -1646,8 +1982,14 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                         if (should_abort_relaxed(abortFlag)) {
                             break;
                         }
-                        load_float3_from_planar(pxIn.filmRawOverride.v, filmRawBIt, filmRawGIt, filmRawRIt);
-                        load_float3_from_planar(pxIn.spatialLogECorrectionsYMC, corrYIt, corrMIt, corrCIt);
+                        load_spatial_dir_density_inputs(
+                            pxIn,
+                            filmRawBIt,
+                            filmRawGIt,
+                            filmRawRIt,
+                            corrYIt,
+                            corrMIt,
+                            corrCIt);
                         if (!run_and_store_density(idx)) {
                             break;
                         }
@@ -1655,8 +1997,8 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                     continue;
                 }
 
-                const float* srcRow = row_ptr_if_fully_covered<const float>(
-                    self._srcImg,
+                const float* srcRow = read_rgb_row_if_fully_covered(
+                    srcImg,
                     srcBounds,
                     originX,
                     originXEnd,
@@ -1668,28 +2010,24 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                         if (should_abort_relaxed(abortFlag)) {
                             break;
                         }
-                        const float* srcPix = srcPixIt;
-                        srcPixIt += this->srcStride;
-                        copy_float3(pxIn.rgb.v, srcPix);
-                        if (!run_and_store_density(idx)) {
+                        if (!copy_and_run_density(srcPixIt, idx)) {
                             break;
                         }
+                        srcPixIt += srcStride;
                     }
                     continue;
                 }
 
                 size_t idx = rowOffset;
-                int x = originX;
-                for (int xOff = 0; xOff < width; ++xOff, ++idx, ++x) {
+                for (int xOff = 0; xOff < width; ++xOff, ++idx) {
                     if (should_abort_relaxed(abortFlag)) {
                         break;
                     }
-                    const float* srcPix = pixel_ptr<const float>(self._srcImg, x, y);
-                    if (!srcPix) {
+                    const int x = offset_from_start(originX, xOff);
+                    if (!read_rgb_pixel_if_present(srcImg, x, y, pxIn.rgb.v)) {
                         store_zero_density(idx);
                         continue;
                     }
-                    copy_float3(pxIn.rgb.v, srcPix);
                     if (!run_and_store_density(idx)) {
                         break;
                     }
@@ -1728,65 +2066,23 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
 
     // The scanner now consumes only the staged CMY density slab; legacy RGB entry points are removed.
-    Scanner::ScannerMediumRuntime printMediumOverride{};
-    const Scanner::ScannerMediumRuntime* mediumRuntime = ctx.printActive
-        ? &_ws->printMediumRuntime
-        : &_ws->negativeMediumRuntime;
-    const bool scannerRuntimeValid = ctx.printActive ? _ws->printScannerValid : _ws->negativeScannerValid;
-    if (ctx.printActive) {
-        printMediumOverride = _ws->printMediumRuntime;
-        if (_hasPrintGlareOverride) {
-            printMediumOverride.glare.active = _printGlareOverride.active;
-            printMediumOverride.glare.percent = _printGlareOverride.percent;
-            printMediumOverride.glare.roughness = _printGlareOverride.roughness;
-            printMediumOverride.glare.blur = _printGlareOverride.blur;
-            printMediumOverride.glare.compensationRemovalFactor = 0.0f;
-            printMediumOverride.glare.compensationRemovalDensity = 0.0f;
-            printMediumOverride.glare.compensationRemovalTransition = 0.0f;
-        }
-        const std::uint64_t glareHash = Scanner::hash_glare(printMediumOverride.glare);
-        if (glareHash == 0) {
-            JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        printMediumOverride.staticKey.glareHash = glareHash;
-        mediumRuntime = &printMediumOverride;
-    }
-
-    ScannerPreflightResult scannerPreflight{};
-    std::string scannerPreflightError;
-    const char* cpuMediumLabel = ctx.printActive ? "print" : "negative";
-    if (!validate_scanner_preflight_runtime(
-            scannerRuntimeValid,
-            cpuMediumLabel,
-            mediumRuntime,
-            scannerPreflight,
-            scannerPreflightError)) {
-        if (traceInfo) {
-            std::string preflightMsg;
-            preflightMsg.reserve(96 + scannerPreflightError.size());
-            preflightMsg = "path=cpu result=fail medium=";
-            preflightMsg += cpuMediumLabel;
-            preflightMsg += " reason=";
-            preflightMsg += scannerPreflightError;
-            JTRACE("MSSKV", preflightMsg);
-            std::string fatalMsg;
-            fatalMsg.reserve(8 + scannerPreflightError.size());
-            fatalMsg = "FATAL: ";
-            fatalMsg += scannerPreflightError;
-            JTRACE("SCAN", fatalMsg);
-        }
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    if (traceVerbose) {
-        std::string preflightMsg;
-        preflightMsg.reserve(96);
-        preflightMsg = "path=cpu result=ok medium=";
-        preflightMsg += cpuMediumLabel;
-        preflightMsg += " static_key_hash=";
-        preflightMsg += std::to_string(scannerPreflight.staticKey.hash);
-        JTRACE_VERBOSE("MSSKV", preflightMsg);
-    }
+    const ScannerMediumRuntimeBinding scannerBinding = bind_scanner_medium_runtime(
+        *_ws,
+        ctx.printActive,
+        _hasPrintGlareOverride,
+        &_printGlareOverride,
+        /*forcePrintGlareHash*/true);
+    const Scanner::ScannerMediumRuntime* mediumRuntime = scannerBinding.runtime;
+    const bool scannerRuntimeValid = scannerBinding.valid;
+    const char* cpuMediumLabel = scannerBinding.label;
+    ScannerPreflightResult scannerPreflight = validate_scanner_preflight_or_throw(
+        scannerRuntimeValid,
+        cpuMediumLabel,
+        mediumRuntime,
+        traceInfo,
+        traceVerbose,
+        "cpu",
+        "SCAN");
 
     mediumRuntime = scannerPreflight.mediumRuntime;
     const Scanner::ColorRuntime* colorPtr = scannerPreflight.colorRuntime;
@@ -1797,23 +2093,13 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
-    Scanner::ScannerRuntimeKey runtimeKey{};
-    runtimeKey.settingsHash = hash_scanner_settings(_scannerSettings, _scannerOptions);
-    runtimeKey.frameBoundsVersion = _frameBoundsVersion;
-    if (runtimeKey.settingsHash == 0) {
-        JTRACE("HASH", "FATAL: scanner runtime settings hash invalid");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    Scanner::finalize_runtime_key(runtimeKey);
-
-    Scanner::ScannerKey scannerKey{};
-    scannerKey.staticKey = staticKey;
-    scannerKey.runtimeKey = runtimeKey;
-    Scanner::finalize_scanner_key(scannerKey);
-    if (scannerKey.hash == 0) {
-        JTRACE("HASH", "FATAL: scanner combined key invalid");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
+    const ScannerKeyBundle scannerKeys = make_scanner_key_bundle_or_throw(
+        staticKey,
+        _scannerSettings,
+        _scannerOptions,
+        _frameBoundsVersion);
+    const Scanner::ScannerRuntimeKey& runtimeKey = scannerKeys.runtimeKey;
+    const Scanner::ScannerKey& scannerKey = scannerKeys.scannerKey;
 
     struct ScannerRuntimeLease {
         InstanceState* state = nullptr;
@@ -1973,9 +2259,9 @@ void JuicerProcessor::processImpl() {
         const OfxRectI srcBounds = _srcImg->getBounds();
         const OfxRectI dstBounds = _dstImg->getBounds();
         for (int y = yStart; y < yEnd; ++y) {
-            float* dstRow = row_ptr_if_fully_covered<float>(
+            float* dstRow = write_float_row_if_fully_covered(
                 _dstImg, dstBounds, xStart, xEnd, y);
-            const float* srcRow = row_ptr_if_fully_covered<const float>(
+            const float* srcRow = read_float_row_if_fully_covered(
                 _srcImg, srcBounds, xStart, xEnd, y);
             copy_row_float_scalar_with_fallback(
                 _srcImg,
@@ -2114,26 +2400,20 @@ void JuicerProcessor::processImagesCUDA() {
 
         cudaError_t setErr = cudaSetDevice(deviceId);
         if (setErr != cudaSuccess) {
-            if (traceInfo) {
-                const char* msg = cudaGetErrorString(setErr);
-                std::string traceMsg;
-                traceMsg.reserve(64);
-                traceMsg = "FATAL: cudaSetDevice failed: ";
-                traceMsg += (msg ? msg : "(unknown)");
-                JTRACE("CUDA", traceMsg);
-            }
+            const char* msg = cudaGetErrorString(setErr);
+            trace_cuda_fatal_prefixed_if(
+                traceInfo,
+                "cudaSetDevice failed",
+                msg ? msg : "(unknown)");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
 
         std::string contextError;
         if (!query_current_cuda_context(contextOpaque, contextError)) {
-            if (traceInfo) {
-                std::string traceMsg;
-                traceMsg.reserve(72 + contextError.size());
-                traceMsg = "FATAL: failed to capture CUDA context identity: ";
-                traceMsg += contextError;
-                JTRACE("CUDA", traceMsg);
-            }
+            trace_cuda_fatal_prefixed_if(
+                traceInfo,
+                "failed to capture CUDA context identity",
+                contextError.c_str());
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
     }
@@ -2261,15 +2541,10 @@ void JuicerProcessor::processImagesCUDA() {
         const char* errorMsg = cudaGetErrorString(errorCode);
         const char* detail = errorMsg ? errorMsg : "(unknown)";
         mark_context_loss_recovery(stageTag ? stageTag : "cuda_stage", errorCode, detail);
-        if (traceInfo) {
-            std::string traceMsg;
-            traceMsg.reserve(96);
-            traceMsg = "FATAL: ";
-            traceMsg += (failurePrefix ? failurePrefix : "CUDA stage failed");
-            traceMsg += ": ";
-            traceMsg += detail;
-            JTRACE("CUDA", traceMsg);
-        }
+        trace_cuda_fatal_prefixed_if(
+            traceInfo,
+            failurePrefix ? failurePrefix : "CUDA stage failed",
+            detail);
         if (useModeFallback) {
             throw_cuda_mode_fallback();
         }
@@ -2277,16 +2552,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto trace_and_throw_cuda_mode_fallback = [&](const char* prefix, const char* detail) {
-        if (traceInfo) {
-            std::string msg;
-            msg.reserve(128);
-            msg = (prefix && prefix[0] != '\0') ? prefix : "CUDA operation failed";
-            if (detail && detail[0] != '\0') {
-                msg += ": ";
-                msg += detail;
-            }
-            JTRACE("CUDA", msg);
-        }
+        trace_cuda_prefixed_if(traceInfo, prefix, detail);
         throw_cuda_mode_fallback();
     };
 
@@ -2302,18 +2568,12 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto trace_contention_and_throw_cuda_mode_fallback = [&](const char* prefix,
                                                              const std::string& detail) {
-        if (traceInfo) {
-            std::string msg;
-            msg.reserve(96 + detail.size());
-            msg = (prefix && prefix[0] != '\0')
+        trace_cuda_prefixed_if(
+            traceInfo,
+            (prefix && prefix[0] != '\0')
                 ? prefix
-                : "CUDA work deferred by contention policy";
-            if (!detail.empty()) {
-                msg += ": ";
-                msg += detail;
-            }
-            JTRACE("CUDA", msg);
-        }
+                : "CUDA work deferred by contention policy",
+            detail.empty() ? nullptr : detail.c_str());
         throw_cuda_mode_fallback();
     };
 
@@ -2324,15 +2584,10 @@ void JuicerProcessor::processImagesCUDA() {
             stageTag ? stageTag : "submission_stage",
             cudaErrorUnknown,
             error);
-        if (traceInfo) {
-            std::string msg;
-            msg.reserve(48 + error.size());
-            msg = "FATAL: ";
-            msg += (failurePrefix && failurePrefix[0] != '\0') ? failurePrefix : "submission stage failed";
-            msg += ": ";
-            msg += error;
-            JTRACE("CUDA", msg);
-        }
+        trace_cuda_fatal_prefixed_if(
+            traceInfo,
+            (failurePrefix && failurePrefix[0] != '\0') ? failurePrefix : "submission stage failed",
+            error.c_str());
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     };
 
@@ -3423,14 +3678,9 @@ void JuicerProcessor::processImagesCUDA() {
             if (pollErr == cudaSuccess) {
                 resources->scanErrorPending = 0;
                 if (*resources->scanErrorHost != 0) {
-                    if (traceInfo) {
-                        std::string traceMsg;
-                        traceMsg.reserve(64);
-                        traceMsg = "FATAL: ";
-                        traceMsg += stage;
-                        traceMsg += " pipeline scan produced non-finite RGB";
-                        JTRACE("CUDA", traceMsg);
-                    }
+                    std::string stagePrefix = stage;
+                    stagePrefix += " pipeline scan produced non-finite RGB";
+                    trace_cuda_fatal_prefixed_if(traceInfo, stagePrefix.c_str());
                     throw OFX::Exception::Suite(kOfxStatErrFatal);
                 }
             }
@@ -3499,14 +3749,9 @@ void JuicerProcessor::processImagesCUDA() {
             run.scanStage.scanLutLog2XYZ = scanLut.log2XYZ;
             run.scanStage.scanLutRes = static_cast<int>(scanLut.res);
             if (!run.scanStage.scanLutLog2XYZ || run.scanStage.scanLutRes <= 0) {
-                if (traceInfo) {
-                    std::string msg;
-                    msg.reserve(56);
-                    msg = "FATAL: ";
-                    msg += scanLabel;
-                    msg += " LUT missing after successful upload";
-                    JTRACE("CUDA", msg);
-                }
+                std::string missingLutPrefix = scanLabel;
+                missingLutPrefix += " LUT missing after successful upload";
+                trace_cuda_fatal_prefixed_if(traceInfo, missingLutPrefix.c_str());
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
         }
@@ -3589,54 +3834,18 @@ void JuicerProcessor::processImagesCUDA() {
         return true;
     };
 
-    auto trace_cuda_scanner_preflight_fail = [&](const char* mediumLabel, const std::string& error) {
-        if (!traceInfo) {
-            return;
-        }
-        std::string msg;
-        msg.reserve(96 + error.size());
-        msg = "path=cuda result=fail medium=";
-        msg += mediumLabel;
-        msg += " reason=";
-        msg += error;
-        JTRACE("MSSKV", msg);
-        std::string fatalMsg;
-        fatalMsg.reserve(8 + error.size());
-        fatalMsg = "FATAL: ";
-        fatalMsg += error;
-        JTRACE("CUDA", fatalMsg);
-    };
-
-    auto trace_cuda_scanner_preflight_ok = [&](const char* mediumLabel, std::uint64_t staticKeyHash) {
-        if (!traceVerbose) {
-            return;
-        }
-        std::string msg;
-        msg.reserve(96);
-        msg = "path=cuda result=ok medium=";
-        msg += (mediumLabel ? mediumLabel : "unspecified");
-        msg += " static_key_hash=";
-        msg += std::to_string(staticKeyHash);
-        JTRACE_VERBOSE("MSSKV", msg);
-    };
-
     auto validate_cuda_scanner_preflight_or_throw = [&](bool scannerRuntimeValid,
                                                          const char* mediumLabel,
                                                          const Scanner::ScannerMediumRuntime* mediumRuntime)
         -> ScannerPreflightResult {
-        ScannerPreflightResult scannerPreflight{};
-        std::string scannerPreflightError;
-        if (!validate_scanner_preflight_runtime(
-                scannerRuntimeValid,
-                mediumLabel,
-                mediumRuntime,
-                scannerPreflight,
-                scannerPreflightError)) {
-            trace_cuda_scanner_preflight_fail(mediumLabel, scannerPreflightError);
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        trace_cuda_scanner_preflight_ok(mediumLabel, scannerPreflight.staticKey.hash);
-        return scannerPreflight;
+        return validate_scanner_preflight_or_throw(
+            scannerRuntimeValid,
+            mediumLabel,
+            mediumRuntime,
+            traceInfo,
+            traceVerbose,
+            "cuda",
+            "CUDA");
     };
 
     auto ensure_print_illuminant_filtered_or_throw = [&](JuicerCuda::Resources* resources) {
@@ -3657,29 +3866,14 @@ void JuicerProcessor::processImagesCUDA() {
             illumError);
     };
 
-    auto apply_print_glare_override_if_requested = [&](Scanner::ScannerMediumRuntime& printMedium) {
-        if (!_hasPrintGlareOverride) {
-            return;
-        }
-        printMedium.glare.active = _printGlareOverride.active;
-        printMedium.glare.percent = _printGlareOverride.percent;
-        printMedium.glare.roughness = _printGlareOverride.roughness;
-        printMedium.glare.blur = _printGlareOverride.blur;
-        printMedium.glare.compensationRemovalFactor = 0.0f;
-        printMedium.glare.compensationRemovalDensity = 0.0f;
-        printMedium.glare.compensationRemovalTransition = 0.0f;
-        const std::uint64_t glareHash = Scanner::hash_glare(printMedium.glare);
-        if (glareHash == 0) {
-            JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
-        }
-        printMedium.staticKey.glareHash = glareHash;
-    };
-
     auto resolve_print_medium_runtime_for_cuda = [&]() -> Scanner::ScannerMediumRuntime {
-        Scanner::ScannerMediumRuntime printMedium = _ws->printMediumRuntime;
-        apply_print_glare_override_if_requested(printMedium);
-        return printMedium;
+        const ScannerMediumRuntimeBinding scannerBinding = bind_scanner_medium_runtime(
+            *_ws,
+            /*printActive*/true,
+            _hasPrintGlareOverride,
+            &_printGlareOverride,
+            /*forcePrintGlareHash*/false);
+        return scannerBinding.printOverride;
     };
 
     auto trace_print_payload_verbose = [&](JuicerCuda::Resources* resources) {
@@ -4449,14 +4643,16 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto validate_medium_scanner_preflight_or_throw = [&](bool negativeMedium) -> ScannerPreflightResult {
-        const char* mediumLabel = negativeMedium ? "negative" : "print";
-        const bool scannerValid = negativeMedium ? _ws->negativeScannerValid : _ws->printScannerValid;
-        const Scanner::ScannerMediumRuntime* mediumRuntime =
-            negativeMedium ? &_ws->negativeMediumRuntime : &_ws->printMediumRuntime;
+        const ScannerMediumRuntimeBinding scannerMedium = bind_scanner_medium_runtime(
+            *_ws,
+            !negativeMedium,
+            /*hasPrintGlareOverride*/false,
+            nullptr,
+            /*forcePrintGlareHash*/false);
         return validate_cuda_scanner_preflight_or_throw(
-            scannerValid,
-            mediumLabel,
-            mediumRuntime);
+            scannerMedium.valid,
+            scannerMedium.label,
+            scannerMedium.runtime);
     };
 
     auto finalize_pipeline_launch_or_abort = [&](const PipelineLaunchResult& launchResult,

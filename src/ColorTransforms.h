@@ -266,6 +266,44 @@ namespace Spectral {
         return std::max(0.0f, sanitize_channel(v));
     }
 
+    inline void sanitize_triplet(float out[3], const float in[3]) {
+        float* outIt = out;
+        const float* inIt = in;
+        for (int i = 0; i < 3; ++i, ++outIt, ++inIt) {
+            *outIt = sanitize_channel(*inIt);
+        }
+    }
+
+    inline void sanitize_nonnegative_triplet(float out[3], const float in[3]) {
+        float* outIt = out;
+        const float* inIt = in;
+        for (int i = 0; i < 3; ++i, ++outIt, ++inIt) {
+            *outIt = sanitize_nonnegative_channel(*inIt);
+        }
+    }
+
+    inline void normalize_triplet_to_unit_y(float values[3]) {
+        const float y = (values[1] > 0.0f) ? values[1] : 1.0f;
+        const float invY = 1.0f / y;
+        float* valueIt = values;
+        for (int i = 0; i < 3; ++i, ++valueIt) {
+            *valueIt *= invY;
+        }
+        values[1] = 1.0f;
+    }
+
+    inline bool triplet_has_positive_finite_sum(const float values[3]) {
+        const float sum = values[0] + values[1] + values[2];
+        return is_finite(sum) && sum > 0.0f;
+    }
+
+    inline void sanitize_white_or_dwg(const float in[3], float out[3]) {
+        sanitize_nonnegative_triplet(out, in);
+        if (!triplet_has_positive_finite_sum(out)) {
+            copy_triplet(out, gDWG_WhitePoint_XYZ);
+        }
+    }
+
     inline float sanitize_min_positive_channel_or(float v, float minValue, float fallback) {
         const float value = sanitize_channel(v);
         return (value > minValue) ? value : fallback;
@@ -316,38 +354,32 @@ namespace Spectral {
     }
 
     inline void apply_input_cctf_decoding(InputColorSpace cs, bool decode, const float in[3], float out[3]) {
-        const float c0 = sanitize_channel(in[0]);
-        const float c1 = sanitize_channel(in[1]);
-        const float c2 = sanitize_channel(in[2]);
         if (!decode) {
-            assign_triplet(out, c0, c1, c2);
+            sanitize_triplet(out, in);
             return;
         }
-        const float n0 = sanitize_nonnegative_channel(c0);
-        const float n1 = sanitize_nonnegative_channel(c1);
-        const float n2 = sanitize_nonnegative_channel(c2);
 
         switch (cs) {
         case InputColorSpace::ITU_R_BT2020: {
             assign_triplet(
                 out,
-                decode_BT2020_nonnegative(n0),
-                decode_BT2020_nonnegative(n1),
-                decode_BT2020_nonnegative(n2));
+                decode_BT2020_channel(in[0]),
+                decode_BT2020_channel(in[1]),
+                decode_BT2020_channel(in[2]));
             break;
         }
         case InputColorSpace::SRGB_Rec709: {
             assign_triplet(
                 out,
-                decode_sRGB_nonnegative(n0),
-                decode_sRGB_nonnegative(n1),
-                decode_sRGB_nonnegative(n2));
+                decode_sRGB_channel(in[0]),
+                decode_sRGB_channel(in[1]),
+                decode_sRGB_channel(in[2]));
             break;
         }
         case InputColorSpace::DaVinciWideGamut:
         case InputColorSpace::ACES2065_1:
         default:
-            assign_triplet(out, c0, c1, c2);
+            sanitize_triplet(out, in);
             break;
         }
     }
@@ -376,27 +408,10 @@ namespace Spectral {
 
         float srcWhite[3];
         float dstWhite[3];
-        const float* srcWhiteIn = srcWhiteXYZ;
-        const float* dstWhiteIn = dstWhiteXYZ;
-        float* srcWhiteOut = srcWhite;
-        float* dstWhiteOut = dstWhite;
-        for (int i = 0; i < 3; ++i, ++srcWhiteIn, ++dstWhiteIn, ++srcWhiteOut, ++dstWhiteOut) {
-            *srcWhiteOut = sanitize_nonnegative_channel(*srcWhiteIn);
-            *dstWhiteOut = sanitize_nonnegative_channel(*dstWhiteIn);
-        }
-
-        const float srcY = (srcWhite[1] > 0.0f) ? srcWhite[1] : 1.0f;
-        const float dstY = (dstWhite[1] > 0.0f) ? dstWhite[1] : 1.0f;
-        const float srcScale = 1.0f / srcY;
-        const float dstScale = 1.0f / dstY;
-        float* srcWhiteIt = srcWhite;
-        float* dstWhiteIt = dstWhite;
-        for (int i = 0; i < 3; ++i, ++srcWhiteIt, ++dstWhiteIt) {
-            *srcWhiteIt *= srcScale;
-            *dstWhiteIt *= dstScale;
-        }
-        srcWhite[1] = 1.0f;
-        dstWhite[1] = 1.0f;
+        sanitize_nonnegative_triplet(srcWhite, srcWhiteXYZ);
+        sanitize_nonnegative_triplet(dstWhite, dstWhiteXYZ);
+        normalize_triplet_to_unit_y(srcWhite);
+        normalize_triplet_to_unit_y(dstWhite);
 
         float srcLMS[3];
         float dstLMS[3];
@@ -487,6 +502,8 @@ namespace Spectral {
         cfg.inputRGBToXYZ = matrix_input_rgb_to_xyz(cfg.inputColorSpace);
         input_colorspace_white_xyz(cfg.inputColorSpace, cfg.inputWhiteXYZ);
         copy_triplet(cfg.workingWhiteXYZ, gDWG_WhitePoint_XYZ);
+        sanitize_white_or_dwg(cfg.inputWhiteXYZ, cfg.inputWhiteXYZ);
+        sanitize_white_or_dwg(cfg.workingWhiteXYZ, cfg.workingWhiteXYZ);
 
         cfg.applyInputChromaticAdapt = !whites_approximately_equal(cfg.inputWhiteXYZ, cfg.workingWhiteXYZ);
         if (cfg.applyInputChromaticAdapt) {
@@ -640,6 +657,67 @@ namespace Spectral {
             finite_to_float_or_zero(Er));
     }
 
+    struct SpectralReconstructionPath {
+        bool spdReady = false;
+        bool useHanatos = false;
+        bool useMallett = false;
+    };
+
+    inline SpectralReconstructionPath select_spectral_reconstruction_path(
+        const FilmRawConfig& cfg,
+        const SpectralTables* tablesSPD,
+        const float* S_inv,
+        bool useSPD,
+        const Curve& sB,
+        const Curve& sG,
+        const Curve& sR)
+    {
+        SpectralReconstructionPath path{};
+        path.spdReady = useSPD && tablesSPD && S_inv && tablesSPD->K > 0;
+        if (!path.spdReady) {
+            return path;
+        }
+        const bool allowHanatos = (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
+        path.useHanatos = allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
+        path.useMallett =
+            (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::ForceMallett) &&
+            mallett_basis_ready_for_tables(tablesSPD, sB, sG, sR);
+        return path;
+    }
+
+    inline void compute_layer_exposures_from_reconstruction_path(
+        const FilmRawConfig& cfg,
+        const float rgbIn[3],
+        const float rgbDWG[3],
+        const SpectralTables* tablesSPD,
+        const float* S_inv,
+        const Curve& sB,
+        const Curve& sG,
+        const Curve& sR,
+        const SpectralReconstructionPath& path,
+        float E[3])
+    {
+        if (!path.spdReady) {
+            std::fill_n(E, 3, 0.0f);
+            return;
+        }
+
+        if (path.useMallett) {
+            float rgbSRGB[3];
+            convert_input_rgb_to_sRGB_linear(cfg, rgbIn, rgbSRGB, nullptr);
+            mallett2019_exposures_from_linear_srgb(rgbSRGB, *tablesSPD, sB, sG, sR, E);
+            return;
+        }
+
+        rgbDWG_to_layerExposures_from_tables_with_curves(
+            rgbDWG, E, 1.0f,
+            tablesSPD,
+            S_inv,
+            sB, sG, sR,
+            cfg.spectralUpsamplingMode,
+            cfg.refIllumWhiteXYZ);
+    }
+
     inline void compute_film_raw_midgray(
         FilmRawConfig& cfg,
         const SpectralTables* tablesSPD,
@@ -650,37 +728,36 @@ namespace Spectral {
     {
         const float rgbMid[3] = { 0.184f, 0.184f, 0.184f };
         float rgbMidDWG[3];
-        const bool spdReady = tablesSPD && S_inv && tablesSPD->K > 0;
-        const bool allowHanatos = (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
-        const bool useHanatos = spdReady && allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
-        const bool useMallett = spdReady &&
-            (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::ForceMallett) &&
-            mallett_basis_ready_for_tables(tablesSPD, sB, sG, sR);
-        convert_input_rgb_to_DWG(cfg, rgbMid, rgbMidDWG, nullptr, !useHanatos);
+        const SpectralReconstructionPath path = select_spectral_reconstruction_path(
+            cfg,
+            tablesSPD,
+            S_inv,
+            true,
+            sB,
+            sG,
+            sR);
+        convert_input_rgb_to_DWG(cfg, rgbMid, rgbMidDWG, nullptr, !path.useHanatos);
         copy_triplet(cfg.midgrayDWG, rgbMidDWG);
 
         float E[3] = { 0.0f, 0.0f, 0.0f };
-        if (!spdReady) {
+        if (!path.spdReady) {
             std::fill_n(cfg.rawMidgray, 3, 0.0f);
             cfg.rawMidgrayGreen = 1.0f;
             cfg.midgrayScale = 1.0f;
             return;
         }
 
-        if (useMallett) {
-            float rgbSRGB[3];
-            convert_input_rgb_to_sRGB_linear(cfg, rgbMid, rgbSRGB, nullptr);
-            mallett2019_exposures_from_linear_srgb(rgbSRGB, *tablesSPD, sB, sG, sR, E);
-        }
-        else {
-            rgbDWG_to_layerExposures_from_tables_with_curves(
-                rgbMidDWG, E, 1.0f,
-                tablesSPD,
-                S_inv,
-                sB, sG, sR,
-                cfg.spectralUpsamplingMode,
-                cfg.refIllumWhiteXYZ);
-        }
+        compute_layer_exposures_from_reconstruction_path(
+            cfg,
+            rgbMid,
+            rgbMidDWG,
+            tablesSPD,
+            S_inv,
+            sB,
+            sG,
+            sR,
+            path,
+            E);
 
         copy_triplet(cfg.rawMidgray, E);
         const float safeGreen = sanitize_min_positive_channel_or(E[1], 1e-9f, 1.0f);
@@ -703,37 +780,35 @@ namespace Spectral {
         const Curve& sG,
         const Curve& sR)
     {
-        const bool spdReady = useSPD && tablesSPD && S_inv && tablesSPD->K > 0;
+        const SpectralReconstructionPath path = select_spectral_reconstruction_path(
+            cfg,
+            tablesSPD,
+            S_inv,
+            useSPD,
+            sB,
+            sG,
+            sR);
         float rgbDWG[3];
         float xyzWorking[3];
-        const bool allowHanatos = (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::PreferHanatos);
-        const bool useHanatos = spdReady && allowHanatos && hanatos_available() && hanatos_matches_reference_shape();
-        const bool useMallett = spdReady &&
-            (cfg.spectralUpsamplingMode == SpectralUpsamplingMode::ForceMallett) &&
-            mallett_basis_ready_for_tables(tablesSPD, sB, sG, sR);
-        convert_input_rgb_to_DWG(cfg, rgbIn, rgbDWG, xyzWorking, !useHanatos);
+        convert_input_rgb_to_DWG(cfg, rgbIn, rgbDWG, xyzWorking, !path.useHanatos);
 
 #if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
-        spd_probe_begin_capture(rgbIn, rgbDWG, spdReady);
+        spd_probe_begin_capture(rgbIn, rgbDWG, path.spdReady);
 #endif
 
         float normScale = cfg.midgrayScale;
-        if (spdReady) {
-            if (useMallett) {
-                float rgbSRGB[3];
-                convert_input_rgb_to_sRGB_linear(cfg, rgbIn, rgbSRGB, nullptr);
-                mallett2019_exposures_from_linear_srgb(rgbSRGB, *tablesSPD, sB, sG, sR, E);
-            }
-            else {
-                rgbDWG_to_layerExposures_from_tables_with_curves(
-                    rgbDWG, E, 1.0f,
-                    tablesSPD,
-                    S_inv,
-                    sB, sG, sR,
-                    cfg.spectralUpsamplingMode,
-                    cfg.refIllumWhiteXYZ);
-            }
-
+        if (path.spdReady) {
+            compute_layer_exposures_from_reconstruction_path(
+                cfg,
+                rgbIn,
+                rgbDWG,
+                tablesSPD,
+                S_inv,
+                sB,
+                sG,
+                sR,
+                path,
+                E);
             normScale = cfg.midgrayScale;
             scale_triplet_nonnegative_inplace(E, normScale);
         }
@@ -760,15 +835,8 @@ namespace Spectral {
         const float XYZ[3],
         float RGB[3])
     {
-        float srcWhite[3] = {
-            tables.whiteXYZ[0],
-            tables.whiteXYZ[1],
-            tables.whiteXYZ[2]
-        };
-        const float sum = srcWhite[0] + srcWhite[1] + srcWhite[2];
-        if (!is_positive_finite(sum)) {
-            copy_triplet(srcWhite, gDWG_WhitePoint_XYZ);
-        }
+        float srcWhite[3];
+        sanitize_white_or_dwg(tables.whiteXYZ, srcWhite);
 
         float adaptedXYZ[3];
         chromatic_adapt_XYZ_CAT02(XYZ, srcWhite, gDWG_WhitePoint_XYZ, adaptedXYZ);

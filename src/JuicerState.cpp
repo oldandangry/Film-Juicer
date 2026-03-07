@@ -264,17 +264,40 @@ namespace {
         return h;
     }
 
+    template <typename MixFn, typename TValue>
+    inline void mix_hash_field(uint64_t& h, TValue value, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(value));
+    }
+
+    template <typename MixFn>
+    inline void mix_hash_field_scaled(uint64_t& h, double value, double scale, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(value * scale));
+    }
+
+    template <typename MixFn>
+    inline void mix_hash_field_scaled_rounded_if_finite(
+        uint64_t& h,
+        double value,
+        double scale,
+        const MixFn& mix) {
+        if (!is_finite(value)) {
+            return;
+        }
+        const int64_t scaled = static_cast<int64_t>(std::llround(value * scale));
+        h = mix(h, static_cast<uint64_t>(scaled));
+    }
+
     template <typename MixFn>
     inline void mix_glare_print_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        h = mix(h, static_cast<uint64_t>(p.glareCompRemovalFactor * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.glareCompRemovalDensity * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.glareCompRemovalTransition * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.printDminFactor * 10000.0));
+        mix_hash_field_scaled(h, p.glareCompRemovalFactor, 10000.0, mix);
+        mix_hash_field_scaled(h, p.glareCompRemovalDensity, 10000.0, mix);
+        mix_hash_field_scaled(h, p.glareCompRemovalTransition, 10000.0, mix);
+        mix_hash_field_scaled(h, p.printDminFactor, 10000.0, mix);
     }
 
     template <typename MixFn>
     inline void mix_camera_filter_hash(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        h = mix(h, static_cast<uint64_t>(p.cameraFilterOverride ? 1 : 0));
+        mix_hash_field(h, p.cameraFilterOverride ? 1 : 0, mix);
         if (!p.cameraFilterOverride) {
             return;
         }
@@ -283,11 +306,7 @@ namespace {
             const double* values = triplet.data();
             const double* const valuesEnd = values + triplet.size();
             for (; values < valuesEnd; ++values) {
-                const double v = *values;
-                if (is_finite(v)) {
-                    const int64_t scaled = static_cast<int64_t>(std::llround(v * 10000.0));
-                    h = mix(h, static_cast<uint64_t>(scaled));
-                }
+                mix_hash_field_scaled_rounded_if_finite(h, *values, 10000.0, mix);
             }
         };
         mix_triplet(p.cameraFilterUV);
@@ -296,34 +315,34 @@ namespace {
 
     template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        h = mix(h, static_cast<uint64_t>(p.filmStockIndex));
-        h = mix(h, static_cast<uint64_t>(p.printPaperIndex));
-        h = mix(h, static_cast<uint64_t>(p.spectralUpsamplingMode));
-        h = mix(h, static_cast<uint64_t>(p.refIll));
-        h = mix(h, static_cast<uint64_t>(p.enlIll));
-        h = mix(h, static_cast<uint64_t>(p.enlDichroicSet));
+        mix_hash_field(h, p.filmStockIndex, mix);
+        mix_hash_field(h, p.printPaperIndex, mix);
+        mix_hash_field(h, p.spectralUpsamplingMode, mix);
+        mix_hash_field(h, p.refIll, mix);
+        mix_hash_field(h, p.enlIll, mix);
+        mix_hash_field(h, p.enlDichroicSet, mix);
     }
 
     template <typename MixFn>
     inline void mix_output_encoding_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        h = mix(h, static_cast<uint64_t>(p.scannerLutResolution));
-        h = mix(h, static_cast<uint64_t>(p.inputColorSpace));
-        h = mix(h, static_cast<uint64_t>(p.inputCctfDecoding));
-        h = mix(h, static_cast<uint64_t>(p.outputColorSpace));
-        h = mix(h, static_cast<uint64_t>(p.outputCctfEncoding));
-        h = mix(h, static_cast<uint64_t>(p.outputLinearPassThrough));
+        mix_hash_field(h, p.scannerLutResolution, mix);
+        mix_hash_field(h, p.inputColorSpace, mix);
+        mix_hash_field(h, p.inputCctfDecoding, mix);
+        mix_hash_field(h, p.outputColorSpace, mix);
+        mix_hash_field(h, p.outputCctfEncoding, mix);
+        mix_hash_field(h, p.outputLinearPassThrough, mix);
     }
 
     template <typename MixFn>
     inline void mix_coupler_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        h = mix(h, static_cast<uint64_t>(p.couplersActive));
-        h = mix(h, static_cast<uint64_t>(p.couplersAmount * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.ratioR * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.ratioG * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.ratioB * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.sigma * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.high * 10000.0));
-        h = mix(h, static_cast<uint64_t>(p.spatialSigmaMicrometers * 10000.0));
+        mix_hash_field(h, p.couplersActive, mix);
+        mix_hash_field_scaled(h, p.couplersAmount, 10000.0, mix);
+        mix_hash_field_scaled(h, p.ratioR, 10000.0, mix);
+        mix_hash_field_scaled(h, p.ratioG, 10000.0, mix);
+        mix_hash_field_scaled(h, p.ratioB, 10000.0, mix);
+        mix_hash_field_scaled(h, p.sigma, 10000.0, mix);
+        mix_hash_field_scaled(h, p.high, 10000.0, mix);
+        mix_hash_field_scaled(h, p.spatialSigmaMicrometers, 10000.0, mix);
     }
 
     inline void sanitize_dir_matrix(float matrix[3][3]) {
@@ -2224,7 +2243,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     if (dirCfg.hasData) {
         auto computeK = [&](int idx) -> float {
-            const float amount = std::max(0.1f, sanitize_positive_or(dirCfg.amount, 1.0f));
+            float amount = is_finite(static_cast<double>(dirCfg.amount))
+                ? static_cast<float>(dirCfg.amount)
+                : 1.0f;
+            if (amount <= 0.0f) {
+                amount = 0.1f;
+            }
             const float ratio = sanitize_positive_or(dirCfg.ratioRGB[idx], 1.0f);
             float k = 6.0f * amount * ratio;
             k = sanitize_positive_or(k, 6.0f);

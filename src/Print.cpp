@@ -886,6 +886,70 @@ namespace Print {
             }
         }
 
+        inline void load_finite_reference_triplet(
+            const std::vector<float>& source,
+            std::array<double, 3>& values,
+            std::array<bool, 3>& validFlags)
+        {
+            const size_t count = std::min<size_t>(3, source.size());
+            const float* sourceData = source.data();
+            for (size_t i = 0; i < count; ++i, ++sourceData) {
+                const float value = *sourceData;
+                if (!is_finite(value)) {
+                    continue;
+                }
+                values[i] = static_cast<double>(value);
+                validFlags[i] = true;
+            }
+        }
+
+        inline void build_delta_triplet(
+            const std::array<double, 3>& measured,
+            const std::array<bool, 3>& measuredValid,
+            const std::array<double, 3>& reference,
+            const std::array<bool, 3>& referenceValid,
+            std::array<double, 3>& delta,
+            std::array<bool, 3>& deltaValid)
+        {
+            const bool* measuredValidIt = measuredValid.data();
+            const bool* referenceValidIt = referenceValid.data();
+            const double* measuredIt = measured.data();
+            const double* referenceIt = reference.data();
+            double* deltaIt = delta.data();
+            bool* deltaValidIt = deltaValid.data();
+            for (int i = 0; i < 3; ++i,
+                 ++measuredValidIt, ++referenceValidIt, ++measuredIt, ++referenceIt,
+                 ++deltaIt, ++deltaValidIt) {
+                if (*measuredValidIt && *referenceValidIt) {
+                    *deltaIt = *measuredIt - *referenceIt;
+                    *deltaValidIt = true;
+                }
+            }
+        }
+
+        inline void append_triplet_segment(
+            std::ostringstream& oss,
+            const char* label,
+            const std::array<double, 3>& values,
+            const std::array<bool, 3>& validFlags)
+        {
+            oss << label << '[';
+            const double* valueData = values.data();
+            const bool* validData = validFlags.data();
+            for (size_t i = 0; i < 3; ++i, ++valueData, ++validData) {
+                if (i > 0) {
+                    oss << ", ";
+                }
+                if (*validData) {
+                    oss << *valueData;
+                }
+                else {
+                    oss << "nan";
+                }
+            }
+            oss << ']';
+        }
+
         // DEPRECATED: This diagnostic function was used to emit a neutral exposure probe after
         // print sensitivity balancing. Since print sensitivities are no longer balanced per
         // agx-emulsion parity, this probe is no longer needed. Kept for reference only.
@@ -921,15 +985,7 @@ namespace Print {
 
             std::array<double, 3> reference{ {0.0, 0.0, 0.0} };
             std::array<bool, 3> referenceValid{ {false, false, false} };
-            const size_t referenceCount = std::min<size_t>(3, referenceLogExposure.size());
-            const float* referenceData = referenceLogExposure.data();
-            for (size_t i = 0; i < referenceCount; ++i, ++referenceData) {
-                const float refVal = *referenceData;
-                if (is_finite(refVal)) {
-                    reference[i] = static_cast<double>(refVal);
-                    referenceValid[i] = true;
-                }
-            }
+            load_finite_reference_triplet(referenceLogExposure, reference, referenceValid);
 
             if (!any_true_triplet(referenceValid)) {
                 return;
@@ -937,49 +993,15 @@ namespace Print {
 
             std::array<double, 3> delta{ {0.0, 0.0, 0.0} };
             std::array<bool, 3> deltaValid{ {false, false, false} };
-            const bool* measuredValidIt = measuredValid.data();
-            const bool* referenceValidIt = referenceValid.data();
-            const double* measuredIt = measured.data();
-            const double* referenceIt = reference.data();
-            double* deltaIt = delta.data();
-            bool* deltaValidIt = deltaValid.data();
-            for (int i = 0; i < 3; ++i,
-                 ++measuredValidIt, ++referenceValidIt, ++measuredIt, ++referenceIt,
-                 ++deltaIt, ++deltaValidIt) {
-                if (*measuredValidIt && *referenceValidIt) {
-                    *deltaIt = *measuredIt - *referenceIt;
-                    *deltaValidIt = true;
-                }
-            }
-
-            auto appendSegment = [](std::ostringstream& oss,
-                const char* label,
-                const std::array<double, 3>& values,
-                const std::array<bool, 3>& validFlags) {
-                    oss << label << '[';
-                    const double* valueData = values.data();
-                    const bool* validData = validFlags.data();
-                    for (size_t i = 0; i < 3; ++i, ++valueData, ++validData) {
-                        if (i > 0) {
-                            oss << ", ";
-                        }
-                        if (*validData) {
-                            oss << *valueData;
-                        }
-                        else {
-                            oss << "nan";
-                        }
-                    }
-                    oss << ']';
-                };
+            build_delta_triplet(measured, measuredValid, reference, referenceValid, delta, deltaValid);
 
             std::ostringstream oss;
             oss.setf(std::ios::fixed, std::ios::floatfield);
             oss << std::setprecision(6);
             oss << "Neutral logE alignment";
-            appendSegment(oss, " measured=", measured, measuredValid);
-            appendSegment(oss, " ref=", reference, referenceValid);
-            appendSegment(oss, " delta=", delta, deltaValid);
+            append_triplet_segment(oss, " measured=", measured, measuredValid);
+            append_triplet_segment(oss, " ref=", reference, referenceValid);
+            append_triplet_segment(oss, " delta=", delta, deltaValid);
             oss << " (agx reference)";
 
             JTRACE("REGRESSION", oss.str());

@@ -324,6 +324,32 @@ namespace Spectral {
         }
     }
 
+    inline void sanitize_nonnegative_triplet_sp(float dst[3], const float src[3]) {
+        float* dstIt = dst;
+        const float* srcIt = src;
+        for (int i = 0; i < 3; ++i, ++dstIt, ++srcIt) {
+            *dstIt = sanitize_nonnegative_component(*srcIt);
+        }
+    }
+
+    inline std::uint64_t hash_float_span_digest_sp(const float* values, std::size_t count) {
+        const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(values, count);
+        const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
+        return Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    inline std::uint64_t hash_float_vector_digest_sp(const std::vector<float>& values) {
+        return hash_float_span_digest_sp(values.data(), values.size());
+    }
+
+    inline std::uint64_t hash_float_scalar_digest_sp(float value) {
+        return hash_float_span_digest_sp(&value, 1);
+    }
+
+    inline std::uint64_t hash_float_triplet_digest_sp(const float values[3]) {
+        return hash_float_span_digest_sp(values, 3);
+    }
+
     inline float sanitize_signed_width(float width, float minMagnitude = 1e-6f) {
         float safeWidth = width;
         if (!is_finite_sp(safeWidth)) {
@@ -1184,47 +1210,28 @@ namespace Spectral {
 
         T.illuminantHash = illuminantHash;
         if (T.illuminantHash == 0 && hasIll) {
-            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(
-                illumView.linear.data(), illumView.linear.size());
-            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
-            T.illuminantHash = Hash::hash_bytes(fields, sizeof(fields));
+            T.illuminantHash = hash_float_vector_digest_sp(illumView.linear);
         }
-
-        auto hash_vec = [](const std::vector<float>& v) -> std::uint64_t {
-            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(v.data(), v.size());
-            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
-            return Hash::hash_bytes(fields, sizeof(fields));
-            };
-        auto hash_scalar = [](float v) -> std::uint64_t {
-            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(&v, 1);
-            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
-            return Hash::hash_bytes(fields, sizeof(fields));
-            };
-        auto hash_array3 = [](const float v[3]) -> std::uint64_t {
-            const Hash::FloatSpanHash h = Hash::hash_float_span_with_nan_mask(v, 3);
-            const std::uint64_t fields[] = { h.valueHash, h.nanMaskHash };
-            return Hash::hash_bytes(fields, sizeof(fields));
-            };
         const std::uint64_t tableFields[] = {
             T.illuminantHash,
-            hash_vec(T.lambda),
-            hash_scalar(T.deltaLambda),
-            hash_scalar(T.invYn),
-            hash_array3(T.whiteXYZ),
-            hash_array3(T.refIllumWhiteXYZ),
-            hash_vec(T.Ax),
-            hash_vec(T.Ay),
-            hash_vec(T.Az),
-            hash_vec(T.illum),
-            hash_vec(T.Xbar),
-            hash_vec(T.Ybar),
-            hash_vec(T.Zbar),
-            hash_vec(T.epsC),
-            hash_vec(T.epsM),
-            hash_vec(T.epsY),
-            hash_vec(T.baseMin),
-            hash_vec(T.baseMid),
-            hash_scalar(T.baselineMixReference),
+            hash_float_vector_digest_sp(T.lambda),
+            hash_float_scalar_digest_sp(T.deltaLambda),
+            hash_float_scalar_digest_sp(T.invYn),
+            hash_float_triplet_digest_sp(T.whiteXYZ),
+            hash_float_triplet_digest_sp(T.refIllumWhiteXYZ),
+            hash_float_vector_digest_sp(T.Ax),
+            hash_float_vector_digest_sp(T.Ay),
+            hash_float_vector_digest_sp(T.Az),
+            hash_float_vector_digest_sp(T.illum),
+            hash_float_vector_digest_sp(T.Xbar),
+            hash_float_vector_digest_sp(T.Ybar),
+            hash_float_vector_digest_sp(T.Zbar),
+            hash_float_vector_digest_sp(T.epsC),
+            hash_float_vector_digest_sp(T.epsM),
+            hash_float_vector_digest_sp(T.epsY),
+            hash_float_vector_digest_sp(T.baseMin),
+            hash_float_vector_digest_sp(T.baseMid),
+            hash_float_scalar_digest_sp(T.baselineMixReference),
             Hash::hash_bytes(&T.hasBaseline, sizeof(T.hasBaseline))
         };
         T.tablesHash = Hash::hash_bytes(tableFields, sizeof(tableFields));
@@ -1239,17 +1246,11 @@ namespace Spectral {
         float XYZ[3];
         DWG_linear_to_XYZ(rgbDWG, XYZ);
 
-        float sanitizedXYZ[3] = {
-            sanitize_nonnegative_component(XYZ[0]),
-            sanitize_nonnegative_component(XYZ[1]),
-            sanitize_nonnegative_component(XYZ[2])
-        };
+        float sanitizedXYZ[3];
+        sanitize_nonnegative_triplet_sp(sanitizedXYZ, XYZ);
 
-        float refWhite[3] = {
-            sanitize_nonnegative_component(T.refIllumWhiteXYZ[0]),
-            sanitize_nonnegative_component(T.refIllumWhiteXYZ[1]),
-            sanitize_nonnegative_component(T.refIllumWhiteXYZ[2])
-        };
+        float refWhite[3];
+        sanitize_nonnegative_triplet_sp(refWhite, T.refIllumWhiteXYZ);
         if (refWhite[1] <= 0.0f) {
             copy_triplet3(gDWG_WhitePoint_XYZ, refWhite);
         }
