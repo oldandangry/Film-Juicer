@@ -1417,9 +1417,13 @@ static void assign_glare_hash_or_throw(Scanner::ScannerMediumRuntime& mediumRunt
 struct ScannerMediumRuntimeBinding {
     ScannerMediumSelection selection{};
     Scanner::ScannerMediumRuntime printOverride{};
-    const Scanner::ScannerMediumRuntime* runtime = nullptr;
+    bool usesPrintOverride = false;
     bool valid = false;
     const char* label = "scanner";
+
+    const Scanner::ScannerMediumRuntime* runtime() const {
+        return usesPrintOverride ? &printOverride : selection.runtime;
+    }
 };
 
 static ScannerMediumRuntimeBinding bind_scanner_medium_runtime(
@@ -1431,9 +1435,9 @@ static ScannerMediumRuntimeBinding bind_scanner_medium_runtime(
 {
     ScannerMediumRuntimeBinding binding{};
     binding.selection = select_scanner_medium(ws, printActive);
-    binding.runtime = binding.selection.runtime;
     binding.valid = binding.selection.valid;
     binding.label = binding.selection.label;
+    binding.usesPrintOverride = false;
     if (!printActive) {
         return binding;
     }
@@ -1445,7 +1449,7 @@ static ScannerMediumRuntimeBinding bind_scanner_medium_runtime(
     if (forcePrintGlareHash || hasPrintGlareOverride) {
         assign_glare_hash_or_throw(binding.printOverride);
     }
-    binding.runtime = &binding.printOverride;
+    binding.usesPrintOverride = true;
     return binding;
 }
 
@@ -2072,7 +2076,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         _hasPrintGlareOverride,
         &_printGlareOverride,
         /*forcePrintGlareHash*/true);
-    const Scanner::ScannerMediumRuntime* mediumRuntime = scannerBinding.runtime;
+    const Scanner::ScannerMediumRuntime* mediumRuntime = scannerBinding.runtime();
     const bool scannerRuntimeValid = scannerBinding.valid;
     const char* cpuMediumLabel = scannerBinding.label;
     ScannerPreflightResult scannerPreflight = validate_scanner_preflight_or_throw(
@@ -4652,7 +4656,7 @@ void JuicerProcessor::processImagesCUDA() {
         return validate_cuda_scanner_preflight_or_throw(
             scannerMedium.valid,
             scannerMedium.label,
-            scannerMedium.runtime);
+            scannerMedium.runtime());
     };
 
     auto finalize_pipeline_launch_or_abort = [&](const PipelineLaunchResult& launchResult,
