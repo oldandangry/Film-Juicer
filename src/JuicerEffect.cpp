@@ -633,6 +633,36 @@ namespace {
             param_name_is(paramName, JuicerParams::kCameraMeteringMethod);
     }
 
+    inline void invalidate_auto_exposure_cache_if_needed(
+        InstanceState* state,
+        const std::string& paramName) {
+        if (!state || !auto_exposure_cache_param_changed(paramName)) {
+            return;
+        }
+        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
+        state->autoExposureCacheValid = false;
+    }
+
+    inline bool halation_revert_param_changed(const std::string& paramName) {
+        return param_name_is(paramName, JuicerParams::kHalationRevertToStock);
+    }
+
+    inline bool changed_param_suppressed(const InstanceState* state) {
+        return param_events_suppressed(state);
+    }
+
+    inline bool changed_param_bootstrap_blocked(const InstanceState* state) {
+        return bootstrap_in_progress(state);
+    }
+
+    inline bool grain_preset_param_changed_by_user(bool userEdit, const std::string& paramName) {
+        return user_edit_param_is(userEdit, paramName, JuicerParams::kGrainPreset);
+    }
+
+    inline bool grain_reset_advanced_param_changed_by_user(bool userEdit, const std::string& paramName) {
+        return user_edit_param_is(userEdit, paramName, JuicerParams::kGrainResetAdvanced);
+    }
+
     inline void update_print_illuminant_runtime(
         const ParamSnapshot& snapshot,
         Print::Runtime& runtime,
@@ -3751,34 +3781,71 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     const bool traceInfo = JTRACE_ENABLED(1);
 
     // Suppress recursion while we are programmatically setting params
-    if (param_events_suppressed(_state.get())) {
+    if (changed_param_suppressed(_state.get())) {
         trace_changed_param_gate(traceInfo, paramName, "changedParam suppressed for '");
         return;
     }
-    if (bootstrap_in_progress(_state.get())) {
+    if (changed_param_bootstrap_blocked(_state.get())) {
         trace_changed_param_gate(traceInfo, paramName, "changedParam ignored during bootstrap for '");
         return;
     }
-    if (_state && auto_exposure_cache_param_changed(paramName)) {
-        std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
-        _state->autoExposureCacheValid = false;
-    }
-    if (param_name_is(paramName, JuicerParams::kHalationRevertToStock)) {
-        applyHalationProfileDefaults();
+    invalidate_auto_exposure_cache_if_needed(_state.get(), paramName);
+
+    auto apply_action_then_rebuild = [&](const auto& applyFn) {
+        applyFn();
         onParamsPossiblyChanged(paramName.c_str());
-        return;
-    }
+    };
 
     const bool userEdit = (args.reason == OFX::eChangeUserEdit);
-    if (user_edit_param_is(userEdit, paramName, JuicerParams::kGrainPreset)) {
-        const int presetIndex = read_choice_param_clamped(_pGrainPreset, 1, 0, 2);
-        applyGrainPresetDefaults(presetIndex);
-        onParamsPossiblyChanged(paramName.c_str());
-        return;
-    }
-    if (user_edit_param_is(userEdit, paramName, JuicerParams::kGrainResetAdvanced)) {
-        resetGrainAdvancedControls();
-        onParamsPossiblyChanged(paramName.c_str());
+
+    auto should_apply_halation_revert_defaults = [&]() {
+        return halation_revert_param_changed(paramName);
+    };
+
+    auto should_apply_grain_preset_defaults = [&]() {
+        return grain_preset_param_changed_by_user(userEdit, paramName);
+    };
+
+    auto should_apply_grain_reset_advanced_defaults = [&]() {
+        return grain_reset_advanced_param_changed_by_user(userEdit, paramName);
+    };
+
+    auto resolve_grain_preset_index_for_user_edit = [&]() {
+        return read_choice_param_clamped(_pGrainPreset, 1, 0, 2);
+    };
+
+    auto apply_grain_preset_defaults_then_rebuild = [&](int presetIndex) {
+        apply_action_then_rebuild([&]() {
+            applyGrainPresetDefaults(presetIndex);
+        });
+    };
+
+    auto apply_grain_reset_advanced_then_rebuild = [&]() {
+        apply_action_then_rebuild([&]() {
+            resetGrainAdvancedControls();
+        });
+    };
+
+    auto process_immediate_rebuild_actions = [&]() -> bool {
+        if (should_apply_halation_revert_defaults()) {
+            apply_action_then_rebuild([&]() {
+                applyHalationProfileDefaults();
+            });
+            return true;
+        }
+        if (should_apply_grain_preset_defaults()) {
+            const int presetIndex = resolve_grain_preset_index_for_user_edit();
+            apply_grain_preset_defaults_then_rebuild(presetIndex);
+            return true;
+        }
+        if (should_apply_grain_reset_advanced_defaults()) {
+            apply_grain_reset_advanced_then_rebuild();
+            return true;
+        }
+        return false;
+    };
+
+    if (process_immediate_rebuild_actions()) {
         return;
     }
 
@@ -3812,16 +3879,50 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         set_double3_param_if(advParam, values[0], values[1], values[2]);
     };
 
+    auto should_apply_master_delta = [&](OFX::DoubleParam* masterParam, OFX::Double3DParam* advParam) {
+        return has_master_triplet_params(masterParam, advParam);
+    };
+
+    auto should_apply_ratio_master = [&](OFX::DoubleParam* masterParam, OFX::Double3DParam* advParam) {
+        return has_master_triplet_params(masterParam, advParam);
+    };
+
+    auto read_master_value_for_update = [&](OFX::DoubleParam* masterParam, double lo, double hi, double& master) {
+        return read_master_value(masterParam, lo, hi, master);
+    };
+
+    auto sanitize_triplet_values_for_master =
+        [&](std::array<double, 3>& values, double fallback, double lo, double hi) {
+        sanitize_triplet_values(values, fallback, lo, hi);
+    };
+
+    auto compute_triplet_mean = [&](const std::array<double, 3>& values) {
+        return (values[0] + values[1] + values[2]) / 3.0;
+    };
+
+    auto write_triplet_from_ratio =
+        [&](std::array<double, 3>& values, double master, const std::array<double, 3>& ratio, double lo, double hi) {
+        double* valueIt = values.data();
+        const double* ratioIt = ratio.data();
+        for (int i = 0; i < 3; ++i, ++valueIt, ++ratioIt) {
+            *valueIt = std::clamp(master * *ratioIt, lo, hi);
+        }
+    };
+
+    auto update_master_cache = [&](double& masterCache, double master) {
+        masterCache = master;
+    };
+
     auto apply_master_delta = [&](OFX::DoubleParam* masterParam,
         OFX::Double3DParam* advParam,
         double& masterCache,
         double lo,
         double hi) {
-        if (!has_master_triplet_params(masterParam, advParam)) {
+        if (!should_apply_master_delta(masterParam, advParam)) {
             return;
         }
         double master = 0.0;
-        if (!read_master_value(masterParam, lo, hi, master)) {
+        if (!read_master_value_for_update(masterParam, lo, hi, master)) {
             return;
         }
         double prev = masterCache;
@@ -3831,14 +3932,14 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         const double delta = master - prev;
         std::array<double, 3> values{ {0.0, 0.0, 0.0} };
         advParam->getValue(values[0], values[1], values[2]);
-        sanitize_triplet_values(values, master, lo, hi);
+        sanitize_triplet_values_for_master(values, master, lo, hi);
         if (delta != 0.0) {
             for (double& value : values) {
                 value = std::clamp(value + delta, lo, hi);
             }
             set_triplet_suppressed(advParam, values);
         }
-        masterCache = master;
+        update_master_cache(masterCache, master);
     };
 
     auto apply_ratio_master = [&](OFX::DoubleParam* masterParam,
@@ -3847,20 +3948,20 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         double& masterCache,
         double lo,
         double hi) {
-        if (!has_master_triplet_params(masterParam, advParam)) {
+        if (!should_apply_ratio_master(masterParam, advParam)) {
             return;
         }
         double master = 0.0;
-        if (!read_master_value(masterParam, lo, hi, master)) {
+        if (!read_master_value_for_update(masterParam, lo, hi, master)) {
             return;
         }
 
         std::array<double, 3> values{ {0.0, 0.0, 0.0} };
         advParam->getValue(values[0], values[1], values[2]);
-        sanitize_triplet_values(values, master, lo, hi);
+        sanitize_triplet_values_for_master(values, master, lo, hi);
 
         std::array<double, 3> ratio = fallbackRatio;
-        const double mean = (values[0] + values[1] + values[2]) / 3.0;
+        const double mean = compute_triplet_mean(values);
         if (is_positive_finite(mean)) {
             double* ratioIt = ratio.data();
             const double* valueIt = values.data();
@@ -3868,14 +3969,9 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
                 *ratioIt = *valueIt / mean;
             }
         }
-
-        double* valueIt = values.data();
-        const double* ratioIt = ratio.data();
-        for (int i = 0; i < 3; ++i, ++valueIt, ++ratioIt) {
-            *valueIt = std::clamp(master * *ratioIt, lo, hi);
-        }
+        write_triplet_from_ratio(values, master, ratio, lo, hi);
         set_triplet_suppressed(advParam, values);
-        masterCache = master;
+        update_master_cache(masterCache, master);
     };
 
     struct MasterTripletUpdateBinding {
@@ -3884,6 +3980,10 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         double* masterCache = nullptr;
         double lo = 0.0;
         double hi = 0.0;
+    };
+
+    auto master_binding_ready = [](const MasterTripletUpdateBinding& binding) {
+        return binding.masterParam && binding.tripletParam && binding.masterCache;
     };
 
     auto resolve_halation_master_update = [&]() -> MasterTripletUpdateBinding {
@@ -3909,6 +4009,13 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         double* masterCache = nullptr;
         double lo = 0.0;
         double hi = 0.0;
+    };
+
+    auto ratio_binding_ready = [](const RatioMasterUpdateBinding& binding) {
+        return binding.masterParam &&
+            binding.tripletParam &&
+            binding.masterCache &&
+            binding.fallbackRatio;
     };
 
     auto resolve_grain_ratio_update =
@@ -3967,64 +4074,150 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         applyFn(value);
     };
 
-    if (userEdit && is_grain_preset_input_param(paramName)) {
-        updateGrainPresetLabel(true);
-    }
+    auto has_grain_blur_dye_target = [&]() {
+        return _pGrainBlurDyeCloudsUm != nullptr;
+    };
 
-    updateGrainChromaEnabled();
+    auto has_grain_texture_link_targets = [&]() {
+        return _pGrainSizeMixWeight && _pGrainMicroStructure;
+    };
 
-    const MasterTripletUpdateBinding halationBinding = resolve_halation_master_update();
-    if (halationBinding.masterParam && halationBinding.tripletParam && halationBinding.masterCache) {
-        apply_master_delta(
-            halationBinding.masterParam,
-            halationBinding.tripletParam,
-            *halationBinding.masterCache,
-            halationBinding.lo,
-            halationBinding.hi);
-    }
-    else if (userEdit) {
-        const GrainRatioMasterSelector grainMaster = grain_ratio_master_selector(paramName);
-        if (grainMaster != GrainRatioMasterSelector::None) {
-            const GrainRatioSet ratios = normalized_default_grain_ratios();
-            const RatioMasterUpdateBinding ratioBinding = resolve_grain_ratio_update(grainMaster, ratios);
-            if (ratioBinding.masterParam && ratioBinding.tripletParam && ratioBinding.masterCache && ratioBinding.fallbackRatio) {
-                apply_ratio_master(
-                    ratioBinding.masterParam,
-                    ratioBinding.tripletParam,
-                    *ratioBinding.fallbackRatio,
-                    *ratioBinding.masterCache,
-                    ratioBinding.lo,
-                    ratioBinding.hi);
-            }
+    auto should_apply_grain_sharpness_linked_update = [&]() {
+        return has_grain_blur_dye_target();
+    };
+
+    auto should_apply_grain_texture_linked_update = [&]() {
+        return has_grain_texture_link_targets();
+    };
+
+    auto write_grain_blur_dye_clouds = [&](double blurDyeClouds) {
+        with_param_event_suppression([&]() {
+            set_double_param_if(_pGrainBlurDyeCloudsUm, blurDyeClouds);
+        });
+    };
+
+    auto write_grain_texture_linked_values = [&](const GrainTextureLinkedValues& linked) {
+        with_param_event_suppression([&]() {
+            set_double_param_if(_pGrainSizeMixWeight, linked.sizeMixWeight);
+            set_double2_param_if(_pGrainMicroStructure, linked.microCell, linked.microSigma);
+        });
+    };
+
+    auto should_mark_grain_preset_custom = [&]() {
+        return userEdit && is_grain_preset_input_param(paramName);
+    };
+
+    auto should_process_grain_preset_custom_label = [&]() {
+        return should_mark_grain_preset_custom();
+    };
+
+    auto should_try_grain_ratio_master_update = [&](const MasterTripletUpdateBinding& binding) {
+        return userEdit && !master_binding_ready(binding);
+    };
+
+    auto resolve_grain_ratio_master_for_fallback = [&]() {
+        return grain_ratio_master_selector(paramName);
+    };
+
+    auto apply_ratio_master_if_selected = [&](GrainRatioMasterSelector grainMaster) {
+        if (grainMaster == GrainRatioMasterSelector::None) {
+            return;
         }
-    }
+        const GrainRatioSet ratios = normalized_default_grain_ratios();
+        const RatioMasterUpdateBinding ratioBinding = resolve_grain_ratio_update(grainMaster, ratios);
+        if (ratio_binding_ready(ratioBinding)) {
+            apply_ratio_master(
+                ratioBinding.masterParam,
+                ratioBinding.tripletParam,
+                *ratioBinding.fallbackRatio,
+                *ratioBinding.masterCache,
+                ratioBinding.lo,
+                ratioBinding.hi);
+        }
+    };
 
-    if (_pGrainBlurDyeCloudsUm) {
+    auto apply_grain_sharpness_linked_update = [&]() {
+        if (!should_apply_grain_sharpness_linked_update()) {
+            return;
+        }
         apply_grain_linked_unit_edit(
             JuicerParams::kGrainSharpness,
             _pGrainSharpness,
             0.5,
             [&](double sharpness) {
                 const double blurDyeClouds = std::clamp(grain_lerp(1.40, 0.60, sharpness), 0.0, 10.0);
-                with_param_event_suppression([&]() {
-                    set_double_param_if(_pGrainBlurDyeCloudsUm, blurDyeClouds);
-                });
+                write_grain_blur_dye_clouds(blurDyeClouds);
             });
-    }
-    if (_pGrainSizeMixWeight && _pGrainMicroStructure) {
+    };
+
+    auto apply_grain_texture_linked_update = [&]() {
+        if (!should_apply_grain_texture_linked_update()) {
+            return;
+        }
         apply_grain_linked_unit_edit(
             JuicerParams::kGrainTexture,
             _pGrainTexture,
             0.55,
             [&](double texture) {
                 const GrainTextureLinkedValues linked = compute_grain_texture_linked_values(texture);
-                with_param_event_suppression([&]() {
-                    set_double_param_if(_pGrainSizeMixWeight, linked.sizeMixWeight);
-                    set_double2_param_if(_pGrainMicroStructure, linked.microCell, linked.microSigma);
-                });
+                write_grain_texture_linked_values(linked);
             });
+    };
+
+    auto should_apply_any_grain_linked_updates = [&]() {
+        return should_apply_grain_sharpness_linked_update() || should_apply_grain_texture_linked_update();
+    };
+
+    auto apply_grain_linked_updates = [&]() {
+        if (!should_apply_any_grain_linked_updates()) {
+            return;
+        }
+        apply_grain_sharpness_linked_update();
+        apply_grain_texture_linked_update();
+    };
+
+    auto should_apply_halation_master_delta = [&](const MasterTripletUpdateBinding& binding) {
+        return master_binding_ready(binding);
+    };
+
+    auto should_apply_ratio_master_fallback = [&](const MasterTripletUpdateBinding& binding) {
+        return should_try_grain_ratio_master_update(binding);
+    };
+
+    auto notify_param_change_rebuild = [&]() {
+        onParamsPossiblyChanged(paramName.c_str());
+    };
+
+    auto apply_master_triplet_or_ratio_fallback = [&](const MasterTripletUpdateBinding& binding) {
+        if (should_apply_halation_master_delta(binding)) {
+            apply_master_delta(
+                binding.masterParam,
+                binding.tripletParam,
+                *binding.masterCache,
+                binding.lo,
+                binding.hi);
+            return;
+        }
+        if (should_apply_ratio_master_fallback(binding)) {
+            const GrainRatioMasterSelector grainMaster = resolve_grain_ratio_master_for_fallback();
+            apply_ratio_master_if_selected(grainMaster);
+        }
+    };
+
+    auto finalize_changed_param_update = [&](const MasterTripletUpdateBinding& binding) {
+        apply_master_triplet_or_ratio_fallback(binding);
+        apply_grain_linked_updates();
+        notify_param_change_rebuild();
+    };
+
+    if (should_process_grain_preset_custom_label()) {
+        updateGrainPresetLabel(true);
     }
-    onParamsPossiblyChanged(paramName.c_str());
+
+    updateGrainChromaEnabled();
+
+    const MasterTripletUpdateBinding halationBinding = resolve_halation_master_update();
+    finalize_changed_param_update(halationBinding);
 }
 
 ParamSnapshot JuicerEffect::snapshotParams() const {
