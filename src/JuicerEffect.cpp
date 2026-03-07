@@ -70,6 +70,9 @@ namespace {
         return data_dir_string("profiles", profileName);
     }
 
+    inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
+    static int illuminant_choice_index_from_string(const std::string& value);
+
     void trace_dichroic_load_failure(
         const char* operation,
         const std::string& dichroicDir,
@@ -79,17 +82,37 @@ namespace {
         if (!JTRACE_ENABLED(1)) {
             return;
         }
-        const char* errorDetail = detail ? detail : "unknown error";
+        const char* errorDetail = cstr_or_default_if_null(detail, "unknown error");
         std::string msg;
         msg.reserve(160 + dichroicDir.size());
-        msg = operation ? operation : "dichroic load failed";
+        msg = cstr_or_default_if_null(operation, "dichroic load failed");
         msg += " at '";
         msg += dichroicDir;
         msg += "' (";
         msg += errorDetail;
         msg += "); ";
-        msg += (fallbackState ? fallbackState : "using identity filters");
+        msg += cstr_or_default_if_null(fallbackState, "using identity filters");
         JTRACE("PRINT", msg);
+    }
+
+    bool try_load_dichroic_filters(
+        int dichroicSetChoice,
+        Print::Runtime& runtime,
+        const char* operation,
+        const char* fallbackState) {
+        const std::string dichroicDir = ensure_trailing_separator(
+            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(dichroicSetChoice)));
+        try {
+            Print::load_dichroic_filters_from_csvs(dichroicDir, runtime);
+            return true;
+        }
+        catch (const std::exception& ex) {
+            trace_dichroic_load_failure(operation, dichroicDir, ex.what(), fallbackState);
+        }
+        catch (...) {
+            trace_dichroic_load_failure(operation, dichroicDir, nullptr, fallbackState);
+        }
+        return false;
     }
 
     inline bool nearly_equal_double(double a, double b) {
@@ -104,6 +127,531 @@ namespace {
 
     inline bool is_finite(double value) {
         return std::isfinite(value);
+    }
+
+    inline int bool_to_i32(bool value) {
+        return value ? 1 : 0;
+    }
+
+    inline const char* cstr_or_default_if_null(const char* value, const char* fallback) {
+        return value ? value : fallback;
+    }
+
+    inline std::size_t cstr_len_or_zero(const char* value) {
+        return value ? std::strlen(value) : 0u;
+    }
+
+    inline const char* cstr_or_default_if_empty(const std::string& value, const char* fallback) {
+        return value.empty() ? fallback : value.c_str();
+    }
+
+    inline bool requires_nonfloat_copy(OFX::BitDepthEnum depth, int nComponents) {
+        return depth != OFX::eBitDepthFloat || nComponents == 0;
+    }
+
+    inline bool param_events_suppressed(const InstanceState* state) {
+        return state && state->suppressParamEvents;
+    }
+
+    inline bool bootstrap_in_progress(const InstanceState* state) {
+        return state && state->inBootstrap;
+    }
+
+    inline void trace_changed_param_gate(
+        bool traceInfo,
+        const std::string& paramName,
+        const char* prefix) {
+        if (!traceInfo) {
+            return;
+        }
+        std::string msg;
+        msg.reserve(cstr_len_or_zero(prefix) + paramName.size() + 1);
+        msg = cstr_or_default_if_null(prefix, "");
+        msg += paramName;
+        msg.push_back('\'');
+        JTRACE("BUILD", msg);
+    }
+
+    inline bool param_name_is(const char* changedName, const char* expected) {
+        return changedName && expected && (std::strcmp(changedName, expected) == 0);
+    }
+
+    inline bool param_name_is(const std::string& paramName, const char* expected) {
+        return expected && (paramName == expected);
+    }
+
+    inline bool user_edit_param_is(bool userEdit, const std::string& paramName, const char* expected) {
+        return userEdit && param_name_is(paramName, expected);
+    }
+
+    inline const std::string& first_nonempty_or(
+        const std::string& primary,
+        const std::string& secondary,
+        const std::string& fallback) {
+        if (!primary.empty()) {
+            return primary;
+        }
+        if (!secondary.empty()) {
+            return secondary;
+        }
+        return fallback;
+    }
+
+    inline std::uint64_t instance_token_or_zero(const InstanceState* state) {
+        return state ? state->instanceToken : 0ull;
+    }
+
+    inline std::uint64_t working_state_build_counter_or_zero(const WorkingState* ws) {
+        return ws ? ws->buildCounter : 0ull;
+    }
+
+    inline std::uint64_t working_state_build_counter_or_zero(const std::shared_ptr<const WorkingState>& ws) {
+        return ws ? ws->buildCounter : 0ull;
+    }
+
+    inline std::uint64_t working_state_full_hash_or_zero(const std::shared_ptr<const WorkingState>& ws) {
+        return ws ? ws->fullHash : 0ull;
+    }
+
+    inline std::uint64_t working_state_core_hash_or_zero(const std::shared_ptr<const WorkingState>& ws) {
+        return ws ? ws->coreHash : 0ull;
+    }
+
+    inline std::uint64_t working_state_dir_hash_or_zero(const std::shared_ptr<const WorkingState>& ws) {
+        return ws ? ws->dirHash : 0ull;
+    }
+
+    inline std::shared_ptr<const WorkingState> load_active_working_state_if(const InstanceState* state) {
+        return state ? JuicerAtomic::load_shared_ptr(&state->activeWorkingState) : nullptr;
+    }
+
+    inline std::uint32_t frame_bounds_version_or_zero(const InstanceState* state) {
+        return state ? state->frameBoundsVersion.load(std::memory_order_acquire) : 0u;
+    }
+
+    inline float print_runtime_value_or_zero(const Print::Runtime* runtime, float Print::Runtime::*field) {
+        return runtime ? (runtime->*field) : 0.0f;
+    }
+
+    inline float scale_if_enabled_or_one(bool enabled, float scale) {
+        return enabled ? scale : 1.0f;
+    }
+
+    inline void append_ymc_triplet(std::string& msg, float y, float m, float c) {
+        msg += std::to_string(y);
+        msg += "/";
+        msg += std::to_string(m);
+        msg += "/";
+        msg += std::to_string(c);
+    }
+
+    inline std::string join_keys_csv_or_none(const std::vector<std::string>& keys) {
+        std::string combined;
+        size_t reserveHint = 0;
+        const std::string* keyData = keys.data();
+        const size_t keyCount = keys.size();
+        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
+            reserveHint += keyData->size() + 1;
+        }
+        combined.reserve(reserveHint);
+        keyData = keys.data();
+        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
+            if (!combined.empty()) {
+                combined += ",";
+            }
+            combined += *keyData;
+        }
+        if (combined.empty()) {
+            combined = "<none>";
+        }
+        return combined;
+    }
+
+    inline std::string neutral_filter_prereq_context(
+        const char* paperKey,
+        const char* negativeKey,
+        const std::string& illumChoices) {
+        std::string msg;
+        msg.reserve(96 + illumChoices.size());
+        msg = "paper=";
+        msg += cstr_or_default_if_null(paperKey, "<unset>");
+        msg += " negative=";
+        msg += cstr_or_default_if_null(negativeKey, "<unset>");
+        msg += " illum_choices=";
+        msg += illumChoices;
+        return msg;
+    }
+
+    inline std::string neutral_filter_missing_context(
+        const char* paperKey,
+        const char* negativeKey,
+        const std::string& illumKeys) {
+        std::string msg;
+        msg.reserve(96 + illumKeys.size());
+        msg = "paper=";
+        msg += cstr_or_default_if_null(paperKey, "<unset>");
+        msg += " illuminant_keys=";
+        msg += illumKeys;
+        msg += " negative=";
+        msg += cstr_or_default_if_null(negativeKey, "<unset>");
+        return msg;
+    }
+
+    struct ProfileKeyLabels {
+        const char* paperKey = nullptr;
+        const char* filmKey = nullptr;
+        const char* paperLabel = "<null>";
+        const char* filmLabel = "<null>";
+    };
+
+    inline ProfileKeyLabels resolve_profile_key_labels(int printPaperIndex, int filmStockIndex) {
+        ProfileKeyLabels labels{};
+        labels.paperKey = print_paper_json_key_for_index(printPaperIndex);
+        labels.filmKey = negative_json_key_for_stock_index(filmStockIndex);
+        labels.paperLabel = cstr_or_default_if_null(labels.paperKey, "<null>");
+        labels.filmLabel = cstr_or_default_if_null(labels.filmKey, "<null>");
+        return labels;
+    }
+
+    inline ProfileKeyLabels resolve_profile_key_labels(const ParamSnapshot& snapshot) {
+        return resolve_profile_key_labels(snapshot.printPaperIndex, snapshot.filmStockIndex);
+    }
+
+    struct PrintProfileLoadInputs {
+        ProfileKeyLabels labels{};
+        std::string printDir;
+        std::string printProfileJson;
+    };
+
+    inline void load_print_profile_into_runtime(
+        const std::string& printDir,
+        const std::string& printProfileJson,
+        Print::Runtime& runtime,
+        bool moveMidNeutralVectors);
+
+    inline PrintProfileLoadInputs build_print_profile_load_inputs(const ParamSnapshot& snapshot) {
+        PrintProfileLoadInputs inputs{};
+        inputs.labels = resolve_profile_key_labels(snapshot);
+        inputs.printDir = print_dir_for_index(snapshot.printPaperIndex);
+        inputs.printProfileJson = profile_json_path_for_key_or_empty(inputs.labels.paperKey);
+        return inputs;
+    }
+
+    inline PrintProfileLoadInputs load_print_profile_for_snapshot(
+        const ParamSnapshot& snapshot,
+        Print::Runtime& runtime,
+        bool moveMidNeutralVectors) {
+        PrintProfileLoadInputs inputs = build_print_profile_load_inputs(snapshot);
+        load_print_profile_into_runtime(
+            inputs.printDir,
+            inputs.printProfileJson,
+            runtime,
+            moveMidNeutralVectors);
+        return inputs;
+    }
+
+    inline void sync_print_runtime_mid_neutral_from_profile(Print::Runtime& runtime, bool moveVectors) {
+        runtime.hasMidNeutralDensity = runtime.profile.hasMidNeutralDensity;
+        runtime.hasMidNeutralLogE = runtime.profile.hasMidNeutralLogE;
+        if (moveVectors) {
+            runtime.midNeutralDensity = std::move(runtime.profile.midNeutralDensity);
+            runtime.midNeutralLogE = std::move(runtime.profile.midNeutralLogE);
+        }
+        else {
+            runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
+            runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
+        }
+    }
+
+    inline void load_print_profile_into_runtime(
+        const std::string& printDir,
+        const std::string& printProfileJson,
+        Print::Runtime& runtime,
+        bool moveMidNeutralVectors) {
+        Print::load_profile_from_dir(printDir, runtime.profile, printProfileJson, &runtime);
+        sync_print_runtime_mid_neutral_from_profile(runtime, moveMidNeutralVectors);
+    }
+
+    struct PendingStateSnapshot {
+        ParamSnapshot params{};
+        std::uint64_t fullHash = 0ull;
+        std::uint64_t coreHash = 0ull;
+        std::uint64_t dirHash = 0ull;
+    };
+
+    inline PendingStateSnapshot load_pending_state_snapshot(InstanceState& state) {
+        PendingStateSnapshot snapshot{};
+        std::lock_guard<std::mutex> lock(state.pending.m);
+        snapshot.params = state.pending.params;
+        snapshot.fullHash = state.pending.fullHash;
+        snapshot.coreHash = state.pending.coreHash;
+        snapshot.dirHash = state.pending.dirHash;
+        return snapshot;
+    }
+
+    inline void store_pending_state_snapshot(
+        InstanceState& state,
+        const ParamSnapshot& params,
+        std::uint64_t fullHash,
+        std::uint64_t coreHash,
+        std::uint64_t dirHash) {
+        std::lock_guard<std::mutex> lock(state.pending.m);
+        state.pending.params = params;
+        state.pending.fullHash = fullHash;
+        state.pending.coreHash = coreHash;
+        state.pending.dirHash = dirHash;
+    }
+
+    inline bool pending_rebuild_required(const PendingStateSnapshot& pending, std::uint64_t builtFullHash) {
+        return pending.fullHash != 0 && pending.fullHash != builtFullHash;
+    }
+
+    inline bool pending_dir_only_rebuild(
+        const PendingStateSnapshot& pending,
+        std::uint64_t builtCoreHash,
+        std::uint64_t builtDirHash) {
+        return (pending.coreHash != 0) && (builtCoreHash != 0) &&
+            (pending.coreHash == builtCoreHash) &&
+            (pending.dirHash != 0) && (pending.dirHash != builtDirHash);
+    }
+
+    inline void rebuild_pending_working_state(
+        JuicerEffect& effect,
+        InstanceState& state,
+        const PendingStateSnapshot& pending,
+        bool dirOnly) {
+        if (dirOnly) {
+            rebuild_working_state_couplers_only(effect.getHandle(), state, pending.params);
+        }
+        else {
+            rebuild_working_state(effect.getHandle(), state, pending.params);
+        }
+    }
+
+    inline void rebuild_pending_state_if_needed(JuicerEffect& effect, InstanceState& state) {
+        const PendingStateSnapshot pending = load_pending_state_snapshot(state);
+        const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(&state);
+        const std::uint64_t builtFullHash = working_state_full_hash_or_zero(wsCur);
+        if (!pending_rebuild_required(pending, builtFullHash)) {
+            return;
+        }
+        const std::uint64_t builtCoreHash = working_state_core_hash_or_zero(wsCur);
+        const std::uint64_t builtDirHash = working_state_dir_hash_or_zero(wsCur);
+        const bool dirOnly = pending_dir_only_rebuild(pending, builtCoreHash, builtDirHash);
+        rebuild_pending_working_state(effect, state, pending, dirOnly);
+    }
+
+    inline bool is_grain_preset_input_param(const std::string& paramName) {
+        return param_name_is(paramName, JuicerParams::kGrainAmplitude) ||
+            param_name_is(paramName, JuicerParams::kGrainBlur) ||
+            param_name_is(paramName, JuicerParams::kGrainSharpness) ||
+            param_name_is(paramName, JuicerParams::kGrainChroma) ||
+            param_name_is(paramName, JuicerParams::kGrainTexture) ||
+            param_name_is(paramName, JuicerParams::kGrainSublayersActive) ||
+            param_name_is(paramName, JuicerParams::kGrainParticleAreaUm2) ||
+            param_name_is(paramName, JuicerParams::kGrainParticleScaleMaster) ||
+            param_name_is(paramName, JuicerParams::kGrainParticleScaleLayersMaster) ||
+            param_name_is(paramName, JuicerParams::kGrainDensityMinMaster) ||
+            param_name_is(paramName, JuicerParams::kGrainUniformityMaster) ||
+            param_name_is(paramName, JuicerParams::kGrainParticleScale) ||
+            param_name_is(paramName, JuicerParams::kGrainParticleScaleLayers) ||
+            param_name_is(paramName, JuicerParams::kGrainDensityMin) ||
+            param_name_is(paramName, JuicerParams::kGrainUniformity) ||
+            param_name_is(paramName, JuicerParams::kGrainBlurDyeCloudsUm) ||
+            param_name_is(paramName, JuicerParams::kGrainSizeMixWeight) ||
+            param_name_is(paramName, JuicerParams::kGrainSizeMixWeightMid) ||
+            param_name_is(paramName, JuicerParams::kGrainSizeMixScale) ||
+            param_name_is(paramName, JuicerParams::kGrainMicroStructure) ||
+            param_name_is(paramName, JuicerParams::kGrainClumpTemporalMix) ||
+            param_name_is(paramName, JuicerParams::kGrainClumpMorphPeriodSec);
+    }
+
+    enum class GrainRatioMasterSelector {
+        None = 0,
+        Scale,
+        ScaleLayers,
+        DensityMin,
+        Uniformity
+    };
+
+    inline GrainRatioMasterSelector grain_ratio_master_selector(const std::string& paramName) {
+        if (param_name_is(paramName, JuicerParams::kGrainParticleScaleMaster)) {
+            return GrainRatioMasterSelector::Scale;
+        }
+        if (param_name_is(paramName, JuicerParams::kGrainParticleScaleLayersMaster)) {
+            return GrainRatioMasterSelector::ScaleLayers;
+        }
+        if (param_name_is(paramName, JuicerParams::kGrainDensityMinMaster)) {
+            return GrainRatioMasterSelector::DensityMin;
+        }
+        if (param_name_is(paramName, JuicerParams::kGrainUniformityMaster)) {
+            return GrainRatioMasterSelector::Uniformity;
+        }
+        return GrainRatioMasterSelector::None;
+    }
+
+    enum class HalationMasterSelector {
+        None = 0,
+        Strength,
+        SizeUm,
+        ScatteringStrength,
+        ScatteringSizeUm
+    };
+
+    inline HalationMasterSelector halation_master_selector(const std::string& paramName) {
+        if (param_name_is(paramName, JuicerParams::kHalationStrengthMaster)) {
+            return HalationMasterSelector::Strength;
+        }
+        if (param_name_is(paramName, JuicerParams::kHalationSizeUmMaster)) {
+            return HalationMasterSelector::SizeUm;
+        }
+        if (param_name_is(paramName, JuicerParams::kHalationScatteringStrengthMaster)) {
+            return HalationMasterSelector::ScatteringStrength;
+        }
+        if (param_name_is(paramName, JuicerParams::kHalationScatteringSizeUmMaster)) {
+            return HalationMasterSelector::ScatteringSizeUm;
+        }
+        return HalationMasterSelector::None;
+    }
+
+#ifdef JUICER_ENABLE_COUPLERS
+    enum class CouplerParamKind {
+        None = 0,
+        Active,
+        Amount,
+        RatioB,
+        RatioG,
+        RatioR,
+        Sigma,
+        High,
+        SpatialSigma
+    };
+
+    inline CouplerParamKind coupler_param_kind(const char* changedName) {
+        using namespace Couplers;
+        if (param_name_is(changedName, kParamCouplersActive)) {
+            return CouplerParamKind::Active;
+        }
+        if (param_name_is(changedName, kParamCouplersAmount)) {
+            return CouplerParamKind::Amount;
+        }
+        if (param_name_is(changedName, kParamCouplersAmountB)) {
+            return CouplerParamKind::RatioB;
+        }
+        if (param_name_is(changedName, kParamCouplersAmountG)) {
+            return CouplerParamKind::RatioG;
+        }
+        if (param_name_is(changedName, kParamCouplersAmountR)) {
+            return CouplerParamKind::RatioR;
+        }
+        if (param_name_is(changedName, kParamCouplersLayerSigma)) {
+            return CouplerParamKind::Sigma;
+        }
+        if (param_name_is(changedName, kParamCouplersHighExpShift)) {
+            return CouplerParamKind::High;
+        }
+        if (param_name_is(changedName, kParamCouplersSpatialSigma)) {
+            return CouplerParamKind::SpatialSigma;
+        }
+        return CouplerParamKind::None;
+    }
+
+    inline void mark_dirty_release(std::atomic<bool>& dirtyFlag) {
+        dirtyFlag.store(true, std::memory_order_release);
+    }
+
+    inline bool mark_coupler_dirty_if_known(InstanceState& state, const char* changedName) {
+        switch (coupler_param_kind(changedName)) {
+        case CouplerParamKind::Active:
+            mark_dirty_release(state.couplerDirty.active);
+            return true;
+        case CouplerParamKind::Amount:
+            mark_dirty_release(state.couplerDirty.amount);
+            return true;
+        case CouplerParamKind::RatioB:
+            mark_dirty_release(state.couplerDirty.ratioB);
+            return true;
+        case CouplerParamKind::RatioG:
+            mark_dirty_release(state.couplerDirty.ratioG);
+            return true;
+        case CouplerParamKind::RatioR:
+            mark_dirty_release(state.couplerDirty.ratioR);
+            return true;
+        case CouplerParamKind::Sigma:
+            mark_dirty_release(state.couplerDirty.sigma);
+            return true;
+        case CouplerParamKind::High:
+            mark_dirty_release(state.couplerDirty.high);
+            return true;
+        case CouplerParamKind::SpatialSigma:
+            mark_dirty_release(state.couplerDirty.spatialSigma);
+            return true;
+        case CouplerParamKind::None:
+        default:
+            return false;
+        }
+    }
+
+    inline bool is_coupler_param_name(const char* changedName) {
+        return coupler_param_kind(changedName) != CouplerParamKind::None;
+    }
+#endif
+
+    inline bool should_refresh_print_illuminant(bool printReloaded, bool filmReloaded) {
+        return printReloaded || filmReloaded;
+    }
+
+    inline bool should_apply_neutral_after_reload(bool printReloaded, bool dichroicReloaded) {
+        return printReloaded || dichroicReloaded;
+    }
+
+    inline bool auto_exposure_cache_param_changed(const std::string& paramName) {
+        return param_name_is(paramName, kParamCameraAutoExposure) ||
+            param_name_is(paramName, JuicerParams::kCameraMeteringMethod);
+    }
+
+    inline void update_print_illuminant_runtime(
+        const ParamSnapshot& snapshot,
+        Print::Runtime& runtime,
+        const std::string& dataDir) {
+        Print::build_illuminant_from_choice(snapshot.enlIll, runtime, dataDir, /*forEnlarger*/true);
+    }
+
+    struct ChangedParamFlags {
+        bool hasName = false;
+        bool referenceIlluminant = false;
+        bool enlargerIlluminant = false;
+        bool printPaper = false;
+        bool enlargerDichroicSet = false;
+        bool filmStock = false;
+        bool couplerParam = false;
+    };
+
+    inline ChangedParamFlags classify_changed_param(const char* changedName) {
+        ChangedParamFlags flags{};
+        flags.hasName = (changedName != nullptr);
+        if (!flags.hasName) {
+            return flags;
+        }
+
+        flags.referenceIlluminant = param_name_is(changedName, kParamReferenceIlluminant);
+        flags.enlargerIlluminant = param_name_is(changedName, kParamEnlargerIlluminant);
+        flags.printPaper = param_name_is(changedName, kParamPrintPaper);
+        flags.enlargerDichroicSet = param_name_is(changedName, kParamEnlargerDichroicSet);
+        flags.filmStock = param_name_is(changedName, kParamFilmStock);
+#ifdef JUICER_ENABLE_COUPLERS
+        flags.couplerParam = is_coupler_param_name(changedName);
+#endif
+        return flags;
+    }
+
+    inline void mark_illuminant_override_if_changed(InstanceState& state, const ChangedParamFlags& changed) {
+        if (changed.referenceIlluminant) {
+            state.illuminantOverride.reference = true;
+        }
+        else if (changed.enlargerIlluminant) {
+            state.illuminantOverride.enlarger = true;
+        }
     }
 
     inline double sanitize_finite_clamped(double value, double fallback, double minValue, double maxValue) {
@@ -228,6 +776,23 @@ namespace {
         if (param) {
             param->setValue(value);
         }
+    }
+
+    inline bool apply_illuminant_choice_from_source(
+        OFX::ChoiceParam* param,
+        int& currentIndex,
+        bool overrideFlag,
+        const std::string& source) {
+        if (overrideFlag || !param) {
+            return false;
+        }
+        const int mapped = illuminant_choice_index_from_string(source);
+        if (mapped < 0 || currentIndex == mapped) {
+            return false;
+        }
+        set_choice_param_if(param, mapped);
+        currentIndex = mapped;
+        return true;
     }
 
     inline void set_double2_param_if(
@@ -708,9 +1273,9 @@ namespace {
         std::string msg;
         msg.reserve(256);
         msg = "event=";
-        msg += (event ? event : "unknown");
+        msg += cstr_or_default_if_null(event, "unknown");
         msg += " instance_token=";
-        msg += std::to_string(state ? state->instanceToken : 0);
+        msg += std::to_string(instance_token_or_zero(state));
         msg += " width=";
         msg += std::to_string(width);
         msg += " height=";
@@ -1897,8 +2462,8 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     }
 #endif
 
-    const std::shared_ptr<const WorkingState> wsCur = (state ? JuicerAtomic::load_shared_ptr(&state->activeWorkingState) : nullptr);
-    const uint64_t wsBuildCounter = wsCur ? wsCur->buildCounter : 0;
+    const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(state);
+    const uint64_t wsBuildCounter = working_state_build_counter_or_zero(wsCur);
 
     // Camera auto-exposure always meters against AgX's fixed 18.4% target (independent of scanner target tweaks).
     constexpr double kCameraMeterTargetY = 0.184;
@@ -2015,7 +2580,7 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         return dirRT;
     }
 
-    const std::shared_ptr<const WorkingState> wsCur = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
+    const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(_state.get());
     if (wsCur && wsCur->buildCounter > 0) {
         dirRT = wsCur->dirRT;
         float* dMaxIt = dirRT.dMax;
@@ -2077,7 +2642,7 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
         return info;
     }
 
-    info.workingState = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
+    info.workingState = load_active_working_state_if(_state.get());
 
     const WorkingState* ws = info.workingState.get();
     if (ws && ws->buildCounter > 0 && ws->printRT) {
@@ -2340,7 +2905,7 @@ JuicerEffect::~JuicerEffect() {
                     msg += " context=";
                     msg += std::to_string(contextBits);
                     msg += " accepted=";
-                    msg += std::to_string(retireOk ? 1 : 0);
+                    msg += std::to_string(bool_to_i32(retireOk));
                     if (!retireError.empty()) {
                         msg += " error=";
                         msg += retireError;
@@ -2379,7 +2944,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (args.isEnabledCudaRender) {
         // CUDA renders use device pointers; avoid CPU pixel reads (auto-exposure, non-float copies, etc.).
-        if (depth != OFX::eBitDepthFloat || nComponents == 0) {
+        if (requires_nonfloat_copy(depth, nComponents)) {
             throw OFX::Exception::Suite(kOfxStatErrUnsupported);
         }
     }
@@ -2389,12 +2954,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     }
 #endif
 
-    if (depth != OFX::eBitDepthFloat) {
-        JuicerProc::copyNonFloatRect(srcImg.get(), dstImg.get());
-        return;
-    }
-
-    if (nComponents == 0) {
+    if (requires_nonfloat_copy(depth, nComponents)) {
         JuicerProc::copyNonFloatRect(srcImg.get(), dstImg.get());
         return;
     }
@@ -2451,33 +3011,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     // Coalesce parameter-driven WorkingState rebuilds on the render thread to keep UI callbacks fast.
     if (_state && _state->baseLoaded) {
-        ParamSnapshot pendingParams{};
-        std::uint64_t pendingFullHash = 0;
-        std::uint64_t pendingCoreHash = 0;
-        std::uint64_t pendingDirHash = 0;
-        {
-            std::lock_guard<std::mutex> lock(_state->pending.m);
-            pendingParams = _state->pending.params;
-            pendingFullHash = _state->pending.fullHash;
-            pendingCoreHash = _state->pending.coreHash;
-            pendingDirHash = _state->pending.dirHash;
-        }
-
-        const std::shared_ptr<const WorkingState> wsCur = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
-        const std::uint64_t builtFullHash = wsCur ? wsCur->fullHash : 0;
-        if (pendingFullHash != 0 && pendingFullHash != builtFullHash) {
-            const std::uint64_t builtCoreHash = wsCur ? wsCur->coreHash : 0;
-            const std::uint64_t builtDirHash = wsCur ? wsCur->dirHash : 0;
-            const bool dirOnly = (pendingCoreHash != 0) && (builtCoreHash != 0) &&
-                (pendingCoreHash == builtCoreHash) &&
-                (pendingDirHash != 0) && (pendingDirHash != builtDirHash);
-            if (dirOnly) {
-                rebuild_working_state_couplers_only(this->getHandle(), *_state, pendingParams);
-            }
-            else {
-                rebuild_working_state(this->getHandle(), *_state, pendingParams);
-            }
-        }
+        rebuild_pending_state_if_needed(*this, *_state);
     }
     const ExposureParams exposureParams = gatherExposureParams();
     const Scanner::Options scannerOptions = gatherScannerOptions();
@@ -2509,31 +3043,24 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const bool printReady = wsInfo.printRuntimeReady;
     if (traceVerbose) {
         ParamSnapshot Pdbg = snapshotParams();
-        const char* paperKey = print_paper_json_key_for_index(Pdbg.printPaperIndex);
-        const char* filmKey = negative_json_key_for_stock_index(Pdbg.filmStockIndex);
+        const ProfileKeyLabels labels = resolve_profile_key_labels(Pdbg);
         const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(prt);
-        const std::uint64_t buildCounter = ws ? ws->buildCounter : 0;
-        const float neutralY = prt ? prt->neutralY : 0.0f;
-        const float neutralM = prt ? prt->neutralM : 0.0f;
-        const float neutralC = prt ? prt->neutralC : 0.0f;
-        const char* paperLabel = paperKey ? paperKey : "<null>";
-        const char* filmLabel = filmKey ? filmKey : "<null>";
+        const std::uint64_t buildCounter = working_state_build_counter_or_zero(ws);
+        const float neutralY = print_runtime_value_or_zero(prt, &Print::Runtime::neutralY);
+        const float neutralM = print_runtime_value_or_zero(prt, &Print::Runtime::neutralM);
+        const float neutralC = print_runtime_value_or_zero(prt, &Print::Runtime::neutralC);
         std::string msg;
         msg.reserve(256);
         msg = "render print state build=";
         msg += std::to_string(buildCounter);
         msg += " paper=";
-        msg += paperLabel;
+        msg += labels.paperLabel;
         msg += " film=";
-        msg += filmLabel;
+        msg += labels.filmLabel;
         msg += " printRT=";
         msg += std::to_string(prtPtr);
         msg += " neutralY/M/C=";
-        msg += std::to_string(neutralY);
-        msg += "/";
-        msg += std::to_string(neutralM);
-        msg += "/";
-        msg += std::to_string(neutralC);
+        append_ymc_triplet(msg, neutralY, neutralM, neutralC);
         msg += " yFilter=";
         msg += std::to_string(printParams.yFilter);
         msg += " mFilter=";
@@ -2541,7 +3068,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         msg += " cFilter=";
         msg += std::to_string(printParams.cFilter);
         msg += " bypass=";
-        msg += std::to_string(printParams.bypass ? 1 : 0);
+        msg += std::to_string(bool_to_i32(printParams.bypass));
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
     if (!wsReady) {
@@ -2559,7 +3086,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         const bool printComp = read_bool_param_or(_pPrintExposureComp, false);
 
         printParams.exposureCompensationEnabled = printComp;
-        printParams.exposureCompensationScale = printComp ? exposureParams.sliderScale : 1.0f;
+        printParams.exposureCompensationScale = scale_if_enabled_or_one(printComp, exposureParams.sliderScale);
     }
 
     // Tile-based multithreaded processing via OFX::ImageProcessor
@@ -2577,9 +3104,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setWorkingState(ws, wsReady);
     proc.setPrintRuntime(prt, printReady);
     proc.setInstanceState(_state.get());
-    const std::uint32_t frameVersion = _state
-        ? _state->frameBoundsVersion.load(std::memory_order_acquire)
-        : 0;
+    const std::uint32_t frameVersion = frame_bounds_version_or_zero(_state.get());
     proc.setFrameBoundsVersion(frameVersion);
     proc.setPixelSizeUm(pixelSizeUm);
     // Per agx-emulsion parity: autoExposure.exposureScale already encodes 2^(autoEV + sliderEV).
@@ -2601,45 +3126,34 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
 void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std::string& paramName) {
     const bool traceInfo = JTRACE_ENABLED(1);
-    auto trace_changed_param_gate = [&](const char* prefix) {
-        if (!traceInfo) {
-            return;
-        }
-        std::string msg;
-        msg.reserve((prefix ? std::strlen(prefix) : 0u) + paramName.size() + 1);
-        msg = prefix;
-        msg += paramName;
-        msg.push_back('\'');
-        JTRACE("BUILD", msg);
-    };
 
     // Suppress recursion while we are programmatically setting params
-    if (_state && _state->suppressParamEvents) {
-        trace_changed_param_gate("changedParam suppressed for '");
+    if (param_events_suppressed(_state.get())) {
+        trace_changed_param_gate(traceInfo, paramName, "changedParam suppressed for '");
         return;
     }
-    if (_state && _state->inBootstrap) {
-        trace_changed_param_gate("changedParam ignored during bootstrap for '");
+    if (bootstrap_in_progress(_state.get())) {
+        trace_changed_param_gate(traceInfo, paramName, "changedParam ignored during bootstrap for '");
         return;
     }
-    if (_state && (paramName == kParamCameraAutoExposure || paramName == JuicerParams::kCameraMeteringMethod)) {
+    if (_state && auto_exposure_cache_param_changed(paramName)) {
         std::lock_guard<std::mutex> cacheLock(_state->autoExposureMutex);
         _state->autoExposureCacheValid = false;
     }
-    if (paramName == JuicerParams::kHalationRevertToStock) {
+    if (param_name_is(paramName, JuicerParams::kHalationRevertToStock)) {
         applyHalationProfileDefaults();
         onParamsPossiblyChanged(paramName.c_str());
         return;
     }
 
     const bool userEdit = (args.reason == OFX::eChangeUserEdit);
-    if (paramName == JuicerParams::kGrainPreset && userEdit) {
+    if (user_edit_param_is(userEdit, paramName, JuicerParams::kGrainPreset)) {
         const int presetIndex = read_choice_param_clamped(_pGrainPreset, 1, 0, 2);
         applyGrainPresetDefaults(presetIndex);
         onParamsPossiblyChanged(paramName.c_str());
         return;
     }
-    if (paramName == JuicerParams::kGrainResetAdvanced && userEdit) {
+    if (user_edit_param_is(userEdit, paramName, JuicerParams::kGrainResetAdvanced)) {
         resetGrainAdvancedControls();
         onParamsPossiblyChanged(paramName.c_str());
         return;
@@ -2733,68 +3247,53 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         masterCache = master;
     };
 
-    if (userEdit) {
-        if (paramName == JuicerParams::kGrainAmplitude ||
-            paramName == JuicerParams::kGrainBlur ||
-            paramName == JuicerParams::kGrainSharpness ||
-            paramName == JuicerParams::kGrainChroma ||
-            paramName == JuicerParams::kGrainTexture ||
-            paramName == JuicerParams::kGrainSublayersActive ||
-            paramName == JuicerParams::kGrainParticleAreaUm2 ||
-            paramName == JuicerParams::kGrainParticleScaleMaster ||
-            paramName == JuicerParams::kGrainParticleScaleLayersMaster ||
-            paramName == JuicerParams::kGrainDensityMinMaster ||
-            paramName == JuicerParams::kGrainUniformityMaster ||
-            paramName == JuicerParams::kGrainParticleScale ||
-            paramName == JuicerParams::kGrainParticleScaleLayers ||
-            paramName == JuicerParams::kGrainDensityMin ||
-            paramName == JuicerParams::kGrainUniformity ||
-            paramName == JuicerParams::kGrainBlurDyeCloudsUm ||
-            paramName == JuicerParams::kGrainSizeMixWeight ||
-            paramName == JuicerParams::kGrainSizeMixWeightMid ||
-            paramName == JuicerParams::kGrainSizeMixScale ||
-            paramName == JuicerParams::kGrainMicroStructure ||
-            paramName == JuicerParams::kGrainClumpTemporalMix ||
-            paramName == JuicerParams::kGrainClumpMorphPeriodSec) {
-            updateGrainPresetLabel(true);
-        }
+    if (userEdit && is_grain_preset_input_param(paramName)) {
+        updateGrainPresetLabel(true);
     }
 
     updateGrainChromaEnabled();
 
-    if (paramName == JuicerParams::kHalationStrengthMaster) {
+    switch (halation_master_selector(paramName)) {
+    case HalationMasterSelector::Strength:
         apply_master_delta(_pHalationStrengthMaster, _pHalationStrength, _halationStrengthMasterLast, 0.0, 100.0);
-    }
-    else if (paramName == JuicerParams::kHalationSizeUmMaster) {
+        break;
+    case HalationMasterSelector::SizeUm:
         apply_master_delta(_pHalationSizeUmMaster, _pHalationSizeUm, _halationSizeUmMasterLast, 0.0, 1000.0);
-    }
-    else if (paramName == JuicerParams::kHalationScatteringStrengthMaster) {
+        break;
+    case HalationMasterSelector::ScatteringStrength:
         apply_master_delta(_pHalationScatteringStrengthMaster, _pHalationScatteringStrength, _halationScatteringStrengthMasterLast, 0.0, 100.0);
-    }
-    else if (paramName == JuicerParams::kHalationScatteringSizeUmMaster) {
+        break;
+    case HalationMasterSelector::ScatteringSizeUm:
         apply_master_delta(_pHalationScatteringSizeUmMaster, _pHalationScatteringSizeUm, _halationScatteringSizeUmMasterLast, 0.0, 1000.0);
-    }
-    else if (userEdit && (paramName == JuicerParams::kGrainParticleScaleMaster ||
-        paramName == JuicerParams::kGrainParticleScaleLayersMaster ||
-        paramName == JuicerParams::kGrainDensityMinMaster ||
-        paramName == JuicerParams::kGrainUniformityMaster)) {
-        const GrainRatioSet ratios = normalized_default_grain_ratios();
+        break;
+    case HalationMasterSelector::None:
+        if (userEdit) {
+            const GrainRatioMasterSelector grainMaster = grain_ratio_master_selector(paramName);
+            if (grainMaster != GrainRatioMasterSelector::None) {
+                const GrainRatioSet ratios = normalized_default_grain_ratios();
 
-        if (paramName == JuicerParams::kGrainParticleScaleMaster) {
-            apply_ratio_master(_pGrainParticleScaleMaster, _pGrainParticleScale, ratios.scale, _grainParticleScaleMasterLast, 0.0, 10.0);
+                switch (grainMaster) {
+                case GrainRatioMasterSelector::Scale:
+                    apply_ratio_master(_pGrainParticleScaleMaster, _pGrainParticleScale, ratios.scale, _grainParticleScaleMasterLast, 0.0, 10.0);
+                    break;
+                case GrainRatioMasterSelector::ScaleLayers:
+                    apply_ratio_master(_pGrainParticleScaleLayersMaster, _pGrainParticleScaleLayers, ratios.scaleLayers, _grainParticleScaleLayersMasterLast, 0.0, 10.0);
+                    break;
+                case GrainRatioMasterSelector::DensityMin:
+                    apply_ratio_master(_pGrainDensityMinMaster, _pGrainDensityMin, ratios.densityMin, _grainDensityMinMasterLast, 0.0, 1.0);
+                    break;
+                case GrainRatioMasterSelector::Uniformity:
+                    apply_ratio_master(_pGrainUniformityMaster, _pGrainUniformity, ratios.uniformity, _grainUniformityMasterLast, 0.0, 1.0);
+                    break;
+                case GrainRatioMasterSelector::None:
+                    break;
+                }
+            }
         }
-        else if (paramName == JuicerParams::kGrainParticleScaleLayersMaster) {
-            apply_ratio_master(_pGrainParticleScaleLayersMaster, _pGrainParticleScaleLayers, ratios.scaleLayers, _grainParticleScaleLayersMasterLast, 0.0, 10.0);
-        }
-        else if (paramName == JuicerParams::kGrainDensityMinMaster) {
-            apply_ratio_master(_pGrainDensityMinMaster, _pGrainDensityMin, ratios.densityMin, _grainDensityMinMasterLast, 0.0, 1.0);
-        }
-        else if (paramName == JuicerParams::kGrainUniformityMaster) {
-            apply_ratio_master(_pGrainUniformityMaster, _pGrainUniformity, ratios.uniformity, _grainUniformityMasterLast, 0.0, 1.0);
-        }
+        break;
     }
 
-    if (userEdit && paramName == JuicerParams::kGrainSharpness && _pGrainSharpness && _pGrainBlurDyeCloudsUm && _state) {
+    if (user_edit_param_is(userEdit, paramName, JuicerParams::kGrainSharpness) && _pGrainSharpness && _pGrainBlurDyeCloudsUm && _state) {
         double sharpness = read_double_param_or(_pGrainSharpness, 0.5);
         if (is_finite(sharpness)) {
             sharpness = sanitize_finite_clamped(sharpness, 0.5, 0.0, 1.0);
@@ -2803,7 +3302,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
             set_double_param_if(_pGrainBlurDyeCloudsUm, blurDyeClouds);
         }
     }
-    if (userEdit && paramName == JuicerParams::kGrainTexture && _pGrainTexture && _pGrainSizeMixWeight && _pGrainMicroStructure && _state) {
+    if (user_edit_param_is(userEdit, paramName, JuicerParams::kGrainTexture) && _pGrainTexture && _pGrainSizeMixWeight && _pGrainMicroStructure && _state) {
         double texture = read_double_param_or(_pGrainTexture, 0.55);
         if (is_finite(texture)) {
             texture = sanitize_finite_clamped(texture, 0.55, 0.0, 1.0);
@@ -2821,7 +3320,7 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 ParamSnapshot JuicerEffect::snapshotParams() const {
     ParamSnapshot P;
     auto read_bool_as_int = [](auto* param, bool fallback) -> int {
-        return read_bool_param_or(param, fallback) ? 1 : 0;
+        return bool_to_i32(read_bool_param_or(param, fallback));
     };
 
     P.filmStockIndex = read_choice_param_or(_pFilmStock, P.filmStockIndex);
@@ -2875,14 +3374,7 @@ void JuicerEffect::bootstrap_after_attach() {
     ParamSnapshot P = snapshotParams();
 
     // Load selected print paper profile
-    const std::string printDir = print_dir_for_index(P.printPaperIndex);
-    const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-    const std::string printProfileJson = profile_json_path_for_key_or_empty(paperKey);
-    Print::load_profile_from_dir(printDir, _state->printRT.profile, printProfileJson, &_state->printRT);
-    _state->printRT.hasMidNeutralDensity = _state->printRT.profile.hasMidNeutralDensity;
-    _state->printRT.midNeutralDensity = _state->printRT.profile.midNeutralDensity;
-    _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
-    _state->printRT.midNeutralLogE = _state->printRT.profile.midNeutralLogE;
+    (void)load_print_profile_for_snapshot(P, _state->printRT, /*moveMidNeutralVectors*/false);
 
     // Load film stock before applying metadata-driven illuminant defaults
     _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);
@@ -2892,21 +3384,15 @@ void JuicerEffect::bootstrap_after_attach() {
 
     // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
     applyMetadataIlluminantDefaults(P);
-    Print::build_illuminant_from_choice(P.enlIll, _state->printRT, _state->dataDir, /*forEnlarger*/true);
+    update_print_illuminant_runtime(P, _state->printRT, _state->dataDir);
 
     // Load dichroic filters (set selection controls which vendor curves are used).
-    const std::string dichroicDir = ensure_trailing_separator(
-        data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
-    try {
-        Print::load_dichroic_filters_from_csvs(dichroicDir, _state->printRT);
-    }
-    catch (const std::exception& ex) {
-        // Identity fallback is already handled in loader via 1.0 curves.
-        trace_dichroic_load_failure("dichroic load failed", dichroicDir, ex.what(), "using identity filters");
-    }
-    catch (...) {
-        trace_dichroic_load_failure("dichroic load failed", dichroicDir, nullptr, "using identity filters");
-    }
+    // Identity fallback is already handled in loader via 1.0 curves.
+    (void)try_load_dichroic_filters(
+        P.enlDichroicSet,
+        _state->printRT,
+        "dichroic load failed",
+        "using identity filters");
 
     applyNeutralFilters(P);
 
@@ -2931,38 +3417,17 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
     }
     const bool traceInfo = JTRACE_ENABLED(1);
 
-    const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-    const char* negativeKey = negative_json_key_for_stock_index(P.filmStockIndex);
+    const ProfileKeyLabels labels = resolve_profile_key_labels(P);
+    const char* paperKey = labels.paperKey;
+    const char* negativeKey = labels.filmKey;
     const std::vector<std::string> illumKeys = enlarger_illuminant_keys_for_choice(P.enlIll);
-
-    auto join_illum_keys = [&]() -> std::string {
-        std::string combined;
-        size_t reserveHint = 0;
-        const std::string* keyData = illumKeys.data();
-        const size_t keyCount = illumKeys.size();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            reserveHint += keyData->size() + 1;
-        }
-        combined.reserve(reserveHint);
-        keyData = illumKeys.data();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            if (!combined.empty()) {
-                combined += ",";
-            }
-            combined += *keyData;
-        }
-        if (combined.empty()) {
-            combined = "<none>";
-        }
-        return combined;
-        };
 
     if (!(paperKey && negativeKey && !illumKeys.empty())) {
         if (traceInfo) {
-            const std::string paperStr = paperKey ? paperKey : "<unset>";
-            const std::string negStr = negativeKey ? negativeKey : "<unset>";
-            JTRACE("PRINT", "Neutral filter lookup prerequisites missing: paper="
-                + paperStr + " negative=" + negStr + " illum_choices=" + join_illum_keys());
+            JTRACE(
+                "PRINT",
+                "Neutral filter lookup prerequisites missing: "
+                + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
         }
         throw std::runtime_error("Neutral filter metadata incomplete for current selection");
     }
@@ -2996,13 +3461,9 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
                 msg = "Neutral filters loaded for ";
                 msg += illumKey;
                 msg += " Y/M/C=";
-                msg += std::to_string(neutralY);
-                msg += "/";
-                msg += std::to_string(neutralM);
-                msg += "/";
-                msg += std::to_string(neutralC);
+                append_ymc_triplet(msg, neutralY, neutralM, neutralC);
                 msg += " db_version_hash=";
-                msg += selectedDbVersionHash.empty() ? "none" : selectedDbVersionHash;
+                msg += cstr_or_default_if_empty(selectedDbVersionHash, "none");
                 JTRACE("PRINT", msg);
             }
             break;
@@ -3011,11 +3472,11 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
 
     if (!loaded) {
         if (traceInfo) {
-            const std::string paperStr = paperKey ? paperKey : "<unset>";
-            const std::string negStr = negativeKey ? negativeKey : "<unset>";
-            JTRACE("PRINT", "Neutral filters missing for paper=" + paperStr
-                + " illuminant_keys=" + join_illum_keys()
-                + " negative=" + negStr + "; aborting print path");
+            JTRACE(
+                "PRINT",
+                "Neutral filters missing for "
+                + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys))
+                + "; aborting print path");
         }
         throw std::runtime_error("Neutral filter database entry not found");
     }
@@ -3049,26 +3510,20 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P) {
     const std::string& printRef = _state->printRT.referenceIlluminant;
     const std::string& printView = _state->printRT.viewingIlluminant;
 
-    std::string refSource = !filmRef.empty() ? filmRef : (!printRef.empty() ? printRef : printView);
-    std::string enlSource = !printRef.empty() ? printRef : (!filmRef.empty() ? filmRef : printView);
+    const std::string& refSource = first_nonempty_or(filmRef, printRef, printView);
+    const std::string& enlSource = first_nonempty_or(printRef, filmRef, printView);
 
     const ScopedParamEventSuppression suppressEvents(_state.get());
-
-    auto tryApply = [&](OFX::ChoiceParam* param, int& currentIndex, bool overrideFlag, const std::string& source) {
-        if (overrideFlag || !param) {
-            return;
-        }
-        const int mapped = illuminant_choice_index_from_string(source);
-        if (mapped < 0 || currentIndex == mapped) {
-            return;
-        }
-        set_choice_param_if(param, mapped);
-        currentIndex = mapped;
-        changed = true;
-        };
-
-    tryApply(_pRefIll, P.refIll, _state->illuminantOverride.reference, refSource);
-    tryApply(_pEnlIll, P.enlIll, _state->illuminantOverride.enlarger, enlSource);
+    changed = apply_illuminant_choice_from_source(
+        _pRefIll,
+        P.refIll,
+        _state->illuminantOverride.reference,
+        refSource) || changed;
+    changed = apply_illuminant_choice_from_source(
+        _pEnlIll,
+        P.enlIll,
+        _state->illuminantOverride.enlarger,
+        enlSource) || changed;
 
     if (changed) {
         P = snapshotParams();
@@ -3108,7 +3563,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
     if (!_state->couplerDirty.active.load(std::memory_order_acquire)) {
         const bool active = dirCfg.active;
         set_bool_param_if(_pCouplersActive, active);
-        P.couplersActive = active ? 1 : 0;
+        P.couplersActive = bool_to_i32(active);
     }
 
     apply_clean_double(
@@ -3195,26 +3650,24 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     ParamSnapshot P = snapshotParams();
+    const ChangedParamFlags changed = classify_changed_param(changedNameOrNull);
     if (traceVerbose) {
-        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-        const std::shared_ptr<const WorkingState> wsDbg = JuicerAtomic::load_shared_ptr(&_state->activeWorkingState);
-        const std::uint64_t activeBuild = wsDbg ? wsDbg->buildCounter : 0;
+        const ProfileKeyLabels labels = resolve_profile_key_labels(P);
+        const std::shared_ptr<const WorkingState> wsDbg = load_active_working_state_if(_state.get());
+        const std::uint64_t activeBuild = working_state_build_counter_or_zero(wsDbg);
         const std::uint64_t lastHash = _state->lastHash.load(std::memory_order_acquire);
-        const char* paperLabel = paperKey ? paperKey : "<null>";
-        const char* filmLabel = filmKey ? filmKey : "<null>";
         std::string msg;
         msg.reserve(224);
         msg = "params change name=";
-        msg += (changedNameOrNull ? changedNameOrNull : "<null>");
+        msg += cstr_or_default_if_null(changedNameOrNull, "<null>");
         msg += " printIndex=";
         msg += std::to_string(P.printPaperIndex);
         msg += " printKey=";
-        msg += paperLabel;
+        msg += labels.paperLabel;
         msg += " filmIndex=";
         msg += std::to_string(P.filmStockIndex);
         msg += " filmKey=";
-        msg += filmLabel;
+        msg += labels.filmLabel;
         msg += " activeBuild=";
         msg += std::to_string(activeBuild);
         msg += " lastHash=";
@@ -3222,113 +3675,53 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 #ifdef JUICER_ENABLE_COUPLERS
-    if (changedNameOrNull) {
-        if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersActive) == 0) {
-            _state->couplerDirty.active.store(true, std::memory_order_release);
-        }
-        else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmount) == 0) {
-            _state->couplerDirty.amount.store(true, std::memory_order_release);
-        }
-        else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmountB) == 0) {
-            _state->couplerDirty.ratioB.store(true, std::memory_order_release);
-        }
-        else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmountG) == 0) {
-            _state->couplerDirty.ratioG.store(true, std::memory_order_release);
-        }
-        else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersAmountR) == 0) {
-            _state->couplerDirty.ratioR.store(true, std::memory_order_release);
-        }
-        else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersLayerSigma) == 0) {
-            _state->couplerDirty.sigma.store(true, std::memory_order_release);
-        }
-        else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersHighExpShift) == 0) {
-            _state->couplerDirty.high.store(true, std::memory_order_release);
-        }
-        else if (std::strcmp(changedNameOrNull, Couplers::kParamCouplersSpatialSigma) == 0) {
-            _state->couplerDirty.spatialSigma.store(true, std::memory_order_release);
-        }
+    if (changed.hasName) {
+        (void)mark_coupler_dirty_if_known(*_state, changedNameOrNull);
     }
 #endif
 
-    // Track user overrides for illuminant choices
-    if (changedNameOrNull) {
-        if (std::strcmp(changedNameOrNull, kParamReferenceIlluminant) == 0) {
-            _state->illuminantOverride.reference = true;
-        }
-        else if (std::strcmp(changedNameOrNull, kParamEnlargerIlluminant) == 0) {
-            _state->illuminantOverride.enlarger = true;
-        }
-    }
-
-    auto reload_dichroic_filters = [&]() -> bool {
-        const std::string dichroicDirReload = ensure_trailing_separator(
-            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(P.enlDichroicSet)));
-        try {
-            Print::load_dichroic_filters_from_csvs(dichroicDirReload, _state->printRT);
-            return true;
-        }
-        catch (const std::exception& ex) {
-            trace_dichroic_load_failure(
-                "dichroic reload failed",
-                dichroicDirReload,
-                ex.what(),
-                "identity filters remain active");
-        }
-        catch (...) {
-            trace_dichroic_load_failure(
-                "dichroic reload failed",
-                dichroicDirReload,
-                nullptr,
-                "identity filters remain active");
-        }
-        return false;
-    };
+    // Track user overrides for illuminant choices.
+    mark_illuminant_override_if_changed(*_state, changed);
 
     auto trace_neutral_filters_applied = [&](const char* reloadSource) {
         if (!traceVerbose) {
             return;
         }
-        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
-        const char* paperLabel = paperKey ? paperKey : "<null>";
-        const char* filmLabel = filmKey ? filmKey : "<null>";
+        const ProfileKeyLabels labels = resolve_profile_key_labels(P);
         std::string msg;
         msg.reserve(192);
         msg = "neutral filters applied (";
-        msg += (reloadSource ? reloadSource : "unspecified");
+        msg += cstr_or_default_if_null(reloadSource, "unspecified");
         msg += ") paper=";
-        msg += paperLabel;
+        msg += labels.paperLabel;
         msg += " film=";
-        msg += filmLabel;
+        msg += labels.filmLabel;
         msg += " Y/M/C=";
-        msg += std::to_string(_state->printRT.neutralY);
-        msg += "/";
-        msg += std::to_string(_state->printRT.neutralM);
-        msg += "/";
-        msg += std::to_string(_state->printRT.neutralC);
+        append_ymc_triplet(msg, _state->printRT.neutralY, _state->printRT.neutralM, _state->printRT.neutralC);
         JTRACE_VERBOSE("PRINTDBG", msg);
     };
 
+    bool neutralApplied = false;
+    auto apply_neutral_filters_with_trace = [&](const char* reloadSource) {
+        applyNeutralFilters(P);
+        neutralApplied = true;
+        trace_neutral_filters_applied(reloadSource);
+    };
+
     bool printReloaded = false;
-    if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamPrintPaper) == 0) {
-        const std::string printDir = print_dir_for_index(P.printPaperIndex);
-        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-        const std::string printProfileJson = profile_json_path_for_key_or_empty(paperKey);
-        Print::load_profile_from_dir(printDir, _state->printRT.profile, printProfileJson, &_state->printRT);
-        _state->printRT.hasMidNeutralDensity = _state->printRT.profile.hasMidNeutralDensity;
-        _state->printRT.midNeutralDensity = std::move(_state->printRT.profile.midNeutralDensity);
-        _state->printRT.hasMidNeutralLogE = _state->printRT.profile.hasMidNeutralLogE;
-        _state->printRT.midNeutralLogE = std::move(_state->printRT.profile.midNeutralLogE);
+    if (changed.printPaper) {
+        const PrintProfileLoadInputs printLoad =
+            load_print_profile_for_snapshot(P, _state->printRT, /*moveMidNeutralVectors*/true);
+        const ProfileKeyLabels& labels = printLoad.labels;
         if (traceVerbose) {
-            const char* paperLabel = paperKey ? paperKey : "<null>";
             std::string msg;
             msg.reserve(256);
             msg = "print reload key=";
-            msg += paperLabel;
+            msg += labels.paperLabel;
             msg += " dir=";
-            msg += printDir;
+            msg += printLoad.printDir;
             msg += " json=";
-            msg += printProfileJson;
+            msg += printLoad.printProfileJson;
             msg += " ref=";
             msg += _state->printRT.referenceIlluminant;
             msg += " view=";
@@ -3337,18 +3730,26 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         }
 
         // Reload dichroic filters (vendor selection controls which curves are used).
-        (void)reload_dichroic_filters();
+        (void)try_load_dichroic_filters(
+            P.enlDichroicSet,
+            _state->printRT,
+            "dichroic reload failed",
+            "identity filters remain active");
 
         printReloaded = true;
     }
 
     bool dichroicReloaded = false;
-    if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerDichroicSet) == 0) {
-        dichroicReloaded = reload_dichroic_filters();
+    if (changed.enlargerDichroicSet) {
+        dichroicReloaded = try_load_dichroic_filters(
+            P.enlDichroicSet,
+            _state->printRT,
+            "dichroic reload failed",
+            "identity filters remain active");
     }
 
     bool filmReloaded = false;
-    if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamFilmStock) == 0) {
+    if (changed.filmStock) {
         _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);
         filmReloaded = _state->baseLoaded;
     }
@@ -3356,24 +3757,19 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         applyHalationProfileDefaults();
     }
 
-    if (printReloaded || filmReloaded) {
+    if (should_refresh_print_illuminant(printReloaded, filmReloaded)) {
         applyMetadataIlluminantDefaults(P);
-        Print::build_illuminant_from_choice(P.enlIll, _state->printRT, _state->dataDir, /*forEnlarger*/true);
+        update_print_illuminant_runtime(P, _state->printRT, _state->dataDir);
     }
 
-    bool neutralApplied = false;
-    if (printReloaded || dichroicReloaded) {
-        applyNeutralFilters(P);
-        neutralApplied = true;
-        trace_neutral_filters_applied("print/dichroic");
+    if (should_apply_neutral_after_reload(printReloaded, dichroicReloaded)) {
+        apply_neutral_filters_with_trace("print/dichroic");
     }
     if (filmReloaded && !neutralApplied) {
-        applyNeutralFilters(P);
-        neutralApplied = true;
-        trace_neutral_filters_applied("film");
+        apply_neutral_filters_with_trace("film");
     }
 
-    if (changedNameOrNull && std::strcmp(changedNameOrNull, kParamEnlargerIlluminant) == 0) {
+    if (changed.enlargerIlluminant) {
         applyNeutralFilters(P);
     }
 
@@ -3387,30 +3783,11 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     const std::uint64_t fullHash = hash_params(P);
     const std::uint64_t coreHash = hash_params_core(P);
     const std::uint64_t dirHash = hash_params_dir(P);
-    {
-        std::lock_guard<std::mutex> lock(_state->pending.m);
-        _state->pending.params = P;
-        _state->pending.fullHash = fullHash;
-        _state->pending.coreHash = coreHash;
-        _state->pending.dirHash = dirHash;
-    }
+    store_pending_state_snapshot(*_state, P, fullHash, coreHash, dirHash);
 
 #ifdef JUICER_ENABLE_COUPLERS
-    if (changedNameOrNull) {
-        using namespace Couplers;
-        const bool isCouplerParam =
-            std::strcmp(changedNameOrNull, kParamCouplersActive) == 0 ||
-            std::strcmp(changedNameOrNull, kParamCouplersAmount) == 0 ||
-            std::strcmp(changedNameOrNull, kParamCouplersAmountR) == 0 ||
-            std::strcmp(changedNameOrNull, kParamCouplersAmountG) == 0 ||
-            std::strcmp(changedNameOrNull, kParamCouplersAmountB) == 0 ||
-            std::strcmp(changedNameOrNull, kParamCouplersLayerSigma) == 0 ||
-            std::strcmp(changedNameOrNull, kParamCouplersHighExpShift) == 0 ||
-            std::strcmp(changedNameOrNull, kParamCouplersSpatialSigma) == 0;
-
-        if (isCouplerParam) {
-            Couplers::on_param_changed(changedNameOrNull);
-        }
+    if (changed.couplerParam) {
+        Couplers::on_param_changed(changedNameOrNull);
     }
 #endif
 }

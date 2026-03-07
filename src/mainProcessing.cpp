@@ -1161,9 +1161,7 @@ namespace {
             printParams,
             dirRT,
             exposureCompScale);
-        if (!is_positive_finite(kMid)) {
-            kMid = 1.0f;
-        }
+        kMid = positive_finite_or(kMid, 1.0f);
 
         if (instanceState) {
             std::lock_guard<std::mutex> lock(instanceState->printMidgrayMutex);
@@ -2474,6 +2472,18 @@ void JuicerProcessor::processImagesCUDA() {
         Print
     };
 
+    auto render_mode_from_print_bypass = [](bool bypass) -> RenderMode {
+        return bypass ? RenderMode::NegativeOnly : RenderMode::Print;
+    };
+
+    auto cuda_stream_or_null = [](void* rawStream) -> cudaStream_t {
+        return rawStream ? reinterpret_cast<cudaStream_t>(rawStream) : nullptr;
+    };
+
+    auto gate_weave_debug_scale_or_one = [](double debugScalePx) -> float {
+        return static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
+    };
+
     if (!_srcImg || !_dstImg) {
         return;
     }
@@ -3002,7 +3012,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (srcPtr == dstPtr && srcRowBytes == dstRowBytes) {
             return;
         }
-        const cudaStream_t stream = reinterpret_cast<cudaStream_t>(_pCudaStream);
+        const cudaStream_t stream = cuda_stream_or_null(_pCudaStream);
         const cudaError_t err = cudaMemcpy2DAsync(
             dstPtr,
             static_cast<size_t>(dstRowBytes),
@@ -3019,9 +3029,6 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    auto render_mode_from_print_bypass = [](bool bypass) -> RenderMode {
-        return bypass ? RenderMode::NegativeOnly : RenderMode::Print;
-    };
     const RenderMode renderMode = render_mode_from_print_bypass(_printParams.bypass);
 
     OfxRectI meterBounds = srcBounds;
@@ -3351,7 +3358,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.gateWeave.dyPx = weave.dyPx;
             run.gateWeave.cosRot = weave.cosRot;
             run.gateWeave.sinRot = weave.sinRot;
-            run.gateWeave.debugScalePx = static_cast<float>((debugScalePx > 1e-6) ? debugScalePx : 1.0);
+            run.gateWeave.debugScalePx = gate_weave_debug_scale_or_one(debugScalePx);
             run.grain.pitchPx = pitchPx;
             run.grain.breathingPeriodFrames = breathingPeriodFrames;
             run.grain.breathingAmplitude = 0.01902219f;
@@ -4645,7 +4652,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     const ScannerOpticsParams scannerOptics = resolve_scanner_optics_params();
-    const cudaStream_t stream = _pCudaStream ? reinterpret_cast<cudaStream_t>(_pCudaStream) : nullptr;
+    const cudaStream_t stream = cuda_stream_or_null(_pCudaStream);
     const bool useSpatialDIR = spatial_dir_enabled(_dirRT);
 
     struct OpticsLaunchInputs {
