@@ -393,6 +393,16 @@ const char* trace_reason_class_or_invalid(const char* token) noexcept {
     return normalizedClass ? normalizedClass : "invalid_unmapped";
 }
 
+std::string trace_reason_class_field_if_known(
+    const char* fieldName,
+    const char* token) {
+    const char* normalizedClass = failure_reason_class(token);
+    if (!normalizedClass) {
+        return {};
+    }
+    return std::string(" ") + trace_or_non_empty(fieldName, "reason_class") + "=" + normalizedClass;
+}
+
 std::string trace_event_prefix(
     const char* eventName,
     const SubmissionTransaction& transaction,
@@ -1885,7 +1895,7 @@ void trace_transient_reservation_decision(
         + " decision_reason=" + trace_or_unspecified(decision.reason)
         + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSTRS", msg);
 }
 
@@ -1924,7 +1934,7 @@ void trace_upload_reservation_decision(
         + " decision_reason=" + trace_or_unspecified(decision.reason)
         + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSUPL", msg);
 }
 
@@ -1965,7 +1975,7 @@ void trace_builder_reservation_decision(
         + " decision_reason=" + trace_or_unspecified(decision.reason)
         + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSBPR", msg);
 }
 
@@ -2443,7 +2453,7 @@ void trace_keep_hot_surface(
         + " enabled=" + std::to_string(cfg.keepHotMs > 0 ? 1 : 0)
         + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(cfg.keepHotMs))
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSHOT", msg);
     telemetry_counter_add(global_state().keepHotSurfaceTraceEvents, 1);
 }
@@ -2465,7 +2475,7 @@ void trace_keep_hot_decision(
         + " forced_evict_events=" + std::to_string(static_cast<unsigned long long>(forcedEvictEvents))
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSHOT", msg);
 }
 
@@ -2483,7 +2493,7 @@ void trace_burst_debt_surface(
         + " burst_debt_half_life_ms=" + std::to_string(static_cast<unsigned long long>(cfg.burstDebtHalfLifeMs))
         + " max_burst_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct))
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSBDE", msg);
     telemetry_counter_add(global_state().burstDebtSurfaceTraceEvents, 1);
 }
@@ -2536,7 +2546,7 @@ void trace_superseded_builder_cancel_surface(
         + trace_device_context_fields(transaction)
         + " enabled=" + std::to_string(cfg.cancelSupersededBuilders ? 1 : 0)
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSCNL", msg);
     telemetry_counter_add(global_state().supersededBuilderCancelSurfaceTraceEvents, 1);
 }
@@ -2697,7 +2707,7 @@ void trace_cache_admission_decision(
         + " decision_reason=" + trace_or_unspecified(decision.reason)
         + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
         + " reason=" + trace_or_unspecified(reason)
-        + " reason_class=" + trace_reason_class_or_invalid(reason);
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSADM", msg);
 }
 

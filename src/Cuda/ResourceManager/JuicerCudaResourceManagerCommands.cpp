@@ -1331,7 +1331,7 @@ void trace_private_lut_fallback(
         " per_medium_cap=" + std::to_string(decision.perMediumCap) +
         " per_instance_cap=" + std::to_string(decision.perInstanceCap) +
         " reason=" + trace_or(reason, decision.reason) +
-        " reason_class=" + trace_reason_class_or_invalid(trace_or(reason, decision.reason));
+        trace_reason_class_field_if_known("reason_class", trace_or(reason, decision.reason));
     JTRACE("MSLUT", msg);
 }
 
@@ -2487,7 +2487,6 @@ bool command_launch_base_pipeline_graph(
     }
 
     const cudaStream_t stream = commands_cuda_stream_or_null(cudaStreamOpaque);
-    LaunchGraphCounters::record_graph_eligible_submission();
     auto launch_base_pipeline_direct = [&]() -> int {
         LaunchGraphCounters::record_kernel_launch();
         return static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
@@ -2938,6 +2937,7 @@ bool command_launch_base_pipeline_graph(
         return true;
     }
 
+    LaunchGraphCounters::record_graph_eligible_submission();
     LaunchGraphCounters::record_kernel_launch();
     cudaError_t runErr = cudaGraphLaunch(exec, stream);
     if (runErr == cudaSuccess) {
