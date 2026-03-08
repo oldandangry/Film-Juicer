@@ -2,6 +2,7 @@
 
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
+#include "Cuda/JuicerCudaLaunchGraphCounters.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaManagerRegistry.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
@@ -287,6 +288,109 @@ const char* trace_or(const char* value, const char* fallback) noexcept {
 
 const char* trace_or_non_empty(const char* value, const char* fallback) noexcept {
     return (value && value[0] != '\0') ? value : fallback;
+}
+
+const char* failure_reason_class(const char* token) noexcept {
+    const std::string_view value = trace_or_non_empty(token, "");
+    if (value.empty()) {
+        return nullptr;
+    }
+
+    if (value == "auto_no_optional_supported" ||
+        value == "capability_fallback_legacy" ||
+        value == "requested_async_unsupported" ||
+        value == "requested_slab_unsupported") {
+        return "capability_unavailable";
+    }
+
+    if (value == "canonical_normalization" ||
+        value == "invalid_expected_hash" ||
+        value == "invalid_scan_lut_key" ||
+        value == "missing_instance_token" ||
+        value == "mixed_snapshot_id_for_frame" ||
+        value == "trace_schema_mismatch") {
+        return "validation_or_safety";
+    }
+
+    if (value == "context_query_failed" ||
+        value == "device_query_failed" ||
+        value == "event_create_failed" ||
+        value == "lifecycle_stage_rejected" ||
+        value == "lifecycle_state_not_allowed" ||
+        value == "missing_registry_entry" ||
+        value == "private_fallback_failed" ||
+        value == "staged_copy_failed" ||
+        value == "sync_fallback_required" ||
+        value == "unknown" ||
+        value == "active_async_pool" ||
+        value == "auto_select_async" ||
+        value == "requested_async_supported" ||
+        value == "unspecified") {
+        return "orchestration_failure";
+    }
+
+    if (value == "already_active" ||
+        value == "cap_disabled" ||
+        value == "disabled" ||
+        value == "empty_request" ||
+        value == "legacy_active" ||
+        value == "legacy_default" ||
+        value == "not_candidate" ||
+        value == "not_superseded" ||
+        value == "per_instance_cap_reached" ||
+        value == "per_medium_cap_zero" ||
+        value == "private_fallback_denied" ||
+        value == "requested_legacy" ||
+        value == "requested_slab_supported" ||
+        value == "slab_scaffold_fallback_legacy" ||
+        value == "auto_select_slab" ||
+        value == "unknown_preference_fallback" ||
+        value == "zero_request") {
+        return "policy_denied";
+    }
+
+    if (value == "accrue_burst_consumed" ||
+        value == "admit_new" ||
+        value == "below_debt_threshold" ||
+        value == "below_threshold" ||
+        value == "builder_reservation_reject" ||
+        value == "cancel_superseded_noncritical" ||
+        value == "cap_exceeded" ||
+        value == "cooldown_blocked" ||
+        value == "cooldown_expired" ||
+        value == "critical_bypass" ||
+        value == "critical_last_resort" ||
+        value == "critical_no_burst_consumption" ||
+        value == "critical_preserve" ||
+        value == "fairness_tokens_exhausted" ||
+        value == "ghost_hit_bypass" ||
+        value == "granted" ||
+        value == "host_alloc_failed" ||
+        value == "no_history" ||
+        value == "normal" ||
+        value == "pressure_gate_reject" ||
+        value == "pressure_pre_upload_reclaim_failed" ||
+        value == "private_fallback_admit" ||
+        value == "private_fallback_served" ||
+        value == "probation_admit" ||
+        value == "probation_critical_override" ||
+        value == "probation_defer" ||
+        value == "slot_reuse" ||
+        value == "throttle_max_debt" ||
+        value == "tier_circuit_blocked" ||
+        value == "too_large_critical_override" ||
+        value == "too_large_noncritical" ||
+        value == "upload_reservation_reject" ||
+        value == "wait_budget_reached") {
+        return "resource_contention";
+    }
+
+    return nullptr;
+}
+
+const char* trace_reason_class_or_invalid(const char* token) noexcept {
+    const char* normalizedClass = failure_reason_class(token);
+    return normalizedClass ? normalizedClass : "invalid_unmapped";
 }
 
 std::string trace_event_prefix(
@@ -1779,7 +1883,9 @@ void trace_transient_reservation_decision(
         + " wait_ms=" + std::to_string(waitMs)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " decision_reason=" + trace_or_unspecified(decision.reason)
-        + " reason=" + trace_or_unspecified(reason);
+        + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSTRS", msg);
 }
 
@@ -1816,7 +1922,9 @@ void trace_upload_reservation_decision(
         + " wait_ms=" + std::to_string(waitMs)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " decision_reason=" + trace_or_unspecified(decision.reason)
-        + " reason=" + trace_or_unspecified(reason);
+        + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSUPL", msg);
 }
 
@@ -1855,7 +1963,9 @@ void trace_builder_reservation_decision(
         + " wait_ms=" + std::to_string(waitMs)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " decision_reason=" + trace_or_unspecified(decision.reason)
-        + " reason=" + trace_or_unspecified(reason);
+        + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSBPR", msg);
 }
 
@@ -2332,7 +2442,8 @@ void trace_keep_hot_surface(
         + trace_device_context_fields(transaction)
         + " enabled=" + std::to_string(cfg.keepHotMs > 0 ? 1 : 0)
         + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(cfg.keepHotMs))
-        + " reason=" + trace_or_unspecified(reason);
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSHOT", msg);
     telemetry_counter_add(global_state().keepHotSurfaceTraceEvents, 1);
 }
@@ -2353,7 +2464,8 @@ void trace_keep_hot_decision(
         + " bypass_events=" + std::to_string(static_cast<unsigned long long>(bypassEvents))
         + " forced_evict_events=" + std::to_string(static_cast<unsigned long long>(forcedEvictEvents))
         + trace_device_context_fields(transaction)
-        + " reason=" + trace_or_unspecified(reason);
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSHOT", msg);
 }
 
@@ -2370,7 +2482,8 @@ void trace_burst_debt_surface(
         + " enabled=" + std::to_string(enabled ? 1 : 0)
         + " burst_debt_half_life_ms=" + std::to_string(static_cast<unsigned long long>(cfg.burstDebtHalfLifeMs))
         + " max_burst_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct))
-        + " reason=" + trace_or_unspecified(reason);
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSBDE", msg);
     telemetry_counter_add(global_state().burstDebtSurfaceTraceEvents, 1);
 }
@@ -2407,7 +2520,8 @@ void trace_burst_debt_decision(
         + " instance_token=" + std::to_string(
             static_cast<unsigned long long>(transaction.snapshot.instanceToken.value))
         + trace_device_context_fields(transaction)
-        + " reason=" + trace_or_unspecified(decision.reason);
+        + " reason=" + trace_or_unspecified(decision.reason)
+        + " reason_class=" + trace_reason_class_or_invalid(decision.reason);
     JTRACE("MSBDE", msg);
 }
 
@@ -2421,7 +2535,8 @@ void trace_superseded_builder_cancel_surface(
     const std::string msg = trace_event_identity_prefix("superseded_builder_cancel_surface", transaction)
         + trace_device_context_fields(transaction)
         + " enabled=" + std::to_string(cfg.cancelSupersededBuilders ? 1 : 0)
-        + " reason=" + trace_or_unspecified(reason);
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSCNL", msg);
     telemetry_counter_add(global_state().supersededBuilderCancelSurfaceTraceEvents, 1);
 }
@@ -2449,7 +2564,8 @@ void trace_superseded_builder_cancel_decision(
         + " instance_token=" + std::to_string(
             static_cast<unsigned long long>(transaction.snapshot.instanceToken.value))
         + trace_device_context_fields(transaction)
-        + " reason=" + trace_or_unspecified(decision.reason);
+        + " reason=" + trace_or_unspecified(decision.reason)
+        + " reason_class=" + trace_reason_class_or_invalid(decision.reason);
     JTRACE("MSCNL", msg);
 }
 
@@ -2536,7 +2652,8 @@ void trace_large_entry_readmit_decision(
         + " ghost_hits_required=" + std::to_string(decision.ghostHitsRequired)
         + " observed_ghost_hits=" + std::to_string(decision.observedGhostHits)
         + trace_device_context_fields(transaction)
-        + " reason=" + trace_or_unspecified(decision.reason);
+        + " reason=" + trace_or_unspecified(decision.reason)
+        + " reason_class=" + trace_reason_class_or_invalid(decision.reason);
     JTRACE("MSTHR", msg);
 }
 
@@ -2578,7 +2695,9 @@ void trace_cache_admission_decision(
         + " entry_digest=" + std::to_string(static_cast<unsigned long long>(entryDigest))
         + trace_device_context_fields(transaction)
         + " decision_reason=" + trace_or_unspecified(decision.reason)
-        + " reason=" + trace_or_unspecified(reason);
+        + " decision_reason_class=" + trace_reason_class_or_invalid(decision.reason)
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSADM", msg);
 }
 
@@ -2600,7 +2719,8 @@ void trace_probation_decision(
         + " required_probation_hits=" + std::to_string(requiredProbationHits)
         + " admitted=" + std::to_string(admitted ? 1 : 0)
         + trace_device_context_fields(transaction)
-        + " reason=" + trace_or_unspecified(reason);
+        + " reason=" + trace_or_unspecified(reason)
+        + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSPRB", msg);
 }
 

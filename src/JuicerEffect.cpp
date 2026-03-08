@@ -1667,165 +1667,6 @@ namespace {
             y);
     }
 
-    template <typename T>
-    inline T* pixel_ptr(OFX::Image* image, int x, int y) {
-        return reinterpret_cast<T*>(image->getPixelAddress(x, y));
-    }
-
-    inline void decode_input_pixel_linear(
-        const float* pix,
-        bool singleComponent,
-        Spectral::InputColorSpace inputColorSpace,
-        bool applyCctfDecoding,
-        float linear[3]) {
-        if (singleComponent) {
-            const float gray = pix[0];
-            const float grayRgb[3] = { gray, gray, gray };
-            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-            return;
-        }
-        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-    }
-
-    inline bool decode_pixel_luma_if_finite(
-        const float* pix,
-        bool singleComponent,
-        Spectral::InputColorSpace inputColorSpace,
-        bool applyCctfDecoding,
-        const Spectral::Mat3& rgbToXYZ,
-        float& outY) {
-        float linear[3];
-        decode_input_pixel_linear(
-            pix,
-            singleComponent,
-            inputColorSpace,
-            applyCctfDecoding,
-            linear);
-        float XYZ[3];
-        rgbToXYZ.mul(linear, XYZ);
-        const float Y = XYZ[1];
-        if (!is_finite(Y)) {
-            return false;
-        }
-        outY = Y;
-        return true;
-    }
-
-    inline void accumulate_weighted_luma_if_finite(
-        const float* pix,
-        bool singleComponent,
-        Spectral::InputColorSpace inputColorSpace,
-        bool applyCctfDecoding,
-        const Spectral::Mat3& rgbToXYZ,
-        double weight,
-        double& sumY,
-        double& sumMask) {
-        float Y = 0.0f;
-        if (!decode_pixel_luma_if_finite(
-            pix,
-            singleComponent,
-            inputColorSpace,
-            applyCctfDecoding,
-            rgbToXYZ,
-            Y)) {
-            return;
-        }
-        sumY += static_cast<double>(Y) * weight;
-        sumMask += weight;
-    }
-
-    inline void set_optional_sum_mask(double* outSumMask, double value) {
-        if (outSumMask) {
-            *outSumMask = value;
-        }
-    }
-
-    inline double weighted_mean_or_zero(double sumY, double sumMask) {
-        return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
-    }
-
-    inline double finalize_weighted_metering(double sumY, double sumMask, double* outSumMask) {
-        set_optional_sum_mask(outSumMask, sumMask);
-        return weighted_mean_or_zero(sumY, sumMask);
-    }
-
-    inline double return_zero_weighted_metering(double* outSumMask) {
-        set_optional_sum_mask(outSumMask, 0.0);
-        return 0.0;
-    }
-
-    inline float clamp_nonnegative(float value) {
-        return (value < 0.0f) ? 0.0f : value;
-    }
-
-    inline void append_nonnegative_luma_if_finite(
-        const float* pix,
-        bool singleComponent,
-        Spectral::InputColorSpace inputColorSpace,
-        bool applyCctfDecoding,
-        const Spectral::Mat3& rgbToXYZ,
-        std::vector<float>& values) {
-        float Y = 0.0f;
-        if (!decode_pixel_luma_if_finite(
-            pix,
-            singleComponent,
-            inputColorSpace,
-            applyCctfDecoding,
-            rgbToXYZ,
-            Y)) {
-            return;
-        }
-        values.emplace_back(clamp_nonnegative(Y));
-    }
-
-    inline void accumulate_weighted_image_pixel_if_present(
-        OFX::Image* image,
-        int x,
-        int y,
-        bool singleComponent,
-        Spectral::InputColorSpace inputColorSpace,
-        bool applyCctfDecoding,
-        const Spectral::Mat3& rgbToXYZ,
-        double weight,
-        double& sumY,
-        double& sumMask) {
-        const float* pix = pixel_ptr<const float>(image, x, y);
-        if (!pix) {
-            return;
-        }
-        accumulate_weighted_luma_if_finite(
-            pix,
-            singleComponent,
-            inputColorSpace,
-            applyCctfDecoding,
-            rgbToXYZ,
-            weight,
-            sumY,
-            sumMask);
-    }
-
-    inline void append_nonnegative_image_pixel_luma_if_present(
-        OFX::Image* image,
-        int x,
-        int y,
-        bool singleComponent,
-        Spectral::InputColorSpace inputColorSpace,
-        bool applyCctfDecoding,
-        const Spectral::Mat3& rgbToXYZ,
-        std::vector<float>& values) {
-        const float* pix = pixel_ptr<const float>(image, x, y);
-        if (!pix) {
-            return;
-        }
-        append_nonnegative_luma_if_finite(
-            pix,
-            singleComponent,
-            inputColorSpace,
-            applyCctfDecoding,
-            rgbToXYZ,
-            values);
-    }
-
     inline double gaussian_weight(double normX, double normY, double invSigmaDenom) {
         const double r2 = normX * normX + normY * normY;
         return std::exp(-r2 * invSigmaDenom);
@@ -2051,17 +1892,6 @@ namespace {
         }
         const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
         const bool singleComponent = (nComponents == 1);
-        auto accumulate_weighted_Y = [&](const float* pix, double weight, double& sumY, double& sumMask) {
-            accumulate_weighted_luma_if_finite(
-                pix,
-                singleComponent,
-                inputColorSpace,
-                applyCctfDecoding,
-                rgbToXYZ,
-                weight,
-                sumY,
-                sumMask);
-            };
 
         auto accumulateYFromMask = [&](const std::vector<double>& mask, double* outSumMask) {
             double sumY = 0.0;
@@ -2075,7 +1905,22 @@ namespace {
                     const float* rowPixIt = rowPix;
                     for (int xOff = 0; xOff < width; ++xOff) {
                         const double w = *maskIt++;
-                        accumulate_weighted_Y(rowPixIt, w, sumY, sumMask);
+                        float linear[3];
+                        if (singleComponent) {
+                            const float gray = rowPixIt[0];
+                            const float grayRgb[3] = { gray, gray, gray };
+                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                        }
+                        else {
+                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
+                        }
+                        float XYZ[3];
+                        rgbToXYZ.mul(linear, XYZ);
+                        const float Y = XYZ[1];
+                        if (is_finite(Y)) {
+                            sumY += static_cast<double>(Y) * w;
+                            sumMask += w;
+                        }
                         rowPixIt += pixelStride;
                     }
                     continue;
@@ -2083,26 +1928,42 @@ namespace {
                 for (int xOff = 0; xOff < width; ++xOff) {
                     const int xx = bounds.x1 + xOff;
                     const double w = *maskIt++;
-                    accumulate_weighted_image_pixel_if_present(
-                        img,
-                        xx,
-                        yy,
-                        singleComponent,
-                        inputColorSpace,
-                        applyCctfDecoding,
-                        rgbToXYZ,
-                        w,
-                        sumY,
-                        sumMask);
+                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
+                    if (!pix) {
+                        continue;
+                    }
+                    float linear[3];
+                    if (singleComponent) {
+                        const float gray = pix[0];
+                        const float grayRgb[3] = { gray, gray, gray };
+                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                    }
+                    else {
+                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+                    }
+                    float XYZ[3];
+                    rgbToXYZ.mul(linear, XYZ);
+                    const float Y = XYZ[1];
+                    if (!is_finite(Y)) {
+                        continue;
+                    }
+                    sumY += static_cast<double>(Y) * w;
+                    sumMask += w;
                 }
             }
-            return finalize_weighted_metering(sumY, sumMask, outSumMask);
+            if (outSumMask) {
+                *outSumMask = sumMask;
+            }
+            return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
         };
 
         auto accumulateYUncached = [&](double* outSumMask) {
             CenterWeightGeometry geometry{};
             if (!build_center_weight_geometry(width, height, sigma, geometry)) {
-                return return_zero_weighted_metering(outSumMask);
+                if (outSumMask) {
+                    *outSumMask = 0.0;
+                }
+                return 0.0;
             }
 
             double sumY = 0.0;
@@ -2117,7 +1978,22 @@ namespace {
                     const float* rowPixIt = rowPix;
                     for (int xOff = 0; xOff < width; ++xOff) {
                         const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                        accumulate_weighted_Y(rowPixIt, w, sumY, sumMask);
+                        float linear[3];
+                        if (singleComponent) {
+                            const float gray = rowPixIt[0];
+                            const float grayRgb[3] = { gray, gray, gray };
+                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                        }
+                        else {
+                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
+                        }
+                        float XYZ[3];
+                        rgbToXYZ.mul(linear, XYZ);
+                        const float Y = XYZ[1];
+                        if (is_finite(Y)) {
+                            sumY += static_cast<double>(Y) * w;
+                            sumMask += w;
+                        }
                         rowPixIt += pixelStride;
                         nx += geometry.invWidth;
                     }
@@ -2126,21 +2002,32 @@ namespace {
                 for (int xOff = 0; xOff < width; ++xOff) {
                     const int xx = bounds.x1 + xOff;
                     const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                    accumulate_weighted_image_pixel_if_present(
-                        img,
-                        xx,
-                        yy,
-                        singleComponent,
-                        inputColorSpace,
-                        applyCctfDecoding,
-                        rgbToXYZ,
-                        w,
-                        sumY,
-                        sumMask);
+                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
+                    if (pix) {
+                        float linear[3];
+                        if (singleComponent) {
+                            const float gray = pix[0];
+                            const float grayRgb[3] = { gray, gray, gray };
+                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                        }
+                        else {
+                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+                        }
+                        float XYZ[3];
+                        rgbToXYZ.mul(linear, XYZ);
+                        const float Y = XYZ[1];
+                        if (is_finite(Y)) {
+                            sumY += static_cast<double>(Y) * w;
+                            sumMask += w;
+                        }
+                    }
                     nx += geometry.invWidth;
                 }
             }
-            return finalize_weighted_metering(sumY, sumMask, outSumMask);
+            if (outSumMask) {
+                *outSumMask = sumMask;
+            }
+            return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
         };
 
         if (!state) {
@@ -2336,28 +2223,46 @@ namespace {
             if (rowPix) {
                 const float* rowPixIt = rowPix;
                 for (int xOff = 0; xOff < width; ++xOff) {
-                    append_nonnegative_luma_if_finite(
-                        rowPixIt,
-                        singleComponent,
-                        inputColorSpace,
-                        applyCctfDecoding,
-                        rgbToXYZ,
-                        values);
+                    float linear[3];
+                    if (singleComponent) {
+                        const float gray = rowPixIt[0];
+                        const float grayRgb[3] = { gray, gray, gray };
+                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                    }
+                    else {
+                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
+                    }
+                    float XYZ[3];
+                    rgbToXYZ.mul(linear, XYZ);
+                    float Y = XYZ[1];
+                    if (is_finite(Y)) {
+                        values.emplace_back((Y < 0.0f) ? 0.0f : Y);
+                    }
                     rowPixIt += pixelStride;
                 }
                 continue;
             }
             for (int xOff = 0; xOff < width; ++xOff) {
                 const int x = bounds.x1 + xOff;
-                append_nonnegative_image_pixel_luma_if_present(
-                    img,
-                    x,
-                    yy,
-                    singleComponent,
-                    inputColorSpace,
-                    applyCctfDecoding,
-                    rgbToXYZ,
-                    values);
+                const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(x, yy));
+                if (!pix) {
+                    continue;
+                }
+                float linear[3];
+                if (singleComponent) {
+                    const float gray = pix[0];
+                    const float grayRgb[3] = { gray, gray, gray };
+                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
+                }
+                else {
+                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
+                }
+                float XYZ[3];
+                rgbToXYZ.mul(linear, XYZ);
+                float Y = XYZ[1];
+                if (is_finite(Y)) {
+                    values.emplace_back((Y < 0.0f) ? 0.0f : Y);
+                }
             }
         }
 
@@ -3582,11 +3487,10 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (!srcImg || !dstImg) return;
 
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
-    // CUDA-only mode: reject CPU/OpenCL/Metal renders. During development this stays disabled so
-    // we can fall back to the CPU pipeline while CUDA parity is still in progress.
+    // CUDA-only mode: reject CPU/OpenCL/Metal renders with an explicit failure.
     if (!args.isEnabledCudaRender) {
-        JTRACE("CUDA", "JUICER_CUDA_ONLY: rejecting non-CUDA render request");
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+        JTRACE("CUDA", "FATAL: JUICER_CUDA_ONLY rejected non-CUDA render request");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 #endif
 
@@ -3601,12 +3505,14 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (args.isEnabledCudaRender) {
         // CUDA renders use device pointers; avoid CPU pixel reads (auto-exposure, non-float copies, etc.).
         if (requires_nonfloat_copy(depth, nComponents)) {
-            throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+            JTRACE("CUDA", "FATAL: CUDA render requested with unsupported non-float copy path");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
     }
 #else
     if (args.isEnabledCudaRender) {
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
+        JTRACE("CUDA", "FATAL: CUDA render requested but the CUDA backend is unavailable in this build");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 #endif
 

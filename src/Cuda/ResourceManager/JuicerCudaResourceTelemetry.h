@@ -13,7 +13,7 @@ namespace JuicerCuda {
 namespace ResourceManager {
 
 #ifndef JUICER_RM_TELEMETRY_COUNTERS_COMPILED
-#define JUICER_RM_TELEMETRY_COUNTERS_COMPILED 1
+#define JUICER_RM_TELEMETRY_COUNTERS_COMPILED 0
 #endif
 
 inline void telemetry_counter_add(

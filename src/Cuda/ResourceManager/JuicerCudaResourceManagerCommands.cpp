@@ -1285,7 +1285,12 @@ PrivateLutFallbackDecision evaluate_private_lut_fallback(
     }
 
     decision.allowed = true;
-    decision.reason = bool_reason(*slotActive, "slot_reuse", "admit_new");
+    if (*slotActive) {
+        decision.reason = "slot_reuse";
+    }
+    else {
+        decision.reason = "admit_new";
+    }
     return decision;
 }
 
@@ -1325,7 +1330,8 @@ void trace_private_lut_fallback(
         " active_count=" + std::to_string(decision.activeCount) +
         " per_medium_cap=" + std::to_string(decision.perMediumCap) +
         " per_instance_cap=" + std::to_string(decision.perInstanceCap) +
-        " reason=" + trace_or(reason, decision.reason);
+        " reason=" + trace_or(reason, decision.reason) +
+        " reason_class=" + trace_reason_class_or_invalid(trace_or(reason, decision.reason));
     JTRACE("MSLUT", msg);
 }
 
@@ -2481,6 +2487,11 @@ bool command_launch_base_pipeline_graph(
     }
 
     const cudaStream_t stream = commands_cuda_stream_or_null(cudaStreamOpaque);
+    LaunchGraphCounters::record_graph_eligible_submission();
+    auto launch_base_pipeline_direct = [&]() -> int {
+        LaunchGraphCounters::record_kernel_launch();
+        return static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+    };
 
     BaseGraphKey key{};
     key.width = run.width;
@@ -2501,7 +2512,7 @@ bool command_launch_base_pipeline_graph(
             requestBytes,
             supersededLatestSnapshotId)) {
         telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        outCudaErrorCode = launch_base_pipeline_direct();
         return true;
     }
     const std::uint64_t graphLargeThresholdBytes = graph_large_entry_threshold_bytes(cfg);
@@ -2593,6 +2604,7 @@ bool command_launch_base_pipeline_graph(
     applyGraphLargeEntryPolicy("pre_admission");
 
     BaseGraphEntry* found = find_base_graph_entry(bucket, key);
+    const bool reusedResidentGraph = (found != nullptr);
     TierCircuitAttempt graphCircuitAttempt{};
     bool graphCircuitAttemptActive = false;
     if (!found) {
@@ -2609,7 +2621,12 @@ bool command_launch_base_pipeline_graph(
         readmitDecision.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
         readmitDecision.cooldownMs = cfg.largeEntryReadmitCooldownMs;
         readmitDecision.ghostHitsRequired = cfg.largeEntryGhostHitsForReadmit;
-        readmitDecision.reason = bool_reason(readmitDecision.enabled, "not_candidate", "disabled");
+        if (readmitDecision.enabled) {
+            readmitDecision.reason = "not_candidate";
+        }
+        else {
+            readmitDecision.reason = "disabled";
+        }
         if (readmitDecision.enabled && readmitDecision.candidate && !kGraphAdmissionCriticalCurrentFrame) {
             auto readmitIt = bucket.largeEntryReadmitByDigest.find(keyDigest);
             if (readmitIt != bucket.largeEntryReadmitByDigest.end()) {
@@ -2662,7 +2679,7 @@ bool command_launch_base_pipeline_graph(
         if (readmitDecision.blocked) {
             telemetry_counter_add(managerState.largeEntryReadmitBlockedEvents, 1);
             telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            outCudaErrorCode = launch_base_pipeline_direct();
             return true;
         }
 
@@ -2735,7 +2752,7 @@ bool command_launch_base_pipeline_graph(
                 bucket.probationHitsByDigest.erase(keyDigest);
             }
             telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            outCudaErrorCode = launch_base_pipeline_direct();
             return true;
         }
 
@@ -2748,7 +2765,7 @@ bool command_launch_base_pipeline_graph(
                 graphCircuitAttempt,
                 circuitError)) {
             telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            outCudaErrorCode = launch_base_pipeline_direct();
             return true;
         }
         graphCircuitAttemptActive = true;
@@ -2814,7 +2831,7 @@ bool command_launch_base_pipeline_graph(
                 graphCircuitAttemptActive = false;
             }
             telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+            outCudaErrorCode = launch_base_pipeline_direct();
             return true;
         }
         telemetry_counter_add(managerState.builderReservationGranted, 1);
@@ -2886,7 +2903,7 @@ bool command_launch_base_pipeline_graph(
                 "durable_build_failed");
             graphCircuitAttemptActive = false;
         }
-        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        outCudaErrorCode = launch_base_pipeline_direct();
         return true;
     }
 
@@ -2917,10 +2934,11 @@ bool command_launch_base_pipeline_graph(
                 "kernel_param_update_failed");
             graphCircuitAttemptActive = false;
         }
-        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        outCudaErrorCode = launch_base_pipeline_direct();
         return true;
     }
 
+    LaunchGraphCounters::record_kernel_launch();
     cudaError_t runErr = cudaGraphLaunch(exec, stream);
     if (runErr == cudaSuccess) {
         runErr = cudaGetLastError();
@@ -2937,10 +2955,13 @@ bool command_launch_base_pipeline_graph(
                 "graph_launch_failed");
             graphCircuitAttemptActive = false;
         }
-        outCudaErrorCode = static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
+        outCudaErrorCode = launch_base_pipeline_direct();
         return true;
     }
 
+    if (reusedResidentGraph) {
+        LaunchGraphCounters::record_graph_replay_hit();
+    }
     if (graphCircuitAttemptActive) {
         tier_circuit_record_outcome(
             transaction,

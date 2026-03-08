@@ -442,9 +442,12 @@ BurstDebtDecision classify_burst_debt(const BurstDebtInput& input) noexcept {
         return out;
     }
 
-    out.reason = input.criticalCurrentFrame
-        ? "critical_no_burst_consumption"
-        : "below_debt_threshold";
+    if (input.criticalCurrentFrame) {
+        out.reason = "critical_no_burst_consumption";
+    }
+    else {
+        out.reason = "below_debt_threshold";
+    }
     return out;
 }
 
