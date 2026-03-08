@@ -5,8 +5,6 @@ VisualStudioVersion = 17.14.36414.22
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "juicer", "juicer.vcxproj", "{E84C5D5E-AAAD-4C04-B01B-5F8CA86FA950}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "JuicerTest", "..\JuicerTest\JuicerTest.vcxproj", "{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -23,14 +21,6 @@ Global
 		{E84C5D5E-AAAD-4C04-B01B-5F8CA86FA950}.Release|x64.Build.0 = Release|x64
 		{E84C5D5E-AAAD-4C04-B01B-5F8CA86FA950}.Release|x86.ActiveCfg = Release|Win32
 		{E84C5D5E-AAAD-4C04-B01B-5F8CA86FA950}.Release|x86.Build.0 = Release|Win32
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Debug|x64.ActiveCfg = Debug|x64
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Debug|x64.Build.0 = Debug|x64
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Debug|x86.ActiveCfg = Debug|Win32
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Debug|x86.Build.0 = Debug|Win32
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Release|x64.ActiveCfg = Release|x64
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Release|x64.Build.0 = Release|x64
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Release|x86.ActiveCfg = Release|Win32
-		{0DAF1FFC-E2F6-4349-A2B6-0333EE9CC19D}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

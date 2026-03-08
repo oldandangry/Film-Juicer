@@ -79,6 +79,8 @@
     <JuicerSpdDebugMaxSamples Condition="'$(JuicerSpdDebugMaxSamples)'==''">1</JuicerSpdDebugMaxSamples>
     <JuicerRmTelemetryCountersCompiled Condition="'$(JuicerRmTelemetryCountersCompiled)'=='' and '$(Configuration)'=='Debug'">1</JuicerRmTelemetryCountersCompiled>
     <JuicerRmTelemetryCountersCompiled Condition="'$(JuicerRmTelemetryCountersCompiled)'=='' and '$(Configuration)'=='Release'">0</JuicerRmTelemetryCountersCompiled>
+    <JuicerLaunchGraphCountersCompiled Condition="'$(JuicerLaunchGraphCountersCompiled)'=='' and '$(Configuration)'=='Debug'">1</JuicerLaunchGraphCountersCompiled>
+    <JuicerLaunchGraphCountersCompiled Condition="'$(JuicerLaunchGraphCountersCompiled)'=='' and '$(Configuration)'=='Release'">0</JuicerLaunchGraphCountersCompiled>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <TargetExt>.ofx</TargetExt>
@@ -90,7 +92,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -115,7 +117,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -141,8 +143,8 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_CUDA_SELF_CHECK=1;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives);JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <PreprocessorDefinitions Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_CUDA_SELF_CHECK=1;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives);JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -171,8 +173,8 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_CUDA_SELF_CHECK=0;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives);JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <PreprocessorDefinitions Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_ENABLE_CUDA=1;JUICER_CUDA_SELF_CHECK=0;JUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives);JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="!Exists('$(VCTargetsPath)\\BuildCustomizations\\CUDA 13.1.props')">WIN32;NOMINMAX;_CRT_SECURE_NO_WARNINGS;JUICER_ENABLE_COUPLERS=1;JUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled);JUICER_SPD_DEBUG=$(JuicerSpdDebug);JUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples);JUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled);JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>

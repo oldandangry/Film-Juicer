@@ -32,6 +32,7 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/JuicerCudaAutoExposure.h"
+#include "Cuda/JuicerCudaLaunchGraphCounters.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
@@ -2084,35 +2085,6 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             float* densityY = self._density.y.data();
             OFX::Image* srcImg = self._srcImg;
             const size_t srcStride = this->srcStride;
-            auto store_zero_density = [&](size_t idx) {
-                store_zero_density_triplet(densityC, densityM, densityY, idx);
-                };
-            auto run_and_store_density = [&](size_t idx) -> bool {
-                if (!runner.run_density_pixel(wsRef, pxIn, pxOut)) {
-                    if (printActive) {
-                        mark_failure_and_abort(failure, abortFlag);
-                        return false;
-                    }
-                    store_zero_density(idx);
-                    return true;
-                }
-
-                if (printActive) {
-                    if (pxOut.medium != Pipeline::DensityMedium::Print) {
-                        mark_failure_and_abort(failure, abortFlag);
-                        return false;
-                    }
-                    store_density_triplet(densityC, densityM, densityY, idx, pxOut.printDensity.v);
-                    return true;
-                }
-
-                store_density_triplet(densityC, densityM, densityY, idx, pxOut.negativeDensity.v);
-                return true;
-            };
-            auto copy_and_run_density = [&](const float* srcPix, size_t idx) -> bool {
-                copy_float3(pxIn.rgb.v, srcPix);
-                return run_and_store_density(idx);
-                };
 
             for (int yOff = yStart; yOff < yEnd && !should_abort_relaxed(abortFlag); ++yOff) {
                 if (self._effect.abort()) {
@@ -2141,9 +2113,23 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                             corrYIt,
                             corrMIt,
                             corrCIt);
-                        if (!run_and_store_density(idx)) {
-                            break;
+                        if (!runner.run_density_pixel(wsRef, pxIn, pxOut)) {
+                            if (printActive) {
+                                mark_failure_and_abort(failure, abortFlag);
+                                break;
+                            }
+                            store_zero_density_triplet(densityC, densityM, densityY, idx);
+                            continue;
                         }
+                        if (printActive) {
+                            if (pxOut.medium != Pipeline::DensityMedium::Print) {
+                                mark_failure_and_abort(failure, abortFlag);
+                                break;
+                            }
+                            store_density_triplet(densityC, densityM, densityY, idx, pxOut.printDensity.v);
+                            continue;
+                        }
+                        store_density_triplet(densityC, densityM, densityY, idx, pxOut.negativeDensity.v);
                     }
                     continue;
                 }
@@ -2161,9 +2147,26 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                         if (should_abort_relaxed(abortFlag)) {
                             break;
                         }
-                        if (!copy_and_run_density(srcPixIt, idx)) {
-                            break;
+                        copy_float3(pxIn.rgb.v, srcPixIt);
+                        if (!runner.run_density_pixel(wsRef, pxIn, pxOut)) {
+                            if (printActive) {
+                                mark_failure_and_abort(failure, abortFlag);
+                                break;
+                            }
+                            store_zero_density_triplet(densityC, densityM, densityY, idx);
+                            srcPixIt += srcStride;
+                            continue;
                         }
+                        if (printActive) {
+                            if (pxOut.medium != Pipeline::DensityMedium::Print) {
+                                mark_failure_and_abort(failure, abortFlag);
+                                break;
+                            }
+                            store_density_triplet(densityC, densityM, densityY, idx, pxOut.printDensity.v);
+                            srcPixIt += srcStride;
+                            continue;
+                        }
+                        store_density_triplet(densityC, densityM, densityY, idx, pxOut.negativeDensity.v);
                         srcPixIt += srcStride;
                     }
                     continue;
@@ -2176,12 +2179,26 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
                     }
                     const int x = offset_from_start(originX, xOff);
                     if (!read_rgb_pixel_if_present(srcImg, x, y, pxIn.rgb.v)) {
-                        store_zero_density(idx);
+                        store_zero_density_triplet(densityC, densityM, densityY, idx);
                         continue;
                     }
-                    if (!run_and_store_density(idx)) {
-                        break;
+                    if (!runner.run_density_pixel(wsRef, pxIn, pxOut)) {
+                        if (printActive) {
+                            mark_failure_and_abort(failure, abortFlag);
+                            break;
+                        }
+                        store_zero_density_triplet(densityC, densityM, densityY, idx);
+                        continue;
                     }
+                    if (printActive) {
+                        if (pxOut.medium != Pipeline::DensityMedium::Print) {
+                            mark_failure_and_abort(failure, abortFlag);
+                            break;
+                        }
+                        store_density_triplet(densityC, densityM, densityY, idx, pxOut.printDensity.v);
+                        continue;
+                    }
+                    store_density_triplet(densityC, densityM, densityY, idx, pxOut.negativeDensity.v);
                 }
             }
         }
@@ -2449,7 +2466,8 @@ void JuicerProcessor::process() {
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
     // CUDA-only mode: refuse CPU/OpenCL/Metal entry points.
     if (!_isEnabledCudaRender) {
-        OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+        JTRACE("CUDA", "FATAL: JUICER_CUDA_ONLY rejected non-CUDA render request");
+        OFX::throwSuiteStatusException(kOfxStatErrFatal);
     }
 #endif
     if (is_gpu_render_requested(_isEnabledOpenCLRender, _isEnabledCudaRender, _isEnabledMetalRender)) {
@@ -2465,7 +2483,8 @@ void JuicerProcessor::multiThreadProcessImages(OfxRectI) {
 
 void JuicerProcessor::processImagesCUDA() {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-    OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+    JTRACE("CUDA", "FATAL: CUDA render requested but the CUDA backend is unavailable in this build");
+    OFX::throwSuiteStatusException(kOfxStatErrFatal);
 #else
     enum class RenderMode {
         NegativeOnly,
@@ -2489,7 +2508,10 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
     if (!(_nComponents == 1 || _nComponents == 3 || _nComponents == 4)) {
-        OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+        std::string msg = "FATAL: CUDA render requested with unsupported component count=";
+        msg += std::to_string(_nComponents);
+        JTRACE("CUDA", msg);
+        OFX::throwSuiteStatusException(kOfxStatErrFatal);
     }
 
     const OfxRectI srcBounds = _srcImg->getBounds();
@@ -2690,53 +2712,43 @@ void JuicerProcessor::processImagesCUDA() {
         return true;
     };
 
-    auto throw_cuda_mode_fallback = [&]() {
-#if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
+    auto throw_cuda_policy_fatal = [&](const char* failurePrefix = nullptr,
+                                       const char* detail = nullptr) {
+        trace_cuda_fatal_prefixed_if(
+            traceInfo,
+            nonempty_cstr_or(failurePrefix, "CUDA render cannot continue"),
+            detail);
         throw OFX::Exception::Suite(kOfxStatErrFatal);
-#else
-        throw OFX::Exception::Suite(kOfxStatErrUnsupported);
-#endif
     };
 
     auto throw_cuda_stage_fatal = [&](const char* stageTag,
                                       const char* failurePrefix,
-                                      cudaError_t errorCode,
-                                      bool useModeFallback = false) {
+                                      cudaError_t errorCode) {
         const char* errorMsg = cudaGetErrorString(errorCode);
         const char* detail = detail_or_unknown(errorMsg);
         mark_context_loss_recovery(nonempty_cstr_or(stageTag, "cuda_stage"), errorCode, detail);
-        trace_cuda_fatal_prefixed_if(
-            traceInfo,
-            nonempty_cstr_or(failurePrefix, "CUDA stage failed"),
-            detail);
-        if (useModeFallback) {
-            throw_cuda_mode_fallback();
-        }
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
+        throw_cuda_policy_fatal(nonempty_cstr_or(failurePrefix, "CUDA stage failed"), detail);
     };
 
-    auto trace_and_throw_cuda_mode_fallback = [&](const char* prefix, const char* detail) {
-        trace_cuda_prefixed_if(traceInfo, prefix, detail);
-        throw_cuda_mode_fallback();
+    auto trace_and_throw_cuda_policy_fatal = [&](const char* prefix, const char* detail) {
+        throw_cuda_policy_fatal(prefix, detail);
     };
 
-    auto mark_context_and_throw_cuda_mode_fallback = [&](const char* stageTag,
-                                                         const char* prefix,
-                                                         const std::string& detail) {
+    auto mark_context_and_throw_cuda_policy_fatal = [&](const char* stageTag,
+                                                        const char* prefix,
+                                                        const std::string& detail) {
         mark_context_loss_recovery(
             nonempty_cstr_or(stageTag, "cuda_stage"),
             cudaErrorUnknown,
             detail);
-        trace_and_throw_cuda_mode_fallback(prefix, cstr_or_null_if_empty(detail));
+        trace_and_throw_cuda_policy_fatal(prefix, cstr_or_null_if_empty(detail));
     };
 
-    auto trace_contention_and_throw_cuda_mode_fallback = [&](const char* prefix,
-                                                             const std::string& detail) {
-        trace_cuda_prefixed_if(
-            traceInfo,
+    auto trace_contention_and_throw_cuda_policy_fatal = [&](const char* prefix,
+                                                            const std::string& detail) {
+        throw_cuda_policy_fatal(
             nonempty_cstr_or(prefix, "CUDA work deferred by contention policy"),
             cstr_or_null_if_empty(detail));
-        throw_cuda_mode_fallback();
     };
 
     auto throw_submission_fatal = [&](const char* stageTag,
@@ -2888,7 +2900,7 @@ void JuicerProcessor::processImagesCUDA() {
             _scannerSettings.useLut,
             _pCudaStream,
             uploadError)) {
-        mark_context_and_throw_cuda_mode_fallback(
+        mark_context_and_throw_cuda_policy_fatal(
             "command_ensure_uploaded",
             "CUDA WorkingState upload failed",
             uploadError);
@@ -2992,7 +3004,7 @@ void JuicerProcessor::processImagesCUDA() {
                     if (traceInfo) {
                         std::string msg;
                         msg.reserve(96);
-                        msg = "CUDA self-check failed; forcing CPU fallback. Error: ";
+                        msg = "CUDA self-check failed; aborting CUDA render. Error: ";
                         msg += detail_or_unknown(sSelfCheckErr);
                         JTRACE("CUDA", msg);
                     }
@@ -3002,7 +3014,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             });
             if (!sSelfCheckOk) {
-                OFX::throwSuiteStatusException(kOfxStatErrUnsupported);
+                OFX::throwSuiteStatusException(kOfxStatErrFatal);
             }
         }
     }
@@ -3079,8 +3091,8 @@ void JuicerProcessor::processImagesCUDA() {
             return;
         }
 
-        auto throw_auto_exposure_mode_fallback = [&](const char* prefix, const char* detail) {
-            trace_and_throw_cuda_mode_fallback(
+        auto throw_auto_exposure_mode_fatal = [&](const char* prefix, const char* detail) {
+            trace_and_throw_cuda_policy_fatal(
                 nonempty_cstr_or(prefix, "CUDA auto-exposure failed"),
                 detail_or_unknown(detail));
         };
@@ -3094,7 +3106,7 @@ void JuicerProcessor::processImagesCUDA() {
                 autoExposureReusableKeyHash,
                 _pCudaStream,
                 aeError)) {
-            throw_auto_exposure_mode_fallback(
+            throw_auto_exposure_mode_fatal(
                 "CUDA auto-exposure buffer allocation failed",
                 cstr_or_null_if_empty(aeError));
         }
@@ -3152,7 +3164,7 @@ void JuicerProcessor::processImagesCUDA() {
                         _pCudaStream,
                         &errMsg);
                     if (rcW != 0) {
-                        throw_auto_exposure_mode_fallback(
+                        throw_auto_exposure_mode_fatal(
                             "CUDA auto-exposure weight build failed",
                             errMsg);
                     }
@@ -3183,7 +3195,7 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 &errMsg);
             if (rc != 0) {
-                throw_auto_exposure_mode_fallback(
+                throw_auto_exposure_mode_fatal(
                     "CUDA auto-exposure metering failed",
                     errMsg);
             }
@@ -3197,7 +3209,7 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 &errMsg);
             if (rc != 0) {
-                throw_auto_exposure_mode_fallback(
+                throw_auto_exposure_mode_fatal(
                     "CUDA auto-exposure slider update failed",
                     errMsg);
             }
@@ -3746,7 +3758,7 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 graphErrCode,
                 graphError)) {
-            mark_context_and_throw_cuda_mode_fallback(
+            mark_context_and_throw_cuda_policy_fatal(
                 "command_launch_base_pipeline_graph",
                 "CUDA base graph launch command failed",
                 graphError);
@@ -3763,7 +3775,7 @@ void JuicerProcessor::processImagesCUDA() {
                 *resources,
                 _pCudaStream,
                 scanFlagError)) {
-            mark_context_and_throw_cuda_mode_fallback(
+            mark_context_and_throw_cuda_policy_fatal(
                 "command_ensure_scan_error_flag",
                 "CUDA scan error flag allocation failed",
                 scanFlagError);
@@ -3805,8 +3817,7 @@ void JuicerProcessor::processImagesCUDA() {
             throw_cuda_stage_fatal(
                 "scan_error_flag_memset",
                 "CUDA scan error flag memset failed",
-                flagErr,
-                true);
+                flagErr);
         }
 
         return scanEvent;
@@ -3825,8 +3836,7 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_cuda_stage_fatal(
                     "scan_error_flag_readback",
                     "CUDA scan error flag readback failed",
-                    flagErr,
-                    true);
+                    flagErr);
             }
             cudaError_t evErr = cudaEventRecord(scanEvent, stream);
             if (evErr != cudaSuccess) {
@@ -3922,7 +3932,7 @@ void JuicerProcessor::processImagesCUDA() {
                     _pCudaStream,
                     lutError)) {
                 const std::string prefix = make_cuda_prefixed_failure(scanLabel, " LUT upload failed");
-                mark_context_and_throw_cuda_mode_fallback(
+                mark_context_and_throw_cuda_policy_fatal(
                     selection.ensureLutStageTag,
                     prefix.c_str(),
                     lutError);
@@ -3974,11 +3984,11 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 dirError)) {
             if (is_scratch_contention_exhausted(dirError)) {
-                trace_contention_and_throw_cuda_mode_fallback(
+                trace_contention_and_throw_cuda_policy_fatal(
                     "CUDA spatial DIR scratch deferred by contention policy",
                     dirError);
             }
-            mark_context_and_throw_cuda_mode_fallback(
+            mark_context_and_throw_cuda_policy_fatal(
                 "command_ensure_spatial_dir_scratch",
                 "CUDA spatial DIR scratch allocation failed",
                 dirError);
@@ -3990,7 +4000,7 @@ void JuicerProcessor::processImagesCUDA() {
                 _dirRT.spatialSigmaPixels,
                 _pCudaStream,
                 dirError)) {
-            mark_context_and_throw_cuda_mode_fallback(
+            mark_context_and_throw_cuda_policy_fatal(
                 "command_ensure_spatial_dir_kernel",
                 "CUDA spatial DIR kernel upload failed",
                 dirError);
@@ -4041,20 +4051,10 @@ void JuicerProcessor::processImagesCUDA() {
                 illumError)) {
             return;
         }
-        mark_context_and_throw_cuda_mode_fallback(
+        mark_context_and_throw_cuda_policy_fatal(
             "command_ensure_print_illuminant_filtered",
             "CUDA print illuminant upload failed",
             illumError);
-    };
-
-    auto resolve_print_medium_runtime_for_cuda = [&]() -> Scanner::ScannerMediumRuntime {
-        const ScannerMediumRuntimeBinding scannerBinding = bind_scanner_medium_runtime(
-            *_ws,
-            /*printActive*/true,
-            _hasPrintGlareOverride,
-            &_printGlareOverride,
-            /*forcePrintGlareHash*/false);
-        return scannerBinding.printOverride;
     };
 
     auto trace_print_payload_verbose = [&](JuicerCuda::Resources* resources) {
@@ -4102,11 +4102,11 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto throw_cuda_optics_scratch_failure = [&](const std::string& opticsError) {
         if (is_scratch_contention_exhausted(opticsError)) {
-            trace_contention_and_throw_cuda_mode_fallback(
+            trace_contention_and_throw_cuda_policy_fatal(
                 "CUDA optics scratch deferred by contention policy",
                 opticsError);
         }
-        mark_context_and_throw_cuda_mode_fallback(
+        mark_context_and_throw_cuda_policy_fatal(
             "command_ensure_optics_scratch",
             "CUDA optics scratch allocation failed",
             opticsError);
@@ -4197,7 +4197,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
         std::string prefix = make_cuda_prefixed_failure(nonempty_cstr_or(kernelLabel, "gaussian"),
                                                         " kernel upload failed");
-        trace_and_throw_cuda_mode_fallback(prefix.c_str(), cstr_or_null_if_empty(opticsError));
+        trace_and_throw_cuda_policy_fatal(prefix.c_str(), cstr_or_null_if_empty(opticsError));
     };
 
     auto ensure_halation_kernel_or_throw = [&](auto& kernel,
@@ -4215,7 +4215,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
         std::string prefix = make_cuda_prefixed_failure(nonempty_cstr_or(kernelLabel, "halation"),
                                                         " kernel upload failed");
-        trace_and_throw_cuda_mode_fallback(prefix.c_str(), cstr_or_null_if_empty(opticsError));
+        trace_and_throw_cuda_policy_fatal(prefix.c_str(), cstr_or_null_if_empty(opticsError));
     };
 
     auto ensure_grain_dye_kernel_or_throw = [&](auto& kernel,
@@ -4544,6 +4544,7 @@ void JuicerProcessor::processImagesCUDA() {
             halationSetup.scatterStrengthBGR,
             halationSetup.scatterSigmaPx,
             opticsError);
+        JuicerCuda::LaunchGraphCounters::record_kernel_launch();
         result.error = launchOpticsKernel(glareSeed, glarePercent, glareRoughness);
         return result;
     };
@@ -4814,10 +4815,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (print_pipeline_payloads_ready(run)) {
             return;
         }
-        trace_cuda_prefixed_if(
-            true,
-            "CUDA print payloads missing; cannot render print pipeline");
-        throw_cuda_mode_fallback();
+        throw_cuda_policy_fatal("CUDA print payloads missing; cannot render print pipeline");
     };
 
     auto begin_medium_pipeline_or_abort = [&](const char* stageLabel) -> bool {
@@ -4825,10 +4823,10 @@ void JuicerProcessor::processImagesCUDA() {
         return !abort_cuda_path_if_requested(cudaResources);
     };
 
-    auto validate_medium_scanner_preflight_or_throw = [&](bool negativeMedium) -> ScannerPreflightResult {
+    auto validate_negative_scanner_preflight_or_throw = [&]() -> ScannerPreflightResult {
         const ScannerMediumRuntimeBinding scannerMedium = bind_scanner_medium_runtime(
             *_ws,
-            !negativeMedium,
+            /*printActive*/false,
             /*hasPrintGlareOverride*/false,
             nullptr,
             /*forcePrintGlareHash*/false);
@@ -4928,7 +4926,7 @@ void JuicerProcessor::processImagesCUDA() {
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
         ScannerPreflightResult scannerPreflight =
-            validate_medium_scanner_preflight_or_throw(true);
+            validate_negative_scanner_preflight_or_throw();
         const Scanner::ScannerMediumRuntime& negativeMediumRuntime = *scannerPreflight.mediumRuntime;
 
         JuicerCuda::PipelineRunParams run{};
@@ -4963,17 +4961,27 @@ void JuicerProcessor::processImagesCUDA() {
             }
         }
         commit_submission_or_throw();
+        JuicerCuda::LaunchGraphCounters::record_frame_completed();
         return;
     }
 
     // RenderMode::Print (PrintBypass=false).
     {
         if (!_printReady || !_prt) {
-            throw_cuda_mode_fallback();
+            throw_cuda_policy_fatal("CUDA print pipeline prerequisites unavailable");
         }
 
-        ScannerPreflightResult scannerPreflight =
-            validate_medium_scanner_preflight_or_throw(false);
+        const ScannerMediumRuntimeBinding printScannerBinding = bind_scanner_medium_runtime(
+            *_ws,
+            /*printActive*/true,
+            _hasPrintGlareOverride,
+            &_printGlareOverride,
+            /*forcePrintGlareHash*/false);
+        ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
+            printScannerBinding.valid,
+            printScannerBinding.label,
+            printScannerBinding.runtime());
+        const Scanner::ScannerMediumRuntime& printMediumRuntime = *scannerPreflight.mediumRuntime;
 
         // Print exposure compensation factor is computed on CPU (no image reads; safe for CUDA renders).
         const float kMidSpectral = compute_print_midgray_factor_cached(
@@ -5008,12 +5016,9 @@ void JuicerProcessor::processImagesCUDA() {
             populate_print_pipeline_payload(run, cudaResources, kMidSpectral);
             throw_if_print_payloads_missing(run);
 
-            // Scanner optics/glare for the print medium.
-            Scanner::ScannerMediumRuntime printMedium = resolve_print_medium_runtime_for_cuda();
-
             if (!run_medium_optics_pipeline_or_abort(
                     run,
-                    printMedium,
+                    printMediumRuntime,
                     Scanner::ScannerMedium::Print,
                     false,
                     "build_gate_mask_print",
@@ -5026,6 +5031,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
         }
         commit_submission_or_throw();
+        JuicerCuda::LaunchGraphCounters::record_frame_completed();
         return;
     }
 #endif

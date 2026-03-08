@@ -194,7 +194,9 @@ void trace_allocator_backend_mode_once(
         + " fallback_capability=" + std::to_string(submission_bool_u32(entry.fallbackCapability))
         + " fallback_scaffold=" + std::to_string(submission_bool_u32(entry.fallbackScaffold))
         + " candidate_reason=" + trace_or_unknown(entry.candidateReason)
-        + " active_reason=" + trace_or_unknown(entry.activeReason);
+        + " candidate_reason_class=" + trace_reason_class_or_invalid(entry.candidateReason)
+        + " active_reason=" + trace_or_unknown(entry.activeReason)
+        + " active_reason_class=" + trace_reason_class_or_invalid(entry.activeReason);
     JTRACE("MSALC", msg);
 }
 
