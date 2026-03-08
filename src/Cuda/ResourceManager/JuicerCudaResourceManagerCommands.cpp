@@ -381,6 +381,43 @@ std::uint64_t estimate_scan_lut_upload_bytes(
     return commands_uncached_bytes(cached, bytes);
 }
 
+bool command_scan_lut_is_cached(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium) noexcept {
+    const Scanner::ScannerStaticKey& staticKey =
+        commands_select_scanner_static_key(ws, negativeMedium);
+    const std::uint32_t res =
+        ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
+    const Scanner::ScannerMediumRuntime& medium =
+        commands_select_scanner_medium_runtime(ws, negativeMedium);
+    if (!medium.tables || medium.tables->tablesHash == 0 || medium.range.digest == 0) {
+        return false;
+    }
+    const std::uint64_t expectedHash = ResourceManager::make_scan_lut_key_digest(
+        static_cast<std::uint32_t>(medium.medium),
+        medium.tables->tablesHash,
+        medium.range.digest,
+        res);
+    if (expectedHash == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(resources.m);
+    const JuicerCuda::Resources::DeviceSpectralLut& dst =
+        commands_select_scan_lut_slot(resources, negativeMedium);
+    if (dst.log2XYZ && dst.res == res && dst.hash == expectedHash) {
+        return true;
+    }
+    const bool privateFallbackActive =
+        negativeMedium ? resources.privateLutFallbackNegativeActive
+                       : resources.privateLutFallbackPrintActive;
+    const std::uint64_t privateFallbackHash =
+        negativeMedium ? resources.privateLutFallbackNegativeHash
+                       : resources.privateLutFallbackPrintHash;
+    return privateFallbackActive && privateFallbackHash == expectedHash;
+}
+
 std::uint64_t estimate_print_illuminant_upload_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
@@ -423,6 +460,35 @@ std::uint64_t estimate_print_illuminant_upload_bytes(
         return std::numeric_limits<std::uint64_t>::max();
     }
     return bytes;
+}
+
+bool command_print_illuminant_filtered_is_cached(
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    const Print::Runtime& prt,
+    const Print::Params& params) noexcept {
+    const int k = Spectral::gShape.K;
+    if (k <= 0) {
+        return false;
+    }
+    const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
+    if (wsCoreHash == 0) {
+        return false;
+    }
+    const float yKey = commands_sanitize_filter_shift_step(params.yFilter);
+    const float mKey = commands_sanitize_filter_shift_step(params.mFilter);
+    const float cKey = commands_sanitize_filter_shift_step(params.cFilter);
+    const std::uint64_t neutralFilterHash = commands_neutral_filter_hash_or_default(prt);
+
+    std::lock_guard<std::mutex> lock(resources.m);
+    return resources.printIllumFiltered &&
+        resources.printIllumK == k &&
+        resources.printIllumShapeK == k &&
+        resources.printIllumCoreHash == wsCoreHash &&
+        resources.printIllumYShiftSteps == yKey &&
+        resources.printIllumMShiftSteps == mKey &&
+        resources.printIllumCShiftSteps == cKey &&
+        resources.printIllumNeutralFilterHash == neutralFilterHash;
 }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1370,6 +1436,9 @@ bool command_ensure_uploaded(
     }
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    if (uploadRequestBytes == 0) {
+        return true;
+    }
     bool requestPreReclaim = false;
     if (!enforce_pressure_gate(
             transaction,
@@ -1495,6 +1564,9 @@ bool command_ensure_scan_lut_internal(
     }
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    if (command_scan_lut_is_cached(resources, ws, negativeMedium)) {
+        return true;
+    }
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     auto try_private_fallback = [&](const char* triggerReason) -> bool {
         if (!criticalRequest) {
@@ -1710,6 +1782,9 @@ bool command_ensure_print_illuminant_filtered(
     }
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    if (command_print_illuminant_filtered_is_cached(resources, ws, prt, params)) {
+        return true;
+    }
     bool requestPreReclaim = false;
     if (!enforce_pressure_gate(
             transaction,
@@ -1800,6 +1875,9 @@ bool command_ensure_optics_scratch(
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
         outError = "scratch growth byte estimation overflow";
         return false;
+    }
+    if (growthBytes == 0) {
+        return true;
     }
 
     bool requestPreReclaim = false;
@@ -2070,6 +2148,9 @@ bool command_ensure_spatial_dir_scratch(
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
         outError = "spatial dir scratch growth byte estimation overflow";
         return false;
+    }
+    if (growthBytes == 0) {
+        return true;
     }
 
     bool requestPreReclaim = false;
@@ -2497,23 +2578,9 @@ bool command_launch_base_pipeline_graph(
     key.height = run.height;
     key.nComponents = run.nComponents;
     key.renderMode = renderModeKey;
-    const std::uint64_t keyDigest = base_graph_key_digest(key);
-    const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     constexpr bool kGraphAdmissionCriticalCurrentFrame = false;
     ResourceManagerState& managerState = global_state();
-    std::uint64_t supersededLatestSnapshotId = 0;
-    if (requestBytes > 0 &&
-        should_cancel_superseded_noncritical_builder(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            kGraphAdmissionCriticalCurrentFrame,
-            requestBytes,
-            supersededLatestSnapshotId)) {
-        telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
-    }
     const std::uint64_t graphLargeThresholdBytes = graph_large_entry_threshold_bytes(cfg);
     const std::uint64_t graphLargeCapBytes = graph_large_entry_quarantine_cap_bytes(cfg);
     const std::uint32_t graphLargeCapEntries = graph_large_entry_quarantine_cap_entries(cfg);
@@ -2600,13 +2667,30 @@ bool command_launch_base_pipeline_graph(
                 trace_or(reason, "policy"));
         }
     };
-    applyGraphLargeEntryPolicy("pre_admission");
-
     BaseGraphEntry* found = find_base_graph_entry(bucket, key);
+    const bool trivialResidentGraphHit = (found != nullptr) && (bucket.entries.size() == 1);
+    if (!trivialResidentGraphHit) {
+        applyGraphLargeEntryPolicy("pre_admission");
+        found = find_base_graph_entry(bucket, key);
+    }
     const bool reusedResidentGraph = (found != nullptr);
+    const std::uint64_t keyDigest = base_graph_key_digest(key);
     TierCircuitAttempt graphCircuitAttempt{};
     bool graphCircuitAttemptActive = false;
     if (!found) {
+        const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
+        std::uint64_t supersededLatestSnapshotId = 0;
+        if (requestBytes > 0 &&
+            should_cancel_superseded_noncritical_builder(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                kGraphAdmissionCriticalCurrentFrame,
+                requestBytes,
+                supersededLatestSnapshotId)) {
+            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
+            outCudaErrorCode = launch_base_pipeline_direct();
+            return true;
+        }
         std::uint32_t observedProbationHits = 0;
         auto probationIt = bucket.probationHitsByDigest.find(keyDigest);
         if (probationIt != bucket.probationHitsByDigest.end()) {
@@ -2911,7 +2995,6 @@ bool command_launch_base_pipeline_graph(
 
     cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(found->execOpaque);
     cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(found->kernelNodeOpaque);
-
     cudaKernelNodeParams nodeParams{};
     nodeParams.func = found->kernelFuncOpaque;
     nodeParams.gridDim = dim3(found->gridX, found->gridY, found->gridZ);
