@@ -4,6 +4,7 @@
 
 #include "Cuda/JuicerCudaLaunchGraphCounters.h"
 #include "Cuda/JuicerCudaResources.h"
+#include "Cuda/JuicerCudaResourcesInternal.h"
 #include "Cuda/ResourceManager/JuicerCudaManagerRegistry.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"

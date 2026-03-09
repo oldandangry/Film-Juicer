@@ -1241,32 +1241,6 @@ namespace JuicerCuda {
 #endif
     }
 
-    // Callers must hold resources.m before invoking this helper.
-    static bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset = true) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)bindIfUnset;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        int cur = -1;
-        const cudaError_t devErr = cudaGetDevice(&cur);
-        if (devErr != cudaSuccess || cur < 0) {
-            outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-            return false;
-        }
-        if (bindIfUnset && resources.deviceId < 0) {
-            resources.deviceId = cur;
-        }
-        if (resources.deviceId != cur) {
-            outError = "CUDA device mismatch for cached resources";
-            return false;
-        }
-        return true;
-#endif
-    }
-
-
     bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError) {
         reclaimedBytes = 0;
         outError.clear();
