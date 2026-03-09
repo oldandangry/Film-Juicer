@@ -163,6 +163,48 @@ const JuicerCuda::Resources::DeviceSpectralLut& commands_select_scan_lut_slot(
     return resources.scanPrintLut;
 }
 
+bool& commands_select_private_lut_fallback_active(
+    JuicerCuda::Resources& resources,
+    bool negativeMedium) noexcept {
+    if (negativeMedium) {
+        return resources.privateLutFallbackNegativeActive;
+    }
+    return resources.privateLutFallbackPrintActive;
+}
+
+std::uint64_t& commands_select_private_lut_fallback_hash(
+    JuicerCuda::Resources& resources,
+    bool negativeMedium) noexcept {
+    if (negativeMedium) {
+        return resources.privateLutFallbackNegativeHash;
+    }
+    return resources.privateLutFallbackPrintHash;
+}
+
+void commands_clear_private_lut_fallback_locked(
+    JuicerCuda::Resources& resources,
+    bool negativeMedium) noexcept {
+    commands_select_private_lut_fallback_active(resources, negativeMedium) = false;
+    commands_select_private_lut_fallback_hash(resources, negativeMedium) = 0;
+}
+
+void commands_sync_private_lut_fallback_locked(
+    JuicerCuda::Resources& resources,
+    bool negativeMedium) noexcept {
+    bool& active = commands_select_private_lut_fallback_active(resources, negativeMedium);
+    std::uint64_t& hash = commands_select_private_lut_fallback_hash(resources, negativeMedium);
+    const JuicerCuda::Resources::DeviceSpectralLut& lut =
+        commands_select_scan_lut_slot(resources, negativeMedium);
+    if (!active) {
+        hash = 0;
+        return;
+    }
+    if (!lut.log2XYZ || lut.hash == 0 || lut.hash != hash) {
+        active = false;
+        hash = 0;
+    }
+}
+
 std::uint64_t commands_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t earlierMs) noexcept {
     if (nowMs > earlierMs) {
         return nowMs - earlierMs;
@@ -404,18 +446,10 @@ bool command_scan_lut_is_cached(
     }
 
     std::lock_guard<std::mutex> lock(resources.m);
+    commands_sync_private_lut_fallback_locked(resources, negativeMedium);
     const JuicerCuda::Resources::DeviceSpectralLut& dst =
         commands_select_scan_lut_slot(resources, negativeMedium);
-    if (dst.log2XYZ && dst.res == res && dst.hash == expectedHash) {
-        return true;
-    }
-    const bool privateFallbackActive =
-        negativeMedium ? resources.privateLutFallbackNegativeActive
-                       : resources.privateLutFallbackPrintActive;
-    const std::uint64_t privateFallbackHash =
-        negativeMedium ? resources.privateLutFallbackNegativeHash
-                       : resources.privateLutFallbackPrintHash;
-    return privateFallbackActive && privateFallbackHash == expectedHash;
+    return dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
 }
 
 std::uint64_t estimate_print_illuminant_upload_bytes(
@@ -489,6 +523,45 @@ bool command_print_illuminant_filtered_is_cached(
         resources.printIllumMShiftSteps == mKey &&
         resources.printIllumCShiftSteps == cKey &&
         resources.printIllumNeutralFilterHash == neutralFilterHash;
+}
+
+bool command_auto_exposure_buffers_ready(
+    JuicerCuda::Resources& resources,
+    int meterWidth,
+    int meterHeight,
+    std::string& outError) {
+    if (meterWidth <= 0 || meterHeight <= 0) {
+        outError = "auto-exposure meter dimensions invalid";
+        return false;
+    }
+
+    const int blockX = 16;
+    const int blockY = 16;
+    const int gridX = (meterWidth + blockX - 1) / blockX;
+    const int gridY = (meterHeight + blockY - 1) / blockY;
+    const int neededPartials = gridX * gridY;
+    if (neededPartials <= 0) {
+        outError = "auto-exposure partial count invalid";
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(resources.m);
+    if (!validate_resource_owner_locked(resources, outError, true)) {
+        return false;
+    }
+
+    return resources.autoExposureExposureScale &&
+        resources.autoExposureAutoEV &&
+        resources.autoExposureValid &&
+        resources.autoExposureScratch.maxYBits &&
+        resources.autoExposureScratch.histogram &&
+        resources.autoExposureScratch.weightsX &&
+        resources.autoExposureScratch.weightsY &&
+        resources.autoExposureScratch.partialsA &&
+        resources.autoExposureScratch.partialsB &&
+        resources.autoExposureScratch.weightsXCapacity >= meterWidth &&
+        resources.autoExposureScratch.weightsYCapacity >= meterHeight &&
+        resources.autoExposureScratch.partialCapacity >= neededPartials;
 }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1302,20 +1375,8 @@ PrivateLutFallbackDecision evaluate_private_lut_fallback(
     }
 
     std::lock_guard<std::mutex> lock(resources.m);
-    auto clear_stale = [](bool& active, std::uint64_t& hash, const JuicerCuda::Resources::DeviceSpectralLut& lut) {
-        if (!lut.log2XYZ) {
-            active = false;
-            hash = 0;
-        }
-    };
-    clear_stale(
-        resources.privateLutFallbackNegativeActive,
-        resources.privateLutFallbackNegativeHash,
-        resources.scanNegativeLut);
-    clear_stale(
-        resources.privateLutFallbackPrintActive,
-        resources.privateLutFallbackPrintHash,
-        resources.scanPrintLut);
+    commands_sync_private_lut_fallback_locked(resources, true);
+    commands_sync_private_lut_fallback_locked(resources, false);
 
     decision.activeCount =
         bool_u32(resources.privateLutFallbackNegativeActive) +
@@ -1330,7 +1391,7 @@ PrivateLutFallbackDecision evaluate_private_lut_fallback(
         slotLut = &resources.scanNegativeLut;
     }
 
-    if (*slotActive && slotLut->log2XYZ && *slotHash == expectedHash) {
+    if (*slotActive && slotLut->log2XYZ && slotLut->hash == expectedHash && *slotHash == expectedHash) {
         decision.allowed = true;
         decision.alreadyActive = true;
         decision.reason = "already_active";
@@ -1725,6 +1786,10 @@ bool command_ensure_scan_lut_internal(
         ok,
         "ensure_success",
         outError);
+    if (ok) {
+        std::lock_guard<std::mutex> lock(resources.m);
+        commands_clear_private_lut_fallback_locked(resources, negativeMedium);
+    }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
@@ -2494,6 +2559,50 @@ bool command_ensure_auto_exposure_buffers(
         meterHeight,
         hadPrevious,
         bool_reason(metadataHit, "metadata_hit", "metadata_miss"));
+
+    if (command_auto_exposure_buffers_ready(resources, meterWidth, meterHeight, outError)) {
+        {
+            AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
+            std::lock_guard<std::mutex> lock(ownershipState.mutex);
+            AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
+            entry.valid = true;
+            entry.keyHash = normalizedKeyHash;
+            entry.meterWidth = meterWidth;
+            entry.meterHeight = meterHeight;
+            entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
+        }
+
+        telemetry_trace_auto_exposure_ownership(
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            "ManagerOnly",
+            "publish",
+            metadataHit,
+            normalizedKeyHash,
+            meterWidth,
+            meterHeight,
+            hadPrevious,
+            bool_reason(metadataHit, "reuse", "refresh"));
+        return true;
+    }
+    if (!outError.empty()) {
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+        telemetry_trace_auto_exposure_ownership(
+            transaction.transactionId,
+            transaction.snapshot.snapshotId,
+            transaction.snapshot.traceSchemaVersion,
+            "ManagerOnly",
+            "ensure_fail",
+            false,
+            normalizedKeyHash,
+            meterWidth,
+            meterHeight,
+            hadPrevious,
+            commands_error_or_cstr(outError, "ensure_failed"));
+        return false;
+    }
+    outError.clear();
 
     if (!JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError)) {
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
