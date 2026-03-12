@@ -724,6 +724,7 @@
 #endif
         resources.sharedTmpWidth = 0;
         resources.sharedTmpHeight = 0;
+        resources.sharedTmpCapacityElements = 0;
     }
 
     bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError) {
@@ -896,15 +897,16 @@
             return false;
         }
 
+        const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
         if (resources.sharedTmpPlane &&
-            resources.sharedTmpWidth == width &&
-            resources.sharedTmpHeight == height) {
+            resources.sharedTmpCapacityElements >= requiredElements) {
+            resources.sharedTmpWidth = width;
+            resources.sharedTmpHeight = height;
             return true;
         }
 
         if (resources.sharedTmpPlane) {
-            const size_t oldN = static_cast<size_t>(std::max(0, resources.sharedTmpWidth)) * static_cast<size_t>(std::max(0, resources.sharedTmpHeight));
-            const size_t oldBytes = oldN * sizeof(float);
+            const size_t oldBytes = resources.sharedTmpCapacityElements * sizeof(float);
             if (!retire_ptr_locked(resources, resources.sharedTmpPlane, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label ? label : "shared tmp", outError)) {
                 return false;
             }
@@ -912,9 +914,9 @@
         }
         resources.sharedTmpWidth = 0;
         resources.sharedTmpHeight = 0;
+        resources.sharedTmpCapacityElements = 0;
 
-        const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
-        const size_t bytes = n * sizeof(float);
+        const size_t bytes = requiredElements * sizeof(float);
         if (!allocate_scratch_device_ptr_locked(
                 resources,
                 resources.sharedTmpPlane,
@@ -928,6 +930,7 @@
 
         resources.sharedTmpWidth = width;
         resources.sharedTmpHeight = height;
+        resources.sharedTmpCapacityElements = requiredElements;
         return true;
 #endif
     }

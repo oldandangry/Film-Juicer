@@ -1646,9 +1646,9 @@ std::size_t estimate_optics_growth_bytes(
         addPlane(3); // rgbR/rgbG/rgbB
     }
 
+    const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     const bool sharedTmpMatch = resources.sharedTmpPlane &&
-        resources.sharedTmpWidth == width &&
-        resources.sharedTmpHeight == height;
+        resources.sharedTmpCapacityElements >= requiredElements;
     if (!sharedTmpMatch) {
         addPlane(); // shared tmp plane
     }
@@ -1674,7 +1674,9 @@ std::size_t estimate_optics_growth_bytes(
         addPlane();
     }
     if (needGateMask) {
-        const bool gateDimsMatch = (scratch.gateWidth == width && scratch.gateHeight == height);
+        const int gateWidth = (width + 1) / 2;
+        const int gateHeight = (height + 1) / 2;
+        const bool gateDimsMatch = (scratch.gateWidth == gateWidth && scratch.gateHeight == gateHeight);
         if (fullRebuild || !scratch.gateMask || !gateDimsMatch) {
             addPlane();
         }
@@ -1695,9 +1697,9 @@ std::size_t estimate_spatial_dir_growth_bytes(
     std::lock_guard<std::mutex> lock(resources.m);
     const auto& scratch = resources.spatialDirScratch;
     const bool haveBase = (scratch.width == width && scratch.height == height && scratch.corrY && scratch.corrM && scratch.corrC);
+    const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     const bool sharedTmpMatch = resources.sharedTmpPlane &&
-        resources.sharedTmpWidth == width &&
-        resources.sharedTmpHeight == height;
+        resources.sharedTmpCapacityElements >= requiredElements;
 
     std::size_t estimate = 0;
     if (!haveBase) {

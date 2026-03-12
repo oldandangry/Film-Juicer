@@ -1425,7 +1425,11 @@ void add_resources_active_bytes_locked(
 
     {
         bool overflow = false;
-        const std::uint64_t sharedTmpBytes = bytes_for_plane_extent_u64(resources.sharedTmpWidth, resources.sharedTmpHeight, overflow);
+        const std::uint64_t sharedTmpBytes =
+            (resources.sharedTmpCapacityElements >
+             (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+                ? (overflow = true, 0ull)
+                : static_cast<std::uint64_t>(resources.sharedTmpCapacityElements) * sizeof(float);
         if (overflow) {
             snapshot.overflow = true;
         }
@@ -1600,7 +1604,10 @@ void add_scratch_tier_bytes_locked(
     ManagerMemorySnapshot& scratchSnapshot) noexcept {
     bool overflow = false;
     const std::uint64_t sharedTmpBytes =
-        bytes_for_plane_extent_u64(resources.sharedTmpWidth, resources.sharedTmpHeight, overflow);
+        (resources.sharedTmpCapacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(resources.sharedTmpCapacityElements) * sizeof(float);
     if (overflow) {
         scratchSnapshot.overflow = true;
     }

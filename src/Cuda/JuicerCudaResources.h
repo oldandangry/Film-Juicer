@@ -151,6 +151,7 @@ namespace JuicerCuda {
         float* sharedTmpPlane = nullptr;
         int sharedTmpWidth = 0;
         int sharedTmpHeight = 0;
+        std::size_t sharedTmpCapacityElements = 0;
 
     struct DeviceOpticsScratch {
         float* rgbR = nullptr;
