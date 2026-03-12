@@ -2992,8 +2992,9 @@ void JuicerProcessor::processImagesCUDA() {
             selfCheckHookActive);
         if (selfCheckHookActive) {
             // Runtime CUDA self-check.
-            // This is intentionally a host-runtime probe (not JUICER_TESTS), and is designed to be easy
-            // to remove later: disable JUICER_CUDA_SELF_CHECK or delete Cuda/JuicerCudaSelfCheck.*.
+            // This is intentionally a host-runtime probe, not part of the deprecated test-hook path,
+            // and is designed to be easy to remove later: disable JUICER_CUDA_SELF_CHECK or delete
+            // Cuda/JuicerCudaSelfCheck.*.
             static std::once_flag sSelfCheckOnce;
             static bool sSelfCheckOk = true;
             static const char* sSelfCheckErr = nullptr;
@@ -3843,19 +3844,6 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_cuda_stage_fatal("scan_error_event_record", "CUDA scan error event record failed", evErr);
             }
             resources->scanErrorPending = 1;
-            cudaError_t pollErr = cudaEventQuery(scanEvent);
-            if (pollErr == cudaSuccess) {
-                resources->scanErrorPending = 0;
-                if (*resources->scanErrorHost != 0) {
-                    std::string stagePrefix = stage;
-                    stagePrefix += " pipeline scan produced non-finite RGB";
-                    trace_cuda_fatal_prefixed_if(traceInfo, stagePrefix.c_str());
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-            }
-            else if (pollErr != cudaErrorNotReady) {
-                throw_cuda_stage_fatal("scan_error_event_query", "CUDA scan error event query failed", pollErr);
-            }
         }
         else {
             static std::atomic<bool> sScanErrorReadbackUnavailableWarned{ false };

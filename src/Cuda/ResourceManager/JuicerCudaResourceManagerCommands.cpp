@@ -525,6 +525,14 @@ bool command_print_illuminant_filtered_is_cached(
         resources.printIllumNeutralFilterHash == neutralFilterHash;
 }
 
+bool command_scan_error_flag_ready(
+    JuicerCuda::Resources& resources) noexcept {
+    std::lock_guard<std::mutex> lock(resources.m);
+    return resources.scanErrorFlag &&
+           resources.scanErrorHost &&
+           resources.scanErrorEventOpaque;
+}
+
 bool command_auto_exposure_buffers_ready(
     JuicerCuda::Resources& resources,
     int meterWidth,
@@ -1820,6 +1828,9 @@ bool command_ensure_scan_error_flag(
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_scan_error_flag")) {
         return false;
+    }
+    if (command_scan_error_flag_ready(resources)) {
+        return true;
     }
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);

@@ -299,8 +299,7 @@ const char* failure_reason_class(const char* token) noexcept {
 
     if (value == "auto_no_optional_supported" ||
         value == "capability_fallback_legacy" ||
-        value == "requested_async_unsupported" ||
-        value == "requested_slab_unsupported") {
+        value == "requested_async_unsupported") {
         return "capability_unavailable";
     }
 
@@ -316,10 +315,14 @@ const char* failure_reason_class(const char* token) noexcept {
     if (value == "context_query_failed" ||
         value == "device_query_failed" ||
         value == "event_create_failed" ||
+        value == "fragmentation_recovery_reap_failed" ||
         value == "lifecycle_stage_rejected" ||
         value == "lifecycle_state_not_allowed" ||
         value == "missing_registry_entry" ||
+        value == "non_allocator_error" ||
         value == "private_fallback_failed" ||
+        value == "reap_failed" ||
+        value == "reap_retry_failed" ||
         value == "staged_copy_failed" ||
         value == "sync_fallback_required" ||
         value == "unknown" ||
@@ -342,16 +345,16 @@ const char* failure_reason_class(const char* token) noexcept {
         value == "per_medium_cap_zero" ||
         value == "private_fallback_denied" ||
         value == "requested_legacy" ||
-        value == "requested_slab_supported" ||
-        value == "slab_scaffold_fallback_legacy" ||
-        value == "auto_select_slab" ||
+        value == "requested_slab_disallowed" ||
         value == "unknown_preference_fallback" ||
         value == "zero_request") {
         return "policy_denied";
     }
 
     if (value == "accrue_burst_consumed" ||
+        value == "allocation_retry_success" ||
         value == "admit_new" ||
+        value == "allocator_oom_final" ||
         value == "below_debt_threshold" ||
         value == "below_threshold" ||
         value == "builder_reservation_reject" ||
@@ -364,18 +367,24 @@ const char* failure_reason_class(const char* token) noexcept {
         value == "critical_no_burst_consumption" ||
         value == "critical_preserve" ||
         value == "fairness_tokens_exhausted" ||
+        value == "fragmentation_recovery_reap" ||
+        value == "fragmentation_recovery_reap_no_progress" ||
         value == "ghost_hit_bypass" ||
         value == "granted" ||
         value == "host_alloc_failed" ||
         value == "no_history" ||
         value == "normal" ||
         value == "pressure_gate_reject" ||
+        value == "pressure_pre_growth_reclaim_failed" ||
         value == "pressure_pre_upload_reclaim_failed" ||
         value == "private_fallback_admit" ||
         value == "private_fallback_served" ||
         value == "probation_admit" ||
         value == "probation_critical_override" ||
         value == "probation_defer" ||
+        value == "reap_no_progress" ||
+        value == "retry_after_reap" ||
+        value == "retry_once" ||
         value == "slot_reuse" ||
         value == "throttle_max_debt" ||
         value == "tier_circuit_blocked" ||
@@ -1314,7 +1323,11 @@ void add_optics_scratch_bytes(
     const JuicerCuda::Resources::DeviceOpticsScratch& scratch,
     ManagerMemorySnapshot& snapshot) noexcept {
     bool overflow = false;
-    const std::uint64_t planeBytes = bytes_for_plane_extent_u64(scratch.width, scratch.height, overflow);
+    const std::uint64_t planeBytes =
+        (scratch.capacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(scratch.capacityElements) * sizeof(float);
     if (overflow) {
         snapshot.overflow = true;
     }
@@ -1329,7 +1342,11 @@ void add_optics_scratch_bytes(
     if (scratch.grainTmpCoarse) add_snapshot_bytes(snapshot, planeBytes);
 
     overflow = false;
-    const std::uint64_t gateBytes = bytes_for_plane_extent_u64(scratch.gateWidth, scratch.gateHeight, overflow);
+    const std::uint64_t gateBytes =
+        (scratch.gateMaskCapacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(scratch.gateMaskCapacityElements) * sizeof(float);
     if (overflow) {
         snapshot.overflow = true;
     }
@@ -1342,7 +1359,11 @@ void add_spatial_dir_scratch_bytes(
     const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch,
     ManagerMemorySnapshot& snapshot) noexcept {
     bool overflow = false;
-    const std::uint64_t planeBytes = bytes_for_plane_extent_u64(scratch.width, scratch.height, overflow);
+    const std::uint64_t planeBytes =
+        (scratch.capacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(scratch.capacityElements) * sizeof(float);
     if (overflow) {
         snapshot.overflow = true;
     }
@@ -1416,7 +1437,11 @@ void add_resources_active_bytes_locked(
 
     {
         bool overflow = false;
-        const std::uint64_t sharedTmpBytes = bytes_for_plane_extent_u64(resources.sharedTmpWidth, resources.sharedTmpHeight, overflow);
+        const std::uint64_t sharedTmpBytes =
+            (resources.sharedTmpCapacityElements >
+             (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+                ? (overflow = true, 0ull)
+                : static_cast<std::uint64_t>(resources.sharedTmpCapacityElements) * sizeof(float);
         if (overflow) {
             snapshot.overflow = true;
         }
@@ -1591,7 +1616,10 @@ void add_scratch_tier_bytes_locked(
     ManagerMemorySnapshot& scratchSnapshot) noexcept {
     bool overflow = false;
     const std::uint64_t sharedTmpBytes =
-        bytes_for_plane_extent_u64(resources.sharedTmpWidth, resources.sharedTmpHeight, overflow);
+        (resources.sharedTmpCapacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(resources.sharedTmpCapacityElements) * sizeof(float);
     if (overflow) {
         scratchSnapshot.overflow = true;
     }
@@ -2780,7 +2808,8 @@ void trace_reap_pass(
         + " reclaimed_bytes=" + std::to_string(static_cast<unsigned long long>(reclaimedBytes))
         + " success=" + std::to_string(success ? 1 : 0)
         + trace_device_context_fields(transaction)
-        + " reason=" + trace_or_unspecified(reason);
+        + " reason=" + trace_or_unspecified(reason)
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSREAP", msg);
 }
 
@@ -2809,7 +2838,8 @@ void trace_fragmentation_recovery(
         + " success=" + std::to_string(success ? 1 : 0)
         + " stage=" + trace_or_unknown(stage)
         + trace_device_context_fields(transaction)
-        + " reason=" + trace_or_unspecified(reason);
+        + " reason=" + trace_or_unspecified(reason)
+        + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSFRAG", msg);
 }
 

@@ -151,25 +151,28 @@ namespace JuicerCuda {
         float* sharedTmpPlane = nullptr;
         int sharedTmpWidth = 0;
         int sharedTmpHeight = 0;
+        std::size_t sharedTmpCapacityElements = 0;
 
-    struct DeviceOpticsScratch {
-        float* rgbR = nullptr;
-        float* rgbG = nullptr;
-        float* rgbB = nullptr;
-        float* tmp = nullptr;
-        float* blurred = nullptr;
-        float* aux = nullptr;
-        float* grainTmp = nullptr;
-        float* grainTmpShared = nullptr;
-        float* grainTmpMid = nullptr;
-        float* grainTmpCoarse = nullptr;
-        float* gateMask = nullptr;
-        int width = 0;
-        int height = 0;
-        int gateWidth = 0;
-        int gateHeight = 0;
-        std::uint64_t gateMaskHash = 0;
-    };
+        struct DeviceOpticsScratch {
+            float* rgbR = nullptr;
+            float* rgbG = nullptr;
+            float* rgbB = nullptr;
+            float* tmp = nullptr;
+            float* blurred = nullptr;
+            float* aux = nullptr;
+            float* grainTmp = nullptr;
+            float* grainTmpShared = nullptr;
+            float* grainTmpMid = nullptr;
+            float* grainTmpCoarse = nullptr;
+            float* gateMask = nullptr;
+            int width = 0;
+            int height = 0;
+            std::size_t capacityElements = 0;
+            int gateWidth = 0;
+            int gateHeight = 0;
+            std::size_t gateMaskCapacityElements = 0;
+            std::uint64_t gateMaskHash = 0;
+        };
 
         struct DeviceSpatialDirScratch {
             float* corrY = nullptr;
@@ -178,6 +181,7 @@ namespace JuicerCuda {
             float* tmp = nullptr;
             int width = 0;
             int height = 0;
+            std::size_t capacityElements = 0;
         };
 
         DeviceGaussianKernel scannerLensBlurKernel;

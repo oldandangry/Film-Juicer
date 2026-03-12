@@ -1626,20 +1626,24 @@ std::size_t estimate_optics_growth_bytes(
 
     std::lock_guard<std::mutex> lock(resources.m);
     const auto& scratch = resources.scannerScratch;
-    const bool dimsMatch = (scratch.width == width && scratch.height == height);
+    const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool haveBase = scratch.rgbR && scratch.rgbG && scratch.rgbB;
-    const bool fullRebuild = !dimsMatch || !haveBase;
+    const bool fullRebuild = !capacityMatch || !haveBase;
 
     std::size_t estimate = 0;
-    auto addPlane = [&](std::size_t multiplier = 1) {
+    auto addBytes = [&](std::size_t bytes, std::size_t multiplier = 1) {
         for (std::size_t i = 0; i < multiplier; ++i) {
             std::size_t next = 0;
-            if (!add_bytes_checked(estimate, planeBytes, next)) {
+            if (!add_bytes_checked(estimate, bytes, next)) {
                 estimate = std::numeric_limits<std::size_t>::max();
                 return;
             }
             estimate = next;
         }
+    };
+    auto addPlane = [&](std::size_t multiplier = 1) {
+        addBytes(planeBytes, multiplier);
     };
 
     if (fullRebuild) {
@@ -1647,8 +1651,7 @@ std::size_t estimate_optics_growth_bytes(
     }
 
     const bool sharedTmpMatch = resources.sharedTmpPlane &&
-        resources.sharedTmpWidth == width &&
-        resources.sharedTmpHeight == height;
+        resources.sharedTmpCapacityElements >= requiredElements;
     if (!sharedTmpMatch) {
         addPlane(); // shared tmp plane
     }
@@ -1674,9 +1677,18 @@ std::size_t estimate_optics_growth_bytes(
         addPlane();
     }
     if (needGateMask) {
-        const bool gateDimsMatch = (scratch.gateWidth == width && scratch.gateHeight == height);
-        if (fullRebuild || !scratch.gateMask || !gateDimsMatch) {
-            addPlane();
+        const int gateWidth = (width + 1) / 2;
+        const int gateHeight = (height + 1) / 2;
+        const std::size_t gateBytes = plane_bytes_for_extent(gateWidth, gateHeight);
+        if (gateBytes == 0 || gateBytes == std::numeric_limits<std::size_t>::max()) {
+            return gateBytes;
+        }
+        const std::size_t requiredGateElements =
+            static_cast<std::size_t>(gateWidth) * static_cast<std::size_t>(gateHeight);
+        const bool gateCapacityMatch =
+            scratch.gateMaskCapacityElements >= requiredGateElements;
+        if (fullRebuild || !scratch.gateMask || !gateCapacityMatch) {
+            addBytes(gateBytes);
         }
     }
 
@@ -1694,13 +1706,14 @@ std::size_t estimate_spatial_dir_growth_bytes(
 
     std::lock_guard<std::mutex> lock(resources.m);
     const auto& scratch = resources.spatialDirScratch;
-    const bool haveBase = (scratch.width == width && scratch.height == height && scratch.corrY && scratch.corrM && scratch.corrC);
+    const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC;
+    const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool sharedTmpMatch = resources.sharedTmpPlane &&
-        resources.sharedTmpWidth == width &&
-        resources.sharedTmpHeight == height;
+        resources.sharedTmpCapacityElements >= requiredElements;
 
     std::size_t estimate = 0;
-    if (!haveBase) {
+    if (!haveBase || !capacityMatch) {
         std::size_t next = 0;
         if (!add_bytes_checked(estimate, planeBytes, next)) {
             return std::numeric_limits<std::size_t>::max();
