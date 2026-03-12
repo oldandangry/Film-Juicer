@@ -685,7 +685,9 @@ namespace JuicerCuda {
             }
         }
 #endif
-        resources.densityCurvesLayersN = 0;
+        for (int ch = 0; ch < 3; ++ch) {
+            resources.densityCurvesLayersChannelN[ch] = 0;
+        }
         resources.hasDensityCurvesLayers = 0;
     }
 
@@ -697,9 +699,11 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        const size_t bytes = static_cast<size_t>(std::max(0, resources.densityCurvesLayersN)) * sizeof(float);
-        for (int layer = 0; layer < 3; ++layer) {
-            for (int ch = 0; ch < 3; ++ch) {
+        for (int ch = 0; ch < 3; ++ch) {
+            const size_t bytes =
+                static_cast<size_t>(std::max(0, resources.densityCurvesLayersChannelN[ch])) *
+                sizeof(float);
+            for (int layer = 0; layer < 3; ++layer) {
                 if (resources.densityCurvesLayers[layer][ch]) {
                     if (!retire_ptr_locked(resources, resources.densityCurvesLayers[layer][ch], bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
                         return false;
@@ -707,8 +711,8 @@ namespace JuicerCuda {
                     resources.densityCurvesLayers[layer][ch] = nullptr;
                 }
             }
+            resources.densityCurvesLayersChannelN[ch] = 0;
         }
-        resources.densityCurvesLayersN = 0;
         resources.hasDensityCurvesLayers = 0;
         return true;
 #endif

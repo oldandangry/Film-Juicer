@@ -1385,18 +1385,19 @@ void add_resources_active_bytes_locked(
     add_curve_bytes(resources.sensG, snapshot);
     add_curve_bytes(resources.sensR, snapshot);
 
-    const std::uint64_t layerN = non_negative_u64(resources.densityCurvesLayersN);
-    if (layerN > 0) {
+    for (int ch = 0; ch < 3; ++ch) {
+        const std::uint64_t layerN = non_negative_u64(resources.densityCurvesLayersChannelN[ch]);
+        if (layerN == 0) {
+            continue;
+        }
         bool overflow = false;
         const std::uint64_t layerBytes = bytes_for_count_u64(layerN, sizeof(float), overflow);
         if (overflow) {
             snapshot.overflow = true;
         }
         for (int layer = 0; layer < 3; ++layer) {
-            for (int ch = 0; ch < 3; ++ch) {
-                if (resources.densityCurvesLayers[layer][ch]) {
-                    add_snapshot_bytes(snapshot, layerBytes);
-                }
+            if (resources.densityCurvesLayers[layer][ch]) {
+                add_snapshot_bytes(snapshot, layerBytes);
             }
         }
     }

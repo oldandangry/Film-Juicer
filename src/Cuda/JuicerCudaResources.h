@@ -78,7 +78,7 @@ namespace JuicerCuda {
         float* densityCurvesLayers[3][3] = { {nullptr, nullptr, nullptr},
                                              {nullptr, nullptr, nullptr},
                                              {nullptr, nullptr, nullptr} };
-        int densityCurvesLayersN = 0;
+        int densityCurvesLayersChannelN[3] = {0, 0, 0};
         int hasDensityCurvesLayers = 0;
 
         DeviceCurve dirDensB;
