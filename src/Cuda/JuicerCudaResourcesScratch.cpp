@@ -604,8 +604,10 @@
         s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
+        s.capacityElements = 0;
         s.gateWidth = 0;
         s.gateHeight = 0;
+        s.gateMaskCapacityElements = 0;
         s.gateMaskHash = 0;
     }
 
@@ -618,8 +620,7 @@
         outError = "CUDA is not enabled";
         return false;
 #else
-        const size_t planeN = static_cast<size_t>(std::max(0, s.width)) * static_cast<size_t>(std::max(0, s.height));
-        const size_t planeBytes = planeN * sizeof(float);
+        const size_t planeBytes = s.capacityElements * sizeof(float);
         if (s.rgbR) {
             if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
             s.rgbR = nullptr;
@@ -657,8 +658,7 @@
             s.grainTmpCoarse = nullptr;
         }
 
-        const size_t gateN = static_cast<size_t>(std::max(0, s.gateWidth)) * static_cast<size_t>(std::max(0, s.gateHeight));
-        const size_t gateBytes = gateN * sizeof(float);
+        const size_t gateBytes = s.gateMaskCapacityElements * sizeof(float);
         if (s.gateMask) {
             if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
             s.gateMask = nullptr;
@@ -667,8 +667,10 @@
         s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
+        s.capacityElements = 0;
         s.gateWidth = 0;
         s.gateHeight = 0;
+        s.gateMaskCapacityElements = 0;
         s.gateMaskHash = 0;
         return true;
 #endif
@@ -683,6 +685,7 @@
         s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
+        s.capacityElements = 0;
     }
 
     static bool retire_spatial_dir_scratch_locked(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -694,8 +697,7 @@
         outError = "CUDA is not enabled";
         return false;
 #else
-        const size_t n = static_cast<size_t>(std::max(0, s.width)) * static_cast<size_t>(std::max(0, s.height));
-        const size_t bytes = n * sizeof(float);
+        const size_t bytes = s.capacityElements * sizeof(float);
         if (s.corrY) {
             if (!retire_ptr_locked(resources, s.corrY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
             s.corrY = nullptr;
@@ -711,6 +713,7 @@
         s.tmp = nullptr;
         s.width = 0;
         s.height = 0;
+        s.capacityElements = 0;
         return true;
 #endif
     }
@@ -958,10 +961,12 @@
             return false;
         }
 
+        const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
         const bool dimsMatch = (resources.scannerScratch.width == width && resources.scannerScratch.height == height);
+        const bool capacityMatch = resources.scannerScratch.capacityElements >= requiredElements;
         const bool haveBase = resources.scannerScratch.rgbR && resources.scannerScratch.rgbG && resources.scannerScratch.rgbB;
 
-        if (!dimsMatch || !haveBase) {
+        if (!capacityMatch || !haveBase) {
             if (resources.scannerScratch.rgbR || resources.scannerScratch.rgbG || resources.scannerScratch.rgbB ||
                 resources.scannerScratch.blurred || resources.scannerScratch.aux || resources.scannerScratch.grainTmp ||
                 resources.scannerScratch.grainTmpShared || resources.scannerScratch.grainTmpMid ||
@@ -974,8 +979,7 @@
                 free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
             }
 
-            const size_t n = static_cast<size_t>(width) * static_cast<size_t>(height);
-            const size_t bytes = n * sizeof(float);
+            const size_t bytes = requiredElements * sizeof(float);
             if (!allocate_scratch_device_ptr_locked(
                     resources,
                     resources.scannerScratch.rgbR,
@@ -1007,8 +1011,12 @@
                 return false;
             }
 
-            resources.scannerScratch.width = width;
-            resources.scannerScratch.height = height;
+            resources.scannerScratch.capacityElements = requiredElements;
+        }
+        resources.scannerScratch.width = width;
+        resources.scannerScratch.height = height;
+        if (!dimsMatch) {
+            resources.scannerScratch.gateMaskHash = 0;
         }
 
         if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
@@ -1016,15 +1024,14 @@
             return false;
         }
         resources.scannerScratch.tmp = resources.sharedTmpPlane;
+        const size_t planeBytes = resources.scannerScratch.capacityElements * sizeof(float);
 
         if (needBlurredScratch) {
             if (!resources.scannerScratch.blurred) {
-                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
-                const size_t bytes = n * sizeof(float);
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
                         resources.scannerScratch.blurred,
-                        bytes,
+                        planeBytes,
                         cudaStreamOpaque,
                         "scannerScratch.blurred",
                         outError)) {
@@ -1034,9 +1041,7 @@
         }
         else {
             if (resources.scannerScratch.blurred) {
-                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
-                const size_t oldBytes = oldN * sizeof(float);
-                if (!retire_ptr_locked(resources, resources.scannerScratch.blurred, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unsharp scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unsharp scratch", outError)) {
                     return false;
                 }
                 resources.scannerScratch.blurred = nullptr;
@@ -1045,12 +1050,10 @@
 
         if (needAuxScratch) {
             if (!resources.scannerScratch.aux) {
-                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
-                const size_t bytes = n * sizeof(float);
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
                         resources.scannerScratch.aux,
-                        bytes,
+                        planeBytes,
                         cudaStreamOpaque,
                         "scannerScratch.aux",
                         outError)) {
@@ -1060,9 +1063,7 @@
         }
         else {
             if (resources.scannerScratch.aux) {
-                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
-                const size_t oldBytes = oldN * sizeof(float);
-                if (!retire_ptr_locked(resources, resources.scannerScratch.aux, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain scratch", outError)) {
                     return false;
                 }
                 resources.scannerScratch.aux = nullptr;
@@ -1071,12 +1072,10 @@
 
         if (needGrainScratch) {
             if (!resources.scannerScratch.grainTmp) {
-                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
-                const size_t bytes = n * sizeof(float);
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
                         resources.scannerScratch.grainTmp,
-                        bytes,
+                        planeBytes,
                         cudaStreamOpaque,
                         "scannerScratch.grainTmp",
                         outError)) {
@@ -1084,12 +1083,10 @@
                 }
             }
             if (!resources.scannerScratch.grainTmpMid) {
-                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
-                const size_t bytes = n * sizeof(float);
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
                         resources.scannerScratch.grainTmpMid,
-                        bytes,
+                        planeBytes,
                         cudaStreamOpaque,
                         "scannerScratch.grainTmpMid",
                         outError)) {
@@ -1097,12 +1094,10 @@
                 }
             }
             if (!resources.scannerScratch.grainTmpCoarse) {
-                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
-                const size_t bytes = n * sizeof(float);
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
                         resources.scannerScratch.grainTmpCoarse,
-                        bytes,
+                        planeBytes,
                         cudaStreamOpaque,
                         "scannerScratch.grainTmpCoarse",
                         outError)) {
@@ -1112,25 +1107,19 @@
         }
         else {
             if (resources.scannerScratch.grainTmp) {
-                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
-                const size_t oldBytes = oldN * sizeof(float);
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmp = nullptr;
             }
             if (resources.scannerScratch.grainTmpMid) {
-                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
-                const size_t oldBytes = oldN * sizeof(float);
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpMid, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix mid scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix mid scratch", outError)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmpMid = nullptr;
             }
             if (resources.scannerScratch.grainTmpCoarse) {
-                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
-                const size_t oldBytes = oldN * sizeof(float);
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpCoarse, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix coarse scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix coarse scratch", outError)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmpCoarse = nullptr;
@@ -1139,12 +1128,10 @@
 
         if (needGrainSharedScratch) {
             if (!resources.scannerScratch.grainTmpShared) {
-                const size_t n = static_cast<size_t>(resources.scannerScratch.width) * static_cast<size_t>(resources.scannerScratch.height);
-                const size_t bytes = n * sizeof(float);
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
                         resources.scannerScratch.grainTmpShared,
-                        bytes,
+                        planeBytes,
                         cudaStreamOpaque,
                         "scannerScratch.grainTmpShared",
                         outError)) {
@@ -1154,9 +1141,7 @@
         }
         else {
             if (resources.scannerScratch.grainTmpShared) {
-                const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.width)) * static_cast<size_t>(std::max(0, resources.scannerScratch.height));
-                const size_t oldBytes = oldN * sizeof(float);
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpShared, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain shared scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain shared scratch", outError)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmpShared = nullptr;
@@ -1166,19 +1151,21 @@
         const int gateWidth = (width + 1) / 2;
         const int gateHeight = (height + 1) / 2;
         if (needGateMask) {
+            const size_t requiredGateElements = static_cast<size_t>(gateWidth) * static_cast<size_t>(gateHeight);
             const bool gateDimsMatch = (resources.scannerScratch.gateWidth == gateWidth &&
                 resources.scannerScratch.gateHeight == gateHeight);
-            if (!resources.scannerScratch.gateMask || !gateDimsMatch) {
+            const bool gateCapacityMatch =
+                resources.scannerScratch.gateMaskCapacityElements >= requiredGateElements;
+            if (!resources.scannerScratch.gateMask || !gateCapacityMatch) {
                 if (resources.scannerScratch.gateMask) {
-                    const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.gateWidth)) * static_cast<size_t>(std::max(0, resources.scannerScratch.gateHeight));
-                    const size_t oldBytes = oldN * sizeof(float);
+                    const size_t oldBytes =
+                        resources.scannerScratch.gateMaskCapacityElements * sizeof(float);
                     if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError)) {
                         return false;
                     }
                     resources.scannerScratch.gateMask = nullptr;
                 }
-                const size_t n = static_cast<size_t>(gateWidth) * static_cast<size_t>(gateHeight);
-                const size_t bytes = n * sizeof(float);
+                const size_t bytes = requiredGateElements * sizeof(float);
                 if (!allocate_scratch_device_ptr_locked(
                         resources,
                         resources.scannerScratch.gateMask,
@@ -1188,20 +1175,24 @@
                         outError)) {
                     return false;
                 }
-                resources.scannerScratch.gateWidth = gateWidth;
-                resources.scannerScratch.gateHeight = gateHeight;
+                resources.scannerScratch.gateMaskCapacityElements = requiredGateElements;
+            }
+            if (!gateDimsMatch) {
                 resources.scannerScratch.gateMaskHash = 0;
             }
+            resources.scannerScratch.gateWidth = gateWidth;
+            resources.scannerScratch.gateHeight = gateHeight;
         }
         else if (resources.scannerScratch.gateMask) {
-            const size_t oldN = static_cast<size_t>(std::max(0, resources.scannerScratch.gateWidth)) * static_cast<size_t>(std::max(0, resources.scannerScratch.gateHeight));
-            const size_t oldBytes = oldN * sizeof(float);
+            const size_t oldBytes =
+                resources.scannerScratch.gateMaskCapacityElements * sizeof(float);
             if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError)) {
                 return false;
             }
             resources.scannerScratch.gateMask = nullptr;
             resources.scannerScratch.gateWidth = 0;
             resources.scannerScratch.gateHeight = 0;
+            resources.scannerScratch.gateMaskCapacityElements = 0;
             resources.scannerScratch.gateMaskHash = 0;
         }
 
@@ -1229,8 +1220,11 @@
         }
 
         Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
-        const bool haveBase = (scratch.width == width && scratch.height == height && scratch.corrY && scratch.corrM && scratch.corrC);
-        if (haveBase) {
+        const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
+        const bool dimsMatch = (scratch.width == width && scratch.height == height);
+        const bool capacityMatch = scratch.capacityElements >= requiredElements;
+        const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC;
+        if (dimsMatch && capacityMatch && haveBase) {
             if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
                 return false;
             }
@@ -1239,13 +1233,24 @@
         }
 
         if (scratch.corrY || scratch.corrM || scratch.corrC) {
-            if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
-                return false;
+            if (!capacityMatch || !haveBase) {
+                if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
+                    return false;
+                }
             }
         }
 
-        const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
-        const size_t bytes = total * sizeof(float);
+        if (capacityMatch && haveBase) {
+            scratch.width = width;
+            scratch.height = height;
+            if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
+                return false;
+            }
+            scratch.tmp = resources.sharedTmpPlane;
+            return true;
+        }
+
+        const size_t bytes = requiredElements * sizeof(float);
         if (!allocate_scratch_device_ptr_locked(
                 resources,
                 scratch.corrY,
@@ -1284,6 +1289,7 @@
 
         scratch.width = width;
         scratch.height = height;
+        scratch.capacityElements = requiredElements;
         return true;
 #endif
     }

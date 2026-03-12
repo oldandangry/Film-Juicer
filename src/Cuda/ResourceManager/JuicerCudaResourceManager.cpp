@@ -1323,7 +1323,11 @@ void add_optics_scratch_bytes(
     const JuicerCuda::Resources::DeviceOpticsScratch& scratch,
     ManagerMemorySnapshot& snapshot) noexcept {
     bool overflow = false;
-    const std::uint64_t planeBytes = bytes_for_plane_extent_u64(scratch.width, scratch.height, overflow);
+    const std::uint64_t planeBytes =
+        (scratch.capacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(scratch.capacityElements) * sizeof(float);
     if (overflow) {
         snapshot.overflow = true;
     }
@@ -1338,7 +1342,11 @@ void add_optics_scratch_bytes(
     if (scratch.grainTmpCoarse) add_snapshot_bytes(snapshot, planeBytes);
 
     overflow = false;
-    const std::uint64_t gateBytes = bytes_for_plane_extent_u64(scratch.gateWidth, scratch.gateHeight, overflow);
+    const std::uint64_t gateBytes =
+        (scratch.gateMaskCapacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(scratch.gateMaskCapacityElements) * sizeof(float);
     if (overflow) {
         snapshot.overflow = true;
     }
@@ -1351,7 +1359,11 @@ void add_spatial_dir_scratch_bytes(
     const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch,
     ManagerMemorySnapshot& snapshot) noexcept {
     bool overflow = false;
-    const std::uint64_t planeBytes = bytes_for_plane_extent_u64(scratch.width, scratch.height, overflow);
+    const std::uint64_t planeBytes =
+        (scratch.capacityElements >
+         (std::numeric_limits<std::uint64_t>::max() / sizeof(float)))
+            ? (overflow = true, 0ull)
+            : static_cast<std::uint64_t>(scratch.capacityElements) * sizeof(float);
     if (overflow) {
         snapshot.overflow = true;
     }
