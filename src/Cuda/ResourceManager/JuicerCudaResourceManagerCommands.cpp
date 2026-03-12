@@ -148,17 +148,24 @@ void complete_tier_circuit_attempt(
     const char* successReason,
     const std::string& failureError);
 
+struct UploadWorkEstimate {
+    std::uint64_t growthBytes = 0;
+    std::uint64_t reservationBytes = 0;
+};
+
 template <typename Action>
 bool execute_upload_immutable_command(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const char* commandName,
-    std::uint64_t uploadRequestBytes,
+    std::uint64_t pressureRequestBytes,
+    std::uint64_t reservationRequestBytes,
     bool criticalRequest,
     const char* overflowMessage,
     Action&& action,
     std::string& outError) {
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+    if (pressureRequestBytes == std::numeric_limits<std::uint64_t>::max() ||
+        reservationRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
         outError = trace_or_non_empty(overflowMessage, "upload reservation request byte estimation overflow");
         return false;
     }
@@ -174,7 +181,7 @@ bool execute_upload_immutable_command(
             resources,
             stageName,
             PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
+            saturating_u64_to_size_t(pressureRequestBytes),
             criticalRequest,
             requestPreReclaim,
             outError)) {
@@ -198,7 +205,7 @@ bool execute_upload_immutable_command(
     if (!acquire_upload_reservation_with_wait(
             transaction,
             stageName,
-            uploadRequestBytes,
+            reservationRequestBytes,
             criticalRequest,
             uploadClaim,
             outError)) {
@@ -328,7 +335,8 @@ bool execute_upload_lut_command(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const char* commandName,
-    std::uint64_t uploadRequestBytes,
+    std::uint64_t pressureRequestBytes,
+    std::uint64_t reservationRequestBytes,
     bool criticalRequest,
     const char* overflowMessage,
     bool captureMemorySnapshots,
@@ -336,7 +344,8 @@ bool execute_upload_lut_command(
     Action&& action,
     PolicyFailureFallback&& policyFailureFallback,
     std::string& outError) {
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+    if (pressureRequestBytes == std::numeric_limits<std::uint64_t>::max() ||
+        reservationRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
         outError = trace_or_non_empty(overflowMessage, "upload reservation request byte estimation overflow");
         return false;
     }
@@ -360,7 +369,7 @@ bool execute_upload_lut_command(
             resources,
             stageName,
             PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
+            saturating_u64_to_size_t(pressureRequestBytes),
             criticalRequest,
             requestPreReclaim,
             outError)) {
@@ -384,7 +393,7 @@ bool execute_upload_lut_command(
     if (!acquire_upload_reservation_with_wait(
             transaction,
             stageName,
-            uploadRequestBytes,
+            reservationRequestBytes,
             criticalRequest,
             uploadClaim,
             outError)) {
@@ -397,7 +406,7 @@ bool execute_upload_lut_command(
             transaction,
             stageName,
             BuilderReservationTier::Lut,
-            uploadRequestBytes,
+            reservationRequestBytes,
             criticalRequest,
             builderClaim,
             outError)) {
@@ -844,11 +853,16 @@ std::uint64_t commands_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t earli
     return 0;
 }
 
-std::uint64_t commands_uncached_bytes(bool cached, std::uint64_t bytes) noexcept {
-    if (cached) {
-        return 0;
+UploadWorkEstimate commands_uncached_upload_work(
+    bool cached,
+    std::uint64_t growthBytes,
+    std::uint64_t reservationBytes) noexcept {
+    UploadWorkEstimate estimate{};
+    if (!cached) {
+        estimate.growthBytes = growthBytes;
+        estimate.reservationBytes = reservationBytes;
     }
-    return bytes;
+    return estimate;
 }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -925,13 +939,233 @@ void add_scan_medium_upload_estimate_bytes(
     }
 }
 
-std::uint64_t estimate_upload_core_request_bytes(
+void add_curve_growth_estimate_bytes(
+    const JuicerCuda::DeviceCurve& dst,
+    const Spectral::Curve& src,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (src.lambda_nm.empty() || src.linear.empty() || src.lambda_nm.size() != src.linear.size()) {
+        return;
+    }
+    const int n = static_cast<int>(src.lambda_nm.size());
+    if (n <= 0) {
+        return;
+    }
+    if (dst.x && dst.y && dst.n == n) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(2u * sizeof(float)), bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_array_growth_estimate_bytes(
+    const float* dst,
+    int currentN,
+    int requestedN,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (requestedN <= 0) {
+        return;
+    }
+    if (dst && currentN == requestedN) {
+        return;
+    }
+    add_count_upload_estimate_bytes(
+        static_cast<std::uint64_t>(requestedN),
+        sizeof(float),
+        total,
+        overflow);
+}
+
+void add_spectral_sample_growth_estimate_bytes(
+    const JuicerCuda::DeviceCurve& dst,
+    const std::vector<float>& src,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (src.empty()) {
+        return;
+    }
+    add_array_growth_estimate_bytes(
+        dst.y,
+        dst.n,
+        static_cast<int>(src.size()),
+        total,
+        overflow);
+}
+
+void add_density_layers_growth_estimate_bytes(
+    const JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const int nR = static_cast<int>(ws.densR.linear.size());
+    const int nG = static_cast<int>(ws.densG.linear.size());
+    const int nB = static_cast<int>(ws.densB.linear.size());
+    const int layerChannelN[3] = {nR, nG, nB};
+    bool sizesOk = ws.hasDensityCurvesLayers && (nR > 0 && nG > 0 && nB > 0);
+    if (sizesOk) {
+        for (int layer = 0; layer < 3; ++layer) {
+            sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][0].size()) == nR);
+            sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][1].size()) == nG);
+            sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][2].size()) == nB);
+        }
+    }
+    if (!sizesOk) {
+        return;
+    }
+
+    bool canReuse = resources.hasDensityCurvesLayers != 0;
+    if (canReuse) {
+        for (int ch = 0; ch < 3; ++ch) {
+            canReuse = canReuse && (resources.densityCurvesLayersChannelN[ch] == layerChannelN[ch]);
+        }
+        for (int layer = 0; layer < 3 && canReuse; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                canReuse = canReuse && (resources.densityCurvesLayers[layer][ch] != nullptr);
+            }
+        }
+    }
+    if (canReuse) {
+        return;
+    }
+
+    for (int layer = 0; layer < 3; ++layer) {
+        for (int ch = 0; ch < 3; ++ch) {
+            add_count_upload_estimate_bytes(
+                static_cast<std::uint64_t>(layerChannelN[ch]),
+                sizeof(float),
+                total,
+                overflow);
+        }
+    }
+}
+
+void add_tables_growth_estimate_bytes(
+    const JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const int K = ws.tablesRef.K;
+    const bool want =
+        ws.spdReady &&
+        K == Spectral::gShape.K &&
+        static_cast<int>(ws.tablesRef.Ax.size()) == K &&
+        static_cast<int>(ws.tablesRef.Ay.size()) == K &&
+        static_cast<int>(ws.tablesRef.Az.size()) == K &&
+        static_cast<int>(ws.tablesRef.illum.size()) == K;
+    if (!want) {
+        return;
+    }
+    const bool canReuse =
+        resources.tablesK == K &&
+        resources.tablesAx &&
+        resources.tablesAy &&
+        resources.tablesAz &&
+        resources.tablesIllum;
+    if (canReuse) {
+        return;
+    }
+
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+}
+
+void add_scan_medium_growth_estimate_bytes(
+    const JuicerCuda::Resources::DeviceScanMedium& dst,
+    const Scanner::ScannerMediumRuntime& medium,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const Spectral::SpectralTables* t = medium.tables;
+    if (!t || t->K != Spectral::gShape.K) {
+        return;
+    }
+    const int K = t->K;
+    const bool arraysOk =
+        static_cast<int>(t->epsC.size()) == K &&
+        static_cast<int>(t->epsM.size()) == K &&
+        static_cast<int>(t->epsY.size()) == K &&
+        static_cast<int>(t->Ax.size()) == K &&
+        static_cast<int>(t->Ay.size()) == K &&
+        static_cast<int>(t->Az.size()) == K &&
+        (!t->hasBaseline || static_cast<int>(t->baseMin.size()) == K);
+    if (!arraysOk) {
+        return;
+    }
+
+    const bool haveCoreArrays =
+        dst.tables.epsC &&
+        dst.tables.epsM &&
+        dst.tables.epsY &&
+        dst.tables.Ax &&
+        dst.tables.Ay &&
+        dst.tables.Az;
+    const bool canReuseCore = (dst.tables.K == K) && haveCoreArrays;
+    if (!canReuseCore) {
+        for (int i = 0; i < 6; ++i) {
+            add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+        }
+    }
+
+    if (t->hasBaseline && !(dst.tables.baseMin && dst.tables.K == K)) {
+        add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    }
+}
+
+void add_print_payload_growth_estimate_bytes(
+    const JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const Print::Runtime* prt = ws.printRT.get();
+    if (!prt || !Print::profile_is_valid(prt->profile)) {
+        return;
+    }
+    const Print::Profile& p = prt->profile;
+
+    auto add_print_curve_growth = [&](const JuicerCuda::DeviceCurve& dst, const Spectral::Curve& src) {
+        const int n = static_cast<int>(src.lambda_nm.size());
+        const bool want = n > 1 && src.linear.size() == src.lambda_nm.size();
+        if (!want) {
+            return;
+        }
+        add_curve_growth_estimate_bytes(dst, src, total, overflow);
+    };
+
+    add_print_curve_growth(resources.printDcC, p.dcC);
+    add_print_curve_growth(resources.printDcM, p.dcM);
+    add_print_curve_growth(resources.printDcY, p.dcY);
+
+    const int K = Spectral::gShape.K;
+    const bool sensOk =
+        K > 0 &&
+        static_cast<int>(p.sensC_log.linear.size()) == K &&
+        static_cast<int>(p.sensM_log.linear.size()) == K &&
+        static_cast<int>(p.sensY_log.linear.size()) == K;
+    if (!sensOk) {
+        return;
+    }
+
+    add_spectral_sample_growth_estimate_bytes(resources.printSensC, p.sensC_log.linear, total, overflow);
+    add_spectral_sample_growth_estimate_bytes(resources.printSensM, p.sensM_log.linear, total, overflow);
+    add_spectral_sample_growth_estimate_bytes(resources.printSensY, p.sensY_log.linear, total, overflow);
+}
+
+UploadWorkEstimate estimate_upload_core_request_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws) noexcept {
+    UploadWorkEstimate estimate{};
     const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     const std::uint64_t wsDirHash = ws.dirHash;
     if (wsCoreHash == 0 || wsDirHash == 0) {
-        return kUploadReservationThresholdDefaultBytes;
+        estimate.reservationBytes = kUploadReservationThresholdDefaultBytes;
+        return estimate;
     }
 
     bool coreUpToDate = false;
@@ -966,6 +1200,7 @@ std::uint64_t estimate_upload_core_request_bytes(
         mallettK == Spectral::kNumSamples &&
         mallettCols == 3 &&
         !ctx.mallettBasis.data.empty();
+    bool overflow = false;
     {
         std::lock_guard<std::mutex> lock(resources.m);
         coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
@@ -979,104 +1214,162 @@ std::uint64_t estimate_upload_core_request_bytes(
                                        (resources.hanatosIntegratedBuildCounter != ws.buildCounter));
         needMallettUpload = wantMallett &&
                             (!resources.mallettBasis || resources.mallettBasisK != mallettK);
+        if (needStbnUpload) {
+            add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimate.growthBytes, overflow);
+            add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimate.reservationBytes, overflow);
+        }
+        if (needWangUpload) {
+            add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimate.growthBytes, overflow);
+            add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimate.reservationBytes, overflow);
+            add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimate.growthBytes, overflow);
+            add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimate.reservationBytes, overflow);
+        }
+
+        if (coreUpToDate && dirUpToDate) {
+            if (overflow) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+            }
+            return estimate;
+        }
+
+        if (coreUpToDate && !dirUpToDate) {
+            add_curve_growth_estimate_bytes(resources.dirDensB, ws.dirDensB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensG, ws.dirDensG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensR, ws.dirDensR, estimate.growthBytes, overflow);
+        } else {
+            add_curve_growth_estimate_bytes(resources.densB, ws.densB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.densG, ws.densG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.densR, ws.densR, estimate.growthBytes, overflow);
+            add_density_layers_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensB, ws.dirDensB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensG, ws.dirDensG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensR, ws.dirDensR, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.sensB, ws.sensB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.sensG, ws.sensG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.sensR, ws.sensR, estimate.growthBytes, overflow);
+            add_tables_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
+            add_scan_medium_growth_estimate_bytes(resources.scanNegative, ws.negativeMediumRuntime, estimate.growthBytes, overflow);
+            add_scan_medium_growth_estimate_bytes(resources.scanPrint, ws.printMediumRuntime, estimate.growthBytes, overflow);
+            add_print_payload_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
+        }
+
+        if (wantHanatos) {
+            std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
+            if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
+                !mul_u64_checked(count, static_cast<std::uint64_t>(hanatosK), count)) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+                return estimate;
+            }
+            hanatosUploadCount = count;
+        }
+        if (wantHanatosIntegrated) {
+            std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
+            if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
+                !mul_u64_checked(count, 4ull, count)) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+                return estimate;
+            }
+            hanatosIntegratedUploadCount = count;
+        }
+        if (wantMallett) {
+            std::uint64_t count = static_cast<std::uint64_t>(mallettK);
+            if (!mul_u64_checked(count, 3ull, count)) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+                return estimate;
+            }
+            mallettUploadCount = count;
+        }
+
+        if (needHanatosUpload) {
+            add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimate.growthBytes, overflow);
+        }
+        if (wantHanatosIntegrated &&
+            (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != hanatosN)) {
+            add_count_upload_estimate_bytes(
+                hanatosIntegratedUploadCount,
+                sizeof(float),
+                estimate.growthBytes,
+                overflow);
+        }
+        if (needMallettUpload) {
+            add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimate.growthBytes, overflow);
+        }
     }
 
-    if (wantHanatos) {
-        std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
-        if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
-            !mul_u64_checked(count, static_cast<std::uint64_t>(hanatosK), count)) {
-            return std::numeric_limits<std::uint64_t>::max();
-        }
-        hanatosUploadCount = count;
-    }
-    if (wantHanatosIntegrated) {
-        std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
-        if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
-            !mul_u64_checked(count, 4ull, count)) {
-            return std::numeric_limits<std::uint64_t>::max();
-        }
-        hanatosIntegratedUploadCount = count;
-    }
-    if (wantMallett) {
-        std::uint64_t count = static_cast<std::uint64_t>(mallettK);
-        if (!mul_u64_checked(count, 3ull, count)) {
-            return std::numeric_limits<std::uint64_t>::max();
-        }
-        mallettUploadCount = count;
-    }
-
-    std::uint64_t estimateBytes = 0;
-    bool overflow = false;
-    if (needStbnUpload) {
-        add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimateBytes, overflow);
-    }
-    if (needWangUpload) {
-        add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimateBytes, overflow);
-        add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimateBytes, overflow);
-    }
-
-    if (coreUpToDate && dirUpToDate) {
-        return estimateBytes;
+    if (overflow) {
+        estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+        estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+        return estimate;
     }
 
     if (coreUpToDate && !dirUpToDate) {
-        add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
-        return estimateBytes;
-    }
+        add_curve_upload_estimate_bytes(ws.dirDensB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensR, estimate.reservationBytes, overflow);
+    } else if (!coreUpToDate) {
+        add_curve_upload_estimate_bytes(ws.densB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.densG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.densR, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensR, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.sensB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.sensG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.sensR, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.Ax, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.Ay, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.Az, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.illum, estimate.reservationBytes, overflow);
 
-    add_curve_upload_estimate_bytes(ws.densB, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.densG, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.densR, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.sensB, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.sensG, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.sensR, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.Ax, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.Ay, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.Az, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.illum, estimateBytes, overflow);
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                add_vector_upload_estimate_bytes(ws.densityCurvesLayers[layer][ch], estimate.reservationBytes, overflow);
+            }
+        }
 
-    for (int layer = 0; layer < 3; ++layer) {
-        for (int ch = 0; ch < 3; ++ch) {
-            add_vector_upload_estimate_bytes(ws.densityCurvesLayers[layer][ch], estimateBytes, overflow);
+        add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimate.reservationBytes, overflow);
+        add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimate.reservationBytes, overflow);
+
+        if (needHanatosUpload) {
+            add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+        if (needHanatosIntegratedUpload) {
+            add_count_upload_estimate_bytes(hanatosIntegratedUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+        if (needMallettUpload) {
+            add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+
+        if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
+            const Print::Profile& p = ws.printRT->profile;
+            add_curve_upload_estimate_bytes(p.dcC, estimate.reservationBytes, overflow);
+            add_curve_upload_estimate_bytes(p.dcM, estimate.reservationBytes, overflow);
+            add_curve_upload_estimate_bytes(p.dcY, estimate.reservationBytes, overflow);
+            add_vector_upload_estimate_bytes(p.sensC_log.linear, estimate.reservationBytes, overflow);
+            add_vector_upload_estimate_bytes(p.sensM_log.linear, estimate.reservationBytes, overflow);
+            add_vector_upload_estimate_bytes(p.sensY_log.linear, estimate.reservationBytes, overflow);
         }
     }
 
-    add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimateBytes, overflow);
-    add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimateBytes, overflow);
-
-    if (needHanatosUpload) {
-        add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimateBytes, overflow);
-    }
-    if (needHanatosIntegratedUpload) {
-        add_count_upload_estimate_bytes(hanatosIntegratedUploadCount, sizeof(float), estimateBytes, overflow);
-    }
-    if (needMallettUpload) {
-        add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimateBytes, overflow);
-    }
-
-    if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
-        const Print::Profile& p = ws.printRT->profile;
-        add_curve_upload_estimate_bytes(p.dcC, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(p.dcM, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(p.dcY, estimateBytes, overflow);
-        add_vector_upload_estimate_bytes(p.sensC_log.linear, estimateBytes, overflow);
-        add_vector_upload_estimate_bytes(p.sensM_log.linear, estimateBytes, overflow);
-        add_vector_upload_estimate_bytes(p.sensY_log.linear, estimateBytes, overflow);
+    if (overflow) {
+        estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+        estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+        return estimate;
     }
 
     // Keep a deterministic floor so large rebuilds always enter upload reservation admission.
-    if (estimateBytes < kUploadReservationThresholdDefaultBytes) {
-        estimateBytes = kUploadReservationThresholdDefaultBytes;
+    if (!coreUpToDate &&
+        estimate.reservationBytes < kUploadReservationThresholdDefaultBytes) {
+        estimate.reservationBytes = kUploadReservationThresholdDefaultBytes;
     }
-    return estimateBytes;
+    return estimate;
 }
 
-std::uint64_t estimate_scan_lut_upload_bytes(
+UploadWorkEstimate estimate_scan_lut_upload_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     bool negativeMedium) noexcept {
@@ -1086,24 +1379,24 @@ std::uint64_t estimate_scan_lut_upload_bytes(
         ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
     std::uint64_t voxelCount = 0;
     if (!mul_u64_checked(static_cast<std::uint64_t>(res), static_cast<std::uint64_t>(res), voxelCount)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
     if (!mul_u64_checked(voxelCount, static_cast<std::uint64_t>(res), voxelCount)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
     std::uint64_t values = 0;
     if (!mul_u64_checked(voxelCount, 3ull, values)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
     std::uint64_t bytes = 0;
     if (!mul_u64_checked(values, static_cast<std::uint64_t>(sizeof(double)), bytes)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
 
     const Scanner::ScannerMediumRuntime& medium =
         commands_select_scanner_medium_runtime(ws, negativeMedium);
     if (!medium.tables || medium.tables->tablesHash == 0 || medium.range.digest == 0) {
-        return 0;
+        return {};
     }
     const std::uint64_t expectedHash = ResourceManager::make_scan_lut_key_digest(
         static_cast<std::uint32_t>(medium.medium),
@@ -1111,17 +1404,22 @@ std::uint64_t estimate_scan_lut_upload_bytes(
         medium.range.digest,
         res);
     if (expectedHash == 0) {
-        return 0;
+        return {};
     }
 
     bool cached = false;
+    bool canOverwriteInPlace = false;
     {
         std::lock_guard<std::mutex> lock(resources.m);
         const JuicerCuda::Resources::DeviceSpectralLut& dst =
             commands_select_scan_lut_slot(resources, negativeMedium);
         cached = dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
+        canOverwriteInPlace = dst.log2XYZ && dst.res == res;
     }
-    return commands_uncached_bytes(cached, bytes);
+    return commands_uncached_upload_work(
+        cached,
+        canOverwriteInPlace ? 0 : bytes,
+        bytes);
 }
 
 bool command_scan_lut_is_cached(
@@ -1153,18 +1451,18 @@ bool command_scan_lut_is_cached(
     return dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
 }
 
-std::uint64_t estimate_print_illuminant_upload_bytes(
+UploadWorkEstimate estimate_print_illuminant_upload_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     const Print::Runtime& prt,
     const Print::Params& params) noexcept {
     const int k = Spectral::gShape.K;
     if (k <= 0) {
-        return 0;
+        return {};
     }
     const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     if (wsCoreHash == 0) {
-        return 0;
+        return {};
     }
     const float yKey = commands_sanitize_filter_shift_step(params.yFilter);
     const float mKey = commands_sanitize_filter_shift_step(params.mFilter);
@@ -1172,6 +1470,7 @@ std::uint64_t estimate_print_illuminant_upload_bytes(
     const std::uint64_t neutralFilterHash = commands_neutral_filter_hash_or_default(prt);
 
     bool cached = false;
+    bool canOverwriteInPlace = false;
     {
         std::lock_guard<std::mutex> lock(resources.m);
         cached =
@@ -1183,18 +1482,21 @@ std::uint64_t estimate_print_illuminant_upload_bytes(
             resources.printIllumMShiftSteps == mKey &&
             resources.printIllumCShiftSteps == cKey &&
             resources.printIllumNeutralFilterHash == neutralFilterHash;
+        canOverwriteInPlace =
+            resources.printIllumFiltered &&
+            resources.printIllumK == k;
     }
     if (cached) {
-        return 0;
+        return {};
     }
     std::uint64_t bytes = 0;
     if (!mul_u64_checked(
             static_cast<std::uint64_t>(k),
             static_cast<std::uint64_t>(sizeof(float)),
             bytes)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
-    return bytes;
+    return {canOverwriteInPlace ? 0 : bytes, bytes};
 }
 
 bool command_print_illuminant_filtered_is_cached(
@@ -2280,16 +2582,17 @@ bool command_ensure_uploaded(
         std::lock_guard<std::mutex> lock(resources.m);
         coreUploadStale = resources.uploadedCoreHash != wsCoreHash;
     }
-    const std::uint64_t uploadRequestBytes =
+    const UploadWorkEstimate uploadEstimate =
         estimate_upload_core_request_bytes(resources, ws);
-    if (uploadRequestBytes == 0) {
+    if (uploadEstimate.reservationBytes == 0) {
         return true;
     }
     const bool ok = execute_upload_immutable_command(
         transaction,
         resources,
         "command_ensure_uploaded",
-        uploadRequestBytes,
+        uploadEstimate.growthBytes,
+        uploadEstimate.reservationBytes,
         true,
         "upload reservation request byte estimation overflow (core)",
         [&](std::string& actionError) {
@@ -2360,9 +2663,10 @@ bool command_ensure_scan_lut_internal(
     if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
-    const std::uint64_t uploadRequestBytes =
+    const UploadWorkEstimate uploadEstimate =
         estimate_scan_lut_upload_bytes(resources, ws, negativeMedium);
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+    if (uploadEstimate.growthBytes == std::numeric_limits<std::uint64_t>::max() ||
+        uploadEstimate.reservationBytes == std::numeric_limits<std::uint64_t>::max()) {
         outError = "upload reservation request byte estimation overflow (scan LUT)";
         return false;
     }
@@ -2446,7 +2750,8 @@ bool command_ensure_scan_lut_internal(
         transaction,
         resources,
         stageName,
-        uploadRequestBytes,
+        uploadEstimate.growthBytes,
+        uploadEstimate.reservationBytes,
         criticalRequest,
         "upload reservation request byte estimation overflow (scan LUT)",
         captureMemorySnapshots,
@@ -2519,7 +2824,7 @@ bool command_ensure_print_illuminant_filtered(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_print_illuminant_filtered")) {
         return false;
     }
-    const std::uint64_t uploadRequestBytes =
+    const UploadWorkEstimate uploadEstimate =
         estimate_print_illuminant_upload_bytes(resources, ws, prt, params);
     if (command_print_illuminant_filtered_is_cached(resources, ws, prt, params)) {
         return true;
@@ -2528,7 +2833,8 @@ bool command_ensure_print_illuminant_filtered(
         transaction,
         resources,
         "command_ensure_print_illuminant_filtered",
-        uploadRequestBytes,
+        uploadEstimate.growthBytes,
+        uploadEstimate.reservationBytes,
         true,
         "upload reservation request byte estimation overflow (print illuminant)",
         [&](std::string& actionError) {
