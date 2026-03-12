@@ -1839,35 +1839,48 @@
                     const bool stillNeedAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
                     const bool stillNeedUpload = stillNeedAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
                     if (stillNeedUpload) {
-                        const size_t bytes = cpu.size() * sizeof(float);
-                        float* dLut = nullptr;
-                        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dLut), bytes);
-                        if (err != cudaSuccess) {
-                            outError = std::string("cudaMalloc(Hanatos integrated LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                        const std::size_t valueCount = cpu.size();
+                        if (valueCount > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+                            outError = "Hanatos integrated LUT value count exceeds upload helper limits";
                             return false;
                         }
-                        if (!enqueue_host_to_device_copy(
-                                "ensure_uploaded",
-                                "Hanatos integrated LUT",
-                                dLut,
-                                cpu.data(),
-                                bytes,
-                                cudaStreamOpaque,
-                                outError)) {
-                            cudaFree(dLut);
-                            return false;
-                        }
+                        const int valueCountInt = static_cast<int>(valueCount);
+                        if (stillNeedAlloc) {
+                            float* dLut = nullptr;
+                            if (!alloc_and_upload_array(
+                                    dLut,
+                                    cpu.data(),
+                                    valueCountInt,
+                                    cudaStreamOpaque,
+                                    "Hanatos integrated LUT",
+                                    outError)) {
+                                return false;
+                            }
 
-                        if (resources.hanatosLutIntegrated) {
-                            const size_t count = static_cast<size_t>(resources.hanatosNIntegrated) * static_cast<size_t>(resources.hanatosNIntegrated) * 4u;
-                            const size_t oldBytes = count * sizeof(float);
-                            if (!retire_ptr_locked(resources, resources.hanatosLutIntegrated, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
-                                cudaFree(dLut);
+                            if (resources.hanatosLutIntegrated) {
+                                const size_t count = static_cast<size_t>(resources.hanatosNIntegrated) * static_cast<size_t>(resources.hanatosNIntegrated) * 4u;
+                                const size_t oldBytes = count * sizeof(float);
+                                if (!retire_ptr_locked(resources, resources.hanatosLutIntegrated, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos integrated LUT", outError)) {
+                                    cudaFree(dLut);
+                                    return false;
+                                }
+                            }
+
+                            resources.hanatosLutIntegrated = dLut;
+                        } else {
+                            const int currentValueCount = resources.hanatosNIntegrated * resources.hanatosNIntegrated * 4;
+                            if (!upload_array_locked(
+                                    resources,
+                                    resources.hanatosLutIntegrated,
+                                    currentValueCount,
+                                    cpu.data(),
+                                    valueCountInt,
+                                    cudaStreamOpaque,
+                                    "Hanatos integrated LUT",
+                                    outError)) {
                                 return false;
                             }
                         }
-
-                        resources.hanatosLutIntegrated = dLut;
                         resources.hanatosNIntegrated = N;
                         resources.hanatosIntegratedBuildCounter = ws.buildCounter;
                     }
