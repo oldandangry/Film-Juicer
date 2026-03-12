@@ -69,6 +69,621 @@ std::string commands_error_or_message(const std::string& error, const char* fall
     return error;
 }
 
+struct AutoExposureOwnershipObservation {
+    ShadowHistoryKey ownershipKey{};
+    bool hadPrevious = false;
+    bool metadataHit = false;
+};
+
+AutoExposureOwnershipObservation observe_auto_exposure_ownership(
+    const SubmissionTransaction& transaction,
+    std::uint64_t normalizedKeyHash,
+    int meterWidth,
+    int meterHeight) {
+    AutoExposureOwnershipObservation observation{};
+    observation.ownershipKey = ShadowHistoryKey{
+        transaction.snapshot.instanceToken.value,
+        transaction.snapshot.deviceContextKey};
+
+    AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
+    std::lock_guard<std::mutex> lock(ownershipState.mutex);
+    auto it = ownershipState.bySubmissionKey.find(observation.ownershipKey);
+    if (it == ownershipState.bySubmissionKey.end() || !it->second.valid) {
+        return observation;
+    }
+
+    observation.hadPrevious = true;
+    const AutoExposureOwnershipEntry& previous = it->second;
+    observation.metadataHit =
+        previous.keySchemaVersion == transaction.snapshot.keySchemaVersion &&
+        previous.keyHash == normalizedKeyHash &&
+        previous.meterWidth == meterWidth &&
+        previous.meterHeight == meterHeight;
+    return observation;
+}
+
+void publish_auto_exposure_ownership(
+    const SubmissionTransaction& transaction,
+    const ShadowHistoryKey& ownershipKey,
+    std::uint64_t normalizedKeyHash,
+    int meterWidth,
+    int meterHeight) {
+    AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
+    std::lock_guard<std::mutex> lock(ownershipState.mutex);
+    AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
+    entry.valid = true;
+    entry.keyHash = normalizedKeyHash;
+    entry.meterWidth = meterWidth;
+    entry.meterHeight = meterHeight;
+    entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
+}
+
+void trace_auto_exposure_ownership_event(
+    const SubmissionTransaction& transaction,
+    const AutoExposureOwnershipObservation& observation,
+    std::uint64_t normalizedKeyHash,
+    int meterWidth,
+    int meterHeight,
+    const char* action,
+    const char* reason) {
+    telemetry_trace_auto_exposure_ownership(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        "ManagerOnly",
+        action,
+        observation.metadataHit,
+        normalizedKeyHash,
+        meterWidth,
+        meterHeight,
+        observation.hadPrevious,
+        reason);
+}
+
+void complete_tier_circuit_attempt(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const TierCircuitAttempt& attempt,
+    bool success,
+    const char* successReason,
+    const std::string& failureError);
+
+template <typename Action>
+bool execute_upload_immutable_command(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::uint64_t uploadRequestBytes,
+    bool criticalRequest,
+    const char* overflowMessage,
+    Action&& action,
+    std::string& outError) {
+    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+        outError = trace_or_non_empty(overflowMessage, "upload reservation request byte estimation overflow");
+        return false;
+    }
+
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+
+    const char* stageName = trace_or_non_empty(commandName, "command");
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            stageName,
+            PressureLane::Upload,
+            saturating_u64_to_size_t(uploadRequestBytes),
+            criticalRequest,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                stageName,
+                "pressure_pre_upload",
+                reclaimError)) {
+            outError =
+                commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
+            return false;
+        }
+    }
+
+    UploadReservationClaim uploadClaim{};
+    if (!acquire_upload_reservation_with_wait(
+            transaction,
+            stageName,
+            uploadRequestBytes,
+            criticalRequest,
+            uploadClaim,
+            outError)) {
+        return false;
+    }
+    UploadReservationGuard uploadGuard(std::move(uploadClaim));
+    TierCircuitAttempt circuitAttempt{};
+    std::string circuitError;
+    if (!tier_circuit_begin_attempt(
+            transaction,
+            stageName,
+            ResourceTier::Immutable,
+            tier_circuit_blocks_admission(ResourceTier::Immutable),
+            circuitAttempt,
+            circuitError)) {
+        outError = circuitError;
+        return false;
+    }
+
+    const bool ok = action(outError);
+    complete_tier_circuit_attempt(
+        transaction,
+        stageName,
+        circuitAttempt,
+        ok,
+        "ensure_success",
+        outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
+}
+
+template <typename Action>
+bool execute_snapshot_wrapped_command(
+    JuicerCuda::Resources& resources,
+    Action&& action,
+    std::string& outError) {
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = action(outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
+}
+
+bool acquire_graph_builder_reservation(
+    const SubmissionTransaction& transaction,
+    ResourceManagerState& managerState,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    BuilderReservationClaim& builderClaim,
+    ReservationAttemptInfo& builderReservation) {
+    telemetry_counter_add(managerState.builderReservationRequests, 1);
+    if (!try_acquire_builder_reservation_claim(
+            transaction,
+            BuilderReservationTier::Graph,
+            requestBytes,
+            criticalCurrentFrame,
+            builderClaim,
+            builderReservation)) {
+        const ReservationDecision& decision = builderReservation.decision;
+        const bool fairnessDeferred =
+            (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
+        if (decision.shouldWait) {
+            telemetry_counter_add(managerState.builderReservationDeferred, 1);
+            if (fairnessDeferred) {
+                telemetry_counter_add(managerState.builderFairnessTokenDeferred, 1);
+            }
+            trace_builder_reservation_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                BuilderReservationTier::Graph,
+                requestBytes,
+                builderReservation.bytesInFlight,
+                builderReservation.capBytes,
+                builderReservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                builderReservation.instanceToken,
+                builderReservation.sharedTokens,
+                builderReservation.criticalTokens,
+                0,
+                "deferred_nonresident");
+        } else {
+            telemetry_counter_add(managerState.builderReservationDenied, 1);
+            trace_builder_reservation_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                BuilderReservationTier::Graph,
+                requestBytes,
+                builderReservation.bytesInFlight,
+                builderReservation.capBytes,
+                builderReservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                builderReservation.instanceToken,
+                builderReservation.sharedTokens,
+                builderReservation.criticalTokens,
+                0,
+                "denied_nonresident");
+        }
+        return false;
+    }
+
+    telemetry_counter_add(managerState.builderReservationGranted, 1);
+    if (JTRACE_ENABLED(3)) {
+        trace_builder_reservation_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            BuilderReservationTier::Graph,
+            requestBytes,
+            builderReservation.bytesInFlight,
+            builderReservation.capBytes,
+            builderReservation.thresholdBytes,
+            builderReservation.decision,
+            criticalCurrentFrame,
+            builderReservation.instanceToken,
+            builderReservation.sharedTokens,
+            builderReservation.criticalTokens,
+            0,
+            "admitted");
+    }
+    return true;
+}
+
+template <typename Action, typename PolicyFailureFallback>
+bool execute_upload_lut_command(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::uint64_t uploadRequestBytes,
+    bool criticalRequest,
+    const char* overflowMessage,
+    bool captureMemorySnapshots,
+    bool publishInitialSnapshot,
+    Action&& action,
+    PolicyFailureFallback&& policyFailureFallback,
+    std::string& outError) {
+    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+        outError = trace_or_non_empty(overflowMessage, "upload reservation request byte estimation overflow");
+        return false;
+    }
+
+    if (publishInitialSnapshot) {
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    }
+
+    const char* stageName = trace_or_non_empty(commandName, "command");
+    auto try_policy_fallback = [&](const char* triggerReason) -> bool {
+        if (!policyFailureFallback(triggerReason)) {
+            return false;
+        }
+        outError.clear();
+        return true;
+    };
+
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            stageName,
+            PressureLane::Upload,
+            saturating_u64_to_size_t(uploadRequestBytes),
+            criticalRequest,
+            requestPreReclaim,
+            outError)) {
+        return try_policy_fallback("pressure_gate_reject");
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                stageName,
+                "pressure_pre_upload",
+                reclaimError)) {
+            outError =
+                commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
+            return try_policy_fallback("pressure_pre_upload_reclaim_failed");
+        }
+    }
+
+    UploadReservationClaim uploadClaim{};
+    if (!acquire_upload_reservation_with_wait(
+            transaction,
+            stageName,
+            uploadRequestBytes,
+            criticalRequest,
+            uploadClaim,
+            outError)) {
+        return try_policy_fallback("upload_reservation_reject");
+    }
+    UploadReservationGuard uploadGuard(std::move(uploadClaim));
+
+    BuilderReservationClaim builderClaim{};
+    if (!acquire_builder_reservation_with_wait(
+            transaction,
+            stageName,
+            BuilderReservationTier::Lut,
+            uploadRequestBytes,
+            criticalRequest,
+            builderClaim,
+            outError)) {
+        return try_policy_fallback("builder_reservation_reject");
+    }
+    BuilderReservationGuard builderGuard(std::move(builderClaim));
+
+    TierCircuitAttempt circuitAttempt{};
+    std::string circuitError;
+    if (!tier_circuit_begin_attempt(
+            transaction,
+            stageName,
+            ResourceTier::Lut,
+            tier_circuit_blocks_admission(ResourceTier::Lut),
+            circuitAttempt,
+            circuitError)) {
+        outError = circuitError;
+        return try_policy_fallback("tier_circuit_blocked");
+    }
+
+    const bool ok = action(outError);
+    complete_tier_circuit_attempt(
+        transaction,
+        stageName,
+        circuitAttempt,
+        ok,
+        "ensure_success",
+        outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
+}
+
+template <typename Action>
+bool execute_scratch_growth_command(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::size_t growthBytes,
+    ScratchWorkClass workClass,
+    int width,
+    int height,
+    bool captureMemorySnapshots,
+    Action&& action,
+    std::string& outError) {
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            commandName,
+            PressureLane::Builder,
+            growthBytes,
+            true,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                commandName,
+                "pressure_pre_growth",
+                reclaimError)) {
+            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
+            return false;
+        }
+    }
+
+    BuilderReservationClaim builderClaim{};
+    if (!acquire_builder_reservation_with_wait(
+            transaction,
+            commandName,
+            BuilderReservationTier::Scratch,
+            static_cast<std::uint64_t>(growthBytes),
+            true,
+            builderClaim,
+            outError)) {
+        return false;
+    }
+    BuilderReservationGuard builderGuard(std::move(builderClaim));
+
+    ScratchPolicyClaim scratchClaim{};
+    if (!acquire_scratch_policy_claim_with_wait(
+            transaction,
+            commandName,
+            workClass,
+            width,
+            height,
+            growthBytes,
+            true,
+            scratchClaim,
+            outError)) {
+        return false;
+    }
+    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
+
+    ResourceManagerState& managerState = global_state();
+    std::uint32_t attempts = 0;
+    bool fragmentationRecoveryTriggered = false;
+    bool fragmentationRecoveryPendingOutcome = false;
+    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
+        if (!fragmentationRecoveryPendingOutcome) {
+            return;
+        }
+        if (success) {
+            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
+        } else {
+            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
+        }
+        trace_fragmentation_recovery(
+            transaction,
+            commandName,
+            attempts,
+            growthBytes,
+            0,
+            0,
+            0,
+            success,
+            "outcome",
+            reason);
+        fragmentationRecoveryPendingOutcome = false;
+    };
+
+    while (true) {
+        outError.clear();
+        TierCircuitAttempt circuitAttempt{};
+        std::string circuitError;
+        if (!tier_circuit_begin_attempt(
+                transaction,
+                commandName,
+                ResourceTier::Scratch,
+                tier_circuit_blocks_admission(ResourceTier::Scratch),
+                circuitAttempt,
+                circuitError)) {
+            outError = circuitError;
+            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
+            return false;
+        }
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+        if (action(outError)) {
+            complete_tier_circuit_attempt(
+                transaction,
+                commandName,
+                circuitAttempt,
+                true,
+                "ensure_success",
+                outError);
+            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+            if (attempts > 0) {
+                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
+            }
+            finalizeFragmentationOutcome(true, "allocation_retry_success");
+            return true;
+        }
+        complete_tier_circuit_attempt(
+            transaction,
+            commandName,
+            circuitAttempt,
+            false,
+            "ensure_success",
+            outError);
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+
+        const bool allocatorOom = is_allocator_oom_error(outError);
+        if (!allocatorOom) {
+            finalizeFragmentationOutcome(false, "non_allocator_error");
+            return false;
+        }
+        if (attempts >= cfg.reclaimRetryMaxAttempts) {
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        commandName,
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        commandName,
+                        growthBytes);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
+            }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                commandName,
+                growthBytes);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+            finalizeFragmentationOutcome(false, "allocator_oom_final");
+            return false;
+        }
+
+        ++attempts;
+        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
+        std::size_t reclaimedBytes = 0;
+        std::string reclaimError;
+        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
+            trace_reap_pass(
+                transaction,
+                commandName,
+                reclaimedBytes,
+                false,
+                commands_error_or_cstr(reclaimError, "reap_failed"));
+            trace_budget_reclaim_retry(
+                transaction,
+                commandName,
+                attempts,
+                reclaimedBytes,
+                false,
+                commands_error_or_cstr(reclaimError, "reap_failed"));
+            if (!reclaimError.empty()) {
+                outError += " | reclaim_retry_failed: " + reclaimError;
+            }
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+            finalizeFragmentationOutcome(false, "reap_retry_failed");
+            return false;
+        }
+
+        if (reclaimedBytes > 0) {
+            telemetry_counter_add(managerState.retireReapPasses, 1);
+            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
+        }
+        trace_reap_pass(
+            transaction,
+            commandName,
+            reclaimedBytes,
+            true,
+            reclaim_retry_reason(reclaimedBytes));
+        trace_budget_reclaim_retry(
+            transaction,
+            commandName,
+            attempts,
+            reclaimedBytes,
+            true,
+            reclaim_retry_reason(reclaimedBytes));
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+
+        if (reclaimedBytes == 0) {
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        commandName,
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        commandName,
+                        growthBytes);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
+            }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                commandName,
+                growthBytes);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+            finalizeFragmentationOutcome(false, "reap_no_progress");
+            return false;
+        }
+    }
+}
+
 void complete_tier_circuit_attempt(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -113,6 +728,23 @@ void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& ove
         return;
     }
     total = next;
+}
+
+void add_count_upload_estimate_bytes(
+    std::uint64_t count,
+    std::size_t elementSize,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (overflow || count == 0 || elementSize == 0) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(count, static_cast<std::uint64_t>(elementSize), bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
 }
 
 std::uint64_t commands_preferred_upload_core_hash(const WorkingState& ws) noexcept {
@@ -306,12 +938,71 @@ std::uint64_t estimate_upload_core_request_bytes(
     bool dirUpToDate = false;
     bool needStbnUpload = false;
     bool needWangUpload = false;
+    bool needHanatosUpload = false;
+    bool needHanatosIntegratedUpload = false;
+    bool needMallettUpload = false;
+    std::uint64_t hanatosUploadCount = 0;
+    std::uint64_t hanatosIntegratedUploadCount = 0;
+    std::uint64_t mallettUploadCount = 0;
+    Spectral::SpectralContext& ctx = Spectral::context();
+    const bool hanatosAvailable = ctx.hanatosAvailable.load(std::memory_order_acquire);
+    const int hanatosN = ctx.hanSpectra.size;
+    const int hanatosK = ctx.hanSpectra.numSamples;
+    const bool wantHanatos =
+        hanatosAvailable &&
+        hanatosN > 0 &&
+        hanatosK == Spectral::kNumSamples &&
+        !ctx.hanSpectra.data.empty();
+    const bool wantHanatosIntegrated =
+        wantHanatos &&
+        static_cast<int>(ws.sensB.linear.size()) == hanatosK &&
+        static_cast<int>(ws.sensG.linear.size()) == hanatosK &&
+        static_cast<int>(ws.sensR.linear.size()) == hanatosK;
+    const bool mallettAvailable = ctx.mallettAvailable.load(std::memory_order_acquire);
+    const int mallettK = ctx.mallettBasis.rows;
+    const int mallettCols = ctx.mallettBasis.cols;
+    const bool wantMallett =
+        mallettAvailable &&
+        mallettK == Spectral::kNumSamples &&
+        mallettCols == 3 &&
+        !ctx.mallettBasis.data.empty();
     {
         std::lock_guard<std::mutex> lock(resources.m);
         coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
         dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
         needStbnUpload = (resources.stbnData == nullptr);
         needWangUpload = (resources.wangTilesData == nullptr) || (resources.wangLutData == nullptr);
+        needHanatosUpload = wantHanatos &&
+                            (!resources.hanatosLut || resources.hanatosN != hanatosN);
+        needHanatosIntegratedUpload = wantHanatosIntegrated &&
+                                      ((!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != hanatosN) ||
+                                       (resources.hanatosIntegratedBuildCounter != ws.buildCounter));
+        needMallettUpload = wantMallett &&
+                            (!resources.mallettBasis || resources.mallettBasisK != mallettK);
+    }
+
+    if (wantHanatos) {
+        std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
+        if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
+            !mul_u64_checked(count, static_cast<std::uint64_t>(hanatosK), count)) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        hanatosUploadCount = count;
+    }
+    if (wantHanatosIntegrated) {
+        std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
+        if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
+            !mul_u64_checked(count, 4ull, count)) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        hanatosIntegratedUploadCount = count;
+    }
+    if (wantMallett) {
+        std::uint64_t count = static_cast<std::uint64_t>(mallettK);
+        if (!mul_u64_checked(count, 3ull, count)) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        mallettUploadCount = count;
     }
 
     std::uint64_t estimateBytes = 0;
@@ -357,6 +1048,16 @@ std::uint64_t estimate_upload_core_request_bytes(
 
     add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimateBytes, overflow);
     add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimateBytes, overflow);
+
+    if (needHanatosUpload) {
+        add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimateBytes, overflow);
+    }
+    if (needHanatosIntegratedUpload) {
+        add_count_upload_estimate_bytes(hanatosIntegratedUploadCount, sizeof(float), estimateBytes, overflow);
+    }
+    if (needMallettUpload) {
+        add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimateBytes, overflow);
+    }
 
     if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
         const Print::Profile& p = ws.printRT->profile;
@@ -794,6 +1495,88 @@ void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
     bucket.probationHitsByDigest.clear();
     bucket.largeEntryReadmitByDigest.clear();
     bucket.useTick = 0;
+}
+
+bool evaluate_graph_large_entry_readmit(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    std::uint64_t keyDigest,
+    std::uint64_t requestBytes,
+    std::uint64_t graphLargeThresholdBytes,
+    bool criticalCurrentFrame,
+    const ResourceManagerConfigEffective& cfg,
+    ResourceManagerState& managerState,
+    std::uint32_t& outObservedProbationHits) {
+    outObservedProbationHits = 0;
+    auto probationIt = bucket.probationHitsByDigest.find(keyDigest);
+    if (probationIt != bucket.probationHitsByDigest.end()) {
+        outObservedProbationHits = probationIt->second;
+    }
+
+    LargeEntryReadmitDecision readmitDecision{};
+    readmitDecision.enabled =
+        (cfg.largeEntryReadmitCooldownMs > 0) || (cfg.largeEntryGhostHitsForReadmit > 0);
+    readmitDecision.candidate =
+        (graphLargeThresholdBytes > 0) && (requestBytes >= graphLargeThresholdBytes);
+    readmitDecision.criticalCurrentFrame = criticalCurrentFrame;
+    readmitDecision.cooldownMs = cfg.largeEntryReadmitCooldownMs;
+    readmitDecision.ghostHitsRequired = cfg.largeEntryGhostHitsForReadmit;
+    if (readmitDecision.enabled) {
+        readmitDecision.reason = "not_candidate";
+    } else {
+        readmitDecision.reason = "disabled";
+    }
+    if (readmitDecision.enabled && readmitDecision.candidate && !criticalCurrentFrame) {
+        auto readmitIt = bucket.largeEntryReadmitByDigest.find(keyDigest);
+        if (readmitIt != bucket.largeEntryReadmitByDigest.end()) {
+            readmitDecision.hadHistory = true;
+            GraphLargeEntryReadmitState& readmitState = readmitIt->second;
+            const std::uint64_t nowMs = monotonic_time_ms();
+            readmitDecision.ageMs = commands_elapsed_ms_since(nowMs, readmitState.lastEvictedMs);
+            readmitDecision.inCooldown =
+                (cfg.largeEntryReadmitCooldownMs > 0) &&
+                (readmitDecision.ageMs < static_cast<std::uint64_t>(cfg.largeEntryReadmitCooldownMs));
+
+            if (readmitDecision.inCooldown) {
+                if (readmitState.ghostHits < std::numeric_limits<std::uint32_t>::max()) {
+                    ++readmitState.ghostHits;
+                }
+                readmitDecision.observedGhostHits = readmitState.ghostHits;
+                if (cfg.largeEntryGhostHitsForReadmit > 0 &&
+                    readmitState.ghostHits >= cfg.largeEntryGhostHitsForReadmit) {
+                    readmitDecision.ghostBypass = true;
+                    readmitDecision.reason = "ghost_hit_bypass";
+                    bucket.largeEntryReadmitByDigest.erase(readmitIt);
+                } else {
+                    readmitDecision.blocked = true;
+                    readmitDecision.reason = "cooldown_blocked";
+                }
+            } else {
+                readmitDecision.reason = "cooldown_expired";
+                bucket.largeEntryReadmitByDigest.erase(readmitIt);
+            }
+        } else {
+            readmitDecision.reason = "no_history";
+        }
+    } else if (readmitDecision.enabled && readmitDecision.candidate && criticalCurrentFrame) {
+        readmitDecision.reason = "critical_bypass";
+    }
+
+    trace_large_entry_readmit_decision(
+        transaction,
+        "command_launch_base_pipeline_graph",
+        keyDigest,
+        requestBytes,
+        graphLargeThresholdBytes,
+        readmitDecision);
+    if (readmitDecision.ghostBypass) {
+        telemetry_counter_add(managerState.largeEntryReadmitGhostBypassEvents, 1);
+    }
+    if (readmitDecision.blocked) {
+        telemetry_counter_add(managerState.largeEntryReadmitBlockedEvents, 1);
+        return false;
+    }
+    return true;
 }
 
 std::uint64_t estimate_base_graph_bucket_active_bytes_locked(
@@ -1499,72 +2282,26 @@ bool command_ensure_uploaded(
     }
     const std::uint64_t uploadRequestBytes =
         estimate_upload_core_request_bytes(resources, ws);
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
-        outError = "upload reservation request byte estimation overflow (core)";
-        return false;
-    }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     if (uploadRequestBytes == 0) {
         return true;
     }
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_uploaded",
-            PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
+    const bool ok = execute_upload_immutable_command(
+        transaction,
+        resources,
+        "command_ensure_uploaded",
+        uploadRequestBytes,
+        true,
+        "upload reservation request byte estimation overflow (core)",
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_uploaded(
                 resources,
-                "command_ensure_uploaded",
-                "pressure_pre_upload",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
-            return false;
-        }
-    }
-    bool ok = false;
-    {
-        UploadReservationClaim uploadClaim{};
-        if (!acquire_upload_reservation_with_wait(
-                transaction,
-                "command_ensure_uploaded",
-                uploadRequestBytes,
-                true,
-                uploadClaim,
-                outError)) {
-            return false;
-        }
-        UploadReservationGuard uploadGuard(std::move(uploadClaim));
-        TierCircuitAttempt circuitAttempt{};
-        std::string circuitError;
-        if (!tier_circuit_begin_attempt(
-                transaction,
-                "command_ensure_uploaded",
-                ResourceTier::Immutable,
-                tier_circuit_blocks_admission(ResourceTier::Immutable),
-                circuitAttempt,
-                circuitError)) {
-            outError = circuitError;
-            return false;
-        }
-        ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
-        complete_tier_circuit_attempt(
-            transaction,
-            "command_ensure_uploaded",
-            circuitAttempt,
-            ok,
-            "ensure_success",
-            outError);
+                ws,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
+    if (!ok) {
+        return false;
     }
 
     if (ok && allowLutPrewarm && coreUploadStale) {
@@ -1606,9 +2343,7 @@ bool command_ensure_uploaded(
             JTRACE_VERBOSE("MSLUT", msg);
         }
     }
-
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return true;
 }
 
 namespace {
@@ -1707,98 +2442,31 @@ bool command_ensure_scan_lut_internal(
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         return true;
     };
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            stageName,
-            PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
-            criticalRequest,
-            requestPreReclaim,
-            outError)) {
-        if (try_private_fallback("pressure_gate_reject")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
-                resources,
-                stageName,
-                "pressure_pre_upload",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
-            if (try_private_fallback("pressure_pre_upload_reclaim_failed")) {
-                outError.clear();
-                return true;
-            }
-            return false;
-        }
-    }
-    UploadReservationClaim uploadClaim{};
-    if (!acquire_upload_reservation_with_wait(
-            transaction,
-            stageName,
-            uploadRequestBytes,
-            criticalRequest,
-            uploadClaim,
-            outError)) {
-        if (try_private_fallback("upload_reservation_reject")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    BuilderReservationClaim builderClaim{};
-    if (!acquire_builder_reservation_with_wait(
-            transaction,
-            stageName,
-            BuilderReservationTier::Lut,
-            uploadRequestBytes,
-            criticalRequest,
-            builderClaim,
-            outError)) {
-        if (try_private_fallback("builder_reservation_reject")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
-    TierCircuitAttempt circuitAttempt{};
-    std::string circuitError;
-    if (!tier_circuit_begin_attempt(
-            transaction,
-            stageName,
-            ResourceTier::Lut,
-            tier_circuit_blocks_admission(ResourceTier::Lut),
-            circuitAttempt,
-            circuitError)) {
-        outError = circuitError;
-        if (try_private_fallback("tier_circuit_blocked")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
-    complete_tier_circuit_attempt(
+    const bool ok = execute_upload_lut_command(
         transaction,
+        resources,
         stageName,
-        circuitAttempt,
-        ok,
-        "ensure_success",
+        uploadRequestBytes,
+        criticalRequest,
+        "upload reservation request byte estimation overflow (scan LUT)",
+        captureMemorySnapshots,
+        false,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_scan_lut(
+                resources,
+                ws,
+                negativeMedium,
+                cudaStreamOpaque,
+                actionError);
+        },
+        [&](const char* triggerReason) {
+            return try_private_fallback(triggerReason);
+        },
         outError);
     if (ok) {
         std::lock_guard<std::mutex> lock(resources.m);
         commands_clear_private_lut_fallback_locked(resources, negativeMedium);
     }
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
 } // namespace
@@ -1832,11 +2500,12 @@ bool command_ensure_scan_error_flag(
     if (command_scan_error_flag_ready(resources)) {
         return true;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, actionError);
+        },
+        outError);
 }
 
 bool command_ensure_print_illuminant_filtered(
@@ -1852,73 +2521,26 @@ bool command_ensure_print_illuminant_filtered(
     }
     const std::uint64_t uploadRequestBytes =
         estimate_print_illuminant_upload_bytes(resources, ws, prt, params);
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
-        outError = "upload reservation request byte estimation overflow (print illuminant)";
-        return false;
-    }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     if (command_print_illuminant_filtered_is_cached(resources, ws, prt, params)) {
         return true;
     }
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_print_illuminant_filtered",
-            PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
-                resources,
-                "command_ensure_print_illuminant_filtered",
-                "pressure_pre_upload",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
-            return false;
-        }
-    }
-    UploadReservationClaim uploadClaim{};
-    if (!acquire_upload_reservation_with_wait(
-            transaction,
-            "command_ensure_print_illuminant_filtered",
-            uploadRequestBytes,
-            true,
-            uploadClaim,
-            outError)) {
-        return false;
-    }
-    UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    TierCircuitAttempt circuitAttempt{};
-    std::string circuitError;
-    if (!tier_circuit_begin_attempt(
-            transaction,
-            "command_ensure_print_illuminant_filtered",
-            ResourceTier::Immutable,
-            tier_circuit_blocks_admission(ResourceTier::Immutable),
-            circuitAttempt,
-            circuitError)) {
-        outError = circuitError;
-        return false;
-    }
-    const bool ok =
-        JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
-    complete_tier_circuit_attempt(
+    return execute_upload_immutable_command(
         transaction,
+        resources,
         "command_ensure_print_illuminant_filtered",
-        circuitAttempt,
-        ok,
-        "ensure_success",
+        uploadRequestBytes,
+        true,
+        "upload reservation request byte estimation overflow (print illuminant)",
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_print_illuminant_filtered(
+                resources,
+                ws,
+                prt,
+                params,
+                cudaStreamOpaque,
+                actionError);
+        },
         outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
 }
 
 bool command_ensure_optics_scratch(
@@ -1955,105 +2577,17 @@ bool command_ensure_optics_scratch(
     if (growthBytes == 0) {
         return true;
     }
-
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_optics_scratch",
-            PressureLane::Builder,
-            growthBytes,
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
-                resources,
-                "command_ensure_optics_scratch",
-                "pressure_pre_growth",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
-            return false;
-        }
-    }
-
-    BuilderReservationClaim builderClaim{};
-    if (!acquire_builder_reservation_with_wait(
-            transaction,
-            "command_ensure_optics_scratch",
-            BuilderReservationTier::Scratch,
-            static_cast<std::uint64_t>(growthBytes),
-            true,
-            builderClaim,
-            outError)) {
-        return false;
-    }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
-
-    ScratchPolicyClaim scratchClaim{};
-    if (!acquire_scratch_policy_claim_with_wait(
-            transaction,
-            "command_ensure_optics_scratch",
-            ScratchWorkClass::Optics,
-            width,
-            height,
-            growthBytes,
-            true,
-            scratchClaim,
-            outError)) {
-        return false;
-    }
-    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
-
-    ResourceManagerState& managerState = global_state();
-    std::uint32_t attempts = 0;
-    bool fragmentationRecoveryTriggered = false;
-    bool fragmentationRecoveryPendingOutcome = false;
-    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
-        if (!fragmentationRecoveryPendingOutcome) {
-            return;
-        }
-        if (success) {
-            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
-        }
-        else {
-            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
-        }
-        trace_fragmentation_recovery(
-            transaction,
-            "command_ensure_optics_scratch",
-            attempts,
-            growthBytes,
-            0,
-            0,
-            0,
-            success,
-            "outcome",
-            reason);
-        fragmentationRecoveryPendingOutcome = false;
-    };
-
-    while (true) {
-        outError.clear();
-        TierCircuitAttempt circuitAttempt{};
-        std::string circuitError;
-        if (!tier_circuit_begin_attempt(
-                transaction,
-                "command_ensure_optics_scratch",
-                ResourceTier::Scratch,
-                tier_circuit_blocks_admission(ResourceTier::Scratch),
-                circuitAttempt,
-                circuitError)) {
-            outError = circuitError;
-            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
-            return false;
-        }
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        if (JuicerCuda::ensure_optics_scratch(
+    return execute_scratch_growth_command(
+        transaction,
+        resources,
+        "command_ensure_optics_scratch",
+        growthBytes,
+        ScratchWorkClass::Optics,
+        width,
+        height,
+        captureMemorySnapshots,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_optics_scratch(
                 resources,
                 width,
                 height,
@@ -2063,148 +2597,9 @@ bool command_ensure_optics_scratch(
                 needGrainSharedScratch,
                 needGateMask,
                 cudaStreamOpaque,
-                outError)) {
-            complete_tier_circuit_attempt(
-                transaction,
-                "command_ensure_optics_scratch",
-                circuitAttempt,
-                true,
-                "ensure_success",
-                outError);
-            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-            if (attempts > 0) {
-                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
-            }
-            finalizeFragmentationOutcome(true, "allocation_retry_success");
-            return true;
-        }
-        complete_tier_circuit_attempt(
-            transaction,
-            "command_ensure_optics_scratch",
-            circuitAttempt,
-            false,
-            "ensure_success",
-            outError);
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        const bool allocatorOom = is_allocator_oom_error(outError);
-        if (!allocatorOom) {
-            finalizeFragmentationOutcome(false, "non_allocator_error");
-            return false;
-        }
-        if (attempts >= cfg.reclaimRetryMaxAttempts) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_optics_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_optics_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_optics_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "allocator_oom_final");
-            return false;
-        }
-
-        ++attempts;
-        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
-        std::size_t reclaimedBytes = 0;
-        std::string reclaimError;
-        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
-            trace_reap_pass(
-                transaction,
-                "command_ensure_optics_scratch",
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            trace_budget_reclaim_retry(
-                transaction,
-                "command_ensure_optics_scratch",
-                attempts,
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            if (!reclaimError.empty()) {
-                outError += " | reclaim_retry_failed: " + reclaimError;
-            }
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_retry_failed");
-            return false;
-        }
-
-        if (reclaimedBytes > 0) {
-            telemetry_counter_add(managerState.retireReapPasses, 1);
-            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
-        }
-        trace_reap_pass(
-            transaction,
-            "command_ensure_optics_scratch",
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        trace_budget_reclaim_retry(
-            transaction,
-            "command_ensure_optics_scratch",
-            attempts,
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        if (reclaimedBytes == 0) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_optics_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_optics_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_optics_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_no_progress");
-            return false;
-        }
-    }
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_spatial_dir_scratch(
@@ -2228,246 +2623,24 @@ bool command_ensure_spatial_dir_scratch(
     if (growthBytes == 0) {
         return true;
     }
-
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_spatial_dir_scratch",
-            PressureLane::Builder,
-            growthBytes,
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
+    return execute_scratch_growth_command(
+        transaction,
+        resources,
+        "command_ensure_spatial_dir_scratch",
+        growthBytes,
+        ScratchWorkClass::SpatialDir,
+        width,
+        height,
+        captureMemorySnapshots,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_spatial_dir_scratch(
                 resources,
-                "command_ensure_spatial_dir_scratch",
-                "pressure_pre_growth",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
-            return false;
-        }
-    }
-
-    BuilderReservationClaim builderClaim{};
-    if (!acquire_builder_reservation_with_wait(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            BuilderReservationTier::Scratch,
-            static_cast<std::uint64_t>(growthBytes),
-            true,
-            builderClaim,
-            outError)) {
-        return false;
-    }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
-
-    ScratchPolicyClaim scratchClaim{};
-    if (!acquire_scratch_policy_claim_with_wait(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            ScratchWorkClass::SpatialDir,
-            width,
-            height,
-            growthBytes,
-            true,
-            scratchClaim,
-            outError)) {
-        return false;
-    }
-    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
-
-    ResourceManagerState& managerState = global_state();
-    std::uint32_t attempts = 0;
-    bool fragmentationRecoveryTriggered = false;
-    bool fragmentationRecoveryPendingOutcome = false;
-    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
-        if (!fragmentationRecoveryPendingOutcome) {
-            return;
-        }
-        if (success) {
-            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
-        }
-        else {
-            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
-        }
-        trace_fragmentation_recovery(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            attempts,
-            growthBytes,
-            0,
-            0,
-            0,
-            success,
-            "outcome",
-            reason);
-        fragmentationRecoveryPendingOutcome = false;
-    };
-
-    while (true) {
-        outError.clear();
-        TierCircuitAttempt circuitAttempt{};
-        std::string circuitError;
-        if (!tier_circuit_begin_attempt(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                ResourceTier::Scratch,
-                tier_circuit_blocks_admission(ResourceTier::Scratch),
-                circuitAttempt,
-                circuitError)) {
-            outError = circuitError;
-            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
-            return false;
-        }
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        if (JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError)) {
-            complete_tier_circuit_attempt(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                circuitAttempt,
-                true,
-                "ensure_success",
-                outError);
-            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-            if (attempts > 0) {
-                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
-            }
-            finalizeFragmentationOutcome(true, "allocation_retry_success");
-            return true;
-        }
-        complete_tier_circuit_attempt(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            circuitAttempt,
-            false,
-            "ensure_success",
-            outError);
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        const bool allocatorOom = is_allocator_oom_error(outError);
-        if (!allocatorOom) {
-            finalizeFragmentationOutcome(false, "non_allocator_error");
-            return false;
-        }
-        if (attempts >= cfg.reclaimRetryMaxAttempts) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "allocator_oom_final");
-            return false;
-        }
-
-        ++attempts;
-        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
-        std::size_t reclaimedBytes = 0;
-        std::string reclaimError;
-        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
-            trace_reap_pass(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            trace_budget_reclaim_retry(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                attempts,
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            if (!reclaimError.empty()) {
-                outError += " | reclaim_retry_failed: " + reclaimError;
-            }
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_retry_failed");
-            return false;
-        }
-
-        if (reclaimedBytes > 0) {
-            telemetry_counter_add(managerState.retireReapPasses, 1);
-            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
-        }
-        trace_reap_pass(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        trace_budget_reclaim_retry(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            attempts,
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        if (reclaimedBytes == 0) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_no_progress");
-            return false;
-        }
-    }
+                width,
+                height,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_spatial_dir_kernel(
@@ -2480,11 +2653,17 @@ bool command_ensure_spatial_dir_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_kernel")) {
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_spatial_dir_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_spatial_dir_kernel(
+                resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_gaussian_kernel(
@@ -2497,11 +2676,17 @@ bool command_ensure_gaussian_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_gaussian_kernel")) {
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_gaussian_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_gaussian_kernel(
+                resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_halation_kernel(
@@ -2514,11 +2699,17 @@ bool command_ensure_halation_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_halation_kernel")) {
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_halation_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_halation_kernel(
+                resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_auto_exposure_buffers(
@@ -2535,81 +2726,46 @@ bool command_ensure_auto_exposure_buffers(
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::uint64_t normalizedKeyHash = normalize_key_u64(autoExposureKeyHash);
+    const AutoExposureOwnershipObservation ownershipObservation =
+        observe_auto_exposure_ownership(transaction, normalizedKeyHash, meterWidth, meterHeight);
+    AutoExposureOwnershipObservation failedOwnershipObservation = ownershipObservation;
+    failedOwnershipObservation.metadataHit = false;
 
-    const ShadowHistoryKey ownershipKey{
-        transaction.snapshot.instanceToken.value,
-        transaction.snapshot.deviceContextKey
-    };
-
-    bool hadPrevious = false;
-    bool metadataHit = false;
-    {
-        AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-        std::lock_guard<std::mutex> lock(ownershipState.mutex);
-        auto it = ownershipState.bySubmissionKey.find(ownershipKey);
-        if (it != ownershipState.bySubmissionKey.end() && it->second.valid) {
-            hadPrevious = true;
-            const AutoExposureOwnershipEntry& previous = it->second;
-            metadataHit =
-                previous.keySchemaVersion == transaction.snapshot.keySchemaVersion &&
-                previous.keyHash == normalizedKeyHash &&
-                previous.meterWidth == meterWidth &&
-                previous.meterHeight == meterHeight;
-        }
-    }
-
-    telemetry_trace_auto_exposure_ownership(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
-        "ManagerOnly",
-        "acquire",
-        metadataHit,
+    trace_auto_exposure_ownership_event(
+        transaction,
+        ownershipObservation,
         normalizedKeyHash,
         meterWidth,
         meterHeight,
-        hadPrevious,
-        bool_reason(metadataHit, "metadata_hit", "metadata_miss"));
+        "acquire",
+        bool_reason(ownershipObservation.metadataHit, "metadata_hit", "metadata_miss"));
 
     if (command_auto_exposure_buffers_ready(resources, meterWidth, meterHeight, outError)) {
-        {
-            AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-            std::lock_guard<std::mutex> lock(ownershipState.mutex);
-            AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
-            entry.valid = true;
-            entry.keyHash = normalizedKeyHash;
-            entry.meterWidth = meterWidth;
-            entry.meterHeight = meterHeight;
-            entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
-        }
-
-        telemetry_trace_auto_exposure_ownership(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            "ManagerOnly",
-            "publish",
-            metadataHit,
+        publish_auto_exposure_ownership(
+            transaction,
+            ownershipObservation.ownershipKey,
+            normalizedKeyHash,
+            meterWidth,
+            meterHeight);
+        trace_auto_exposure_ownership_event(
+            transaction,
+            ownershipObservation,
             normalizedKeyHash,
             meterWidth,
             meterHeight,
-            hadPrevious,
-            bool_reason(metadataHit, "reuse", "refresh"));
+            "publish",
+            bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
         return true;
     }
     if (!outError.empty()) {
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        telemetry_trace_auto_exposure_ownership(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            "ManagerOnly",
-            "ensure_fail",
-            false,
+        trace_auto_exposure_ownership_event(
+            transaction,
+            failedOwnershipObservation,
             normalizedKeyHash,
             meterWidth,
             meterHeight,
-            hadPrevious,
+            "ensure_fail",
             commands_error_or_cstr(outError, "ensure_failed"));
         return false;
     }
@@ -2617,45 +2773,32 @@ bool command_ensure_auto_exposure_buffers(
 
     if (!JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError)) {
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        telemetry_trace_auto_exposure_ownership(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            "ManagerOnly",
-            "ensure_fail",
-            false,
+        trace_auto_exposure_ownership_event(
+            transaction,
+            failedOwnershipObservation,
             normalizedKeyHash,
             meterWidth,
             meterHeight,
-            hadPrevious,
+            "ensure_fail",
             commands_error_or_cstr(outError, "ensure_failed"));
         return false;
     }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
-    {
-        AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-        std::lock_guard<std::mutex> lock(ownershipState.mutex);
-        AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
-        entry.valid = true;
-        entry.keyHash = normalizedKeyHash;
-        entry.meterWidth = meterWidth;
-        entry.meterHeight = meterHeight;
-        entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
-    }
-
-    telemetry_trace_auto_exposure_ownership(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
-        "ManagerOnly",
-        "publish",
-        metadataHit,
+    publish_auto_exposure_ownership(
+        transaction,
+        ownershipObservation.ownershipKey,
+        normalizedKeyHash,
+        meterWidth,
+        meterHeight);
+    trace_auto_exposure_ownership_event(
+        transaction,
+        ownershipObservation,
         normalizedKeyHash,
         meterWidth,
         meterHeight,
-        hadPrevious,
-        bool_reason(metadataHit, "reuse", "refresh"));
+        "publish",
+        bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
     return true;
 }
 
@@ -2797,6 +2940,38 @@ bool command_launch_base_pipeline_graph(
     const std::uint64_t keyDigest = base_graph_key_digest(key);
     TierCircuitAttempt graphCircuitAttempt{};
     bool graphCircuitAttemptActive = false;
+    auto launch_graph_direct = [&](bool countNonResidentServe) -> bool {
+        if (countNonResidentServe) {
+            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
+        }
+        outCudaErrorCode = launch_base_pipeline_direct();
+        return true;
+    };
+    auto cancel_graph_attempt_and_launch_direct =
+        [&](const char* cancelReason, bool countNonResidentServe) -> bool {
+        if (graphCircuitAttemptActive) {
+            tier_circuit_cancel_attempt(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                graphCircuitAttempt,
+                cancelReason);
+            graphCircuitAttemptActive = false;
+        }
+        return launch_graph_direct(countNonResidentServe);
+    };
+    auto fail_graph_attempt_and_launch_direct =
+        [&](const char* failureReason, bool countNonResidentServe) -> bool {
+        if (graphCircuitAttemptActive) {
+            tier_circuit_record_outcome(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                graphCircuitAttempt,
+                false,
+                failureReason);
+            graphCircuitAttemptActive = false;
+        }
+        return launch_graph_direct(countNonResidentServe);
+    };
     if (!found) {
         const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
         std::uint64_t supersededLatestSnapshotId = 0;
@@ -2807,83 +2982,20 @@ bool command_launch_base_pipeline_graph(
                 kGraphAdmissionCriticalCurrentFrame,
                 requestBytes,
                 supersededLatestSnapshotId)) {
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
+            return launch_graph_direct(true);
         }
         std::uint32_t observedProbationHits = 0;
-        auto probationIt = bucket.probationHitsByDigest.find(keyDigest);
-        if (probationIt != bucket.probationHitsByDigest.end()) {
-            observedProbationHits = probationIt->second;
-        }
-        LargeEntryReadmitDecision readmitDecision{};
-        readmitDecision.enabled =
-            (cfg.largeEntryReadmitCooldownMs > 0) || (cfg.largeEntryGhostHitsForReadmit > 0);
-        readmitDecision.candidate =
-            (graphLargeThresholdBytes > 0) && (requestBytes >= graphLargeThresholdBytes);
-        readmitDecision.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
-        readmitDecision.cooldownMs = cfg.largeEntryReadmitCooldownMs;
-        readmitDecision.ghostHitsRequired = cfg.largeEntryGhostHitsForReadmit;
-        if (readmitDecision.enabled) {
-            readmitDecision.reason = "not_candidate";
-        }
-        else {
-            readmitDecision.reason = "disabled";
-        }
-        if (readmitDecision.enabled && readmitDecision.candidate && !kGraphAdmissionCriticalCurrentFrame) {
-            auto readmitIt = bucket.largeEntryReadmitByDigest.find(keyDigest);
-            if (readmitIt != bucket.largeEntryReadmitByDigest.end()) {
-                readmitDecision.hadHistory = true;
-                GraphLargeEntryReadmitState& readmitState = readmitIt->second;
-                const std::uint64_t nowMs = monotonic_time_ms();
-                readmitDecision.ageMs = commands_elapsed_ms_since(nowMs, readmitState.lastEvictedMs);
-                readmitDecision.inCooldown =
-                    (cfg.largeEntryReadmitCooldownMs > 0) &&
-                    (readmitDecision.ageMs < static_cast<std::uint64_t>(cfg.largeEntryReadmitCooldownMs));
-
-                if (readmitDecision.inCooldown) {
-                    if (readmitState.ghostHits < std::numeric_limits<std::uint32_t>::max()) {
-                        ++readmitState.ghostHits;
-                    }
-                    readmitDecision.observedGhostHits = readmitState.ghostHits;
-                    if (cfg.largeEntryGhostHitsForReadmit > 0 &&
-                        readmitState.ghostHits >= cfg.largeEntryGhostHitsForReadmit) {
-                        readmitDecision.ghostBypass = true;
-                        readmitDecision.reason = "ghost_hit_bypass";
-                        bucket.largeEntryReadmitByDigest.erase(readmitIt);
-                    }
-                    else {
-                        readmitDecision.blocked = true;
-                        readmitDecision.reason = "cooldown_blocked";
-                    }
-                }
-                else {
-                    readmitDecision.reason = "cooldown_expired";
-                    bucket.largeEntryReadmitByDigest.erase(readmitIt);
-                }
-            }
-            else {
-                readmitDecision.reason = "no_history";
-            }
-        }
-        else if (readmitDecision.enabled && readmitDecision.candidate && kGraphAdmissionCriticalCurrentFrame) {
-            readmitDecision.reason = "critical_bypass";
-        }
-        trace_large_entry_readmit_decision(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            keyDigest,
-            requestBytes,
-            graphLargeThresholdBytes,
-            readmitDecision);
-        if (readmitDecision.ghostBypass) {
-            telemetry_counter_add(managerState.largeEntryReadmitGhostBypassEvents, 1);
-        }
-        if (readmitDecision.blocked) {
-            telemetry_counter_add(managerState.largeEntryReadmitBlockedEvents, 1);
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
+        if (!evaluate_graph_large_entry_readmit(
+                transaction,
+                bucket,
+                keyDigest,
+                requestBytes,
+                graphLargeThresholdBytes,
+                kGraphAdmissionCriticalCurrentFrame,
+                cfg,
+                managerState,
+                observedProbationHits)) {
+            return launch_graph_direct(true);
         }
 
         CacheAdmissionInput admissionInput{};
@@ -2954,9 +3066,7 @@ bool command_launch_base_pipeline_graph(
             else {
                 bucket.probationHitsByDigest.erase(keyDigest);
             }
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
+            return launch_graph_direct(true);
         }
 
         std::string circuitError;
@@ -2967,93 +3077,20 @@ bool command_launch_base_pipeline_graph(
                 tier_circuit_blocks_admission(ResourceTier::Graph),
                 graphCircuitAttempt,
                 circuitError)) {
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
+            return launch_graph_direct(true);
         }
         graphCircuitAttemptActive = true;
 
         BuilderReservationClaim builderClaim{};
         ReservationAttemptInfo builderReservation{};
-        telemetry_counter_add(managerState.builderReservationRequests, 1);
-        if (!try_acquire_builder_reservation_claim(
+        if (!acquire_graph_builder_reservation(
                 transaction,
-                BuilderReservationTier::Graph,
+                managerState,
                 requestBytes,
                 kGraphAdmissionCriticalCurrentFrame,
                 builderClaim,
                 builderReservation)) {
-            const ReservationDecision& decision = builderReservation.decision;
-            const bool fairnessDeferred =
-                (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
-            if (decision.shouldWait) {
-                telemetry_counter_add(managerState.builderReservationDeferred, 1);
-                if (fairnessDeferred) {
-                    telemetry_counter_add(managerState.builderFairnessTokenDeferred, 1);
-                }
-                trace_builder_reservation_decision(
-                    transaction,
-                    "command_launch_base_pipeline_graph",
-                    BuilderReservationTier::Graph,
-                    requestBytes,
-                    builderReservation.bytesInFlight,
-                    builderReservation.capBytes,
-                    builderReservation.thresholdBytes,
-                    decision,
-                    kGraphAdmissionCriticalCurrentFrame,
-                    builderReservation.instanceToken,
-                    builderReservation.sharedTokens,
-                    builderReservation.criticalTokens,
-                    0,
-                    "deferred_nonresident");
-            }
-            else {
-                telemetry_counter_add(managerState.builderReservationDenied, 1);
-                trace_builder_reservation_decision(
-                    transaction,
-                    "command_launch_base_pipeline_graph",
-                    BuilderReservationTier::Graph,
-                    requestBytes,
-                    builderReservation.bytesInFlight,
-                    builderReservation.capBytes,
-                    builderReservation.thresholdBytes,
-                    decision,
-                    kGraphAdmissionCriticalCurrentFrame,
-                    builderReservation.instanceToken,
-                    builderReservation.sharedTokens,
-                    builderReservation.criticalTokens,
-                    0,
-                    "denied_nonresident");
-            }
-            if (graphCircuitAttemptActive) {
-                tier_circuit_cancel_attempt(
-                    transaction,
-                    "command_launch_base_pipeline_graph",
-                    graphCircuitAttempt,
-                    "nonresident_builder_gate");
-                graphCircuitAttemptActive = false;
-            }
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
-        }
-        telemetry_counter_add(managerState.builderReservationGranted, 1);
-        if (JTRACE_ENABLED(3)) {
-            trace_builder_reservation_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                BuilderReservationTier::Graph,
-                requestBytes,
-                builderReservation.bytesInFlight,
-                builderReservation.capBytes,
-                builderReservation.thresholdBytes,
-                builderReservation.decision,
-                kGraphAdmissionCriticalCurrentFrame,
-                builderReservation.instanceToken,
-                builderReservation.sharedTokens,
-                builderReservation.criticalTokens,
-                0,
-                "admitted");
+            return cancel_graph_attempt_and_launch_direct("nonresident_builder_gate", true);
         }
         BuilderReservationGuard builderGuard(std::move(builderClaim));
 
@@ -3097,17 +3134,7 @@ bool command_launch_base_pipeline_graph(
     }
 
     if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
-        if (graphCircuitAttemptActive) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                false,
-                "durable_build_failed");
-            graphCircuitAttemptActive = false;
-        }
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
+        return fail_graph_attempt_and_launch_direct("durable_build_failed", false);
     }
 
     found->lastUseTick = useTick;
@@ -3127,17 +3154,7 @@ bool command_launch_base_pipeline_graph(
     if (setErr != cudaSuccess) {
         destroy_base_graph_entry(*found);
         applyGraphLargeEntryPolicy("kernel_param_update_failed");
-        if (graphCircuitAttemptActive) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                false,
-                "kernel_param_update_failed");
-            graphCircuitAttemptActive = false;
-        }
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
+        return fail_graph_attempt_and_launch_direct("kernel_param_update_failed", false);
     }
 
     LaunchGraphCounters::record_graph_eligible_submission();
@@ -3149,17 +3166,7 @@ bool command_launch_base_pipeline_graph(
     if (runErr != cudaSuccess) {
         destroy_base_graph_entry(*found);
         applyGraphLargeEntryPolicy("graph_launch_failed");
-        if (graphCircuitAttemptActive) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                false,
-                "graph_launch_failed");
-            graphCircuitAttemptActive = false;
-        }
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
+        return fail_graph_attempt_and_launch_direct("graph_launch_failed", false);
     }
 
     if (reusedResidentGraph) {

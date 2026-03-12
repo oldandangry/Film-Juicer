@@ -2089,11 +2089,44 @@
                 return true;
             }
 
+            const size_t bytes = cpu.size() * sizeof(double);
+            if (dst->log2XYZ && dst->res == res) {
+                const cudaStream_t stream = cudaStreamOpaque
+                                                ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                                                : nullptr;
+                if (resources.lastUseEventOpaque) {
+                    const cudaEvent_t lastUseEv =
+                        reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+                    const cudaError_t waitErr =
+                        cudaStreamWaitEvent(stream, lastUseEv, 0);
+                    if (waitErr != cudaSuccess) {
+                        outError =
+                            std::string("cudaStreamWaitEvent before scan LUT update failed: ") +
+                            (cudaGetErrorString(waitErr)
+                                 ? cudaGetErrorString(waitErr)
+                                 : "(unknown)");
+                        return false;
+                    }
+                }
+                if (!enqueue_host_to_device_copy(
+                        "ensure_scan_lut",
+                        "scan LUT",
+                        dst->log2XYZ,
+                        cpu.data(),
+                        bytes,
+                        cudaStreamOpaque,
+                        outError)) {
+                    return false;
+                }
+                dst->hash = expectedHash;
+                return true;
+            }
+
             if (dst->log2XYZ) {
                 // Retire the previous LUT without blocking the CPU.
                 const size_t count = static_cast<size_t>(dst->res) * static_cast<size_t>(dst->res) * static_cast<size_t>(dst->res) * 3u;
-                const size_t bytes = count * sizeof(double);
-                if (!retire_ptr_locked(resources, dst->log2XYZ, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "scan LUT", outError)) {
+                const size_t oldBytes = count * sizeof(double);
+                if (!retire_ptr_locked(resources, dst->log2XYZ, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "scan LUT", outError)) {
                     return false;
                 }
                 dst->log2XYZ = nullptr;
@@ -2102,7 +2135,6 @@
             }
 
             double* dLut = nullptr;
-            const size_t bytes = cpu.size() * sizeof(double);
             cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dLut), bytes);
             if (err != cudaSuccess) {
                 outError = std::string("cudaMalloc(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
