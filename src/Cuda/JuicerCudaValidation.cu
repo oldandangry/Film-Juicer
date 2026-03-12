@@ -8,6 +8,7 @@
 
 #include "Cuda/JuicerCudaKernelsUtil.cuh"
 #include "Cuda/JuicerCudaPrintPipeline.cuh"
+#include "Cuda/JuicerCudaValidationProbes.h"
 
 #if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
 

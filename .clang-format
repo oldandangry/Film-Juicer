@@ -1,0 +1,28 @@
+---
+BasedOnStyle: Microsoft
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 0
+PointerAlignment: Left
+ReferenceAlignment: Left
+BreakBeforeBraces: Attach
+NamespaceIndentation: All
+AccessModifierOffset: -4
+IndentCaseLabels: true
+IndentPPDirectives: None
+SortIncludes: false
+ReflowComments: false
+BinPackArguments: false
+BinPackParameters: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Empty
+AllowShortLoopsOnASingleLine: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+SpaceBeforeParens: ControlStatements
+Standard: c++17
+...

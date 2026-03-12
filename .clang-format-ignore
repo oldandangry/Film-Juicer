@@ -1,0 +1,8 @@
+external/**
+installer/**
+juicer/**
+x64/**
+Resources/**
+docs/**
+src/GeneratedColorSpaces.cpp
+src/GeneratedColorSpaces.h

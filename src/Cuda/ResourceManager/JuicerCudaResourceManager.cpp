@@ -299,8 +299,7 @@ const char* failure_reason_class(const char* token) noexcept {
 
     if (value == "auto_no_optional_supported" ||
         value == "capability_fallback_legacy" ||
-        value == "requested_async_unsupported" ||
-        value == "requested_slab_unsupported") {
+        value == "requested_async_unsupported") {
         return "capability_unavailable";
     }
 
@@ -342,9 +341,7 @@ const char* failure_reason_class(const char* token) noexcept {
         value == "per_medium_cap_zero" ||
         value == "private_fallback_denied" ||
         value == "requested_legacy" ||
-        value == "requested_slab_supported" ||
-        value == "slab_scaffold_fallback_legacy" ||
-        value == "auto_select_slab" ||
+        value == "requested_slab_disallowed" ||
         value == "unknown_preference_fallback" ||
         value == "zero_request") {
         return "policy_denied";

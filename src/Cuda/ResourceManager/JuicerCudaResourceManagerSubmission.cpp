@@ -8,15 +8,17 @@ struct AllocatorBackendContextEntry {
     AllocatorBackendMode candidate = AllocatorBackendMode::Legacy;
     AllocatorBackendMode active = AllocatorBackendMode::Legacy;
     bool asyncPoolSupported = false;
-    bool slabSupported = false;
     bool fallbackCapability = false;
-    bool fallbackScaffold = false;
     bool mempoolPolicyValid = false;
     bool mempoolPolicyApplied = false;
     std::uint64_t mempoolReleaseThresholdBytes = 0;
     PressureState mempoolPolicyPressureState = PressureState::Normal;
     const char* candidateReason = "unknown";
     const char* activeReason = "unknown";
+    const char* policyDecision = "legacy_transitional";
+    const char* policyRationale = "unknown";
+    const char* deprecationAction = "none";
+    const char* removalCriteria = "none";
 };
 
 struct AllocatorBackendState {
@@ -86,6 +88,55 @@ bool probe_async_pool_support_for_device(int deviceId) noexcept {
 #endif
 }
 
+const char* allocator_backend_policy_decision(AllocatorBackendMode activeMode) noexcept {
+    return activeMode == AllocatorBackendMode::AsyncPool
+               ? "async_pool_preferred"
+               : "legacy_transitional";
+}
+
+void finalize_allocator_backend_policy_metadata(AllocatorBackendContextEntry& entry) noexcept {
+    entry.policyDecision = allocator_backend_policy_decision(entry.active);
+    entry.policyRationale = entry.activeReason;
+    entry.deprecationAction = "none";
+    entry.removalCriteria = "none";
+
+    if (entry.active == AllocatorBackendMode::AsyncPool) {
+        entry.policyRationale = "async_pool_active";
+        return;
+    }
+
+    if (entry.requested == AllocatorBackendPreference::Slab) {
+        entry.policyRationale = "slab_not_in_active_plan";
+        entry.deprecationAction = "remove_slab_preference_or_reapprove_scope";
+        entry.removalCriteria = "slab_requires_new_committed_item_before_activation";
+        return;
+    }
+
+    if (entry.fallbackCapability) {
+        entry.policyRationale = "async_pool_capability_unavailable";
+        entry.deprecationAction = "promote_async_pool_when_capability_available";
+        entry.removalCriteria = "remove_legacy_transitional_once_locked_cuda_targets_support_async_pool";
+        return;
+    }
+
+    if (entry.requested == AllocatorBackendPreference::Legacy) {
+        entry.policyRationale = "legacy_preference_explicit";
+        entry.deprecationAction = "migrate_config_off_legacy_preference";
+        entry.removalCriteria = "disallow_explicit_legacy_preference_before_p3_closeout_or_reapprove_in_new_scope";
+        return;
+    }
+
+    if (std::string_view(entry.candidateReason) == "auto_no_optional_supported") {
+        entry.policyRationale = "no_optional_backend_supported";
+        entry.deprecationAction = "promote_async_pool_when_capability_available";
+        entry.removalCriteria = "remove_legacy_transitional_once_locked_cuda_targets_support_async_pool";
+        return;
+    }
+
+    entry.deprecationAction = "review_legacy_transitional_path";
+    entry.removalCriteria = "legacy_transitional_requires_explicit_reapproval_before_p3_closeout";
+}
+
 AllocatorBackendContextEntry compute_allocator_backend_context_entry(
     const DeviceContextKey& key,
     const ResourceManagerConfigEffective& cfg) noexcept {
@@ -93,11 +144,9 @@ AllocatorBackendContextEntry compute_allocator_backend_context_entry(
     out.valid = true;
     out.requested = sanitize_allocator_backend_preference(cfg.allocatorBackendPreference);
     out.asyncPoolSupported = probe_async_pool_support_for_device(key.deviceId);
-    out.slabSupported = false;
     out.candidate = AllocatorBackendMode::Legacy;
     out.active = AllocatorBackendMode::Legacy;
     out.fallbackCapability = false;
-    out.fallbackScaffold = false;
     out.candidateReason = "legacy_default";
     out.activeReason = "legacy_active";
 
@@ -118,24 +167,13 @@ AllocatorBackendContextEntry compute_allocator_backend_context_entry(
         }
         break;
     case AllocatorBackendPreference::Slab:
-        if (out.slabSupported) {
-            out.candidate = AllocatorBackendMode::Slab;
-            out.candidateReason = "requested_slab_supported";
-        }
-        else {
-            out.candidate = AllocatorBackendMode::Legacy;
-            out.fallbackCapability = true;
-            out.candidateReason = "requested_slab_unsupported";
-        }
+        out.candidate = AllocatorBackendMode::Legacy;
+        out.candidateReason = "requested_slab_disallowed";
         break;
     case AllocatorBackendPreference::Auto:
         if (out.asyncPoolSupported) {
             out.candidate = AllocatorBackendMode::AsyncPool;
             out.candidateReason = "auto_select_async";
-        }
-        else if (out.slabSupported) {
-            out.candidate = AllocatorBackendMode::Slab;
-            out.candidateReason = "auto_select_slab";
         }
         else {
             out.candidate = AllocatorBackendMode::Legacy;
@@ -152,18 +190,14 @@ AllocatorBackendContextEntry compute_allocator_backend_context_entry(
         out.active = AllocatorBackendMode::AsyncPool;
         out.activeReason = "active_async_pool";
     }
-    else if (out.candidate == AllocatorBackendMode::Slab) {
-        // Slab backend is not wired yet; retain deterministic legacy fallback.
-        out.fallbackScaffold = true;
-        out.active = AllocatorBackendMode::Legacy;
-        out.activeReason = "slab_scaffold_fallback_legacy";
-    }
     else if (out.fallbackCapability) {
         out.activeReason = "capability_fallback_legacy";
-    }
-    else {
+    } else if (out.requested == AllocatorBackendPreference::Slab) {
+        out.activeReason = "requested_slab_disallowed";
+    } else {
         out.activeReason = out.candidateReason;
     }
+    finalize_allocator_backend_policy_metadata(out);
     return out;
 }
 
@@ -184,19 +218,7 @@ void trace_allocator_backend_mode_once(
     if (!JTRACE_ENABLED(1)) {
         return;
     }
-    const std::string msg = trace_event_identity_prefix("backend_mode", transaction)
-        + trace_device_context_fields(transaction)
-        + " requested=" + to_cstr(entry.requested)
-        + " candidate=" + to_cstr(entry.candidate)
-        + " active=" + to_cstr(entry.active)
-        + " async_pool_supported=" + std::to_string(submission_bool_u32(entry.asyncPoolSupported))
-        + " slab_supported=" + std::to_string(submission_bool_u32(entry.slabSupported))
-        + " fallback_capability=" + std::to_string(submission_bool_u32(entry.fallbackCapability))
-        + " fallback_scaffold=" + std::to_string(submission_bool_u32(entry.fallbackScaffold))
-        + " candidate_reason=" + trace_or_unknown(entry.candidateReason)
-        + " candidate_reason_class=" + trace_reason_class_or_invalid(entry.candidateReason)
-        + " active_reason=" + trace_or_unknown(entry.activeReason)
-        + " active_reason_class=" + trace_reason_class_or_invalid(entry.activeReason);
+    const std::string msg = trace_event_identity_prefix("backend_mode", transaction) + trace_device_context_fields(transaction) + " requested=" + to_cstr(entry.requested) + " candidate=" + to_cstr(entry.candidate) + " active=" + to_cstr(entry.active) + " async_pool_supported=" + std::to_string(submission_bool_u32(entry.asyncPoolSupported)) + " fallback_capability=" + std::to_string(submission_bool_u32(entry.fallbackCapability)) + " candidate_reason=" + trace_or_unknown(entry.candidateReason) + " candidate_reason_class=" + trace_reason_class_or_invalid(entry.candidateReason) + " active_reason=" + trace_or_unknown(entry.activeReason) + " active_reason_class=" + trace_reason_class_or_invalid(entry.activeReason) + " policy_decision=" + trace_or_unknown(entry.policyDecision) + " policy_rationale=" + trace_or_unknown(entry.policyRationale) + " deprecation_action=" + trace_or_unknown(entry.deprecationAction) + " removal_criteria=" + trace_or_unknown(entry.removalCriteria);
     JTRACE("MSALC", msg);
 }
 

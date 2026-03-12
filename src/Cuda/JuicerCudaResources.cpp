@@ -5,6 +5,7 @@
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaResourcesInternal.h"
 #include "Cuda/JuicerCudaPayloads.h"
+#include "Cuda/JuicerCudaValidationProbes.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
