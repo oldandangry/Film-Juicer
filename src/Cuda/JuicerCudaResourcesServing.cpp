@@ -1399,7 +1399,6 @@
 
         // Core rebuild required: refresh device mirrors in place where allocation shape is stable,
         // and only retire/reallocate when the existing buffers are no longer compatible.
-        if (!retire_density_layers_locked(resources, cudaStreamOpaque, "densityCurvesLayers", outError)) return false;
 
         resources.validatedBuildCounter = 0;
         resources.uploadedBuildCounter = 0;
@@ -1417,6 +1416,7 @@
             const int nR = static_cast<int>(ws.densR.linear.size());
             const int nG = static_cast<int>(ws.densG.linear.size());
             const int nB = static_cast<int>(ws.densB.linear.size());
+            const int layerChannelN[3] = {nR, nG, nB};
             bool wantLayers = ws.hasDensityCurvesLayers;
             bool sizesOk = wantLayers && (nR > 0 && nG > 0 && nB > 0);
             if (sizesOk) {
@@ -1426,33 +1426,92 @@
                     sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][2].size()) == nB);
                 }
             }
-            const bool sameN = (nR == nG && nR == nB);
 
             if (!sizesOk) {
-                free_density_layers(resources);
-            }
-            else if (!resources.hasDensityCurvesLayers ||
-                resources.densityCurvesLayersN != nR ||
-                !resources.densityCurvesLayers[0][0]) {
-                free_density_layers(resources);
-                std::string layersError;
-                for (int layer = 0; layer < 3; ++layer) {
+                bool haveDensityLayerStorage = false;
+                for (int layer = 0; layer < 3 && !haveDensityLayerStorage; ++layer) {
                     for (int ch = 0; ch < 3; ++ch) {
-                        const int n = (ch == 0) ? nR : (ch == 1 ? nG : nB);
-                        if (!alloc_and_upload_array(resources.densityCurvesLayers[layer][ch],
-                            ws.densityCurvesLayers[layer][ch].data(),
-                            n,
-                            cudaStreamOpaque,
-                            "grain density layer",
-                            layersError))
-                        {
-                            outError = std::string("upload grain density layers failed: ") + layersError;
-                            free_density_layers(resources);
-                            return false;
+                        if (resources.densityCurvesLayers[layer][ch]) {
+                            haveDensityLayerStorage = true;
+                            break;
                         }
                     }
                 }
-                resources.densityCurvesLayersN = sameN ? nR : 0;
+                if (haveDensityLayerStorage) {
+                    if (!retire_density_layers_locked(resources, cudaStreamOpaque, "densityCurvesLayers", outError)) {
+                        return false;
+                    }
+                } else {
+                    free_density_layers(resources);
+                }
+            } else {
+                bool canReuse = resources.hasDensityCurvesLayers;
+                if (canReuse) {
+                    for (int ch = 0; ch < 3; ++ch) {
+                        canReuse = canReuse && (resources.densityCurvesLayersChannelN[ch] == layerChannelN[ch]);
+                    }
+                    for (int layer = 0; layer < 3 && canReuse; ++layer) {
+                        for (int ch = 0; ch < 3; ++ch) {
+                            canReuse = canReuse && (resources.densityCurvesLayers[layer][ch] != nullptr);
+                        }
+                    }
+                }
+
+                if (canReuse) {
+                    for (int layer = 0; layer < 3; ++layer) {
+                        for (int ch = 0; ch < 3; ++ch) {
+                            if (!upload_array_locked(
+                                    resources,
+                                    resources.densityCurvesLayers[layer][ch],
+                                    resources.densityCurvesLayersChannelN[ch],
+                                    ws.densityCurvesLayers[layer][ch].data(),
+                                    layerChannelN[ch],
+                                    cudaStreamOpaque,
+                                    "grain density layer",
+                                    outError)) {
+                                outError = std::string("upload grain density layers failed: ") + outError;
+                                return false;
+                            }
+                        }
+                    }
+                } else {
+                    bool haveDensityLayerStorage = false;
+                    for (int layer = 0; layer < 3 && !haveDensityLayerStorage; ++layer) {
+                        for (int ch = 0; ch < 3; ++ch) {
+                            if (resources.densityCurvesLayers[layer][ch]) {
+                                haveDensityLayerStorage = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (haveDensityLayerStorage) {
+                        if (!retire_density_layers_locked(resources, cudaStreamOpaque, "densityCurvesLayers", outError)) {
+                            return false;
+                        }
+                    } else {
+                        free_density_layers(resources);
+                    }
+
+                    std::string layersError;
+                    for (int layer = 0; layer < 3; ++layer) {
+                        for (int ch = 0; ch < 3; ++ch) {
+                            if (!alloc_and_upload_array(resources.densityCurvesLayers[layer][ch],
+                                                        ws.densityCurvesLayers[layer][ch].data(),
+                                                        layerChannelN[ch],
+                                                        cudaStreamOpaque,
+                                                        "grain density layer",
+                                                        layersError)) {
+                                outError = std::string("upload grain density layers failed: ") + layersError;
+                                free_density_layers(resources);
+                                return false;
+                            }
+                        }
+                    }
+                }
+
+                for (int ch = 0; ch < 3; ++ch) {
+                    resources.densityCurvesLayersChannelN[ch] = layerChannelN[ch];
+                }
                 resources.hasDensityCurvesLayers = 1;
             }
         }
