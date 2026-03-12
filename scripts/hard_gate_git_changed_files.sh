@@ -63,11 +63,12 @@ done
 
 FAIL=0
 EXTENSIONS="c,cc,cpp,cxx,h,hh,hpp,hxx,inl,ixx,cu,cuh"
+TRACKED_DIFF_IREGEX='.*\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inl|ixx|cu|cuh)$'
 
 if [[ ${#TRACKED_CHANGED_FILES[@]} -gt 0 ]]; then
     TRACKED_FORMAT_DIFF="$(
         git diff -U0 --no-color HEAD -- "${TRACKED_CHANGED_FILES[@]}" |
-        clang-format-diff -p1 -style=file
+        clang-format-diff -p1 -style=file -iregex "$TRACKED_DIFF_IREGEX"
     )"
     if [[ -n "$TRACKED_FORMAT_DIFF" ]]; then
         printf '%s\n' "$TRACKED_FORMAT_DIFF"
