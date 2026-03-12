@@ -1397,30 +1397,21 @@
             return true;
         }
 
-        // Core rebuild required: retire and replace device pointers without blocking sync.
-        if (!retire_curve_locked(resources, resources.densB, cudaStreamOpaque, "densB", outError)) return false;
-        if (!retire_curve_locked(resources, resources.densG, cudaStreamOpaque, "densG", outError)) return false;
-        if (!retire_curve_locked(resources, resources.densR, cudaStreamOpaque, "densR", outError)) return false;
+        // Core rebuild required: refresh device mirrors in place where allocation shape is stable,
+        // and only retire/reallocate when the existing buffers are no longer compatible.
         if (!retire_density_layers_locked(resources, cudaStreamOpaque, "densityCurvesLayers", outError)) return false;
-        if (!retire_curve_locked(resources, resources.dirDensB, cudaStreamOpaque, "dirDensB", outError)) return false;
-        if (!retire_curve_locked(resources, resources.dirDensG, cudaStreamOpaque, "dirDensG", outError)) return false;
-        if (!retire_curve_locked(resources, resources.dirDensR, cudaStreamOpaque, "dirDensR", outError)) return false;
-        if (!retire_curve_locked(resources, resources.sensB, cudaStreamOpaque, "sensB", outError)) return false;
-        if (!retire_curve_locked(resources, resources.sensG, cudaStreamOpaque, "sensG", outError)) return false;
-        if (!retire_curve_locked(resources, resources.sensR, cudaStreamOpaque, "sensR", outError)) return false;
-        if (!retire_tables_locked(resources, cudaStreamOpaque, "tables", outError)) return false;
-        if (!retire_scan_medium_locked(resources, resources.scanNegative, cudaStreamOpaque, "scanNegative", outError)) return false;
-        if (!retire_scan_medium_locked(resources, resources.scanPrint, cudaStreamOpaque, "scanPrint", outError)) return false;
-        if (!retire_print_payloads_locked(resources, cudaStreamOpaque, "print payloads", outError)) return false;
 
         resources.validatedBuildCounter = 0;
         resources.uploadedBuildCounter = 0;
         resources.uploadedCoreHash = 0;
         resources.uploadedDirHash = 0;
 
-        if (!alloc_and_upload_curve(resources.densB, ws.densB, cudaStreamOpaque, outError)) return false;
-        if (!alloc_and_upload_curve(resources.densG, ws.densG, cudaStreamOpaque, outError)) return false;
-        if (!alloc_and_upload_curve(resources.densR, ws.densR, cudaStreamOpaque, outError)) return false;
+        if (!upload_curve_locked(resources, resources.densB, ws.densB, cudaStreamOpaque, "densB", outError))
+            return false;
+        if (!upload_curve_locked(resources, resources.densG, ws.densG, cudaStreamOpaque, "densG", outError))
+            return false;
+        if (!upload_curve_locked(resources, resources.densR, ws.densR, cudaStreamOpaque, "densR", outError))
+            return false;
 
         {
             const int nR = static_cast<int>(ws.densR.linear.size());
@@ -1466,13 +1457,19 @@
             }
         }
 
-        if (!alloc_and_upload_curve(resources.dirDensB, ws.dirDensB, cudaStreamOpaque, outError)) return false;
-        if (!alloc_and_upload_curve(resources.dirDensG, ws.dirDensG, cudaStreamOpaque, outError)) return false;
-        if (!alloc_and_upload_curve(resources.dirDensR, ws.dirDensR, cudaStreamOpaque, outError)) return false;
+        if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, "dirDensB", outError))
+            return false;
+        if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, "dirDensG", outError))
+            return false;
+        if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, "dirDensR", outError))
+            return false;
 
-        if (!alloc_and_upload_curve(resources.sensB, ws.sensB, cudaStreamOpaque, outError)) return false;
-        if (!alloc_and_upload_curve(resources.sensG, ws.sensG, cudaStreamOpaque, outError)) return false;
-        if (!alloc_and_upload_curve(resources.sensR, ws.sensR, cudaStreamOpaque, outError)) return false;
+        if (!upload_curve_locked(resources, resources.sensB, ws.sensB, cudaStreamOpaque, "sensB", outError))
+            return false;
+        if (!upload_curve_locked(resources, resources.sensG, ws.sensG, cudaStreamOpaque, "sensG", outError))
+            return false;
+        if (!upload_curve_locked(resources, resources.sensR, ws.sensR, cudaStreamOpaque, "sensR", outError))
+            return false;
 
         // Upload per-instance reference illuminant tables (Ax/Ay/Az + illum) and keep a host-side copy of S_inv + ref white.
         {
@@ -1486,9 +1483,30 @@
                 static_cast<int>(ws.tablesRef.illum.size()) == K;
 
             if (!want) {
-                free_tables(resources);
-            } else if (resources.tablesK != K || !resources.tablesAx || !resources.tablesAy || !resources.tablesAz || !resources.tablesIllum) {
-                free_tables(resources);
+                if (resources.tablesAx || resources.tablesAy || resources.tablesAz || resources.tablesIllum) {
+                    if (!retire_tables_locked(resources, cudaStreamOpaque, "tables", outError)) {
+                        return false;
+                    }
+                } else {
+                    free_tables(resources);
+                }
+            } else if (resources.tablesK == K && resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesIllum) {
+                if (!upload_array_locked(resources, resources.tablesAx, K, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, "tablesAx", outError))
+                    return false;
+                if (!upload_array_locked(resources, resources.tablesAy, K, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, "tablesAy", outError))
+                    return false;
+                if (!upload_array_locked(resources, resources.tablesAz, K, ws.tablesRef.Az.data(), K, cudaStreamOpaque, "tablesAz", outError))
+                    return false;
+                if (!upload_array_locked(resources, resources.tablesIllum, K, ws.tablesRef.illum.data(), K, cudaStreamOpaque, "tablesIllum", outError))
+                    return false;
+            } else {
+                if (resources.tablesAx || resources.tablesAy || resources.tablesAz || resources.tablesIllum) {
+                    if (!retire_tables_locked(resources, cudaStreamOpaque, "tables", outError)) {
+                        return false;
+                    }
+                } else {
+                    free_tables(resources);
+                }
                 if (!alloc_and_upload_array(resources.tablesAx, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, "tablesAx", outError)) { free_tables(resources); return false; }
                 if (!alloc_and_upload_array(resources.tablesAy, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, "tablesAy", outError)) { free_tables(resources); return false; }
                 if (!alloc_and_upload_array(resources.tablesAz, ws.tablesRef.Az.data(), K, cudaStreamOpaque, "tablesAz", outError)) { free_tables(resources); return false; }
@@ -1506,8 +1524,18 @@
 
         auto upload_scan_medium = [&](Resources::DeviceScanMedium& dst, const Scanner::ScannerMediumRuntime& medium, std::string& outErrorLocal) -> bool {
             const Spectral::SpectralTables* t = medium.tables;
+            const char* mediumLabel = (medium.medium == Scanner::ScannerMedium::Negative)
+                                          ? "scanNegative"
+                                          : "scanPrint";
             if (!t || t->K != Spectral::gShape.K) {
-                free_scan_medium(dst);
+                if (dst.tables.epsC || dst.tables.epsM || dst.tables.epsY ||
+                    dst.tables.Ax || dst.tables.Ay || dst.tables.Az || dst.tables.baseMin) {
+                    if (!retire_scan_medium_locked(resources, dst, cudaStreamOpaque, mediumLabel, outErrorLocal)) {
+                        return false;
+                    }
+                } else {
+                    free_scan_medium(dst);
+                }
                 return true;
             }
             const int K = t->K;
@@ -1524,9 +1552,31 @@
                 return false;
             }
 
-            // Rebuild if size mismatches or not allocated yet.
-            if (dst.tables.K != K || !dst.tables.epsC || !dst.tables.Ax) {
-                free_scan_medium(dst);
+            const bool haveCoreArrays =
+                dst.tables.epsC && dst.tables.epsM && dst.tables.epsY &&
+                dst.tables.Ax && dst.tables.Ay && dst.tables.Az;
+            if (dst.tables.K == K && haveCoreArrays) {
+                if (!upload_array_locked(resources, dst.tables.epsC, K, t->epsC.data(), K, cudaStreamOpaque, "scan.epsC", outErrorLocal))
+                    return false;
+                if (!upload_array_locked(resources, dst.tables.epsM, K, t->epsM.data(), K, cudaStreamOpaque, "scan.epsM", outErrorLocal))
+                    return false;
+                if (!upload_array_locked(resources, dst.tables.epsY, K, t->epsY.data(), K, cudaStreamOpaque, "scan.epsY", outErrorLocal))
+                    return false;
+                if (!upload_array_locked(resources, dst.tables.Ax, K, t->Ax.data(), K, cudaStreamOpaque, "scan.Ax", outErrorLocal))
+                    return false;
+                if (!upload_array_locked(resources, dst.tables.Ay, K, t->Ay.data(), K, cudaStreamOpaque, "scan.Ay", outErrorLocal))
+                    return false;
+                if (!upload_array_locked(resources, dst.tables.Az, K, t->Az.data(), K, cudaStreamOpaque, "scan.Az", outErrorLocal))
+                    return false;
+            } else {
+                if (dst.tables.epsC || dst.tables.epsM || dst.tables.epsY ||
+                    dst.tables.Ax || dst.tables.Ay || dst.tables.Az || dst.tables.baseMin) {
+                    if (!retire_scan_medium_locked(resources, dst, cudaStreamOpaque, mediumLabel, outErrorLocal)) {
+                        return false;
+                    }
+                } else {
+                    free_scan_medium(dst);
+                }
                 if (!alloc_and_upload_array(dst.tables.epsC, t->epsC.data(), K, cudaStreamOpaque, "scan.epsC", outErrorLocal)) { free_scan_medium(dst); return false; }
                 if (!alloc_and_upload_array(dst.tables.epsM, t->epsM.data(), K, cudaStreamOpaque, "scan.epsM", outErrorLocal)) { free_scan_medium(dst); return false; }
                 if (!alloc_and_upload_array(dst.tables.epsY, t->epsY.data(), K, cudaStreamOpaque, "scan.epsY", outErrorLocal)) { free_scan_medium(dst); return false; }
@@ -1542,7 +1592,11 @@
 
             // Baseline can toggle without changing K; keep device pointer in sync.
             if (t->hasBaseline) {
-                if (!dst.tables.baseMin) {
+                if (dst.tables.baseMin && dst.tables.K == K) {
+                    if (!upload_array_locked(resources, dst.tables.baseMin, K, t->baseMin.data(), K, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) {
+                        return false;
+                    }
+                } else if (!dst.tables.baseMin) {
                     if (!alloc_and_upload_array(dst.tables.baseMin, t->baseMin.data(), K, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) { free_scan_medium(dst); return false; }
                 }
             }
@@ -1585,7 +1639,19 @@
         {
             const Print::Runtime* prt = ws.printRT.get();
             if (!prt || !Print::profile_is_valid(prt->profile)) {
-                free_print_payloads(resources);
+                if (resources.printDcC.x || resources.printDcC.y ||
+                    resources.printDcM.x || resources.printDcM.y ||
+                    resources.printDcY.x || resources.printDcY.y ||
+                    resources.printSensC.x || resources.printSensC.y ||
+                    resources.printSensM.x || resources.printSensM.y ||
+                    resources.printSensY.x || resources.printSensY.y ||
+                    resources.printIllumFiltered) {
+                    if (!retire_print_payloads_locked(resources, cudaStreamOpaque, "print payloads", outError)) {
+                        return false;
+                    }
+                } else {
+                    free_print_payloads(resources);
+                }
             }
             else {
                 const Print::Profile& p = prt->profile;
@@ -1595,15 +1661,18 @@
                     const int n = static_cast<int>(src.lambda_nm.size());
                     const bool want = n > 1 && src.linear.size() == src.lambda_nm.size();
                     if (!want) {
-                        free_curve(dst);
+                        if (dst.x || dst.y) {
+                            if (!retire_curve_locked(resources, dst, cudaStreamOpaque, label, err)) {
+                                return false;
+                            }
+                        } else {
+                            free_curve(dst);
+                        }
                         return true;
                     }
-                    if (dst.n != n || !dst.x || !dst.y) {
-                        free_curve(dst);
-                        if (!alloc_and_upload_curve(dst, src, cudaStreamOpaque, err)) {
-                            err = std::string(label) + ": " + err;
-                            return false;
-                        }
+                    if (!upload_curve_locked(resources, dst, src, cudaStreamOpaque, label, err)) {
+                        err = std::string(label) + ": " + err;
+                        return false;
                     }
                     return true;
                 };
@@ -1621,22 +1690,25 @@
                     static_cast<int>(p.sensM_log.linear.size()) == K &&
                     static_cast<int>(p.sensY_log.linear.size()) == K;
                 if (!sensOk) {
-                    free_curve(resources.printSensC);
-                    free_curve(resources.printSensM);
-                    free_curve(resources.printSensY);
+                    if (!retire_curve_locked(resources, resources.printSensC, cudaStreamOpaque, "print sensC", outError)) {
+                        return false;
+                    }
+                    if (!retire_curve_locked(resources, resources.printSensM, cudaStreamOpaque, "print sensM", outError)) {
+                        return false;
+                    }
+                    if (!retire_curve_locked(resources, resources.printSensY, cudaStreamOpaque, "print sensY", outError)) {
+                        return false;
+                    }
                 }
                 else {
-                    if (!resources.printSensC.y || resources.printSensC.n != K) {
-                        free_curve(resources.printSensC);
-                        if (!alloc_and_upload_spectral_samples(resources.printSensC, p.sensC_log.linear, cudaStreamOpaque, "print sensC", outError)) { return false; }
+                    if (!upload_spectral_samples_locked(resources, resources.printSensC, p.sensC_log.linear, cudaStreamOpaque, "print sensC", outError)) {
+                        return false;
                     }
-                    if (!resources.printSensM.y || resources.printSensM.n != K) {
-                        free_curve(resources.printSensM);
-                        if (!alloc_and_upload_spectral_samples(resources.printSensM, p.sensM_log.linear, cudaStreamOpaque, "print sensM", outError)) { return false; }
+                    if (!upload_spectral_samples_locked(resources, resources.printSensM, p.sensM_log.linear, cudaStreamOpaque, "print sensM", outError)) {
+                        return false;
                     }
-                    if (!resources.printSensY.y || resources.printSensY.n != K) {
-                        free_curve(resources.printSensY);
-                        if (!alloc_and_upload_spectral_samples(resources.printSensY, p.sensY_log.linear, cudaStreamOpaque, "print sensY", outError)) { return false; }
+                    if (!upload_spectral_samples_locked(resources, resources.printSensY, p.sensY_log.linear, cudaStreamOpaque, "print sensY", outError)) {
+                        return false;
                     }
                 }
 

@@ -859,6 +859,63 @@ namespace JuicerCuda {
 #endif
     }
 
+    static bool upload_array_locked(Resources& resources, float*& dst, int currentN, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)dst;
+        (void)currentN;
+        (void)src;
+        (void)n;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!src || n <= 0) {
+            outError = std::string(label ? label : "array") + " array is empty";
+            return false;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+        if (dst && currentN == n) {
+            if (resources.lastUseEventOpaque) {
+                const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+                if (waitErr != cudaSuccess) {
+                    outError = std::string("cudaStreamWaitEvent before ") + (label ? label : "array") + " update failed: " +
+                               (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                    return false;
+                }
+            }
+            return enqueue_host_to_device_copy(
+                "upload_array_locked",
+                label,
+                dst,
+                src,
+                bytes,
+                cudaStreamOpaque,
+                outError);
+        }
+
+        float* tmp = nullptr;
+        if (!alloc_and_upload_array(tmp, src, n, cudaStreamOpaque, label, outError)) {
+            return false;
+        }
+
+        const size_t oldBytes = static_cast<size_t>(std::max(0, currentN)) * sizeof(float);
+        if (dst) {
+            if (!retire_ptr_locked(resources, dst, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                cudaFree(tmp);
+                return false;
+            }
+        }
+
+        dst = tmp;
+        return true;
+#endif
+    }
+
     static bool alloc_and_upload_curve(DeviceCurve& dst, const Spectral::Curve& src, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)dst;
@@ -1074,6 +1131,70 @@ namespace JuicerCuda {
         dst.n = n;
         dst.domainBegin = 0;
         dst.domainEnd = n - 1;
+        return true;
+#endif
+    }
+
+    static bool upload_spectral_samples_locked(Resources& resources, DeviceCurve& dst, const std::vector<float>& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)dst;
+        (void)src;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (src.empty()) {
+            outError = std::string(label ? label : "spectral samples") + " array is empty";
+            return false;
+        }
+
+        const int n = static_cast<int>(src.size());
+        if (n <= 0) {
+            outError = std::string(label ? label : "spectral samples") + " sample count invalid";
+            return false;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        const size_t bytes = static_cast<size_t>(n) * sizeof(float);
+        if (dst.y && dst.n == n) {
+            if (resources.lastUseEventOpaque) {
+                const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+                if (waitErr != cudaSuccess) {
+                    outError = std::string("cudaStreamWaitEvent before ") + (label ? label : "spectral samples") + " update failed: " +
+                               (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                    return false;
+                }
+            }
+            if (!enqueue_host_to_device_copy(
+                    "upload_spectral_samples_locked",
+                    label,
+                    dst.y,
+                    src.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError)) {
+                return false;
+            }
+            dst.n = n;
+            dst.domainBegin = 0;
+            dst.domainEnd = n - 1;
+            return true;
+        }
+
+        DeviceCurve tmp{};
+        if (!alloc_and_upload_spectral_samples(tmp, src, cudaStreamOpaque, label, outError)) {
+            return false;
+        }
+
+        if (!retire_curve_locked(resources, dst, cudaStreamOpaque, label, outError)) {
+            free_curve(tmp);
+            return false;
+        }
+
+        dst = tmp;
         return true;
 #endif
     }
