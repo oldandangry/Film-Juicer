@@ -1724,6 +1724,21 @@ std::uint64_t estimate_base_graph_request_bytes(const BaseGraphKey& key) noexcep
     return nextBytes;
 }
 
+BaseGraphEntry* find_base_graph_entry(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key) noexcept;
+
+BaseGraphEntry* build_base_graph_entry(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    BasePipelineLaunchFn launchFn,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t largeEntryThresholdBytes,
+    std::uint32_t keepHotMs,
+    std::uint64_t& outKeepHotBypassEvents,
+    std::uint64_t& outKeepHotForcedEvictEvents) noexcept;
+
 bool graph_entry_in_keep_hot_window(
     const BaseGraphEntry& entry,
     std::uint32_t keepHotMs,
@@ -1879,6 +1894,308 @@ bool evaluate_graph_large_entry_readmit(
         return false;
     }
     return true;
+}
+
+bool evaluate_graph_cache_admission(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    std::uint64_t keyDigest,
+    std::uint64_t requestBytes,
+    std::uint32_t observedProbationHits,
+    bool criticalCurrentFrame,
+    const ResourceManagerConfigEffective& cfg,
+    ResourceManagerState& managerState) {
+    CacheAdmissionInput admissionInput{};
+    admissionInput.requestBytes = requestBytes;
+    admissionInput.cacheTargetBytes = cfg.managerSoftTargetBytes;
+    admissionInput.maxCacheableEntryBytes = cfg.maxCacheableEntryBytes;
+    admissionInput.maxCacheableEntryPctOfTarget = cfg.maxCacheableEntryPctOfTarget;
+    admissionInput.largeEntryProbationThresholdBytes = cfg.largeEntryProbationThresholdBytes;
+    admissionInput.largeEntryProbationHitsRequired = cfg.largeEntryProbationHitsRequired;
+    admissionInput.observedProbationHits = observedProbationHits;
+    admissionInput.criticalCurrentFrame = criticalCurrentFrame;
+    const CacheAdmissionDecision admissionDecision = classify_cache_admission(admissionInput);
+    const AdmissionChurnSnapshot churnSnapshot = sample_admission_churn_state(
+        transaction,
+        cfg,
+        keyDigest,
+        observedProbationHits);
+    const std::uint32_t churnProbationHitsRequired = effective_probation_hits_required(
+        admissionDecision.probationHitsRequired,
+        churnSnapshot);
+    const bool churnProbationAllowDurable =
+        !admissionDecision.probationApplied ||
+        (next_probation_hits(observedProbationHits) >= churnProbationHitsRequired);
+
+    trace_cache_admission_decision(
+        transaction,
+        "command_launch_base_pipeline_graph",
+        admissionDecision,
+        churnSnapshot,
+        criticalCurrentFrame,
+        requestBytes,
+        observedProbationHits,
+        keyDigest,
+        "graph_miss");
+    if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
+        telemetry_counter_add(managerState.cacheAdmissionTooLargeEvents, 1);
+    }
+    if (admissionDecision.probationApplied) {
+        const std::uint32_t nextObservedHits = next_probation_hits(observedProbationHits);
+        trace_probation_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            keyDigest,
+            nextObservedHits,
+            churnProbationHitsRequired,
+            churnProbationAllowDurable,
+            admissionDecision.reason);
+        if (churnProbationAllowDurable) {
+            telemetry_counter_add(managerState.cacheAdmissionProbationAdmitEvents, 1);
+        } else {
+            telemetry_counter_add(managerState.cacheAdmissionProbationDeferredEvents, 1);
+        }
+    }
+    if (admissionDecision.reason &&
+        std::string_view(admissionDecision.reason).find("critical_override") != std::string_view::npos) {
+        telemetry_counter_add(managerState.cacheAdmissionCriticalOverrideEvents, 1);
+    }
+
+    const bool allowDurableAdmission =
+        commands_allow_durable_admission(admissionDecision, churnProbationAllowDurable);
+    if (allowDurableAdmission) {
+        return true;
+    }
+
+    if (admissionDecision.probationApplied) {
+        std::uint32_t& probationHits = bucket.probationHitsByDigest[keyDigest];
+        if (probationHits < std::numeric_limits<std::uint32_t>::max()) {
+            ++probationHits;
+        }
+    } else {
+        bucket.probationHitsByDigest.erase(keyDigest);
+    }
+    return false;
+}
+
+void clear_graph_admission_state(
+    BaseGraphBucketState& bucket,
+    std::uint64_t keyDigest) noexcept {
+    bucket.probationHitsByDigest.erase(keyDigest);
+    bucket.largeEntryReadmitByDigest.erase(keyDigest);
+}
+
+template <typename PolicyReplay>
+BaseGraphEntry* build_admitted_graph_entry(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    std::uint64_t keyDigest,
+    BasePipelineLaunchFn launchFn,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t graphLargeThresholdBytes,
+    std::uint32_t keepHotMs,
+    ResourceManagerState& managerState,
+    PolicyReplay&& replayPolicy) {
+    clear_graph_admission_state(bucket, keyDigest);
+
+    std::uint64_t keepHotBypassEvents = 0;
+    std::uint64_t keepHotForcedEvictEvents = 0;
+    BaseGraphEntry* found = build_base_graph_entry(
+        bucket,
+        key,
+        launchFn,
+        run,
+        stream,
+        graphLargeThresholdBytes,
+        keepHotMs,
+        keepHotBypassEvents,
+        keepHotForcedEvictEvents);
+    if (keepHotBypassEvents > 0) {
+        telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
+    }
+    if (keepHotForcedEvictEvents > 0) {
+        telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
+    }
+    if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
+        trace_keep_hot_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            keepHotMs,
+            keepHotBypassEvents,
+            keepHotForcedEvictEvents,
+            "base_graph_cap");
+    }
+    if (!found) {
+        return nullptr;
+    }
+
+    replayPolicy("post_build");
+    return find_base_graph_entry(bucket, key);
+}
+
+template <typename PolicyReplay>
+const char* launch_selected_graph_entry(
+    BaseGraphEntry& entry,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t useTick,
+    bool reusedResidentGraph,
+    PolicyReplay&& replayPolicy,
+    int& outCudaErrorCode) {
+    entry.lastUseTick = useTick;
+    entry.lastUseMs = monotonic_time_ms();
+
+    cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(entry.execOpaque);
+    cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(entry.kernelNodeOpaque);
+    cudaKernelNodeParams nodeParams{};
+    nodeParams.func = entry.kernelFuncOpaque;
+    nodeParams.gridDim = dim3(entry.gridX, entry.gridY, entry.gridZ);
+    nodeParams.blockDim = dim3(entry.blockX, entry.blockY, entry.blockZ);
+    nodeParams.sharedMemBytes = entry.sharedMemBytes;
+    void* kernelArgs[] = {&run};
+    nodeParams.kernelParams = kernelArgs;
+    nodeParams.extra = nullptr;
+    cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
+    if (setErr != cudaSuccess) {
+        destroy_base_graph_entry(entry);
+        replayPolicy("kernel_param_update_failed");
+        return "kernel_param_update_failed";
+    }
+
+    LaunchGraphCounters::record_graph_eligible_submission();
+    LaunchGraphCounters::record_kernel_launch();
+    cudaError_t runErr = cudaGraphLaunch(exec, stream);
+    if (runErr == cudaSuccess) {
+        runErr = cudaGetLastError();
+    }
+    if (runErr != cudaSuccess) {
+        destroy_base_graph_entry(entry);
+        replayPolicy("graph_launch_failed");
+        return "graph_launch_failed";
+    }
+
+    if (reusedResidentGraph) {
+        LaunchGraphCounters::record_graph_replay_hit();
+    }
+    outCudaErrorCode = static_cast<int>(cudaSuccess);
+    return nullptr;
+}
+
+template <typename DirectLaunch>
+bool launch_base_pipeline_direct_fallback(
+    ResourceManagerState& managerState,
+    bool countNonResidentServe,
+    DirectLaunch&& directLaunch,
+    int& outCudaErrorCode) {
+    if (countNonResidentServe) {
+        telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
+    }
+    outCudaErrorCode = directLaunch();
+    return true;
+}
+
+template <typename DirectLaunch>
+bool cancel_graph_attempt_and_launch_direct_fallback(
+    const SubmissionTransaction& transaction,
+    TierCircuitAttempt& graphCircuitAttempt,
+    bool& graphCircuitAttemptActive,
+    const char* cancelReason,
+    ResourceManagerState& managerState,
+    bool countNonResidentServe,
+    DirectLaunch&& directLaunch,
+    int& outCudaErrorCode) {
+    if (graphCircuitAttemptActive) {
+        tier_circuit_cancel_attempt(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            graphCircuitAttempt,
+            cancelReason);
+        graphCircuitAttemptActive = false;
+    }
+    return launch_base_pipeline_direct_fallback(
+        managerState,
+        countNonResidentServe,
+        std::forward<DirectLaunch>(directLaunch),
+        outCudaErrorCode);
+}
+
+template <typename DirectLaunch>
+bool fail_graph_attempt_and_launch_direct_fallback(
+    const SubmissionTransaction& transaction,
+    TierCircuitAttempt& graphCircuitAttempt,
+    bool& graphCircuitAttemptActive,
+    const char* failureReason,
+    ResourceManagerState& managerState,
+    bool countNonResidentServe,
+    DirectLaunch&& directLaunch,
+    int& outCudaErrorCode) {
+    if (graphCircuitAttemptActive) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            graphCircuitAttempt,
+            false,
+            failureReason);
+        graphCircuitAttemptActive = false;
+    }
+    return launch_base_pipeline_direct_fallback(
+        managerState,
+        countNonResidentServe,
+        std::forward<DirectLaunch>(directLaunch),
+        outCudaErrorCode);
+}
+
+void complete_graph_attempt_success(
+    const SubmissionTransaction& transaction,
+    TierCircuitAttempt& graphCircuitAttempt,
+    bool& graphCircuitAttemptActive) {
+    if (!graphCircuitAttemptActive) {
+        return;
+    }
+    tier_circuit_record_outcome(
+        transaction,
+        "command_launch_base_pipeline_graph",
+        graphCircuitAttempt,
+        true,
+        "durable_build_success");
+    graphCircuitAttemptActive = false;
+}
+
+std::uint64_t prepare_base_graph_bucket_for_submission(
+    BaseGraphBucketState& bucket,
+    std::uint64_t contextEpoch) noexcept {
+    std::uint64_t activeEpoch = contextEpoch;
+    if (activeEpoch == 0) {
+        activeEpoch = 1;
+    }
+    if (bucket.contextEpoch != activeEpoch) {
+        clear_base_graph_bucket(bucket);
+        bucket.contextEpoch = activeEpoch;
+    }
+
+    bucket.useTick++;
+    if (bucket.useTick == 0) {
+        bucket.useTick = 1;
+    }
+    return bucket.useTick;
+}
+
+template <typename PolicyReplay>
+BaseGraphEntry* resolve_resident_base_graph_entry(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    PolicyReplay&& replayPolicy,
+    bool& outReusedResidentGraph) {
+    BaseGraphEntry* found = find_base_graph_entry(bucket, key);
+    const bool trivialResidentGraphHit = (found != nullptr) && (bucket.entries.size() == 1);
+    if (!trivialResidentGraphHit) {
+        replayPolicy("pre_admission");
+        found = find_base_graph_entry(bucket, key);
+    }
+    outReusedResidentGraph = (found != nullptr);
+    return found;
 }
 
 std::uint64_t estimate_base_graph_bucket_active_bytes_locked(
@@ -2093,6 +2410,74 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
 
     publish_graph_large_entry_resident_snapshot_locked(bucket, residentBytes, outResidentEntries);
     return residentBytes;
+}
+
+void replay_graph_large_entry_policy(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    std::uint64_t graphLargeThresholdBytes,
+    std::uint64_t graphLargeCapBytes,
+    std::uint32_t graphLargeCapEntries,
+    std::uint32_t keepHotMs,
+    ResourceManagerState& managerState,
+    const char* reason) {
+    std::uint64_t decayEvictedEntries = 0;
+    std::uint64_t capTrimEvictedEntries = 0;
+    std::uint64_t keepHotBypassEvents = 0;
+    std::uint64_t keepHotForcedEvictEvents = 0;
+    bool capHit = false;
+    std::uint32_t residentEntries = 0;
+    const std::uint64_t residentBytes = trim_graph_large_entry_decay_and_caps_locked(
+        bucket,
+        graphLargeThresholdBytes,
+        graphLargeCapBytes,
+        graphLargeCapEntries,
+        keepHotMs,
+        monotonic_time_ms(),
+        decayEvictedEntries,
+        capTrimEvictedEntries,
+        keepHotBypassEvents,
+        keepHotForcedEvictEvents,
+        capHit,
+        residentEntries);
+    if (decayEvictedEntries > 0) {
+        telemetry_counter_add(managerState.graphLargeEntryDecayEvents, decayEvictedEntries);
+    }
+    if (capTrimEvictedEntries > 0) {
+        telemetry_counter_add(managerState.graphLargeEntryTrimEvents, capTrimEvictedEntries);
+    }
+    if (capHit) {
+        telemetry_counter_add(managerState.graphLargeEntryCapHits, 1);
+    }
+    if (keepHotBypassEvents > 0) {
+        telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
+    }
+    if (keepHotForcedEvictEvents > 0) {
+        telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
+    }
+    if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
+        trace_keep_hot_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            keepHotMs,
+            keepHotBypassEvents,
+            keepHotForcedEvictEvents,
+            trace_or(reason, "policy"));
+    }
+    if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
+        trace_graph_large_entry_quarantine(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            graphLargeThresholdBytes,
+            graphLargeCapBytes,
+            graphLargeCapEntries,
+            residentBytes,
+            residentEntries,
+            decayEvictedEntries,
+            capTrimEvictedEntries,
+            capHit,
+            trace_or(reason, "policy"));
+    }
 }
 
 std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept {
@@ -3163,120 +3548,59 @@ bool command_launch_base_pipeline_graph(
     }
     std::lock_guard<std::mutex> bucketLock(bucketPtr->mutex);
     BaseGraphBucketState& bucket = *bucketPtr;
-    std::uint64_t activeEpoch = transaction.snapshot.contextEpoch;
-    if (activeEpoch == 0) {
-        activeEpoch = 1;
-    }
-    if (bucket.contextEpoch != activeEpoch) {
-        clear_base_graph_bucket(bucket);
-        bucket.contextEpoch = activeEpoch;
-    }
-
-    bucket.useTick++;
-    if (bucket.useTick == 0) {
-        bucket.useTick = 1;
-    }
-    const std::uint64_t useTick = bucket.useTick;
+    const std::uint64_t useTick = prepare_base_graph_bucket_for_submission(
+        bucket,
+        transaction.snapshot.contextEpoch);
     auto applyGraphLargeEntryPolicy = [&](const char* reason) {
-        std::uint64_t decayEvictedEntries = 0;
-        std::uint64_t capTrimEvictedEntries = 0;
-        std::uint64_t keepHotBypassEvents = 0;
-        std::uint64_t keepHotForcedEvictEvents = 0;
-        bool capHit = false;
-        std::uint32_t residentEntries = 0;
-        const std::uint64_t residentBytes = trim_graph_large_entry_decay_and_caps_locked(
+        replay_graph_large_entry_policy(
+            transaction,
             bucket,
             graphLargeThresholdBytes,
             graphLargeCapBytes,
             graphLargeCapEntries,
             cfg.keepHotMs,
-            monotonic_time_ms(),
-            decayEvictedEntries,
-            capTrimEvictedEntries,
-            keepHotBypassEvents,
-            keepHotForcedEvictEvents,
-            capHit,
-            residentEntries);
-        if (decayEvictedEntries > 0) {
-            telemetry_counter_add(managerState.graphLargeEntryDecayEvents, decayEvictedEntries);
-        }
-        if (capTrimEvictedEntries > 0) {
-            telemetry_counter_add(managerState.graphLargeEntryTrimEvents, capTrimEvictedEntries);
-        }
-        if (capHit) {
-            telemetry_counter_add(managerState.graphLargeEntryCapHits, 1);
-        }
-        if (keepHotBypassEvents > 0) {
-            telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
-        }
-        if (keepHotForcedEvictEvents > 0) {
-            telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
-        }
-        if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
-            trace_keep_hot_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                cfg.keepHotMs,
-                keepHotBypassEvents,
-                keepHotForcedEvictEvents,
-                trace_or(reason, "policy"));
-        }
-        if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
-            trace_graph_large_entry_quarantine(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphLargeThresholdBytes,
-                graphLargeCapBytes,
-                graphLargeCapEntries,
-                residentBytes,
-                residentEntries,
-                decayEvictedEntries,
-                capTrimEvictedEntries,
-                capHit,
-                trace_or(reason, "policy"));
-        }
+            managerState,
+            reason);
     };
-    BaseGraphEntry* found = find_base_graph_entry(bucket, key);
-    const bool trivialResidentGraphHit = (found != nullptr) && (bucket.entries.size() == 1);
-    if (!trivialResidentGraphHit) {
-        applyGraphLargeEntryPolicy("pre_admission");
-        found = find_base_graph_entry(bucket, key);
-    }
-    const bool reusedResidentGraph = (found != nullptr);
+    bool reusedResidentGraph = false;
+    BaseGraphEntry* found = resolve_resident_base_graph_entry(
+        bucket,
+        key,
+        applyGraphLargeEntryPolicy,
+        reusedResidentGraph);
     const std::uint64_t keyDigest = base_graph_key_digest(key);
     TierCircuitAttempt graphCircuitAttempt{};
     bool graphCircuitAttemptActive = false;
     auto launch_graph_direct = [&](bool countNonResidentServe) -> bool {
-        if (countNonResidentServe) {
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-        }
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
+        return launch_base_pipeline_direct_fallback(
+            managerState,
+            countNonResidentServe,
+            launch_base_pipeline_direct,
+            outCudaErrorCode);
     };
     auto cancel_graph_attempt_and_launch_direct =
         [&](const char* cancelReason, bool countNonResidentServe) -> bool {
-        if (graphCircuitAttemptActive) {
-            tier_circuit_cancel_attempt(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                cancelReason);
-            graphCircuitAttemptActive = false;
-        }
-        return launch_graph_direct(countNonResidentServe);
+        return cancel_graph_attempt_and_launch_direct_fallback(
+            transaction,
+            graphCircuitAttempt,
+            graphCircuitAttemptActive,
+            cancelReason,
+            managerState,
+            countNonResidentServe,
+            launch_base_pipeline_direct,
+            outCudaErrorCode);
     };
     auto fail_graph_attempt_and_launch_direct =
         [&](const char* failureReason, bool countNonResidentServe) -> bool {
-        if (graphCircuitAttemptActive) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                false,
-                failureReason);
-            graphCircuitAttemptActive = false;
-        }
-        return launch_graph_direct(countNonResidentServe);
+        return fail_graph_attempt_and_launch_direct_fallback(
+            transaction,
+            graphCircuitAttempt,
+            graphCircuitAttemptActive,
+            failureReason,
+            managerState,
+            countNonResidentServe,
+            launch_base_pipeline_direct,
+            outCudaErrorCode);
     };
     if (!found) {
         const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
@@ -3304,74 +3628,15 @@ bool command_launch_base_pipeline_graph(
             return launch_graph_direct(true);
         }
 
-        CacheAdmissionInput admissionInput{};
-        admissionInput.requestBytes = requestBytes;
-        admissionInput.cacheTargetBytes = cfg.managerSoftTargetBytes;
-        admissionInput.maxCacheableEntryBytes = cfg.maxCacheableEntryBytes;
-        admissionInput.maxCacheableEntryPctOfTarget = cfg.maxCacheableEntryPctOfTarget;
-        admissionInput.largeEntryProbationThresholdBytes = cfg.largeEntryProbationThresholdBytes;
-        admissionInput.largeEntryProbationHitsRequired = cfg.largeEntryProbationHitsRequired;
-        admissionInput.observedProbationHits = observedProbationHits;
-        admissionInput.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
-        const CacheAdmissionDecision admissionDecision = classify_cache_admission(admissionInput);
-        const AdmissionChurnSnapshot churnSnapshot = sample_admission_churn_state(
-            transaction,
-            cfg,
-            keyDigest,
-            observedProbationHits);
-        const std::uint32_t churnProbationHitsRequired = effective_probation_hits_required(
-            admissionDecision.probationHitsRequired,
-            churnSnapshot);
-        const bool churnProbationAllowDurable =
-            !admissionDecision.probationApplied ||
-            (next_probation_hits(observedProbationHits) >= churnProbationHitsRequired);
-        trace_cache_admission_decision(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            admissionDecision,
-            churnSnapshot,
-            kGraphAdmissionCriticalCurrentFrame,
-            requestBytes,
-            observedProbationHits,
-            keyDigest,
-            "graph_miss");
-        if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
-            telemetry_counter_add(managerState.cacheAdmissionTooLargeEvents, 1);
-        }
-        if (admissionDecision.probationApplied) {
-            const std::uint32_t nextObservedHits = next_probation_hits(observedProbationHits);
-            trace_probation_decision(
+        if (!evaluate_graph_cache_admission(
                 transaction,
-                "command_launch_base_pipeline_graph",
+                bucket,
                 keyDigest,
-                nextObservedHits,
-                churnProbationHitsRequired,
-                churnProbationAllowDurable,
-                admissionDecision.reason);
-            if (churnProbationAllowDurable) {
-                telemetry_counter_add(managerState.cacheAdmissionProbationAdmitEvents, 1);
-            }
-            else {
-                telemetry_counter_add(managerState.cacheAdmissionProbationDeferredEvents, 1);
-            }
-        }
-        if (admissionDecision.reason &&
-            std::string_view(admissionDecision.reason).find("critical_override") != std::string_view::npos) {
-            telemetry_counter_add(managerState.cacheAdmissionCriticalOverrideEvents, 1);
-        }
-
-        const bool allowDurableAdmission =
-            commands_allow_durable_admission(admissionDecision, churnProbationAllowDurable);
-        if (!allowDurableAdmission) {
-            if (admissionDecision.probationApplied) {
-                std::uint32_t& probationHits = bucket.probationHitsByDigest[keyDigest];
-                if (probationHits < std::numeric_limits<std::uint32_t>::max()) {
-                    ++probationHits;
-                }
-            }
-            else {
-                bucket.probationHitsByDigest.erase(keyDigest);
-            }
+                requestBytes,
+                observedProbationHits,
+                kGraphAdmissionCriticalCurrentFrame,
+                cfg,
+                managerState)) {
             return launch_graph_direct(true);
         }
 
@@ -3400,93 +3665,40 @@ bool command_launch_base_pipeline_graph(
         }
         BuilderReservationGuard builderGuard(std::move(builderClaim));
 
-        bucket.probationHitsByDigest.erase(keyDigest);
-        bucket.largeEntryReadmitByDigest.erase(keyDigest);
-        std::uint64_t keepHotBypassEvents = 0;
-        std::uint64_t keepHotForcedEvictEvents = 0;
-        found = build_base_graph_entry(
+        found = build_admitted_graph_entry(
+            transaction,
             bucket,
             key,
+            keyDigest,
             launchFn,
             run,
             stream,
             graphLargeThresholdBytes,
             cfg.keepHotMs,
-            keepHotBypassEvents,
-            keepHotForcedEvictEvents);
-        if (keepHotBypassEvents > 0) {
-            telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
-        }
-        if (keepHotForcedEvictEvents > 0) {
-            telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
-        }
-        if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
-            trace_keep_hot_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                cfg.keepHotMs,
-                keepHotBypassEvents,
-                keepHotForcedEvictEvents,
-                "base_graph_cap");
-        }
-        if (found) {
-            applyGraphLargeEntryPolicy("post_build");
-            found = find_base_graph_entry(bucket, key);
-        }
-    }
-    else {
-        bucket.probationHitsByDigest.erase(keyDigest);
-        bucket.largeEntryReadmitByDigest.erase(keyDigest);
+            managerState,
+            applyGraphLargeEntryPolicy);
+    } else {
+        clear_graph_admission_state(bucket, keyDigest);
     }
 
     if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
         return fail_graph_attempt_and_launch_direct("durable_build_failed", false);
     }
 
-    found->lastUseTick = useTick;
-    found->lastUseMs = monotonic_time_ms();
-
-    cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(found->execOpaque);
-    cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(found->kernelNodeOpaque);
-    cudaKernelNodeParams nodeParams{};
-    nodeParams.func = found->kernelFuncOpaque;
-    nodeParams.gridDim = dim3(found->gridX, found->gridY, found->gridZ);
-    nodeParams.blockDim = dim3(found->blockX, found->blockY, found->blockZ);
-    nodeParams.sharedMemBytes = found->sharedMemBytes;
-    void* kernelArgs[] = { &run };
-    nodeParams.kernelParams = kernelArgs;
-    nodeParams.extra = nullptr;
-    cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
-    if (setErr != cudaSuccess) {
-        destroy_base_graph_entry(*found);
-        applyGraphLargeEntryPolicy("kernel_param_update_failed");
-        return fail_graph_attempt_and_launch_direct("kernel_param_update_failed", false);
+    if (const char* graphLaunchFailure = launch_selected_graph_entry(
+            *found,
+            run,
+            stream,
+            useTick,
+            reusedResidentGraph,
+            applyGraphLargeEntryPolicy,
+            outCudaErrorCode)) {
+        return fail_graph_attempt_and_launch_direct(graphLaunchFailure, false);
     }
-
-    LaunchGraphCounters::record_graph_eligible_submission();
-    LaunchGraphCounters::record_kernel_launch();
-    cudaError_t runErr = cudaGraphLaunch(exec, stream);
-    if (runErr == cudaSuccess) {
-        runErr = cudaGetLastError();
-    }
-    if (runErr != cudaSuccess) {
-        destroy_base_graph_entry(*found);
-        applyGraphLargeEntryPolicy("graph_launch_failed");
-        return fail_graph_attempt_and_launch_direct("graph_launch_failed", false);
-    }
-
-    if (reusedResidentGraph) {
-        LaunchGraphCounters::record_graph_replay_hit();
-    }
-    if (graphCircuitAttemptActive) {
-        tier_circuit_record_outcome(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            graphCircuitAttempt,
-            true,
-            "durable_build_success");
-        graphCircuitAttemptActive = false;
-    }
+    complete_graph_attempt_success(
+        transaction,
+        graphCircuitAttempt,
+        graphCircuitAttemptActive);
     outCudaErrorCode = static_cast<int>(cudaSuccess);
     return true;
 #endif

@@ -299,10 +299,6 @@ namespace {
         int meterHeight,
         float* outWX)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        if (x >= meterWidth) {
-            return;
-        }
         if (!outWX || meterWidth <= 0 || meterHeight <= 0) {
             return;
         }
@@ -312,11 +308,13 @@ namespace {
         const int maxDimInt = (meterWidth > meterHeight) ? meterWidth : meterHeight;
         const float maxDim = static_cast<float>(maxDimInt);
         const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
-        const float nx = (static_cast<float>(x) / static_cast<float>(meterWidth)) - 0.5f;
-        const float normX = nx * static_cast<float>(meterWidth) * invMax;
-        const float r2 = normX * normX;
-        const float w = expf(-r2 / (2.0f * sigma * sigma));
-        outWX[x] = w;
+        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < meterWidth; x += blockDim.x * gridDim.x) {
+            const float nx = (static_cast<float>(x) / static_cast<float>(meterWidth)) - 0.5f;
+            const float normX = nx * static_cast<float>(meterWidth) * invMax;
+            const float r2 = normX * normX;
+            const float w = expf(-r2 / (2.0f * sigma * sigma));
+            outWX[x] = w;
+        }
     }
 
     __global__ void build_center_weight_y_kernel(
@@ -324,10 +322,6 @@ namespace {
         int meterHeight,
         float* outWY)
     {
-        const int y = blockIdx.x * blockDim.x + threadIdx.x;
-        if (y >= meterHeight) {
-            return;
-        }
         if (!outWY || meterWidth <= 0 || meterHeight <= 0) {
             return;
         }
@@ -337,11 +331,13 @@ namespace {
         const int maxDimInt = (meterWidth > meterHeight) ? meterWidth : meterHeight;
         const float maxDim = static_cast<float>(maxDimInt);
         const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
-        const float ny = (static_cast<float>(y) / static_cast<float>(meterHeight)) - 0.5f;
-        const float normY = ny * static_cast<float>(meterHeight) * invMax;
-        const float r2 = normY * normY;
-        const float w = expf(-r2 / (2.0f * sigma * sigma));
-        outWY[y] = w;
+        for (int y = blockIdx.x * blockDim.x + threadIdx.x; y < meterHeight; y += blockDim.x * gridDim.x) {
+            const float ny = (static_cast<float>(y) / static_cast<float>(meterHeight)) - 0.5f;
+            const float normY = ny * static_cast<float>(meterHeight) * invMax;
+            const float r2 = normY * normY;
+            const float w = expf(-r2 / (2.0f * sigma * sigma));
+            outWY[y] = w;
+        }
     }
 
     __global__ void meter_center_weighted_Y_partials_kernel(

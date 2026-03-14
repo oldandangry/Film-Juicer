@@ -202,18 +202,16 @@ __global__ void optics_blur_vertical_kernel(
 }
 
 __global__ void optics_unsharp_combine_kernel(float* inOut, const float* JUICER_RESTRICT blurred, int n, float amount) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!inOut || !blurred) {
         return;
     }
-    const double v0 = static_cast<double>(inOut[idx]);
-    const double vb = static_cast<double>(blurred[idx]);
     const double a = static_cast<double>(amount);
-    const double v = v0 + a * (v0 - vb);
-    inOut[idx] = (isfinite(v) && !isnan(v)) ? static_cast<float>(v) : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const double v0 = static_cast<double>(inOut[idx]);
+        const double vb = static_cast<double>(blurred[idx]);
+        const double v = v0 + a * (v0 - vb);
+        inOut[idx] = (isfinite(v) && !isnan(v)) ? static_cast<float>(v) : 0.0f;
+    }
 }
 
 __global__ void optics_unsharp_vertical_combine_kernel(
