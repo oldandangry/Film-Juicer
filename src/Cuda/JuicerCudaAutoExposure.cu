@@ -73,18 +73,27 @@ namespace {
         double* outSumY,
         double* outSumW)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-
         double localSumY = 0.0;
         double localSumW = 0.0;
+        constexpr float sigma = 0.2f;
+        const int maxDimInt = (width > height) ? width : height;
+        const float maxDim = static_cast<float>(maxDimInt);
+        const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
+        const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
 
-        if (x < width && y < height) {
-            const int px = meterX1 + x;
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < height; y += blockDim.y * gridDim.y) {
             const int py = meterY1 + y;
-            if (px >= srcBoundsX1 && px < srcBoundsX2 && py >= srcBoundsY1 && py < srcBoundsY2) {
-                const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
-                const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            if (py < srcBoundsY1 || py >= srcBoundsY2) {
+                continue;
+            }
+            const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            const float ny = (static_cast<float>(y) / static_cast<float>(height)) - 0.5f;
+            const float normY = ny * static_cast<float>(height) * invMax;
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < width; x += blockDim.x * gridDim.x) {
+                const int px = meterX1 + x;
+                if (px < srcBoundsX1 || px >= srcBoundsX2) {
+                    continue;
+                }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
                 float inRgb[3] = { pix[0], pix[1], pix[2] };
@@ -93,20 +102,14 @@ namespace {
 
                 const float Y = mulY(rgbToXYZ, lin);
                 if (isfinite(Y)) {
-                // Matches build_center_weight_mask() weighting.
-                constexpr float sigma = 0.2f;
-                const float nx = (static_cast<float>(x) / static_cast<float>(width)) - 0.5f;
-                const float ny = (static_cast<float>(y) / static_cast<float>(height)) - 0.5f;
-                const int maxDimInt = (width > height) ? width : height;
-                const float maxDim = static_cast<float>(maxDimInt);
-                const float invMax = (maxDim > 0.0f) ? (1.0f / maxDim) : 0.0f;
-                const float normX = nx * static_cast<float>(width) * invMax;
-                const float normY = ny * static_cast<float>(height) * invMax;
-                const float r2 = normX * normX + normY * normY;
-                const float w = expf(-r2 / (2.0f * sigma * sigma));
+                    // Matches build_center_weight_mask() weighting.
+                    const float nx = (static_cast<float>(x) / static_cast<float>(width)) - 0.5f;
+                    const float normX = nx * static_cast<float>(width) * invMax;
+                    const float r2 = normX * normX + normY * normY;
+                    const float w = expf(-r2 / (2.0f * sigma * sigma));
 
-                    localSumY = static_cast<double>(Y) * static_cast<double>(w);
-                    localSumW = static_cast<double>(w);
+                    localSumY += static_cast<double>(Y) * static_cast<double>(w);
+                    localSumW += static_cast<double>(w);
                 }
             }
         }
@@ -150,16 +153,19 @@ namespace {
         Mat3 rgbToXYZ,
         unsigned int* outMaxBits)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-
         float localMax = 0.0f;
-        if (x < width && y < height) {
-            const int px = meterX1 + x;
+        const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < height; y += blockDim.y * gridDim.y) {
             const int py = meterY1 + y;
-            if (px >= srcBoundsX1 && px < srcBoundsX2 && py >= srcBoundsY1 && py < srcBoundsY2) {
-                const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
-                const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            if (py < srcBoundsY1 || py >= srcBoundsY2) {
+                continue;
+            }
+            const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < width; x += blockDim.x * gridDim.x) {
+                const int px = meterX1 + x;
+                if (px < srcBoundsX1 || px >= srcBoundsX2) {
+                    continue;
+                }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
                 float inRgb[3] = { pix[0], pix[1], pix[2] };
@@ -209,15 +215,18 @@ namespace {
         float maxY,
         unsigned int* histogram)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-        if (x < width && y < height) {
-            const int px = meterX1 + x;
+        const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < height; y += blockDim.y * gridDim.y) {
             const int py = meterY1 + y;
-            if (px >= srcBoundsX1 && px < srcBoundsX2 && py >= srcBoundsY1 && py < srcBoundsY2) {
-                const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
-                const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            if (py < srcBoundsY1 || py >= srcBoundsY2) {
+                continue;
+            }
+            const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < width; x += blockDim.x * gridDim.x) {
+                const int px = meterX1 + x;
+                if (px < srcBoundsX1 || px >= srcBoundsX2) {
+                    continue;
+                }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
                 float inRgb[3] = { pix[0], pix[1], pix[2] };
@@ -359,18 +368,20 @@ namespace {
         const float* weightsY,
         JuicerCudaAutoExposurePartial* outPartials)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-
         double localSumY = 0.0;
         double localSumW = 0.0;
-
-        if (x < width && y < height) {
-            const int px = meterX1 + x;
+        const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < height; y += blockDim.y * gridDim.y) {
             const int py = meterY1 + y;
-            if (px >= srcBoundsX1 && px < srcBoundsX2 && py >= srcBoundsY1 && py < srcBoundsY2) {
-                const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
-                const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            if (py < srcBoundsY1 || py >= srcBoundsY2) {
+                continue;
+            }
+            const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < width; x += blockDim.x * gridDim.x) {
+                const int px = meterX1 + x;
+                if (px < srcBoundsX1 || px >= srcBoundsX2) {
+                    continue;
+                }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
                 float inRgb[3] = { pix[0], pix[1], pix[2] };
@@ -387,8 +398,8 @@ namespace {
                         w = 0.0f;
                     }
 
-                    localSumY = static_cast<double>(Y) * static_cast<double>(w);
-                    localSumW = static_cast<double>(w);
+                    localSumY += static_cast<double>(Y) * static_cast<double>(w);
+                    localSumW += static_cast<double>(w);
                 }
             }
         }
@@ -422,17 +433,18 @@ namespace {
         JuicerCudaAutoExposurePartial* outPartials)
     {
         const int tid = threadIdx.x;
-        const int base = (blockIdx.x * blockDim.x * 2) + tid;
         double sumY = 0.0;
         double sumW = 0.0;
-        if (base < n) {
+        const int gridStride = blockDim.x * gridDim.x * 2;
+        for (int base = (blockIdx.x * blockDim.x * 2) + tid; base < n; base += gridStride) {
             sumY += inPartials[base].sumY;
             sumW += inPartials[base].sumW;
-        }
-        const int base2 = base + blockDim.x;
-        if (base2 < n) {
-            sumY += inPartials[base2].sumY;
-            sumW += inPartials[base2].sumW;
+
+            const int base2 = base + blockDim.x;
+            if (base2 < n) {
+                sumY += inPartials[base2].sumY;
+                sumW += inPartials[base2].sumW;
+            }
         }
 
         __shared__ double sY[256];
@@ -516,9 +528,6 @@ namespace {
         const unsigned int* maxYBits,
         unsigned int* histogram)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-
         float maxY = 0.0f;
         if (maxYBits) {
             maxY = __uint_as_float(*maxYBits);
@@ -535,12 +544,18 @@ namespace {
         }
         __syncthreads();
 
-        if (x < width && y < height) {
-            const int px = meterX1 + x;
+        const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < height; y += blockDim.y * gridDim.y) {
             const int py = meterY1 + y;
-            if (px >= srcBoundsX1 && px < srcBoundsX2 && py >= srcBoundsY1 && py < srcBoundsY2) {
-                const std::size_t pixelStrideBytes = static_cast<std::size_t>(nComponents) * sizeof(float);
-                const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            if (py < srcBoundsY1 || py >= srcBoundsY2) {
+                continue;
+            }
+            const unsigned char* rowPtr = srcBase + static_cast<std::size_t>(py - srcBoundsY1) * srcRowBytes;
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < width; x += blockDim.x * gridDim.x) {
+                const int px = meterX1 + x;
+                if (px < srcBoundsX1 || px >= srcBoundsX2) {
+                    continue;
+                }
                 const float* pix = reinterpret_cast<const float*>(rowPtr + static_cast<std::size_t>(px - srcBoundsX1) * pixelStrideBytes);
 
                 float inRgb[3] = { pix[0], pix[1], pix[2] };

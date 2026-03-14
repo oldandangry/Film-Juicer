@@ -570,68 +570,65 @@ namespace {
         float* outB)
     {
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        if (x >= params.width || y >= params.height) {
-            return;
-        }
-
         if (!inC || !inM || !inY || !outR || !outG || !outB) {
             return;
         }
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
 
-        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                const float D_cmy[3] = { inC[idx], inM[idx], inY[idx] };
 
-        const float D_cmy[3] = { inC[idx], inM[idx], inY[idx] };
+                // Scan: normalize density -> logXYZ
+                double D_norm[3];
+                if (scan.scanTables.mediumIsNegative) {
+                    D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(scan.scanTables.min_cmy[0])) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
+                    D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
+                    D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+                }
+                else {
+                    D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
+                    D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
+                    D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+                }
 
-        // Scan: normalize density -> logXYZ
-        double D_norm[3];
-        if (scan.scanTables.mediumIsNegative) {
-            D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(scan.scanTables.min_cmy[0])) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
-            D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
-            D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+                const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
+                double logXYZ[3] = { 0.0, 0.0, 0.0 };
+                scan_log_xyz_device(scan, D_norm, logXYZ);
+
+                const bool useLutLog2 =
+                    scan.scannerUseLut && scan.scanLutLog2XYZ && scan.scanLutRes > 0 && D_norm_finite;
+                double xyz[3] = {
+                    useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
+                    useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
+                    useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])
+                };
+
+                if (glarePercent) {
+                    const double glare = static_cast<double>(glarePercent[idx]) * 0.01;
+                    xyz[0] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[0]);
+                    xyz[1] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[1]);
+                    xyz[2] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[2]);
+                }
+
+                double adapted[3];
+                mat3_mul_vec_double_device(scan.scanColor.cat02, xyz, adapted);
+                double rgbOut[3];
+                mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgbOut);
+
+                if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
+                    signal_scan_error_device(scan.scanErrorFlag);
+                    outR[idx] = 0.0f;
+                    outG[idx] = 0.0f;
+                    outB[idx] = 0.0f;
+                    continue;
+                }
+
+                outR[idx] = static_cast<float>(rgbOut[0]);
+                outG[idx] = static_cast<float>(rgbOut[1]);
+                outB[idx] = static_cast<float>(rgbOut[2]);
+            }
         }
-        else {
-            D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
-            D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
-            D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
-        }
-
-        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
-        double logXYZ[3] = { 0.0, 0.0, 0.0 };
-        scan_log_xyz_device(scan, D_norm, logXYZ);
-
-        const bool useLutLog2 =
-            scan.scannerUseLut && scan.scanLutLog2XYZ && scan.scanLutRes > 0 && D_norm_finite;
-        double xyz[3] = {
-            useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
-            useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
-            useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])
-        };
-
-        if (glarePercent) {
-            const double glare = static_cast<double>(glarePercent[idx]) * 0.01;
-            xyz[0] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[0]);
-            xyz[1] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[1]);
-            xyz[2] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[2]);
-        }
-
-        double adapted[3];
-        mat3_mul_vec_double_device(scan.scanColor.cat02, xyz, adapted);
-        double rgbOut[3];
-        mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgbOut);
-
-        if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
-            signal_scan_error_device(scan.scanErrorFlag);
-            outR[idx] = 0.0f;
-            outG[idx] = 0.0f;
-            outB[idx] = 0.0f;
-            return;
-        }
-
-        outR[idx] = static_cast<float>(rgbOut[0]);
-        outG[idx] = static_cast<float>(rgbOut[1]);
-        outB[idx] = static_cast<float>(rgbOut[2]);
     }
 
     __global__ void apply_film_defects_kernel(
@@ -641,11 +638,6 @@ namespace {
         float* ioY)
     {
         const JuicerCuda::GrainPayload& grain = params.grain;
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        if (x >= params.width || y >= params.height) {
-            return;
-        }
         if (!ioC || !ioM || !ioY) {
             return;
         }
@@ -667,10 +659,6 @@ namespace {
         const float time = static_cast<float>(grain.frameIndex) + grain.timeAlpha;
         const float rollPx = (grain.pitchPx > 0) ? static_cast<float>(grain.pitchPx) : 0.0f;
 
-        const float absX = static_cast<float>(grain.originX + x);
-        const float absY = static_cast<float>(grain.originY + y);
-        const float rollY = absY + rollPx * time;
-
         constexpr float kDustCellUm = 400.0f;
         constexpr float kDustBaseProb = 0.02f;
         constexpr float kDustSizeUm = 25.0f;
@@ -691,24 +679,31 @@ namespace {
         const float dustCellMm = kDustCellUm * 0.001f;
         const float scratchCellMmX = kScratchCellUmX * 0.001f;
         const float scratchCellMmY = kScratchCellUmY * 0.001f;
-        const float xMm = absX * pixelToMm;
-        const float rollYMm = rollY * pixelToMm;
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+                const float absX = static_cast<float>(grain.originX + x);
+                const float absY = static_cast<float>(grain.originY + y);
+                const float rollY = absY + rollPx * time;
+                const float xMm = absX * pixelToMm;
+                const float rollYMm = rollY * pixelToMm;
 
-        const float dustMask = dust_mask_device(
-            dustAmount, xMm, rollYMm, grain.pixelSizeUm, seedDust,
-            dustCellMm, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
-        const float scratchMask = scratch_mask_device(
-            scratchAmount, xMm, rollYMm, grain.pixelSizeUm, seedScratch,
-            scratchCellMmX, scratchCellMmY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
-        float delta = dustMask + scratchMask;
-        if (!device_isfinite(delta)) {
-            delta = 0.0f;
-        }
-        if (delta != 0.0f) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-            ioC[idx] = ioC[idx] + delta;
-            ioM[idx] = ioM[idx] + delta;
-            ioY[idx] = ioY[idx] + delta;
+                const float dustMask = dust_mask_device(
+                    dustAmount, xMm, rollYMm, grain.pixelSizeUm, seedDust,
+                    dustCellMm, kDustBaseProb, kDustSizeUm, kDustStrength, kDustBrightMix, kDustBrightScale);
+                const float scratchMask = scratch_mask_device(
+                    scratchAmount, xMm, rollYMm, grain.pixelSizeUm, seedScratch,
+                    scratchCellMmX, scratchCellMmY, kScratchBaseProb, kScratchWidthUm, kScratchStrength, kScratchMaxAngle, kScratchBrightMix, kScratchBrightScale);
+                float delta = dustMask + scratchMask;
+                if (!device_isfinite(delta)) {
+                    delta = 0.0f;
+                }
+                if (delta != 0.0f) {
+                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                    ioC[idx] = ioC[idx] + delta;
+                    ioM[idx] = ioM[idx] + delta;
+                    ioY[idx] = ioY[idx] + delta;
+                }
+            }
         }
     }
 
@@ -719,46 +714,44 @@ namespace {
         int maskHeight)
     {
         const JuicerCuda::GrainPayload& grain = params.grain;
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        if (x >= maskWidth || y >= maskHeight) {
-            return;
-        }
         if (!outMask) {
             return;
         }
 
         const float dustAmount = grain.gateDustAmount;
         const float scratchAmount = grain.gateScratchAmount;
-        if (!(dustAmount > 0.0f) && !(scratchAmount > 0.0f)) {
-            outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = 0.0f;
-            return;
-        }
-        if (!(grain.pixelSizeUm > 0.0f)) {
-            outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = 0.0f;
-            return;
-        }
+        const bool gateActive = (dustAmount > 0.0f) || (scratchAmount > 0.0f);
+        const bool pixelSizeValid = (grain.pixelSizeUm > 0.0f);
 
         const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
         const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
         const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
 
         const float pixelToMm = grain.pixelSizeUm * 0.001f;
-        const float absX = static_cast<float>(grain.originX) + static_cast<float>(x) * 2.0f;
-        const float absY = static_cast<float>(grain.originY) + static_cast<float>(y) * 2.0f;
-        const float xMm = absX * pixelToMm;
-        const float yMm = absY * pixelToMm;
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < maskHeight; y += blockDim.y * gridDim.y) {
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < maskWidth; x += blockDim.x * gridDim.x) {
+                if (!gateActive || !pixelSizeValid) {
+                    outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = 0.0f;
+                    continue;
+                }
 
-        const float gateMask = gate_mask_device(
-            dustAmount,
-            scratchAmount,
-            xMm,
-            yMm,
-            grain.pixelSizeUm,
-            seedGateDust,
-            seedGateScratch);
+                const float absX = static_cast<float>(grain.originX) + static_cast<float>(x) * 2.0f;
+                const float absY = static_cast<float>(grain.originY) + static_cast<float>(y) * 2.0f;
+                const float xMm = absX * pixelToMm;
+                const float yMm = absY * pixelToMm;
 
-        outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = gateMask;
+                const float gateMask = gate_mask_device(
+                    dustAmount,
+                    scratchAmount,
+                    xMm,
+                    yMm,
+                    grain.pixelSizeUm,
+                    seedGateDust,
+                    seedGateScratch);
+
+                outMask[static_cast<size_t>(y) * static_cast<size_t>(maskWidth) + static_cast<size_t>(x)] = gateMask;
+            }
+        }
     }
 
     __global__ void scan_output_encode_kernel(
@@ -770,11 +763,6 @@ namespace {
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
         const JuicerCuda::GateWeavePayload& weave = params.gateWeave;
         const JuicerCuda::GrainPayload& grain = params.grain;
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        if (x >= params.width || y >= params.height) {
-            return;
-        }
 
         if (!params.src || !params.dst || params.srcRowBytes == 0 || params.dstRowBytes == 0) {
             return;
@@ -787,83 +775,86 @@ namespace {
         if (!(nC == 3 || nC == 4)) {
             return;
         }
-
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
         const int debugView = grain.debugView;
-        const float absX = static_cast<float>(grain.originX + x);
-        const float absY = static_cast<float>(grain.originY + y);
-        double rgbOut[3];
-        if (debugView != 0) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-            rgbOut[0] = static_cast<double>(rgbR[idx]);
-            rgbOut[1] = static_cast<double>(rgbG[idx]);
-            rgbOut[2] = static_cast<double>(rgbB[idx]);
-        }
-        else if (weave.active != 0) {
-            const float cx = 0.5f * static_cast<float>(params.width - 1);
-            const float cy = 0.5f * static_cast<float>(params.height - 1);
-            const float fx = static_cast<float>(x) - cx;
-            const float fy = static_cast<float>(y) - cy;
-            const float c = weave.cosRot;
-            const float s = weave.sinRot;
-            const float srcX = c * fx - s * fy + cx + weave.dxPx;
-            const float srcY = s * fx + c * fy + cy + weave.dyPx;
-            rgbOut[0] = static_cast<double>(sample_plane_mitchell_device(rgbR, params.width, params.height, srcX, srcY));
-            rgbOut[1] = static_cast<double>(sample_plane_mitchell_device(rgbG, params.width, params.height, srcX, srcY));
-            rgbOut[2] = static_cast<double>(sample_plane_mitchell_device(rgbB, params.width, params.height, srcX, srcY));
-        }
-        else {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-            rgbOut[0] = static_cast<double>(rgbR[idx]);
-            rgbOut[1] = static_cast<double>(rgbG[idx]);
-            rgbOut[2] = static_cast<double>(rgbB[idx]);
-        }
-        if (debugView == 0) {
-            const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
-            const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
-            const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
-            const float pixelToMm = grain.pixelSizeUm * 0.001f;
-            const float xMm = absX * pixelToMm;
-            const float yMm = absY * pixelToMm;
-            const bool gateActive = (grain.gateDustAmount > 0.0f) || (grain.gateScratchAmount > 0.0f);
-            if (gateActive) {
-                float gateMask = 0.0f;
-                if (grain.gateMask && grain.gateMaskWidth > 0 && grain.gateMaskHeight > 0) {
-                    const float maskX = (absX - static_cast<float>(grain.originX)) * 0.5f;
-                    const float maskY = (absY - static_cast<float>(grain.originY)) * 0.5f;
-                    gateMask = sample_gate_mask_device(grain.gateMask, grain.gateMaskWidth, grain.gateMaskHeight, maskX, maskY);
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+            char* dstRow = reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
+            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+                const float absX = static_cast<float>(grain.originX + x);
+                const float absY = static_cast<float>(grain.originY + y);
+                double rgbOut[3];
+                if (debugView != 0) {
+                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                    rgbOut[0] = static_cast<double>(rgbR[idx]);
+                    rgbOut[1] = static_cast<double>(rgbG[idx]);
+                    rgbOut[2] = static_cast<double>(rgbB[idx]);
+                }
+                else if (weave.active != 0) {
+                    const float cx = 0.5f * static_cast<float>(params.width - 1);
+                    const float cy = 0.5f * static_cast<float>(params.height - 1);
+                    const float fx = static_cast<float>(x) - cx;
+                    const float fy = static_cast<float>(y) - cy;
+                    const float c = weave.cosRot;
+                    const float s = weave.sinRot;
+                    const float srcX = c * fx - s * fy + cx + weave.dxPx;
+                    const float srcY = s * fx + c * fy + cy + weave.dyPx;
+                    rgbOut[0] = static_cast<double>(sample_plane_mitchell_device(rgbR, params.width, params.height, srcX, srcY));
+                    rgbOut[1] = static_cast<double>(sample_plane_mitchell_device(rgbG, params.width, params.height, srcX, srcY));
+                    rgbOut[2] = static_cast<double>(sample_plane_mitchell_device(rgbB, params.width, params.height, srcX, srcY));
                 }
                 else {
-                    gateMask = gate_mask_device(
-                        grain.gateDustAmount,
-                        grain.gateScratchAmount,
-                        xMm,
-                        yMm,
-                        grain.pixelSizeUm,
-                        seedGateDust,
-                        seedGateScratch);
+                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                    rgbOut[0] = static_cast<double>(rgbR[idx]);
+                    rgbOut[1] = static_cast<double>(rgbG[idx]);
+                    rgbOut[2] = static_cast<double>(rgbB[idx]);
                 }
-                if (device_isfinite(gateMask) && gateMask != 0.0f) {
-                    gateMask = fminf(fmaxf(gateMask, -0.5f), 0.95f);
-                    const float trans = 1.0f - gateMask;
-                    rgbOut[0] *= static_cast<double>(trans);
-                    rgbOut[1] *= static_cast<double>(trans);
-                    rgbOut[2] *= static_cast<double>(trans);
+                if (debugView == 0) {
+                    const std::uint64_t sessionSeed = (grain.stbnSessionSeed != 0) ? grain.stbnSessionSeed : 1ULL;
+                    const std::uint64_t seedGateDust = splitmix64_device(sessionSeed ^ 0xA1B2C3D4E5F60718ULL);
+                    const std::uint64_t seedGateScratch = splitmix64_device(sessionSeed ^ 0xC6A4A7935BD1E995ULL);
+                    const float pixelToMm = grain.pixelSizeUm * 0.001f;
+                    const float xMm = absX * pixelToMm;
+                    const float yMm = absY * pixelToMm;
+                    const bool gateActive = (grain.gateDustAmount > 0.0f) || (grain.gateScratchAmount > 0.0f);
+                    if (gateActive) {
+                        float gateMask = 0.0f;
+                        if (grain.gateMask && grain.gateMaskWidth > 0 && grain.gateMaskHeight > 0) {
+                            const float maskX = (absX - static_cast<float>(grain.originX)) * 0.5f;
+                            const float maskY = (absY - static_cast<float>(grain.originY)) * 0.5f;
+                            gateMask = sample_gate_mask_device(grain.gateMask, grain.gateMaskWidth, grain.gateMaskHeight, maskX, maskY);
+                        }
+                        else {
+                            gateMask = gate_mask_device(
+                                grain.gateDustAmount,
+                                grain.gateScratchAmount,
+                                xMm,
+                                yMm,
+                                grain.pixelSizeUm,
+                                seedGateDust,
+                                seedGateScratch);
+                        }
+                        if (device_isfinite(gateMask) && gateMask != 0.0f) {
+                            gateMask = fminf(fmaxf(gateMask, -0.5f), 0.95f);
+                            const float trans = 1.0f - gateMask;
+                            rgbOut[0] *= static_cast<double>(trans);
+                            rgbOut[1] *= static_cast<double>(trans);
+                            rgbOut[2] *= static_cast<double>(trans);
+                        }
+                    }
+                    apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
+                }
+
+                float* dstPix = reinterpret_cast<float*>(dstRow + static_cast<std::size_t>(x) * pixelBytes);
+                dstPix[0] = static_cast<float>(rgbOut[0]);
+                dstPix[1] = static_cast<float>(rgbOut[1]);
+                dstPix[2] = static_cast<float>(rgbOut[2]);
+
+                if (nC == 4) {
+                    const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+                    dstPix[3] = srcPix ? srcPix[3] : 1.0f;
                 }
             }
-            apply_output_encoding_device(scan.scanColor.encoding, rgbOut);
-        }
-
-        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-        char* dstRow = reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
-        float* dstPix = reinterpret_cast<float*>(dstRow + static_cast<std::size_t>(x) * pixelBytes);
-        dstPix[0] = static_cast<float>(rgbOut[0]);
-        dstPix[1] = static_cast<float>(rgbOut[1]);
-        dstPix[2] = static_cast<float>(rgbOut[2]);
-
-        if (nC == 4) {
-            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-            const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-            dstPix[3] = srcPix ? srcPix[3] : 1.0f;
         }
     }
 

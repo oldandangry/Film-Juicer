@@ -435,7 +435,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintBypass");
             p->setLabel("Bypass print");
-            p->setDefault(true);
+            p->setDefault(false);
             if (grpPrint) p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
