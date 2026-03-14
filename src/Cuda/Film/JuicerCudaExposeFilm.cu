@@ -14,12 +14,6 @@ __global__ void expose_film_raw_kernel(
     float* outG,
     float* outR)
 {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= params.width || y >= params.height) {
-        return;
-    }
-
     if (!params.src || params.srcRowBytes == 0) {
         return;
     }
@@ -33,27 +27,27 @@ __global__ void expose_film_raw_kernel(
     }
 
     const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-    const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-    const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-    if (!srcPix) {
-        return;
+    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+            const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+            if (!srcPix) {
+                continue;
+            }
+
+            const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
+            float filmRaw[3] = { 0.0f, 0.0f, 0.0f };
+            compute_film_raw_device(params, rgbIn, filmRaw);
+
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            outB[idx] = filmRaw[0];
+            outG[idx] = filmRaw[1];
+            outR[idx] = filmRaw[2];
+        }
     }
-
-    const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
-    float filmRaw[3] = { 0.0f, 0.0f, 0.0f };
-    compute_film_raw_device(params, rgbIn, filmRaw);
-
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-    outB[idx] = filmRaw[0];
-    outG[idx] = filmRaw[1];
-    outR[idx] = filmRaw[2];
 }
 
 __global__ void halation_apply_kernel(float* inOut, const float* blurred, int n, float strength) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!inOut || !blurred) {
         return;
     }
@@ -63,8 +57,10 @@ __global__ void halation_apply_kernel(float* inOut, const float* blurred, int n,
         return;
     }
 
-    const double a = static_cast<double>(inOut[idx]);
-    const double b = static_cast<double>(blurred[idx]);
-    const double out = (a + static_cast<double>(s) * b) / (1.0 + static_cast<double>(s));
-    inOut[idx] = (isfinite(out) && !isnan(out)) ? static_cast<float>(out) : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const double a = static_cast<double>(inOut[idx]);
+        const double b = static_cast<double>(blurred[idx]);
+        const double out = (a + static_cast<double>(s) * b) / (1.0 + static_cast<double>(s));
+        inOut[idx] = (isfinite(out) && !isnan(out)) ? static_cast<float>(out) : 0.0f;
+    }
 }

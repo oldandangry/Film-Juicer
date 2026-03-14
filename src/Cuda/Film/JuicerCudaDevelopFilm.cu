@@ -693,12 +693,6 @@ __global__ void develop_film_density_kernel(
 {
     const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= params.width || y >= params.height) {
-        return;
-    }
-
     if (!params.src || params.srcRowBytes == 0) {
         return;
     }
@@ -712,138 +706,128 @@ __global__ void develop_film_density_kernel(
     }
 
     const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-    const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-    const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-    if (!srcPix) {
-        return;
-    }
-
-    const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
-
     const bool useSpatialDir =
         dev.spatialDir.active &&
         dev.spatialDir.corrY && dev.spatialDir.corrM && dev.spatialDir.corrC;
+    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+            const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+            if (!srcPix) {
+                continue;
+            }
 
-    float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
-    if (useSpatialDir) {
-        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
-        compute_logE_raw_device(params, rgbIn, logE_raw);
+            const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
+            float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+            if (useSpatialDir) {
+                float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+                compute_logE_raw_device(params, rgbIn, logE_raw);
 
-        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-        const float corrY = dev.spatialDir.corrY[idx];
-        const float corrM = dev.spatialDir.corrM[idx];
-        const float corrC = dev.spatialDir.corrC[idx];
+                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                const float corrY = dev.spatialDir.corrY[idx];
+                const float corrM = dev.spatialDir.corrM[idx];
+                const float corrC = dev.spatialDir.corrC[idx];
 
-        float logE_corr[3] = {
-            logE_raw[0] - corrY,
-            logE_raw[1] - corrM,
-            logE_raw[2] - corrC
-        };
+                float logE_corr[3] = {
+                    logE_raw[0] - corrY,
+                    logE_raw[1] - corrM,
+                    logE_raw[2] - corrC
+                };
 
-        const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-        const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-        const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
+                const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
+                const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
+                const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
 
-        logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB);
-        logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG);
-        logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR);
+                logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB);
+                logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG);
+                logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR);
 
-        const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
-        const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
-        const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
+                const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
+                const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
+                const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
 
-        D_cmy[0] = DC;
-        D_cmy[1] = DM;
-        D_cmy[2] = DY;
-    }
-    else {
-        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
-        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
-        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
-        compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+                D_cmy[0] = DC;
+                D_cmy[1] = DM;
+                D_cmy[2] = DY;
+            }
+            else {
+                float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+                float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
+                float layerPre[3] = { 0.0f, 0.0f, 0.0f };
+                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
 
-        if (dev.dir.active) {
-            float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
-            apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
+                if (dev.dir.active) {
+                    float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
+                    apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
 
-            const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-            const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-            const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
+                    const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
+                    const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
+                    const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
 
-            const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
-            const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
-            const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
+                    const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
+                    const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
+                    const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
 
-            D_cmy[0] = DC;
-            D_cmy[1] = DM;
-            D_cmy[2] = DY;
+                    D_cmy[0] = DC;
+                    D_cmy[1] = DM;
+                    D_cmy[2] = DY;
+                }
+                else {
+                    // Map B/G/R layer densities to C/M/Y dyes
+                    D_cmy[0] = layerPre[2];
+                    D_cmy[1] = layerPre[1];
+                    D_cmy[2] = layerPre[0];
+                }
+            }
+
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            outC[idx] = D_cmy[0];
+            outM[idx] = D_cmy[1];
+            outY[idx] = D_cmy[2];
         }
-        else {
-            // Map B/G/R layer densities to C/M/Y dyes
-            D_cmy[0] = layerPre[2];
-            D_cmy[1] = layerPre[1];
-            D_cmy[2] = layerPre[0];
-        }
     }
-
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-    outC[idx] = D_cmy[0];
-    outM[idx] = D_cmy[1];
-    outY[idx] = D_cmy[2];
 }
 
 __global__ void grain_clear_kernel(float* out, int n) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!out) {
         return;
     }
-    out[idx] = 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        out[idx] = 0.0f;
+    }
 }
 
 __global__ void grain_accumulate_kernel(float* dst, const float* src, int n) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!dst || !src) {
         return;
     }
-    const float v = dst[idx] + src[idx];
-    dst[idx] = device_isfinite(v) ? v : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float v = dst[idx] + src[idx];
+        dst[idx] = device_isfinite(v) ? v : 0.0f;
+    }
 }
 
 __global__ void grain_add_bias_kernel(float* inOut, int n, float bias) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!inOut) {
         return;
     }
-    const float v = inOut[idx] + bias;
-    inOut[idx] = device_isfinite(v) ? v : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float v = inOut[idx] + bias;
+        inOut[idx] = device_isfinite(v) ? v : 0.0f;
+    }
 }
 
 __global__ void grain_multiply_kernel(float* inOut, const float* mult, int n) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!inOut || !mult) {
         return;
     }
-    const float v = inOut[idx] * mult[idx];
-    inOut[idx] = device_isfinite(v) ? v : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float v = inOut[idx] * mult[idx];
+        inOut[idx] = device_isfinite(v) ? v : 0.0f;
+    }
 }
 
 __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, float amplitude) {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!inOut || !sub) {
         return;
     }
@@ -851,8 +835,10 @@ __global__ void grain_subtract_kernel(float* inOut, const float* sub, int n, flo
     if (a < 0.0f) {
         a = 0.0f;
     }
-    const float v = (inOut[idx] - sub[idx]) * a;
-    inOut[idx] = device_isfinite(v) ? v : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float v = (inOut[idx] - sub[idx]) * a;
+        inOut[idx] = device_isfinite(v) ? v : 0.0f;
+    }
 }
 
 __global__ void grain_mix_delta_kernel(
@@ -863,19 +849,17 @@ __global__ void grain_mix_delta_kernel(
     float wCoarse,
     float gain)
 {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!outDelta || !fineDelta || !coarseDelta) {
         return;
     }
     const float w = fminf(fmaxf(wCoarse, 0.0f), 1.0f);
     const float g = device_isfinite(gain) ? gain : 1.0f;
-    const float fine = fineDelta[idx];
-    const float coarse = coarseDelta[idx];
-    const float v = g * ((1.0f - w) * fine + w * coarse);
-    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float fine = fineDelta[idx];
+        const float coarse = coarseDelta[idx];
+        const float v = g * ((1.0f - w) * fine + w * coarse);
+        outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+    }
 }
 
 __global__ void grain_mix_delta3_kernel(
@@ -889,10 +873,6 @@ __global__ void grain_mix_delta3_kernel(
     float gain,
     float amplitude)
 {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!outDelta || !fineDelta || !midDelta || !coarseDelta) {
         return;
     }
@@ -907,11 +887,13 @@ __global__ void grain_mix_delta3_kernel(
     if (a < 0.0f) {
         a = 0.0f;
     }
-    const float fine = fineDelta[idx];
-    const float mid = midDelta[idx];
-    const float coarse = coarseDelta[idx];
-    const float v = a * g * (wF * fine + wM * mid + wC * coarse);
-    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float fine = fineDelta[idx];
+        const float mid = midDelta[idx];
+        const float coarse = coarseDelta[idx];
+        const float v = a * g * (wF * fine + wM * mid + wC * coarse);
+        outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+    }
 }
 
 __global__ void grain_mix_shared_kernel(
@@ -923,10 +905,6 @@ __global__ void grain_mix_shared_kernel(
     float wInd,
     float amplitude)
 {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!outDelta) {
         return;
     }
@@ -936,10 +914,12 @@ __global__ void grain_mix_shared_kernel(
     if (a < 0.0f) {
         a = 0.0f;
     }
-    const float shared = (sharedDelta && ws > 0.0f) ? sharedDelta[idx] : 0.0f;
-    const float ind = (indDelta && wi > 0.0f) ? indDelta[idx] : 0.0f;
-    const float v = a * (ws * shared + wi * ind);
-    outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float shared = (sharedDelta && ws > 0.0f) ? sharedDelta[idx] : 0.0f;
+        const float ind = (indDelta && wi > 0.0f) ? indDelta[idx] : 0.0f;
+        const float v = a * (ws * shared + wi * ind);
+        outDelta[idx] = device_isfinite(v) ? v : 0.0f;
+    }
 }
 
 __global__ void grain_debug_encode_avg3_kernel(
@@ -953,26 +933,24 @@ __global__ void grain_debug_encode_avg3_kernel(
     float offset,
     float scale)
 {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) {
-        return;
-    }
     if (!outR || !outG || !outB || !in0 || !in1 || !in2) {
         return;
     }
-    const float v0 = in0[idx];
-    const float v1 = in1[idx];
-    const float v2 = in2[idx];
-    float avg = (v0 + v1 + v2) * (1.0f / 3.0f);
-    if (!device_isfinite(avg)) {
-        avg = 0.0f;
-    }
     const float s = device_isfinite(scale) ? scale : 1.0f;
     const float o = device_isfinite(offset) ? offset : 0.0f;
-    const float out = o + avg * s;
-    outR[idx] = out;
-    outG[idx] = out;
-    outB[idx] = out;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += blockDim.x * gridDim.x) {
+        const float v0 = in0[idx];
+        const float v1 = in1[idx];
+        const float v2 = in2[idx];
+        float avg = (v0 + v1 + v2) * (1.0f / 3.0f);
+        if (!device_isfinite(avg)) {
+            avg = 0.0f;
+        }
+        const float out = o + avg * s;
+        outR[idx] = out;
+        outG[idx] = out;
+        outB[idx] = out;
+    }
 }
 
 __global__ void grain_apply_simple_kernel(
@@ -1193,12 +1171,6 @@ __global__ void develop_film_density_from_raw_kernel(
 {
     const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= params.width || y >= params.height) {
-        return;
-    }
-
     if (!inB || !inG || !inR || !outC || !outM || !outY) {
         return;
     }
@@ -1208,74 +1180,77 @@ __global__ void develop_film_density_from_raw_kernel(
         return;
     }
 
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-    const float filmRaw[3] = { inB[idx], inG[idx], inR[idx] };
-
     const bool useSpatialDir =
         dev.spatialDir.active &&
         dev.spatialDir.corrY && dev.spatialDir.corrM && dev.spatialDir.corrC;
+    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            const float filmRaw[3] = { inB[idx], inG[idx], inR[idx] };
 
-    float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
-    if (useSpatialDir) {
-        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
-        compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
+            float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+            if (useSpatialDir) {
+                float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+                compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
 
-        const float corrY = dev.spatialDir.corrY[idx];
-        const float corrM = dev.spatialDir.corrM[idx];
-        const float corrC = dev.spatialDir.corrC[idx];
+                const float corrY = dev.spatialDir.corrY[idx];
+                const float corrM = dev.spatialDir.corrM[idx];
+                const float corrC = dev.spatialDir.corrC[idx];
 
-        float logE_corr[3] = {
-            logE_raw[0] - corrY,
-            logE_raw[1] - corrM,
-            logE_raw[2] - corrC
-        };
+                float logE_corr[3] = {
+                    logE_raw[0] - corrY,
+                    logE_raw[1] - corrM,
+                    logE_raw[2] - corrC
+                };
 
-        const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-        const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-        const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
+                const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
+                const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
+                const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
 
-        logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB);
-        logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG);
-        logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR);
+                logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB);
+                logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG);
+                logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR);
 
-        const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
-        const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
-        const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
+                const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
+                const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
+                const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
 
-        D_cmy[0] = DC;
-        D_cmy[1] = DM;
-        D_cmy[2] = DY;
-    }
-    else {
-        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
-        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
-        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
-        compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
+                D_cmy[0] = DC;
+                D_cmy[1] = DM;
+                D_cmy[2] = DY;
+            }
+            else {
+                float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+                float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
+                float layerPre[3] = { 0.0f, 0.0f, 0.0f };
+                compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
 
-        if (dev.dir.active) {
-            float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
-            apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
+                if (dev.dir.active) {
+                    float logE_corr[3] = { logE_sanitized[0], logE_sanitized[1], logE_sanitized[2] };
+                    apply_dir_runtime_logE_device(logE_corr, layerPre, dev.dir, dev.densB, dev.densG, dev.densR);
 
-            const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-            const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-            const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
+                    const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
+                    const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
+                    const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
 
-            const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
-            const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
-            const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
+                    const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
+                    const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
+                    const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
 
-            D_cmy[0] = DC;
-            D_cmy[1] = DM;
-            D_cmy[2] = DY;
+                    D_cmy[0] = DC;
+                    D_cmy[1] = DM;
+                    D_cmy[2] = DY;
+                }
+                else {
+                    D_cmy[0] = layerPre[2];
+                    D_cmy[1] = layerPre[1];
+                    D_cmy[2] = layerPre[0];
+                }
+            }
+
+            outC[idx] = D_cmy[0];
+            outM[idx] = D_cmy[1];
+            outY[idx] = D_cmy[2];
         }
-        else {
-            D_cmy[0] = layerPre[2];
-            D_cmy[1] = layerPre[1];
-            D_cmy[2] = layerPre[0];
-        }
     }
-
-    outC[idx] = D_cmy[0];
-    outM[idx] = D_cmy[1];
-    outY[idx] = D_cmy[2];
 }

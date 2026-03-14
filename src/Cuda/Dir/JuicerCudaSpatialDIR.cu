@@ -90,11 +90,6 @@ namespace {
         float* corrM,
         float* corrC)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
-        if (x >= params.width || y >= params.height) {
-            return;
-        }
         if (!params.src || params.srcRowBytes == 0) {
             return;
         }
@@ -108,28 +103,32 @@ namespace {
         }
 
         const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-        const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-        const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
-        if (!srcPix) {
-            return;
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+                const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+                if (!srcPix) {
+                    continue;
+                }
+
+                const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
+                float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
+                float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
+                float layerPre[3] = { 0.0f, 0.0f, 0.0f };
+                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+
+                const float D_cmy[3] = { layerPre[2], layerPre[1], layerPre[0] };
+                const float dYMC[3] = { D_cmy[2], D_cmy[1], D_cmy[0] };
+
+                float outCorr[3] = { 0.0f, 0.0f, 0.0f };
+                compute_dir_corrections_device(params.filmDevelop.dir, dYMC, outCorr);
+
+                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                corrY[idx] = outCorr[0];
+                corrM[idx] = outCorr[1];
+                corrC[idx] = outCorr[2];
+            }
         }
-
-        const float rgbIn[3] = { srcPix[0], srcPix[1], srcPix[2] };
-        float logE_raw[3] = { 0.0f, 0.0f, 0.0f };
-        float logE_sanitized[3] = { 0.0f, 0.0f, 0.0f };
-        float layerPre[3] = { 0.0f, 0.0f, 0.0f };
-        compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
-
-        const float D_cmy[3] = { layerPre[2], layerPre[1], layerPre[0] };
-        const float dYMC[3] = { D_cmy[2], D_cmy[1], D_cmy[0] };
-
-        float outCorr[3] = { 0.0f, 0.0f, 0.0f };
-        compute_dir_corrections_device(params.filmDevelop.dir, dYMC, outCorr);
-
-        const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-        corrY[idx] = outCorr[0];
-        corrM[idx] = outCorr[1];
-        corrC[idx] = outCorr[2];
     }
 
     __global__ void spatial_dir_blur_vertical_clamp_kernel(

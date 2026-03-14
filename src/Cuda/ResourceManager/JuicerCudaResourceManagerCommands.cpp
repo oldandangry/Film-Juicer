@@ -69,6 +69,630 @@ std::string commands_error_or_message(const std::string& error, const char* fall
     return error;
 }
 
+struct AutoExposureOwnershipObservation {
+    ShadowHistoryKey ownershipKey{};
+    bool hadPrevious = false;
+    bool metadataHit = false;
+};
+
+AutoExposureOwnershipObservation observe_auto_exposure_ownership(
+    const SubmissionTransaction& transaction,
+    std::uint64_t normalizedKeyHash,
+    int meterWidth,
+    int meterHeight) {
+    AutoExposureOwnershipObservation observation{};
+    observation.ownershipKey = ShadowHistoryKey{
+        transaction.snapshot.instanceToken.value,
+        transaction.snapshot.deviceContextKey};
+
+    AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
+    std::lock_guard<std::mutex> lock(ownershipState.mutex);
+    auto it = ownershipState.bySubmissionKey.find(observation.ownershipKey);
+    if (it == ownershipState.bySubmissionKey.end() || !it->second.valid) {
+        return observation;
+    }
+
+    observation.hadPrevious = true;
+    const AutoExposureOwnershipEntry& previous = it->second;
+    observation.metadataHit =
+        previous.keySchemaVersion == transaction.snapshot.keySchemaVersion &&
+        previous.keyHash == normalizedKeyHash &&
+        previous.meterWidth == meterWidth &&
+        previous.meterHeight == meterHeight;
+    return observation;
+}
+
+void publish_auto_exposure_ownership(
+    const SubmissionTransaction& transaction,
+    const ShadowHistoryKey& ownershipKey,
+    std::uint64_t normalizedKeyHash,
+    int meterWidth,
+    int meterHeight) {
+    AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
+    std::lock_guard<std::mutex> lock(ownershipState.mutex);
+    AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
+    entry.valid = true;
+    entry.keyHash = normalizedKeyHash;
+    entry.meterWidth = meterWidth;
+    entry.meterHeight = meterHeight;
+    entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
+}
+
+void trace_auto_exposure_ownership_event(
+    const SubmissionTransaction& transaction,
+    const AutoExposureOwnershipObservation& observation,
+    std::uint64_t normalizedKeyHash,
+    int meterWidth,
+    int meterHeight,
+    const char* action,
+    const char* reason) {
+    telemetry_trace_auto_exposure_ownership(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        "ManagerOnly",
+        action,
+        observation.metadataHit,
+        normalizedKeyHash,
+        meterWidth,
+        meterHeight,
+        observation.hadPrevious,
+        reason);
+}
+
+void complete_tier_circuit_attempt(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const TierCircuitAttempt& attempt,
+    bool success,
+    const char* successReason,
+    const std::string& failureError);
+
+struct UploadWorkEstimate {
+    std::uint64_t growthBytes = 0;
+    std::uint64_t reservationBytes = 0;
+};
+
+template <typename Action>
+bool execute_upload_immutable_command(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::uint64_t pressureRequestBytes,
+    std::uint64_t reservationRequestBytes,
+    bool criticalRequest,
+    const char* overflowMessage,
+    Action&& action,
+    std::string& outError) {
+    if (pressureRequestBytes == std::numeric_limits<std::uint64_t>::max() ||
+        reservationRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+        outError = trace_or_non_empty(overflowMessage, "upload reservation request byte estimation overflow");
+        return false;
+    }
+
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+
+    const char* stageName = trace_or_non_empty(commandName, "command");
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            stageName,
+            PressureLane::Upload,
+            saturating_u64_to_size_t(pressureRequestBytes),
+            criticalRequest,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                stageName,
+                "pressure_pre_upload",
+                reclaimError)) {
+            outError =
+                commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
+            return false;
+        }
+    }
+
+    UploadReservationClaim uploadClaim{};
+    if (!acquire_upload_reservation_with_wait(
+            transaction,
+            stageName,
+            reservationRequestBytes,
+            criticalRequest,
+            uploadClaim,
+            outError)) {
+        return false;
+    }
+    UploadReservationGuard uploadGuard(std::move(uploadClaim));
+    TierCircuitAttempt circuitAttempt{};
+    std::string circuitError;
+    if (!tier_circuit_begin_attempt(
+            transaction,
+            stageName,
+            ResourceTier::Immutable,
+            tier_circuit_blocks_admission(ResourceTier::Immutable),
+            circuitAttempt,
+            circuitError)) {
+        outError = circuitError;
+        return false;
+    }
+
+    const bool ok = action(outError);
+    complete_tier_circuit_attempt(
+        transaction,
+        stageName,
+        circuitAttempt,
+        ok,
+        "ensure_success",
+        outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
+}
+
+template <typename Action>
+bool execute_snapshot_wrapped_command(
+    JuicerCuda::Resources& resources,
+    Action&& action,
+    std::string& outError) {
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(manager_effective_config());
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const bool ok = action(outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
+}
+
+bool acquire_graph_builder_reservation(
+    const SubmissionTransaction& transaction,
+    ResourceManagerState& managerState,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    BuilderReservationClaim& builderClaim,
+    ReservationAttemptInfo& builderReservation) {
+    telemetry_counter_add(managerState.builderReservationRequests, 1);
+    if (!try_acquire_builder_reservation_claim(
+            transaction,
+            BuilderReservationTier::Graph,
+            requestBytes,
+            criticalCurrentFrame,
+            builderClaim,
+            builderReservation)) {
+        const ReservationDecision& decision = builderReservation.decision;
+        const bool fairnessDeferred =
+            (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
+        if (decision.shouldWait) {
+            telemetry_counter_add(managerState.builderReservationDeferred, 1);
+            if (fairnessDeferred) {
+                telemetry_counter_add(managerState.builderFairnessTokenDeferred, 1);
+            }
+            trace_builder_reservation_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                BuilderReservationTier::Graph,
+                requestBytes,
+                builderReservation.bytesInFlight,
+                builderReservation.capBytes,
+                builderReservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                builderReservation.instanceToken,
+                builderReservation.sharedTokens,
+                builderReservation.criticalTokens,
+                0,
+                "deferred_nonresident");
+        } else {
+            telemetry_counter_add(managerState.builderReservationDenied, 1);
+            trace_builder_reservation_decision(
+                transaction,
+                "command_launch_base_pipeline_graph",
+                BuilderReservationTier::Graph,
+                requestBytes,
+                builderReservation.bytesInFlight,
+                builderReservation.capBytes,
+                builderReservation.thresholdBytes,
+                decision,
+                criticalCurrentFrame,
+                builderReservation.instanceToken,
+                builderReservation.sharedTokens,
+                builderReservation.criticalTokens,
+                0,
+                "denied_nonresident");
+        }
+        return false;
+    }
+
+    telemetry_counter_add(managerState.builderReservationGranted, 1);
+    if (JTRACE_ENABLED(3)) {
+        trace_builder_reservation_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            BuilderReservationTier::Graph,
+            requestBytes,
+            builderReservation.bytesInFlight,
+            builderReservation.capBytes,
+            builderReservation.thresholdBytes,
+            builderReservation.decision,
+            criticalCurrentFrame,
+            builderReservation.instanceToken,
+            builderReservation.sharedTokens,
+            builderReservation.criticalTokens,
+            0,
+            "admitted");
+    }
+    return true;
+}
+
+template <typename Action, typename PolicyFailureFallback>
+bool execute_upload_lut_command(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::uint64_t pressureRequestBytes,
+    std::uint64_t reservationRequestBytes,
+    bool criticalRequest,
+    const char* overflowMessage,
+    bool captureMemorySnapshots,
+    bool publishInitialSnapshot,
+    Action&& action,
+    PolicyFailureFallback&& policyFailureFallback,
+    std::string& outError) {
+    if (pressureRequestBytes == std::numeric_limits<std::uint64_t>::max() ||
+        reservationRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+        outError = trace_or_non_empty(overflowMessage, "upload reservation request byte estimation overflow");
+        return false;
+    }
+
+    if (publishInitialSnapshot) {
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    }
+
+    const char* stageName = trace_or_non_empty(commandName, "command");
+    auto try_policy_fallback = [&](const char* triggerReason) -> bool {
+        if (!policyFailureFallback(triggerReason)) {
+            return false;
+        }
+        outError.clear();
+        return true;
+    };
+
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            stageName,
+            PressureLane::Upload,
+            saturating_u64_to_size_t(pressureRequestBytes),
+            criticalRequest,
+            requestPreReclaim,
+            outError)) {
+        return try_policy_fallback("pressure_gate_reject");
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                stageName,
+                "pressure_pre_upload",
+                reclaimError)) {
+            outError =
+                commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
+            return try_policy_fallback("pressure_pre_upload_reclaim_failed");
+        }
+    }
+
+    UploadReservationClaim uploadClaim{};
+    if (!acquire_upload_reservation_with_wait(
+            transaction,
+            stageName,
+            reservationRequestBytes,
+            criticalRequest,
+            uploadClaim,
+            outError)) {
+        return try_policy_fallback("upload_reservation_reject");
+    }
+    UploadReservationGuard uploadGuard(std::move(uploadClaim));
+
+    BuilderReservationClaim builderClaim{};
+    if (!acquire_builder_reservation_with_wait(
+            transaction,
+            stageName,
+            BuilderReservationTier::Lut,
+            reservationRequestBytes,
+            criticalRequest,
+            builderClaim,
+            outError)) {
+        return try_policy_fallback("builder_reservation_reject");
+    }
+    BuilderReservationGuard builderGuard(std::move(builderClaim));
+
+    TierCircuitAttempt circuitAttempt{};
+    std::string circuitError;
+    if (!tier_circuit_begin_attempt(
+            transaction,
+            stageName,
+            ResourceTier::Lut,
+            tier_circuit_blocks_admission(ResourceTier::Lut),
+            circuitAttempt,
+            circuitError)) {
+        outError = circuitError;
+        return try_policy_fallback("tier_circuit_blocked");
+    }
+
+    const bool ok = action(outError);
+    complete_tier_circuit_attempt(
+        transaction,
+        stageName,
+        circuitAttempt,
+        ok,
+        "ensure_success",
+        outError);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    return ok;
+}
+
+template <typename Action>
+bool execute_scratch_growth_command(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::size_t growthBytes,
+    ScratchWorkClass workClass,
+    int width,
+    int height,
+    bool captureMemorySnapshots,
+    Action&& action,
+    std::string& outError) {
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+
+    bool requestPreReclaim = false;
+    if (!enforce_pressure_gate(
+            transaction,
+            resources,
+            commandName,
+            PressureLane::Builder,
+            growthBytes,
+            true,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+    if (requestPreReclaim) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                commandName,
+                "pressure_pre_growth",
+                reclaimError)) {
+            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
+            return false;
+        }
+    }
+
+    BuilderReservationClaim builderClaim{};
+    if (!acquire_builder_reservation_with_wait(
+            transaction,
+            commandName,
+            BuilderReservationTier::Scratch,
+            static_cast<std::uint64_t>(growthBytes),
+            true,
+            builderClaim,
+            outError)) {
+        return false;
+    }
+    BuilderReservationGuard builderGuard(std::move(builderClaim));
+
+    ScratchPolicyClaim scratchClaim{};
+    if (!acquire_scratch_policy_claim_with_wait(
+            transaction,
+            commandName,
+            workClass,
+            width,
+            height,
+            growthBytes,
+            true,
+            scratchClaim,
+            outError)) {
+        return false;
+    }
+    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
+
+    ResourceManagerState& managerState = global_state();
+    std::uint32_t attempts = 0;
+    bool fragmentationRecoveryTriggered = false;
+    bool fragmentationRecoveryPendingOutcome = false;
+    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
+        if (!fragmentationRecoveryPendingOutcome) {
+            return;
+        }
+        if (success) {
+            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
+        } else {
+            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
+        }
+        trace_fragmentation_recovery(
+            transaction,
+            commandName,
+            attempts,
+            growthBytes,
+            0,
+            0,
+            0,
+            success,
+            "outcome",
+            reason);
+        fragmentationRecoveryPendingOutcome = false;
+    };
+
+    while (true) {
+        outError.clear();
+        TierCircuitAttempt circuitAttempt{};
+        std::string circuitError;
+        if (!tier_circuit_begin_attempt(
+                transaction,
+                commandName,
+                ResourceTier::Scratch,
+                tier_circuit_blocks_admission(ResourceTier::Scratch),
+                circuitAttempt,
+                circuitError)) {
+            outError = circuitError;
+            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
+            return false;
+        }
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+        if (action(outError)) {
+            complete_tier_circuit_attempt(
+                transaction,
+                commandName,
+                circuitAttempt,
+                true,
+                "ensure_success",
+                outError);
+            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+            if (attempts > 0) {
+                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
+            }
+            finalizeFragmentationOutcome(true, "allocation_retry_success");
+            return true;
+        }
+        complete_tier_circuit_attempt(
+            transaction,
+            commandName,
+            circuitAttempt,
+            false,
+            "ensure_success",
+            outError);
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+
+        const bool allocatorOom = is_allocator_oom_error(outError);
+        if (!allocatorOom) {
+            finalizeFragmentationOutcome(false, "non_allocator_error");
+            return false;
+        }
+        if (attempts >= cfg.reclaimRetryMaxAttempts) {
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        commandName,
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        commandName,
+                        growthBytes);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
+            }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                commandName,
+                growthBytes);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+            finalizeFragmentationOutcome(false, "allocator_oom_final");
+            return false;
+        }
+
+        ++attempts;
+        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
+        std::size_t reclaimedBytes = 0;
+        std::string reclaimError;
+        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
+            trace_reap_pass(
+                transaction,
+                commandName,
+                reclaimedBytes,
+                false,
+                commands_error_or_cstr(reclaimError, "reap_failed"));
+            trace_budget_reclaim_retry(
+                transaction,
+                commandName,
+                attempts,
+                reclaimedBytes,
+                false,
+                commands_error_or_cstr(reclaimError, "reap_failed"));
+            if (!reclaimError.empty()) {
+                outError += " | reclaim_retry_failed: " + reclaimError;
+            }
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+            finalizeFragmentationOutcome(false, "reap_retry_failed");
+            return false;
+        }
+
+        if (reclaimedBytes > 0) {
+            telemetry_counter_add(managerState.retireReapPasses, 1);
+            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
+        }
+        trace_reap_pass(
+            transaction,
+            commandName,
+            reclaimedBytes,
+            true,
+            reclaim_retry_reason(reclaimedBytes));
+        trace_budget_reclaim_retry(
+            transaction,
+            commandName,
+            attempts,
+            reclaimedBytes,
+            true,
+            reclaim_retry_reason(reclaimedBytes));
+        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+
+        if (reclaimedBytes == 0) {
+            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
+                std::string recoveryError;
+                if (!run_fragmentation_recovery_once(
+                        transaction,
+                        resources,
+                        commandName,
+                        growthBytes,
+                        attempts,
+                        captureMemorySnapshots,
+                        recoveryError)) {
+                    if (!recoveryError.empty()) {
+                        outError += " | fragmentation_recovery_failed: " + recoveryError;
+                    }
+                    record_allocator_oom_headroom_observation(
+                        transaction,
+                        commandName,
+                        growthBytes);
+                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+                    return false;
+                }
+                fragmentationRecoveryTriggered = true;
+                fragmentationRecoveryPendingOutcome = true;
+                continue;
+            }
+            record_allocator_oom_headroom_observation(
+                transaction,
+                commandName,
+                growthBytes);
+            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
+            finalizeFragmentationOutcome(false, "reap_no_progress");
+            return false;
+        }
+    }
+}
+
 void complete_tier_circuit_attempt(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -113,6 +737,23 @@ void add_estimate_bytes_u64(std::uint64_t bytes, std::uint64_t& total, bool& ove
         return;
     }
     total = next;
+}
+
+void add_count_upload_estimate_bytes(
+    std::uint64_t count,
+    std::size_t elementSize,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (overflow || count == 0 || elementSize == 0) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(count, static_cast<std::uint64_t>(elementSize), bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
 }
 
 std::uint64_t commands_preferred_upload_core_hash(const WorkingState& ws) noexcept {
@@ -212,11 +853,16 @@ std::uint64_t commands_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t earli
     return 0;
 }
 
-std::uint64_t commands_uncached_bytes(bool cached, std::uint64_t bytes) noexcept {
-    if (cached) {
-        return 0;
+UploadWorkEstimate commands_uncached_upload_work(
+    bool cached,
+    std::uint64_t growthBytes,
+    std::uint64_t reservationBytes) noexcept {
+    UploadWorkEstimate estimate{};
+    if (!cached) {
+        estimate.growthBytes = growthBytes;
+        estimate.reservationBytes = reservationBytes;
     }
-    return bytes;
+    return estimate;
 }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -293,89 +939,437 @@ void add_scan_medium_upload_estimate_bytes(
     }
 }
 
-std::uint64_t estimate_upload_core_request_bytes(
+void add_curve_growth_estimate_bytes(
+    const JuicerCuda::DeviceCurve& dst,
+    const Spectral::Curve& src,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (src.lambda_nm.empty() || src.linear.empty() || src.lambda_nm.size() != src.linear.size()) {
+        return;
+    }
+    const int n = static_cast<int>(src.lambda_nm.size());
+    if (n <= 0) {
+        return;
+    }
+    if (dst.x && dst.y && dst.n == n) {
+        return;
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(2u * sizeof(float)), bytes)) {
+        total = std::numeric_limits<std::uint64_t>::max();
+        overflow = true;
+        return;
+    }
+    add_estimate_bytes_u64(bytes, total, overflow);
+}
+
+void add_array_growth_estimate_bytes(
+    const float* dst,
+    int currentN,
+    int requestedN,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (requestedN <= 0) {
+        return;
+    }
+    if (dst && currentN == requestedN) {
+        return;
+    }
+    add_count_upload_estimate_bytes(
+        static_cast<std::uint64_t>(requestedN),
+        sizeof(float),
+        total,
+        overflow);
+}
+
+void add_spectral_sample_growth_estimate_bytes(
+    const JuicerCuda::DeviceCurve& dst,
+    const std::vector<float>& src,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    if (src.empty()) {
+        return;
+    }
+    add_array_growth_estimate_bytes(
+        dst.y,
+        dst.n,
+        static_cast<int>(src.size()),
+        total,
+        overflow);
+}
+
+void add_density_layers_growth_estimate_bytes(
+    const JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const int nR = static_cast<int>(ws.densR.linear.size());
+    const int nG = static_cast<int>(ws.densG.linear.size());
+    const int nB = static_cast<int>(ws.densB.linear.size());
+    const int layerChannelN[3] = {nR, nG, nB};
+    bool sizesOk = ws.hasDensityCurvesLayers && (nR > 0 && nG > 0 && nB > 0);
+    if (sizesOk) {
+        for (int layer = 0; layer < 3; ++layer) {
+            sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][0].size()) == nR);
+            sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][1].size()) == nG);
+            sizesOk = sizesOk && (static_cast<int>(ws.densityCurvesLayers[layer][2].size()) == nB);
+        }
+    }
+    if (!sizesOk) {
+        return;
+    }
+
+    bool canReuse = resources.hasDensityCurvesLayers != 0;
+    if (canReuse) {
+        for (int ch = 0; ch < 3; ++ch) {
+            canReuse = canReuse && (resources.densityCurvesLayersChannelN[ch] == layerChannelN[ch]);
+        }
+        for (int layer = 0; layer < 3 && canReuse; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                canReuse = canReuse && (resources.densityCurvesLayers[layer][ch] != nullptr);
+            }
+        }
+    }
+    if (canReuse) {
+        return;
+    }
+
+    for (int layer = 0; layer < 3; ++layer) {
+        for (int ch = 0; ch < 3; ++ch) {
+            add_count_upload_estimate_bytes(
+                static_cast<std::uint64_t>(layerChannelN[ch]),
+                sizeof(float),
+                total,
+                overflow);
+        }
+    }
+}
+
+void add_tables_growth_estimate_bytes(
+    const JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const int K = ws.tablesRef.K;
+    const bool want =
+        ws.spdReady &&
+        K == Spectral::gShape.K &&
+        static_cast<int>(ws.tablesRef.Ax.size()) == K &&
+        static_cast<int>(ws.tablesRef.Ay.size()) == K &&
+        static_cast<int>(ws.tablesRef.Az.size()) == K &&
+        static_cast<int>(ws.tablesRef.illum.size()) == K;
+    if (!want) {
+        return;
+    }
+    const bool canReuse =
+        resources.tablesK == K &&
+        resources.tablesAx &&
+        resources.tablesAy &&
+        resources.tablesAz &&
+        resources.tablesIllum;
+    if (canReuse) {
+        return;
+    }
+
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+}
+
+void add_scan_medium_growth_estimate_bytes(
+    const JuicerCuda::Resources::DeviceScanMedium& dst,
+    const Scanner::ScannerMediumRuntime& medium,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const Spectral::SpectralTables* t = medium.tables;
+    if (!t || t->K != Spectral::gShape.K) {
+        return;
+    }
+    const int K = t->K;
+    const bool arraysOk =
+        static_cast<int>(t->epsC.size()) == K &&
+        static_cast<int>(t->epsM.size()) == K &&
+        static_cast<int>(t->epsY.size()) == K &&
+        static_cast<int>(t->Ax.size()) == K &&
+        static_cast<int>(t->Ay.size()) == K &&
+        static_cast<int>(t->Az.size()) == K &&
+        (!t->hasBaseline || static_cast<int>(t->baseMin.size()) == K);
+    if (!arraysOk) {
+        return;
+    }
+
+    const bool haveCoreArrays =
+        dst.tables.epsC &&
+        dst.tables.epsM &&
+        dst.tables.epsY &&
+        dst.tables.Ax &&
+        dst.tables.Ay &&
+        dst.tables.Az;
+    const bool canReuseCore = (dst.tables.K == K) && haveCoreArrays;
+    if (!canReuseCore) {
+        for (int i = 0; i < 6; ++i) {
+            add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+        }
+    }
+
+    if (t->hasBaseline && !(dst.tables.baseMin && dst.tables.K == K)) {
+        add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
+    }
+}
+
+void add_print_payload_growth_estimate_bytes(
+    const JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    std::uint64_t& total,
+    bool& overflow) noexcept {
+    const Print::Runtime* prt = ws.printRT.get();
+    if (!prt || !Print::profile_is_valid(prt->profile)) {
+        return;
+    }
+    const Print::Profile& p = prt->profile;
+
+    auto add_print_curve_growth = [&](const JuicerCuda::DeviceCurve& dst, const Spectral::Curve& src) {
+        const int n = static_cast<int>(src.lambda_nm.size());
+        const bool want = n > 1 && src.linear.size() == src.lambda_nm.size();
+        if (!want) {
+            return;
+        }
+        add_curve_growth_estimate_bytes(dst, src, total, overflow);
+    };
+
+    add_print_curve_growth(resources.printDcC, p.dcC);
+    add_print_curve_growth(resources.printDcM, p.dcM);
+    add_print_curve_growth(resources.printDcY, p.dcY);
+
+    const int K = Spectral::gShape.K;
+    const bool sensOk =
+        K > 0 &&
+        static_cast<int>(p.sensC_log.linear.size()) == K &&
+        static_cast<int>(p.sensM_log.linear.size()) == K &&
+        static_cast<int>(p.sensY_log.linear.size()) == K;
+    if (!sensOk) {
+        return;
+    }
+
+    add_spectral_sample_growth_estimate_bytes(resources.printSensC, p.sensC_log.linear, total, overflow);
+    add_spectral_sample_growth_estimate_bytes(resources.printSensM, p.sensM_log.linear, total, overflow);
+    add_spectral_sample_growth_estimate_bytes(resources.printSensY, p.sensY_log.linear, total, overflow);
+}
+
+UploadWorkEstimate estimate_upload_core_request_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws) noexcept {
+    UploadWorkEstimate estimate{};
     const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     const std::uint64_t wsDirHash = ws.dirHash;
     if (wsCoreHash == 0 || wsDirHash == 0) {
-        return kUploadReservationThresholdDefaultBytes;
+        estimate.reservationBytes = kUploadReservationThresholdDefaultBytes;
+        return estimate;
     }
 
     bool coreUpToDate = false;
     bool dirUpToDate = false;
     bool needStbnUpload = false;
     bool needWangUpload = false;
+    bool needHanatosUpload = false;
+    bool needHanatosIntegratedUpload = false;
+    bool needMallettUpload = false;
+    std::uint64_t hanatosUploadCount = 0;
+    std::uint64_t hanatosIntegratedUploadCount = 0;
+    std::uint64_t mallettUploadCount = 0;
+    Spectral::SpectralContext& ctx = Spectral::context();
+    const bool hanatosAvailable = ctx.hanatosAvailable.load(std::memory_order_acquire);
+    const int hanatosN = ctx.hanSpectra.size;
+    const int hanatosK = ctx.hanSpectra.numSamples;
+    const bool wantHanatos =
+        hanatosAvailable &&
+        hanatosN > 0 &&
+        hanatosK == Spectral::kNumSamples &&
+        !ctx.hanSpectra.data.empty();
+    const bool wantHanatosIntegrated =
+        wantHanatos &&
+        static_cast<int>(ws.sensB.linear.size()) == hanatosK &&
+        static_cast<int>(ws.sensG.linear.size()) == hanatosK &&
+        static_cast<int>(ws.sensR.linear.size()) == hanatosK;
+    const bool mallettAvailable = ctx.mallettAvailable.load(std::memory_order_acquire);
+    const int mallettK = ctx.mallettBasis.rows;
+    const int mallettCols = ctx.mallettBasis.cols;
+    const bool wantMallett =
+        mallettAvailable &&
+        mallettK == Spectral::kNumSamples &&
+        mallettCols == 3 &&
+        !ctx.mallettBasis.data.empty();
+    bool overflow = false;
     {
         std::lock_guard<std::mutex> lock(resources.m);
         coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
         dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
         needStbnUpload = (resources.stbnData == nullptr);
         needWangUpload = (resources.wangTilesData == nullptr) || (resources.wangLutData == nullptr);
-    }
+        needHanatosUpload = wantHanatos &&
+                            (!resources.hanatosLut || resources.hanatosN != hanatosN);
+        needHanatosIntegratedUpload = wantHanatosIntegrated &&
+                                      ((!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != hanatosN) ||
+                                       (resources.hanatosIntegratedBuildCounter != ws.buildCounter));
+        needMallettUpload = wantMallett &&
+                            (!resources.mallettBasis || resources.mallettBasisK != mallettK);
+        if (needStbnUpload) {
+            add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimate.growthBytes, overflow);
+            add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimate.reservationBytes, overflow);
+        }
+        if (needWangUpload) {
+            add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimate.growthBytes, overflow);
+            add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimate.reservationBytes, overflow);
+            add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimate.growthBytes, overflow);
+            add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimate.reservationBytes, overflow);
+        }
 
-    std::uint64_t estimateBytes = 0;
-    bool overflow = false;
-    if (needStbnUpload) {
-        add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimateBytes, overflow);
-    }
-    if (needWangUpload) {
-        add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimateBytes, overflow);
-        add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimateBytes, overflow);
-    }
+        if (coreUpToDate && dirUpToDate) {
+            if (overflow) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+            }
+            return estimate;
+        }
 
-    if (coreUpToDate && dirUpToDate) {
-        return estimateBytes;
-    }
+        if (coreUpToDate && !dirUpToDate) {
+            add_curve_growth_estimate_bytes(resources.dirDensB, ws.dirDensB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensG, ws.dirDensG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensR, ws.dirDensR, estimate.growthBytes, overflow);
+        } else {
+            add_curve_growth_estimate_bytes(resources.densB, ws.densB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.densG, ws.densG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.densR, ws.densR, estimate.growthBytes, overflow);
+            add_density_layers_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensB, ws.dirDensB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensG, ws.dirDensG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.dirDensR, ws.dirDensR, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.sensB, ws.sensB, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.sensG, ws.sensG, estimate.growthBytes, overflow);
+            add_curve_growth_estimate_bytes(resources.sensR, ws.sensR, estimate.growthBytes, overflow);
+            add_tables_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
+            add_scan_medium_growth_estimate_bytes(resources.scanNegative, ws.negativeMediumRuntime, estimate.growthBytes, overflow);
+            add_scan_medium_growth_estimate_bytes(resources.scanPrint, ws.printMediumRuntime, estimate.growthBytes, overflow);
+            add_print_payload_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
+        }
 
-    if (coreUpToDate && !dirUpToDate) {
-        add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
-        return estimateBytes;
-    }
+        if (wantHanatos) {
+            std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
+            if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
+                !mul_u64_checked(count, static_cast<std::uint64_t>(hanatosK), count)) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+                return estimate;
+            }
+            hanatosUploadCount = count;
+        }
+        if (wantHanatosIntegrated) {
+            std::uint64_t count = static_cast<std::uint64_t>(hanatosN);
+            if (!mul_u64_checked(count, static_cast<std::uint64_t>(hanatosN), count) ||
+                !mul_u64_checked(count, 4ull, count)) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+                return estimate;
+            }
+            hanatosIntegratedUploadCount = count;
+        }
+        if (wantMallett) {
+            std::uint64_t count = static_cast<std::uint64_t>(mallettK);
+            if (!mul_u64_checked(count, 3ull, count)) {
+                estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+                estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+                return estimate;
+            }
+            mallettUploadCount = count;
+        }
 
-    add_curve_upload_estimate_bytes(ws.densB, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.densG, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.densR, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.dirDensB, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.dirDensG, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.dirDensR, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.sensB, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.sensG, estimateBytes, overflow);
-    add_curve_upload_estimate_bytes(ws.sensR, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.Ax, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.Ay, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.Az, estimateBytes, overflow);
-    add_vector_upload_estimate_bytes(ws.tablesRef.illum, estimateBytes, overflow);
-
-    for (int layer = 0; layer < 3; ++layer) {
-        for (int ch = 0; ch < 3; ++ch) {
-            add_vector_upload_estimate_bytes(ws.densityCurvesLayers[layer][ch], estimateBytes, overflow);
+        if (needHanatosUpload) {
+            add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimate.growthBytes, overflow);
+        }
+        if (wantHanatosIntegrated &&
+            (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != hanatosN)) {
+            add_count_upload_estimate_bytes(
+                hanatosIntegratedUploadCount,
+                sizeof(float),
+                estimate.growthBytes,
+                overflow);
+        }
+        if (needMallettUpload) {
+            add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimate.growthBytes, overflow);
         }
     }
 
-    add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimateBytes, overflow);
-    add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimateBytes, overflow);
+    if (overflow) {
+        estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+        estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+        return estimate;
+    }
 
-    if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
-        const Print::Profile& p = ws.printRT->profile;
-        add_curve_upload_estimate_bytes(p.dcC, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(p.dcM, estimateBytes, overflow);
-        add_curve_upload_estimate_bytes(p.dcY, estimateBytes, overflow);
-        add_vector_upload_estimate_bytes(p.sensC_log.linear, estimateBytes, overflow);
-        add_vector_upload_estimate_bytes(p.sensM_log.linear, estimateBytes, overflow);
-        add_vector_upload_estimate_bytes(p.sensY_log.linear, estimateBytes, overflow);
+    if (coreUpToDate && !dirUpToDate) {
+        add_curve_upload_estimate_bytes(ws.dirDensB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensR, estimate.reservationBytes, overflow);
+    } else if (!coreUpToDate) {
+        add_curve_upload_estimate_bytes(ws.densB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.densG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.densR, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.dirDensR, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.sensB, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.sensG, estimate.reservationBytes, overflow);
+        add_curve_upload_estimate_bytes(ws.sensR, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.Ax, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.Ay, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.Az, estimate.reservationBytes, overflow);
+        add_vector_upload_estimate_bytes(ws.tablesRef.illum, estimate.reservationBytes, overflow);
+
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                add_vector_upload_estimate_bytes(ws.densityCurvesLayers[layer][ch], estimate.reservationBytes, overflow);
+            }
+        }
+
+        add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimate.reservationBytes, overflow);
+        add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimate.reservationBytes, overflow);
+
+        if (needHanatosUpload) {
+            add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+        if (needHanatosIntegratedUpload) {
+            add_count_upload_estimate_bytes(hanatosIntegratedUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+        if (needMallettUpload) {
+            add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+
+        if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
+            const Print::Profile& p = ws.printRT->profile;
+            add_curve_upload_estimate_bytes(p.dcC, estimate.reservationBytes, overflow);
+            add_curve_upload_estimate_bytes(p.dcM, estimate.reservationBytes, overflow);
+            add_curve_upload_estimate_bytes(p.dcY, estimate.reservationBytes, overflow);
+            add_vector_upload_estimate_bytes(p.sensC_log.linear, estimate.reservationBytes, overflow);
+            add_vector_upload_estimate_bytes(p.sensM_log.linear, estimate.reservationBytes, overflow);
+            add_vector_upload_estimate_bytes(p.sensY_log.linear, estimate.reservationBytes, overflow);
+        }
+    }
+
+    if (overflow) {
+        estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
+        estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
+        return estimate;
     }
 
     // Keep a deterministic floor so large rebuilds always enter upload reservation admission.
-    if (estimateBytes < kUploadReservationThresholdDefaultBytes) {
-        estimateBytes = kUploadReservationThresholdDefaultBytes;
+    if (!coreUpToDate &&
+        estimate.reservationBytes < kUploadReservationThresholdDefaultBytes) {
+        estimate.reservationBytes = kUploadReservationThresholdDefaultBytes;
     }
-    return estimateBytes;
+    return estimate;
 }
 
-std::uint64_t estimate_scan_lut_upload_bytes(
+UploadWorkEstimate estimate_scan_lut_upload_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     bool negativeMedium) noexcept {
@@ -385,24 +1379,24 @@ std::uint64_t estimate_scan_lut_upload_bytes(
         ResourceManager::normalize_scan_lut_resolution(staticKey.lutResolution);
     std::uint64_t voxelCount = 0;
     if (!mul_u64_checked(static_cast<std::uint64_t>(res), static_cast<std::uint64_t>(res), voxelCount)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
     if (!mul_u64_checked(voxelCount, static_cast<std::uint64_t>(res), voxelCount)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
     std::uint64_t values = 0;
     if (!mul_u64_checked(voxelCount, 3ull, values)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
     std::uint64_t bytes = 0;
     if (!mul_u64_checked(values, static_cast<std::uint64_t>(sizeof(double)), bytes)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
 
     const Scanner::ScannerMediumRuntime& medium =
         commands_select_scanner_medium_runtime(ws, negativeMedium);
     if (!medium.tables || medium.tables->tablesHash == 0 || medium.range.digest == 0) {
-        return 0;
+        return {};
     }
     const std::uint64_t expectedHash = ResourceManager::make_scan_lut_key_digest(
         static_cast<std::uint32_t>(medium.medium),
@@ -410,17 +1404,22 @@ std::uint64_t estimate_scan_lut_upload_bytes(
         medium.range.digest,
         res);
     if (expectedHash == 0) {
-        return 0;
+        return {};
     }
 
     bool cached = false;
+    bool canOverwriteInPlace = false;
     {
         std::lock_guard<std::mutex> lock(resources.m);
         const JuicerCuda::Resources::DeviceSpectralLut& dst =
             commands_select_scan_lut_slot(resources, negativeMedium);
         cached = dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
+        canOverwriteInPlace = dst.log2XYZ && dst.res == res;
     }
-    return commands_uncached_bytes(cached, bytes);
+    return commands_uncached_upload_work(
+        cached,
+        canOverwriteInPlace ? 0 : bytes,
+        bytes);
 }
 
 bool command_scan_lut_is_cached(
@@ -452,18 +1451,18 @@ bool command_scan_lut_is_cached(
     return dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
 }
 
-std::uint64_t estimate_print_illuminant_upload_bytes(
+UploadWorkEstimate estimate_print_illuminant_upload_bytes(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     const Print::Runtime& prt,
     const Print::Params& params) noexcept {
     const int k = Spectral::gShape.K;
     if (k <= 0) {
-        return 0;
+        return {};
     }
     const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     if (wsCoreHash == 0) {
-        return 0;
+        return {};
     }
     const float yKey = commands_sanitize_filter_shift_step(params.yFilter);
     const float mKey = commands_sanitize_filter_shift_step(params.mFilter);
@@ -471,6 +1470,7 @@ std::uint64_t estimate_print_illuminant_upload_bytes(
     const std::uint64_t neutralFilterHash = commands_neutral_filter_hash_or_default(prt);
 
     bool cached = false;
+    bool canOverwriteInPlace = false;
     {
         std::lock_guard<std::mutex> lock(resources.m);
         cached =
@@ -482,18 +1482,21 @@ std::uint64_t estimate_print_illuminant_upload_bytes(
             resources.printIllumMShiftSteps == mKey &&
             resources.printIllumCShiftSteps == cKey &&
             resources.printIllumNeutralFilterHash == neutralFilterHash;
+        canOverwriteInPlace =
+            resources.printIllumFiltered &&
+            resources.printIllumK == k;
     }
     if (cached) {
-        return 0;
+        return {};
     }
     std::uint64_t bytes = 0;
     if (!mul_u64_checked(
             static_cast<std::uint64_t>(k),
             static_cast<std::uint64_t>(sizeof(float)),
             bytes)) {
-        return std::numeric_limits<std::uint64_t>::max();
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
-    return bytes;
+    return {canOverwriteInPlace ? 0 : bytes, bytes};
 }
 
 bool command_print_illuminant_filtered_is_cached(
@@ -721,6 +1724,21 @@ std::uint64_t estimate_base_graph_request_bytes(const BaseGraphKey& key) noexcep
     return nextBytes;
 }
 
+BaseGraphEntry* find_base_graph_entry(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key) noexcept;
+
+BaseGraphEntry* build_base_graph_entry(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    BasePipelineLaunchFn launchFn,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t largeEntryThresholdBytes,
+    std::uint32_t keepHotMs,
+    std::uint64_t& outKeepHotBypassEvents,
+    std::uint64_t& outKeepHotForcedEvictEvents) noexcept;
+
 bool graph_entry_in_keep_hot_window(
     const BaseGraphEntry& entry,
     std::uint32_t keepHotMs,
@@ -794,6 +1812,390 @@ void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
     bucket.probationHitsByDigest.clear();
     bucket.largeEntryReadmitByDigest.clear();
     bucket.useTick = 0;
+}
+
+bool evaluate_graph_large_entry_readmit(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    std::uint64_t keyDigest,
+    std::uint64_t requestBytes,
+    std::uint64_t graphLargeThresholdBytes,
+    bool criticalCurrentFrame,
+    const ResourceManagerConfigEffective& cfg,
+    ResourceManagerState& managerState,
+    std::uint32_t& outObservedProbationHits) {
+    outObservedProbationHits = 0;
+    auto probationIt = bucket.probationHitsByDigest.find(keyDigest);
+    if (probationIt != bucket.probationHitsByDigest.end()) {
+        outObservedProbationHits = probationIt->second;
+    }
+
+    LargeEntryReadmitDecision readmitDecision{};
+    readmitDecision.enabled =
+        (cfg.largeEntryReadmitCooldownMs > 0) || (cfg.largeEntryGhostHitsForReadmit > 0);
+    readmitDecision.candidate =
+        (graphLargeThresholdBytes > 0) && (requestBytes >= graphLargeThresholdBytes);
+    readmitDecision.criticalCurrentFrame = criticalCurrentFrame;
+    readmitDecision.cooldownMs = cfg.largeEntryReadmitCooldownMs;
+    readmitDecision.ghostHitsRequired = cfg.largeEntryGhostHitsForReadmit;
+    if (readmitDecision.enabled) {
+        readmitDecision.reason = "not_candidate";
+    } else {
+        readmitDecision.reason = "disabled";
+    }
+    if (readmitDecision.enabled && readmitDecision.candidate && !criticalCurrentFrame) {
+        auto readmitIt = bucket.largeEntryReadmitByDigest.find(keyDigest);
+        if (readmitIt != bucket.largeEntryReadmitByDigest.end()) {
+            readmitDecision.hadHistory = true;
+            GraphLargeEntryReadmitState& readmitState = readmitIt->second;
+            const std::uint64_t nowMs = monotonic_time_ms();
+            readmitDecision.ageMs = commands_elapsed_ms_since(nowMs, readmitState.lastEvictedMs);
+            readmitDecision.inCooldown =
+                (cfg.largeEntryReadmitCooldownMs > 0) &&
+                (readmitDecision.ageMs < static_cast<std::uint64_t>(cfg.largeEntryReadmitCooldownMs));
+
+            if (readmitDecision.inCooldown) {
+                if (readmitState.ghostHits < std::numeric_limits<std::uint32_t>::max()) {
+                    ++readmitState.ghostHits;
+                }
+                readmitDecision.observedGhostHits = readmitState.ghostHits;
+                if (cfg.largeEntryGhostHitsForReadmit > 0 &&
+                    readmitState.ghostHits >= cfg.largeEntryGhostHitsForReadmit) {
+                    readmitDecision.ghostBypass = true;
+                    readmitDecision.reason = "ghost_hit_bypass";
+                    bucket.largeEntryReadmitByDigest.erase(readmitIt);
+                } else {
+                    readmitDecision.blocked = true;
+                    readmitDecision.reason = "cooldown_blocked";
+                }
+            } else {
+                readmitDecision.reason = "cooldown_expired";
+                bucket.largeEntryReadmitByDigest.erase(readmitIt);
+            }
+        } else {
+            readmitDecision.reason = "no_history";
+        }
+    } else if (readmitDecision.enabled && readmitDecision.candidate && criticalCurrentFrame) {
+        readmitDecision.reason = "critical_bypass";
+    }
+
+    trace_large_entry_readmit_decision(
+        transaction,
+        "command_launch_base_pipeline_graph",
+        keyDigest,
+        requestBytes,
+        graphLargeThresholdBytes,
+        readmitDecision);
+    if (readmitDecision.ghostBypass) {
+        telemetry_counter_add(managerState.largeEntryReadmitGhostBypassEvents, 1);
+    }
+    if (readmitDecision.blocked) {
+        telemetry_counter_add(managerState.largeEntryReadmitBlockedEvents, 1);
+        return false;
+    }
+    return true;
+}
+
+bool evaluate_graph_cache_admission(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    std::uint64_t keyDigest,
+    std::uint64_t requestBytes,
+    std::uint32_t observedProbationHits,
+    bool criticalCurrentFrame,
+    const ResourceManagerConfigEffective& cfg,
+    ResourceManagerState& managerState) {
+    CacheAdmissionInput admissionInput{};
+    admissionInput.requestBytes = requestBytes;
+    admissionInput.cacheTargetBytes = cfg.managerSoftTargetBytes;
+    admissionInput.maxCacheableEntryBytes = cfg.maxCacheableEntryBytes;
+    admissionInput.maxCacheableEntryPctOfTarget = cfg.maxCacheableEntryPctOfTarget;
+    admissionInput.largeEntryProbationThresholdBytes = cfg.largeEntryProbationThresholdBytes;
+    admissionInput.largeEntryProbationHitsRequired = cfg.largeEntryProbationHitsRequired;
+    admissionInput.observedProbationHits = observedProbationHits;
+    admissionInput.criticalCurrentFrame = criticalCurrentFrame;
+    const CacheAdmissionDecision admissionDecision = classify_cache_admission(admissionInput);
+    const AdmissionChurnSnapshot churnSnapshot = sample_admission_churn_state(
+        transaction,
+        cfg,
+        keyDigest,
+        observedProbationHits);
+    const std::uint32_t churnProbationHitsRequired = effective_probation_hits_required(
+        admissionDecision.probationHitsRequired,
+        churnSnapshot);
+    const bool churnProbationAllowDurable =
+        !admissionDecision.probationApplied ||
+        (next_probation_hits(observedProbationHits) >= churnProbationHitsRequired);
+
+    trace_cache_admission_decision(
+        transaction,
+        "command_launch_base_pipeline_graph",
+        admissionDecision,
+        churnSnapshot,
+        criticalCurrentFrame,
+        requestBytes,
+        observedProbationHits,
+        keyDigest,
+        "graph_miss");
+    if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
+        telemetry_counter_add(managerState.cacheAdmissionTooLargeEvents, 1);
+    }
+    if (admissionDecision.probationApplied) {
+        const std::uint32_t nextObservedHits = next_probation_hits(observedProbationHits);
+        trace_probation_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            keyDigest,
+            nextObservedHits,
+            churnProbationHitsRequired,
+            churnProbationAllowDurable,
+            admissionDecision.reason);
+        if (churnProbationAllowDurable) {
+            telemetry_counter_add(managerState.cacheAdmissionProbationAdmitEvents, 1);
+        } else {
+            telemetry_counter_add(managerState.cacheAdmissionProbationDeferredEvents, 1);
+        }
+    }
+    if (admissionDecision.reason &&
+        std::string_view(admissionDecision.reason).find("critical_override") != std::string_view::npos) {
+        telemetry_counter_add(managerState.cacheAdmissionCriticalOverrideEvents, 1);
+    }
+
+    const bool allowDurableAdmission =
+        commands_allow_durable_admission(admissionDecision, churnProbationAllowDurable);
+    if (allowDurableAdmission) {
+        return true;
+    }
+
+    if (admissionDecision.probationApplied) {
+        std::uint32_t& probationHits = bucket.probationHitsByDigest[keyDigest];
+        if (probationHits < std::numeric_limits<std::uint32_t>::max()) {
+            ++probationHits;
+        }
+    } else {
+        bucket.probationHitsByDigest.erase(keyDigest);
+    }
+    return false;
+}
+
+void clear_graph_admission_state(
+    BaseGraphBucketState& bucket,
+    std::uint64_t keyDigest) noexcept {
+    bucket.probationHitsByDigest.erase(keyDigest);
+    bucket.largeEntryReadmitByDigest.erase(keyDigest);
+}
+
+template <typename PolicyReplay>
+BaseGraphEntry* build_admitted_graph_entry(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    std::uint64_t keyDigest,
+    BasePipelineLaunchFn launchFn,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t graphLargeThresholdBytes,
+    std::uint32_t keepHotMs,
+    ResourceManagerState& managerState,
+    PolicyReplay&& replayPolicy) {
+    clear_graph_admission_state(bucket, keyDigest);
+
+    std::uint64_t keepHotBypassEvents = 0;
+    std::uint64_t keepHotForcedEvictEvents = 0;
+    BaseGraphEntry* found = build_base_graph_entry(
+        bucket,
+        key,
+        launchFn,
+        run,
+        stream,
+        graphLargeThresholdBytes,
+        keepHotMs,
+        keepHotBypassEvents,
+        keepHotForcedEvictEvents);
+    if (keepHotBypassEvents > 0) {
+        telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
+    }
+    if (keepHotForcedEvictEvents > 0) {
+        telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
+    }
+    if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
+        trace_keep_hot_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            keepHotMs,
+            keepHotBypassEvents,
+            keepHotForcedEvictEvents,
+            "base_graph_cap");
+    }
+    if (!found) {
+        return nullptr;
+    }
+
+    replayPolicy("post_build");
+    return find_base_graph_entry(bucket, key);
+}
+
+template <typename PolicyReplay>
+const char* launch_selected_graph_entry(
+    BaseGraphEntry& entry,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t useTick,
+    bool reusedResidentGraph,
+    PolicyReplay&& replayPolicy,
+    int& outCudaErrorCode) {
+    entry.lastUseTick = useTick;
+    entry.lastUseMs = monotonic_time_ms();
+
+    cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(entry.execOpaque);
+    cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(entry.kernelNodeOpaque);
+    cudaKernelNodeParams nodeParams{};
+    nodeParams.func = entry.kernelFuncOpaque;
+    nodeParams.gridDim = dim3(entry.gridX, entry.gridY, entry.gridZ);
+    nodeParams.blockDim = dim3(entry.blockX, entry.blockY, entry.blockZ);
+    nodeParams.sharedMemBytes = entry.sharedMemBytes;
+    void* kernelArgs[] = {&run};
+    nodeParams.kernelParams = kernelArgs;
+    nodeParams.extra = nullptr;
+    cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
+    if (setErr != cudaSuccess) {
+        destroy_base_graph_entry(entry);
+        replayPolicy("kernel_param_update_failed");
+        return "kernel_param_update_failed";
+    }
+
+    LaunchGraphCounters::record_graph_eligible_submission();
+    LaunchGraphCounters::record_kernel_launch();
+    cudaError_t runErr = cudaGraphLaunch(exec, stream);
+    if (runErr == cudaSuccess) {
+        runErr = cudaGetLastError();
+    }
+    if (runErr != cudaSuccess) {
+        destroy_base_graph_entry(entry);
+        replayPolicy("graph_launch_failed");
+        return "graph_launch_failed";
+    }
+
+    if (reusedResidentGraph) {
+        LaunchGraphCounters::record_graph_replay_hit();
+    }
+    outCudaErrorCode = static_cast<int>(cudaSuccess);
+    return nullptr;
+}
+
+template <typename DirectLaunch>
+bool launch_base_pipeline_direct_fallback(
+    ResourceManagerState& managerState,
+    bool countNonResidentServe,
+    DirectLaunch&& directLaunch,
+    int& outCudaErrorCode) {
+    if (countNonResidentServe) {
+        telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
+    }
+    outCudaErrorCode = directLaunch();
+    return true;
+}
+
+template <typename DirectLaunch>
+bool cancel_graph_attempt_and_launch_direct_fallback(
+    const SubmissionTransaction& transaction,
+    TierCircuitAttempt& graphCircuitAttempt,
+    bool& graphCircuitAttemptActive,
+    const char* cancelReason,
+    ResourceManagerState& managerState,
+    bool countNonResidentServe,
+    DirectLaunch&& directLaunch,
+    int& outCudaErrorCode) {
+    if (graphCircuitAttemptActive) {
+        tier_circuit_cancel_attempt(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            graphCircuitAttempt,
+            cancelReason);
+        graphCircuitAttemptActive = false;
+    }
+    return launch_base_pipeline_direct_fallback(
+        managerState,
+        countNonResidentServe,
+        std::forward<DirectLaunch>(directLaunch),
+        outCudaErrorCode);
+}
+
+template <typename DirectLaunch>
+bool fail_graph_attempt_and_launch_direct_fallback(
+    const SubmissionTransaction& transaction,
+    TierCircuitAttempt& graphCircuitAttempt,
+    bool& graphCircuitAttemptActive,
+    const char* failureReason,
+    ResourceManagerState& managerState,
+    bool countNonResidentServe,
+    DirectLaunch&& directLaunch,
+    int& outCudaErrorCode) {
+    if (graphCircuitAttemptActive) {
+        tier_circuit_record_outcome(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            graphCircuitAttempt,
+            false,
+            failureReason);
+        graphCircuitAttemptActive = false;
+    }
+    return launch_base_pipeline_direct_fallback(
+        managerState,
+        countNonResidentServe,
+        std::forward<DirectLaunch>(directLaunch),
+        outCudaErrorCode);
+}
+
+void complete_graph_attempt_success(
+    const SubmissionTransaction& transaction,
+    TierCircuitAttempt& graphCircuitAttempt,
+    bool& graphCircuitAttemptActive) {
+    if (!graphCircuitAttemptActive) {
+        return;
+    }
+    tier_circuit_record_outcome(
+        transaction,
+        "command_launch_base_pipeline_graph",
+        graphCircuitAttempt,
+        true,
+        "durable_build_success");
+    graphCircuitAttemptActive = false;
+}
+
+std::uint64_t prepare_base_graph_bucket_for_submission(
+    BaseGraphBucketState& bucket,
+    std::uint64_t contextEpoch) noexcept {
+    std::uint64_t activeEpoch = contextEpoch;
+    if (activeEpoch == 0) {
+        activeEpoch = 1;
+    }
+    if (bucket.contextEpoch != activeEpoch) {
+        clear_base_graph_bucket(bucket);
+        bucket.contextEpoch = activeEpoch;
+    }
+
+    bucket.useTick++;
+    if (bucket.useTick == 0) {
+        bucket.useTick = 1;
+    }
+    return bucket.useTick;
+}
+
+template <typename PolicyReplay>
+BaseGraphEntry* resolve_resident_base_graph_entry(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    PolicyReplay&& replayPolicy,
+    bool& outReusedResidentGraph) {
+    BaseGraphEntry* found = find_base_graph_entry(bucket, key);
+    const bool trivialResidentGraphHit = (found != nullptr) && (bucket.entries.size() == 1);
+    if (!trivialResidentGraphHit) {
+        replayPolicy("pre_admission");
+        found = find_base_graph_entry(bucket, key);
+    }
+    outReusedResidentGraph = (found != nullptr);
+    return found;
 }
 
 std::uint64_t estimate_base_graph_bucket_active_bytes_locked(
@@ -1008,6 +2410,74 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
 
     publish_graph_large_entry_resident_snapshot_locked(bucket, residentBytes, outResidentEntries);
     return residentBytes;
+}
+
+void replay_graph_large_entry_policy(
+    const SubmissionTransaction& transaction,
+    BaseGraphBucketState& bucket,
+    std::uint64_t graphLargeThresholdBytes,
+    std::uint64_t graphLargeCapBytes,
+    std::uint32_t graphLargeCapEntries,
+    std::uint32_t keepHotMs,
+    ResourceManagerState& managerState,
+    const char* reason) {
+    std::uint64_t decayEvictedEntries = 0;
+    std::uint64_t capTrimEvictedEntries = 0;
+    std::uint64_t keepHotBypassEvents = 0;
+    std::uint64_t keepHotForcedEvictEvents = 0;
+    bool capHit = false;
+    std::uint32_t residentEntries = 0;
+    const std::uint64_t residentBytes = trim_graph_large_entry_decay_and_caps_locked(
+        bucket,
+        graphLargeThresholdBytes,
+        graphLargeCapBytes,
+        graphLargeCapEntries,
+        keepHotMs,
+        monotonic_time_ms(),
+        decayEvictedEntries,
+        capTrimEvictedEntries,
+        keepHotBypassEvents,
+        keepHotForcedEvictEvents,
+        capHit,
+        residentEntries);
+    if (decayEvictedEntries > 0) {
+        telemetry_counter_add(managerState.graphLargeEntryDecayEvents, decayEvictedEntries);
+    }
+    if (capTrimEvictedEntries > 0) {
+        telemetry_counter_add(managerState.graphLargeEntryTrimEvents, capTrimEvictedEntries);
+    }
+    if (capHit) {
+        telemetry_counter_add(managerState.graphLargeEntryCapHits, 1);
+    }
+    if (keepHotBypassEvents > 0) {
+        telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
+    }
+    if (keepHotForcedEvictEvents > 0) {
+        telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
+    }
+    if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
+        trace_keep_hot_decision(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            keepHotMs,
+            keepHotBypassEvents,
+            keepHotForcedEvictEvents,
+            trace_or(reason, "policy"));
+    }
+    if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
+        trace_graph_large_entry_quarantine(
+            transaction,
+            "command_launch_base_pipeline_graph",
+            graphLargeThresholdBytes,
+            graphLargeCapBytes,
+            graphLargeCapEntries,
+            residentBytes,
+            residentEntries,
+            decayEvictedEntries,
+            capTrimEvictedEntries,
+            capHit,
+            trace_or(reason, "policy"));
+    }
 }
 
 std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept {
@@ -1497,74 +2967,29 @@ bool command_ensure_uploaded(
         std::lock_guard<std::mutex> lock(resources.m);
         coreUploadStale = resources.uploadedCoreHash != wsCoreHash;
     }
-    const std::uint64_t uploadRequestBytes =
+    const UploadWorkEstimate uploadEstimate =
         estimate_upload_core_request_bytes(resources, ws);
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
-        outError = "upload reservation request byte estimation overflow (core)";
-        return false;
-    }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    if (uploadRequestBytes == 0) {
+    if (uploadEstimate.reservationBytes == 0) {
         return true;
     }
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_uploaded",
-            PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
+    const bool ok = execute_upload_immutable_command(
+        transaction,
+        resources,
+        "command_ensure_uploaded",
+        uploadEstimate.growthBytes,
+        uploadEstimate.reservationBytes,
+        true,
+        "upload reservation request byte estimation overflow (core)",
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_uploaded(
                 resources,
-                "command_ensure_uploaded",
-                "pressure_pre_upload",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
-            return false;
-        }
-    }
-    bool ok = false;
-    {
-        UploadReservationClaim uploadClaim{};
-        if (!acquire_upload_reservation_with_wait(
-                transaction,
-                "command_ensure_uploaded",
-                uploadRequestBytes,
-                true,
-                uploadClaim,
-                outError)) {
-            return false;
-        }
-        UploadReservationGuard uploadGuard(std::move(uploadClaim));
-        TierCircuitAttempt circuitAttempt{};
-        std::string circuitError;
-        if (!tier_circuit_begin_attempt(
-                transaction,
-                "command_ensure_uploaded",
-                ResourceTier::Immutable,
-                tier_circuit_blocks_admission(ResourceTier::Immutable),
-                circuitAttempt,
-                circuitError)) {
-            outError = circuitError;
-            return false;
-        }
-        ok = JuicerCuda::ensure_uploaded(resources, ws, cudaStreamOpaque, outError);
-        complete_tier_circuit_attempt(
-            transaction,
-            "command_ensure_uploaded",
-            circuitAttempt,
-            ok,
-            "ensure_success",
-            outError);
+                ws,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
+    if (!ok) {
+        return false;
     }
 
     if (ok && allowLutPrewarm && coreUploadStale) {
@@ -1606,9 +3031,7 @@ bool command_ensure_uploaded(
             JTRACE_VERBOSE("MSLUT", msg);
         }
     }
-
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return true;
 }
 
 namespace {
@@ -1625,9 +3048,10 @@ bool command_ensure_scan_lut_internal(
     if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
-    const std::uint64_t uploadRequestBytes =
+    const UploadWorkEstimate uploadEstimate =
         estimate_scan_lut_upload_bytes(resources, ws, negativeMedium);
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
+    if (uploadEstimate.growthBytes == std::numeric_limits<std::uint64_t>::max() ||
+        uploadEstimate.reservationBytes == std::numeric_limits<std::uint64_t>::max()) {
         outError = "upload reservation request byte estimation overflow (scan LUT)";
         return false;
     }
@@ -1707,98 +3131,32 @@ bool command_ensure_scan_lut_internal(
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         return true;
     };
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            stageName,
-            PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
-            criticalRequest,
-            requestPreReclaim,
-            outError)) {
-        if (try_private_fallback("pressure_gate_reject")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
-                resources,
-                stageName,
-                "pressure_pre_upload",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
-            if (try_private_fallback("pressure_pre_upload_reclaim_failed")) {
-                outError.clear();
-                return true;
-            }
-            return false;
-        }
-    }
-    UploadReservationClaim uploadClaim{};
-    if (!acquire_upload_reservation_with_wait(
-            transaction,
-            stageName,
-            uploadRequestBytes,
-            criticalRequest,
-            uploadClaim,
-            outError)) {
-        if (try_private_fallback("upload_reservation_reject")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    BuilderReservationClaim builderClaim{};
-    if (!acquire_builder_reservation_with_wait(
-            transaction,
-            stageName,
-            BuilderReservationTier::Lut,
-            uploadRequestBytes,
-            criticalRequest,
-            builderClaim,
-            outError)) {
-        if (try_private_fallback("builder_reservation_reject")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
-    TierCircuitAttempt circuitAttempt{};
-    std::string circuitError;
-    if (!tier_circuit_begin_attempt(
-            transaction,
-            stageName,
-            ResourceTier::Lut,
-            tier_circuit_blocks_admission(ResourceTier::Lut),
-            circuitAttempt,
-            circuitError)) {
-        outError = circuitError;
-        if (try_private_fallback("tier_circuit_blocked")) {
-            outError.clear();
-            return true;
-        }
-        return false;
-    }
-    const bool ok = JuicerCuda::ensure_scan_lut(resources, ws, negativeMedium, cudaStreamOpaque, outError);
-    complete_tier_circuit_attempt(
+    const bool ok = execute_upload_lut_command(
         transaction,
+        resources,
         stageName,
-        circuitAttempt,
-        ok,
-        "ensure_success",
+        uploadEstimate.growthBytes,
+        uploadEstimate.reservationBytes,
+        criticalRequest,
+        "upload reservation request byte estimation overflow (scan LUT)",
+        captureMemorySnapshots,
+        false,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_scan_lut(
+                resources,
+                ws,
+                negativeMedium,
+                cudaStreamOpaque,
+                actionError);
+        },
+        [&](const char* triggerReason) {
+            return try_private_fallback(triggerReason);
+        },
         outError);
     if (ok) {
         std::lock_guard<std::mutex> lock(resources.m);
         commands_clear_private_lut_fallback_locked(resources, negativeMedium);
     }
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     return ok;
 }
 } // namespace
@@ -1832,11 +3190,12 @@ bool command_ensure_scan_error_flag(
     if (command_scan_error_flag_ready(resources)) {
         return true;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, actionError);
+        },
+        outError);
 }
 
 bool command_ensure_print_illuminant_filtered(
@@ -1850,75 +3209,29 @@ bool command_ensure_print_illuminant_filtered(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_print_illuminant_filtered")) {
         return false;
     }
-    const std::uint64_t uploadRequestBytes =
+    const UploadWorkEstimate uploadEstimate =
         estimate_print_illuminant_upload_bytes(resources, ws, prt, params);
-    if (uploadRequestBytes == std::numeric_limits<std::uint64_t>::max()) {
-        outError = "upload reservation request byte estimation overflow (print illuminant)";
-        return false;
-    }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     if (command_print_illuminant_filtered_is_cached(resources, ws, prt, params)) {
         return true;
     }
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_print_illuminant_filtered",
-            PressureLane::Upload,
-            saturating_u64_to_size_t(uploadRequestBytes),
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
-                resources,
-                "command_ensure_print_illuminant_filtered",
-                "pressure_pre_upload",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-upload reclaim failed");
-            return false;
-        }
-    }
-    UploadReservationClaim uploadClaim{};
-    if (!acquire_upload_reservation_with_wait(
-            transaction,
-            "command_ensure_print_illuminant_filtered",
-            uploadRequestBytes,
-            true,
-            uploadClaim,
-            outError)) {
-        return false;
-    }
-    UploadReservationGuard uploadGuard(std::move(uploadClaim));
-    TierCircuitAttempt circuitAttempt{};
-    std::string circuitError;
-    if (!tier_circuit_begin_attempt(
-            transaction,
-            "command_ensure_print_illuminant_filtered",
-            ResourceTier::Immutable,
-            tier_circuit_blocks_admission(ResourceTier::Immutable),
-            circuitAttempt,
-            circuitError)) {
-        outError = circuitError;
-        return false;
-    }
-    const bool ok =
-        JuicerCuda::ensure_print_illuminant_filtered(resources, ws, prt, params, cudaStreamOpaque, outError);
-    complete_tier_circuit_attempt(
+    return execute_upload_immutable_command(
         transaction,
+        resources,
         "command_ensure_print_illuminant_filtered",
-        circuitAttempt,
-        ok,
-        "ensure_success",
+        uploadEstimate.growthBytes,
+        uploadEstimate.reservationBytes,
+        true,
+        "upload reservation request byte estimation overflow (print illuminant)",
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_print_illuminant_filtered(
+                resources,
+                ws,
+                prt,
+                params,
+                cudaStreamOpaque,
+                actionError);
+        },
         outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
 }
 
 bool command_ensure_optics_scratch(
@@ -1955,105 +3268,17 @@ bool command_ensure_optics_scratch(
     if (growthBytes == 0) {
         return true;
     }
-
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_optics_scratch",
-            PressureLane::Builder,
-            growthBytes,
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
-                resources,
-                "command_ensure_optics_scratch",
-                "pressure_pre_growth",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
-            return false;
-        }
-    }
-
-    BuilderReservationClaim builderClaim{};
-    if (!acquire_builder_reservation_with_wait(
-            transaction,
-            "command_ensure_optics_scratch",
-            BuilderReservationTier::Scratch,
-            static_cast<std::uint64_t>(growthBytes),
-            true,
-            builderClaim,
-            outError)) {
-        return false;
-    }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
-
-    ScratchPolicyClaim scratchClaim{};
-    if (!acquire_scratch_policy_claim_with_wait(
-            transaction,
-            "command_ensure_optics_scratch",
-            ScratchWorkClass::Optics,
-            width,
-            height,
-            growthBytes,
-            true,
-            scratchClaim,
-            outError)) {
-        return false;
-    }
-    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
-
-    ResourceManagerState& managerState = global_state();
-    std::uint32_t attempts = 0;
-    bool fragmentationRecoveryTriggered = false;
-    bool fragmentationRecoveryPendingOutcome = false;
-    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
-        if (!fragmentationRecoveryPendingOutcome) {
-            return;
-        }
-        if (success) {
-            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
-        }
-        else {
-            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
-        }
-        trace_fragmentation_recovery(
-            transaction,
-            "command_ensure_optics_scratch",
-            attempts,
-            growthBytes,
-            0,
-            0,
-            0,
-            success,
-            "outcome",
-            reason);
-        fragmentationRecoveryPendingOutcome = false;
-    };
-
-    while (true) {
-        outError.clear();
-        TierCircuitAttempt circuitAttempt{};
-        std::string circuitError;
-        if (!tier_circuit_begin_attempt(
-                transaction,
-                "command_ensure_optics_scratch",
-                ResourceTier::Scratch,
-                tier_circuit_blocks_admission(ResourceTier::Scratch),
-                circuitAttempt,
-                circuitError)) {
-            outError = circuitError;
-            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
-            return false;
-        }
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        if (JuicerCuda::ensure_optics_scratch(
+    return execute_scratch_growth_command(
+        transaction,
+        resources,
+        "command_ensure_optics_scratch",
+        growthBytes,
+        ScratchWorkClass::Optics,
+        width,
+        height,
+        captureMemorySnapshots,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_optics_scratch(
                 resources,
                 width,
                 height,
@@ -2063,148 +3288,9 @@ bool command_ensure_optics_scratch(
                 needGrainSharedScratch,
                 needGateMask,
                 cudaStreamOpaque,
-                outError)) {
-            complete_tier_circuit_attempt(
-                transaction,
-                "command_ensure_optics_scratch",
-                circuitAttempt,
-                true,
-                "ensure_success",
-                outError);
-            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-            if (attempts > 0) {
-                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
-            }
-            finalizeFragmentationOutcome(true, "allocation_retry_success");
-            return true;
-        }
-        complete_tier_circuit_attempt(
-            transaction,
-            "command_ensure_optics_scratch",
-            circuitAttempt,
-            false,
-            "ensure_success",
-            outError);
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        const bool allocatorOom = is_allocator_oom_error(outError);
-        if (!allocatorOom) {
-            finalizeFragmentationOutcome(false, "non_allocator_error");
-            return false;
-        }
-        if (attempts >= cfg.reclaimRetryMaxAttempts) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_optics_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_optics_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_optics_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "allocator_oom_final");
-            return false;
-        }
-
-        ++attempts;
-        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
-        std::size_t reclaimedBytes = 0;
-        std::string reclaimError;
-        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
-            trace_reap_pass(
-                transaction,
-                "command_ensure_optics_scratch",
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            trace_budget_reclaim_retry(
-                transaction,
-                "command_ensure_optics_scratch",
-                attempts,
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            if (!reclaimError.empty()) {
-                outError += " | reclaim_retry_failed: " + reclaimError;
-            }
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_retry_failed");
-            return false;
-        }
-
-        if (reclaimedBytes > 0) {
-            telemetry_counter_add(managerState.retireReapPasses, 1);
-            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
-        }
-        trace_reap_pass(
-            transaction,
-            "command_ensure_optics_scratch",
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        trace_budget_reclaim_retry(
-            transaction,
-            "command_ensure_optics_scratch",
-            attempts,
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        if (reclaimedBytes == 0) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_optics_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_optics_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_optics_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_no_progress");
-            return false;
-        }
-    }
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_spatial_dir_scratch(
@@ -2228,246 +3314,24 @@ bool command_ensure_spatial_dir_scratch(
     if (growthBytes == 0) {
         return true;
     }
-
-    bool requestPreReclaim = false;
-    if (!enforce_pressure_gate(
-            transaction,
-            resources,
-            "command_ensure_spatial_dir_scratch",
-            PressureLane::Builder,
-            growthBytes,
-            true,
-            requestPreReclaim,
-            outError)) {
-        return false;
-    }
-    if (requestPreReclaim) {
-        std::string reclaimError;
-        if (!run_reap_pass_for_pressure(
-                transaction,
+    return execute_scratch_growth_command(
+        transaction,
+        resources,
+        "command_ensure_spatial_dir_scratch",
+        growthBytes,
+        ScratchWorkClass::SpatialDir,
+        width,
+        height,
+        captureMemorySnapshots,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_spatial_dir_scratch(
                 resources,
-                "command_ensure_spatial_dir_scratch",
-                "pressure_pre_growth",
-                reclaimError)) {
-            outError = commands_error_or_message(reclaimError, "pressure pre-growth reclaim failed");
-            return false;
-        }
-    }
-
-    BuilderReservationClaim builderClaim{};
-    if (!acquire_builder_reservation_with_wait(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            BuilderReservationTier::Scratch,
-            static_cast<std::uint64_t>(growthBytes),
-            true,
-            builderClaim,
-            outError)) {
-        return false;
-    }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
-
-    ScratchPolicyClaim scratchClaim{};
-    if (!acquire_scratch_policy_claim_with_wait(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            ScratchWorkClass::SpatialDir,
-            width,
-            height,
-            growthBytes,
-            true,
-            scratchClaim,
-            outError)) {
-        return false;
-    }
-    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
-
-    ResourceManagerState& managerState = global_state();
-    std::uint32_t attempts = 0;
-    bool fragmentationRecoveryTriggered = false;
-    bool fragmentationRecoveryPendingOutcome = false;
-    auto finalizeFragmentationOutcome = [&](bool success, const char* reason) {
-        if (!fragmentationRecoveryPendingOutcome) {
-            return;
-        }
-        if (success) {
-            telemetry_counter_add(managerState.fragmentationRecoverySuccess, 1);
-        }
-        else {
-            telemetry_counter_add(managerState.fragmentationRecoveryFailures, 1);
-        }
-        trace_fragmentation_recovery(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            attempts,
-            growthBytes,
-            0,
-            0,
-            0,
-            success,
-            "outcome",
-            reason);
-        fragmentationRecoveryPendingOutcome = false;
-    };
-
-    while (true) {
-        outError.clear();
-        TierCircuitAttempt circuitAttempt{};
-        std::string circuitError;
-        if (!tier_circuit_begin_attempt(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                ResourceTier::Scratch,
-                tier_circuit_blocks_admission(ResourceTier::Scratch),
-                circuitAttempt,
-                circuitError)) {
-            outError = circuitError;
-            finalizeFragmentationOutcome(false, "tier_circuit_blocked");
-            return false;
-        }
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        if (JuicerCuda::ensure_spatial_dir_scratch(resources, width, height, cudaStreamOpaque, outError)) {
-            complete_tier_circuit_attempt(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                circuitAttempt,
-                true,
-                "ensure_success",
-                outError);
-            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-            if (attempts > 0) {
-                telemetry_counter_add(managerState.budgetReclaimRetrySuccess, 1);
-            }
-            finalizeFragmentationOutcome(true, "allocation_retry_success");
-            return true;
-        }
-        complete_tier_circuit_attempt(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            circuitAttempt,
-            false,
-            "ensure_success",
-            outError);
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        const bool allocatorOom = is_allocator_oom_error(outError);
-        if (!allocatorOom) {
-            finalizeFragmentationOutcome(false, "non_allocator_error");
-            return false;
-        }
-        if (attempts >= cfg.reclaimRetryMaxAttempts) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "allocator_oom_final");
-            return false;
-        }
-
-        ++attempts;
-        telemetry_counter_add(managerState.budgetReclaimRetryAttempts, 1);
-        std::size_t reclaimedBytes = 0;
-        std::string reclaimError;
-        if (!JuicerCuda::reap_retired_allocations(resources, reclaimedBytes, reclaimError)) {
-            trace_reap_pass(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            trace_budget_reclaim_retry(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                attempts,
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
-            if (!reclaimError.empty()) {
-                outError += " | reclaim_retry_failed: " + reclaimError;
-            }
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_retry_failed");
-            return false;
-        }
-
-        if (reclaimedBytes > 0) {
-            telemetry_counter_add(managerState.retireReapPasses, 1);
-            telemetry_counter_add(managerState.retireReapBytes, reclaimedBytes);
-        }
-        trace_reap_pass(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        trace_budget_reclaim_retry(
-            transaction,
-            "command_ensure_spatial_dir_scratch",
-            attempts,
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
-        maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-
-        if (reclaimedBytes == 0) {
-            if (cfg.fragmentationRecoveryEnabled && !fragmentationRecoveryTriggered) {
-                std::string recoveryError;
-                if (!run_fragmentation_recovery_once(
-                        transaction,
-                        resources,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes,
-                        attempts,
-                        captureMemorySnapshots,
-                        recoveryError)) {
-                    if (!recoveryError.empty()) {
-                        outError += " | fragmentation_recovery_failed: " + recoveryError;
-                    }
-                    record_allocator_oom_headroom_observation(
-                        transaction,
-                        "command_ensure_spatial_dir_scratch",
-                        growthBytes);
-                    telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-                    return false;
-                }
-                fragmentationRecoveryTriggered = true;
-                fragmentationRecoveryPendingOutcome = true;
-                continue;
-            }
-            record_allocator_oom_headroom_observation(
-                transaction,
-                "command_ensure_spatial_dir_scratch",
-                growthBytes);
-            telemetry_counter_add(managerState.budgetAllocatorOomEvents, 1);
-            finalizeFragmentationOutcome(false, "reap_no_progress");
-            return false;
-        }
-    }
+                width,
+                height,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_spatial_dir_kernel(
@@ -2480,11 +3344,17 @@ bool command_ensure_spatial_dir_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_kernel")) {
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_spatial_dir_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_spatial_dir_kernel(
+                resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_gaussian_kernel(
@@ -2497,11 +3367,17 @@ bool command_ensure_gaussian_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_gaussian_kernel")) {
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_gaussian_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_gaussian_kernel(
+                resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_halation_kernel(
@@ -2514,11 +3390,17 @@ bool command_ensure_halation_kernel(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_halation_kernel")) {
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const bool ok = JuicerCuda::ensure_halation_kernel(resources, kernel, sigma, cudaStreamOpaque, outError);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    return ok;
+    return execute_snapshot_wrapped_command(
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_halation_kernel(
+                resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 bool command_ensure_auto_exposure_buffers(
@@ -2535,81 +3417,46 @@ bool command_ensure_auto_exposure_buffers(
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::uint64_t normalizedKeyHash = normalize_key_u64(autoExposureKeyHash);
+    const AutoExposureOwnershipObservation ownershipObservation =
+        observe_auto_exposure_ownership(transaction, normalizedKeyHash, meterWidth, meterHeight);
+    AutoExposureOwnershipObservation failedOwnershipObservation = ownershipObservation;
+    failedOwnershipObservation.metadataHit = false;
 
-    const ShadowHistoryKey ownershipKey{
-        transaction.snapshot.instanceToken.value,
-        transaction.snapshot.deviceContextKey
-    };
-
-    bool hadPrevious = false;
-    bool metadataHit = false;
-    {
-        AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-        std::lock_guard<std::mutex> lock(ownershipState.mutex);
-        auto it = ownershipState.bySubmissionKey.find(ownershipKey);
-        if (it != ownershipState.bySubmissionKey.end() && it->second.valid) {
-            hadPrevious = true;
-            const AutoExposureOwnershipEntry& previous = it->second;
-            metadataHit =
-                previous.keySchemaVersion == transaction.snapshot.keySchemaVersion &&
-                previous.keyHash == normalizedKeyHash &&
-                previous.meterWidth == meterWidth &&
-                previous.meterHeight == meterHeight;
-        }
-    }
-
-    telemetry_trace_auto_exposure_ownership(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
-        "ManagerOnly",
-        "acquire",
-        metadataHit,
+    trace_auto_exposure_ownership_event(
+        transaction,
+        ownershipObservation,
         normalizedKeyHash,
         meterWidth,
         meterHeight,
-        hadPrevious,
-        bool_reason(metadataHit, "metadata_hit", "metadata_miss"));
+        "acquire",
+        bool_reason(ownershipObservation.metadataHit, "metadata_hit", "metadata_miss"));
 
     if (command_auto_exposure_buffers_ready(resources, meterWidth, meterHeight, outError)) {
-        {
-            AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-            std::lock_guard<std::mutex> lock(ownershipState.mutex);
-            AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
-            entry.valid = true;
-            entry.keyHash = normalizedKeyHash;
-            entry.meterWidth = meterWidth;
-            entry.meterHeight = meterHeight;
-            entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
-        }
-
-        telemetry_trace_auto_exposure_ownership(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            "ManagerOnly",
-            "publish",
-            metadataHit,
+        publish_auto_exposure_ownership(
+            transaction,
+            ownershipObservation.ownershipKey,
+            normalizedKeyHash,
+            meterWidth,
+            meterHeight);
+        trace_auto_exposure_ownership_event(
+            transaction,
+            ownershipObservation,
             normalizedKeyHash,
             meterWidth,
             meterHeight,
-            hadPrevious,
-            bool_reason(metadataHit, "reuse", "refresh"));
+            "publish",
+            bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
         return true;
     }
     if (!outError.empty()) {
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        telemetry_trace_auto_exposure_ownership(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            "ManagerOnly",
-            "ensure_fail",
-            false,
+        trace_auto_exposure_ownership_event(
+            transaction,
+            failedOwnershipObservation,
             normalizedKeyHash,
             meterWidth,
             meterHeight,
-            hadPrevious,
+            "ensure_fail",
             commands_error_or_cstr(outError, "ensure_failed"));
         return false;
     }
@@ -2617,45 +3464,32 @@ bool command_ensure_auto_exposure_buffers(
 
     if (!JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError)) {
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        telemetry_trace_auto_exposure_ownership(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            "ManagerOnly",
-            "ensure_fail",
-            false,
+        trace_auto_exposure_ownership_event(
+            transaction,
+            failedOwnershipObservation,
             normalizedKeyHash,
             meterWidth,
             meterHeight,
-            hadPrevious,
+            "ensure_fail",
             commands_error_or_cstr(outError, "ensure_failed"));
         return false;
     }
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
-    {
-        AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
-        std::lock_guard<std::mutex> lock(ownershipState.mutex);
-        AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
-        entry.valid = true;
-        entry.keyHash = normalizedKeyHash;
-        entry.meterWidth = meterWidth;
-        entry.meterHeight = meterHeight;
-        entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
-    }
-
-    telemetry_trace_auto_exposure_ownership(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
-        "ManagerOnly",
-        "publish",
-        metadataHit,
+    publish_auto_exposure_ownership(
+        transaction,
+        ownershipObservation.ownershipKey,
+        normalizedKeyHash,
+        meterWidth,
+        meterHeight);
+    trace_auto_exposure_ownership_event(
+        transaction,
+        ownershipObservation,
         normalizedKeyHash,
         meterWidth,
         meterHeight,
-        hadPrevious,
-        bool_reason(metadataHit, "reuse", "refresh"));
+        "publish",
+        bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
     return true;
 }
 
@@ -2714,89 +3548,60 @@ bool command_launch_base_pipeline_graph(
     }
     std::lock_guard<std::mutex> bucketLock(bucketPtr->mutex);
     BaseGraphBucketState& bucket = *bucketPtr;
-    std::uint64_t activeEpoch = transaction.snapshot.contextEpoch;
-    if (activeEpoch == 0) {
-        activeEpoch = 1;
-    }
-    if (bucket.contextEpoch != activeEpoch) {
-        clear_base_graph_bucket(bucket);
-        bucket.contextEpoch = activeEpoch;
-    }
-
-    bucket.useTick++;
-    if (bucket.useTick == 0) {
-        bucket.useTick = 1;
-    }
-    const std::uint64_t useTick = bucket.useTick;
+    const std::uint64_t useTick = prepare_base_graph_bucket_for_submission(
+        bucket,
+        transaction.snapshot.contextEpoch);
     auto applyGraphLargeEntryPolicy = [&](const char* reason) {
-        std::uint64_t decayEvictedEntries = 0;
-        std::uint64_t capTrimEvictedEntries = 0;
-        std::uint64_t keepHotBypassEvents = 0;
-        std::uint64_t keepHotForcedEvictEvents = 0;
-        bool capHit = false;
-        std::uint32_t residentEntries = 0;
-        const std::uint64_t residentBytes = trim_graph_large_entry_decay_and_caps_locked(
+        replay_graph_large_entry_policy(
+            transaction,
             bucket,
             graphLargeThresholdBytes,
             graphLargeCapBytes,
             graphLargeCapEntries,
             cfg.keepHotMs,
-            monotonic_time_ms(),
-            decayEvictedEntries,
-            capTrimEvictedEntries,
-            keepHotBypassEvents,
-            keepHotForcedEvictEvents,
-            capHit,
-            residentEntries);
-        if (decayEvictedEntries > 0) {
-            telemetry_counter_add(managerState.graphLargeEntryDecayEvents, decayEvictedEntries);
-        }
-        if (capTrimEvictedEntries > 0) {
-            telemetry_counter_add(managerState.graphLargeEntryTrimEvents, capTrimEvictedEntries);
-        }
-        if (capHit) {
-            telemetry_counter_add(managerState.graphLargeEntryCapHits, 1);
-        }
-        if (keepHotBypassEvents > 0) {
-            telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
-        }
-        if (keepHotForcedEvictEvents > 0) {
-            telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
-        }
-        if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
-            trace_keep_hot_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                cfg.keepHotMs,
-                keepHotBypassEvents,
-                keepHotForcedEvictEvents,
-                trace_or(reason, "policy"));
-        }
-        if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
-            trace_graph_large_entry_quarantine(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphLargeThresholdBytes,
-                graphLargeCapBytes,
-                graphLargeCapEntries,
-                residentBytes,
-                residentEntries,
-                decayEvictedEntries,
-                capTrimEvictedEntries,
-                capHit,
-                trace_or(reason, "policy"));
-        }
+            managerState,
+            reason);
     };
-    BaseGraphEntry* found = find_base_graph_entry(bucket, key);
-    const bool trivialResidentGraphHit = (found != nullptr) && (bucket.entries.size() == 1);
-    if (!trivialResidentGraphHit) {
-        applyGraphLargeEntryPolicy("pre_admission");
-        found = find_base_graph_entry(bucket, key);
-    }
-    const bool reusedResidentGraph = (found != nullptr);
+    bool reusedResidentGraph = false;
+    BaseGraphEntry* found = resolve_resident_base_graph_entry(
+        bucket,
+        key,
+        applyGraphLargeEntryPolicy,
+        reusedResidentGraph);
     const std::uint64_t keyDigest = base_graph_key_digest(key);
     TierCircuitAttempt graphCircuitAttempt{};
     bool graphCircuitAttemptActive = false;
+    auto launch_graph_direct = [&](bool countNonResidentServe) -> bool {
+        return launch_base_pipeline_direct_fallback(
+            managerState,
+            countNonResidentServe,
+            launch_base_pipeline_direct,
+            outCudaErrorCode);
+    };
+    auto cancel_graph_attempt_and_launch_direct =
+        [&](const char* cancelReason, bool countNonResidentServe) -> bool {
+        return cancel_graph_attempt_and_launch_direct_fallback(
+            transaction,
+            graphCircuitAttempt,
+            graphCircuitAttemptActive,
+            cancelReason,
+            managerState,
+            countNonResidentServe,
+            launch_base_pipeline_direct,
+            outCudaErrorCode);
+    };
+    auto fail_graph_attempt_and_launch_direct =
+        [&](const char* failureReason, bool countNonResidentServe) -> bool {
+        return fail_graph_attempt_and_launch_direct_fallback(
+            transaction,
+            graphCircuitAttempt,
+            graphCircuitAttemptActive,
+            failureReason,
+            managerState,
+            countNonResidentServe,
+            launch_base_pipeline_direct,
+            outCudaErrorCode);
+    };
     if (!found) {
         const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
         std::uint64_t supersededLatestSnapshotId = 0;
@@ -2807,156 +3612,32 @@ bool command_launch_base_pipeline_graph(
                 kGraphAdmissionCriticalCurrentFrame,
                 requestBytes,
                 supersededLatestSnapshotId)) {
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
+            return launch_graph_direct(true);
         }
         std::uint32_t observedProbationHits = 0;
-        auto probationIt = bucket.probationHitsByDigest.find(keyDigest);
-        if (probationIt != bucket.probationHitsByDigest.end()) {
-            observedProbationHits = probationIt->second;
-        }
-        LargeEntryReadmitDecision readmitDecision{};
-        readmitDecision.enabled =
-            (cfg.largeEntryReadmitCooldownMs > 0) || (cfg.largeEntryGhostHitsForReadmit > 0);
-        readmitDecision.candidate =
-            (graphLargeThresholdBytes > 0) && (requestBytes >= graphLargeThresholdBytes);
-        readmitDecision.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
-        readmitDecision.cooldownMs = cfg.largeEntryReadmitCooldownMs;
-        readmitDecision.ghostHitsRequired = cfg.largeEntryGhostHitsForReadmit;
-        if (readmitDecision.enabled) {
-            readmitDecision.reason = "not_candidate";
-        }
-        else {
-            readmitDecision.reason = "disabled";
-        }
-        if (readmitDecision.enabled && readmitDecision.candidate && !kGraphAdmissionCriticalCurrentFrame) {
-            auto readmitIt = bucket.largeEntryReadmitByDigest.find(keyDigest);
-            if (readmitIt != bucket.largeEntryReadmitByDigest.end()) {
-                readmitDecision.hadHistory = true;
-                GraphLargeEntryReadmitState& readmitState = readmitIt->second;
-                const std::uint64_t nowMs = monotonic_time_ms();
-                readmitDecision.ageMs = commands_elapsed_ms_since(nowMs, readmitState.lastEvictedMs);
-                readmitDecision.inCooldown =
-                    (cfg.largeEntryReadmitCooldownMs > 0) &&
-                    (readmitDecision.ageMs < static_cast<std::uint64_t>(cfg.largeEntryReadmitCooldownMs));
-
-                if (readmitDecision.inCooldown) {
-                    if (readmitState.ghostHits < std::numeric_limits<std::uint32_t>::max()) {
-                        ++readmitState.ghostHits;
-                    }
-                    readmitDecision.observedGhostHits = readmitState.ghostHits;
-                    if (cfg.largeEntryGhostHitsForReadmit > 0 &&
-                        readmitState.ghostHits >= cfg.largeEntryGhostHitsForReadmit) {
-                        readmitDecision.ghostBypass = true;
-                        readmitDecision.reason = "ghost_hit_bypass";
-                        bucket.largeEntryReadmitByDigest.erase(readmitIt);
-                    }
-                    else {
-                        readmitDecision.blocked = true;
-                        readmitDecision.reason = "cooldown_blocked";
-                    }
-                }
-                else {
-                    readmitDecision.reason = "cooldown_expired";
-                    bucket.largeEntryReadmitByDigest.erase(readmitIt);
-                }
-            }
-            else {
-                readmitDecision.reason = "no_history";
-            }
-        }
-        else if (readmitDecision.enabled && readmitDecision.candidate && kGraphAdmissionCriticalCurrentFrame) {
-            readmitDecision.reason = "critical_bypass";
-        }
-        trace_large_entry_readmit_decision(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            keyDigest,
-            requestBytes,
-            graphLargeThresholdBytes,
-            readmitDecision);
-        if (readmitDecision.ghostBypass) {
-            telemetry_counter_add(managerState.largeEntryReadmitGhostBypassEvents, 1);
-        }
-        if (readmitDecision.blocked) {
-            telemetry_counter_add(managerState.largeEntryReadmitBlockedEvents, 1);
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
-        }
-
-        CacheAdmissionInput admissionInput{};
-        admissionInput.requestBytes = requestBytes;
-        admissionInput.cacheTargetBytes = cfg.managerSoftTargetBytes;
-        admissionInput.maxCacheableEntryBytes = cfg.maxCacheableEntryBytes;
-        admissionInput.maxCacheableEntryPctOfTarget = cfg.maxCacheableEntryPctOfTarget;
-        admissionInput.largeEntryProbationThresholdBytes = cfg.largeEntryProbationThresholdBytes;
-        admissionInput.largeEntryProbationHitsRequired = cfg.largeEntryProbationHitsRequired;
-        admissionInput.observedProbationHits = observedProbationHits;
-        admissionInput.criticalCurrentFrame = kGraphAdmissionCriticalCurrentFrame;
-        const CacheAdmissionDecision admissionDecision = classify_cache_admission(admissionInput);
-        const AdmissionChurnSnapshot churnSnapshot = sample_admission_churn_state(
-            transaction,
-            cfg,
-            keyDigest,
-            observedProbationHits);
-        const std::uint32_t churnProbationHitsRequired = effective_probation_hits_required(
-            admissionDecision.probationHitsRequired,
-            churnSnapshot);
-        const bool churnProbationAllowDurable =
-            !admissionDecision.probationApplied ||
-            (next_probation_hits(observedProbationHits) >= churnProbationHitsRequired);
-        trace_cache_admission_decision(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            admissionDecision,
-            churnSnapshot,
-            kGraphAdmissionCriticalCurrentFrame,
-            requestBytes,
-            observedProbationHits,
-            keyDigest,
-            "graph_miss");
-        if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
-            telemetry_counter_add(managerState.cacheAdmissionTooLargeEvents, 1);
-        }
-        if (admissionDecision.probationApplied) {
-            const std::uint32_t nextObservedHits = next_probation_hits(observedProbationHits);
-            trace_probation_decision(
+        if (!evaluate_graph_large_entry_readmit(
                 transaction,
-                "command_launch_base_pipeline_graph",
+                bucket,
                 keyDigest,
-                nextObservedHits,
-                churnProbationHitsRequired,
-                churnProbationAllowDurable,
-                admissionDecision.reason);
-            if (churnProbationAllowDurable) {
-                telemetry_counter_add(managerState.cacheAdmissionProbationAdmitEvents, 1);
-            }
-            else {
-                telemetry_counter_add(managerState.cacheAdmissionProbationDeferredEvents, 1);
-            }
-        }
-        if (admissionDecision.reason &&
-            std::string_view(admissionDecision.reason).find("critical_override") != std::string_view::npos) {
-            telemetry_counter_add(managerState.cacheAdmissionCriticalOverrideEvents, 1);
+                requestBytes,
+                graphLargeThresholdBytes,
+                kGraphAdmissionCriticalCurrentFrame,
+                cfg,
+                managerState,
+                observedProbationHits)) {
+            return launch_graph_direct(true);
         }
 
-        const bool allowDurableAdmission =
-            commands_allow_durable_admission(admissionDecision, churnProbationAllowDurable);
-        if (!allowDurableAdmission) {
-            if (admissionDecision.probationApplied) {
-                std::uint32_t& probationHits = bucket.probationHitsByDigest[keyDigest];
-                if (probationHits < std::numeric_limits<std::uint32_t>::max()) {
-                    ++probationHits;
-                }
-            }
-            else {
-                bucket.probationHitsByDigest.erase(keyDigest);
-            }
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
+        if (!evaluate_graph_cache_admission(
+                transaction,
+                bucket,
+                keyDigest,
+                requestBytes,
+                observedProbationHits,
+                kGraphAdmissionCriticalCurrentFrame,
+                cfg,
+                managerState)) {
+            return launch_graph_direct(true);
         }
 
         std::string circuitError;
@@ -2967,213 +3648,57 @@ bool command_launch_base_pipeline_graph(
                 tier_circuit_blocks_admission(ResourceTier::Graph),
                 graphCircuitAttempt,
                 circuitError)) {
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
+            return launch_graph_direct(true);
         }
         graphCircuitAttemptActive = true;
 
         BuilderReservationClaim builderClaim{};
         ReservationAttemptInfo builderReservation{};
-        telemetry_counter_add(managerState.builderReservationRequests, 1);
-        if (!try_acquire_builder_reservation_claim(
+        if (!acquire_graph_builder_reservation(
                 transaction,
-                BuilderReservationTier::Graph,
+                managerState,
                 requestBytes,
                 kGraphAdmissionCriticalCurrentFrame,
                 builderClaim,
                 builderReservation)) {
-            const ReservationDecision& decision = builderReservation.decision;
-            const bool fairnessDeferred =
-                (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
-            if (decision.shouldWait) {
-                telemetry_counter_add(managerState.builderReservationDeferred, 1);
-                if (fairnessDeferred) {
-                    telemetry_counter_add(managerState.builderFairnessTokenDeferred, 1);
-                }
-                trace_builder_reservation_decision(
-                    transaction,
-                    "command_launch_base_pipeline_graph",
-                    BuilderReservationTier::Graph,
-                    requestBytes,
-                    builderReservation.bytesInFlight,
-                    builderReservation.capBytes,
-                    builderReservation.thresholdBytes,
-                    decision,
-                    kGraphAdmissionCriticalCurrentFrame,
-                    builderReservation.instanceToken,
-                    builderReservation.sharedTokens,
-                    builderReservation.criticalTokens,
-                    0,
-                    "deferred_nonresident");
-            }
-            else {
-                telemetry_counter_add(managerState.builderReservationDenied, 1);
-                trace_builder_reservation_decision(
-                    transaction,
-                    "command_launch_base_pipeline_graph",
-                    BuilderReservationTier::Graph,
-                    requestBytes,
-                    builderReservation.bytesInFlight,
-                    builderReservation.capBytes,
-                    builderReservation.thresholdBytes,
-                    decision,
-                    kGraphAdmissionCriticalCurrentFrame,
-                    builderReservation.instanceToken,
-                    builderReservation.sharedTokens,
-                    builderReservation.criticalTokens,
-                    0,
-                    "denied_nonresident");
-            }
-            if (graphCircuitAttemptActive) {
-                tier_circuit_cancel_attempt(
-                    transaction,
-                    "command_launch_base_pipeline_graph",
-                    graphCircuitAttempt,
-                    "nonresident_builder_gate");
-                graphCircuitAttemptActive = false;
-            }
-            telemetry_counter_add(managerState.graphNonResidentServeEvents, 1);
-            outCudaErrorCode = launch_base_pipeline_direct();
-            return true;
-        }
-        telemetry_counter_add(managerState.builderReservationGranted, 1);
-        if (JTRACE_ENABLED(3)) {
-            trace_builder_reservation_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                BuilderReservationTier::Graph,
-                requestBytes,
-                builderReservation.bytesInFlight,
-                builderReservation.capBytes,
-                builderReservation.thresholdBytes,
-                builderReservation.decision,
-                kGraphAdmissionCriticalCurrentFrame,
-                builderReservation.instanceToken,
-                builderReservation.sharedTokens,
-                builderReservation.criticalTokens,
-                0,
-                "admitted");
+            return cancel_graph_attempt_and_launch_direct("nonresident_builder_gate", true);
         }
         BuilderReservationGuard builderGuard(std::move(builderClaim));
 
-        bucket.probationHitsByDigest.erase(keyDigest);
-        bucket.largeEntryReadmitByDigest.erase(keyDigest);
-        std::uint64_t keepHotBypassEvents = 0;
-        std::uint64_t keepHotForcedEvictEvents = 0;
-        found = build_base_graph_entry(
+        found = build_admitted_graph_entry(
+            transaction,
             bucket,
             key,
+            keyDigest,
             launchFn,
             run,
             stream,
             graphLargeThresholdBytes,
             cfg.keepHotMs,
-            keepHotBypassEvents,
-            keepHotForcedEvictEvents);
-        if (keepHotBypassEvents > 0) {
-            telemetry_counter_add(managerState.keepHotBypassEvents, keepHotBypassEvents);
-        }
-        if (keepHotForcedEvictEvents > 0) {
-            telemetry_counter_add(managerState.keepHotForcedEvictEvents, keepHotForcedEvictEvents);
-        }
-        if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
-            trace_keep_hot_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                cfg.keepHotMs,
-                keepHotBypassEvents,
-                keepHotForcedEvictEvents,
-                "base_graph_cap");
-        }
-        if (found) {
-            applyGraphLargeEntryPolicy("post_build");
-            found = find_base_graph_entry(bucket, key);
-        }
-    }
-    else {
-        bucket.probationHitsByDigest.erase(keyDigest);
-        bucket.largeEntryReadmitByDigest.erase(keyDigest);
+            managerState,
+            applyGraphLargeEntryPolicy);
+    } else {
+        clear_graph_admission_state(bucket, keyDigest);
     }
 
     if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
-        if (graphCircuitAttemptActive) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                false,
-                "durable_build_failed");
-            graphCircuitAttemptActive = false;
-        }
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
+        return fail_graph_attempt_and_launch_direct("durable_build_failed", false);
     }
 
-    found->lastUseTick = useTick;
-    found->lastUseMs = monotonic_time_ms();
-
-    cudaGraphExec_t exec = reinterpret_cast<cudaGraphExec_t>(found->execOpaque);
-    cudaGraphNode_t node = reinterpret_cast<cudaGraphNode_t>(found->kernelNodeOpaque);
-    cudaKernelNodeParams nodeParams{};
-    nodeParams.func = found->kernelFuncOpaque;
-    nodeParams.gridDim = dim3(found->gridX, found->gridY, found->gridZ);
-    nodeParams.blockDim = dim3(found->blockX, found->blockY, found->blockZ);
-    nodeParams.sharedMemBytes = found->sharedMemBytes;
-    void* kernelArgs[] = { &run };
-    nodeParams.kernelParams = kernelArgs;
-    nodeParams.extra = nullptr;
-    cudaError_t setErr = cudaGraphExecKernelNodeSetParams(exec, node, &nodeParams);
-    if (setErr != cudaSuccess) {
-        destroy_base_graph_entry(*found);
-        applyGraphLargeEntryPolicy("kernel_param_update_failed");
-        if (graphCircuitAttemptActive) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                false,
-                "kernel_param_update_failed");
-            graphCircuitAttemptActive = false;
-        }
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
+    if (const char* graphLaunchFailure = launch_selected_graph_entry(
+            *found,
+            run,
+            stream,
+            useTick,
+            reusedResidentGraph,
+            applyGraphLargeEntryPolicy,
+            outCudaErrorCode)) {
+        return fail_graph_attempt_and_launch_direct(graphLaunchFailure, false);
     }
-
-    LaunchGraphCounters::record_graph_eligible_submission();
-    LaunchGraphCounters::record_kernel_launch();
-    cudaError_t runErr = cudaGraphLaunch(exec, stream);
-    if (runErr == cudaSuccess) {
-        runErr = cudaGetLastError();
-    }
-    if (runErr != cudaSuccess) {
-        destroy_base_graph_entry(*found);
-        applyGraphLargeEntryPolicy("graph_launch_failed");
-        if (graphCircuitAttemptActive) {
-            tier_circuit_record_outcome(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                graphCircuitAttempt,
-                false,
-                "graph_launch_failed");
-            graphCircuitAttemptActive = false;
-        }
-        outCudaErrorCode = launch_base_pipeline_direct();
-        return true;
-    }
-
-    if (reusedResidentGraph) {
-        LaunchGraphCounters::record_graph_replay_hit();
-    }
-    if (graphCircuitAttemptActive) {
-        tier_circuit_record_outcome(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            graphCircuitAttempt,
-            true,
-            "durable_build_success");
-        graphCircuitAttemptActive = false;
-    }
+    complete_graph_attempt_success(
+        transaction,
+        graphCircuitAttempt,
+        graphCircuitAttemptActive);
     outCudaErrorCode = static_cast<int>(cudaSuccess);
     return true;
 #endif

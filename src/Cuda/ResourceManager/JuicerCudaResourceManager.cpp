@@ -12,6 +12,7 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceState.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
 #include "Print.h"
+#include "SpectralContext.h"
 #include "WorkingState.h"
 
 #include <algorithm>
