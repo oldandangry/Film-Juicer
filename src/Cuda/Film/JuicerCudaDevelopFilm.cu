@@ -960,11 +960,6 @@ __global__ void grain_apply_simple_kernel(
 {
     const JuicerCuda::GrainPayload& grain = params.grain;
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= params.width || y >= params.height) {
-        return;
-    }
     if (!inOut) {
         return;
     }
@@ -972,17 +967,14 @@ __global__ void grain_apply_simple_kernel(
         return;
     }
 
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-    float density = inOut[idx];
-
     const float densityMin = grain.densityMin[channelIndex];
     const float densityMax = grain.densityMax[channelIndex];
     const float nParticles = grain.nParticles[channelIndex];
     const float odParticle = grain.odParticle[channelIndex];
     const float uniformity = grain.uniformity[channelIndex];
     const int nSubLayers = (grain.nSubLayers > 0) ? grain.nSubLayers : 1;
-    float mixWeight = grain.sizeMixWeight;
-    float mixScale = grain.sizeMixScale;
+    const float mixWeight = grain.sizeMixWeight;
+    const float mixScale = grain.sizeMixScale;
     const float timeAlpha = grain.timeAlpha;
     const bool useRetime = (timeAlpha > 1e-6f && timeAlpha < 0.999999f);
     const bool wantNext = useRetime;
@@ -994,64 +986,127 @@ __global__ void grain_apply_simple_kernel(
         return;
     }
 
-    const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
-    const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
-
-    density += densityMin;
-
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
-
-    const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
     const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
     const float wFine = 1.0f - wCoarse;
     const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
 
-    float acc = 0.0f;
-    float accNext = 0.0f;
-    for (int sl = 0; sl < nSubLayers; ++sl) {
-        const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
-        const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
-        if (!useMix) {
-            acc += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useStbn, 0);
+    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            float density = inOut[idx];
+            const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
+            const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
+
+            density += densityMin;
+
+            const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
+            float acc = 0.0f;
+            float accNext = 0.0f;
+            for (int sl = 0; sl < nSubLayers; ++sl) {
+                const std::uint64_t seed =
+                    grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
+                const std::uint64_t seedNext =
+                    grain.seedBaseNext ^
+                    (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sl) * 10ULL);
+                if (!useMix) {
+                    acc += layer_particle_model_device(
+                        density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useStbn, 0);
+                    if (wantNext) {
+                        accNext += layer_particle_model_device(
+                            density,
+                            densityMax,
+                            nParticles,
+                            odParticle,
+                            uniformity,
+                            seedNext,
+                            absX,
+                            absY,
+                            grain,
+                            useStbn,
+                            1);
+                    }
+                } else {
+                    if (wFine > 0.0f) {
+                        acc += layer_particle_model_device(
+                            density,
+                            densityMax,
+                            nParticles,
+                            odParticle * wFine,
+                            uniformity,
+                            seed,
+                            absX,
+                            absY,
+                            grain,
+                            useStbn,
+                            0);
+                        if (wantNext) {
+                            accNext += layer_particle_model_device(
+                                density,
+                                densityMax,
+                                nParticles,
+                                odParticle * wFine,
+                                uniformity,
+                                seedNext,
+                                absX,
+                                absY,
+                                grain,
+                                useStbn,
+                                1);
+                        }
+                    }
+                    const float nParticlesCoarse = nParticles / mixScale;
+                    if (nParticlesCoarse > 0.0f) {
+                        acc += layer_particle_model_device(
+                            density,
+                            densityMax,
+                            nParticlesCoarse,
+                            odParticle * wCoarse * mixScale,
+                            uniformity,
+                            seed,
+                            absX,
+                            absY,
+                            grain,
+                            useStbn,
+                            0);
+                        if (wantNext) {
+                            accNext += layer_particle_model_device(
+                                density,
+                                densityMax,
+                                nParticlesCoarse,
+                                odParticle * wCoarse * mixScale,
+                                uniformity,
+                                seedNext,
+                                absX,
+                                absY,
+                                grain,
+                                useStbn,
+                                1);
+                        }
+                    }
+                }
+            }
+            acc /= static_cast<float>(nSubLayers);
             if (wantNext) {
-                accNext += layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                accNext /= static_cast<float>(nSubLayers);
             }
+            const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
+            acc = density + (acc - density) * breathingFactor * clumpFactor;
+            if (wantNext) {
+                accNext = density + (accNext - density) * breathingFactor * clumpFactor;
+            }
+            if (useRetime) {
+                const float delta0 = acc - density;
+                const float delta1 = accNext - density;
+                const float blend = delta0 + (delta1 - delta0) * timeAlpha;
+                const float w0 = 1.0f - timeAlpha;
+                const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
+                const float norm = rsqrtf(denom);
+                acc = density + blend * norm;
+            }
+            inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
         }
-        else {
-            if (wFine > 0.0f) {
-                acc += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, useStbn, 0);
-                if (wantNext) {
-                    accNext += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seedNext, absX, absY, grain, useStbn, 1);
-                }
-            }
-            const float nParticlesCoarse = nParticles / mixScale;
-            if (nParticlesCoarse > 0.0f) {
-                acc += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, useStbn, 0);
-                if (wantNext) {
-                    accNext += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seedNext, absX, absY, grain, useStbn, 1);
-                }
-            }
-        }
     }
-    acc /= static_cast<float>(nSubLayers);
-    if (wantNext) {
-        accNext /= static_cast<float>(nSubLayers);
-    }
-    const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
-    acc = density + (acc - density) * breathingFactor * clumpFactor;
-    if (wantNext) {
-        accNext = density + (accNext - density) * breathingFactor * clumpFactor;
-    }
-    if (useRetime) {
-        const float delta0 = acc - density;
-        const float delta1 = accNext - density;
-        const float blend = delta0 + (delta1 - delta0) * timeAlpha;
-        const float w0 = 1.0f - timeAlpha;
-        const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
-        const float norm = rsqrtf(denom);
-        acc = density + blend * norm;
-    }
-    inOut[idx] = device_isfinite(acc) ? acc : 0.0f;
 }
 
 __global__ void grain_layer_kernel(
@@ -1064,11 +1119,6 @@ __global__ void grain_layer_kernel(
     const JuicerCuda::GrainPayload& grain = params.grain;
     const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= params.width || y >= params.height) {
-        return;
-    }
     if (!inDensity || !outGrain) {
         return;
     }
@@ -1079,16 +1129,13 @@ __global__ void grain_layer_kernel(
         return;
     }
 
-    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-    float density = inDensity[idx];
-
     const float densityMin = grain.densityMinLayers[sublayerIndex][channelIndex];
     const float densityMax = grain.densityMaxLayers[sublayerIndex][channelIndex];
     const float nParticles = grain.nParticlesLayers[sublayerIndex][channelIndex];
     const float odParticle = grain.odParticleLayers[sublayerIndex][channelIndex];
     const float uniformity = grain.uniformity[channelIndex];
-    float mixWeight = grain.sizeMixWeight;
-    float mixScale = grain.sizeMixScale;
+    const float mixWeight = grain.sizeMixWeight;
+    const float mixScale = grain.sizeMixScale;
     const float timeAlpha = grain.timeAlpha;
     const bool useRetime = (timeAlpha > 1e-6f && timeAlpha < 0.999999f);
     const bool wantNext = useRetime;
@@ -1097,67 +1144,112 @@ __global__ void grain_layer_kernel(
         !device_isfinite(nParticles) || !(nParticles > 0.0f) ||
         !device_isfinite(odParticle) || !(odParticle > 0.0f))
     {
-        outGrain[idx] = 0.0f;
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                outGrain[idx] = 0.0f;
+            }
+        }
         return;
     }
 
-    const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
-    const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
-
     const JuicerCuda::DeviceCurveView curve = curve_for_channel_device(dev, channelIndex);
     const float* layerCurve = grain.densityCurvesLayers[sublayerIndex][channelIndex];
-    density = interp_density_layer_device(density, curve.y, layerCurve, curve.n);
-    density += densityMin;
 
     const std::uint64_t seed = grain.seedBase ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
     const int useStbn = (grain.stbn && grain.stbnWidth > 0 && grain.stbnHeight > 0 && grain.stbnFrames > 0) ? 1 : 0;
-
-    const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
     const float wCoarse = fminf(fmaxf(mixWeight, 0.0f), 1.0f);
     const float wFine = 1.0f - wCoarse;
     const bool useMix = (wCoarse > 0.0f) && (mixScale > 1.0f);
+    const std::uint64_t seedNext =
+        grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
 
-    float grainSample = 0.0f;
-    float grainSampleNext = 0.0f;
-    if (!useMix) {
-        grainSample = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useStbn, 0);
-        if (wantNext) {
-            const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
-            grainSampleNext = layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seedNext, absX, absY, grain, useStbn, 1);
-        }
-    }
-    else {
-        if (wFine > 0.0f) {
-            grainSample += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, useStbn, 0);
-            if (wantNext) {
-                const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
-                grainSampleNext += layer_particle_model_device(density, densityMax, nParticles, odParticle * wFine, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+    for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+        for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            float density = inDensity[idx];
+            const std::uint64_t absX = static_cast<std::uint64_t>(grain.originX + x);
+            const std::uint64_t absY = static_cast<std::uint64_t>(grain.originY + y);
+
+            density = interp_density_layer_device(density, curve.y, layerCurve, curve.n);
+            density += densityMin;
+
+            const float clumpFactor = grain_clump_factor_device(grain, absX, absY);
+            float grainSample = 0.0f;
+            float grainSampleNext = 0.0f;
+            if (!useMix) {
+                grainSample =
+                    layer_particle_model_device(density, densityMax, nParticles, odParticle, uniformity, seed, absX, absY, grain, useStbn, 0);
+                if (wantNext) {
+                    grainSampleNext = layer_particle_model_device(
+                        density, densityMax, nParticles, odParticle, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                }
+            } else {
+                if (wFine > 0.0f) {
+                    grainSample += layer_particle_model_device(
+                        density, densityMax, nParticles, odParticle * wFine, uniformity, seed, absX, absY, grain, useStbn, 0);
+                    if (wantNext) {
+                        grainSampleNext += layer_particle_model_device(
+                            density,
+                            densityMax,
+                            nParticles,
+                            odParticle * wFine,
+                            uniformity,
+                            seedNext,
+                            absX,
+                            absY,
+                            grain,
+                            useStbn,
+                            1);
+                    }
+                }
+                const float nParticlesCoarse = nParticles / mixScale;
+                if (nParticlesCoarse > 0.0f) {
+                    grainSample += layer_particle_model_device(
+                        density,
+                        densityMax,
+                        nParticlesCoarse,
+                        odParticle * wCoarse * mixScale,
+                        uniformity,
+                        seed,
+                        absX,
+                        absY,
+                        grain,
+                        useStbn,
+                        0);
+                    if (wantNext) {
+                        grainSampleNext += layer_particle_model_device(
+                            density,
+                            densityMax,
+                            nParticlesCoarse,
+                            odParticle * wCoarse * mixScale,
+                            uniformity,
+                            seedNext,
+                            absX,
+                            absY,
+                            grain,
+                            useStbn,
+                            1);
+                    }
+                }
             }
-        }
-        const float nParticlesCoarse = nParticles / mixScale;
-        if (nParticlesCoarse > 0.0f) {
-            grainSample += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seed, absX, absY, grain, useStbn, 0);
+            const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
+            grainSample = density + (grainSample - density) * breathingFactor * clumpFactor;
             if (wantNext) {
-                const std::uint64_t seedNext = grain.seedBaseNext ^ (static_cast<std::uint64_t>(channelIndex) + static_cast<std::uint64_t>(sublayerIndex) * 10ULL);
-                grainSampleNext += layer_particle_model_device(density, densityMax, nParticlesCoarse, odParticle * wCoarse * mixScale, uniformity, seedNext, absX, absY, grain, useStbn, 1);
+                grainSampleNext = density + (grainSampleNext - density) * breathingFactor * clumpFactor;
             }
+            if (useRetime) {
+                const float delta0 = grainSample - density;
+                const float delta1 = grainSampleNext - density;
+                const float blend = delta0 + (delta1 - delta0) * timeAlpha;
+                const float w0 = 1.0f - timeAlpha;
+                const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
+                const float norm = rsqrtf(denom);
+                grainSample = density + blend * norm;
+            }
+            outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
         }
     }
-    const float breathingFactor = grain_breathing_factor_device(grain, absX, absY);
-    grainSample = density + (grainSample - density) * breathingFactor * clumpFactor;
-    if (wantNext) {
-        grainSampleNext = density + (grainSampleNext - density) * breathingFactor * clumpFactor;
-    }
-    if (useRetime) {
-        const float delta0 = grainSample - density;
-        const float delta1 = grainSampleNext - density;
-        const float blend = delta0 + (delta1 - delta0) * timeAlpha;
-        const float w0 = 1.0f - timeAlpha;
-        const float denom = w0 * w0 + timeAlpha * timeAlpha + 1e-6f;
-        const float norm = rsqrtf(denom);
-        grainSample = density + blend * norm;
-    }
-    outGrain[idx] = device_isfinite(grainSample) ? grainSample : 0.0f;
 }
 
 __global__ void develop_film_density_from_raw_kernel(
