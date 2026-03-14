@@ -2432,7 +2432,7 @@ Scanner::Settings JuicerEffect::gatherScannerSettings() const {
 
 Print::Params JuicerEffect::gatherPrintParams() const {
     Print::Params params{};
-    const bool bypass = read_bool_param_or(_pPrintBypass, true);
+    const bool bypass = read_bool_param_or(_pPrintBypass, false);
     const double pexp = read_double_param_or(_pPrintExposure, 1.0);
     const double preflash = read_double_param_or(_pPrintPreflash, 0.0);
     const double y = read_double_param_or(_pEnlargerY, 0.0);

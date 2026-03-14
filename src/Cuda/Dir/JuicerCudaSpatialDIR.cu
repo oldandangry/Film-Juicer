@@ -139,13 +139,10 @@ namespace {
         const float* JUICER_RESTRICT k,
         int radius)
     {
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
         if (!in || !out || !k || radius <= 0) {
             return;
         }
 
-        const bool inBounds = (x < width && y < height);
         const int kLen = 2 * radius + 1;
         const int tileW = blockDim.x;
         const int tileH = blockDim.y + 2 * radius;
@@ -156,45 +153,54 @@ namespace {
 
         const int tid = threadIdx.y * blockDim.x + threadIdx.x;
         const int tcount = blockDim.x * blockDim.y;
+        const int xLocal = threadIdx.x;
 
         for (int i = tid; i < kLen; i += tcount) {
             sWeights[i] = k[i];
         }
-
-        const int blockX = blockIdx.x * blockDim.x;
-        const int blockY = blockIdx.y * blockDim.y;
-        const int xLocal = threadIdx.x;
-        const int xLoad = blockX + xLocal;
-        if (xLoad < width) {
-            for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
-                const int yLoad = blockY + i - radius;
-                const int yy = reflect_index_repeat_device(yLoad, height);
-                sTile[i * tileW + xLocal] = in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
-            }
-        }
-
         __syncthreads();
 
-        if (!inBounds) {
-            return;
-        }
+        for (int blockY = blockIdx.y * blockDim.y; blockY < height; blockY += blockDim.y * gridDim.y) {
+            for (int blockX = blockIdx.x * blockDim.x; blockX < width; blockX += blockDim.x * gridDim.x) {
+                const int x = blockX + threadIdx.x;
+                const int y = blockY + threadIdx.y;
+                const bool inBounds = (x < width && y < height);
+                const int xLoad = blockX + xLocal;
+                if (xLoad < width) {
+                    for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
+                        const int yLoad = blockY + i - radius;
+                        const int yy = reflect_index_repeat_device(yLoad, height);
+                        sTile[i * tileW + xLocal] =
+                            in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
+                    }
+                }
 
-        double acc = 0.0;
-        const int tileY = threadIdx.y + radius;
-        for (int j = -radius; j <= radius; ++j) {
-            const float v = sTile[(tileY + j) * tileW + xLocal];
-            const float w = sWeights[j + radius];
-            acc += static_cast<double>(v) * static_cast<double>(w);
-        }
+                __syncthreads();
 
-        float outV = (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
-        if (!isfinite(outV) || isnan(outV)) {
-            outV = 0.0f;
-        }
-        if (outV < -10.0f) outV = -10.0f;
-        if (outV > 10.0f) outV = 10.0f;
+                if (inBounds) {
+                    double acc = 0.0;
+                    const int tileY = threadIdx.y + radius;
+                    for (int j = -radius; j <= radius; ++j) {
+                        const float v = sTile[(tileY + j) * tileW + xLocal];
+                        const float w = sWeights[j + radius];
+                        acc += static_cast<double>(v) * static_cast<double>(w);
+                    }
 
-        out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] = outV;
+                    float outV = (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
+                    if (!isfinite(outV) || isnan(outV)) {
+                        outV = 0.0f;
+                    }
+                    if (outV < -10.0f)
+                        outV = -10.0f;
+                    if (outV > 10.0f)
+                        outV = 10.0f;
+
+                    out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] = outV;
+                }
+
+                __syncthreads();
+            }
+        }
     }
 
 } // namespace
