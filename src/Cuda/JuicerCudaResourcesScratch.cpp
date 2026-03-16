@@ -622,45 +622,45 @@
 #else
         const size_t planeBytes = s.capacityElements * sizeof(float);
         if (s.rgbR) {
-            if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.rgbR = nullptr;
         }
         if (s.rgbG) {
-            if (!retire_ptr_locked(resources, s.rgbG, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.rgbG, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.rgbG = nullptr;
         }
         if (s.rgbB) {
-            if (!retire_ptr_locked(resources, s.rgbB, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.rgbB, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.rgbB = nullptr;
         }
         if (s.blurred) {
-            if (!retire_ptr_locked(resources, s.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.blurred = nullptr;
         }
         if (s.aux) {
-            if (!retire_ptr_locked(resources, s.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.aux = nullptr;
         }
         if (s.grainTmp) {
-            if (!retire_ptr_locked(resources, s.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.grainTmp = nullptr;
         }
         if (s.grainTmpShared) {
-            if (!retire_ptr_locked(resources, s.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.grainTmpShared = nullptr;
         }
         if (s.grainTmpMid) {
-            if (!retire_ptr_locked(resources, s.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.grainTmpMid = nullptr;
         }
         if (s.grainTmpCoarse) {
-            if (!retire_ptr_locked(resources, s.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.grainTmpCoarse = nullptr;
         }
 
         const size_t gateBytes = s.gateMaskCapacityElements * sizeof(float);
         if (s.gateMask) {
-            if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.gateMask = nullptr;
         }
 
@@ -699,15 +699,15 @@
 #else
         const size_t bytes = s.capacityElements * sizeof(float);
         if (s.corrY) {
-            if (!retire_ptr_locked(resources, s.corrY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.corrY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.corrY = nullptr;
         }
         if (s.corrM) {
-            if (!retire_ptr_locked(resources, s.corrM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.corrM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.corrM = nullptr;
         }
         if (s.corrC) {
-            if (!retire_ptr_locked(resources, s.corrC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, s.corrC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.corrC = nullptr;
         }
         s.tmp = nullptr;
@@ -725,9 +725,484 @@
             resources.sharedTmpPlane,
             nullptr);
 #endif
+        resources.sharedTmpPlane = nullptr;
         resources.sharedTmpWidth = 0;
         resources.sharedTmpHeight = 0;
         resources.sharedTmpCapacityElements = 0;
+    }
+
+    static bool optics_base_live_locked(const Resources& resources) noexcept {
+        const auto& scratch = resources.scannerScratch;
+        return scratch.rgbR || scratch.rgbG || scratch.rgbB;
+    }
+
+    static bool optics_any_live_locked(const Resources::DeviceOpticsScratch& scratch) noexcept {
+        return scratch.rgbR || scratch.rgbG || scratch.rgbB ||
+            scratch.blurred || scratch.aux ||
+            scratch.grainTmp || scratch.grainTmpShared ||
+            scratch.grainTmpMid || scratch.grainTmpCoarse ||
+            scratch.gateMask;
+    }
+
+    static bool spatial_dir_base_live_locked(const Resources& resources) noexcept {
+        const auto& scratch = resources.spatialDirScratch;
+        return scratch.corrY || scratch.corrM || scratch.corrC;
+    }
+
+    static bool retire_shared_tmp_plane_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!resources.sharedTmpPlane) {
+            return true;
+        }
+
+        const std::size_t bytes = resources.sharedTmpCapacityElements * sizeof(float);
+        if (!retire_ptr_locked(
+                resources,
+                resources.sharedTmpPlane,
+                bytes,
+                Resources::RetireKind::DeviceFree,
+                cudaStreamOpaque,
+                label ? label : "shared tmp plane",
+                outError,
+                true)) {
+            return false;
+        }
+        resources.sharedTmpPlane = nullptr;
+        resources.sharedTmpWidth = 0;
+        resources.sharedTmpHeight = 0;
+        resources.sharedTmpCapacityElements = 0;
+        resources.scannerScratch.tmp = nullptr;
+        resources.spatialDirScratch.tmp = nullptr;
+        return true;
+#endif
+    }
+
+    static bool retire_orphaned_shared_tmp_plane_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!resources.sharedTmpPlane) {
+            return true;
+        }
+        if (optics_base_live_locked(resources) || spatial_dir_base_live_locked(resources)) {
+            return true;
+        }
+        return retire_shared_tmp_plane_locked(
+            resources,
+            cudaStreamOpaque,
+            label ? label : "scratch normalization shared tmp plane",
+            outError);
+#endif
+    }
+
+    static bool retire_optics_gate_mask_candidate_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
+        if (!scratch.gateMask) {
+            return true;
+        }
+
+        const std::size_t bytes = scratch.gateMaskCapacityElements * sizeof(float);
+        if (!retire_ptr_locked(
+                resources,
+                scratch.gateMask,
+                bytes,
+                Resources::RetireKind::DeviceFree,
+                cudaStreamOpaque,
+                "scratch normalization optics gate mask",
+                outError,
+                true)) {
+            return false;
+        }
+        scratch.gateMask = nullptr;
+        scratch.gateWidth = 0;
+        scratch.gateHeight = 0;
+        scratch.gateMaskCapacityElements = 0;
+        scratch.gateMaskHash = 0;
+        return true;
+#endif
+    }
+
+    static bool retire_optics_grain_shared_candidate_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
+        if (!scratch.grainTmpShared) {
+            return true;
+        }
+
+        const std::size_t bytes = scratch.capacityElements * sizeof(float);
+        if (!retire_ptr_locked(
+                resources,
+                scratch.grainTmpShared,
+                bytes,
+                Resources::RetireKind::DeviceFree,
+                cudaStreamOpaque,
+                "scratch normalization optics grain shared",
+                outError,
+                true)) {
+            return false;
+        }
+        scratch.grainTmpShared = nullptr;
+        return true;
+#endif
+    }
+
+    static bool retire_optics_grain_triplet_candidate_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
+        const std::size_t bytes = scratch.capacityElements * sizeof(float);
+        if (scratch.grainTmp) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.grainTmp,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization optics grain triplet",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.grainTmp = nullptr;
+        }
+        if (scratch.grainTmpMid) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.grainTmpMid,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization optics grain triplet",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.grainTmpMid = nullptr;
+        }
+        if (scratch.grainTmpCoarse) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.grainTmpCoarse,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization optics grain triplet",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.grainTmpCoarse = nullptr;
+        }
+        return true;
+#endif
+    }
+
+    static bool retire_optics_aux_candidate_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
+        if (!scratch.aux) {
+            return true;
+        }
+
+        const std::size_t bytes = scratch.capacityElements * sizeof(float);
+        if (!retire_ptr_locked(
+                resources,
+                scratch.aux,
+                bytes,
+                Resources::RetireKind::DeviceFree,
+                cudaStreamOpaque,
+                "scratch normalization optics aux",
+                outError,
+                true)) {
+            return false;
+        }
+        scratch.aux = nullptr;
+        return true;
+#endif
+    }
+
+    static bool retire_optics_blurred_candidate_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
+        if (!scratch.blurred) {
+            return true;
+        }
+
+        const std::size_t bytes = scratch.capacityElements * sizeof(float);
+        if (!retire_ptr_locked(
+                resources,
+                scratch.blurred,
+                bytes,
+                Resources::RetireKind::DeviceFree,
+                cudaStreamOpaque,
+                "scratch normalization optics blurred",
+                outError,
+                true)) {
+            return false;
+        }
+        scratch.blurred = nullptr;
+        return true;
+#endif
+    }
+
+    static bool retire_spatial_dir_base_candidate_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
+        const std::size_t bytes = scratch.capacityElements * sizeof(float);
+        if (scratch.corrY) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.corrY,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization spatial dir base",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.corrY = nullptr;
+        }
+        if (scratch.corrM) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.corrM,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization spatial dir base",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.corrM = nullptr;
+        }
+        if (scratch.corrC) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.corrC,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization spatial dir base",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.corrC = nullptr;
+        }
+        scratch.tmp = nullptr;
+        scratch.width = 0;
+        scratch.height = 0;
+        scratch.capacityElements = 0;
+        return retire_orphaned_shared_tmp_plane_locked(
+            resources,
+            cudaStreamOpaque,
+            "scratch normalization spatial dir shared tmp",
+            outError);
+#endif
+    }
+
+    static bool retire_optics_base_candidate_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        Resources::DeviceOpticsScratch& scratch = resources.scannerScratch;
+        const std::size_t bytes = scratch.capacityElements * sizeof(float);
+        if (scratch.rgbR) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.rgbR,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization optics base",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.rgbR = nullptr;
+        }
+        if (scratch.rgbG) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.rgbG,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization optics base",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.rgbG = nullptr;
+        }
+        if (scratch.rgbB) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.rgbB,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization optics base",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.rgbB = nullptr;
+        }
+
+        if (!optics_any_live_locked(scratch)) {
+            scratch.tmp = nullptr;
+            scratch.width = 0;
+            scratch.height = 0;
+            scratch.capacityElements = 0;
+            scratch.gateWidth = 0;
+            scratch.gateHeight = 0;
+            scratch.gateMaskCapacityElements = 0;
+            scratch.gateMaskHash = 0;
+        }
+        return retire_orphaned_shared_tmp_plane_locked(
+            resources,
+            cudaStreamOpaque,
+            "scratch normalization optics shared tmp",
+            outError);
+#endif
+    }
+
+    bool retire_scratch_policy_candidate(
+        Resources& resources,
+        ResourceManager::ScratchPolicyCandidate candidate,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)candidate;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        switch (candidate) {
+        case ResourceManager::ScratchPolicyCandidate::OpticsGateMask:
+            return retire_optics_gate_mask_candidate_locked(resources, cudaStreamOpaque, outError);
+        case ResourceManager::ScratchPolicyCandidate::OpticsGrainShared:
+            return retire_optics_grain_shared_candidate_locked(resources, cudaStreamOpaque, outError);
+        case ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet:
+            return retire_optics_grain_triplet_candidate_locked(resources, cudaStreamOpaque, outError);
+        case ResourceManager::ScratchPolicyCandidate::OpticsAux:
+            return retire_optics_aux_candidate_locked(resources, cudaStreamOpaque, outError);
+        case ResourceManager::ScratchPolicyCandidate::OpticsBlurred:
+            return retire_optics_blurred_candidate_locked(resources, cudaStreamOpaque, outError);
+        case ResourceManager::ScratchPolicyCandidate::SpatialDirBase:
+            return retire_spatial_dir_base_candidate_locked(resources, cudaStreamOpaque, outError);
+        case ResourceManager::ScratchPolicyCandidate::OpticsBase:
+            return retire_optics_base_candidate_locked(resources, cudaStreamOpaque, outError);
+        default:
+            outError = "scratch normalization candidate is invalid";
+            return false;
+        }
+#endif
+    }
+
+    bool retire_orphaned_shared_tmp_plane(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        return retire_orphaned_shared_tmp_plane_locked(
+            resources,
+            cudaStreamOpaque,
+            "scratch normalization orphaned shared tmp",
+            outError);
+#endif
     }
 
     bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError) {
@@ -808,7 +1283,7 @@
             if (needWeightsX) {
                 if (resources.autoExposureScratch.weightsX) {
                     const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.weightsXCapacity)) * sizeof(float);
-                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.weightsX, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure weightsX", outError)) {
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.weightsX, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure weightsX", outError, true)) {
                         return false;
                     }
                     resources.autoExposureScratch.weightsX = nullptr;
@@ -825,7 +1300,7 @@
             if (needWeightsY) {
                 if (resources.autoExposureScratch.weightsY) {
                     const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.weightsYCapacity)) * sizeof(float);
-                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.weightsY, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure weightsY", outError)) {
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.weightsY, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure weightsY", outError, true)) {
                         return false;
                     }
                     resources.autoExposureScratch.weightsY = nullptr;
@@ -848,13 +1323,13 @@
             if (resources.autoExposureScratch.partialsA || resources.autoExposureScratch.partialsB) {
                 const size_t oldBytes = static_cast<size_t>(std::max(0, resources.autoExposureScratch.partialCapacity)) * sizeof(JuicerCudaAutoExposurePartial);
                 if (resources.autoExposureScratch.partialsA) {
-                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.partialsA, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure partialsA", outError)) {
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.partialsA, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure partialsA", outError, true)) {
                         return false;
                     }
                     resources.autoExposureScratch.partialsA = nullptr;
                 }
                 if (resources.autoExposureScratch.partialsB) {
-                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.partialsB, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure partialsB", outError)) {
+                    if (!retire_ptr_locked(resources, resources.autoExposureScratch.partialsB, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "auto-exposure partialsB", outError, true)) {
                         return false;
                     }
                     resources.autoExposureScratch.partialsB = nullptr;
@@ -910,7 +1385,7 @@
 
         if (resources.sharedTmpPlane) {
             const size_t oldBytes = resources.sharedTmpCapacityElements * sizeof(float);
-            if (!retire_ptr_locked(resources, resources.sharedTmpPlane, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label ? label : "shared tmp", outError)) {
+            if (!retire_ptr_locked(resources, resources.sharedTmpPlane, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label ? label : "shared tmp", outError, true)) {
                 return false;
             }
             resources.sharedTmpPlane = nullptr;
@@ -1041,7 +1516,7 @@
         }
         else {
             if (resources.scannerScratch.blurred) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unsharp scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unsharp scratch", outError, true)) {
                     return false;
                 }
                 resources.scannerScratch.blurred = nullptr;
@@ -1063,7 +1538,7 @@
         }
         else {
             if (resources.scannerScratch.aux) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain scratch", outError, true)) {
                     return false;
                 }
                 resources.scannerScratch.aux = nullptr;
@@ -1107,19 +1582,19 @@
         }
         else {
             if (resources.scannerScratch.grainTmp) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError, true)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmp = nullptr;
             }
             if (resources.scannerScratch.grainTmpMid) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix mid scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix mid scratch", outError, true)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmpMid = nullptr;
             }
             if (resources.scannerScratch.grainTmpCoarse) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix coarse scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix coarse scratch", outError, true)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmpCoarse = nullptr;
@@ -1141,7 +1616,7 @@
         }
         else {
             if (resources.scannerScratch.grainTmpShared) {
-                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain shared scratch", outError)) {
+                if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain shared scratch", outError, true)) {
                     return false;
                 }
                 resources.scannerScratch.grainTmpShared = nullptr;
@@ -1160,7 +1635,7 @@
                 if (resources.scannerScratch.gateMask) {
                     const size_t oldBytes =
                         resources.scannerScratch.gateMaskCapacityElements * sizeof(float);
-                    if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError)) {
+                    if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError, true)) {
                         return false;
                     }
                     resources.scannerScratch.gateMask = nullptr;
@@ -1186,7 +1661,7 @@
         else if (resources.scannerScratch.gateMask) {
             const size_t oldBytes =
                 resources.scannerScratch.gateMaskCapacityElements * sizeof(float);
-            if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError)) {
+            if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError, true)) {
                 return false;
             }
             resources.scannerScratch.gateMask = nullptr;

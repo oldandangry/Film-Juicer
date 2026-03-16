@@ -173,6 +173,11 @@ enum class PressureLane : std::uint8_t {
     Upload = 1
 };
 
+enum class ScratchCheckpointInvocation : std::uint8_t {
+    OuterPhaseCheckpoint = 0,
+    TierPretrim = 1
+};
+
 enum class BuilderReservationTier : std::uint8_t {
     Scratch = 0,
     Lut = 1,
@@ -202,6 +207,17 @@ const char* to_cstr(PressureLane lane) noexcept {
         return "builder";
     case PressureLane::Upload:
         return "upload";
+    default:
+        return "unknown";
+    }
+}
+
+const char* to_cstr(ScratchCheckpointInvocation invocation) noexcept {
+    switch (invocation) {
+    case ScratchCheckpointInvocation::OuterPhaseCheckpoint:
+        return "outer_phase_checkpoint";
+    case ScratchCheckpointInvocation::TierPretrim:
+        return "tier_pretrim";
     default:
         return "unknown";
     }
@@ -503,6 +519,22 @@ struct ScratchPolicyState {
     std::uint64_t totalInFlightBytes = 0;
 };
 
+struct ScratchNormalizationNoShedCache {
+    bool valid = false;
+    std::uint64_t requestDescriptorGeneration = 0;
+    std::uint64_t retainedScratchGeneration = 0;
+    std::uint64_t scratchTargetBytes = 0;
+};
+
+struct ScratchNormalizationContextState {
+    ScratchNormalizationNoShedCache noShedCache{};
+};
+
+struct ScratchNormalizationState {
+    std::mutex mutex;
+    std::unordered_map<DeviceContextKey, ScratchNormalizationContextState, DeviceContextKeyHash> byContext;
+};
+
 
 struct UploadReservationContextState {
     std::uint64_t inFlightBytes = 0;
@@ -708,6 +740,46 @@ struct ActiveBurstDecision {
     std::uint64_t overTargetBytes = 0;
     std::uint64_t capBytes = 0;
     std::uint64_t elapsedMs = 0;
+};
+
+struct ScratchEligibilityResult {
+    std::array<bool, kScratchPolicyCandidateCount> eligibleNow{};
+    std::uint64_t reclaimableLiveBytes = 0;
+    bool sharedTmpEligibleNow = false;
+    bool anyEligible = false;
+};
+
+struct ScratchCheckpointObservation {
+    bool requestActive = false;
+    bool stage1OverTarget = false;
+    bool stage2Evaluated = false;
+    bool stage2SkippedByNoShedCache = false;
+    bool overTargetButNotReducible = false;
+    bool sheddingAttempted = false;
+    bool sheddingProgressed = false;
+    bool sheddingPartialFailure = false;
+    bool sheddingTargetReached = false;
+    bool sheddingOrphanedSharedTmpRetired = false;
+    std::uint64_t requestDescriptorGeneration = 0;
+    std::uint64_t retainedScratchGeneration = 0;
+    std::uint64_t scratchTargetBytes = 0;
+    std::uint64_t hysteresisBytes = 0;
+    std::uint64_t policyLiveRetainedBytes = 0;
+    std::uint64_t reclaimableLiveBytes = 0;
+    std::uint32_t shedRetiredActionCount = 0;
+    std::uint64_t shedRetiredLiveBytes = 0;
+    ScratchResidencyView residency{};
+    ScratchEligibilityResult eligibility{};
+};
+
+struct ScratchSheddingResult {
+    bool attempted = false;
+    bool progressed = false;
+    bool partialFailure = false;
+    bool orphanedSharedTmpRetired = false;
+    bool targetReached = false;
+    std::uint32_t retiredActionCount = 0;
+    std::uint64_t retiredLiveBytes = 0;
 };
 
 struct BurstDebtRuntimeDecision {
@@ -2055,7 +2127,7 @@ void trace_tier_budget_event(
     std::size_t requestBytes,
     bool criticalCurrentFrame,
     bool requestReclaimPass,
-    std::uint64_t scratchTrimmedEntries,
+    std::uint64_t scratchNormalizedActions,
     std::uint64_t graphEvictedEntries,
     const char* reason) {
     if (!JTRACE_ENABLED(2)) {
@@ -2107,11 +2179,190 @@ void trace_tier_budget_event(
         + " total_active_bytes=" + std::to_string(static_cast<unsigned long long>(tierBudget.totalActiveBytes))
         + " total_reclaimable_bytes=" + std::to_string(
             static_cast<unsigned long long>(tierBudget.totalReclaimableBytes))
-        + " scratch_trimmed_entries=" + std::to_string(static_cast<unsigned long long>(scratchTrimmedEntries))
+        + " scratch_normalized_actions=" + std::to_string(static_cast<unsigned long long>(scratchNormalizedActions))
         + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(graphEvictedEntries))
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSTGT", msg);
+}
+
+void trace_scratch_request_descriptor(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const ScratchRequestDescriptor& descriptor,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::string msg = trace_event_prefix("scratch_request", transaction, commandName)
+        + " request_generation=" + std::to_string(static_cast<unsigned long long>(descriptor.generation))
+        + " need_optics=" + std::to_string(descriptor.needOptics ? 1 : 0)
+        + " need_spatial_dir=" + std::to_string(descriptor.needSpatialDir ? 1 : 0)
+        + " requested_width=" + std::to_string(descriptor.requestedWidth)
+        + " requested_height=" + std::to_string(descriptor.requestedHeight)
+        + " need_blurred=" + std::to_string(descriptor.needBlurred ? 1 : 0)
+        + " need_aux=" + std::to_string(descriptor.needAux ? 1 : 0)
+        + " need_grain_triplet=" + std::to_string(descriptor.needGrainTriplet ? 1 : 0)
+        + " need_grain_shared=" + std::to_string(descriptor.needGrainShared ? 1 : 0)
+        + " need_gate_mask=" + std::to_string(descriptor.needGateMask ? 1 : 0)
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
+    JTRACE("MSSRQ", msg);
+}
+
+void trace_scratch_checkpoint_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    ScratchCheckpointInvocation invocation,
+    const ScratchCheckpointObservation& observation,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const auto bytes_for_candidate = [&](ScratchPolicyCandidate candidate) -> std::uint64_t {
+        const std::size_t index = scratch_policy_candidate_index(candidate);
+        if (index >= observation.residency.candidates.size()) {
+            return 0;
+        }
+        return observation.residency.candidates[index].liveRetainedBytes;
+    };
+
+    const auto helper_non_policy_bytes = [&](ScratchHelperNonPolicyAllocation allocation) -> std::uint64_t {
+        const std::size_t index = scratch_helper_non_policy_index(allocation);
+        if (index >= observation.residency.helperNonPolicyBytes.size()) {
+            return 0;
+        }
+        return observation.residency.helperNonPolicyBytes[index];
+    };
+
+    const auto eligible_now = [&](ScratchPolicyCandidate candidate) -> std::uint32_t {
+        const std::size_t index = scratch_policy_candidate_index(candidate);
+        if (index >= observation.eligibility.eligibleNow.size()) {
+            return 0u;
+        }
+        return observation.eligibility.eligibleNow[index] ? 1u : 0u;
+    };
+
+    const std::string msg = trace_event_prefix("scratch_checkpoint", transaction, commandName)
+        + " invocation=" + to_cstr(invocation)
+        + " request_active=" + std::to_string(observation.requestActive ? 1 : 0)
+        + " stage1_over_target=" + std::to_string(observation.stage1OverTarget ? 1 : 0)
+        + " stage2_evaluated=" + std::to_string(observation.stage2Evaluated ? 1 : 0)
+        + " stage2_skipped_no_shed_cache=" + std::to_string(observation.stage2SkippedByNoShedCache ? 1 : 0)
+        + " over_target_not_reducible=" + std::to_string(observation.overTargetButNotReducible ? 1 : 0)
+        + " shedding_attempted=" + std::to_string(observation.sheddingAttempted ? 1 : 0)
+        + " shedding_progressed=" + std::to_string(observation.sheddingProgressed ? 1 : 0)
+        + " shedding_partial_failure=" + std::to_string(observation.sheddingPartialFailure ? 1 : 0)
+        + " shedding_target_reached=" + std::to_string(observation.sheddingTargetReached ? 1 : 0)
+        + " shedding_orphaned_shared_tmp_retired=" + std::to_string(
+            observation.sheddingOrphanedSharedTmpRetired ? 1 : 0)
+        + " request_generation=" + std::to_string(
+            static_cast<unsigned long long>(observation.requestDescriptorGeneration))
+        + " retained_generation=" + std::to_string(
+            static_cast<unsigned long long>(observation.retainedScratchGeneration))
+        + " scratch_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.scratchTargetBytes))
+        + " hysteresis_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.hysteresisBytes))
+        + " policy_live_retained_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.policyLiveRetainedBytes))
+        + " reclaimable_live_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.reclaimableLiveBytes))
+        + " shed_retired_action_count=" + std::to_string(
+            static_cast<unsigned long long>(observation.shedRetiredActionCount))
+        + " shed_retired_live_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.shedRetiredLiveBytes))
+        + " total_live_retained_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.residency.totalLiveRetainedBytes))
+        + " retire_pending_scratch_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.residency.retirePendingScratchBytes))
+        + " helper_shared_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.residency.helperSharedBytes))
+        + " helper_non_policy_bytes=" + std::to_string(
+            static_cast<unsigned long long>(observation.residency.helperNonPolicyTotalBytes))
+        + " optics_base_bytes=" + std::to_string(
+            static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBase)))
+        + " optics_blurred_bytes=" + std::to_string(
+            static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBlurred)))
+        + " optics_aux_bytes=" + std::to_string(
+            static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsAux)))
+        + " optics_grain_triplet_bytes=" + std::to_string(
+            static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainTriplet)))
+        + " optics_grain_shared_bytes=" + std::to_string(
+            static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainShared)))
+        + " optics_gate_mask_bytes=" + std::to_string(
+            static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGateMask)))
+        + " spatial_dir_base_bytes=" + std::to_string(
+            static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::SpatialDirBase)))
+        + " optics_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBase))
+        + " optics_blurred_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBlurred))
+        + " optics_aux_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsAux))
+        + " optics_grain_triplet_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainTriplet))
+        + " optics_grain_shared_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainShared))
+        + " optics_gate_mask_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGateMask))
+        + " spatial_dir_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::SpatialDirBase))
+        + " shared_tmp_eligible_now=" + std::to_string(observation.eligibility.sharedTmpEligibleNow ? 1 : 0)
+        + " scan_error_flag_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorFlag)))
+        + " scan_error_host_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorHost)))
+        + " auto_exposure_scale_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureExposureScale)))
+        + " auto_exposure_ev_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureAutoEV)))
+        + " auto_exposure_valid_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureValid)))
+        + " auto_exposure_max_y_bits_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureMaxYBits)))
+        + " auto_exposure_histogram_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureHistogram)))
+        + " auto_exposure_weights_x_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureWeightsX)))
+        + " auto_exposure_weights_y_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureWeightsY)))
+        + " auto_exposure_partials_a_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposurePartialsA)))
+        + " auto_exposure_partials_b_bytes=" + std::to_string(
+            static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposurePartialsB)))
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
+    JTRACE("MSSCP", msg);
+}
+
+void trace_scratch_shedding_event(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    ScratchCheckpointInvocation invocation,
+    const char* actionName,
+    std::uint64_t candidateLiveBytesBefore,
+    std::uint64_t candidateLiveBytesAfter,
+    std::uint64_t policyLiveBytesBefore,
+    std::uint64_t policyLiveBytesAfter,
+    bool orphanedSharedTmpRetired,
+    bool partialFailure,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::string msg = trace_event_prefix("scratch_shedding", transaction, commandName)
+        + " invocation=" + to_cstr(invocation)
+        + " action=" + trace_or_unspecified(actionName)
+        + " candidate_live_bytes_before=" + std::to_string(
+            static_cast<unsigned long long>(candidateLiveBytesBefore))
+        + " candidate_live_bytes_after=" + std::to_string(
+            static_cast<unsigned long long>(candidateLiveBytesAfter))
+        + " policy_live_retained_bytes_before=" + std::to_string(
+            static_cast<unsigned long long>(policyLiveBytesBefore))
+        + " policy_live_retained_bytes_after=" + std::to_string(
+            static_cast<unsigned long long>(policyLiveBytesAfter))
+        + " orphaned_shared_tmp_retired=" + std::to_string(orphanedSharedTmpRetired ? 1 : 0)
+        + " partial_failure=" + std::to_string(partialFailure ? 1 : 0)
+        + trace_device_context_fields(transaction)
+        + " reason=" + trace_or_unspecified(reason);
+    JTRACE("MSSSH", msg);
 }
 
 void trace_effective_reserve_event(
@@ -2821,7 +3072,6 @@ void trace_fragmentation_recovery(
     std::uint32_t attempt,
     std::size_t requestBytes,
     std::size_t reapedBytes,
-    std::uint64_t quarantineTrimmedEntries,
     std::uint64_t graphEvictedEntries,
     bool success,
     const char* stage,
@@ -2834,8 +3084,6 @@ void trace_fragmentation_recovery(
         + " attempt=" + std::to_string(static_cast<unsigned long long>(attempt))
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " reaped_bytes=" + std::to_string(static_cast<unsigned long long>(reapedBytes))
-        + " quarantine_trimmed_entries=" + std::to_string(
-            static_cast<unsigned long long>(quarantineTrimmedEntries))
         + " graph_evicted_entries=" + std::to_string(static_cast<unsigned long long>(graphEvictedEntries))
         + " success=" + std::to_string(success ? 1 : 0)
         + " stage=" + trace_or_unknown(stage)

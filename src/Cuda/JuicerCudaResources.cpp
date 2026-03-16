@@ -387,6 +387,156 @@ namespace JuicerCuda {
 #endif
 
 
+    static bool add_u64_saturating(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t& out) noexcept {
+        if (lhs > (std::numeric_limits<std::uint64_t>::max() - rhs)) {
+            out = std::numeric_limits<std::uint64_t>::max();
+            return false;
+        }
+        out = lhs + rhs;
+        return true;
+    }
+
+    static std::uint64_t bytes_for_count_u64(
+        std::size_t count,
+        std::size_t elementBytes,
+        bool& overflow) noexcept {
+        if (overflow) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        if (count == 0 || elementBytes == 0) {
+            return 0;
+        }
+
+        const std::uint64_t count64 = static_cast<std::uint64_t>(count);
+        const std::uint64_t elementBytes64 = static_cast<std::uint64_t>(elementBytes);
+        if (count64 > (std::numeric_limits<std::uint64_t>::max() / elementBytes64)) {
+            overflow = true;
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+        return count64 * elementBytes64;
+    }
+
+    static void add_residency_bytes(
+        std::uint64_t bytes,
+        std::uint64_t& total,
+        bool& overflow) noexcept {
+        std::uint64_t next = 0;
+        if (!add_u64_saturating(total, bytes, next)) {
+            overflow = true;
+        }
+        total = next;
+    }
+
+    static void refresh_scratch_residency_state_locked(Resources& resources) noexcept {
+        Resources::ScratchResidencyState next{};
+        next.retainedGeneration = std::max<std::uint64_t>(1ull, resources.scratchResidency.retainedGeneration);
+
+        bool overflow = false;
+        const std::uint64_t opticsPlaneBytes =
+            bytes_for_count_u64(resources.scannerScratch.capacityElements, sizeof(float), overflow);
+        const std::uint64_t spatialDirPlaneBytes =
+            bytes_for_count_u64(resources.spatialDirScratch.capacityElements, sizeof(float), overflow);
+        const std::uint64_t gateMaskBytes =
+            bytes_for_count_u64(resources.scannerScratch.gateMaskCapacityElements, sizeof(float), overflow);
+        const std::uint64_t sharedTmpBytes =
+            bytes_for_count_u64(resources.sharedTmpCapacityElements, sizeof(float), overflow);
+        if (overflow) {
+            next.overflow = true;
+        }
+
+        auto add_candidate_plane = [&](ResourceManager::ScratchPolicyCandidate candidate, bool live, std::uint64_t bytes) {
+            if (!live || bytes == 0) {
+                return;
+            }
+            const std::size_t index = ResourceManager::scratch_policy_candidate_index(candidate);
+            add_residency_bytes(bytes, next.candidateLiveBytes[index], next.overflow);
+        };
+
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbR != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbG != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbB != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBlurred, resources.scannerScratch.blurred != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsAux, resources.scannerScratch.aux != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet, resources.scannerScratch.grainTmp != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet, resources.scannerScratch.grainTmpMid != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet, resources.scannerScratch.grainTmpCoarse != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainShared, resources.scannerScratch.grainTmpShared != nullptr, opticsPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGateMask, resources.scannerScratch.gateMask != nullptr, gateMaskBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrY != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrM != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrC != nullptr, spatialDirPlaneBytes);
+
+        if (resources.sharedTmpPlane) {
+            next.helperSharedBytes = sharedTmpBytes;
+        }
+
+        auto assign_non_policy_bytes = [&](ResourceManager::ScratchHelperNonPolicyAllocation allocation, bool live, std::uint64_t bytes) {
+            if (!live || bytes == 0) {
+                return;
+            }
+            const std::size_t index = ResourceManager::scratch_helper_non_policy_index(allocation);
+            next.helperNonPolicyBytes[index] = bytes;
+            add_residency_bytes(bytes, next.helperNonPolicyTotalBytes, next.overflow);
+        };
+
+        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorFlag, resources.scanErrorFlag != nullptr, sizeof(int));
+        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorHost, resources.scanErrorHost != nullptr, sizeof(int));
+        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureExposureScale, resources.autoExposureExposureScale != nullptr, sizeof(float));
+        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureAutoEV, resources.autoExposureAutoEV != nullptr, sizeof(double));
+        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureValid, resources.autoExposureValid != nullptr, sizeof(int));
+        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureMaxYBits, resources.autoExposureScratch.maxYBits != nullptr, sizeof(unsigned int));
+        assign_non_policy_bytes(
+            ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureHistogram,
+            resources.autoExposureScratch.histogram != nullptr,
+            static_cast<std::uint64_t>(2048u) * sizeof(unsigned int));
+        assign_non_policy_bytes(
+            ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureWeightsX,
+            resources.autoExposureScratch.weightsX != nullptr,
+            bytes_for_count_u64(static_cast<std::size_t>(std::max(0, resources.autoExposureScratch.weightsXCapacity)), sizeof(float), next.overflow));
+        assign_non_policy_bytes(
+            ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureWeightsY,
+            resources.autoExposureScratch.weightsY != nullptr,
+            bytes_for_count_u64(static_cast<std::size_t>(std::max(0, resources.autoExposureScratch.weightsYCapacity)), sizeof(float), next.overflow));
+        assign_non_policy_bytes(
+            ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposurePartialsA,
+            resources.autoExposureScratch.partialsA != nullptr,
+            bytes_for_count_u64(
+                static_cast<std::size_t>(std::max(0, resources.autoExposureScratch.partialCapacity)),
+                sizeof(JuicerCudaAutoExposurePartial),
+                next.overflow));
+        assign_non_policy_bytes(
+            ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposurePartialsB,
+            resources.autoExposureScratch.partialsB != nullptr,
+            bytes_for_count_u64(
+                static_cast<std::size_t>(std::max(0, resources.autoExposureScratch.partialCapacity)),
+                sizeof(JuicerCudaAutoExposurePartial),
+                next.overflow));
+
+        for (std::uint64_t bytes : next.candidateLiveBytes) {
+            add_residency_bytes(bytes, next.policyLiveRetainedBytes, next.overflow);
+        }
+        add_residency_bytes(next.helperSharedBytes, next.policyLiveRetainedBytes, next.overflow);
+        next.totalLiveRetainedBytes = next.policyLiveRetainedBytes;
+        add_residency_bytes(next.helperNonPolicyTotalBytes, next.totalLiveRetainedBytes, next.overflow);
+
+        const bool changed =
+            next.candidateLiveBytes != resources.scratchResidency.candidateLiveBytes ||
+            next.helperNonPolicyBytes != resources.scratchResidency.helperNonPolicyBytes ||
+            next.helperSharedBytes != resources.scratchResidency.helperSharedBytes ||
+            next.helperNonPolicyTotalBytes != resources.scratchResidency.helperNonPolicyTotalBytes ||
+            next.policyLiveRetainedBytes != resources.scratchResidency.policyLiveRetainedBytes ||
+            next.totalLiveRetainedBytes != resources.scratchResidency.totalLiveRetainedBytes ||
+            next.overflow != resources.scratchResidency.overflow;
+        if (changed) {
+            next.retainedGeneration =
+                (resources.scratchResidency.retainedGeneration == std::numeric_limits<std::uint64_t>::max())
+                ? std::numeric_limits<std::uint64_t>::max()
+                : std::max<std::uint64_t>(1ull, resources.scratchResidency.retainedGeneration + 1ull);
+        }
+
+        resources.scratchResidency = next;
+    }
+
     static void reap_retire_queue_locked(Resources& resources) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         for (size_t i = 0; i < resources.retireQueue.size();) {
@@ -415,6 +565,9 @@ namespace JuicerCuda {
                 }
                 if (resources.retireBytes >= e.bytes) {
                     resources.retireBytes -= e.bytes;
+                }
+                if (e.scratchTier && resources.retireScratchBytes >= e.bytes) {
+                    resources.retireScratchBytes -= e.bytes;
                 }
                 resources.retireQueue[i] = resources.retireQueue.back();
                 resources.retireQueue.pop_back();
@@ -447,6 +600,9 @@ namespace JuicerCuda {
                 resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
                 if (resources.retireBytes >= e.bytes) {
                     resources.retireBytes -= e.bytes;
+                }
+                if (e.scratchTier && resources.retireScratchBytes >= e.bytes) {
+                    resources.retireScratchBytes -= e.bytes;
                 }
                 resources.retireQueue[i] = resources.retireQueue.back();
                 resources.retireQueue.pop_back();
@@ -500,6 +656,7 @@ namespace JuicerCuda {
         }
         resources.retireQueue.clear();
         resources.retireBytes = 0;
+        resources.retireScratchBytes = 0;
 
         // Destroy pooled events.
         for (void* p : resources.retireEventPoolOpaque) {
@@ -572,7 +729,7 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool retire_ptr_locked(Resources& resources, void* ptr, std::size_t bytes, Resources::RetireKind kind, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool retire_ptr_locked(Resources& resources, void* ptr, std::size_t bytes, Resources::RetireKind kind, void* cudaStreamOpaque, const char* label, std::string& outError, bool scratchTier = false) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)ptr;
@@ -619,9 +776,13 @@ namespace JuicerCuda {
         e.ptr = ptr;
         e.bytes = bytes;
         e.kind = effectiveKind;
+        e.scratchTier = scratchTier;
         e.doneEventOpaque = retireEventOpaque;
         resources.retireQueue.push_back(e);
         resources.retireBytes += bytes;
+        if (scratchTier) {
+            resources.retireScratchBytes += bytes;
+        }
         if (effectiveKind == Resources::RetireKind::DeviceFreeAsync && asyncTracked) {
             untrack_async_device_ptr_locked(resources, ptr);
         }
@@ -1482,6 +1643,47 @@ namespace JuicerCuda {
         const std::size_t afterBytes = resources.retireBytes;
         reclaimedBytes = (beforeBytes >= afterBytes) ? (beforeBytes - afterBytes) : 0;
         return true;
+#endif
+    }
+
+    void snapshot_scratch_stage1_state(
+        Resources& resources,
+        ResourceManager::ScratchStage1DecisionState& outState) noexcept {
+        outState = ResourceManager::ScratchStage1DecisionState{};
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        std::lock_guard<std::mutex> lock(resources.m);
+        refresh_scratch_residency_state_locked(resources);
+        outState.policyLiveRetainedBytes = resources.scratchResidency.policyLiveRetainedBytes;
+        outState.retainedGeneration = resources.scratchResidency.retainedGeneration;
+#else
+        (void)resources;
+#endif
+    }
+
+    void snapshot_scratch_residency_view(
+        Resources& resources,
+        ResourceManager::ScratchResidencyView& outView) noexcept {
+        outView = ResourceManager::ScratchResidencyView{};
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        std::lock_guard<std::mutex> lock(resources.m);
+        refresh_scratch_residency_state_locked(resources);
+        for (std::size_t i = 0; i < ResourceManager::kScratchPolicyCandidateCount; ++i) {
+            outView.candidates[i].candidate = ResourceManager::kScratchPolicyCandidateOrder[i];
+            outView.candidates[i].liveRetainedBytes = resources.scratchResidency.candidateLiveBytes[i];
+        }
+        outView.helperNonPolicyBytes = resources.scratchResidency.helperNonPolicyBytes;
+        outView.helperSharedBytes = resources.scratchResidency.helperSharedBytes;
+        outView.helperNonPolicyTotalBytes = resources.scratchResidency.helperNonPolicyTotalBytes;
+        outView.policyLiveRetainedBytes = resources.scratchResidency.policyLiveRetainedBytes;
+        outView.totalLiveRetainedBytes = resources.scratchResidency.totalLiveRetainedBytes;
+        outView.retirePendingScratchBytes = static_cast<std::uint64_t>(
+            std::min<std::size_t>(
+                resources.retireScratchBytes,
+                static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+        outView.retainedGeneration = resources.scratchResidency.retainedGeneration;
+        outView.overflow = resources.scratchResidency.overflow;
+#else
+        (void)resources;
 #endif
     }
 

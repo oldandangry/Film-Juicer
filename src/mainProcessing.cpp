@@ -3949,6 +3949,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto setup_spatial_dir_stage = [&](JuicerCuda::Resources* resources,
                                        JuicerCuda::PipelineRunParams& run,
+                                       const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                        int frameWidth,
                                        int frameHeight,
                                        bool useSpatialDir) -> bool {
@@ -3967,8 +3968,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
                 submissionTxn,
                 *resources,
-                frameWidth,
-                frameHeight,
+                scratchRequest,
                 _pCudaStream,
                 dirError)) {
             if (is_scratch_contention_exhausted(dirError)) {
@@ -4101,22 +4101,12 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto ensure_optics_scratch_or_throw = [&](JuicerCuda::Resources* resources,
-                                              int frameWidth,
-                                              int frameHeight,
-                                              const OpticsScratchNeeds& scratchNeeds,
-                                              bool needGrainShared,
-                                              bool needGateMask,
+                                              const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                               std::string& opticsError) {
         if (JuicerCuda::ResourceManager::command_ensure_optics_scratch(
                 submissionTxn,
                 *resources,
-                frameWidth,
-                frameHeight,
-                scratchNeeds.blurred,
-                scratchNeeds.aux,
-                scratchNeeds.grain,
-                needGrainShared,
-                needGateMask,
+                scratchRequest,
                 _pCudaStream,
                 opticsError)) {
             return;
@@ -4473,6 +4463,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto launch_pipeline_with_optional_optics = [&](JuicerCuda::PipelineRunParams& run,
+                                                    const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                                     const ScannerOpticsParams& scannerOptics,
                                                     const OpticsIntent& opticsIntent,
                                                     const GrainOpticsState& grainState,
@@ -4494,16 +4485,9 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         std::string opticsError;
-        const OpticsScratchNeeds scratchNeeds = build_optics_scratch_needs_for_stage(
-            opticsIntent.wantGlareBlur,
-            grainState);
         ensure_optics_scratch_or_throw(
             cudaResources,
-            width,
-            height,
-            scratchNeeds,
-            grainState.needGrainShared,
-            opticsIntent.needGateMask,
+            scratchRequest,
             opticsError);
         if (!setup_gate_mask_if_needed(
                 run,
@@ -4650,6 +4634,7 @@ void JuicerProcessor::processImagesCUDA() {
         GrainSetupResult grain{};
         GrainOpticsState grainState{};
         OpticsIntent intent{};
+        OpticsScratchNeeds scratchNeeds{};
     };
 
     auto build_optics_launch_inputs = [&](JuicerCuda::PipelineRunParams& run,
@@ -4671,18 +4656,38 @@ void JuicerProcessor::processImagesCUDA() {
             inputs.glare.blurSigmaPx,
             inputs.halation.wantHalation,
             inputs.grainState.wantGrain);
+        if (inputs.intent.wantOptics) {
+            inputs.scratchNeeds = build_optics_scratch_needs_for_stage(
+                inputs.intent.wantGlareBlur,
+                inputs.grainState);
+        }
         return inputs;
+    };
+
+    auto build_medium_scratch_request = [&](const OpticsLaunchInputs& opticsInputs)
+        -> JuicerCuda::ResourceManager::ScratchRequestDescriptor {
+        return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
+            opticsInputs.intent.wantOptics,
+            useSpatialDIR,
+            width,
+            height,
+            opticsInputs.scratchNeeds.blurred,
+            opticsInputs.scratchNeeds.aux,
+            opticsInputs.scratchNeeds.grain,
+            opticsInputs.grainState.needGrainShared,
+            opticsInputs.intent.needGateMask);
     };
 
     auto prepare_common_cuda_pipeline_stages = [&](JuicerCuda::PipelineRunParams& run,
                                                    JuicerCuda::Resources* resources,
+                                                   const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                                    bool useSpatialDIR,
                                                    bool negativeMedium,
                                                    cudaEvent_t& outScanEvent) -> bool {
         setup_camera_auto_exposure(run, resources);
         populate_film_runtime_payload(run);
         outScanEvent = setup_scan_stage_resources(resources, run, stream, negativeMedium);
-        return setup_spatial_dir_stage(resources, run, width, height, useSpatialDIR);
+        return setup_spatial_dir_stage(resources, run, scratchRequest, width, height, useSpatialDIR);
     };
 
     auto initialize_medium_pipeline_run = [&](JuicerCuda::PipelineRunParams& run,
@@ -4693,11 +4698,13 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto prepare_common_cuda_pipeline_stages_for_medium = [&](JuicerCuda::PipelineRunParams& run,
                                                               JuicerCuda::Resources* resources,
+                                                              const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                                               bool negativeMedium,
                                                               cudaEvent_t& outScanEvent) -> bool {
         return prepare_common_cuda_pipeline_stages(
             run,
             resources,
+            scratchRequest,
             useSpatialDIR,
             negativeMedium,
             outScanEvent);
@@ -4811,6 +4818,26 @@ void JuicerProcessor::processImagesCUDA() {
         return !abort_cuda_path_if_requested(cudaResources);
     };
 
+    auto checkpoint_medium_scratch_phase_or_throw = [&](const char* stageTag,
+                                                        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest) {
+        if (!scratchRequest.has_any_family()) {
+            return;
+        }
+
+        std::string scratchPhaseError;
+        if (!JuicerCuda::ResourceManager::command_checkpoint_scratch_phase(
+                submissionTxn,
+                *cudaResources,
+                scratchRequest,
+                stageTag,
+                scratchPhaseError)) {
+            mark_context_and_throw_cuda_policy_fatal(
+                stageTag,
+                "CUDA scratch phase checkpoint failed",
+                scratchPhaseError);
+        }
+    };
+
     auto validate_negative_scanner_preflight_or_throw = [&]() -> ScannerPreflightResult {
         const ScannerMediumRuntimeBinding scannerMedium = bind_scanner_medium_runtime(
             *_ws,
@@ -4846,6 +4873,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto launch_and_finalize_medium_pipeline_or_abort = [&](JuicerCuda::PipelineRunParams& run,
+                                                            const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                                             const OpticsLaunchInputs& opticsInputs,
                                                             const char* gateStageTag,
                                                             const char* launchStageTag,
@@ -4858,6 +4886,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
         const PipelineLaunchResult launchResult = launch_pipeline_with_optional_optics(
             run,
+            scratchRequest,
             scannerOptics,
             opticsInputs.intent,
             opticsInputs.grainState,
@@ -4886,22 +4915,17 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto run_medium_optics_pipeline_or_abort = [&](JuicerCuda::PipelineRunParams& run,
-                                                   const Scanner::ScannerMediumRuntime& mediumRuntime,
-                                                   Scanner::ScannerMedium mediumType,
-                                                   bool includeDefects,
+                                                   const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                                                   const OpticsLaunchInputs& opticsInputs,
                                                    const char* gateStageTag,
                                                    const char* launchStageTag,
                                                    const char* launchFailurePrefix,
                                                    const char* stageLabel,
                                                    auto&& launchOpticsKernel,
                                                    cudaEvent_t scanEvent) -> bool {
-        const OpticsLaunchInputs opticsInputs = build_optics_launch_inputs(
-            run,
-            mediumRuntime,
-            mediumType,
-            includeDefects);
         return launch_and_finalize_medium_pipeline_or_abort(
             run,
+            scratchRequest,
             opticsInputs,
             gateStageTag,
             launchStageTag,
@@ -4919,16 +4943,27 @@ void JuicerProcessor::processImagesCUDA() {
 
         JuicerCuda::PipelineRunParams run{};
         initialize_medium_pipeline_run(run, scannerPreflight);
+        const OpticsLaunchInputs opticsInputs = build_optics_launch_inputs(
+            run,
+            negativeMediumRuntime,
+            Scanner::ScannerMedium::Negative,
+            true);
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            build_medium_scratch_request(opticsInputs);
 
         {
             if (!begin_medium_pipeline_or_abort("negative pipeline")) {
                 return;
             }
+            checkpoint_medium_scratch_phase_or_throw(
+                "command_checkpoint_negative_medium_scratch_phase",
+                scratchRequest);
 
             cudaEvent_t scanEvent = nullptr;
             if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
                     cudaResources,
+                    scratchRequest,
                     true,
                     scanEvent)) {
                 return;
@@ -4936,9 +4971,8 @@ void JuicerProcessor::processImagesCUDA() {
 
             if (!run_medium_optics_pipeline_or_abort(
                     run,
-                    negativeMediumRuntime,
-                    Scanner::ScannerMedium::Negative,
-                    true,
+                    scratchRequest,
+                    opticsInputs,
                     "build_gate_mask_negative",
                     "negative_pipeline_kernel_launch",
                     "negative pipeline kernel launch failed",
@@ -4981,6 +5015,13 @@ void JuicerProcessor::processImagesCUDA() {
 
         JuicerCuda::PipelineRunParams run{};
         initialize_medium_pipeline_run(run, scannerPreflight);
+        const OpticsLaunchInputs opticsInputs = build_optics_launch_inputs(
+            run,
+            printMediumRuntime,
+            Scanner::ScannerMedium::Print,
+            false);
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            build_medium_scratch_request(opticsInputs);
 
         {
             if (!begin_medium_pipeline_or_abort("print pipeline")) {
@@ -4990,11 +5031,15 @@ void JuicerProcessor::processImagesCUDA() {
             // Ensure the print illuminant filtered is available for current print params.
             ensure_print_illuminant_filtered_or_throw(cudaResources);
             trace_print_payload_verbose(cudaResources);
+            checkpoint_medium_scratch_phase_or_throw(
+                "command_checkpoint_print_medium_scratch_phase",
+                scratchRequest);
 
             cudaEvent_t scanEvent = nullptr;
             if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
                     cudaResources,
+                    scratchRequest,
                     false,
                     scanEvent)) {
                 return;
@@ -5006,9 +5051,8 @@ void JuicerProcessor::processImagesCUDA() {
 
             if (!run_medium_optics_pipeline_or_abort(
                     run,
-                    printMediumRuntime,
-                    Scanner::ScannerMedium::Print,
-                    false,
+                    scratchRequest,
+                    opticsInputs,
                     "build_gate_mask_print",
                     "print_pipeline_kernel_launch",
                     "print pipeline kernel launch failed",
