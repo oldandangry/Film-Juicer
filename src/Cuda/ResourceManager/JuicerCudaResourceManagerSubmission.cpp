@@ -740,7 +740,6 @@ bool run_fragmentation_recovery_once(
             requestBytes,
             reapedBytes,
             0,
-            0,
             false,
             "attempt",
             submission_error_or_cstr(reapError, "reap_failed"));
@@ -760,14 +759,9 @@ bool run_fragmentation_recovery_once(
         true,
         fragmentation_reap_outcome_reason(reapedBytes));
 
-    const std::uint64_t quarantineTrimmedEntries =
-        trim_large_frame_quarantine_for_context(transaction.snapshot.deviceContextKey);
     const std::uint64_t graphEvictedEntries =
         evict_noncritical_graph_entries_for_context(transaction.snapshot.deviceContextKey);
 
-    if (quarantineTrimmedEntries > 0) {
-        telemetry_counter_add(managerState.fragmentationRecoveryQuarantineTrimmedEntries, quarantineTrimmedEntries);
-    }
     if (graphEvictedEntries > 0) {
         telemetry_counter_add(managerState.fragmentationRecoveryGraphEvictedEntries, graphEvictedEntries);
     }
@@ -782,7 +776,6 @@ bool run_fragmentation_recovery_once(
         attempt,
         requestBytes,
         reapedBytes,
-        quarantineTrimmedEntries,
         graphEvictedEntries,
         true,
         "attempt",

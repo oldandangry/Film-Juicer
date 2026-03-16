@@ -8,6 +8,7 @@
 //
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "Cuda/JuicerCudaAutoExposure.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
 
 struct WorkingState;
 namespace Print {
@@ -62,6 +64,7 @@ namespace JuicerCuda {
             void* ptr = nullptr;
             std::size_t bytes = 0;
             RetireKind kind = RetireKind::DeviceFree;
+            bool scratchTier = false;
             void* doneEventOpaque = nullptr; // cudaEvent_t recorded once for this entry.
         };
 
@@ -69,8 +72,20 @@ namespace JuicerCuda {
         std::vector<RetireEntry> retireQueue;
         std::vector<void*> retireEventPoolOpaque; // cudaEvent_t pool (cudaEventDisableTiming)
         std::size_t retireBytes = 0;
+        std::size_t retireScratchBytes = 0;
         // Tracks pointers allocated with cudaMallocAsync so free/retire uses cudaFreeAsync.
         std::unordered_set<void*> asyncDeviceAllocPointers;
+
+        struct ScratchResidencyState {
+            std::array<std::uint64_t, ResourceManager::kScratchPolicyCandidateCount> candidateLiveBytes{};
+            std::array<std::uint64_t, ResourceManager::kScratchHelperNonPolicyAllocationCount> helperNonPolicyBytes{};
+            std::uint64_t helperSharedBytes = 0;
+            std::uint64_t helperNonPolicyTotalBytes = 0;
+            std::uint64_t policyLiveRetainedBytes = 0;
+            std::uint64_t totalLiveRetainedBytes = 0;
+            std::uint64_t retainedGeneration = 1;
+            bool overflow = false;
+        };
 
         DeviceCurve densB;
         DeviceCurve densG;
@@ -274,6 +289,7 @@ namespace JuicerCuda {
         int* autoExposureValid = nullptr;
         std::uint64_t autoExposureKeyHash = 0;
         double autoExposureSliderEV = std::numeric_limits<double>::quiet_NaN();
+        ScratchResidencyState scratchResidency{};
 
         Resources() = default;
         Resources(const Resources&) = delete;
@@ -301,6 +317,23 @@ namespace JuicerCuda {
 
     // Reaps deferred retire entries that are ready and returns reclaimed bytes.
     bool reap_retired_allocations(Resources& resources, std::size_t& reclaimedBytes, std::string& outError);
+
+    // Manager-only scratch telemetry surfaces use the helper-owned retained-scratch view built here.
+    void snapshot_scratch_stage1_state(
+        Resources& resources,
+        ResourceManager::ScratchStage1DecisionState& outState) noexcept;
+    void snapshot_scratch_residency_view(
+        Resources& resources,
+        ResourceManager::ScratchResidencyView& outView) noexcept;
+    bool retire_scratch_policy_candidate(
+        Resources& resources,
+        ResourceManager::ScratchPolicyCandidate candidate,
+        void* cudaStreamOpaque,
+        std::string& outError);
+    bool retire_orphaned_shared_tmp_plane(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        std::string& outError);
 
     // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
     void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;

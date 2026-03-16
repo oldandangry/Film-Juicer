@@ -72,6 +72,13 @@ bool command_ensure_scan_error_flag(
     void* cudaStreamOpaque,
     std::string& outError);
 
+bool command_checkpoint_scratch_phase(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
+    const char* commandName,
+    std::string& outError);
+
 bool command_ensure_print_illuminant_filtered(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -84,21 +91,14 @@ bool command_ensure_print_illuminant_filtered(
 bool command_ensure_optics_scratch(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
-    int width,
-    int height,
-    bool needBlurredScratch,
-    bool needAuxScratch,
-    bool needGrainScratch,
-    bool needGrainSharedScratch,
-    bool needGateMask,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError);
 
 bool command_ensure_spatial_dir_scratch(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
-    int width,
-    int height,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError);
 

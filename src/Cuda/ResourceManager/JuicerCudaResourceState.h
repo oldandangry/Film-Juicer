@@ -74,7 +74,6 @@ struct ResourceManagerState {
     std::atomic<std::uint64_t> fragmentationRecoveryAttempts{ 0 };
     std::atomic<std::uint64_t> fragmentationRecoverySuccess{ 0 };
     std::atomic<std::uint64_t> fragmentationRecoveryFailures{ 0 };
-    std::atomic<std::uint64_t> fragmentationRecoveryQuarantineTrimmedEntries{ 0 };
     std::atomic<std::uint64_t> fragmentationRecoveryGraphEvictedEntries{ 0 };
     std::atomic<std::uint64_t> pressureStateTransitions{ 0 };
     std::atomic<std::uint64_t> pressureTransitionDwellDefers{ 0 };

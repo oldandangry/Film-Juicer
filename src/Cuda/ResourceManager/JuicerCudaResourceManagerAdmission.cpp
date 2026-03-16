@@ -20,6 +20,11 @@ ScratchPolicyState& scratch_policy_state() noexcept {
     return state;
 }
 
+ScratchNormalizationState& scratch_normalization_state() noexcept {
+    static ScratchNormalizationState state{};
+    return state;
+}
+
 UploadReservationState& upload_reservation_state() noexcept {
     static UploadReservationState state{};
     return state;
@@ -362,6 +367,466 @@ std::uint64_t tier_target_bytes(
 
 inline bool pressure_policy_enabled(const ResourceManagerConfigEffective& cfg) noexcept {
     return cfg.managerSoftTargetBytes > 0;
+}
+
+bool validate_scratch_request_descriptor_for_manager(
+    const ScratchRequestDescriptor& descriptor,
+    const char* commandName,
+    std::string& outError) noexcept {
+    if (!scratch_request_descriptor_is_valid(descriptor)) {
+        outError = std::string(trace_or_non_empty(commandName, "scratch_request"))
+            + ": invalid scratch request descriptor";
+        return false;
+    }
+    return true;
+}
+
+std::uint64_t scratch_candidate_live_bytes(
+    const ScratchResidencyView& view,
+    ScratchPolicyCandidate candidate) noexcept {
+    const std::size_t index = scratch_policy_candidate_index(candidate);
+    if (index >= view.candidates.size()) {
+        return 0;
+    }
+    return view.candidates[index].liveRetainedBytes;
+}
+
+bool scratch_candidate_required_by_request(
+    ScratchPolicyCandidate candidate,
+    const ScratchRequestDescriptor& descriptor) noexcept {
+    switch (candidate) {
+    case ScratchPolicyCandidate::OpticsBase:
+        return descriptor.needOptics;
+    case ScratchPolicyCandidate::OpticsBlurred:
+        return descriptor.needOptics && descriptor.needBlurred;
+    case ScratchPolicyCandidate::OpticsAux:
+        return descriptor.needOptics && descriptor.needAux;
+    case ScratchPolicyCandidate::OpticsGrainTriplet:
+        return descriptor.needOptics && descriptor.needGrainTriplet;
+    case ScratchPolicyCandidate::OpticsGrainShared:
+        return descriptor.needOptics && descriptor.needGrainShared;
+    case ScratchPolicyCandidate::OpticsGateMask:
+        return descriptor.needOptics && descriptor.needGateMask;
+    case ScratchPolicyCandidate::SpatialDirBase:
+        return descriptor.needSpatialDir;
+    default:
+        return false;
+    }
+}
+
+ScratchEligibilityResult evaluate_scratch_eligibility(
+    const ScratchResidencyView& view,
+    const ScratchRequestDescriptor& descriptor) noexcept {
+    ScratchEligibilityResult result{};
+    for (ScratchPolicyCandidate candidate : kScratchPolicyCandidateOrder) {
+        const std::size_t index = scratch_policy_candidate_index(candidate);
+        if (index >= result.eligibleNow.size()) {
+            continue;
+        }
+        const std::uint64_t liveBytes = scratch_candidate_live_bytes(view, candidate);
+        const bool eligible = (liveBytes > 0) && !scratch_candidate_required_by_request(candidate, descriptor);
+        result.eligibleNow[index] = eligible;
+        if (eligible) {
+            result.anyEligible = true;
+            std::uint64_t next = 0;
+            if (!add_u64_checked(result.reclaimableLiveBytes, liveBytes, next)) {
+                result.reclaimableLiveBytes = std::numeric_limits<std::uint64_t>::max();
+            }
+            else {
+                result.reclaimableLiveBytes = next;
+            }
+        }
+    }
+
+    if (view.helperSharedBytes > 0) {
+        const bool opticsBaseLive =
+            scratch_candidate_live_bytes(view, ScratchPolicyCandidate::OpticsBase) > 0;
+        const bool spatialDirBaseLive =
+            scratch_candidate_live_bytes(view, ScratchPolicyCandidate::SpatialDirBase) > 0;
+        const bool opticsBaseEligible =
+            result.eligibleNow[scratch_policy_candidate_index(ScratchPolicyCandidate::OpticsBase)];
+        const bool spatialDirBaseEligible =
+            result.eligibleNow[scratch_policy_candidate_index(ScratchPolicyCandidate::SpatialDirBase)];
+        const bool sharedEligible =
+            (!opticsBaseLive || opticsBaseEligible) &&
+            (!spatialDirBaseLive || spatialDirBaseEligible);
+        if (sharedEligible) {
+            result.sharedTmpEligibleNow = true;
+            result.anyEligible = true;
+            std::uint64_t next = 0;
+            if (!add_u64_checked(result.reclaimableLiveBytes, view.helperSharedBytes, next)) {
+                result.reclaimableLiveBytes = std::numeric_limits<std::uint64_t>::max();
+            }
+            else {
+                result.reclaimableLiveBytes = next;
+            }
+        }
+    }
+
+    return result;
+}
+
+bool scratch_no_shed_cache_matches(
+    const ScratchNormalizationContextState& contextState,
+    std::uint64_t requestDescriptorGeneration,
+    std::uint64_t retainedScratchGeneration,
+    std::uint64_t scratchTargetBytes) noexcept {
+    return contextState.noShedCache.valid &&
+        contextState.noShedCache.requestDescriptorGeneration == requestDescriptorGeneration &&
+        contextState.noShedCache.retainedScratchGeneration == retainedScratchGeneration &&
+        contextState.noShedCache.scratchTargetBytes == scratchTargetBytes;
+}
+
+std::uint64_t scratch_stage1_threshold_bytes(std::uint64_t scratchTargetBytes) noexcept {
+    std::uint64_t threshold = 0;
+    if (!add_u64_checked(
+            scratchTargetBytes,
+            kScratchNormalizationHysteresisBytes,
+            threshold)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return threshold;
+}
+
+void refresh_scratch_checkpoint_stage2_observation(
+    JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
+    ScratchCheckpointObservation& outObservation) noexcept {
+    JuicerCuda::snapshot_scratch_residency_view(resources, outObservation.residency);
+    outObservation.stage2Evaluated = true;
+    outObservation.stage2SkippedByNoShedCache = false;
+    outObservation.policyLiveRetainedBytes = outObservation.residency.policyLiveRetainedBytes;
+    outObservation.retainedScratchGeneration = outObservation.residency.retainedGeneration;
+    outObservation.eligibility =
+        evaluate_scratch_eligibility(outObservation.residency, scratchRequest);
+    outObservation.reclaimableLiveBytes = outObservation.eligibility.reclaimableLiveBytes;
+
+    const std::uint64_t stage1Threshold =
+        scratch_stage1_threshold_bytes(outObservation.scratchTargetBytes);
+    outObservation.stage1OverTarget =
+        outObservation.policyLiveRetainedBytes > stage1Threshold;
+    outObservation.overTargetButNotReducible =
+        outObservation.stage1OverTarget &&
+        (outObservation.reclaimableLiveBytes == 0);
+}
+
+bool execute_scratch_shedding_primitive(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    const ScratchRequestDescriptor& scratchRequest,
+    ScratchCheckpointInvocation invocation,
+    ScratchCheckpointObservation& ioObservation,
+    ScratchSheddingResult& outResult,
+    std::string& outError) {
+    outResult = ScratchSheddingResult{};
+    outError.clear();
+
+    if (!ioObservation.requestActive || !ioObservation.stage2Evaluated) {
+        return true;
+    }
+
+    const std::uint64_t stage1Threshold =
+        scratch_stage1_threshold_bytes(ioObservation.scratchTargetBytes);
+    if (ioObservation.policyLiveRetainedBytes <= stage1Threshold) {
+        outResult.targetReached = true;
+        return true;
+    }
+
+    auto record_progress = [&](std::uint64_t beforeBytes, std::uint64_t afterBytes) {
+        if (afterBytes < beforeBytes) {
+            outResult.progressed = true;
+            const std::uint64_t retiredBytes = beforeBytes - afterBytes;
+            std::uint64_t nextRetiredBytes = 0;
+            if (!add_u64_checked(outResult.retiredLiveBytes, retiredBytes, nextRetiredBytes)) {
+                outResult.retiredLiveBytes = std::numeric_limits<std::uint64_t>::max();
+            }
+            else {
+                outResult.retiredLiveBytes = nextRetiredBytes;
+            }
+        }
+    };
+
+    for (ScratchPolicyCandidate candidate : kScratchPolicySheddingOrder) {
+        if (ioObservation.policyLiveRetainedBytes <= stage1Threshold) {
+            outResult.targetReached = true;
+            return true;
+        }
+
+        const std::size_t index = scratch_policy_candidate_index(candidate);
+        if (index >= ioObservation.eligibility.eligibleNow.size() ||
+            !ioObservation.eligibility.eligibleNow[index]) {
+            continue;
+        }
+
+        const std::uint64_t candidateBytesBefore =
+            scratch_candidate_live_bytes(ioObservation.residency, candidate);
+        if (candidateBytesBefore == 0) {
+            continue;
+        }
+
+        const std::uint64_t policyBytesBefore = ioObservation.policyLiveRetainedBytes;
+        const std::uint64_t sharedBytesBefore = ioObservation.residency.helperSharedBytes;
+        outResult.attempted = true;
+
+        std::string retireError;
+        const bool retired = JuicerCuda::retire_scratch_policy_candidate(
+            resources,
+            candidate,
+            nullptr,
+            retireError);
+
+        refresh_scratch_checkpoint_stage2_observation(
+            resources,
+            scratchRequest,
+            ioObservation);
+
+        const std::uint64_t candidateBytesAfter =
+            scratch_candidate_live_bytes(ioObservation.residency, candidate);
+        const bool orphanedSharedTmpRetired =
+            ioObservation.residency.helperSharedBytes < sharedBytesBefore;
+        const bool actionProgressed =
+            ioObservation.policyLiveRetainedBytes < policyBytesBefore;
+
+        record_progress(policyBytesBefore, ioObservation.policyLiveRetainedBytes);
+        if (actionProgressed && outResult.retiredActionCount < std::numeric_limits<std::uint32_t>::max()) {
+            ++outResult.retiredActionCount;
+        }
+
+        trace_scratch_shedding_event(
+            transaction,
+            commandName,
+            invocation,
+            to_cstr(candidate),
+            candidateBytesBefore,
+            candidateBytesAfter,
+            policyBytesBefore,
+            ioObservation.policyLiveRetainedBytes,
+            orphanedSharedTmpRetired,
+            !retired,
+            retired ? "candidate_retired" : retireError.c_str());
+
+        if (!retired) {
+            outResult.partialFailure = true;
+            outResult.orphanedSharedTmpRetired =
+                outResult.orphanedSharedTmpRetired || orphanedSharedTmpRetired;
+            outError = retireError;
+            outResult.targetReached =
+                ioObservation.policyLiveRetainedBytes <= stage1Threshold;
+            return true;
+        }
+
+        outResult.orphanedSharedTmpRetired =
+            outResult.orphanedSharedTmpRetired || orphanedSharedTmpRetired;
+    }
+
+    if (ioObservation.policyLiveRetainedBytes > stage1Threshold &&
+        ioObservation.eligibility.sharedTmpEligibleNow) {
+        const std::uint64_t policyBytesBefore = ioObservation.policyLiveRetainedBytes;
+        const std::uint64_t sharedBytesBefore = ioObservation.residency.helperSharedBytes;
+        outResult.attempted = true;
+
+        std::string retireError;
+        const bool retired = JuicerCuda::retire_orphaned_shared_tmp_plane(
+            resources,
+            nullptr,
+            retireError);
+
+        refresh_scratch_checkpoint_stage2_observation(
+            resources,
+            scratchRequest,
+            ioObservation);
+
+        const std::uint64_t sharedBytesAfter = ioObservation.residency.helperSharedBytes;
+        const bool orphanedSharedTmpRetired = sharedBytesAfter < sharedBytesBefore;
+        const bool actionProgressed =
+            ioObservation.policyLiveRetainedBytes < policyBytesBefore;
+        record_progress(policyBytesBefore, ioObservation.policyLiveRetainedBytes);
+        outResult.orphanedSharedTmpRetired =
+            outResult.orphanedSharedTmpRetired || orphanedSharedTmpRetired;
+        if (actionProgressed && outResult.retiredActionCount < std::numeric_limits<std::uint32_t>::max()) {
+            ++outResult.retiredActionCount;
+        }
+
+        trace_scratch_shedding_event(
+            transaction,
+            commandName,
+            invocation,
+            "HelperSharedTmp",
+            sharedBytesBefore,
+            sharedBytesAfter,
+            policyBytesBefore,
+            ioObservation.policyLiveRetainedBytes,
+            orphanedSharedTmpRetired,
+            !retired,
+            retired
+                ? (orphanedSharedTmpRetired
+                    ? "orphaned_shared_tmp_retired"
+                    : "shared_tmp_not_orphaned")
+                : retireError.c_str());
+
+        if (!retired) {
+            outResult.partialFailure = true;
+            outError = retireError;
+            outResult.targetReached =
+                ioObservation.policyLiveRetainedBytes <= stage1Threshold;
+            return true;
+        }
+    }
+
+    outResult.targetReached =
+        ioObservation.policyLiveRetainedBytes <= stage1Threshold;
+    return true;
+}
+
+bool run_canonical_scratch_checkpoint(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    const ScratchRequestDescriptor* scratchRequest,
+    ScratchCheckpointInvocation invocation,
+    ScratchCheckpointObservation& outObservation,
+    std::string& outError) {
+    outObservation = ScratchCheckpointObservation{};
+    outError.clear();
+
+    if (!scratchRequest) {
+        trace_scratch_checkpoint_event(
+            transaction,
+            commandName,
+            invocation,
+            outObservation,
+            "no_active_phase_request");
+        return true;
+    }
+
+    if (!validate_scratch_request_descriptor_for_manager(*scratchRequest, commandName, outError)) {
+        return false;
+    }
+
+    outObservation.requestActive = true;
+    outObservation.requestDescriptorGeneration = scratchRequest->generation;
+    outObservation.hysteresisBytes = kScratchNormalizationHysteresisBytes;
+
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    if (!pressure_policy_enabled(cfg)) {
+        trace_scratch_checkpoint_event(
+            transaction,
+            commandName,
+            invocation,
+            outObservation,
+            "pressure_policy_disabled");
+        return true;
+    }
+    outObservation.scratchTargetBytes = tier_target_bytes(cfg, ResourceTier::Scratch);
+
+    ScratchStage1DecisionState stage1State{};
+    JuicerCuda::snapshot_scratch_stage1_state(resources, stage1State);
+    outObservation.policyLiveRetainedBytes = stage1State.policyLiveRetainedBytes;
+    outObservation.retainedScratchGeneration = stage1State.retainedGeneration;
+
+    const std::uint64_t stage1Threshold =
+        scratch_stage1_threshold_bytes(outObservation.scratchTargetBytes);
+    outObservation.stage1OverTarget =
+        outObservation.policyLiveRetainedBytes > stage1Threshold;
+    if (!outObservation.stage1OverTarget) {
+        trace_scratch_checkpoint_event(
+            transaction,
+            commandName,
+            invocation,
+            outObservation,
+            "below_stage1_threshold");
+        return true;
+    }
+
+    {
+        ScratchNormalizationState& state = scratch_normalization_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        ScratchNormalizationContextState& contextState =
+            state.byContext[transaction.snapshot.deviceContextKey];
+        if (scratch_no_shed_cache_matches(
+                contextState,
+                outObservation.requestDescriptorGeneration,
+                outObservation.retainedScratchGeneration,
+                outObservation.scratchTargetBytes)) {
+            outObservation.stage2SkippedByNoShedCache = true;
+            outObservation.overTargetButNotReducible = true;
+            trace_scratch_checkpoint_event(
+                transaction,
+                commandName,
+                invocation,
+                outObservation,
+                "no_shed_cache_hit");
+            return true;
+        }
+    }
+
+    refresh_scratch_checkpoint_stage2_observation(
+        resources,
+        *scratchRequest,
+        outObservation);
+
+    ScratchSheddingResult sheddingResult{};
+    std::string sheddingError;
+    if (!outObservation.overTargetButNotReducible) {
+        (void)execute_scratch_shedding_primitive(
+            transaction,
+            resources,
+            commandName,
+            *scratchRequest,
+            invocation,
+            outObservation,
+            sheddingResult,
+            sheddingError);
+        outObservation.sheddingAttempted = sheddingResult.attempted;
+        outObservation.sheddingProgressed = sheddingResult.progressed;
+        outObservation.sheddingPartialFailure = sheddingResult.partialFailure;
+        outObservation.sheddingTargetReached = sheddingResult.targetReached;
+        outObservation.sheddingOrphanedSharedTmpRetired =
+            sheddingResult.orphanedSharedTmpRetired;
+        outObservation.shedRetiredActionCount = sheddingResult.retiredActionCount;
+        outObservation.shedRetiredLiveBytes = sheddingResult.retiredLiveBytes;
+        if (sheddingResult.progressed || sheddingResult.partialFailure) {
+            publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+        }
+    }
+
+    {
+        ScratchNormalizationState& state = scratch_normalization_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        ScratchNormalizationContextState& contextState =
+            state.byContext[transaction.snapshot.deviceContextKey];
+        if (outObservation.sheddingPartialFailure) {
+            contextState.noShedCache = ScratchNormalizationNoShedCache{};
+        }
+        else if (outObservation.overTargetButNotReducible) {
+            contextState.noShedCache.valid = true;
+            contextState.noShedCache.requestDescriptorGeneration =
+                outObservation.requestDescriptorGeneration;
+            contextState.noShedCache.retainedScratchGeneration =
+                outObservation.retainedScratchGeneration;
+            contextState.noShedCache.scratchTargetBytes =
+                outObservation.scratchTargetBytes;
+        }
+        else {
+            contextState.noShedCache = ScratchNormalizationNoShedCache{};
+        }
+    }
+
+    trace_scratch_checkpoint_event(
+        transaction,
+        commandName,
+        invocation,
+        outObservation,
+        outObservation.sheddingPartialFailure
+            ? "scratch_shedding_partial_failure"
+            : (outObservation.sheddingProgressed
+                ? "live_retained_scratch_retired"
+                : (outObservation.overTargetButNotReducible
+                    ? "over_target_not_reducible_for_request"
+                    : "eligible_live_retained_scratch_observed")));
+    outError.clear();
+    return true;
 }
 
 std::uint64_t transient_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
@@ -1803,24 +2268,6 @@ void trim_large_frame_quarantine_caps_locked(
     }
 }
 
-std::uint64_t trim_large_frame_quarantine_for_context(
-    const DeviceContextKey& contextKey) noexcept {
-    ScratchPolicyState& state = scratch_policy_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto contextIt = state.byContext.find(contextKey);
-    if (contextIt == state.byContext.end()) {
-        return 0;
-    }
-    ScratchContextState& contextState = contextIt->second;
-    const std::uint64_t removedEntries = static_cast<std::uint64_t>(contextState.largeFrameQuarantine.size());
-    if (removedEntries == 0) {
-        return 0;
-    }
-    contextState.largeFrameQuarantine.clear();
-    contextState.largeFrameQuarantineBytes = 0;
-    return removedEntries;
-}
-
 void snapshot_bucket_state_locked(
     const ScratchContextState& contextState,
     const ScratchBucketEntry& bucketEntry,
@@ -2406,12 +2853,12 @@ void run_tier_target_pretrim(
     PressureLane lane,
     PressureState pressureState,
     const TierBudgetSnapshot& tierBudget,
+    const ScratchRequestDescriptor* scratchRequest,
     bool& outDidWork,
-    std::uint64_t& outScratchTrimmedEntries,
+    std::uint64_t& outScratchNormalizedActions,
     std::uint64_t& outGraphEvictedEntries) noexcept {
-    (void)resources;
     outDidWork = false;
-    outScratchTrimmedEntries = 0;
+    outScratchNormalizedActions = 0;
     outGraphEvictedEntries = 0;
 
     const bool constrainedOrWorse =
@@ -2430,11 +2877,25 @@ void run_tier_target_pretrim(
             evict_noncritical_graph_entries_for_context(transaction.snapshot.deviceContextKey);
     }
     if (scratchOverTarget > 0 && allowProactiveTrim) {
-        outScratchTrimmedEntries =
-            trim_large_frame_quarantine_for_context(transaction.snapshot.deviceContextKey);
+        ScratchCheckpointObservation scratchObservation{};
+        std::string scratchCheckpointError;
+        if (!run_canonical_scratch_checkpoint(
+                transaction,
+                resources,
+                commandName,
+                scratchRequest,
+                ScratchCheckpointInvocation::TierPretrim,
+                scratchObservation,
+                scratchCheckpointError)) {
+            if (!scratchCheckpointError.empty()) {
+                JTRACE("MSSCP", scratchCheckpointError);
+            }
+        }
+        outScratchNormalizedActions = static_cast<std::uint64_t>(
+            scratchObservation.shedRetiredActionCount);
     }
 
-    outDidWork = (outGraphEvictedEntries > 0) || (outScratchTrimmedEntries > 0);
+    outDidWork = (outGraphEvictedEntries > 0) || (outScratchNormalizedActions > 0);
     if (outDidWork && JTRACE_ENABLED(3)) {
         trace_tier_budget_event(
             transaction,
@@ -2445,7 +2906,7 @@ void run_tier_target_pretrim(
             0,
             false,
             false,
-            outScratchTrimmedEntries,
+            outScratchNormalizedActions,
             outGraphEvictedEntries,
             "tier_target_pretrim");
     }
@@ -2674,6 +3135,7 @@ bool enforce_pressure_gate(
     PressureLane lane,
     std::size_t requestBytes,
     bool criticalCurrentFrame,
+    const ScratchRequestDescriptor* scratchRequest,
     bool& outRequestReclaimPass,
     std::string& outError) {
     outRequestReclaimPass = false;
@@ -2799,7 +3261,7 @@ bool enforce_pressure_gate(
             outRequestReclaimPass = true;
         }
 
-        std::uint64_t scratchTrimmedEntries = 0;
+        std::uint64_t scratchNormalizedActions = 0;
         std::uint64_t graphEvictedEntries = 0;
         bool didTierPretrim = false;
         run_tier_target_pretrim(
@@ -2809,8 +3271,9 @@ bool enforce_pressure_gate(
             lane,
             pressureState,
             tierBudget,
+            scratchRequest,
             didTierPretrim,
-            scratchTrimmedEntries,
+            scratchNormalizedActions,
             graphEvictedEntries);
         if (didTierPretrim) {
             outRequestReclaimPass = outRequestReclaimPass || (requestBytes > 0);
@@ -2826,7 +3289,7 @@ bool enforce_pressure_gate(
                 requestBytes,
                 criticalCurrentFrame,
                 outRequestReclaimPass,
-                scratchTrimmedEntries,
+                scratchNormalizedActions,
                 graphEvictedEntries,
                 tier_pretrim_reason(didTierPretrim));
         }
@@ -3262,6 +3725,12 @@ void tier_circuit_retire_context(const DeviceContextKey& key) noexcept {
 
 void pressure_policy_retire_context(const DeviceContextKey& key) noexcept {
     PressurePolicyState& state = pressure_policy_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.byContext.erase(key);
+}
+
+void scratch_normalization_retire_context(const DeviceContextKey& key) noexcept {
+    ScratchNormalizationState& state = scratch_normalization_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.byContext.erase(key);
 }

@@ -69,6 +69,31 @@ std::string commands_error_or_message(const std::string& error, const char* fall
     return error;
 }
 
+bool validate_scratch_request_for_family(
+    const ScratchRequestDescriptor& scratchRequest,
+    const char* commandName,
+    ScratchWorkClass workClass,
+    std::string& outError) {
+    if (!validate_scratch_request_descriptor_for_manager(
+            scratchRequest,
+            commandName,
+            outError)) {
+        return false;
+    }
+
+    if (workClass == ScratchWorkClass::Optics && !scratchRequest.needOptics) {
+        outError = std::string(trace_or_non_empty(commandName, "command"))
+            + ": optics scratch request missing needOptics";
+        return false;
+    }
+    if (workClass == ScratchWorkClass::SpatialDir && !scratchRequest.needSpatialDir) {
+        outError = std::string(trace_or_non_empty(commandName, "command"))
+            + ": spatial DIR scratch request missing needSpatialDir";
+        return false;
+    }
+    return true;
+}
+
 struct AutoExposureOwnershipObservation {
     ShadowHistoryKey ownershipKey{};
     bool hadPrevious = false;
@@ -183,6 +208,7 @@ bool execute_upload_immutable_command(
             PressureLane::Upload,
             saturating_u64_to_size_t(pressureRequestBytes),
             criticalRequest,
+            nullptr,
             requestPreReclaim,
             outError)) {
         return false;
@@ -371,6 +397,7 @@ bool execute_upload_lut_command(
             PressureLane::Upload,
             saturating_u64_to_size_t(pressureRequestBytes),
             criticalRequest,
+            nullptr,
             requestPreReclaim,
             outError)) {
         return try_policy_fallback("pressure_gate_reject");
@@ -446,8 +473,7 @@ bool execute_scratch_growth_command(
     const char* commandName,
     std::size_t growthBytes,
     ScratchWorkClass workClass,
-    int width,
-    int height,
+    const ScratchRequestDescriptor& scratchRequest,
     bool captureMemorySnapshots,
     Action&& action,
     std::string& outError) {
@@ -461,6 +487,7 @@ bool execute_scratch_growth_command(
             PressureLane::Builder,
             growthBytes,
             true,
+            &scratchRequest,
             requestPreReclaim,
             outError)) {
         return false;
@@ -496,8 +523,8 @@ bool execute_scratch_growth_command(
             transaction,
             commandName,
             workClass,
-            width,
-            height,
+            scratchRequest.requestedWidth,
+            scratchRequest.requestedHeight,
             growthBytes,
             true,
             scratchClaim,
@@ -524,7 +551,6 @@ bool execute_scratch_growth_command(
             commandName,
             attempts,
             growthBytes,
-            0,
             0,
             0,
             success,
@@ -2752,6 +2778,7 @@ bool command_retire_context_with_reason(
 #endif
     tier_circuit_retire_context(key);
     pressure_policy_retire_context(key);
+    scratch_normalization_retire_context(key);
     admission_churn_retire_context(key);
     optional_heuristic_trace_retire_context(key);
     allocator_backend_retire_context(key);
@@ -3198,6 +3225,35 @@ bool command_ensure_scan_error_flag(
         outError);
 }
 
+bool command_checkpoint_scratch_phase(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
+    const char* commandName,
+    std::string& outError) {
+    const char* stageName = trace_or_non_empty(commandName, "command_checkpoint_scratch_phase");
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!validate_scratch_request_descriptor_for_manager(
+            scratchRequest,
+            stageName,
+            outError)) {
+        return false;
+    }
+
+    trace_scratch_request_descriptor(transaction, stageName, scratchRequest, "phase_declared");
+    ScratchCheckpointObservation observation{};
+    return run_canonical_scratch_checkpoint(
+        transaction,
+        resources,
+        stageName,
+        &scratchRequest,
+        ScratchCheckpointInvocation::OuterPhaseCheckpoint,
+        observation,
+        outError);
+}
+
 bool command_ensure_print_illuminant_filtered(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -3237,16 +3293,17 @@ bool command_ensure_print_illuminant_filtered(
 bool command_ensure_optics_scratch(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
-    int width,
-    int height,
-    bool needBlurredScratch,
-    bool needAuxScratch,
-    bool needGrainScratch,
-    bool needGrainSharedScratch,
-    bool needGateMask,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_optics_scratch")) {
+        return false;
+    }
+    if (!validate_scratch_request_for_family(
+            scratchRequest,
+            "command_ensure_optics_scratch",
+            ScratchWorkClass::Optics,
+            outError)) {
         return false;
     }
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
@@ -3254,13 +3311,13 @@ bool command_ensure_optics_scratch(
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::size_t growthBytes = estimate_optics_growth_bytes(
         resources,
-        width,
-        height,
-        needBlurredScratch,
-        needAuxScratch,
-        needGrainScratch,
-        needGrainSharedScratch,
-        needGateMask);
+        scratchRequest.requestedWidth,
+        scratchRequest.requestedHeight,
+        scratchRequest.needBlurred,
+        scratchRequest.needAux,
+        scratchRequest.needGrainTriplet,
+        scratchRequest.needGrainShared,
+        scratchRequest.needGateMask);
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
         outError = "scratch growth byte estimation overflow";
         return false;
@@ -3274,19 +3331,18 @@ bool command_ensure_optics_scratch(
         "command_ensure_optics_scratch",
         growthBytes,
         ScratchWorkClass::Optics,
-        width,
-        height,
+        scratchRequest,
         captureMemorySnapshots,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_optics_scratch(
                 resources,
-                width,
-                height,
-                needBlurredScratch,
-                needAuxScratch,
-                needGrainScratch,
-                needGrainSharedScratch,
-                needGateMask,
+                scratchRequest.requestedWidth,
+                scratchRequest.requestedHeight,
+                scratchRequest.needBlurred,
+                scratchRequest.needAux,
+                scratchRequest.needGrainTriplet,
+                scratchRequest.needGrainShared,
+                scratchRequest.needGateMask,
                 cudaStreamOpaque,
                 actionError);
         },
@@ -3296,17 +3352,26 @@ bool command_ensure_optics_scratch(
 bool command_ensure_spatial_dir_scratch(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
-    int width,
-    int height,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_scratch")) {
         return false;
     }
+    if (!validate_scratch_request_for_family(
+            scratchRequest,
+            "command_ensure_spatial_dir_scratch",
+            ScratchWorkClass::SpatialDir,
+            outError)) {
+        return false;
+    }
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(cfg);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const std::size_t growthBytes = estimate_spatial_dir_growth_bytes(resources, width, height);
+    const std::size_t growthBytes = estimate_spatial_dir_growth_bytes(
+        resources,
+        scratchRequest.requestedWidth,
+        scratchRequest.requestedHeight);
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
         outError = "spatial dir scratch growth byte estimation overflow";
         return false;
@@ -3320,14 +3385,13 @@ bool command_ensure_spatial_dir_scratch(
         "command_ensure_spatial_dir_scratch",
         growthBytes,
         ScratchWorkClass::SpatialDir,
-        width,
-        height,
+        scratchRequest,
         captureMemorySnapshots,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_spatial_dir_scratch(
                 resources,
-                width,
-                height,
+                scratchRequest.requestedWidth,
+                scratchRequest.requestedHeight,
                 cudaStreamOpaque,
                 actionError);
         },
