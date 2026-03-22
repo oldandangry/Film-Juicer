@@ -27,13 +27,6 @@ bool ensure_active_for_command(
         rejectionStage);
 }
 
-const char* prewarm_result_reason(const std::string& prewarmError) noexcept {
-    if (prewarmError.empty()) {
-        return "ok";
-    }
-    return "skip";
-}
-
 const char* reclaim_retry_reason(std::size_t reclaimedBytes) noexcept {
     if (reclaimedBytes > 0) {
         return "retry_after_reap";
@@ -186,6 +179,7 @@ bool execute_upload_immutable_command(
     std::uint64_t pressureRequestBytes,
     std::uint64_t reservationRequestBytes,
     bool criticalRequest,
+    const ScratchRequestDescriptor* scratchRequest,
     const char* overflowMessage,
     Action&& action,
     std::string& outError) {
@@ -196,7 +190,7 @@ bool execute_upload_immutable_command(
     }
 
     const bool captureMemorySnapshots =
-        should_collect_manager_memory_snapshots(manager_effective_config());
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
     const char* stageName = trace_or_non_empty(commandName, "command");
@@ -208,7 +202,7 @@ bool execute_upload_immutable_command(
             PressureLane::Upload,
             saturating_u64_to_size_t(pressureRequestBytes),
             criticalRequest,
-            nullptr,
+            scratchRequest,
             requestPreReclaim,
             outError)) {
         return false;
@@ -265,11 +259,12 @@ bool execute_upload_immutable_command(
 
 template <typename Action>
 bool execute_snapshot_wrapped_command(
+    const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     Action&& action,
     std::string& outError) {
     const bool captureMemorySnapshots =
-        should_collect_manager_memory_snapshots(manager_effective_config());
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const bool ok = action(outError);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
@@ -364,6 +359,7 @@ bool execute_upload_lut_command(
     std::uint64_t pressureRequestBytes,
     std::uint64_t reservationRequestBytes,
     bool criticalRequest,
+    const ScratchRequestDescriptor* scratchRequest,
     const char* overflowMessage,
     bool captureMemorySnapshots,
     bool publishInitialSnapshot,
@@ -397,7 +393,7 @@ bool execute_upload_lut_command(
             PressureLane::Upload,
             saturating_u64_to_size_t(pressureRequestBytes),
             criticalRequest,
-            nullptr,
+            scratchRequest,
             requestPreReclaim,
             outError)) {
         return try_policy_fallback("pressure_gate_reject");
@@ -1185,7 +1181,9 @@ void add_print_payload_growth_estimate_bytes(
 
 UploadWorkEstimate estimate_upload_core_request_bytes(
     JuicerCuda::Resources& resources,
-    const WorkingState& ws) noexcept {
+    const WorkingState& ws,
+    bool includeCurrentMediumUploads,
+    bool negativeMedium) noexcept {
     UploadWorkEstimate estimate{};
     const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
     const std::uint64_t wsDirHash = ws.dirHash;
@@ -1251,7 +1249,7 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
             add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimate.reservationBytes, overflow);
         }
 
-        if (coreUpToDate && dirUpToDate) {
+        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads) {
             if (overflow) {
                 estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
                 estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
@@ -1275,9 +1273,26 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
             add_curve_growth_estimate_bytes(resources.sensG, ws.sensG, estimate.growthBytes, overflow);
             add_curve_growth_estimate_bytes(resources.sensR, ws.sensR, estimate.growthBytes, overflow);
             add_tables_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
-            add_scan_medium_growth_estimate_bytes(resources.scanNegative, ws.negativeMediumRuntime, estimate.growthBytes, overflow);
-            add_scan_medium_growth_estimate_bytes(resources.scanPrint, ws.printMediumRuntime, estimate.growthBytes, overflow);
-            add_print_payload_growth_estimate_bytes(resources, ws, estimate.growthBytes, overflow);
+        }
+
+        if (includeCurrentMediumUploads) {
+            add_scan_medium_growth_estimate_bytes(
+                resources.scanNegative,
+                ws.negativeMediumRuntime,
+                estimate.growthBytes,
+                overflow);
+            if (!negativeMedium) {
+                add_scan_medium_growth_estimate_bytes(
+                    resources.scanPrint,
+                    ws.printMediumRuntime,
+                    estimate.growthBytes,
+                    overflow);
+                add_print_payload_growth_estimate_bytes(
+                    resources,
+                    ws,
+                    estimate.growthBytes,
+                    overflow);
+            }
         }
 
         if (wantHanatos) {
@@ -1357,9 +1372,6 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
             }
         }
 
-        add_scan_medium_upload_estimate_bytes(ws.negativeMediumRuntime, estimate.reservationBytes, overflow);
-        add_scan_medium_upload_estimate_bytes(ws.printMediumRuntime, estimate.reservationBytes, overflow);
-
         if (needHanatosUpload) {
             add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimate.reservationBytes, overflow);
         }
@@ -1369,15 +1381,27 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
         if (needMallettUpload) {
             add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimate.reservationBytes, overflow);
         }
+    }
 
-        if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
-            const Print::Profile& p = ws.printRT->profile;
-            add_curve_upload_estimate_bytes(p.dcC, estimate.reservationBytes, overflow);
-            add_curve_upload_estimate_bytes(p.dcM, estimate.reservationBytes, overflow);
-            add_curve_upload_estimate_bytes(p.dcY, estimate.reservationBytes, overflow);
-            add_vector_upload_estimate_bytes(p.sensC_log.linear, estimate.reservationBytes, overflow);
-            add_vector_upload_estimate_bytes(p.sensM_log.linear, estimate.reservationBytes, overflow);
-            add_vector_upload_estimate_bytes(p.sensY_log.linear, estimate.reservationBytes, overflow);
+    if (includeCurrentMediumUploads) {
+        add_scan_medium_upload_estimate_bytes(
+            ws.negativeMediumRuntime,
+            estimate.reservationBytes,
+            overflow);
+        if (!negativeMedium) {
+            add_scan_medium_upload_estimate_bytes(
+                ws.printMediumRuntime,
+                estimate.reservationBytes,
+                overflow);
+            if (ws.printRT && Print::profile_is_valid(ws.printRT->profile)) {
+                const Print::Profile& p = ws.printRT->profile;
+                add_curve_upload_estimate_bytes(p.dcC, estimate.reservationBytes, overflow);
+                add_curve_upload_estimate_bytes(p.dcM, estimate.reservationBytes, overflow);
+                add_curve_upload_estimate_bytes(p.dcY, estimate.reservationBytes, overflow);
+                add_vector_upload_estimate_bytes(p.sensC_log.linear, estimate.reservationBytes, overflow);
+                add_vector_upload_estimate_bytes(p.sensM_log.linear, estimate.reservationBytes, overflow);
+                add_vector_upload_estimate_bytes(p.sensY_log.linear, estimate.reservationBytes, overflow);
+            }
         }
     }
 
@@ -2973,6 +2997,7 @@ bool command_ensure_scan_lut_internal(
     const WorkingState& ws,
     bool negativeMedium,
     bool criticalRequest,
+    const ScratchRequestDescriptor* scratchRequest,
     const char* commandName,
     void* cudaStreamOpaque,
     std::string& outError);
@@ -2982,83 +3007,82 @@ bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
-    bool allowLutPrewarm,
     void* cudaStreamOpaque,
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_uploaded")) {
         return false;
     }
-    const std::uint64_t wsCoreHash = commands_preferred_upload_core_hash(ws);
-    bool coreUploadStale = true;
-    if (wsCoreHash != 0) {
-        std::lock_guard<std::mutex> lock(resources.m);
-        coreUploadStale = resources.uploadedCoreHash != wsCoreHash;
-    }
     const UploadWorkEstimate uploadEstimate =
-        estimate_upload_core_request_bytes(resources, ws);
+        estimate_upload_core_request_bytes(resources, ws, false, false);
     if (uploadEstimate.reservationBytes == 0) {
         return true;
     }
-    const bool ok = execute_upload_immutable_command(
+    return execute_upload_immutable_command(
         transaction,
         resources,
         "command_ensure_uploaded",
         uploadEstimate.growthBytes,
         uploadEstimate.reservationBytes,
         true,
+        nullptr,
         "upload reservation request byte estimation overflow (core)",
         [&](std::string& actionError) {
             return JuicerCuda::ensure_uploaded(
                 resources,
                 ws,
+                false,
+                false,
                 cudaStreamOpaque,
                 actionError);
         },
         outError);
-    if (!ok) {
+}
+
+bool command_ensure_current_medium_uploaded(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium,
+    const ScratchRequestDescriptor& scratchRequest,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    const char* stageName = negativeMedium
+        ? "command_ensure_current_medium_uploaded_negative"
+        : "command_ensure_current_medium_uploaded_print";
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!validate_scratch_request_descriptor_for_manager(
+            scratchRequest,
+            stageName,
+            outError)) {
         return false;
     }
 
-    if (ok && allowLutPrewarm && coreUploadStale) {
-        std::string prewarmError;
-        (void)command_ensure_scan_lut_internal(
-            transaction,
-            resources,
-            ws,
-            true,
-            false,
-            "command_prewarm_scan_lut_negative",
-            cudaStreamOpaque,
-            prewarmError);
-        if (JTRACE_ENABLED(3)) {
-            std::string msg = std::string("stage=prewarm medium=negative result=")
-                + prewarm_result_reason(prewarmError);
-            if (!prewarmError.empty()) {
-                msg += " detail=" + prewarmError;
-            }
-            JTRACE_VERBOSE("MSLUT", msg);
-        }
-
-        prewarmError.clear();
-        (void)command_ensure_scan_lut_internal(
-            transaction,
-            resources,
-            ws,
-            false,
-            false,
-            "command_prewarm_scan_lut_print",
-            cudaStreamOpaque,
-            prewarmError);
-        if (JTRACE_ENABLED(3)) {
-            std::string msg = std::string("stage=prewarm medium=print result=")
-                + prewarm_result_reason(prewarmError);
-            if (!prewarmError.empty()) {
-                msg += " detail=" + prewarmError;
-            }
-            JTRACE_VERBOSE("MSLUT", msg);
-        }
+    const UploadWorkEstimate uploadEstimate =
+        estimate_upload_core_request_bytes(resources, ws, true, negativeMedium);
+    if (uploadEstimate.reservationBytes == 0) {
+        return true;
     }
-    return true;
+    return execute_upload_immutable_command(
+        transaction,
+        resources,
+        stageName,
+        uploadEstimate.growthBytes,
+        uploadEstimate.reservationBytes,
+        true,
+        &scratchRequest,
+        "upload reservation request byte estimation overflow (current medium)",
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_uploaded(
+                resources,
+                ws,
+                true,
+                negativeMedium,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
 }
 
 namespace {
@@ -3068,11 +3092,19 @@ bool command_ensure_scan_lut_internal(
     const WorkingState& ws,
     bool negativeMedium,
     bool criticalRequest,
+    const ScratchRequestDescriptor* scratchRequest,
     const char* commandName,
     void* cudaStreamOpaque,
     std::string& outError) {
     const char* stageName = trace_or_non_empty(commandName, "command_ensure_scan_lut");
     if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (scratchRequest &&
+        !validate_scratch_request_descriptor_for_manager(
+            *scratchRequest,
+            stageName,
+            outError)) {
         return false;
     }
     const UploadWorkEstimate uploadEstimate =
@@ -3082,7 +3114,8 @@ bool command_ensure_scan_lut_internal(
         outError = "upload reservation request byte estimation overflow (scan LUT)";
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     if (command_scan_lut_is_cached(resources, ws, negativeMedium)) {
         return true;
@@ -3092,6 +3125,15 @@ bool command_ensure_scan_lut_internal(
         if (!criticalRequest) {
             return false;
         }
+        trace_pressure_gate_reader(
+            transaction,
+            stageName,
+            PressureLane::Upload,
+            saturating_u64_to_size_t(uploadEstimate.growthBytes),
+            criticalRequest,
+            scratchRequest,
+            "private_fallback",
+            trace_or(triggerReason, "private_fallback"));
 
         std::uint64_t expectedHash = 0;
         if (!compute_expected_scan_lut_hash(ws, negativeMedium, expectedHash)) {
@@ -3165,6 +3207,7 @@ bool command_ensure_scan_lut_internal(
         uploadEstimate.growthBytes,
         uploadEstimate.reservationBytes,
         criticalRequest,
+        scratchRequest,
         "upload reservation request byte estimation overflow (scan LUT)",
         captureMemorySnapshots,
         false,
@@ -3193,6 +3236,7 @@ bool command_ensure_scan_lut(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     bool negativeMedium,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError) {
     return command_ensure_scan_lut_internal(
@@ -3201,6 +3245,7 @@ bool command_ensure_scan_lut(
         ws,
         negativeMedium,
         true,
+        &scratchRequest,
         "command_ensure_scan_lut",
         cudaStreamOpaque,
         outError);
@@ -3218,6 +3263,7 @@ bool command_ensure_scan_error_flag(
         return true;
     }
     return execute_snapshot_wrapped_command(
+        transaction,
         resources,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_scan_error_flag(resources, cudaStreamOpaque, actionError);
@@ -3260,9 +3306,16 @@ bool command_ensure_print_illuminant_filtered(
     const WorkingState& ws,
     const Print::Runtime& prt,
     const Print::Params& params,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_print_illuminant_filtered")) {
+        return false;
+    }
+    if (!validate_scratch_request_descriptor_for_manager(
+            scratchRequest,
+            "command_ensure_print_illuminant_filtered",
+            outError)) {
         return false;
     }
     const UploadWorkEstimate uploadEstimate =
@@ -3277,6 +3330,7 @@ bool command_ensure_print_illuminant_filtered(
         uploadEstimate.growthBytes,
         uploadEstimate.reservationBytes,
         true,
+        &scratchRequest,
         "upload reservation request byte estimation overflow (print illuminant)",
         [&](std::string& actionError) {
             return JuicerCuda::ensure_print_illuminant_filtered(
@@ -3306,8 +3360,8 @@ bool command_ensure_optics_scratch(
             outError)) {
         return false;
     }
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(cfg);
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::size_t growthBytes = estimate_optics_growth_bytes(
         resources,
@@ -3365,8 +3419,8 @@ bool command_ensure_spatial_dir_scratch(
             outError)) {
         return false;
     }
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(cfg);
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::size_t growthBytes = estimate_spatial_dir_growth_bytes(
         resources,
@@ -3409,6 +3463,7 @@ bool command_ensure_spatial_dir_kernel(
         return false;
     }
     return execute_snapshot_wrapped_command(
+        transaction,
         resources,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_spatial_dir_kernel(
@@ -3432,6 +3487,7 @@ bool command_ensure_gaussian_kernel(
         return false;
     }
     return execute_snapshot_wrapped_command(
+        transaction,
         resources,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_gaussian_kernel(
@@ -3455,6 +3511,7 @@ bool command_ensure_halation_kernel(
         return false;
     }
     return execute_snapshot_wrapped_command(
+        transaction,
         resources,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_halation_kernel(
@@ -3478,7 +3535,8 @@ bool command_ensure_auto_exposure_buffers(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_auto_exposure_buffers")) {
         return false;
     }
-    const bool captureMemorySnapshots = should_collect_manager_memory_snapshots(manager_effective_config());
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     const std::uint64_t normalizedKeyHash = normalize_key_u64(autoExposureKeyHash);
     const AutoExposureOwnershipObservation ownershipObservation =

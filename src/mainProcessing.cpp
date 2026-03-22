@@ -2897,7 +2897,6 @@ void JuicerProcessor::processImagesCUDA() {
             submissionTxn,
             *cudaResources,
             *_ws,
-            _scannerSettings.useLut,
             _pCudaStream,
             uploadError)) {
         mark_context_and_throw_cuda_policy_fatal(
@@ -3903,6 +3902,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto setup_scan_stage_resources = [&](JuicerCuda::Resources* resources,
                                           JuicerCuda::PipelineRunParams& run,
+                                          const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                           cudaStream_t stream,
                                           bool negativeMedium) -> cudaEvent_t {
         const ScanStageMediumSelection selection = select_scan_stage_medium(resources, negativeMedium);
@@ -3917,6 +3917,7 @@ void JuicerProcessor::processImagesCUDA() {
                     *resources,
                     *_ws,
                     negativeMedium,
+                    scratchRequest,
                     _pCudaStream,
                     lutError)) {
                 const std::string prefix = make_cuda_prefixed_failure(scanLabel, " LUT upload failed");
@@ -4027,7 +4028,9 @@ void JuicerProcessor::processImagesCUDA() {
             "CUDA");
     };
 
-    auto ensure_print_illuminant_filtered_or_throw = [&](JuicerCuda::Resources* resources) {
+    auto ensure_print_illuminant_filtered_or_throw = [&](
+        JuicerCuda::Resources* resources,
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest) {
         std::string illumError;
         if (JuicerCuda::ResourceManager::command_ensure_print_illuminant_filtered(
                 submissionTxn,
@@ -4035,6 +4038,7 @@ void JuicerProcessor::processImagesCUDA() {
                 *_ws,
                 *_prt,
                 _printParams,
+                scratchRequest,
                 _pCudaStream,
                 illumError)) {
             return;
@@ -4686,7 +4690,7 @@ void JuicerProcessor::processImagesCUDA() {
                                                    cudaEvent_t& outScanEvent) -> bool {
         setup_camera_auto_exposure(run, resources);
         populate_film_runtime_payload(run);
-        outScanEvent = setup_scan_stage_resources(resources, run, stream, negativeMedium);
+        outScanEvent = setup_scan_stage_resources(resources, run, scratchRequest, stream, negativeMedium);
         return setup_spatial_dir_stage(resources, run, scratchRequest, width, height, useSpatialDIR);
     };
 
@@ -4838,6 +4842,29 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
+    auto ensure_current_medium_uploaded_or_throw = [&](
+        bool negativeMedium,
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest) {
+        const char* stageTag = negativeMedium
+            ? "command_ensure_current_medium_uploaded_negative"
+            : "command_ensure_current_medium_uploaded_print";
+        std::string currentMediumUploadError;
+        if (JuicerCuda::ResourceManager::command_ensure_current_medium_uploaded(
+                submissionTxn,
+                *cudaResources,
+                *_ws,
+                negativeMedium,
+                scratchRequest,
+                _pCudaStream,
+                currentMediumUploadError)) {
+            return;
+        }
+        mark_context_and_throw_cuda_policy_fatal(
+            stageTag,
+            "CUDA current-medium upload failed",
+            currentMediumUploadError);
+    };
+
     auto validate_negative_scanner_preflight_or_throw = [&]() -> ScannerPreflightResult {
         const ScannerMediumRuntimeBinding scannerMedium = bind_scanner_medium_runtime(
             *_ws,
@@ -4958,6 +4985,7 @@ void JuicerProcessor::processImagesCUDA() {
             checkpoint_medium_scratch_phase_or_throw(
                 "command_checkpoint_negative_medium_scratch_phase",
                 scratchRequest);
+            ensure_current_medium_uploaded_or_throw(true, scratchRequest);
 
             cudaEvent_t scanEvent = nullptr;
             if (!prepare_common_cuda_pipeline_stages_for_medium(
@@ -5028,12 +5056,14 @@ void JuicerProcessor::processImagesCUDA() {
                 return;
             }
 
-            // Ensure the print illuminant filtered is available for current print params.
-            ensure_print_illuminant_filtered_or_throw(cudaResources);
-            trace_print_payload_verbose(cudaResources);
             checkpoint_medium_scratch_phase_or_throw(
                 "command_checkpoint_print_medium_scratch_phase",
                 scratchRequest);
+            ensure_current_medium_uploaded_or_throw(false, scratchRequest);
+
+            // Ensure the print illuminant filtered is available for current print params.
+            ensure_print_illuminant_filtered_or_throw(cudaResources, scratchRequest);
+            trace_print_payload_verbose(cudaResources);
 
             cudaEvent_t scanEvent = nullptr;
             if (!prepare_common_cuda_pipeline_stages_for_medium(

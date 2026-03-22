@@ -593,9 +593,39 @@ struct ScratchResidencyView {
     bool overflow = false;
 };
 
+enum class ResolvedPressurePolicySource : std::uint8_t {
+    DerivedDefault = 0,
+    SoftOverrideOnly = 1,
+    ReserveOverrideOnly = 2,
+    SoftAndReserveOverride = 3
+};
+
+inline const char* to_cstr(ResolvedPressurePolicySource source) noexcept {
+    switch (source) {
+    case ResolvedPressurePolicySource::DerivedDefault:
+        return "derived_default";
+    case ResolvedPressurePolicySource::SoftOverrideOnly:
+        return "soft_override_only";
+    case ResolvedPressurePolicySource::ReserveOverrideOnly:
+        return "reserve_override_only";
+    case ResolvedPressurePolicySource::SoftAndReserveOverride:
+        return "soft_and_reserve_override";
+    default:
+        return "unknown";
+    }
+}
+
+struct ResolvedPressurePolicy {
+    std::uint64_t deviceBudgetBytes = 0;
+    std::uint64_t softTargetBytes = 0;
+    std::uint64_t reserveBytes = 0;
+    int policyDeviceId = -1;
+    ResolvedPressurePolicySource policySource = ResolvedPressurePolicySource::DerivedDefault;
+};
+
 // Trace schema contract: single source of truth for submission traces.
 // Bump only when required trace fields/tags or their required semantics change.
-constexpr std::uint32_t kTraceSchemaVersion = 4u;
+constexpr std::uint32_t kTraceSchemaVersion = 5u;
 
 constexpr std::uint32_t sanitize_trace_schema_version(std::uint32_t value) noexcept {
     return (value == 0u) ? kTraceSchemaVersion : value;
@@ -624,6 +654,7 @@ struct SubmissionTransaction {
     std::uint64_t transactionId = 0;
     std::uint64_t leaseGeneration = 0;
     SubmissionSnapshot snapshot{};
+    ResolvedPressurePolicy resolvedPressurePolicy{};
     bool active = false;
     bool committed = false;
 };

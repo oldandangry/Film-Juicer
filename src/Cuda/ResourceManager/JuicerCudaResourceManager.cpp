@@ -51,7 +51,13 @@ namespace JuicerCuda {
 
 // Internal resource-acquire helpers are intentionally consumed only by command wrappers
 // in this module; they are not part of the public JuicerCudaResources API surface.
-bool ensure_uploaded(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
+bool ensure_uploaded(
+    Resources& resources,
+    const WorkingState& ws,
+    bool includeCurrentMediumUploads,
+    bool negativeMedium,
+    void* cudaStreamOpaque,
+    std::string& outError);
 bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
 bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
 bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
@@ -458,6 +464,36 @@ std::string trace_device_context_fields(const SubmissionTransaction& transaction
         + " context=" + std::to_string(contextBits);
 }
 
+template <typename Action>
+bool with_explicit_cuda_device(int targetDevice, Action&& action) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    if (targetDevice < 0) {
+        return false;
+    }
+
+    int previousDevice = -1;
+    if (cudaGetDevice(&previousDevice) != cudaSuccess) {
+        return false;
+    }
+    if (previousDevice != targetDevice &&
+        cudaSetDevice(targetDevice) != cudaSuccess) {
+        return false;
+    }
+
+    action();
+
+    if (previousDevice != targetDevice &&
+        cudaSetDevice(previousDevice) != cudaSuccess) {
+        return false;
+    }
+    return true;
+#else
+    (void)targetDevice;
+    (void)action;
+    return false;
+#endif
+}
+
 struct ScratchBucketKey {
     std::uint32_t widthBucket = 0;
     std::uint32_t heightBucket = 0;
@@ -707,11 +743,14 @@ struct HeadroomTelemetry {
     std::uint64_t allocatorPoolReservedBytes = 0;
     std::uint64_t allocatorPoolUsedBytes = 0;
     HeadroomSource source = HeadroomSource::FreeVramOnly;
+    int sampledDeviceId = -1;
+    bool sampleSuccess = false;
     bool poolTelemetryAvailable = false;
 };
 
 struct PressureCheckpoint {
     PressureInput input{};
+    HeadroomTelemetry headroom{};
     PressureDecision decision{};
     PressureState previousState = PressureState::Normal;
     PressureState desiredState = PressureState::Normal;
@@ -970,6 +1009,21 @@ bool parse_env_u32(const char* name, std::uint32_t& outValue) noexcept {
     return true;
 }
 
+bool parse_env_u64(const char* name, std::uint64_t& outValue) noexcept {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::strtoull(raw, &end, 10);
+    if (errno != 0 || end == raw || (end && *end != '\0')) {
+        return false;
+    }
+    outValue = static_cast<std::uint64_t>(parsed);
+    return true;
+}
+
 struct FiveXEnvOverrides {
     ResourceManagerConfigRaw raw{};
     bool anyOverride = false;
@@ -1036,6 +1090,13 @@ FiveXEnvOverrides load_5x_env_overrides() noexcept {
             out.anyOverride = true;
         }
     };
+    auto parse_u64_override = [&](const char* envName, std::uint64_t& target) {
+        std::uint64_t parsed = 0;
+        if (parse_env_u64(envName, parsed)) {
+            target = parsed;
+            out.anyOverride = true;
+        }
+    };
     auto parse_bool_override = [&](const char* envName, bool& target) {
         bool parsed = false;
         if (parse_env_bool(envName, parsed)) {
@@ -1044,6 +1105,10 @@ FiveXEnvOverrides load_5x_env_overrides() noexcept {
         }
     };
 
+    parse_u64_override("JUICER_MANAGER_SOFT_TARGET_BYTES", out.raw.managerSoftTargetBytes);
+    parse_u64_override("JUICER_5X_MANAGER_SOFT_TARGET_BYTES", out.raw.managerSoftTargetBytes);
+    parse_u64_override("JUICER_MANAGER_RESERVE_BYTES", out.raw.managerReserveBytes);
+    parse_u64_override("JUICER_5X_MANAGER_RESERVE_BYTES", out.raw.managerReserveBytes);
     parse_u32_override("JUICER_5X_KEEP_HOT_MS", out.raw.keepHotMs);
     parse_u32_override("JUICER_5X_ADMISSION_CHURN_WINDOW_MS", out.raw.admissionChurnWindowMs);
     parse_u32_override(
@@ -1075,6 +1140,10 @@ void trace_5x_env_overrides(const FiveXEnvOverrides& overrides, const ResourceMa
     const std::string msg = std::string("event=5x_env_overrides")
         + " profile_enabled=" + std::to_string(overrides.profileEnabled ? 1 : 0)
         + " profile_disabled=" + std::to_string(overrides.profileDisabled ? 1 : 0)
+        + " manager_soft_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(cfg.managerSoftTargetBytes))
+        + " manager_reserve_bytes=" + std::to_string(
+            static_cast<unsigned long long>(cfg.managerReserveBytes))
         + " keep_hot_ms=" + std::to_string(static_cast<unsigned long long>(cfg.keepHotMs))
         + " admission_churn_window_ms=" + std::to_string(static_cast<unsigned long long>(cfg.admissionChurnWindowMs))
         + " admission_churn_enter_one_hit_rate_pct=" + std::to_string(
@@ -1830,7 +1899,8 @@ void fill_tier_budget_snapshot(
         ResourceTier::Graph
     };
     for (ResourceTier tier : kTierOrder) {
-        const std::uint64_t targetBytes = tier_target_bytes(cfg, tier);
+        const std::uint64_t targetBytes =
+            tier_target_bytes(cfg, transaction.resolvedPressurePolicy, tier);
         tier_bytes_at(out.targetBytes, tier) = targetBytes;
         const std::uint64_t activeBytes = tier_bytes_at(out.activeBytes, tier);
         if (activeBytes > targetBytes) {
@@ -1870,8 +1940,48 @@ void publish_manager_memory_snapshot(const ManagerMemorySnapshot& snapshot) noex
 }
 
 
-inline bool should_collect_manager_memory_snapshots(const ResourceManagerConfigEffective& cfg) noexcept {
-    return cfg.managerSoftTargetBytes > 0 || JTRACE_ENABLED(3);
+inline bool should_collect_manager_memory_snapshots(const ResolvedPressurePolicy& policy) noexcept {
+    return pressure_policy_enabled(policy) || JTRACE_ENABLED(3);
+}
+
+std::uint32_t trace_policy_match_u32(
+    const SubmissionTransaction& transaction,
+    std::uint64_t softTargetBytes,
+    std::uint64_t reserveBytes) noexcept {
+    const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
+    return (softTargetBytes == policy.softTargetBytes && reserveBytes == policy.reserveBytes) ? 1u : 0u;
+}
+
+std::string trace_resolved_policy_fields(
+    const SubmissionTransaction& transaction,
+    std::uint64_t softTargetBytes,
+    std::uint64_t reserveBytes) {
+    const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
+    return std::string(" policy_source=") + to_cstr(policy.policySource)
+        + " policy_device_id=" + std::to_string(policy.policyDeviceId)
+        + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(softTargetBytes))
+        + " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBytes))
+        + " reader_matches_submission_policy=" + std::to_string(
+            trace_policy_match_u32(transaction, softTargetBytes, reserveBytes));
+}
+
+std::string trace_resolved_policy_fields(const SubmissionTransaction& transaction) {
+    return trace_resolved_policy_fields(
+        transaction,
+        transaction.resolvedPressurePolicy.softTargetBytes,
+        transaction.resolvedPressurePolicy.reserveBytes);
+}
+
+std::string trace_headroom_identity_fields(
+    const SubmissionTransaction& transaction,
+    const HeadroomTelemetry& headroom) {
+    const int submissionDeviceId = transaction.snapshot.deviceContextKey.deviceId;
+    const bool sampleMatchesSubmissionDevice =
+        headroom.sampleSuccess && headroom.sampledDeviceId == submissionDeviceId;
+    return std::string(" submission_device_id=") + std::to_string(submissionDeviceId)
+        + " sampled_device_id=" + std::to_string(headroom.sampledDeviceId)
+        + " sample_matches_submission_device=" + std::to_string(sampleMatchesSubmissionDevice ? 1u : 0u)
+        + " sample_success=" + std::to_string(headroom.sampleSuccess ? 1u : 0u);
 }
 
 
@@ -1986,6 +2096,7 @@ void trace_transient_reservation_decision(
 
     const std::string msg = trace_event_prefix("transient_reservation", transaction, commandName)
         + " kind=" + to_cstr(ReservationKind::TransientNonManager)
+        + trace_resolved_policy_fields(transaction)
         + trace_device_context_fields(transaction)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
@@ -2023,6 +2134,7 @@ void trace_upload_reservation_decision(
     const std::string msg = trace_event_prefix("upload_reservation", transaction, commandName)
         + " kind=" + to_cstr(ReservationKind::UploadCopy)
         + " instance_token=" + std::to_string(static_cast<unsigned long long>(instanceToken))
+        + trace_resolved_policy_fields(transaction)
         + trace_device_context_fields(transaction)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " bytes_in_flight=" + std::to_string(static_cast<unsigned long long>(bytesInFlight))
@@ -2137,6 +2249,7 @@ void trace_tier_budget_event(
     const std::string msg = trace_event_prefix("tier_budget", transaction, commandName)
         + " lane=" + to_cstr(lane)
         + " state=" + to_cstr(pressureState)
+        + trace_resolved_policy_fields(transaction)
         + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " request_reclaim_pass=" + std::to_string(requestReclaimPass ? 1 : 0)
@@ -2245,9 +2358,18 @@ void trace_scratch_checkpoint_event(
         return observation.eligibility.eligibleNow[index] ? 1u : 0u;
     };
 
+    const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
     const std::string msg = trace_event_prefix("scratch_checkpoint", transaction, commandName)
         + " invocation=" + to_cstr(invocation)
         + " request_active=" + std::to_string(observation.requestActive ? 1 : 0)
+        + " pressure_policy_enabled=" + std::to_string(pressure_policy_enabled(policy) ? 1 : 0)
+        + " policy_source=" + std::string(to_cstr(policy.policySource))
+        + " policy_device_id=" + std::to_string(policy.policyDeviceId)
+        + " soft_target_bytes=" + std::to_string(
+            static_cast<unsigned long long>(policy.softTargetBytes))
+        + " reserve_bytes=" + std::to_string(
+            static_cast<unsigned long long>(policy.reserveBytes))
+        + " reader_matches_submission_policy=1"
         + " stage1_over_target=" + std::to_string(observation.stage1OverTarget ? 1 : 0)
         + " stage2_evaluated=" + std::to_string(observation.stage2Evaluated ? 1 : 0)
         + " stage2_skipped_no_shed_cache=" + std::to_string(observation.stage2SkippedByNoShedCache ? 1 : 0)
@@ -2331,6 +2453,34 @@ void trace_scratch_checkpoint_event(
     JTRACE("MSSCP", msg);
 }
 
+void trace_pressure_gate_reader(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    PressureLane lane,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    const ScratchRequestDescriptor* scratchRequest,
+    const char* path,
+    const char* reason) {
+    if (!JTRACE_ENABLED(2)) {
+        return;
+    }
+
+    const std::string msg = trace_event_prefix("pressure_gate_reader", transaction, commandName)
+        + " lane=" + to_cstr(lane)
+        + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
+        + " critical_current_frame=" + std::to_string(criticalCurrentFrame ? 1 : 0)
+        + " pressure_policy_enabled=" + std::to_string(
+            pressure_policy_enabled(transaction.resolvedPressurePolicy) ? 1 : 0)
+        + trace_resolved_policy_fields(transaction)
+        + " request_active=" + std::to_string(scratchRequest ? 1 : 0)
+        + " request_generation=" + std::to_string(
+            static_cast<unsigned long long>(scratchRequest ? scratchRequest->generation : 0))
+        + " path=" + trace_or_unspecified(path)
+        + " reason=" + trace_or_unspecified(reason);
+    JTRACE("MSPGR", msg);
+}
+
 void trace_scratch_shedding_event(
     const SubmissionTransaction& transaction,
     const char* commandName,
@@ -2381,6 +2531,10 @@ void trace_effective_reserve_event(
 
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
     const std::string msg = trace_event_prefix("effective_reserve", transaction, commandName)
+        + trace_resolved_policy_fields(
+            transaction,
+            transaction.resolvedPressurePolicy.softTargetBytes,
+            reserveBaseBytes)
         + " reserve_base_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBaseBytes))
         + " reserve_before_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBeforeBytes))
         + " reserve_target_bytes=" + std::to_string(static_cast<unsigned long long>(reserveTargetBytes))
@@ -2495,8 +2649,11 @@ void trace_pressure_checkpoint(
         + " sampled=" + std::to_string(checkpoint.sampled ? 1 : 0)
         + " poll_interval_ms=" + std::to_string(checkpoint.pollIntervalMs)
         + trace_device_context_fields(transaction)
-        + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.softTargetBytes))
-        + " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.reserveBytes))
+        + trace_resolved_policy_fields(
+            transaction,
+            checkpoint.input.softTargetBytes,
+            checkpoint.input.reserveBytes)
+        + trace_headroom_identity_fields(transaction, checkpoint.headroom)
         + " manager_resident_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.managerResidentBytes))
         + " retire_pending_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.retirePendingBytes))
         + " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.transientNonManagerBytes))
@@ -2537,6 +2694,11 @@ void trace_headroom_sample(
 
     const std::string msg = trace_event_prefix("headroom", transaction, commandName)
         + trace_device_context_fields(transaction)
+        + trace_resolved_policy_fields(
+            transaction,
+            checkpoint.input.softTargetBytes,
+            checkpoint.input.reserveBytes)
+        + trace_headroom_identity_fields(transaction, checkpoint.headroom)
         + " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes))
         + " effective_headroom_bytes=" + std::to_string(
             static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes))
@@ -2563,6 +2725,10 @@ void trace_transient_non_manager_sample(
 
     const std::string msg = trace_event_prefix("transient_non_manager_sample", transaction, commandName)
         + trace_device_context_fields(transaction)
+        + trace_resolved_policy_fields(
+            transaction,
+            checkpoint.input.softTargetBytes,
+            checkpoint.input.reserveBytes)
         + " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.transientNonManagerBytes))
         + " pending_growth_bytes=" + std::to_string(static_cast<unsigned long long>(pendingGrowthBytes))
         + " pressure_total_bytes=" + std::to_string(static_cast<unsigned long long>(pressure_total_bytes(checkpoint.input)))

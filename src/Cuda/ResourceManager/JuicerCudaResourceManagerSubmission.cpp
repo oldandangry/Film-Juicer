@@ -807,6 +807,131 @@ AllocatorBackendMode query_allocator_backend_mode(const DeviceContextKey& key) n
     return derived.active;
 }
 
+bool query_submission_device_budget_bytes(
+    const DeviceContextKey& key,
+    std::uint64_t& outDeviceBudgetBytes,
+    std::string& outError) {
+    outDeviceBudgetBytes = 0;
+    outError.clear();
+
+    if (key.deviceId < 0) {
+        outError = "submission pressure policy requires a valid device id";
+        return false;
+    }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    bool queryOk = false;
+    const bool deviceSwitchOk = with_explicit_cuda_device(
+        key.deviceId,
+        [&]() noexcept {
+            std::size_t freeBytes = 0;
+            std::size_t totalBytes = 0;
+            if (cudaMemGetInfo(&freeBytes, &totalBytes) != cudaSuccess) {
+                return;
+            }
+            outDeviceBudgetBytes = static_cast<std::uint64_t>(
+                std::min<std::size_t>(
+                    totalBytes,
+                    static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+            queryOk = true;
+        });
+    if (!deviceSwitchOk) {
+        outError = "submission pressure policy device-budget query failed";
+        return false;
+    }
+    if (!queryOk) {
+        outError = "submission pressure policy cudaMemGetInfo query failed";
+        return false;
+    }
+    return true;
+#else
+    (void)key;
+    outError = "submission pressure policy requires CUDA device-budget support";
+    return false;
+#endif
+}
+
+bool validate_resolved_pressure_policy(
+    const ResolvedPressurePolicy& policy,
+    std::string& outError) {
+    outError.clear();
+    if (policy.policyDeviceId < 0) {
+        outError = "submission pressure policy device id is invalid";
+        return false;
+    }
+    if (policy.deviceBudgetBytes <= 1) {
+        outError = "submission pressure policy device budget must be greater than one byte";
+        return false;
+    }
+    if (policy.softTargetBytes == 0) {
+        outError = "submission pressure policy soft target must be non-zero";
+        return false;
+    }
+    if (policy.reserveBytes == 0) {
+        outError = "submission pressure policy reserve must be non-zero";
+        return false;
+    }
+    if (policy.reserveBytes > policy.softTargetBytes) {
+        outError = "submission pressure policy reserve exceeds soft target";
+        return false;
+    }
+    if (policy.softTargetBytes > policy.deviceBudgetBytes) {
+        outError = "submission pressure policy soft target exceeds device budget";
+        return false;
+    }
+    return true;
+}
+
+bool resolve_submission_pressure_policy(
+    const SubmissionSnapshot& snapshot,
+    const ResourceManagerConfigEffective& cfg,
+    ResolvedPressurePolicy& outPolicy,
+    std::string& outError) {
+    outPolicy = ResolvedPressurePolicy{};
+    outPolicy.policyDeviceId = snapshot.deviceContextKey.deviceId;
+
+    if (!query_submission_device_budget_bytes(
+            snapshot.deviceContextKey,
+            outPolicy.deviceBudgetBytes,
+            outError)) {
+        return false;
+    }
+
+    const bool softOverride = cfg.managerSoftTargetBytes > 0;
+    const bool reserveOverride = cfg.managerReserveBytes > 0;
+    const std::uint64_t maxDefaultReserveBytes =
+        (outPolicy.deviceBudgetBytes > 0) ? (outPolicy.deviceBudgetBytes - 1) : 0;
+    const std::uint64_t defaultReserveBytes =
+        std::min<std::uint64_t>(cfg.reserveSafetyMarginBytes, maxDefaultReserveBytes);
+
+    if (softOverride && reserveOverride) {
+        outPolicy.policySource = ResolvedPressurePolicySource::SoftAndReserveOverride;
+        outPolicy.softTargetBytes = cfg.managerSoftTargetBytes;
+        outPolicy.reserveBytes = cfg.managerReserveBytes;
+    }
+    else if (softOverride) {
+        outPolicy.policySource = ResolvedPressurePolicySource::SoftOverrideOnly;
+        outPolicy.softTargetBytes = cfg.managerSoftTargetBytes;
+        outPolicy.reserveBytes = std::min<std::uint64_t>(defaultReserveBytes, outPolicy.softTargetBytes);
+    }
+    else if (reserveOverride) {
+        outPolicy.policySource = ResolvedPressurePolicySource::ReserveOverrideOnly;
+        outPolicy.reserveBytes = cfg.managerReserveBytes;
+        const std::uint64_t remainingBudget =
+            (outPolicy.deviceBudgetBytes > outPolicy.reserveBytes)
+                ? (outPolicy.deviceBudgetBytes - outPolicy.reserveBytes)
+                : 0;
+        outPolicy.softTargetBytes = std::max<std::uint64_t>(outPolicy.reserveBytes, remainingBudget);
+    }
+    else {
+        outPolicy.policySource = ResolvedPressurePolicySource::DerivedDefault;
+        outPolicy.reserveBytes = defaultReserveBytes;
+        outPolicy.softTargetBytes = outPolicy.deviceBudgetBytes - outPolicy.reserveBytes;
+    }
+
+    return validate_resolved_pressure_policy(outPolicy, outError);
+}
+
 bool begin_submission(
     SubmissionTransaction& outTransaction,
     const SubmissionSnapshot& snapshot,
@@ -855,6 +980,15 @@ bool begin_submission(
     outTransaction.snapshot.traceSchemaVersion = sanitize_trace_schema_version(outTransaction.snapshot.traceSchemaVersion);
     outTransaction.snapshot.keyDigests = normalize_key_digests(outTransaction.snapshot.keyDigests);
 
+    const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    if (!resolve_submission_pressure_policy(
+            outTransaction.snapshot,
+            cfg,
+            outTransaction.resolvedPressurePolicy,
+            outError)) {
+        return false;
+    }
+
     std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
     if (leaseGeneration == 0) {
         leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -873,7 +1007,6 @@ bool begin_submission(
         finalize_submission_transaction(outTransaction, false);
         return false;
     }
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
     ensure_allocator_backend_mode_initialized(outTransaction, cfg);
     state_note_latest_snapshot(outTransaction.snapshot);
     maybe_apply_async_mempool_release_policy(
