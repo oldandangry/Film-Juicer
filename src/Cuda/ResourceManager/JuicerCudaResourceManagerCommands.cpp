@@ -62,6 +62,36 @@ std::string commands_error_or_message(const std::string& error, const char* fall
     return error;
 }
 
+bool resolve_optional_active_scratch_request(
+    const ScratchRequestDescriptor& scratchRequest,
+    const char* commandName,
+    const ScratchRequestDescriptor*& outActiveScratchRequest,
+    std::string& outError) {
+    outActiveScratchRequest = nullptr;
+    if (!scratchRequest.has_any_family()) {
+        if (scratchRequest.needBlurred ||
+            scratchRequest.needAux ||
+            scratchRequest.needGrainTriplet ||
+            scratchRequest.needGrainShared ||
+            scratchRequest.needGateMask) {
+            outError = std::string(trace_or_non_empty(commandName, "scratch_request"))
+                + ": invalid scratch request descriptor";
+            return false;
+        }
+        return true;
+    }
+
+    if (!validate_scratch_request_descriptor_for_manager(
+            scratchRequest,
+            commandName,
+            outError)) {
+        return false;
+    }
+
+    outActiveScratchRequest = &scratchRequest;
+    return true;
+}
+
 bool validate_scratch_request_for_family(
     const ScratchRequestDescriptor& scratchRequest,
     const char* commandName,
@@ -3052,9 +3082,11 @@ bool command_ensure_current_medium_uploaded(
     if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
-    if (!validate_scratch_request_descriptor_for_manager(
+    const ScratchRequestDescriptor* activeScratchRequest = nullptr;
+    if (!resolve_optional_active_scratch_request(
             scratchRequest,
             stageName,
+            activeScratchRequest,
             outError)) {
         return false;
     }
@@ -3071,7 +3103,7 @@ bool command_ensure_current_medium_uploaded(
         uploadEstimate.growthBytes,
         uploadEstimate.reservationBytes,
         true,
-        &scratchRequest,
+        activeScratchRequest,
         "upload reservation request byte estimation overflow (current medium)",
         [&](std::string& actionError) {
             return JuicerCuda::ensure_uploaded(
@@ -3100,10 +3132,12 @@ bool command_ensure_scan_lut_internal(
     if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
+    const ScratchRequestDescriptor* activeScratchRequest = nullptr;
     if (scratchRequest &&
-        !validate_scratch_request_descriptor_for_manager(
+        !resolve_optional_active_scratch_request(
             *scratchRequest,
             stageName,
+            activeScratchRequest,
             outError)) {
         return false;
     }
@@ -3131,7 +3165,7 @@ bool command_ensure_scan_lut_internal(
             PressureLane::Upload,
             saturating_u64_to_size_t(uploadEstimate.growthBytes),
             criticalRequest,
-            scratchRequest,
+            activeScratchRequest,
             "private_fallback",
             trace_or(triggerReason, "private_fallback"));
 
@@ -3207,7 +3241,7 @@ bool command_ensure_scan_lut_internal(
         uploadEstimate.growthBytes,
         uploadEstimate.reservationBytes,
         criticalRequest,
-        scratchRequest,
+        activeScratchRequest,
         "upload reservation request byte estimation overflow (scan LUT)",
         captureMemorySnapshots,
         false,
@@ -3312,9 +3346,11 @@ bool command_ensure_print_illuminant_filtered(
     if (!ensure_active_for_command(transaction, outError, "command_ensure_print_illuminant_filtered")) {
         return false;
     }
-    if (!validate_scratch_request_descriptor_for_manager(
+    const ScratchRequestDescriptor* activeScratchRequest = nullptr;
+    if (!resolve_optional_active_scratch_request(
             scratchRequest,
             "command_ensure_print_illuminant_filtered",
+            activeScratchRequest,
             outError)) {
         return false;
     }
@@ -3330,7 +3366,7 @@ bool command_ensure_print_illuminant_filtered(
         uploadEstimate.growthBytes,
         uploadEstimate.reservationBytes,
         true,
-        &scratchRequest,
+        activeScratchRequest,
         "upload reservation request byte estimation overflow (print illuminant)",
         [&](std::string& actionError) {
             return JuicerCuda::ensure_print_illuminant_filtered(
