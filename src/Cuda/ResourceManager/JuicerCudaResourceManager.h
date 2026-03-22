@@ -54,7 +54,15 @@ bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
-    bool allowLutPrewarm,
+    void* cudaStreamOpaque,
+    std::string& outError);
+
+bool command_ensure_current_medium_uploaded(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const WorkingState& ws,
+    bool negativeMedium,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError);
 
@@ -63,6 +71,7 @@ bool command_ensure_scan_lut(
     JuicerCuda::Resources& resources,
     const WorkingState& ws,
     bool negativeMedium,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError);
 
@@ -85,6 +94,7 @@ bool command_ensure_print_illuminant_filtered(
     const WorkingState& ws,
     const Print::Runtime& prt,
     const Print::Params& params,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError);
 

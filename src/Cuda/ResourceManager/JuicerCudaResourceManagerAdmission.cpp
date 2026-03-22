@@ -149,14 +149,14 @@ const char* fairness_bypass_reason(bool fairnessDeferred) noexcept {
 
 const char* sampled_cache_reason(bool sampled) noexcept {
     if (sampled) {
-        return "sampled";
+        return "sampled_checkpoint";
     }
-    return "cached";
+    return "cached_checkpoint";
 }
 
 const char* headroom_trace_reason(bool sourceSwitch, bool sampled) noexcept {
     if (sourceSwitch) {
-        return "source_switch";
+        return "headroom_source_switch";
     }
     return sampled_cache_reason(sampled);
 }
@@ -351,22 +351,23 @@ std::uint64_t tier_target_basis_points(
 
 std::uint64_t tier_target_bytes(
     const ResourceManagerConfigEffective& cfg,
+    const ResolvedPressurePolicy& policy,
     ResourceTier tier) noexcept {
-    if (cfg.managerSoftTargetBytes == 0) {
+    if (policy.softTargetBytes == 0) {
         return 0;
     }
     const std::uint64_t bp = std::min<std::uint64_t>(
         tier_target_basis_points(cfg, tier),
         kBasisPointsDenominator);
     std::uint64_t weighted = 0;
-    if (!mul_u64_checked(cfg.managerSoftTargetBytes, bp, weighted)) {
+    if (!mul_u64_checked(policy.softTargetBytes, bp, weighted)) {
         return std::numeric_limits<std::uint64_t>::max();
     }
     return weighted / kBasisPointsDenominator;
 }
 
-inline bool pressure_policy_enabled(const ResourceManagerConfigEffective& cfg) noexcept {
-    return cfg.managerSoftTargetBytes > 0;
+inline bool pressure_policy_enabled(const ResolvedPressurePolicy& policy) noexcept {
+    return policy.softTargetBytes > 0;
 }
 
 bool validate_scratch_request_descriptor_for_manager(
@@ -709,7 +710,7 @@ bool run_canonical_scratch_checkpoint(
     outObservation.hysteresisBytes = kScratchNormalizationHysteresisBytes;
 
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    if (!pressure_policy_enabled(cfg)) {
+    if (!pressure_policy_enabled(transaction.resolvedPressurePolicy)) {
         trace_scratch_checkpoint_event(
             transaction,
             commandName,
@@ -718,7 +719,8 @@ bool run_canonical_scratch_checkpoint(
             "pressure_policy_disabled");
         return true;
     }
-    outObservation.scratchTargetBytes = tier_target_bytes(cfg, ResourceTier::Scratch);
+    outObservation.scratchTargetBytes =
+        tier_target_bytes(cfg, transaction.resolvedPressurePolicy, ResourceTier::Scratch);
 
     ScratchStage1DecisionState stage1State{};
     JuicerCuda::snapshot_scratch_stage1_state(resources, stage1State);
@@ -829,18 +831,22 @@ bool run_canonical_scratch_checkpoint(
     return true;
 }
 
-std::uint64_t transient_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
-    if (cfg.managerSoftTargetBytes == 0) {
+std::uint64_t transient_reservation_cap_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    const ResolvedPressurePolicy& policy) noexcept {
+    if (policy.softTargetBytes == 0) {
         return kTransientReservationCapDefaultBytes;
     }
-    const std::uint64_t quarterTarget = cfg.managerSoftTargetBytes / 4ull;
+    const std::uint64_t quarterTarget = policy.softTargetBytes / 4ull;
     return std::max<std::uint64_t>(
         kTransientReservationThresholdDefaultBytes,
         std::min<std::uint64_t>(kTransientReservationCapDefaultBytes, quarterTarget));
 }
 
-std::uint64_t transient_reservation_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
-    const std::uint64_t capBytes = transient_reservation_cap_bytes(cfg);
+std::uint64_t transient_reservation_threshold_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    const ResolvedPressurePolicy& policy) noexcept {
+    const std::uint64_t capBytes = transient_reservation_cap_bytes(cfg, policy);
     if (capBytes == 0) {
         return 0;
     }
@@ -897,7 +903,9 @@ bool builder_context_has_inflight(const BuilderReservationContextState& contextS
         contextState.inFlightGraphBytes > 0;
 }
 
-std::uint64_t upload_reservation_cap_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
+std::uint64_t upload_reservation_cap_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    const ResolvedPressurePolicy& policy) noexcept {
     std::uint64_t configCapBytes = 0;
     if (!mul_u64_checked(
             static_cast<std::uint64_t>(cfg.uploadBytesInFlightLimitMB),
@@ -908,16 +916,18 @@ std::uint64_t upload_reservation_cap_bytes(const ResourceManagerConfigEffective&
     if (configCapBytes == 0) {
         configCapBytes = kUploadReservationCapDefaultBytes;
     }
-    if (cfg.managerSoftTargetBytes == 0) {
+    if (policy.softTargetBytes == 0) {
         return std::max<std::uint64_t>(kUploadReservationThresholdDefaultBytes, configCapBytes);
     }
-    const std::uint64_t quarterTarget = cfg.managerSoftTargetBytes / 4ull;
+    const std::uint64_t quarterTarget = policy.softTargetBytes / 4ull;
     const std::uint64_t boundedCap = std::min<std::uint64_t>(configCapBytes, quarterTarget);
     return std::max<std::uint64_t>(kUploadReservationThresholdDefaultBytes, boundedCap);
 }
 
-std::uint64_t upload_reservation_threshold_bytes(const ResourceManagerConfigEffective& cfg) noexcept {
-    const std::uint64_t capBytes = upload_reservation_cap_bytes(cfg);
+std::uint64_t upload_reservation_threshold_bytes(
+    const ResourceManagerConfigEffective& cfg,
+    const ResolvedPressurePolicy& policy) noexcept {
+    const std::uint64_t capBytes = upload_reservation_cap_bytes(cfg, policy);
     if (capBytes == 0) {
         return 0;
     }
@@ -1009,10 +1019,11 @@ bool try_acquire_scratch_policy_claim(
     }
 
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
     outReservation.considered = true;
     outReservation.bytesInFlight = state.totalInFlightBytes;
-    outReservation.capBytes = transient_reservation_cap_bytes(cfg);
-    outReservation.thresholdBytes = transient_reservation_threshold_bytes(cfg);
+    outReservation.capBytes = transient_reservation_cap_bytes(cfg, policy);
+    outReservation.thresholdBytes = transient_reservation_threshold_bytes(cfg, policy);
 
     ReservationDecision reservationDecision{};
     if (static_cast<std::uint64_t>(requestBytes) < outReservation.thresholdBytes) {
@@ -1100,19 +1111,6 @@ bool try_acquire_scratch_policy_claim(
     bucketEntry.starvationLatched = false;
     global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
     telemetry_counter_add(global_state().transientReservationGranted, 1);
-    if (reservationDecision.reason && std::string_view(reservationDecision.reason) == "critical_last_resort") {
-        trace_transient_reservation_decision(
-            transaction,
-            commandName,
-            requestBytes,
-            outReservation.bytesInFlight,
-            outReservation.capBytes,
-            outReservation.thresholdBytes,
-            reservationDecision,
-            criticalCurrentFrame,
-            0,
-            "critical_last_resort");
-    }
 
     outClaim.contextKey = contextKey;
     outClaim.bucketKey = bucketKey;
@@ -1153,6 +1151,21 @@ bool acquire_scratch_policy_claim_with_wait(
                 outClaim,
                 snapshot,
                 reservation)) {
+            if (reservation.considered) {
+                trace_transient_reservation_decision(
+                    transaction,
+                    commandName,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    waitedMs,
+                    waitedMs > 0
+                        ? "admit_after_wait"
+                        : trace_or(reservation.decision.reason, "granted"));
+            }
             if (waitedMs > 0) {
                 telemetry_counter_add(state.scratchPolicyWaitEvents, 1);
                 if (criticalCurrentFrame) {
@@ -1586,14 +1599,15 @@ bool try_acquire_upload_reservation_claim(
     }
 
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
     UploadReservationState& state = upload_reservation_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     outReservation.instanceToken = transaction.snapshot.instanceToken.value;
 
     outReservation.considered = true;
     outReservation.bytesInFlight = state.totalInFlightBytes;
-    outReservation.capBytes = upload_reservation_cap_bytes(cfg);
-    outReservation.thresholdBytes = upload_reservation_threshold_bytes(cfg);
+    outReservation.capBytes = upload_reservation_cap_bytes(cfg, policy);
+    outReservation.thresholdBytes = upload_reservation_threshold_bytes(cfg, policy);
 
     ReservationDecision reservationDecision{};
     if (requestBytes < outReservation.thresholdBytes) {
@@ -1690,6 +1704,24 @@ bool acquire_upload_reservation_with_wait(
                 outClaim,
                 reservation)) {
             telemetry_counter_add(state.uploadReservationGranted, 1);
+            if (reservation.considered) {
+                trace_upload_reservation_decision(
+                    transaction,
+                    commandName,
+                    requestBytes,
+                    reservation.bytesInFlight,
+                    reservation.capBytes,
+                    reservation.thresholdBytes,
+                    reservation.decision,
+                    criticalCurrentFrame,
+                    reservation.instanceToken,
+                    reservation.sharedTokens,
+                    reservation.criticalTokens,
+                    waitedMs,
+                    waitedMs > 0
+                        ? "admit_after_wait"
+                        : trace_or(reservation.decision.reason, "granted"));
+            }
             if (waitedMs > 0) {
                 telemetry_counter_add(state.uploadFairnessWaitEvents, 1);
                 if (criticalCurrentFrame) {
@@ -1706,37 +1738,6 @@ bool acquire_upload_reservation_with_wait(
                         "admit_after_wait",
                         trace_or(reservation.decision.reason, "waited"));
                 }
-                trace_upload_reservation_decision(
-                    transaction,
-                    commandName,
-                    requestBytes,
-                    reservation.bytesInFlight,
-                    reservation.capBytes,
-                    reservation.thresholdBytes,
-                    reservation.decision,
-                    criticalCurrentFrame,
-                    reservation.instanceToken,
-                    reservation.sharedTokens,
-                    reservation.criticalTokens,
-                    waitedMs,
-                    "admit_after_wait");
-            }
-            else if (reservation.decision.reason &&
-                     std::string_view(reservation.decision.reason) == "critical_last_resort") {
-                trace_upload_reservation_decision(
-                    transaction,
-                    commandName,
-                    requestBytes,
-                    reservation.bytesInFlight,
-                    reservation.capBytes,
-                    reservation.thresholdBytes,
-                    reservation.decision,
-                    criticalCurrentFrame,
-                    reservation.instanceToken,
-                    reservation.sharedTokens,
-                    reservation.criticalTokens,
-                    waitedMs,
-                    "critical_last_resort");
             }
             return true;
         }
@@ -1852,59 +1853,75 @@ void maybe_publish_manager_memory_snapshot(
     publish_manager_memory_snapshot(snapshot_manager_memory(resources));
 }
 
-HeadroomTelemetry sample_headroom_telemetry() noexcept {
+HeadroomTelemetry sample_headroom_telemetry(const SubmissionTransaction& transaction) noexcept {
     HeadroomTelemetry out{};
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    std::size_t freeBytes = 0;
-    std::size_t totalBytes = 0;
-    if (cudaMemGetInfo(&freeBytes, &totalBytes) == cudaSuccess) {
-        (void)totalBytes;
-        out.driverFreeBytes = static_cast<std::uint64_t>(
-            std::min<std::size_t>(freeBytes, static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
-        out.effectiveHeadroomBytes = out.driverFreeBytes;
+    const int targetDevice = transaction.snapshot.deviceContextKey.deviceId;
+    if (targetDevice < 0) {
+        return out;
     }
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
-    int currentDevice = 0;
-    if (cudaGetDevice(&currentDevice) == cudaSuccess) {
-        cudaMemPool_t defaultPool = nullptr;
-        if (cudaDeviceGetDefaultMemPool(&defaultPool, currentDevice) == cudaSuccess && defaultPool != nullptr) {
-            std::size_t poolReservedBytes = 0;
-            std::size_t poolUsedBytes = 0;
-            const cudaError_t reservedErr = cudaMemPoolGetAttribute(
-                defaultPool,
-                cudaMemPoolAttrReservedMemCurrent,
-                &poolReservedBytes);
-            const cudaError_t usedErr = cudaMemPoolGetAttribute(
-                defaultPool,
-                cudaMemPoolAttrUsedMemCurrent,
-                &poolUsedBytes);
-            if (reservedErr == cudaSuccess && usedErr == cudaSuccess) {
-                out.poolTelemetryAvailable = true;
-                out.source = HeadroomSource::AllocatorPool;
-                out.allocatorPoolReservedBytes = static_cast<std::uint64_t>(
-                    std::min<std::size_t>(
-                        poolReservedBytes,
-                        static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
-                out.allocatorPoolUsedBytes = static_cast<std::uint64_t>(
-                    std::min<std::size_t>(
-                        poolUsedBytes,
-                        static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
-                if (out.allocatorPoolUsedBytes > out.allocatorPoolReservedBytes) {
-                    out.allocatorPoolUsedBytes = out.allocatorPoolReservedBytes;
-                }
 
-                const std::uint64_t poolFreeBytes =
-                    out.allocatorPoolReservedBytes - out.allocatorPoolUsedBytes;
-                std::uint64_t combinedHeadroom = out.driverFreeBytes;
-                if (!add_u64_checked(combinedHeadroom, poolFreeBytes, combinedHeadroom)) {
-                    combinedHeadroom = std::numeric_limits<std::uint64_t>::max();
-                }
-                out.effectiveHeadroomBytes = combinedHeadroom;
+    const bool deviceContextReady = with_explicit_cuda_device(
+        targetDevice,
+        [&]() noexcept {
+            out.sampledDeviceId = targetDevice;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+            std::size_t freeBytes = 0;
+            std::size_t totalBytes = 0;
+            if (cudaMemGetInfo(&freeBytes, &totalBytes) != cudaSuccess) {
+                return;
             }
-        }
+            out.sampleSuccess = true;
+            out.driverFreeBytes = static_cast<std::uint64_t>(
+                std::min<std::size_t>(
+                    freeBytes,
+                    static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+            out.effectiveHeadroomBytes = out.driverFreeBytes;
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+            cudaMemPool_t defaultPool = nullptr;
+            if (cudaDeviceGetDefaultMemPool(&defaultPool, targetDevice) == cudaSuccess &&
+                defaultPool != nullptr) {
+                std::size_t poolReservedBytes = 0;
+                std::size_t poolUsedBytes = 0;
+                const cudaError_t reservedErr = cudaMemPoolGetAttribute(
+                    defaultPool,
+                    cudaMemPoolAttrReservedMemCurrent,
+                    &poolReservedBytes);
+                const cudaError_t usedErr = cudaMemPoolGetAttribute(
+                    defaultPool,
+                    cudaMemPoolAttrUsedMemCurrent,
+                    &poolUsedBytes);
+                if (reservedErr == cudaSuccess && usedErr == cudaSuccess) {
+                    out.poolTelemetryAvailable = true;
+                    out.source = HeadroomSource::AllocatorPool;
+                    out.allocatorPoolReservedBytes = static_cast<std::uint64_t>(
+                        std::min<std::size_t>(
+                            poolReservedBytes,
+                            static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+                    out.allocatorPoolUsedBytes = static_cast<std::uint64_t>(
+                        std::min<std::size_t>(
+                            poolUsedBytes,
+                            static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+                    if (out.allocatorPoolUsedBytes > out.allocatorPoolReservedBytes) {
+                        out.allocatorPoolUsedBytes = out.allocatorPoolReservedBytes;
+                    }
+
+                    const std::uint64_t poolFreeBytes =
+                        out.allocatorPoolReservedBytes - out.allocatorPoolUsedBytes;
+                    std::uint64_t combinedHeadroom = out.driverFreeBytes;
+                    if (!add_u64_checked(combinedHeadroom, poolFreeBytes, combinedHeadroom)) {
+                        combinedHeadroom = std::numeric_limits<std::uint64_t>::max();
+                    }
+                    out.effectiveHeadroomBytes = combinedHeadroom;
+                }
+            }
+#endif
+#else
+            (void)targetDevice;
+#endif
+        });
+    if (!deviceContextReady) {
+        return HeadroomTelemetry{};
     }
-#endif
-#endif
     return out;
 }
 
@@ -1930,15 +1947,16 @@ bool reserve_crossed(const PressureInput& input) noexcept {
 
 std::uint64_t compute_effective_reserve_target_bytes(
     const ResourceManagerConfigEffective& cfg,
+    const ResolvedPressurePolicy& policy,
     std::uint64_t transientBytes) noexcept {
-    std::uint64_t targetBytes = cfg.managerReserveBytes;
+    std::uint64_t targetBytes = policy.reserveBytes;
     std::uint64_t transientBoundBytes = transientBytes;
     if (!add_u64_checked(transientBoundBytes, cfg.reserveSafetyMarginBytes, transientBoundBytes)) {
         transientBoundBytes = std::numeric_limits<std::uint64_t>::max();
     }
     targetBytes = std::max<std::uint64_t>(targetBytes, transientBoundBytes);
-    if (cfg.managerSoftTargetBytes > 0) {
-        targetBytes = std::min<std::uint64_t>(targetBytes, cfg.managerSoftTargetBytes);
+    if (policy.softTargetBytes > 0) {
+        targetBytes = std::min<std::uint64_t>(targetBytes, policy.softTargetBytes);
     }
     return targetBytes;
 }
@@ -2513,11 +2531,13 @@ PressureCheckpoint evaluate_pressure_checkpoint(
 
     publish_manager_memory_snapshot(checkpoint.memory);
 
-    const HeadroomTelemetry headroom = sample_headroom_telemetry();
+    const HeadroomTelemetry headroom = sample_headroom_telemetry(transaction);
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
+    const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
     ResourceManagerState& managerState = global_state();
-    checkpoint.input.softTargetBytes = cfg.managerSoftTargetBytes;
-    checkpoint.input.reserveBytes = cfg.managerReserveBytes;
+    checkpoint.headroom = headroom;
+    checkpoint.input.softTargetBytes = policy.softTargetBytes;
+    checkpoint.input.reserveBytes = policy.reserveBytes;
     checkpoint.input.retirePendingBytes = checkpoint.memory.retirePendingBytes;
     checkpoint.input.transientNonManagerBytes = checkpoint.memory.transientNonManagerBytes;
     checkpoint.input.effectiveHeadroomBytes = headroom.effectiveHeadroomBytes;
@@ -2571,17 +2591,18 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         }
 
         checkpoint.reserveBeforeBytes =
-            admission_effective_reserve_or_default(contextState, cfg.managerReserveBytes);
+            admission_effective_reserve_or_default(contextState, policy.reserveBytes);
         checkpoint.reserveTargetBytes = compute_effective_reserve_target_bytes(
             cfg,
+            policy,
             checkpoint.input.transientNonManagerBytes);
         if (sampleDue || !contextState.effectiveReserveValid) {
             std::uint64_t nextReserve = step_effective_reserve_bytes(
                 cfg,
                 checkpoint.reserveBeforeBytes,
                 checkpoint.reserveTargetBytes);
-            if (cfg.managerSoftTargetBytes > 0) {
-                nextReserve = std::min<std::uint64_t>(nextReserve, cfg.managerSoftTargetBytes);
+            if (policy.softTargetBytes > 0) {
+                nextReserve = std::min<std::uint64_t>(nextReserve, policy.softTargetBytes);
             }
             checkpoint.reserveUpdated = nextReserve != checkpoint.reserveBeforeBytes;
             contextState.effectiveReserveBytes = nextReserve;
@@ -2589,7 +2610,7 @@ PressureCheckpoint evaluate_pressure_checkpoint(
         }
 
         checkpoint.input.effectiveReserveBytes =
-            admission_effective_reserve_or_default(contextState, cfg.managerReserveBytes);
+            admission_effective_reserve_or_default(contextState, policy.reserveBytes);
         const PressureDecision computedDecision = classify_pressure(checkpoint.input);
         checkpoint.decision = computedDecision;
         checkpoint.desiredState = computedDecision.state;
@@ -2697,86 +2718,56 @@ PressureCheckpoint evaluate_pressure_checkpoint(
             checkpoint.desiredState = computedDecision.state;
             checkpoint.reserveCrossedNow = contextState.reserveCrossed;
             checkpoint.input.effectiveReserveBytes =
-                admission_effective_reserve_or_default(contextState, cfg.managerReserveBytes);
+                admission_effective_reserve_or_default(contextState, policy.reserveBytes);
         }
     }
 
-    if (checkpoint.sampled ||
-        checkpoint.transition ||
-        checkpoint.reserveCrossing ||
-        checkpoint.reserveUpdated ||
-        checkpoint.freezeTransitionEnter ||
-        checkpoint.freezeTransitionExit ||
-        headroomSourceSwitch) {
-        const char* pressureReason = "sample";
-        if (checkpoint.transitionDeferredByRate) {
-            pressureReason = "state_transition_rate_deferred";
-        }
-        else if (checkpoint.transitionDeferredByDwell) {
-            pressureReason = "state_transition_dwell_deferred";
-        }
-        else if (checkpoint.transition) {
-            pressureReason = "state_transition";
-        }
-        else if (checkpoint.freezeTransitionEnter) {
-            pressureReason = "freeze_enter";
-        }
-        else if (checkpoint.freezeTransitionExit) {
-            pressureReason = "freeze_exit";
-        }
-        else if (checkpoint.reserveUpdated) {
-            pressureReason = "reserve_updated";
-        }
-        else if (checkpoint.reserveCrossing) {
-            pressureReason = "reserve_crossing";
-        }
-        trace_pressure_checkpoint(
-            transaction,
-            commandName,
-            checkpoint,
-            pendingGrowthBytes,
-            pressureReason);
-        trace_transient_non_manager_sample(
-            transaction,
-            commandName,
-            checkpoint,
-            pendingGrowthBytes,
-            sampled_cache_reason(checkpoint.sampled));
-        trace_headroom_sample(
-            transaction,
-            commandName,
-            checkpoint,
-            pendingGrowthBytes,
-            headroomSourceSwitch,
-            headroom_trace_reason(headroomSourceSwitch, checkpoint.sampled));
+    const char* checkpointReason =
+        headroom_trace_reason(headroomSourceSwitch, checkpoint.sampled);
+    trace_pressure_checkpoint(
+        transaction,
+        commandName,
+        checkpoint,
+        pendingGrowthBytes,
+        checkpointReason);
+    trace_transient_non_manager_sample(
+        transaction,
+        commandName,
+        checkpoint,
+        pendingGrowthBytes,
+        checkpointReason);
+    trace_headroom_sample(
+        transaction,
+        commandName,
+        checkpoint,
+        pendingGrowthBytes,
+        headroomSourceSwitch,
+        checkpointReason);
+    trace_effective_reserve_event(
+        transaction,
+        commandName,
+        checkpoint.input.reserveBytes,
+        checkpoint.reserveBeforeBytes,
+        checkpoint.reserveTargetBytes,
+        checkpoint.input.effectiveReserveBytes,
+        checkpoint.input.transientNonManagerBytes,
+        checkpoint.reserveUpdated,
+        checkpointReason);
 
-        if (checkpoint.sampled || checkpoint.reserveUpdated || JTRACE_ENABLED(3)) {
-            trace_effective_reserve_event(
-                transaction,
-                commandName,
-                checkpoint.input.reserveBytes,
-                checkpoint.reserveBeforeBytes,
-                checkpoint.reserveTargetBytes,
-                checkpoint.input.effectiveReserveBytes,
-                checkpoint.input.transientNonManagerBytes,
-                checkpoint.reserveUpdated,
-                reserve_update_reason(checkpoint.reserveUpdated));
-        }
-        if (checkpoint.freezeTransitionEnter || checkpoint.freezeTransitionExit || JTRACE_ENABLED(3)) {
-            const bool freezeActive = checkpoint.decision.freezeOpportunistic;
-            trace_opportunistic_freeze_event(
-                transaction,
-                commandName,
-                checkpoint.decision.state,
-                checkpoint.input.effectiveHeadroomBytes,
-                checkpoint.decision.effectiveReserveBytes,
-                freezeActive,
-                !freezeActive,
-                false,
-                freeze_transition_reason(
-                    checkpoint.freezeTransitionEnter,
-                    checkpoint.freezeTransitionExit));
-        }
+    if (checkpoint.freezeTransitionEnter || checkpoint.freezeTransitionExit || JTRACE_ENABLED(3)) {
+        const bool freezeActive = checkpoint.decision.freezeOpportunistic;
+        trace_opportunistic_freeze_event(
+            transaction,
+            commandName,
+            checkpoint.decision.state,
+            checkpoint.input.effectiveHeadroomBytes,
+            checkpoint.decision.effectiveReserveBytes,
+            freezeActive,
+            !freezeActive,
+            false,
+            freeze_transition_reason(
+                checkpoint.freezeTransitionEnter,
+                checkpoint.freezeTransitionExit));
     }
 
     return checkpoint;
@@ -2786,7 +2777,7 @@ void record_allocator_oom_headroom_observation(
     const SubmissionTransaction& transaction,
     const char* commandName,
     std::size_t requestBytes) {
-    const HeadroomTelemetry headroom = sample_headroom_telemetry();
+    const HeadroomTelemetry headroom = sample_headroom_telemetry(transaction);
     ResourceManagerState& managerState = global_state();
     managerState.allocatorEffectiveHeadroomBytes.store(headroom.effectiveHeadroomBytes, std::memory_order_relaxed);
     managerState.allocatorPoolReservedBytes.store(headroom.allocatorPoolReservedBytes, std::memory_order_relaxed);
@@ -2799,6 +2790,9 @@ void record_allocator_oom_headroom_observation(
     }
 
     PressureCheckpoint checkpoint{};
+    checkpoint.headroom = headroom;
+    checkpoint.input.softTargetBytes = transaction.resolvedPressurePolicy.softTargetBytes;
+    checkpoint.input.reserveBytes = transaction.resolvedPressurePolicy.reserveBytes;
     checkpoint.input.effectiveHeadroomBytes = headroom.effectiveHeadroomBytes;
     checkpoint.input.driverFreeBytes = headroom.driverFreeBytes;
     checkpoint.input.allocatorPoolReservedBytes = headroom.allocatorPoolReservedBytes;
@@ -2887,9 +2881,16 @@ void run_tier_target_pretrim(
                 ScratchCheckpointInvocation::TierPretrim,
                 scratchObservation,
                 scratchCheckpointError)) {
-            if (!scratchCheckpointError.empty()) {
-                JTRACE("MSSCP", scratchCheckpointError);
-            }
+            scratchObservation.requestActive = (scratchRequest != nullptr);
+            scratchObservation.requestDescriptorGeneration =
+                scratchRequest ? scratchRequest->generation : 0;
+            scratchObservation.hysteresisBytes = kScratchNormalizationHysteresisBytes;
+            trace_scratch_checkpoint_event(
+                transaction,
+                commandName,
+                ScratchCheckpointInvocation::TierPretrim,
+                scratchObservation,
+                "checkpoint_invocation_failed");
         }
         outScratchNormalizedActions = static_cast<std::uint64_t>(
             scratchObservation.shedRetiredActionCount);
@@ -3141,7 +3142,17 @@ bool enforce_pressure_gate(
     outRequestReclaimPass = false;
     outError.clear();
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    const std::uint64_t uploadCapBytes = upload_reservation_cap_bytes(cfg);
+    trace_pressure_gate_reader(
+        transaction,
+        commandName,
+        lane,
+        requestBytes,
+        criticalCurrentFrame,
+        scratchRequest,
+        "normal",
+        "reader_observed");
+    const std::uint64_t uploadCapBytes =
+        upload_reservation_cap_bytes(cfg, transaction.resolvedPressurePolicy);
     const std::uint64_t uploadBytesInFlight =
         global_state().uploadBytesInFlight.load(std::memory_order_relaxed);
     const bool uploadCapEnabled = (uploadCapBytes > 0);
@@ -3161,7 +3172,7 @@ bool enforce_pressure_gate(
     PressureState pressureState = PressureState::Normal;
     TierBudgetSnapshot tierBudget{};
     bool tierBudgetValid = false;
-    const bool pressureEnabled = pressure_policy_enabled(cfg);
+    const bool pressureEnabled = pressure_policy_enabled(transaction.resolvedPressurePolicy);
     PressureCheckpoint checkpoint{};
     bool checkpointValid = false;
     bool freezeBelowReserve = false;
@@ -3279,20 +3290,18 @@ bool enforce_pressure_gate(
             outRequestReclaimPass = outRequestReclaimPass || (requestBytes > 0);
         }
 
-        if (tierBudget.anyOverTarget || didTierPretrim || JTRACE_ENABLED(3)) {
-            trace_tier_budget_event(
-                transaction,
-                commandName,
-                lane,
-                pressureState,
-                tierBudget,
-                requestBytes,
-                criticalCurrentFrame,
-                outRequestReclaimPass,
-                scratchNormalizedActions,
-                graphEvictedEntries,
-                tier_pretrim_reason(didTierPretrim));
-        }
+        trace_tier_budget_event(
+            transaction,
+            commandName,
+            lane,
+            pressureState,
+            tierBudget,
+            requestBytes,
+            criticalCurrentFrame,
+            outRequestReclaimPass,
+            scratchNormalizedActions,
+            graphEvictedEntries,
+            tier_pretrim_reason(didTierPretrim));
     }
     else if (JTRACE_ENABLED(3)) {
         trace_tier_budget_event(

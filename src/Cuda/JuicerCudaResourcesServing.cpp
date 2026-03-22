@@ -1243,10 +1243,18 @@
     }
 
 
-    bool ensure_uploaded(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_uploaded(
+        Resources& resources,
+        const WorkingState& ws,
+        bool includeCurrentMediumUploads,
+        bool negativeMedium,
+        void* cudaStreamOpaque,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)ws;
+        (void)includeCurrentMediumUploads;
+        (void)negativeMedium;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
         return false;
@@ -1372,6 +1380,7 @@
         const std::uint64_t wsCoreHash =
             (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
         const std::uint64_t wsDirHash = ws.dirHash;
+        const bool needPrintMediumUploads = includeCurrentMediumUploads && !negativeMedium;
         if (wsCoreHash == 0 || wsDirHash == 0) {
             outError = "WorkingState hash is 0";
             return false;
@@ -1380,7 +1389,7 @@
         const bool coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
         const bool dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
 
-        if (coreUpToDate && dirUpToDate) {
+        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads) {
             resources.uploadedBuildCounter = ws.buildCounter;
             return true;
         }
@@ -1394,25 +1403,28 @@
 
             resources.uploadedDirHash = wsDirHash;
             resources.uploadedBuildCounter = ws.buildCounter;
-            return true;
+            if (!includeCurrentMediumUploads) {
+                return true;
+            }
         }
 
         // Core rebuild required: refresh device mirrors in place where allocation shape is stable,
         // and only retire/reallocate when the existing buffers are no longer compatible.
 
-        resources.validatedBuildCounter = 0;
-        resources.uploadedBuildCounter = 0;
-        resources.uploadedCoreHash = 0;
-        resources.uploadedDirHash = 0;
+        if (!coreUpToDate) {
+            resources.validatedBuildCounter = 0;
+            resources.uploadedBuildCounter = 0;
+            resources.uploadedCoreHash = 0;
+            resources.uploadedDirHash = 0;
 
-        if (!upload_curve_locked(resources, resources.densB, ws.densB, cudaStreamOpaque, "densB", outError))
-            return false;
-        if (!upload_curve_locked(resources, resources.densG, ws.densG, cudaStreamOpaque, "densG", outError))
-            return false;
-        if (!upload_curve_locked(resources, resources.densR, ws.densR, cudaStreamOpaque, "densR", outError))
-            return false;
+            if (!upload_curve_locked(resources, resources.densB, ws.densB, cudaStreamOpaque, "densB", outError))
+                return false;
+            if (!upload_curve_locked(resources, resources.densG, ws.densG, cudaStreamOpaque, "densG", outError))
+                return false;
+            if (!upload_curve_locked(resources, resources.densR, ws.densR, cudaStreamOpaque, "densR", outError))
+                return false;
 
-        {
+            {
             const int nR = static_cast<int>(ws.densR.linear.size());
             const int nG = static_cast<int>(ws.densG.linear.size());
             const int nB = static_cast<int>(ws.densB.linear.size());
@@ -1514,24 +1526,24 @@
                 }
                 resources.hasDensityCurvesLayers = 1;
             }
-        }
+            }
 
-        if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, "dirDensB", outError))
-            return false;
-        if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, "dirDensG", outError))
-            return false;
-        if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, "dirDensR", outError))
-            return false;
+            if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, "dirDensB", outError))
+                return false;
+            if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, "dirDensG", outError))
+                return false;
+            if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, "dirDensR", outError))
+                return false;
 
-        if (!upload_curve_locked(resources, resources.sensB, ws.sensB, cudaStreamOpaque, "sensB", outError))
-            return false;
-        if (!upload_curve_locked(resources, resources.sensG, ws.sensG, cudaStreamOpaque, "sensG", outError))
-            return false;
-        if (!upload_curve_locked(resources, resources.sensR, ws.sensR, cudaStreamOpaque, "sensR", outError))
-            return false;
+            if (!upload_curve_locked(resources, resources.sensB, ws.sensB, cudaStreamOpaque, "sensB", outError))
+                return false;
+            if (!upload_curve_locked(resources, resources.sensG, ws.sensG, cudaStreamOpaque, "sensG", outError))
+                return false;
+            if (!upload_curve_locked(resources, resources.sensR, ws.sensR, cudaStreamOpaque, "sensR", outError))
+                return false;
 
-        // Upload per-instance reference illuminant tables (Ax/Ay/Az + illum) and keep a host-side copy of S_inv + ref white.
-        {
+            // Upload per-instance reference illuminant tables (Ax/Ay/Az + illum) and keep a host-side copy of S_inv + ref white.
+            {
             const int K = ws.tablesRef.K;
             const bool want =
                 ws.spdReady &&
@@ -1578,6 +1590,7 @@
                 for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.tablesRef.refIllumWhiteXYZ[i];
             } else {
                 for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.filmRaw.refIllumWhiteXYZ[i];
+            }
             }
         }
 
@@ -1682,20 +1695,21 @@
             return true;
         };
 
-        {
+        if (includeCurrentMediumUploads) {
             std::string scanError;
             if (!upload_scan_medium(resources.scanNegative, ws.negativeMediumRuntime, scanError)) {
                 outError = std::string("upload scan negative failed: ") + scanError;
                 return false;
             }
-            if (!upload_scan_medium(resources.scanPrint, ws.printMediumRuntime, scanError)) {
+            if (needPrintMediumUploads &&
+                !upload_scan_medium(resources.scanPrint, ws.printMediumRuntime, scanError)) {
                 outError = std::string("upload scan print failed: ") + scanError;
                 return false;
             }
         }
 
         // Print pipeline: upload payloads when a valid print runtime is present.
-        {
+        if (needPrintMediumUploads) {
             const Print::Runtime* prt = ws.printRT.get();
             if (!prt || !Print::profile_is_valid(prt->profile)) {
                 if (resources.printDcC.x || resources.printDcC.y ||
