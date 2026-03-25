@@ -7,12 +7,15 @@
 #include <cmath>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <vector>
 #include <utility>
 #include <string_view>
 
@@ -308,6 +311,224 @@ namespace Profiles {
             return value;
         }
 
+        struct FileStamp {
+            bool valid = false;
+            std::uint64_t sizeBytes = 0;
+            std::int64_t writeTimeTicks = 0;
+        };
+
+        struct CachedAgxFilmProfileEntry {
+            std::string cacheKey;
+            FileStamp stamp;
+            AgxFilmProfile profile;
+        };
+
+        struct CachedProfileInfoEntry {
+            std::string cacheKey;
+            FileStamp stamp;
+            ProfileInfoSummary info;
+        };
+
+        constexpr std::size_t kAgxFilmProfileCacheCapacity = 2;
+        constexpr std::size_t kProfileInfoCacheCapacity = 8;
+
+        FileStamp read_profile_file_stamp(const std::string& jsonPath) {
+            std::filesystem::path path(jsonPath);
+            std::error_code ec;
+            const auto sizeBytes = std::filesystem::file_size(path, ec);
+            if (ec) {
+                return {};
+            }
+            const auto writeTime = std::filesystem::last_write_time(path, ec);
+            if (ec) {
+                return {};
+            }
+
+            FileStamp stamp;
+            stamp.valid = true;
+            stamp.sizeBytes = static_cast<std::uint64_t>(sizeBytes);
+            stamp.writeTimeTicks = static_cast<std::int64_t>(writeTime.time_since_epoch().count());
+            return stamp;
+        }
+
+        bool same_file_stamp(const FileStamp& a, const FileStamp& b) {
+            return a.valid &&
+                b.valid &&
+                a.sizeBytes == b.sizeBytes &&
+                a.writeTimeTicks == b.writeTimeTicks;
+        }
+
+        std::string normalize_profile_cache_key(const std::string& jsonPath) {
+            std::filesystem::path path(jsonPath);
+            path.make_preferred();
+            return to_lower_ascii(path.lexically_normal().string());
+        }
+
+        std::mutex& agx_film_profile_cache_mutex() {
+            static std::mutex cacheMutex;
+            return cacheMutex;
+        }
+
+        std::vector<CachedAgxFilmProfileEntry>& agx_film_profile_cache() {
+            static std::vector<CachedAgxFilmProfileEntry> cache;
+            return cache;
+        }
+
+        bool try_load_cached_agx_film_profile(
+            const std::string& cacheKey,
+            const FileStamp& stamp,
+            AgxFilmProfile& outProfile)
+        {
+            if (cacheKey.empty() || !stamp.valid) {
+                return false;
+            }
+
+            std::lock_guard<std::mutex> lock(agx_film_profile_cache_mutex());
+            auto& cache = agx_film_profile_cache();
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                CachedAgxFilmProfileEntry& entry = cache[i];
+                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
+                    continue;
+                }
+
+                if (i != 0) {
+                    std::swap(cache[0], cache[i]);
+                }
+                outProfile = cache[0].profile;
+                return true;
+            }
+
+            return false;
+        }
+
+        void store_cached_agx_film_profile(
+            std::string cacheKey,
+            const FileStamp& stamp,
+            const AgxFilmProfile& profile)
+        {
+            if (cacheKey.empty() || !stamp.valid) {
+                return;
+            }
+
+            std::lock_guard<std::mutex> lock(agx_film_profile_cache_mutex());
+            auto& cache = agx_film_profile_cache();
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                if (cache[i].cacheKey == cacheKey) {
+                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
+                    break;
+                }
+            }
+
+            cache.insert(
+                cache.begin(),
+                CachedAgxFilmProfileEntry{
+                    std::move(cacheKey),
+                    stamp,
+                    profile
+                });
+            if (cache.size() > kAgxFilmProfileCacheCapacity) {
+                cache.resize(kAgxFilmProfileCacheCapacity);
+            }
+        }
+
+        std::mutex& profile_info_cache_mutex() {
+            static std::mutex cacheMutex;
+            return cacheMutex;
+        }
+
+        std::vector<CachedProfileInfoEntry>& profile_info_cache() {
+            static std::vector<CachedProfileInfoEntry> cache;
+            return cache;
+        }
+
+        bool try_load_cached_profile_info(
+            const std::string& cacheKey,
+            const FileStamp& stamp,
+            ProfileInfoSummary& outInfo)
+        {
+            if (cacheKey.empty() || !stamp.valid) {
+                return false;
+            }
+
+            std::lock_guard<std::mutex> lock(profile_info_cache_mutex());
+            auto& cache = profile_info_cache();
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                CachedProfileInfoEntry& entry = cache[i];
+                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
+                    continue;
+                }
+
+                if (i != 0) {
+                    std::swap(cache[0], cache[i]);
+                }
+                outInfo = cache[0].info;
+                return true;
+            }
+
+            return false;
+        }
+
+        void store_cached_profile_info(
+            std::string cacheKey,
+            const FileStamp& stamp,
+            const ProfileInfoSummary& info)
+        {
+            if (cacheKey.empty() || !stamp.valid) {
+                return;
+            }
+
+            std::lock_guard<std::mutex> lock(profile_info_cache_mutex());
+            auto& cache = profile_info_cache();
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                if (cache[i].cacheKey == cacheKey) {
+                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
+                    break;
+                }
+            }
+
+            cache.insert(
+                cache.begin(),
+                CachedProfileInfoEntry{
+                    std::move(cacheKey),
+                    stamp,
+                    info
+                });
+            if (cache.size() > kProfileInfoCacheCapacity) {
+                cache.resize(kProfileInfoCacheCapacity);
+            }
+        }
+
+        bool extract_profile_info_from_root(const Json& root, ProfileInfoSummary& outInfo) {
+            if (!root.is_object() || !root.contains("info")) {
+                return false;
+            }
+
+            const Json& infoNode = root["info"];
+            if (!infoNode.is_object()) {
+                return false;
+            }
+
+            auto readString = [](const Json& node) -> std::string {
+                if (node.is_string()) {
+                    return node.get<std::string>();
+                }
+                return std::string();
+            };
+
+            outInfo = ProfileInfoSummary{};
+            if (infoNode.contains("stock")) {
+                outInfo.stock = readString(infoNode["stock"]);
+            }
+            if (infoNode.contains("name")) {
+                outInfo.name = readString(infoNode["name"]);
+            }
+            if (infoNode.contains("type")) {
+                outInfo.type = readString(infoNode["type"]);
+            }
+
+            return !outInfo.stock.empty();
+        }
+
         bool json_wavelengths_match_reference_axis(const Json& wavelengths, std::string_view sourceLabel) {
             const std::string_view label = sourceLabel.empty()
                 ? std::string_view("profile JSON")
@@ -554,7 +775,7 @@ namespace Profiles {
 
     } // namespace
 
-    bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
+    static bool load_agx_film_profile_json_uncached(const std::string& jsonPath, AgxFilmProfile& outProfile) {
         outProfile = AgxFilmProfile{};
 
         Json root;
@@ -1115,39 +1336,44 @@ namespace Profiles {
         return true;
     }
 
+    bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
+        outProfile = AgxFilmProfile{};
+
+        const FileStamp stamp = read_profile_file_stamp(jsonPath);
+        const std::string cacheKey = normalize_profile_cache_key(jsonPath);
+        if (try_load_cached_agx_film_profile(cacheKey, stamp, outProfile)) {
+            return true;
+        }
+
+        AgxFilmProfile parsedProfile;
+        if (!load_agx_film_profile_json_uncached(jsonPath, parsedProfile)) {
+            return false;
+        }
+
+        store_cached_agx_film_profile(cacheKey, stamp, parsedProfile);
+        outProfile = std::move(parsedProfile);
+        return true;
+    }
+
     bool load_profile_info(const std::string& jsonPath, ProfileInfoSummary& outInfo) {
+        outInfo = ProfileInfoSummary{};
+
+        const FileStamp stamp = read_profile_file_stamp(jsonPath);
+        const std::string cacheKey = normalize_profile_cache_key(jsonPath);
+        if (try_load_cached_profile_info(cacheKey, stamp, outInfo)) {
+            return true;
+        }
+
         Json root;
         if (!parse_json_file(jsonPath, root)) {
             return false;
         }
-        if (!root.is_object() || !root.contains("info")) {
+        if (!extract_profile_info_from_root(root, outInfo)) {
             return false;
         }
 
-        const Json& infoNode = root["info"];
-        if (!infoNode.is_object()) {
-            return false;
-        }
-
-        auto readString = [](const Json& node) -> std::string {
-            if (node.is_string()) {
-                return node.get<std::string>();
-            }
-            return std::string();
-            };
-
-        outInfo = ProfileInfoSummary{};
-        if (infoNode.contains("stock")) {
-            outInfo.stock = readString(infoNode["stock"]);
-        }
-        if (infoNode.contains("name")) {
-            outInfo.name = readString(infoNode["name"]);
-        }
-        if (infoNode.contains("type")) {
-            outInfo.type = readString(infoNode["type"]);
-        }
-
-        return !outInfo.stock.empty();
+        store_cached_profile_info(cacheKey, stamp, outInfo);
+        return true;
     }
 
 } // namespace Profiles

@@ -246,12 +246,10 @@ namespace {
 
     bool lookup_triplet(
         const ParsedNeutralFilterDb& db,
-        const std::string& paperKey,
-        const std::string& illuminantKey,
-        const std::string& negativeKey,
+        const std::string& lookupKey,
         std::tuple<float, float, float>& outYMC)
     {
-        const auto it = db.lookup.find(make_lookup_key(paperKey, illuminantKey, negativeKey));
+        const auto it = db.lookup.find(lookupKey);
         if (it == db.lookup.end()) {
             return false;
         }
@@ -278,6 +276,7 @@ bool load_enlarger_neutral_filters(
         return false;
     }
 
+    const std::string lookupKey = make_lookup_key(paperKey, illuminantKey, negativeKey);
     const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
     if (cacheKey.empty()) {
         trace_neutral_filter_event("miss", "none", threadClass, "empty_path", &jsonPath);
@@ -290,8 +289,11 @@ bool load_enlarger_neutral_filters(
     std::shared_ptr<const ParsedNeutralFilterDb> dbSnapshot;
     {
         std::lock_guard<std::mutex> lock(gNeutralFilterCacheMutex);
-        NeutralFilterCacheEntry& cacheEntry = gNeutralFilterCache[cacheKey];
-        dbSnapshot = cacheEntry.db;
+        auto cacheIt = gNeutralFilterCache.find(cacheKey);
+        NeutralFilterCacheEntry* cacheEntry = (cacheIt != gNeutralFilterCache.end())
+            ? &cacheIt->second
+            : nullptr;
+        dbSnapshot = cacheEntry ? cacheEntry->db : nullptr;
 
         if (!dbSnapshot) {
             if (threadClass == NeutralFilterThreadClass::RenderWorker) {
@@ -307,21 +309,28 @@ bool load_enlarger_neutral_filters(
             }
 
             dbSnapshot = std::make_shared<ParsedNeutralFilterDb>(std::move(parsedDb));
-            cacheEntry.db = dbSnapshot;
+            cacheIt = gNeutralFilterCache.emplace(cacheKey, NeutralFilterCacheEntry{}).first;
+            cacheEntry = &cacheIt->second;
+            cacheEntry->db = dbSnapshot;
             if (diagnosticsReload) {
-                cacheEntry.lastDiagnosticsReloadCheck = now;
-                cacheEntry.hasDiagnosticsReloadCheck = true;
+                cacheEntry->lastDiagnosticsReloadCheck = now;
+                cacheEntry->hasDiagnosticsReloadCheck = true;
             }
             trace_neutral_filter_event("load", dbSnapshot->versionHash, threadClass, nullptr, &jsonPath);
         }
 
         if (diagnosticsReload && threadClass == NeutralFilterThreadClass::Control && dbSnapshot) {
+            if (!cacheEntry) {
+                trace_neutral_filter_event("reload_failed", dbSnapshot->versionHash, threadClass, "cache_entry_missing", &jsonPath);
+                return false;
+            }
             bool shouldCheckReload = false;
-            if (!cacheEntry.hasDiagnosticsReloadCheck) {
+            if (!cacheEntry->hasDiagnosticsReloadCheck) {
                 shouldCheckReload = true;
             }
             else {
-                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - cacheEntry.lastDiagnosticsReloadCheck).count();
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - cacheEntry->lastDiagnosticsReloadCheck).count();
                 shouldCheckReload = elapsed >= kNeutralFilterDiagnosticsReloadCheckMs;
             }
 
@@ -329,8 +338,8 @@ bool load_enlarger_neutral_filters(
                 trace_neutral_filter_event("reload_skip", dbSnapshot->versionHash, threadClass, "interval_not_elapsed", &jsonPath);
             }
             else {
-                cacheEntry.lastDiagnosticsReloadCheck = now;
-                cacheEntry.hasDiagnosticsReloadCheck = true;
+                cacheEntry->lastDiagnosticsReloadCheck = now;
+                cacheEntry->hasDiagnosticsReloadCheck = true;
                 trace_neutral_filter_event("reload_check", dbSnapshot->versionHash, threadClass, nullptr, &jsonPath);
 
                 const FileStamp newStamp = read_file_stamp(jsonPath);
@@ -351,7 +360,7 @@ bool load_enlarger_neutral_filters(
                     }
                     else {
                         dbSnapshot = std::make_shared<ParsedNeutralFilterDb>(std::move(parsedDb));
-                        cacheEntry.db = dbSnapshot;
+                        cacheEntry->db = dbSnapshot;
                         trace_neutral_filter_event("reload_commit", dbSnapshot->versionHash, threadClass, nullptr, &jsonPath);
                     }
                 }
@@ -364,7 +373,7 @@ bool load_enlarger_neutral_filters(
         return false;
     }
 
-    if (!lookup_triplet(*dbSnapshot, paperKey, illuminantKey, negativeKey, outYMC)) {
+    if (!lookup_triplet(*dbSnapshot, lookupKey, outYMC)) {
         trace_neutral_filter_event("miss", dbSnapshot->versionHash, threadClass, "entry_not_found", &jsonPath);
         return false;
     }
