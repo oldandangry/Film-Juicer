@@ -2844,6 +2844,9 @@ bool command_retire_context_with_reason(
     }
 
     registry_retire(handle, reason, &key);
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    JuicerCuda::purge_host_asset_caches_if_registry_idle(stageName);
+#endif
     return true;
 }
 } // namespace

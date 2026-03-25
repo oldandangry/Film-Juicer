@@ -358,6 +358,53 @@ namespace Print {
             return ctx;
         }
 
+        bool channel_has_finite_samples(const FloatPairs& pairs, size_t minimumFiniteSamples = 4u)
+        {
+            size_t finiteCount = 0;
+            const std::pair<float, float>* sampleData = pairs.data();
+            const size_t sampleCount = pairs.size();
+            for (size_t i = 0; i < sampleCount; ++i, ++sampleData) {
+                if (is_finite(sampleData->second)) {
+                    if (++finiteCount >= minimumFiniteSamples) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        bool json_profile_has_complete_print_dyes(const JsonProfileContext& ctx)
+        {
+            if (!ctx.hasProfile) {
+                return false;
+            }
+            return channel_has_finite_samples(ctx.profile.dyeC) &&
+                channel_has_finite_samples(ctx.profile.dyeM) &&
+                channel_has_finite_samples(ctx.profile.dyeY);
+        }
+
+        bool json_profile_has_complete_print_sensitivities(const JsonProfileContext& ctx)
+        {
+            if (!ctx.hasProfile) {
+                return false;
+            }
+            return channel_has_finite_samples(ctx.profile.logSensR) &&
+                channel_has_finite_samples(ctx.profile.logSensG) &&
+                channel_has_finite_samples(ctx.profile.logSensB);
+        }
+
+        bool json_profile_has_complete_print_baseline_min(const JsonProfileContext& ctx)
+        {
+            return ctx.hasProfile &&
+                channel_has_finite_samples(ctx.profile.baseMin);
+        }
+
+        bool json_profile_has_complete_print_baseline_mid(const JsonProfileContext& ctx)
+        {
+            return ctx.hasProfile &&
+                channel_has_finite_samples(ctx.profile.baseMid);
+        }
+
         void apply_json_dye_and_sensitivity_overrides(
             const JsonProfileContext& ctx,
             Profile& out,
@@ -378,23 +425,9 @@ namespace Print {
             }
 
             const auto& profileJson = ctx.profile;
-            auto channel_has_finite = [](const FloatPairs& pairs)->bool {
-                size_t finiteCount = 0;
-                const std::pair<float, float>* sampleData = pairs.data();
-                const size_t sampleCount = pairs.size();
-                for (size_t i = 0; i < sampleCount; ++i, ++sampleData) {
-                    if (is_finite(sampleData->second)) {
-                        if (++finiteCount >= 4) {
-                            return true;
-                        }
-                    }
-                }
-                return false;
-                };
-
-            const bool jsonDyeC = channel_has_finite(profileJson.dyeC);
-            const bool jsonDyeM = channel_has_finite(profileJson.dyeM);
-            const bool jsonDyeY = channel_has_finite(profileJson.dyeY);
+            const bool jsonDyeC = channel_has_finite_samples(profileJson.dyeC);
+            const bool jsonDyeM = channel_has_finite_samples(profileJson.dyeM);
+            const bool jsonDyeY = channel_has_finite_samples(profileJson.dyeY);
             if (jsonDyeC && jsonDyeM && jsonDyeY) {
                 c_eps = profileJson.dyeC;
                 m_eps = profileJson.dyeM;
@@ -410,9 +443,9 @@ namespace Print {
                 JTRACE("PRINT", warn.str());
             }
 
-            const bool jsonSensR = channel_has_finite(profileJson.logSensR);
-            const bool jsonSensG = channel_has_finite(profileJson.logSensG);
-            const bool jsonSensB = channel_has_finite(profileJson.logSensB);
+            const bool jsonSensR = channel_has_finite_samples(profileJson.logSensR);
+            const bool jsonSensG = channel_has_finite_samples(profileJson.logSensG);
+            const bool jsonSensB = channel_has_finite_samples(profileJson.logSensB);
             if (jsonSensR) r_sens = profileJson.logSensR;
             if (jsonSensG) g_sens = profileJson.logSensG;
             if (jsonSensB) b_sens = profileJson.logSensB;
@@ -1434,20 +1467,27 @@ namespace Print {
             FloatPairs midPairs;
         };
 
-        BaselineCurves load_baseline_csvs(const std::string& dir)
+        BaselineCurves load_baseline_csvs(
+            const std::string& dir,
+            bool loadMinCsv,
+            bool loadMidCsv)
         {
             BaselineCurves curves;
-            try {
-                curves.minPairs = Spectral::load_csv_pairs(dir + "dye_density_min.csv");
+            if (loadMinCsv) {
+                try {
+                    curves.minPairs = Spectral::load_csv_pairs(dir + "dye_density_min.csv");
+                }
+                catch (...) {
+                    curves.minPairs.clear();
+                }
             }
-            catch (...) {
-                curves.minPairs.clear();
-            }
-            try {
-                curves.midPairs = Spectral::load_csv_pairs(dir + "dye_density_mid.csv");
-            }
-            catch (...) {
-                curves.midPairs.clear();
+            if (loadMidCsv) {
+                try {
+                    curves.midPairs = Spectral::load_csv_pairs(dir + "dye_density_mid.csv");
+                }
+                catch (...) {
+                    curves.midPairs.clear();
+                }
             }
             return curves;
         }
@@ -1460,10 +1500,12 @@ namespace Print {
             }
 
             const auto& profileJson = ctx.profile;
-            if (curves.minPairs.empty() && !profileJson.baseMin.empty()) {
+            if (curves.minPairs.empty() &&
+                json_profile_has_complete_print_baseline_min(ctx)) {
                 curves.minPairs = profileJson.baseMin;
             }
-            if (curves.midPairs.empty() && !profileJson.baseMid.empty()) {
+            if (curves.midPairs.empty() &&
+                json_profile_has_complete_print_baseline_mid(ctx)) {
                 curves.midPairs = profileJson.baseMid;
             }
         }
@@ -1603,13 +1645,25 @@ namespace Print {
             runtime->glare = out.glare;
         }
 
-        FloatPairs c_eps = load_csv_pairs_silent(dir + "dye_density_c.csv");
-        FloatPairs m_eps = load_csv_pairs_silent(dir + "dye_density_m.csv");
-        FloatPairs y_eps = load_csv_pairs_silent(dir + "dye_density_y.csv");
+        FloatPairs c_eps;
+        FloatPairs m_eps;
+        FloatPairs y_eps;
+        const bool needCsvDyes = !json_profile_has_complete_print_dyes(jsonCtx);
+        if (needCsvDyes) {
+            c_eps = load_csv_pairs_silent(dir + "dye_density_c.csv");
+            m_eps = load_csv_pairs_silent(dir + "dye_density_m.csv");
+            y_eps = load_csv_pairs_silent(dir + "dye_density_y.csv");
+        }
 
-        FloatPairs r_sens = load_csv_pairs_silent(dir + "log_sensitivity_r.csv");
-        FloatPairs g_sens = load_csv_pairs_silent(dir + "log_sensitivity_g.csv");
-        FloatPairs b_sens = load_csv_pairs_silent(dir + "log_sensitivity_b.csv");
+        FloatPairs r_sens;
+        FloatPairs g_sens;
+        FloatPairs b_sens;
+        const bool needCsvSens = !json_profile_has_complete_print_sensitivities(jsonCtx);
+        if (needCsvSens) {
+            r_sens = load_csv_pairs_silent(dir + "log_sensitivity_r.csv");
+            g_sens = load_csv_pairs_silent(dir + "log_sensitivity_g.csv");
+            b_sens = load_csv_pairs_silent(dir + "log_sensitivity_b.csv");
+        }
 
         bool usedJsonEps = false;
         bool usedJsonSens = false;
@@ -1690,7 +1744,14 @@ namespace Print {
         // (Neutral exposure probing applies only to film development, not print paper.)
         const bool densityCurvesOk = rebuild_density_curves(out, densityCurves);
 
-        BaselineCurves baselineCurves = load_baseline_csvs(dir);
+        const bool needCsvBaselineMin =
+            !json_profile_has_complete_print_baseline_min(jsonCtx);
+        const bool needCsvBaselineMid =
+            !json_profile_has_complete_print_baseline_mid(jsonCtx);
+        BaselineCurves baselineCurves = load_baseline_csvs(
+            dir,
+            needCsvBaselineMin,
+            needCsvBaselineMid);
         merge_baseline_with_json(jsonCtx, baselineCurves);
         apply_baseline_to_profile(baselineCurves, out);
         recompute_mid_neutral(out, runtime);

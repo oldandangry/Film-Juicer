@@ -344,4 +344,7 @@ namespace JuicerCuda {
     // Purges process-shared pinned upload staging blocks for one device/context key.
     void purge_pinned_upload_staging_for_context(int deviceId, void* contextOpaque) noexcept;
 
+    // Purges process-shared host asset caches once no live CUDA managers remain.
+    void purge_host_asset_caches_if_registry_idle(const char* stage) noexcept;
+
 } // namespace JuicerCuda

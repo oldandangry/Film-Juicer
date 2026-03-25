@@ -82,12 +82,24 @@
             std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
     }
 
+    template <typename T>
+    static std::size_t retained_vector_bytes_locked(const std::vector<T>& values) {
+        return values.capacity() * sizeof(T);
+    }
+
+    template <typename T>
+    static void release_vector_storage(std::vector<T>& values) {
+        std::vector<T> empty;
+        values.swap(empty);
+    }
+
     static std::size_t stbn_cache_bytes_locked(const StbnCpuCache& cache) {
-        return cache.data.size();
+        return retained_vector_bytes_locked(cache.data);
     }
 
     static std::size_t wang_cache_bytes_locked(const WangCpuCache& cache) {
-        return cache.tiles.size() + cache.lut.size();
+        return retained_vector_bytes_locked(cache.tiles) +
+            retained_vector_bytes_locked(cache.lut);
     }
 
     static void publish_host_asset_cache_bytes(std::size_t bytes) {
@@ -96,15 +108,15 @@
     }
 
     static bool host_cache_trim_eligible(const StbnCpuCache& cache) {
-        return cache.state == HostCacheLoadState::Ready &&
+        return cache.state != HostCacheLoadState::Loading &&
             cache.activeUsers == 0 &&
-            !cache.data.empty();
+            stbn_cache_bytes_locked(cache) > 0;
     }
 
     static bool host_cache_trim_eligible(const WangCpuCache& cache) {
-        return cache.state == HostCacheLoadState::Ready &&
+        return cache.state != HostCacheLoadState::Loading &&
             cache.activeUsers == 0 &&
-            (!cache.tiles.empty() || !cache.lut.empty());
+            wang_cache_bytes_locked(cache) > 0;
     }
 
     static HostAssetCacheId pick_oldest_host_cache_candidate_locked(
@@ -138,9 +150,8 @@
             if (!host_cache_trim_eligible(stbn)) {
                 return 0;
             }
-            const std::size_t bytes = stbn.data.size();
-            stbn.data.clear();
-            stbn.data.shrink_to_fit();
+            const std::size_t bytes = stbn_cache_bytes_locked(stbn);
+            release_vector_storage(stbn.data);
             stbn.loaded = false;
             stbn.valid = false;
             stbn.state = HostCacheLoadState::Uninitialized;
@@ -152,11 +163,9 @@
             if (!host_cache_trim_eligible(wang)) {
                 return 0;
             }
-            const std::size_t bytes = wang.tiles.size() + wang.lut.size();
-            wang.tiles.clear();
-            wang.tiles.shrink_to_fit();
-            wang.lut.clear();
-            wang.lut.shrink_to_fit();
+            const std::size_t bytes = wang_cache_bytes_locked(wang);
+            release_vector_storage(wang.tiles);
+            release_vector_storage(wang.lut);
             wang.width = 0;
             wang.height = 0;
             wang.count = 0;
@@ -328,6 +337,53 @@
         publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
     }
 
+    void purge_host_asset_caches_if_registry_idle(const char* stage) noexcept {
+        ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
+        if (managerState.registryLiveManagers.load(std::memory_order_relaxed) != 0) {
+            return;
+        }
+
+        HostAssetCachePolicyState& policy = host_asset_cache_policy_state();
+        std::lock_guard<std::mutex> policyLock(policy.mutex);
+        if (managerState.registryLiveManagers.load(std::memory_order_relaxed) != 0) {
+            return;
+        }
+
+        const std::uint64_t nowMs = host_asset_now_ms();
+        StbnCpuCache& stbn = stbn_cache();
+        WangCpuCache& wang = wang_cache();
+        std::scoped_lock<std::mutex, std::mutex> cachesLock(stbn.mutex, wang.mutex);
+
+        std::size_t totalBytes = stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang);
+        publish_host_asset_cache_bytes(totalBytes);
+        if (totalBytes == 0) {
+            return;
+        }
+
+        std::size_t trimmedBytesTotal = 0;
+        const std::uint64_t trimSequence = policy.nextTrimSequence++;
+        for (;;) {
+            const HostAssetCacheId candidate = pick_oldest_host_cache_candidate_locked(stbn, wang);
+            if (candidate == HostAssetCacheId::None) {
+                break;
+            }
+            const std::size_t trimmed = trim_host_cache_locked(stbn, wang, candidate, nowMs);
+            if (trimmed == 0) {
+                break;
+            }
+            trimmedBytesTotal += trimmed;
+            totalBytes = stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang);
+            trace_host_asset_trim(stage, "registry_idle_purge", candidate, trimmed, totalBytes, trimSequence);
+        }
+
+        if (trimmedBytesTotal > 0) {
+            ResourceManager::telemetry_counter_add(managerState.hostAssetCacheTrimEvents, 1);
+            ResourceManager::telemetry_counter_add(managerState.hostAssetCacheTrimBytes, static_cast<std::uint64_t>(trimmedBytesTotal));
+        }
+
+        publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
+    }
+
     #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 
     struct PinnedUploadContextKey {
@@ -481,10 +537,116 @@
         return candidateIndex;
     }
 
-    static std::size_t trim_pinned_upload_pool_locked(
+    static bool pinned_upload_pool_is_empty_locked(const PinnedUploadPool& pool) {
+        return pool.blocks.empty() && pool.totalBytes == 0;
+    }
+
+    struct PinnedUploadTrimTarget {
+        bool found = false;
+        PinnedUploadContextKey key{};
+        int blockIndex = -1;
+        std::uint64_t lastTouchedMs = 0;
+    };
+
+    static PinnedUploadTrimTarget pick_trim_candidate_across_pools_locked(
         PinnedUploadStagingPolicyState& policyState,
-        PinnedUploadPool& pool,
+        std::uint64_t nowMs,
+        std::uint32_t idleTrimMs,
+        bool idleOnly) {
+        PinnedUploadTrimTarget target{};
+        for (auto& poolEntry : policyState.pools) {
+            const int candidate = pick_trim_candidate_pinned_block_locked(
+                poolEntry.second,
+                nowMs,
+                idleTrimMs,
+                idleOnly);
+            if (candidate < 0) {
+                continue;
+            }
+
+            const PinnedUploadBlock& block =
+                poolEntry.second.blocks[static_cast<std::size_t>(candidate)];
+            if (!target.found || block.lastTouchedMs < target.lastTouchedMs) {
+                target.found = true;
+                target.key = poolEntry.first;
+                target.blockIndex = candidate;
+                target.lastTouchedMs = block.lastTouchedMs;
+            }
+        }
+        return target;
+    }
+
+    static std::size_t trim_one_pinned_upload_block_locked(
+        PinnedUploadStagingPolicyState& policyState,
         const PinnedUploadContextKey& key,
+        int blockIndex,
+        const char* stage,
+        const char* reason,
+        std::size_t capBytes) {
+        auto poolIt = policyState.pools.find(key);
+        if (poolIt == policyState.pools.end()) {
+            return 0;
+        }
+
+        PinnedUploadPool& pool = poolIt->second;
+        if (blockIndex < 0 ||
+            static_cast<std::size_t>(blockIndex) >= pool.blocks.size()) {
+            return 0;
+        }
+
+        const std::size_t trimBatchBytes = static_cast<std::size_t>(
+            pinned_upload_staging_config().pinnedUploadStagingTrimBatchBytes);
+        const std::uint64_t trimSequence = pool.nextTrimSequence++;
+        PinnedUploadBlock block =
+            std::move(pool.blocks[static_cast<std::size_t>(blockIndex)]);
+        pool.blocks.erase(pool.blocks.begin() + blockIndex);
+        if (!block.ptr) {
+            if (pinned_upload_pool_is_empty_locked(pool)) {
+                policyState.pools.erase(poolIt);
+            }
+            return 0;
+        }
+
+        const std::size_t blockBytes = block.capacity;
+        if (block.doneEventOpaque) {
+            cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+            (void)cudaEventDestroy(doneEvent);
+        }
+        (void)cudaFreeHost(block.ptr);
+
+        if (pool.totalBytes >= blockBytes) {
+            pool.totalBytes -= blockBytes;
+        }
+        else {
+            pool.totalBytes = 0;
+        }
+        if (policyState.totalBytesAllContexts >= blockBytes) {
+            policyState.totalBytesAllContexts -= blockBytes;
+        }
+        else {
+            policyState.totalBytesAllContexts = 0;
+        }
+
+        trace_pinned_staging_event(
+            stage,
+            "trim",
+            reason,
+            key,
+            blockBytes,
+            capBytes,
+            policyState.totalBytesAllContexts,
+            trimBatchBytes,
+            trimSequence);
+
+        if (pinned_upload_pool_is_empty_locked(pool)) {
+            policyState.pools.erase(poolIt);
+        }
+
+        return blockBytes;
+    }
+
+    static std::size_t trim_pinned_upload_pools_locked(
+        PinnedUploadStagingPolicyState& policyState,
         const char* stage,
         const char* reason,
         std::size_t trimBudgetBytes,
@@ -493,54 +655,30 @@
         std::size_t capBytes) {
         std::size_t trimmedBytes = 0;
         const std::uint64_t nowMs = host_asset_now_ms();
-        const std::size_t trimBatchBytes = static_cast<std::size_t>(
-            pinned_upload_staging_config().pinnedUploadStagingTrimBatchBytes);
-        const std::uint64_t trimSequence = pool.nextTrimSequence++;
 
         while (trimmedBytes < trimBudgetBytes) {
-            const int candidate = pick_trim_candidate_pinned_block_locked(
-                pool, nowMs, idleTrimMs, idleOnly);
-            if (candidate < 0) {
+            const PinnedUploadTrimTarget target =
+                pick_trim_candidate_across_pools_locked(
+                    policyState,
+                    nowMs,
+                    idleTrimMs,
+                    idleOnly);
+            if (!target.found) {
                 break;
             }
 
-            PinnedUploadBlock block = std::move(pool.blocks[static_cast<std::size_t>(candidate)]);
-            pool.blocks.erase(pool.blocks.begin() + candidate);
-            if (!block.ptr) {
-                continue;
-            }
-
-            const std::size_t blockBytes = block.capacity;
-            if (block.doneEventOpaque) {
-                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
-                (void)cudaEventDestroy(doneEvent);
-            }
-            (void)cudaFreeHost(block.ptr);
-
-            if (pool.totalBytes >= blockBytes) {
-                pool.totalBytes -= blockBytes;
-            }
-            else {
-                pool.totalBytes = 0;
-            }
-            if (policyState.totalBytesAllContexts >= blockBytes) {
-                policyState.totalBytesAllContexts -= blockBytes;
-            }
-            else {
-                policyState.totalBytesAllContexts = 0;
-            }
-
-            trimmedBytes += blockBytes;
-            trace_pinned_staging_event(
+            const std::size_t trimmed = trim_one_pinned_upload_block_locked(
+                policyState,
+                target.key,
+                target.blockIndex,
                 stage,
-                "trim",
                 reason,
-                key,
-                blockBytes,
-                capBytes,
-                policyState.totalBytesAllContexts,
-                trimBatchBytes,
-                trimSequence);
+                capBytes);
+            if (trimmed == 0) {
+                break;
+            }
+
+            trimmedBytes += trimmed;
         }
 
         if (trimmedBytes > 0) {
@@ -592,13 +730,10 @@
 
         PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
         std::lock_guard<std::mutex> lock(policyState.mutex);
-        PinnedUploadPool& pool = policyState.pools[result.key];
         const std::uint64_t nowMs = host_asset_now_ms();
 
-        (void)trim_pinned_upload_pool_locked(
+        (void)trim_pinned_upload_pools_locked(
             policyState,
-            pool,
-            result.key,
             stage,
             "idle_trim",
             result.trimBatchBytes,
@@ -606,9 +741,26 @@
             true,
             result.capBytes);
 
-        int blockIndex = pick_reusable_pinned_block_locked(pool, bytes, nowMs);
+        auto poolIt = policyState.pools.find(result.key);
+        int blockIndex = -1;
+        if (poolIt != policyState.pools.end()) {
+            blockIndex = pick_reusable_pinned_block_locked(
+                poolIt->second,
+                bytes,
+                nowMs);
+        }
         if (blockIndex < 0) {
-            if (pool.totalBytes + bytes > result.capBytes) {
+            if (bytes > result.capBytes) {
+                result.fallbackReason = "cap_exceeded";
+                return result;
+            }
+
+            std::size_t requiredTrimBytes = 0;
+            if (policyState.totalBytesAllContexts > result.capBytes - bytes) {
+                requiredTrimBytes =
+                    policyState.totalBytesAllContexts - (result.capBytes - bytes);
+            }
+            if (requiredTrimBytes > 0) {
                 ResourceManager::telemetry_counter_add(ResourceManager::global_state().pinnedStagingCapHits, 1);
                 trace_pinned_staging_event(
                     stage,
@@ -619,20 +771,20 @@
                     result.capBytes,
                     policyState.totalBytesAllContexts,
                     result.trimBatchBytes,
-                    pool.nextTrimSequence);
-                (void)trim_pinned_upload_pool_locked(
+                    0);
+                const std::size_t capTrimBudgetBytes =
+                    std::max(result.trimBatchBytes, requiredTrimBytes);
+                (void)trim_pinned_upload_pools_locked(
                     policyState,
-                    pool,
-                    result.key,
                     stage,
                     "cap_trim",
-                    result.trimBatchBytes,
+                    capTrimBudgetBytes,
                     cfg.pinnedUploadStagingIdleTrimMs,
                     false,
                     result.capBytes);
             }
 
-            if (pool.totalBytes + bytes > result.capBytes) {
+            if (policyState.totalBytesAllContexts > result.capBytes - bytes) {
                 result.fallbackReason = "cap_exceeded";
                 return result;
             }
@@ -652,6 +804,7 @@
                 return result;
             }
 
+            PinnedUploadPool& pool = policyState.pools[result.key];
             PinnedUploadBlock block{};
             block.id = pool.nextBlockId++;
             block.ptr = pinnedPtr;
@@ -682,7 +835,8 @@
             return result;
         }
 
-        PinnedUploadBlock& block = pool.blocks[static_cast<std::size_t>(blockIndex)];
+        PinnedUploadBlock& block =
+            poolIt->second.blocks[static_cast<std::size_t>(blockIndex)];
         block.reserved = true;
         block.lastTouchedMs = nowMs;
         result.staged = true;
@@ -1119,9 +1273,10 @@
                 trace_host_asset_event("stbn", "load", cache.data.size());
             }
             else {
-                cache.data.clear();
+                release_vector_storage(cache.data);
                 cache.failureReason = loadError.empty() ? "STBN load failed: unknown error" : loadError;
                 cache.state = HostCacheLoadState::Failed;
+                cache.lastTouchedMs = host_asset_now_ms();
                 outError = cache.failureReason;
                 trace_host_asset_event("stbn", "failed_load", 0, cache.failureReason.c_str());
             }
@@ -1178,14 +1333,15 @@
                 trace_host_asset_event("wang", "load", cache.tiles.size() + cache.lut.size());
             }
             else {
-                cache.tiles.clear();
-                cache.lut.clear();
+                release_vector_storage(cache.tiles);
+                release_vector_storage(cache.lut);
                 cache.width = 0;
                 cache.height = 0;
                 cache.count = 0;
                 cache.colors = 0;
                 cache.failureReason = loadError.empty() ? "Wang tiles load failed: unknown error" : loadError;
                 cache.state = HostCacheLoadState::Failed;
+                cache.lastTouchedMs = host_asset_now_ms();
                 outError = cache.failureReason;
                 trace_host_asset_event("wang", "failed_load", 0, cache.failureReason.c_str());
             }
@@ -2388,6 +2544,8 @@
 
         const PinnedUploadContextKey key{ deviceId, contextOpaque };
         std::vector<PinnedUploadBlock> blocksToFree;
+        const bool registryIdle =
+            ResourceManager::global_state().registryLiveManagers.load(std::memory_order_relaxed) == 0;
         {
             PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
             std::lock_guard<std::mutex> lock(policyState.mutex);
@@ -2401,7 +2559,12 @@
             retained.nextTrimSequence = it->second.nextTrimSequence;
             for (PinnedUploadBlock& block : it->second.blocks) {
                 refresh_pinned_block_completion_locked(block, nowMs);
-                if (block.reserved || block.inFlight || !block.ptr) {
+                if (block.reserved || !block.ptr) {
+                    retained.blocks.push_back(block);
+                    retained.totalBytes += block.capacity;
+                    continue;
+                }
+                if (block.inFlight && !registryIdle) {
                     retained.blocks.push_back(block);
                     retained.totalBytes += block.capacity;
                     continue;
@@ -2440,6 +2603,10 @@
         const bool needRestore = havePreviousDevice && previousDevice != deviceId;
         (void)cudaSetDevice(deviceId);
         for (const PinnedUploadBlock& block : blocksToFree) {
+            if (block.inFlight && block.doneEventOpaque) {
+                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                (void)cudaEventSynchronize(doneEvent);
+            }
             if (block.doneEventOpaque) {
                 cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
                 (void)cudaEventDestroy(doneEvent);
