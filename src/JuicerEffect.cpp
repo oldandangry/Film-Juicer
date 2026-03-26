@@ -395,6 +395,22 @@ namespace {
         sync_print_runtime_mid_neutral_from_profile(runtime, moveMidNeutralVectors);
     }
 
+    inline Print::Runtime snapshot_print_runtime_locked(InstanceState& state) {
+        std::lock_guard<std::mutex> lock(state.m);
+        return state.printRT;
+    }
+
+    inline void publish_print_runtime_locked(InstanceState& state, Print::Runtime runtime) {
+        std::lock_guard<std::mutex> lock(state.m);
+        state.printRT = std::move(runtime);
+    }
+
+    inline bool load_film_stock_into_base_locked(int filmStockIndex, InstanceState& state) {
+        std::lock_guard<std::mutex> lock(state.m);
+        state.baseLoaded = load_film_stock_into_base(filmStockIndex, state);
+        return state.baseLoaded;
+    }
+
     struct PendingStateSnapshot {
         ParamSnapshot params{};
         std::uint64_t fullHash = 0ull;
@@ -850,19 +866,19 @@ namespace {
     inline bool reload_print_profile_if_requested(
         bool requested,
         const ParamSnapshot& snapshot,
-        InstanceState& state,
+        Print::Runtime& runtime,
         bool traceVerbose) {
         if (!requested) {
             return false;
         }
         const PrintProfileLoadInputs printLoad =
-            load_print_profile_for_snapshot(snapshot, state.printRT, /*moveMidNeutralVectors*/true);
-        trace_print_reload_verbose_if(traceVerbose, printLoad, state.printRT);
+            load_print_profile_for_snapshot(snapshot, runtime, /*moveMidNeutralVectors*/true);
+        trace_print_reload_verbose_if(traceVerbose, printLoad, runtime);
 
         // Reload dichroic filters (vendor selection controls which curves are used).
         (void)reload_dichroic_filters_with_identity_fallback(
             snapshot.enlDichroicSet,
-            state.printRT);
+            runtime);
         return true;
     }
 
@@ -924,8 +940,7 @@ namespace {
         if (!requested) {
             return false;
         }
-        state.baseLoaded = load_film_stock_into_base(filmStockIndex, state);
-        return state.baseLoaded;
+        return load_film_stock_into_base_locked(filmStockIndex, state);
     }
 
     struct OnParamsReloadStatus {
@@ -938,12 +953,13 @@ namespace {
         const ChangedParamFlags& changed,
         const ParamSnapshot& snapshot,
         InstanceState& state,
+        Print::Runtime& runtime,
         bool traceVerbose) {
         OnParamsReloadStatus status{};
         status.printReloaded =
-            reload_print_profile_if_requested(changed.printPaper, snapshot, state, traceVerbose);
+            reload_print_profile_if_requested(changed.printPaper, snapshot, runtime, traceVerbose);
         status.dichroicReloaded =
-            reload_dichroic_filters_if_requested(changed.enlargerDichroicSet, snapshot, state.printRT);
+            reload_dichroic_filters_if_requested(changed.enlargerDichroicSet, snapshot, runtime);
         status.filmReloaded =
             reload_film_stock_if_requested(changed.filmStock, snapshot.filmStockIndex, state);
         return status;
@@ -4186,31 +4202,32 @@ void JuicerEffect::bootstrap_after_attach() {
     _state->inBootstrap = true;
     _state->suppressParamEvents = true;
 
-    _state->printRT = Print::Runtime{};
+    Print::Runtime nextPrintRuntime{};
     ParamSnapshot P = snapshotParams();
 
     // Load selected print paper profile
-    (void)load_print_profile_for_snapshot(P, _state->printRT, /*moveMidNeutralVectors*/false);
+    (void)load_print_profile_for_snapshot(P, nextPrintRuntime, /*moveMidNeutralVectors*/false);
 
     // Load film stock before applying metadata-driven illuminant defaults
-    _state->baseLoaded = load_film_stock_into_base(P.filmStockIndex, *_state);
+    load_film_stock_into_base_locked(P.filmStockIndex, *_state);
     if (has_loaded_base_state(_state.get())) {
         applyHalationProfileDefaults();
     }
 
     // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
-    applyMetadataIlluminantDefaults(P);
-    update_print_illuminant_runtime(P, _state->printRT, _state->dataDir);
+    applyMetadataIlluminantDefaults(P, nextPrintRuntime);
+    update_print_illuminant_runtime(P, nextPrintRuntime, _state->dataDir);
 
     // Load dichroic filters (set selection controls which vendor curves are used).
     // Identity fallback is already handled in loader via 1.0 curves.
     (void)try_load_dichroic_filters(
         P.enlDichroicSet,
-        _state->printRT,
+        nextPrintRuntime,
         "dichroic load failed",
         "using identity filters");
 
-    applyNeutralFilters(P);
+    applyNeutralFilters(P, nextPrintRuntime);
+    publish_print_runtime_locked(*_state, std::move(nextPrintRuntime));
 
     if (has_loaded_base_state(_state.get())) {
 #ifdef JUICER_ENABLE_COUPLERS
@@ -4227,7 +4244,7 @@ void JuicerEffect::bootstrap_after_attach() {
     _state->inBootstrap = false;
 }
 
-void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
+void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& runtime) {
     if (!_state) {
         return;
     }
@@ -4305,15 +4322,15 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P) {
         }
     }
 
-    _state->printRT.neutralY = neutralY;
-    _state->printRT.neutralM = neutralM;
-    _state->printRT.neutralC = neutralC;
-    _state->printRT.neutralFilterHash = neutralFilterHash;
+    runtime.neutralY = neutralY;
+    runtime.neutralM = neutralM;
+    runtime.neutralC = neutralC;
+    runtime.neutralFilterHash = neutralFilterHash;
     // Preserve user-entered enlarger offsets and exposure toggle; neutral baselines update independently.
 
 }
 
-bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P) {
+bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print::Runtime& runtime) {
     if (!_state) {
         return false;
     }
@@ -4323,8 +4340,8 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P) {
     const std::string& filmRef = !_state->filmReferenceIlluminant.empty()
         ? _state->filmReferenceIlluminant
         : _state->base.referenceIlluminant;
-    const std::string& printRef = _state->printRT.referenceIlluminant;
-    const std::string& printView = _state->printRT.viewingIlluminant;
+    const std::string& printRef = runtime.referenceIlluminant;
+    const std::string& printView = runtime.viewingIlluminant;
 
     const std::string& refSource = first_nonempty_or(filmRef, printRef, printView);
     const std::string& enlSource = first_nonempty_or(printRef, filmRef, printView);
@@ -4468,6 +4485,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     ParamSnapshot P = snapshotParams();
     const ChangedParamFlags changed = classify_changed_param(changedNameOrNull);
     trace_param_change_verbose_if(traceVerbose, P, *_state, changedNameOrNull);
+    Print::Runtime nextPrintRuntime = snapshot_print_runtime_locked(*_state);
 #ifdef JUICER_ENABLE_COUPLERS
     maybe_mark_coupler_dirty(changed, *_state, changedNameOrNull);
 #endif
@@ -4479,36 +4497,47 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     auto apply_neutral_filters_with_trace = [&](const char* reloadSource) {
         apply_neutral_filters_with_optional_trace(
             [&]() {
-                applyNeutralFilters(P);
+                applyNeutralFilters(P, nextPrintRuntime);
             },
             traceVerbose,
             P,
-            _state->printRT,
+            nextPrintRuntime,
             reloadSource,
             neutralApplied);
     };
 
     const OnParamsReloadStatus reloadStatus =
-        evaluate_on_params_reload_status(changed, P, *_state, traceVerbose);
+        evaluate_on_params_reload_status(changed, P, *_state, nextPrintRuntime, traceVerbose);
+
+    bool printRuntimeDirty =
+        reloadStatus.printReloaded ||
+        reloadStatus.dichroicReloaded ||
+        reloadStatus.filmReloaded;
 
     apply_when_film_reloaded(reloadStatus.filmReloaded, [&]() {
         applyHalationProfileDefaults();
     });
 
     apply_when_reload_requires_illuminant_refresh(reloadStatus, [&]() {
-        applyMetadataIlluminantDefaults(P);
-        update_print_illuminant_runtime(P, _state->printRT, _state->dataDir);
+        applyMetadataIlluminantDefaults(P, nextPrintRuntime);
+        update_print_illuminant_runtime(P, nextPrintRuntime, _state->dataDir);
+        printRuntimeDirty = true;
     });
 
     apply_when_reload_requires_neutral_filters(reloadStatus, [&]() {
         apply_neutral_filters_with_trace("print/dichroic");
+        printRuntimeDirty = true;
     });
 
     apply_when_film_neutral_filters_needed(reloadStatus, neutralApplied, [&]() {
         apply_neutral_filters_with_trace("film");
+        printRuntimeDirty = true;
     });
 
-    apply_when_enlarger_illuminant_changed(changed, [&]() { applyNeutralFilters(P); });
+    apply_when_enlarger_illuminant_changed(changed, [&]() {
+        applyNeutralFilters(P, nextPrintRuntime);
+        printRuntimeDirty = true;
+    });
 
     // Rebuild if any effective param changed
     apply_when_base_state_loaded(_state.get(), [&]() {
@@ -4516,6 +4545,10 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         applyCouplerProfileDefaults(P);
 #endif
     });
+
+    if (printRuntimeDirty) {
+        publish_print_runtime_locked(*_state, std::move(nextPrintRuntime));
+    }
 
     store_pending_hashes_for_snapshot(*_state, P);
 

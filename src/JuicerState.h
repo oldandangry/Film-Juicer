@@ -186,6 +186,7 @@ struct IlluminantOverrideFlags {
 };
 
 struct PendingParamsState {
+    // Leaf lock for the coalesced pending-params snapshot. Do not nest with InstanceState::m.
     std::mutex m;
     ParamSnapshot params;
     std::uint64_t fullHash = 0;
@@ -194,7 +195,12 @@ struct PendingParamsState {
 };
 
 struct InstanceState {
+    // Lock-order rule for P6: rebuildMutex may precede m during rebuild snapshot/publication.
+    // m is otherwise a short publication/snapshot lock and must not be held across heavy rebuild
+    // work, sleep/wait paths, or while acquiring the leaf mutexes below.
     std::mutex m;
+    // Serializes working-state rebuilds so the heavy rebuild path can run outside InstanceState::m.
+    std::mutex rebuildMutex;
     BaseState base;
     // Published render snapshot. Readers use std::atomic_load; writers use std::atomic_store.
     std::shared_ptr<const WorkingState> activeWorkingState;

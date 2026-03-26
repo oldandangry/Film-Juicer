@@ -125,6 +125,81 @@ namespace {
         std::memcpy(dst, src, 3u * sizeof(float));
     }
 
+    struct CouplerDirtySnapshot {
+        bool active = false;
+        bool amount = false;
+        bool ratioR = false;
+        bool ratioG = false;
+        bool ratioB = false;
+        bool sigma = false;
+        bool high = false;
+        bool spatialSigma = false;
+    };
+
+    struct RebuildStateSnapshot {
+        BaseState base;
+        std::shared_ptr<const WorkingState> activeWorkingState;
+        std::uint64_t activeBuildCounter = 0;
+        ParamSnapshot lastParams;
+        std::uint64_t lastHash = 0;
+        Print::Runtime printRT;
+        std::string dataDir;
+        bool baseLoaded = false;
+        IlluminantOverrideFlags illuminantOverride;
+        bool couplerProfileSpatialSigmaValid = false;
+        double couplerProfileSpatialSigmaMicrometers = 0.0;
+        CouplerDirtySnapshot couplerDirty;
+        std::string filmReferenceIlluminant;
+    };
+
+    inline CouplerDirtySnapshot snapshot_coupler_dirty(const CouplerDirtyFlags& flags) {
+        CouplerDirtySnapshot snapshot{};
+        snapshot.active = flags.active.load(std::memory_order_acquire);
+        snapshot.amount = flags.amount.load(std::memory_order_acquire);
+        snapshot.ratioR = flags.ratioR.load(std::memory_order_acquire);
+        snapshot.ratioG = flags.ratioG.load(std::memory_order_acquire);
+        snapshot.ratioB = flags.ratioB.load(std::memory_order_acquire);
+        snapshot.sigma = flags.sigma.load(std::memory_order_acquire);
+        snapshot.high = flags.high.load(std::memory_order_acquire);
+        snapshot.spatialSigma = flags.spatialSigma.load(std::memory_order_acquire);
+        return snapshot;
+    }
+
+    inline RebuildStateSnapshot snapshot_rebuild_state_locked(InstanceState& state) {
+        RebuildStateSnapshot snapshot{};
+        snapshot.base = state.base;
+        snapshot.activeWorkingState = JuicerAtomic::load_shared_ptr(&state.activeWorkingState);
+        snapshot.activeBuildCounter = state.activeBuildCounter;
+        snapshot.lastParams = state.lastParams;
+        snapshot.lastHash = state.lastHash.load(std::memory_order_acquire);
+        snapshot.printRT = state.printRT;
+        snapshot.dataDir = state.dataDir;
+        snapshot.baseLoaded = state.baseLoaded;
+        snapshot.illuminantOverride = state.illuminantOverride;
+        snapshot.couplerProfileSpatialSigmaValid = state.couplerProfileSpatialSigmaValid;
+        snapshot.couplerProfileSpatialSigmaMicrometers = state.couplerProfileSpatialSigmaMicrometers;
+        snapshot.couplerDirty = snapshot_coupler_dirty(state.couplerDirty);
+        snapshot.filmReferenceIlluminant = state.filmReferenceIlluminant;
+        return snapshot;
+    }
+
+    inline void publish_rebuilt_working_state(
+        InstanceState& state,
+        const ParamSnapshot& params,
+        std::shared_ptr<WorkingState> next,
+        bool invalidateSpatialSigmaCache) {
+        const std::uint64_t buildCounter = next ? next->buildCounter : 0;
+        const std::uint64_t fullHash = next ? next->fullHash : 0;
+        std::lock_guard<std::mutex> lock(state.m);
+        if (invalidateSpatialSigmaCache) {
+            state.spatialSigmaCacheValid.store(false, std::memory_order_release);
+        }
+        JuicerAtomic::store_shared_ptr(&state.activeWorkingState, std::shared_ptr<const WorkingState>(std::move(next)));
+        state.activeBuildCounter = buildCounter;
+        state.lastParams = params;
+        state.lastHash.store(fullHash, std::memory_order_release);
+    }
+
     inline bool is_finite(float value) {
         return std::isfinite(value);
     }
@@ -410,12 +485,12 @@ namespace {
         sanitize_dir_matrix(matrix);
     }
 
-    void recompute_working_state_dir_overlay(InstanceState& S, const ParamSnapshot& P, WorkingState& target) {
+    void recompute_working_state_dir_overlay(const RebuildStateSnapshot& snapshot, const ParamSnapshot& P, WorkingState& target) {
         auto approx_equal_local = [](double a, double b, double eps = 1e-6) {
             return std::fabs(a - b) <= eps;
             };
 
-        const Profiles::DirCouplersProfile& dirCfg = S.base.dirCouplers;
+        const Profiles::DirCouplersProfile& dirCfg = snapshot.base.dirCouplers;
 
         int effectiveCouplersActive = P.couplersActive;
         double effectiveCouplersAmount = P.couplersAmount;
@@ -426,36 +501,36 @@ namespace {
         double effectiveCouplersHigh = P.high;
         const bool spatialSigmaIsUiDefault = approx_equal_local(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma);
         double effectiveSpatialSigma = P.spatialSigmaMicrometers;
-        if (spatialSigmaIsUiDefault && S.couplerProfileSpatialSigmaValid) {
-            effectiveSpatialSigma = S.couplerProfileSpatialSigmaMicrometers;
+        if (spatialSigmaIsUiDefault && snapshot.couplerProfileSpatialSigmaValid) {
+            effectiveSpatialSigma = snapshot.couplerProfileSpatialSigmaMicrometers;
         }
 
 #ifdef JUICER_ENABLE_COUPLERS
         if (dirCfg.hasData) {
-            if (!S.couplerDirty.active.load(std::memory_order_acquire) && effectiveCouplersActive == kFactoryCouplersActive) {
+            if (!snapshot.couplerDirty.active && effectiveCouplersActive == kFactoryCouplersActive) {
                 effectiveCouplersActive = dirCfg.active ? 1 : 0;
             }
-            if (!S.couplerDirty.amount.load(std::memory_order_acquire) && approx_equal_local(effectiveCouplersAmount, kFactoryCouplersAmount)) {
+            if (!snapshot.couplerDirty.amount && approx_equal_local(effectiveCouplersAmount, kFactoryCouplersAmount)) {
                 effectiveCouplersAmount = sanitize_profile_value(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
             }
-            if (!S.couplerDirty.ratioB.load(std::memory_order_acquire) && approx_equal_local(effectiveRatioB, kFactoryCouplersRatioB)) {
+            if (!snapshot.couplerDirty.ratioB && approx_equal_local(effectiveRatioB, kFactoryCouplersRatioB)) {
                 effectiveRatioB = sanitize_profile_value(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
             }
-            if (!S.couplerDirty.ratioG.load(std::memory_order_acquire) && approx_equal_local(effectiveRatioG, kFactoryCouplersRatioG)) {
+            if (!snapshot.couplerDirty.ratioG && approx_equal_local(effectiveRatioG, kFactoryCouplersRatioG)) {
                 effectiveRatioG = sanitize_profile_value(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
             }
-            if (!S.couplerDirty.ratioR.load(std::memory_order_acquire) && approx_equal_local(effectiveRatioR, kFactoryCouplersRatioR)) {
+            if (!snapshot.couplerDirty.ratioR && approx_equal_local(effectiveRatioR, kFactoryCouplersRatioR)) {
                 effectiveRatioR = sanitize_profile_value(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
             }
-            if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal_local(effectiveCouplersSigma, kFactoryCouplersSigma)) {
+            if (!snapshot.couplerDirty.sigma && approx_equal_local(effectiveCouplersSigma, kFactoryCouplersSigma)) {
                 effectiveCouplersSigma = sanitize_profile_value(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
             }
-            if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal_local(effectiveCouplersHigh, kFactoryCouplersHigh)) {
+            if (!snapshot.couplerDirty.high && approx_equal_local(effectiveCouplersHigh, kFactoryCouplersHigh)) {
                 effectiveCouplersHigh = sanitize_profile_value(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
             }
-            if (!S.couplerDirty.spatialSigma.load(std::memory_order_acquire) && spatialSigmaIsUiDefault) {
-                const double profileSpatialSigma = S.couplerProfileSpatialSigmaValid
-                    ? S.couplerProfileSpatialSigmaMicrometers
+            if (!snapshot.couplerDirty.spatialSigma && spatialSigmaIsUiDefault) {
+                const double profileSpatialSigma = snapshot.couplerProfileSpatialSigmaValid
+                    ? snapshot.couplerProfileSpatialSigmaMicrometers
                     : static_cast<double>(dirCfg.diffusionSizeUm);
                 effectiveSpatialSigma = sanitize_profile_value(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
             }
@@ -1871,15 +1946,23 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     JTRACE_SCOPE("BUILD", "rebuild_working_state");
 
-    std::unique_lock<std::mutex> lk(S.m);
+    std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
     const bool buildTraceEnabled = JTRACE_ENABLED(1);
     const bool printTraceEnabled = JTRACE_ENABLED(3);
+    RebuildStateSnapshot snapshot{};
+    {
+        std::lock_guard<std::mutex> stateLock(S.m);
+        snapshot = snapshot_rebuild_state_locked(S);
+    }
+    const BaseState& base = snapshot.base;
+    Print::Runtime printRT = snapshot.printRT;
+    const std::string& dataDir = snapshot.dataDir;
 
     if (buildTraceEnabled) {
         std::ostringstream oss;
-        oss << "enter with baseLoaded=" << (S.baseLoaded ? 1 : 0);
+        oss << "enter with baseLoaded=" << (snapshot.baseLoaded ? 1 : 0);
         JTRACE("BUILD", oss.str());
     }
 
@@ -1929,8 +2012,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target->coreShareHash = coreShareHash;
         target->sharedCore = coreShare.sharedCore;
 
-        recompute_working_state_dir_overlay(S, P, *target);
-        S.spatialSigmaCacheValid.store(false, std::memory_order_release);
+        recompute_working_state_dir_overlay(snapshot, P, *target);
         if (rebuild_working_state_scanner_output_runtime(P, *target)) {
             target->fullHash = hash_params(P);
             target->uploadCoreHash = hash_params_upload_core(P);
@@ -1948,62 +2030,57 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 JTRACE("BUILD", oss.str());
             }
 
-            JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
+            publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/true);
             if (buildTraceEnabled) {
                 std::ostringstream oss;
                 oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
                 JTRACE("BUILD", oss.str());
             }
-            S.activeBuildCounter = target->buildCounter;
-            S.lastParams = P;
-            S.lastHash.store(target->fullHash, std::memory_order_release);
             return;
         }
         JTRACE("MSWSC", "event=core_share_fastpath_fallback reason=scanner_runtime_rebuild_failed");
     }
 
-    Print::build_illuminant_from_choice(P.enlIll, S.printRT, S.dataDir, /*forEnlarger*/true);
+    Print::build_illuminant_from_choice(P.enlIll, printRT, dataDir, /*forEnlarger*/true);
     Scanner::ScannerIlluminant printScannerIlluminant;
-    if (!build_scanner_illuminant(S.dataDir, S.printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
-        lk.unlock();
+    if (!build_scanner_illuminant(dataDir, printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
         return;
     }
-    S.printRT.illumView = printScannerIlluminant.curve;
+    printRT.illumView = printScannerIlluminant.curve;
     if (buildTraceEnabled) {
         std::ostringstream oss;
-        oss << "Enl illum K=" << static_cast<int>(S.printRT.illumEnlarger.linear.size())
-            << " View illum K=" << static_cast<int>(S.printRT.illumView.linear.size());
+        oss << "Enl illum K=" << static_cast<int>(printRT.illumEnlarger.linear.size())
+            << " View illum K=" << static_cast<int>(printRT.illumView.linear.size());
         JTRACE("BUILD", oss.str());
     }
 
     Scanner::ScannerIlluminant negativeScannerIlluminant;
-    if (!build_scanner_illuminant(S.dataDir, S.base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
-        lk.unlock();
+    if (!build_scanner_illuminant(dataDir, base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
         return;
     }
     Scanner::ScannerDensityRange negativeDensityRange;
     bool negativeRangeOk = false;
 
-    Spectral::Curve epsY = S.base.epsY;
-    Spectral::Curve epsM = S.base.epsM;
-    Spectral::Curve epsC = S.base.epsC;
-    Spectral::Curve sensB = S.base.sensB;
-    Spectral::Curve sensG = S.base.sensG;
-    Spectral::Curve sensR = S.base.sensR;
-    Spectral::Curve densB = S.base.densB;
-    Spectral::Curve densG = S.base.densG;
-    Spectral::Curve densR = S.base.densR;
+    Spectral::Curve epsY = base.epsY;
+    Spectral::Curve epsM = base.epsM;
+    Spectral::Curve epsC = base.epsC;
+    Spectral::Curve sensB = base.sensB;
+    Spectral::Curve sensG = base.sensG;
+    Spectral::Curve sensR = base.sensR;
+    Spectral::Curve densB = base.densB;
+    Spectral::Curve densG = base.densG;
+    Spectral::Curve densR = base.densR;
     Spectral::Curve dirDensB = densB;
     Spectral::Curve dirDensG = densG;
     Spectral::Curve dirDensR = densR;
-    Spectral::Curve baseMin = S.base.baseMin;
-    Spectral::Curve baseMid = S.base.baseMid;
+    Spectral::Curve baseMin = base.baseMin;
+    Spectral::Curve baseMid = base.baseMid;
     Spectral::Curve illumRef;
     bool hasRefIlluminant = false;
-    const bool hasBaseline = S.base.hasBaseline;
+    const bool hasBaseline = base.hasBaseline;
     const float dyeDensityMinScale =
-        (is_finite(S.base.dyeDensityMinFactor) && S.base.dyeDensityMinFactor >= 0.0f)
-        ? S.base.dyeDensityMinFactor
+        (is_finite(base.dyeDensityMinFactor) && base.dyeDensityMinFactor >= 0.0f)
+        ? base.dyeDensityMinFactor
         : 1.0f;
     if (hasBaseline && !approx_equal(dyeDensityMinScale, 1.0f)) {
         scale_finite_curve_samples(baseMin, dyeDensityMinScale, true);
@@ -2023,8 +2100,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         Print::Runtime tmpRT;
 
         Spectral::Curve profileRefIll;
-        if (!S.illuminantOverride.reference && !S.filmReferenceIlluminant.empty()) {
-            profileRefIll = build_illuminant_from_string(S.dataDir, S.filmReferenceIlluminant);
+        if (!snapshot.illuminantOverride.reference && !snapshot.filmReferenceIlluminant.empty()) {
+            profileRefIll = build_illuminant_from_string(dataDir, snapshot.filmReferenceIlluminant);
         }
 
         if (!profileRefIll.linear.empty() &&
@@ -2033,7 +2110,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             tmpRT.illumView = profileRefIll;
         }
         else {
-            Print::build_illuminant_from_choice(P.refIll, tmpRT, S.dataDir, /*forEnlarger*/false);
+            Print::build_illuminant_from_choice(P.refIll, tmpRT, dataDir, /*forEnlarger*/false);
         }
 
         illumRef = tmpRT.illumView;
@@ -2065,8 +2142,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             return out;
             };
 
-        std::array<float, 3> filterUV = S.base.cameraFilterUV;
-        std::array<float, 3> filterIR = S.base.cameraFilterIR;
+        std::array<float, 3> filterUV = base.cameraFilterUV;
+        std::array<float, 3> filterIR = base.cameraFilterIR;
         if (P.cameraFilterOverride) {
             filterUV = to_triplet(P.cameraFilterUV, filterUV);
             filterIR = to_triplet(P.cameraFilterIR, filterIR);
@@ -2111,7 +2188,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         curve_max_clamped_or_default(densRForCalibration)
     };
 
-    const Profiles::DirCouplersProfile& dirCfg = S.base.dirCouplers;
+    const Profiles::DirCouplersProfile& dirCfg = base.dirCouplers;
 
     int effectiveCouplersActive = P.couplersActive;
     double effectiveCouplersAmount = P.couplersAmount;
@@ -2122,36 +2199,36 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     double effectiveCouplersHigh = P.high;
     const bool spatialSigmaIsUiDefault = approx_equal(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma);
     double effectiveSpatialSigma = P.spatialSigmaMicrometers;
-    if (spatialSigmaIsUiDefault && S.couplerProfileSpatialSigmaValid) {
-        effectiveSpatialSigma = S.couplerProfileSpatialSigmaMicrometers;
+    if (spatialSigmaIsUiDefault && snapshot.couplerProfileSpatialSigmaValid) {
+        effectiveSpatialSigma = snapshot.couplerProfileSpatialSigmaMicrometers;
     }
 
 #ifdef JUICER_ENABLE_COUPLERS
     if (dirCfg.hasData) {
-        if (!S.couplerDirty.active.load(std::memory_order_acquire) && effectiveCouplersActive == kFactoryCouplersActive) {
+        if (!snapshot.couplerDirty.active && effectiveCouplersActive == kFactoryCouplersActive) {
             effectiveCouplersActive = dirCfg.active ? 1 : 0;
         }
-        if (!S.couplerDirty.amount.load(std::memory_order_acquire) && approx_equal(effectiveCouplersAmount, kFactoryCouplersAmount)) {
+        if (!snapshot.couplerDirty.amount && approx_equal(effectiveCouplersAmount, kFactoryCouplersAmount)) {
             effectiveCouplersAmount = sanitize_profile_value(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
         }
-        if (!S.couplerDirty.ratioB.load(std::memory_order_acquire) && approx_equal(effectiveRatioB, kFactoryCouplersRatioB)) {
+        if (!snapshot.couplerDirty.ratioB && approx_equal(effectiveRatioB, kFactoryCouplersRatioB)) {
             effectiveRatioB = sanitize_profile_value(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
         }
-        if (!S.couplerDirty.ratioG.load(std::memory_order_acquire) && approx_equal(effectiveRatioG, kFactoryCouplersRatioG)) {
+        if (!snapshot.couplerDirty.ratioG && approx_equal(effectiveRatioG, kFactoryCouplersRatioG)) {
             effectiveRatioG = sanitize_profile_value(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
         }
-        if (!S.couplerDirty.ratioR.load(std::memory_order_acquire) && approx_equal(effectiveRatioR, kFactoryCouplersRatioR)) {
+        if (!snapshot.couplerDirty.ratioR && approx_equal(effectiveRatioR, kFactoryCouplersRatioR)) {
             effectiveRatioR = sanitize_profile_value(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
         }
-        if (!S.couplerDirty.sigma.load(std::memory_order_acquire) && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
+        if (!snapshot.couplerDirty.sigma && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
             effectiveCouplersSigma = sanitize_profile_value(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
         }
-        if (!S.couplerDirty.high.load(std::memory_order_acquire) && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
+        if (!snapshot.couplerDirty.high && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
             effectiveCouplersHigh = sanitize_profile_value(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
         }
-        if (!S.couplerDirty.spatialSigma.load(std::memory_order_acquire) && spatialSigmaIsUiDefault) {
-            const double profileSpatialSigma = S.couplerProfileSpatialSigmaValid
-                ? S.couplerProfileSpatialSigmaMicrometers
+        if (!snapshot.couplerDirty.spatialSigma && spatialSigmaIsUiDefault) {
+            const double profileSpatialSigma = snapshot.couplerProfileSpatialSigmaValid
+                ? snapshot.couplerProfileSpatialSigmaMicrometers
                 : static_cast<double>(dirCfg.diffusionSizeUm);
             effectiveSpatialSigma = sanitize_profile_value(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
         }
@@ -2234,7 +2311,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         std::copy(std::begin(defaultMask), std::end(defaultMask), negParams.mask);
     }
 
-    if (S.base.hasBaseline) {
+    if (base.hasBaseline) {
         const auto baseCoeffs = estimate_base_dyes(baseMin, epsY, epsM, epsC);
         negParams.baseY = baseCoeffs[0];
         negParams.baseM = baseCoeffs[1];
@@ -2259,7 +2336,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         negParams.kR = computeK(2);
     }
 
-    const bool hasMaskingData = S.base.maskingCouplers.hasData;
+    const bool hasMaskingData = base.maskingCouplers.hasData;
     if (dirCfg.hasData || hasMaskingData) {
         float amountRGB[3] = { 1.0f, 1.0f, 1.0f };
         if (dirCfg.hasData) {
@@ -2282,10 +2359,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         std::array<float, 3> maskScaleCh{ {1.0f, 1.0f, 1.0f} };
         std::array<float, 3> maskOffsetCh{ {0.0f, 0.0f, 0.0f} };
         if (hasMaskingData) {
-            const auto& maskProfile = S.base.maskingCouplers;
+            const auto& maskProfile = base.maskingCouplers;
             const auto& lambda = Spectral::gShape.wavelengths;
             const size_t K = lambda.size();
-            const Spectral::Curve* epsCurves[3] = { &S.base.epsY, &S.base.epsM, &S.base.epsC };
+            const Spectral::Curve* epsCurves[3] = { &base.epsY, &base.epsM, &base.epsC };
             const float effectiveness = 1.0f;
             for (int ch = 0; ch < 3; ++ch) {
                 const Spectral::Curve* eps = epsCurves[ch];
@@ -2396,14 +2473,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printGlareCompensated = false;
 
     target->negParams = negParams;
-    target->grain = S.base.grain;
-    target->halation = S.base.halation;
-    target->negativeGlare = S.base.glare;
-    target->hasDensityCurvesLayers = S.base.hasDensityCurvesLayers;
+    target->grain = base.grain;
+    target->halation = base.halation;
+    target->negativeGlare = base.glare;
+    target->hasDensityCurvesLayers = base.hasDensityCurvesLayers;
     const size_t layerCount = target->densityCurvesLayers.size();
     for (size_t layer = 0; layer < layerCount; ++layer) {
         auto& dstLayer = target->densityCurvesLayers[layer];
-        const auto& srcLayer = S.base.densityCurvesLayers[layer];
+        const auto& srcLayer = base.densityCurvesLayers[layer];
         const size_t channelCount = dstLayer.size();
         auto* dstChannel = dstLayer.data();
         const auto* srcChannel = srcLayer.data();
@@ -2432,18 +2509,18 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         return (count > 0) ? (sum / static_cast<float>(count)) : 0.0f;
         };
 
-    const float baselineMixReference = !S.base.densityMidNeutral.empty()
-        ? average_positive(S.base.densityMidNeutral)
+    const float baselineMixReference = !base.densityMidNeutral.empty()
+        ? average_positive(base.densityMidNeutral)
         : 0.0f;
     const float printBaselineMixReference =
-        (S.printRT.profile.hasBaseline && S.printRT.hasMidNeutralDensity)
-        ? average_positive(S.printRT.midNeutralDensity)
+        (printRT.profile.hasBaseline && printRT.hasMidNeutralDensity)
+        ? average_positive(printRT.midNeutralDensity)
         : 0.0f;
 
         Spectral::build_tables_from_curves_non_global(
             /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
             /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
-            /*illumView*/ S.printRT.illumView,
+            /*illumView*/ printRT.illumView,
             /*baseMin*/ baseMin, /*baseMid*/ baseMid, /*hasBaseline*/ hasBaseline,
             baselineMixReference,
             target->tablesView,
@@ -2471,7 +2548,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target->tablesRef = Spectral::SpectralTables{};
     }
 
-    std::shared_ptr<Print::Runtime> printRuntimeCopy = std::make_shared<Print::Runtime>(S.printRT);
+    std::shared_ptr<Print::Runtime> printRuntimeCopy = std::make_shared<Print::Runtime>(printRT);
     Print::Profile printProfile = printRuntimeCopy->profile;
     Print::DensityCurves printCurves = printRuntimeCopy->densityCurvesRaw;
     Scanner::ScannerDensityRange printDensityRange;
@@ -2678,15 +2755,15 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     std::array<float, 3> densityMidRGB{ {0.0f, 0.0f, 0.0f} };
-    bool hasDensityMid = !S.base.densityMidNeutral.empty();
+    bool hasDensityMid = !base.densityMidNeutral.empty();
     if (hasDensityMid) {
         float seed = 0.0f;
-        if (is_finite(S.base.densityMidNeutral.front())) {
-            seed = S.base.densityMidNeutral.front();
+        if (is_finite(base.densityMidNeutral.front())) {
+            seed = base.densityMidNeutral.front();
         }
         densityMidRGB.fill(seed);
-        const size_t count = std::min<size_t>(static_cast<size_t>(3), S.base.densityMidNeutral.size());
-        const float* midNeutralData = S.base.densityMidNeutral.data();
+        const size_t count = std::min<size_t>(static_cast<size_t>(3), base.densityMidNeutral.size());
+        const float* midNeutralData = base.densityMidNeutral.data();
         float* densityMidData = densityMidRGB.data();
         for (size_t i = 0; i < count; ++i, ++midNeutralData, ++densityMidData) {
             const float v = *midNeutralData;
@@ -2702,18 +2779,18 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     std::array<float, 3> logMidRGB{ {0.0f, 0.0f, 0.0f} };
-    bool hasLogEMid = !S.base.logExposureMidNeutral.empty();
+    bool hasLogEMid = !base.logExposureMidNeutral.empty();
     if (hasLogEMid) {
         float seed = 0.0f;
         bool seedValid = false;
-        if (is_finite(S.base.logExposureMidNeutral.front())) {
-            seed = S.base.logExposureMidNeutral.front();
+        if (is_finite(base.logExposureMidNeutral.front())) {
+            seed = base.logExposureMidNeutral.front();
             seedValid = true;
         }
         logMidRGB.fill(seed);
         size_t finiteCount = seedValid ? 1u : 0u;
-        const size_t count = std::min<size_t>(static_cast<size_t>(3), S.base.logExposureMidNeutral.size());
-        const float* logMidData = S.base.logExposureMidNeutral.data();
+        const size_t count = std::min<size_t>(static_cast<size_t>(3), base.logExposureMidNeutral.size());
+        const float* logMidData = base.logExposureMidNeutral.data();
         float* outLogMidData = logMidRGB.data();
         for (size_t i = 0; i < count; ++i, ++logMidData, ++outLogMidData) {
             const float v = *logMidData;
@@ -2791,9 +2868,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printBaselineMixReference = printBaselineMixReference;
 
     // Copy per-channel gamma factors for density curve interpolation (agx-emulsion parity)
-    target->gammaFactorB = S.base.gammaFactor[0];
-    target->gammaFactorG = S.base.gammaFactor[1];
-    target->gammaFactorR = S.base.gammaFactor[2];
+    target->gammaFactorB = base.gammaFactor[0];
+    target->gammaFactorG = base.gammaFactor[1];
+    target->gammaFactorR = base.gammaFactor[2];
 
     target->dirRT = dirRT;
     target->dirPrecorrected = precorrectApplied;
@@ -2805,16 +2882,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         return;
     }
 
-    S.spatialSigmaCacheValid.store(false, std::memory_order_release);
-
     {
         RebuildWorkingState::NegativeReuseContext reuseCtx;
-        reuseCtx.activeBuildCounter = S.activeBuildCounter;
-        reuseCtx.lastHash = S.lastHash.load(std::memory_order_acquire);
-        reuseCtx.lastFilmStock = S.lastParams.filmStockIndex;
-        reuseCtx.lastEnlargerIll = S.lastParams.enlIll;
+        reuseCtx.activeBuildCounter = snapshot.activeBuildCounter;
+        reuseCtx.lastHash = snapshot.lastHash;
+        reuseCtx.lastFilmStock = snapshot.lastParams.filmStockIndex;
+        reuseCtx.lastEnlargerIll = snapshot.lastParams.enlIll;
 
-        const std::shared_ptr<const WorkingState> prev = JuicerAtomic::load_shared_ptr(&S.activeWorkingState);
+        const std::shared_ptr<const WorkingState> prev = snapshot.activeWorkingState;
         if (RebuildWorkingState::can_reuse_negative_params(
             reuseCtx, prev.get(), *target, P.filmStockIndex, P.enlIll)) {
             // Only reuse metadata that is guaranteed to be identical. Density
@@ -2904,16 +2979,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
 
-    JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
+    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/true);
     if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
         JTRACE("BUILD", oss.str());
     }
-    S.activeBuildCounter = target->buildCounter;
-    S.lastParams = P;
-    S.lastHash.store(target->fullHash, std::memory_order_release);
-
 }
 
 void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P) {
@@ -2930,19 +3001,23 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
 
     JTRACE_SCOPE("BUILD", "rebuild_working_state_couplers_only");
 
-    std::unique_lock<std::mutex> lk(S.m);
-
+    std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
+    RebuildStateSnapshot snapshot{};
+    {
+        std::lock_guard<std::mutex> stateLock(S.m);
+        snapshot = snapshot_rebuild_state_locked(S);
+    }
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
         WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
     const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
     std::shared_ptr<const WorkingState> src;
     if (!(coreShare.sharedCore && coreShare.sharedCore->payload)) {
-        src = JuicerAtomic::load_shared_ptr(&S.activeWorkingState);
+        src = snapshot.activeWorkingState;
         if (!src || src->buildCounter == 0) {
-            lk.unlock();
+            rebuildLock.unlock();
             rebuild_working_state(instance, S, P);
             return;
         }
@@ -2960,10 +3035,9 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     }
     target->coreShareHash = coreShareHash;
     target->sharedCore = coreShare.sharedCore;
-    recompute_working_state_dir_overlay(S, P, *target);
-    S.spatialSigmaCacheValid.store(false, std::memory_order_release);
+    recompute_working_state_dir_overlay(snapshot, P, *target);
     if (!rebuild_working_state_scanner_output_runtime(P, *target)) {
-        lk.unlock();
+        rebuildLock.unlock();
         rebuild_working_state(instance, S, P);
         return;
     }
@@ -2978,9 +3052,6 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     trace_working_state_core_share(coreShareInitial, target->buildCounter, "couplers_only_shell_acquire");
     trace_working_state_core_share(coreShare, target->buildCounter, "couplers_only");
 
-    JuicerAtomic::store_shared_ptr(&S.activeWorkingState, std::shared_ptr<const WorkingState>(next));
-    S.activeBuildCounter = target->buildCounter;
-    S.lastParams = P;
-    S.lastHash.store(target->fullHash, std::memory_order_release);
+    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/true);
 #endif
 }

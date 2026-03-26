@@ -1420,50 +1420,75 @@
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+        const bool needStbnUpload = !resources.stbnData;
+        const bool needWangUpload = !resources.wangTilesData || !resources.wangLutData;
+        lock.unlock();
+
         enforce_host_asset_cache_policy("ensure_uploaded_pre");
 
-        if (!resources.stbnData) {
-            std::string stbnError;
+        StbnCpuCache* stbnCache = nullptr;
+        StbnCpuView stbnView{};
+        std::string stbnError;
+        if (needStbnUpload) {
             StbnCpuCache& cache = stbn_cache();
-            if (load_stbn_cpu(cache, stbnError)) {
-                StbnCpuView view{};
-                if (acquire_stbn_cpu_view(cache, view, stbnError)) {
-                    struct StbnViewGuard {
-                        StbnCpuCache* cache = nullptr;
-                        ~StbnViewGuard() {
-                            if (cache) {
-                                release_stbn_cpu_view(*cache);
-                            }
-                        }
-                    } guard{ &cache };
-                    if (view.bytes > 0) {
-                        const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&resources.stbnData), view.bytes);
-                        if (allocErr == cudaSuccess) {
-                            if (!enqueue_host_to_device_copy(
-                                    "ensure_uploaded",
-                                    "STBN",
-                                    resources.stbnData,
-                                    view.data,
-                                    view.bytes,
-                                    cudaStreamOpaque,
-                                    stbnError)) {
-                                free_stbn(resources);
-                            }
-                            else {
-                                resources.stbnWidth = view.width;
-                                resources.stbnHeight = view.height;
-                                resources.stbnFrames = view.frames;
-                            }
-                        }
-                        else {
-                            stbnError = std::string("cudaMalloc(STBN) failed: ") + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
-                            free_stbn(resources);
-                        }
+            if (load_stbn_cpu(cache, stbnError) &&
+                acquire_stbn_cpu_view(cache, stbnView, stbnError)) {
+                stbnCache = &cache;
+            }
+        }
+
+        WangCpuCache* wangCache = nullptr;
+        WangCpuView wangView{};
+        std::string wangError;
+        if (needWangUpload) {
+            WangCpuCache& cache = wang_cache();
+            if (load_wang_cpu(cache, wangError) &&
+                acquire_wang_cpu_view(cache, wangView, wangError)) {
+                wangCache = &cache;
+            }
+        }
+
+        std::string resourceOwnerError;
+        lock.lock();
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, resourceOwnerError, true)) {
+            lock.unlock();
+            if (stbnCache) {
+                release_stbn_cpu_view(*stbnCache);
+            }
+            if (wangCache) {
+                release_wang_cpu_view(*wangCache);
+            }
+            outError = resourceOwnerError;
+            return false;
+        }
+
+        if (!resources.stbnData && stbnCache) {
+            if (stbnView.bytes > 0) {
+                const cudaError_t allocErr =
+                    cudaMalloc(reinterpret_cast<void**>(&resources.stbnData), stbnView.bytes);
+                if (allocErr == cudaSuccess) {
+                    if (!enqueue_host_to_device_copy(
+                            "ensure_uploaded",
+                            "STBN",
+                            resources.stbnData,
+                            stbnView.data,
+                            stbnView.bytes,
+                            cudaStreamOpaque,
+                            stbnError)) {
+                        free_stbn(resources);
+                    }
+                    else {
+                        resources.stbnWidth = stbnView.width;
+                        resources.stbnHeight = stbnView.height;
+                        resources.stbnFrames = stbnView.frames;
                     }
                 }
-            }
-            if (!stbnError.empty() && !gStbnWarned.exchange(true)) {
-                JTRACE("CUDA", stbnError);
+                else {
+                    stbnError = std::string("cudaMalloc(STBN) failed: ") +
+                        (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+                    free_stbn(resources);
+                }
             }
         }
 
@@ -1471,62 +1496,67 @@
             if (resources.wangTilesData || resources.wangLutData) {
                 free_wang(resources);
             }
-            std::string wangError;
-            WangCpuCache& cache = wang_cache();
-            if (load_wang_cpu(cache, wangError)) {
-                WangCpuView view{};
-                if (acquire_wang_cpu_view(cache, view, wangError)) {
-                    struct WangViewGuard {
-                        WangCpuCache* cache = nullptr;
-                        ~WangViewGuard() {
-                            if (cache) {
-                                release_wang_cpu_view(*cache);
-                            }
-                        }
-                    } guard{ &cache };
-                    if (view.tileBytes > 0 && view.lutBytes > 0) {
-                        const cudaError_t allocTiles = cudaMalloc(reinterpret_cast<void**>(&resources.wangTilesData), view.tileBytes);
-                        const cudaError_t allocLut = cudaMalloc(reinterpret_cast<void**>(&resources.wangLutData), view.lutBytes);
-                        if (allocTiles == cudaSuccess && allocLut == cudaSuccess) {
-                            const bool tilesOk = enqueue_host_to_device_copy(
-                                "ensure_uploaded",
-                                "Wang.tiles",
-                                resources.wangTilesData,
-                                view.tiles,
-                                view.tileBytes,
-                                cudaStreamOpaque,
-                                wangError);
-                            const bool lutOk = tilesOk && enqueue_host_to_device_copy(
-                                "ensure_uploaded",
-                                "Wang.lut",
-                                resources.wangLutData,
-                                view.lut,
-                                view.lutBytes,
-                                cudaStreamOpaque,
-                                wangError);
-                            if (!tilesOk || !lutOk) {
-                                free_wang(resources);
-                            }
-                            else {
-                                resources.wangWidth = view.width;
-                                resources.wangHeight = view.height;
-                                resources.wangCount = view.count;
-                                resources.wangColors = view.colors;
-                            }
-                        }
-                        else {
-                            wangError = std::string("cudaMalloc(Wang) failed: ") +
-                                (cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) ? cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut) : "(unknown)");
-                            free_wang(resources);
-                        }
+            if (wangCache && wangView.tileBytes > 0 && wangView.lutBytes > 0) {
+                const cudaError_t allocTiles =
+                    cudaMalloc(reinterpret_cast<void**>(&resources.wangTilesData), wangView.tileBytes);
+                const cudaError_t allocLut =
+                    cudaMalloc(reinterpret_cast<void**>(&resources.wangLutData), wangView.lutBytes);
+                if (allocTiles == cudaSuccess && allocLut == cudaSuccess) {
+                    const bool tilesOk = enqueue_host_to_device_copy(
+                        "ensure_uploaded",
+                        "Wang.tiles",
+                        resources.wangTilesData,
+                        wangView.tiles,
+                        wangView.tileBytes,
+                        cudaStreamOpaque,
+                        wangError);
+                    const bool lutOk = tilesOk && enqueue_host_to_device_copy(
+                        "ensure_uploaded",
+                        "Wang.lut",
+                        resources.wangLutData,
+                        wangView.lut,
+                        wangView.lutBytes,
+                        cudaStreamOpaque,
+                        wangError);
+                    if (!tilesOk || !lutOk) {
+                        free_wang(resources);
+                    }
+                    else {
+                        resources.wangWidth = wangView.width;
+                        resources.wangHeight = wangView.height;
+                        resources.wangCount = wangView.count;
+                        resources.wangColors = wangView.colors;
                     }
                 }
-            }
-            if (!wangError.empty() && !gWangWarned.exchange(true)) {
-                JTRACE("CUDA", wangError);
+                else {
+                    wangError = std::string("cudaMalloc(Wang) failed: ") +
+                        (cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut)
+                            ? cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut)
+                            : "(unknown)");
+                    free_wang(resources);
+                }
             }
         }
+
+        lock.unlock();
+        if (stbnCache) {
+            release_stbn_cpu_view(*stbnCache);
+        }
+        if (wangCache) {
+            release_wang_cpu_view(*wangCache);
+        }
         enforce_host_asset_cache_policy("ensure_uploaded_post");
+        if (!stbnError.empty() && !gStbnWarned.exchange(true)) {
+            JTRACE("CUDA", stbnError);
+        }
+        if (!wangError.empty() && !gWangWarned.exchange(true)) {
+            JTRACE("CUDA", wangError);
+        }
+        lock.lock();
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
 
         if (ws.buildCounter == 0) {
             outError = "WorkingState buildCounter is 0";
@@ -1949,25 +1979,39 @@
                 resources.printGammaY = gamma_safe(p.gammaFactor[2]);
 
                 // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState build.
-                if (!resources.printPreflashValid ||
+                const bool needPreflashBuild =
+                    !resources.printPreflashValid ||
                     resources.printPreflashBuildCounter != ws.buildCounter ||
-                    resources.printPreflashShapeK != Spectral::gShape.K) {
+                    resources.printPreflashShapeK != Spectral::gShape.K;
+                if (needPreflashBuild) {
                     float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
                     int shapeK = 0;
+                    lock.unlock();
                     const bool ok = Precompute::build_print_preflash_raw(ws, *prt, preflashRaw, shapeK);
-                    if (!ok) {
-                        resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
-                        resources.printPreflashValid = false;
-                        resources.printPreflashBuildCounter = ws.buildCounter;
-                        resources.printPreflashShapeK = 0;
+                    lock.lock();
+                    if (!validate_resource_owner_locked(resources, outError, false)) {
+                        return false;
                     }
-                    else {
-                        resources.printPreflashRaw[0] = preflashRaw[0];
-                        resources.printPreflashRaw[1] = preflashRaw[1];
-                        resources.printPreflashRaw[2] = preflashRaw[2];
-                        resources.printPreflashValid = true;
-                        resources.printPreflashBuildCounter = ws.buildCounter;
-                        resources.printPreflashShapeK = shapeK;
+
+                    const bool stillNeedPreflashBuild =
+                        !resources.printPreflashValid ||
+                        resources.printPreflashBuildCounter != ws.buildCounter ||
+                        resources.printPreflashShapeK != Spectral::gShape.K;
+                    if (stillNeedPreflashBuild) {
+                        if (!ok) {
+                            resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
+                            resources.printPreflashValid = false;
+                            resources.printPreflashBuildCounter = ws.buildCounter;
+                            resources.printPreflashShapeK = 0;
+                        }
+                        else {
+                            resources.printPreflashRaw[0] = preflashRaw[0];
+                            resources.printPreflashRaw[1] = preflashRaw[1];
+                            resources.printPreflashRaw[2] = preflashRaw[2];
+                            resources.printPreflashValid = true;
+                            resources.printPreflashBuildCounter = ws.buildCounter;
+                            resources.printPreflashShapeK = shapeK;
+                        }
                     }
                 }
             }

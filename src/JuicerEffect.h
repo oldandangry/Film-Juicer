@@ -135,8 +135,8 @@ private:
     ParamSnapshot snapshotParams() const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
     void bootstrap_after_attach();
-    void applyNeutralFilters(const ParamSnapshot& P);
-    bool applyMetadataIlluminantDefaults(ParamSnapshot& P);
+    void applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& runtime);
+    bool applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print::Runtime& runtime);
 #ifdef JUICER_ENABLE_COUPLERS
     void applyCouplerProfileDefaults(ParamSnapshot& P);
 #endif

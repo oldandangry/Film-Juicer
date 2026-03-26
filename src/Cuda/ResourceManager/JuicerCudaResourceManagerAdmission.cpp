@@ -35,6 +35,67 @@ BuilderReservationState& builder_reservation_state() noexcept {
     return state;
 }
 
+void bump_reservation_state_version(std::uint64_t& version) noexcept {
+    version = (version == std::numeric_limits<std::uint64_t>::max()) ? 1ull : (version + 1ull);
+}
+
+void wait_for_scratch_policy_state_change_or_timeout(
+    std::uint64_t observedVersion,
+    int waitMs) noexcept {
+    if (waitMs <= 0) {
+        return;
+    }
+    ScratchPolicyState& state = scratch_policy_state();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    if (state.stateVersion != observedVersion) {
+        return;
+    }
+    state.cv.wait_for(
+        lock,
+        std::chrono::milliseconds(waitMs),
+        [&state, observedVersion]() {
+            return state.stateVersion != observedVersion;
+        });
+}
+
+void wait_for_builder_reservation_state_change_or_timeout(
+    std::uint64_t observedVersion,
+    int waitMs) noexcept {
+    if (waitMs <= 0) {
+        return;
+    }
+    BuilderReservationState& state = builder_reservation_state();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    if (state.stateVersion != observedVersion) {
+        return;
+    }
+    state.cv.wait_for(
+        lock,
+        std::chrono::milliseconds(waitMs),
+        [&state, observedVersion]() {
+            return state.stateVersion != observedVersion;
+        });
+}
+
+void wait_for_upload_reservation_state_change_or_timeout(
+    std::uint64_t observedVersion,
+    int waitMs) noexcept {
+    if (waitMs <= 0) {
+        return;
+    }
+    UploadReservationState& state = upload_reservation_state();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    if (state.stateVersion != observedVersion) {
+        return;
+    }
+    state.cv.wait_for(
+        lock,
+        std::chrono::milliseconds(waitMs),
+        [&state, observedVersion]() {
+            return state.stateVersion != observedVersion;
+        });
+}
+
 PressurePolicyState& pressure_policy_state() noexcept {
     static PressurePolicyState state{};
     return state;
@@ -1001,6 +1062,7 @@ bool try_acquire_scratch_policy_claim(
     outReservation = ReservationAttemptInfo{};
     ScratchPolicyState& state = scratch_policy_state();
     std::lock_guard<std::mutex> lock(state.mutex);
+    outReservation.stateVersion = state.stateVersion;
 
     ScratchContextState& contextState = state.byContext[contextKey];
     const std::uint64_t nowMs = monotonic_time_ms();
@@ -1256,7 +1318,9 @@ bool acquire_scratch_policy_claim_with_wait(
             return false;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(kScratchWaitStepMs));
+        wait_for_scratch_policy_state_change_or_timeout(
+            reservation.stateVersion,
+            kScratchWaitStepMs);
         waitedMs += kScratchWaitStepMs;
     }
 }
@@ -1279,6 +1343,7 @@ bool try_acquire_builder_reservation_claim(
     BuilderReservationState& state = builder_reservation_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     outReservation.instanceToken = transaction.snapshot.instanceToken.value;
+    outReservation.stateVersion = state.stateVersion;
 
     outReservation.considered = true;
     std::uint64_t& tierTotalBytes = builder_total_bytes_for_tier(state, tier);
@@ -1580,7 +1645,9 @@ bool acquire_builder_reservation_with_wait(
             std::min<int>(
                 admission_wait_ms_or_one(decision.waitMs),
                 kBuilderReservationWaitStepMs));
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        wait_for_builder_reservation_state_change_or_timeout(
+            reservation.stateVersion,
+            sleepMs);
         waitedMs += sleepMs;
     }
 }
@@ -1603,6 +1670,7 @@ bool try_acquire_upload_reservation_claim(
     UploadReservationState& state = upload_reservation_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     outReservation.instanceToken = transaction.snapshot.instanceToken.value;
+    outReservation.stateVersion = state.stateVersion;
 
     outReservation.considered = true;
     outReservation.bytesInFlight = state.totalInFlightBytes;
@@ -1838,7 +1906,9 @@ bool acquire_upload_reservation_with_wait(
             std::min<int>(
                 admission_wait_ms_or_one(decision.waitMs),
                 kUploadReservationWaitStepMs));
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        wait_for_upload_reservation_state_change_or_timeout(
+            reservation.stateVersion,
+            sleepMs);
         waitedMs += sleepMs;
     }
 }
@@ -2309,59 +2379,67 @@ void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
     }
 
     ScratchPolicyState& state = scratch_policy_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto contextIt = state.byContext.find(claim.contextKey);
-    if (contextIt == state.byContext.end()) {
-        claim = ScratchPolicyClaim{};
-        return;
-    }
-
-    ScratchContextState& contextState = contextIt->second;
-    auto bucketIt = contextState.buckets.find(claim.bucketKey);
-    std::size_t releasedBytes = 0;
-    if (bucketIt != contextState.buckets.end()) {
-        ScratchBucketEntry& bucketEntry = bucketIt->second;
-        if (bucketEntry.inFlightSets > 0) {
-            --bucketEntry.inFlightSets;
+    bool notifyWaiters = false;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto contextIt = state.byContext.find(claim.contextKey);
+        if (contextIt == state.byContext.end()) {
+            claim = ScratchPolicyClaim{};
+            return;
         }
-        if (bucketEntry.inFlightBytes >= claim.bytes) {
-            bucketEntry.inFlightBytes -= claim.bytes;
-            releasedBytes = claim.bytes;
+
+        ScratchContextState& contextState = contextIt->second;
+        auto bucketIt = contextState.buckets.find(claim.bucketKey);
+        std::size_t releasedBytes = 0;
+        if (bucketIt != contextState.buckets.end()) {
+            ScratchBucketEntry& bucketEntry = bucketIt->second;
+            if (bucketEntry.inFlightSets > 0) {
+                --bucketEntry.inFlightSets;
+            }
+            if (bucketEntry.inFlightBytes >= claim.bytes) {
+                bucketEntry.inFlightBytes -= claim.bytes;
+                releasedBytes = claim.bytes;
+            }
+            else {
+                releasedBytes = bucketEntry.inFlightBytes;
+                bucketEntry.inFlightBytes = 0;
+            }
+        }
+        if (contextState.totalInFlightBytes >= releasedBytes) {
+            contextState.totalInFlightBytes -= releasedBytes;
         }
         else {
-            releasedBytes = bucketEntry.inFlightBytes;
-            bucketEntry.inFlightBytes = 0;
+            contextState.totalInFlightBytes = 0;
         }
-    }
-    if (contextState.totalInFlightBytes >= releasedBytes) {
-        contextState.totalInFlightBytes -= releasedBytes;
-    }
-    else {
-        contextState.totalInFlightBytes = 0;
-    }
-    if (state.totalInFlightBytes >= static_cast<std::uint64_t>(releasedBytes)) {
-        state.totalInFlightBytes -= static_cast<std::uint64_t>(releasedBytes);
-    }
-    else {
-        state.totalInFlightBytes = 0;
-    }
-    global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
+        if (state.totalInFlightBytes >= static_cast<std::uint64_t>(releasedBytes)) {
+            state.totalInFlightBytes -= static_cast<std::uint64_t>(releasedBytes);
+        }
+        else {
+            state.totalInFlightBytes = 0;
+        }
+        global_state().transientNonManagerBytes.store(state.totalInFlightBytes, std::memory_order_relaxed);
 
-    const std::uint64_t nowMs = monotonic_time_ms();
-    trim_large_frame_quarantine_decay_locked(contextState, nowMs);
+        const std::uint64_t nowMs = monotonic_time_ms();
+        trim_large_frame_quarantine_decay_locked(contextState, nowMs);
 
-    if (claim.bucketKey.largeFrame && claim.bytes > 0) {
-        ScratchQuarantineEntry entry{};
-        entry.key = claim.bucketKey;
-        entry.bytes = claim.bytes;
-        entry.touchedMs = nowMs;
-        entry.sequence = contextState.nextQuarantineSequence++;
-        contextState.largeFrameQuarantine.push_back(entry);
-        contextState.largeFrameQuarantineBytes += claim.bytes;
-        trim_large_frame_quarantine_caps_locked(contextState);
+        if (claim.bucketKey.largeFrame && claim.bytes > 0) {
+            ScratchQuarantineEntry entry{};
+            entry.key = claim.bucketKey;
+            entry.bytes = claim.bytes;
+            entry.touchedMs = nowMs;
+            entry.sequence = contextState.nextQuarantineSequence++;
+            contextState.largeFrameQuarantine.push_back(entry);
+            contextState.largeFrameQuarantineBytes += claim.bytes;
+            trim_large_frame_quarantine_caps_locked(contextState);
+        }
+
+        bump_reservation_state_version(state.stateVersion);
+        claim = ScratchPolicyClaim{};
+        notifyWaiters = true;
     }
-
-    claim = ScratchPolicyClaim{};
+    if (notifyWaiters) {
+        state.cv.notify_all();
+    }
 }
 
 class ScratchPolicyGuard {
@@ -2388,42 +2466,47 @@ void release_builder_reservation_claim(BuilderReservationClaim& claim) noexcept 
 
     BuilderReservationState& state = builder_reservation_state();
     ResourceManagerState& managerState = global_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
 
-    std::uint64_t& tierTotalBytes = builder_total_bytes_for_tier(state, claim.tier);
-    auto contextIt = state.byContext.find(claim.contextKey);
-    if (contextIt == state.byContext.end()) {
-        if (tierTotalBytes >= claim.bytes) {
-            tierTotalBytes -= claim.bytes;
+        std::uint64_t& tierTotalBytes = builder_total_bytes_for_tier(state, claim.tier);
+        auto contextIt = state.byContext.find(claim.contextKey);
+        if (contextIt == state.byContext.end()) {
+            if (tierTotalBytes >= claim.bytes) {
+                tierTotalBytes -= claim.bytes;
+            }
+            else {
+                tierTotalBytes = 0;
+            }
+            builder_global_gauge_for_tier(managerState, claim.tier).store(tierTotalBytes, std::memory_order_relaxed);
+            bump_reservation_state_version(state.stateVersion);
+            claim = BuilderReservationClaim{};
         }
         else {
-            tierTotalBytes = 0;
+            BuilderReservationContextState& contextState = contextIt->second;
+            std::uint64_t& contextTierBytes = builder_context_bytes_for_tier(contextState, claim.tier);
+            if (contextTierBytes >= claim.bytes) {
+                contextTierBytes -= claim.bytes;
+            }
+            else {
+                contextTierBytes = 0;
+            }
+            if (tierTotalBytes >= claim.bytes) {
+                tierTotalBytes -= claim.bytes;
+            }
+            else {
+                tierTotalBytes = 0;
+            }
+
+            if (!builder_context_has_inflight(contextState)) {
+                state.byContext.erase(contextIt);
+            }
+            builder_global_gauge_for_tier(managerState, claim.tier).store(tierTotalBytes, std::memory_order_relaxed);
+            bump_reservation_state_version(state.stateVersion);
+            claim = BuilderReservationClaim{};
         }
-        builder_global_gauge_for_tier(managerState, claim.tier).store(tierTotalBytes, std::memory_order_relaxed);
-        claim = BuilderReservationClaim{};
-        return;
     }
-
-    BuilderReservationContextState& contextState = contextIt->second;
-    std::uint64_t& contextTierBytes = builder_context_bytes_for_tier(contextState, claim.tier);
-    if (contextTierBytes >= claim.bytes) {
-        contextTierBytes -= claim.bytes;
-    }
-    else {
-        contextTierBytes = 0;
-    }
-    if (tierTotalBytes >= claim.bytes) {
-        tierTotalBytes -= claim.bytes;
-    }
-    else {
-        tierTotalBytes = 0;
-    }
-
-    if (!builder_context_has_inflight(contextState)) {
-        state.byContext.erase(contextIt);
-    }
-    builder_global_gauge_for_tier(managerState, claim.tier).store(tierTotalBytes, std::memory_order_relaxed);
-    claim = BuilderReservationClaim{};
+    state.cv.notify_all();
 }
 
 class BuilderReservationGuard {
@@ -2449,38 +2532,43 @@ void release_upload_reservation_claim(UploadReservationClaim& claim) noexcept {
     }
 
     UploadReservationState& state = upload_reservation_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto contextIt = state.byContext.find(claim.contextKey);
-    if (contextIt == state.byContext.end()) {
-        if (state.totalInFlightBytes >= claim.bytes) {
-            state.totalInFlightBytes -= claim.bytes;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto contextIt = state.byContext.find(claim.contextKey);
+        if (contextIt == state.byContext.end()) {
+            if (state.totalInFlightBytes >= claim.bytes) {
+                state.totalInFlightBytes -= claim.bytes;
+            }
+            else {
+                state.totalInFlightBytes = 0;
+            }
+            global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
+            bump_reservation_state_version(state.stateVersion);
+            claim = UploadReservationClaim{};
         }
         else {
-            state.totalInFlightBytes = 0;
+            UploadReservationContextState& contextState = contextIt->second;
+            if (contextState.inFlightBytes >= claim.bytes) {
+                contextState.inFlightBytes -= claim.bytes;
+            }
+            else {
+                contextState.inFlightBytes = 0;
+            }
+            if (state.totalInFlightBytes >= claim.bytes) {
+                state.totalInFlightBytes -= claim.bytes;
+            }
+            else {
+                state.totalInFlightBytes = 0;
+            }
+            if (contextState.inFlightBytes == 0) {
+                state.byContext.erase(contextIt);
+            }
+            global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
+            bump_reservation_state_version(state.stateVersion);
+            claim = UploadReservationClaim{};
         }
-        claim = UploadReservationClaim{};
-        global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
-        return;
     }
-
-    UploadReservationContextState& contextState = contextIt->second;
-    if (contextState.inFlightBytes >= claim.bytes) {
-        contextState.inFlightBytes -= claim.bytes;
-    }
-    else {
-        contextState.inFlightBytes = 0;
-    }
-    if (state.totalInFlightBytes >= claim.bytes) {
-        state.totalInFlightBytes -= claim.bytes;
-    }
-    else {
-        state.totalInFlightBytes = 0;
-    }
-    if (contextState.inFlightBytes == 0) {
-        state.byContext.erase(contextIt);
-    }
-    global_state().uploadBytesInFlight.store(state.totalInFlightBytes, std::memory_order_relaxed);
-    claim = UploadReservationClaim{};
+    state.cv.notify_all();
 }
 
 class UploadReservationGuard {
