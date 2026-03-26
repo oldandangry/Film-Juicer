@@ -280,6 +280,17 @@ std::uint64_t admission_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t star
     return 0;
 }
 
+int admission_elapsed_ms_since_clamped(std::uint64_t startMs) noexcept {
+    if (startMs == 0) {
+        return 0;
+    }
+    const std::uint64_t elapsedMs =
+        admission_elapsed_ms_since(monotonic_time_ms(), startMs);
+    const std::uint64_t maxInt =
+        static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    return static_cast<int>(std::min<std::uint64_t>(elapsedMs, maxInt));
+}
+
 std::uint32_t admission_bool_u32(bool value) noexcept {
     if (value) {
         return 1u;
@@ -1202,6 +1213,7 @@ bool acquire_scratch_policy_claim_with_wait(
     ScratchPolicySnapshot snapshot{};
     ReservationAttemptInfo reservation{};
     int waitedMs = 0;
+    std::uint64_t waitStartMs = 0;
     while (true) {
         if (try_acquire_scratch_policy_claim(
                 transaction,
@@ -1318,10 +1330,13 @@ bool acquire_scratch_policy_claim_with_wait(
             return false;
         }
 
+        if (waitStartMs == 0) {
+            waitStartMs = monotonic_time_ms();
+        }
         wait_for_scratch_policy_state_change_or_timeout(
             reservation.stateVersion,
             kScratchWaitStepMs);
-        waitedMs += kScratchWaitStepMs;
+        waitedMs = admission_elapsed_ms_since_clamped(waitStartMs);
     }
 }
 
@@ -1441,6 +1456,7 @@ bool acquire_builder_reservation_with_wait(
 
     ReservationAttemptInfo reservation{};
     int waitedMs = 0;
+    std::uint64_t waitStartMs = 0;
     while (true) {
         if (try_acquire_builder_reservation_claim(
                 transaction,
@@ -1645,10 +1661,13 @@ bool acquire_builder_reservation_with_wait(
             std::min<int>(
                 admission_wait_ms_or_one(decision.waitMs),
                 kBuilderReservationWaitStepMs));
+        if (waitStartMs == 0) {
+            waitStartMs = monotonic_time_ms();
+        }
         wait_for_builder_reservation_state_change_or_timeout(
             reservation.stateVersion,
             sleepMs);
-        waitedMs += sleepMs;
+        waitedMs = admission_elapsed_ms_since_clamped(waitStartMs);
     }
 }
 
@@ -1764,6 +1783,7 @@ bool acquire_upload_reservation_with_wait(
 
     ReservationAttemptInfo reservation{};
     int waitedMs = 0;
+    std::uint64_t waitStartMs = 0;
     while (true) {
         if (try_acquire_upload_reservation_claim(
                 transaction,
@@ -1906,10 +1926,13 @@ bool acquire_upload_reservation_with_wait(
             std::min<int>(
                 admission_wait_ms_or_one(decision.waitMs),
                 kUploadReservationWaitStepMs));
+        if (waitStartMs == 0) {
+            waitStartMs = monotonic_time_ms();
+        }
         wait_for_upload_reservation_state_change_or_timeout(
             reservation.stateVersion,
             sleepMs);
-        waitedMs += sleepMs;
+        waitedMs = admission_elapsed_ms_since_clamped(waitStartMs);
     }
 }
 
