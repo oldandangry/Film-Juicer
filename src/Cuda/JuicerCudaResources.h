@@ -38,6 +38,9 @@ namespace JuicerCuda {
     };
 
     struct Resources {
+        // Leaf lock for per-device CUDA resource state. Do not hold InstanceState locks or
+        // resource-manager admission/cache bookkeeping locks while taking this mutex, and do not
+        // sleep or wait on external work while it is held.
         std::mutex m;
         int deviceId = -1;
         // CUcontext identity captured from the render slot key; used by teardown safety checks.

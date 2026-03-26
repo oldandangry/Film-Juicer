@@ -22,6 +22,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <condition_variable>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -551,6 +552,8 @@ struct ScratchContextState {
 
 struct ScratchPolicyState {
     std::mutex mutex;
+    std::condition_variable cv;
+    std::uint64_t stateVersion = 0;
     std::unordered_map<DeviceContextKey, ScratchContextState, DeviceContextKeyHash> byContext;
     std::uint64_t totalInFlightBytes = 0;
 };
@@ -584,6 +587,8 @@ struct UploadReservationContextState {
 
 struct UploadReservationState {
     std::mutex mutex;
+    std::condition_variable cv;
+    std::uint64_t stateVersion = 0;
     std::unordered_map<DeviceContextKey, UploadReservationContextState, DeviceContextKeyHash> byContext;
     std::uint64_t totalInFlightBytes = 0;
 };
@@ -603,6 +608,8 @@ struct BuilderReservationContextState {
 
 struct BuilderReservationState {
     std::mutex mutex;
+    std::condition_variable cv;
+    std::uint64_t stateVersion = 0;
     std::unordered_map<DeviceContextKey, BuilderReservationContextState, DeviceContextKeyHash> byContext;
     std::uint64_t totalScratchInFlightBytes = 0;
     std::uint64_t totalLutInFlightBytes = 0;
@@ -857,6 +864,7 @@ struct ReservationAttemptInfo {
     std::uint64_t bytesInFlight = 0;
     std::uint64_t capBytes = 0;
     std::uint64_t thresholdBytes = 0;
+    std::uint64_t stateVersion = 0;
     std::uint64_t instanceToken = 0;
     std::uint32_t sharedTokens = 0;
     std::uint32_t criticalTokens = 0;
