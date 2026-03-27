@@ -2371,10 +2371,8 @@
             const size_t bytes = cpu.size() * sizeof(double);
             if (dst->log2XYZ && dst->res == res) {
                 double* const deviceLut = dst->log2XYZ;
-                void* const lastUseEventOpaque = resources.lastUseEventOpaque;
-                lock.unlock();
                 const bool waitOk = wait_for_last_use_event_snapshot(
-                    lastUseEventOpaque,
+                    resources.lastUseEventOpaque,
                     cudaStreamOpaque,
                     "scan LUT",
                     outError);
@@ -2386,9 +2384,6 @@
                         bytes,
                         cudaStreamOpaque,
                         outError);
-                if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
-                    return false;
-                }
                 if (!copyOk) {
                     return false;
                 }
@@ -2605,10 +2600,8 @@
         }
         if (overwriting) {
             float* const printIllumFiltered = resources.printIllumFiltered;
-            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
-            lock.unlock();
             const bool waitOk = wait_for_last_use_event_snapshot(
-                lastUseEventOpaque,
+                resources.lastUseEventOpaque,
                 cudaStreamOpaque,
                 "print illuminant filtered",
                 outError);
@@ -2620,9 +2613,6 @@
                     bytes,
                     cudaStreamOpaque,
                     outError);
-            if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
-                return false;
-            }
             if (!copyOk) {
                 return false;
             }
