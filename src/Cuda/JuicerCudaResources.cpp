@@ -1179,26 +1179,19 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst && currentN == n) {
-            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
-            if (resourcesLock) {
-                resourcesLock->unlock();
-            }
             const bool waitOk = wait_for_last_use_event_snapshot(
-                lastUseEventOpaque,
+                resources.lastUseEventOpaque,
                 cudaStreamOpaque,
                 label,
                 outError);
             const bool copyOk = waitOk && enqueue_host_to_device_copy(
                 "upload_array_locked",
                 label,
-                dst,
-                src,
-                bytes,
-                cudaStreamOpaque,
-                outError);
-            if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
-                return false;
-            }
+                    dst,
+                    src,
+                    bytes,
+                    cudaStreamOpaque,
+                    outError);
             return copyOk;
         }
 
@@ -1348,12 +1341,8 @@ namespace JuicerCuda {
                 --domainEnd;
             }
 
-            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
-            if (resourcesLock) {
-                resourcesLock->unlock();
-            }
             const bool waitOk = wait_for_last_use_event_snapshot(
-                lastUseEventOpaque,
+                resources.lastUseEventOpaque,
                 cudaStreamOpaque,
                 baseLabel,
                 outError);
@@ -1374,9 +1363,6 @@ namespace JuicerCuda {
                     bytes,
                     cudaStreamOpaque,
                     outError);
-            if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
-                return false;
-            }
             if (!copyXOk) {
                 outError = std::string(baseLabel) + ".x upload failed: " + outError;
                 return false;
@@ -1502,12 +1488,8 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst.y && dst.n == n) {
-            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
-            if (resourcesLock) {
-                resourcesLock->unlock();
-            }
             const bool waitOk = wait_for_last_use_event_snapshot(
-                lastUseEventOpaque,
+                resources.lastUseEventOpaque,
                 cudaStreamOpaque,
                 label,
                 outError);
@@ -1519,9 +1501,6 @@ namespace JuicerCuda {
                     bytes,
                     cudaStreamOpaque,
                     outError);
-            if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
-                return false;
-            }
             if (!copyOk) {
                 return false;
             }
