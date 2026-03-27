@@ -1024,7 +1024,142 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool upload_array_locked(Resources& resources, float*& dst, int currentN, const float* src, int n, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool relock_resources_after_offlock_upload(
+        Resources& resources,
+        std::unique_lock<std::mutex>* resourcesLock,
+        std::string& outError) {
+        if (!resourcesLock) {
+            return true;
+        }
+        resourcesLock->lock();
+        reap_retire_queue_locked(resources);
+        return validate_resource_owner_locked(resources, outError, false);
+    }
+
+    static bool wait_for_last_use_event_snapshot(
+        void* lastUseEventOpaque,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)lastUseEventOpaque;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!lastUseEventOpaque) {
+            return true;
+        }
+        const cudaStream_t stream = cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+            : nullptr;
+        const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
+        const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
+        if (waitErr != cudaSuccess) {
+            outError = std::string("cudaStreamWaitEvent before ")
+                + (label ? label : "resource")
+                + " update failed: "
+                + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+            return false;
+        }
+        return true;
+#endif
+    }
+
+    static bool alloc_and_upload_bytes(
+        void*& dst,
+        const void* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)dst;
+        (void)src;
+        (void)bytes;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!src || bytes == 0) {
+            outError = std::string(label ? label : "buffer") + " buffer is empty";
+            return false;
+        }
+
+        const cudaError_t err = cudaMalloc(&dst, bytes);
+        if (err != cudaSuccess) {
+            outError = std::string("cudaMalloc(")
+                + (label ? label : "buffer")
+                + ") failed: "
+                + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            return false;
+        }
+
+        if (!enqueue_host_to_device_copy(
+                "alloc_and_upload_bytes",
+                label,
+                dst,
+                src,
+                bytes,
+                cudaStreamOpaque,
+                outError)) {
+            cudaFree(dst);
+            dst = nullptr;
+            return false;
+        }
+
+        return true;
+#endif
+    }
+
+    static bool alloc_and_upload_bytes_locked(
+        Resources& resources,
+        void*& dst,
+        const void* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>* resourcesLock,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)dst;
+        (void)src;
+        (void)bytes;
+        (void)cudaStreamOpaque;
+        (void)resourcesLock;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (resourcesLock) {
+            resourcesLock->unlock();
+        }
+        const bool allocOk =
+            alloc_and_upload_bytes(dst, src, bytes, cudaStreamOpaque, label, outError);
+        if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+            if (dst) {
+                cudaFree(dst);
+                dst = nullptr;
+            }
+            return false;
+        }
+        return allocOk;
+#endif
+    }
+
+    static bool upload_array_locked(
+        Resources& resources,
+        float*& dst,
+        int currentN,
+        const float* src,
+        int n,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>* resourcesLock,
+        const char* label,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)dst;
@@ -1032,6 +1167,7 @@ namespace JuicerCuda {
         (void)src;
         (void)n;
         (void)cudaStreamOpaque;
+        (void)resourcesLock;
         (void)label;
         outError = "CUDA is not enabled";
         return false;
@@ -1041,19 +1177,18 @@ namespace JuicerCuda {
             return false;
         }
 
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst && currentN == n) {
-            if (resources.lastUseEventOpaque) {
-                const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-                const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-                if (waitErr != cudaSuccess) {
-                    outError = std::string("cudaStreamWaitEvent before ") + (label ? label : "array") + " update failed: " +
-                               (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                    return false;
-                }
+            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
+            if (resourcesLock) {
+                resourcesLock->unlock();
             }
-            return enqueue_host_to_device_copy(
+            const bool waitOk = wait_for_last_use_event_snapshot(
+                lastUseEventOpaque,
+                cudaStreamOpaque,
+                label,
+                outError);
+            const bool copyOk = waitOk && enqueue_host_to_device_copy(
                 "upload_array_locked",
                 label,
                 dst,
@@ -1061,10 +1196,25 @@ namespace JuicerCuda {
                 bytes,
                 cudaStreamOpaque,
                 outError);
+            if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+                return false;
+            }
+            return copyOk;
         }
 
         float* tmp = nullptr;
-        if (!alloc_and_upload_array(tmp, src, n, cudaStreamOpaque, label, outError)) {
+        if (resourcesLock) {
+            resourcesLock->unlock();
+        }
+        const bool allocOk =
+            alloc_and_upload_array(tmp, src, n, cudaStreamOpaque, label, outError);
+        if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+            if (tmp) {
+                cudaFree(tmp);
+            }
+            return false;
+        }
+        if (!allocOk) {
             return false;
         }
 
@@ -1155,12 +1305,20 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool upload_curve_locked(Resources& resources, DeviceCurve& dst, const Spectral::Curve& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool upload_curve_locked(
+        Resources& resources,
+        DeviceCurve& dst,
+        const Spectral::Curve& src,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>* resourcesLock,
+        const char* label,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)dst;
         (void)src;
         (void)cudaStreamOpaque;
+        (void)resourcesLock;
         (void)label;
         outError = "CUDA is not enabled";
         return false;
@@ -1175,47 +1333,12 @@ namespace JuicerCuda {
             return false;
         }
 
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
 
         // If the allocation matches, update in place to avoid alloc/free churn (common during slider scrubs).
         if (dst.x && dst.y && dst.n == n) {
-            if (resources.lastUseEventOpaque) {
-                const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-                const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-                if (waitErr != cudaSuccess) {
-                    outError = std::string("cudaStreamWaitEvent before ") + label + " update failed: " +
-                        (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                    return false;
-                }
-            }
-
             const char* baseLabel = label ? label : "curve";
             const std::string labelX = std::string(baseLabel) + ".x";
-            if (!enqueue_host_to_device_copy(
-                    "upload_curve_locked",
-                    labelX.c_str(),
-                    dst.x,
-                    src.lambda_nm.data(),
-                    bytes,
-                    cudaStreamOpaque,
-                    outError)) {
-                outError = std::string(baseLabel) + ".x upload failed: " + outError;
-                return false;
-            }
-            const std::string labelY = std::string(baseLabel) + ".y";
-            if (!enqueue_host_to_device_copy(
-                    "upload_curve_locked",
-                    labelY.c_str(),
-                    dst.y,
-                    src.linear.data(),
-                    bytes,
-                    cudaStreamOpaque,
-                    outError)) {
-                outError = std::string(baseLabel) + ".y upload failed: " + outError;
-                return false;
-            }
-
             int domainBegin = 0;
             while (domainBegin < n && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainBegin)])) {
                 ++domainBegin;
@@ -1224,6 +1347,45 @@ namespace JuicerCuda {
             while (domainEnd > domainBegin && !std::isfinite(src.lambda_nm[static_cast<size_t>(domainEnd)])) {
                 --domainEnd;
             }
+
+            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
+            if (resourcesLock) {
+                resourcesLock->unlock();
+            }
+            const bool waitOk = wait_for_last_use_event_snapshot(
+                lastUseEventOpaque,
+                cudaStreamOpaque,
+                baseLabel,
+                outError);
+            const bool copyXOk = waitOk && enqueue_host_to_device_copy(
+                    "upload_curve_locked",
+                    labelX.c_str(),
+                    dst.x,
+                    src.lambda_nm.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError);
+            const std::string labelY = std::string(baseLabel) + ".y";
+            const bool copyYOk = copyXOk && enqueue_host_to_device_copy(
+                    "upload_curve_locked",
+                    labelY.c_str(),
+                    dst.y,
+                    src.linear.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError);
+            if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+                return false;
+            }
+            if (!copyXOk) {
+                outError = std::string(baseLabel) + ".x upload failed: " + outError;
+                return false;
+            }
+            if (!copyYOk) {
+                outError = std::string(baseLabel) + ".y upload failed: " + outError;
+                return false;
+            }
+
             dst.domainBegin = domainBegin;
             dst.domainEnd = domainEnd;
             dst.n = n;
@@ -1231,7 +1393,16 @@ namespace JuicerCuda {
         }
 
         DeviceCurve tmp{};
-        if (!alloc_and_upload_curve(tmp, src, cudaStreamOpaque, outError)) {
+        if (resourcesLock) {
+            resourcesLock->unlock();
+        }
+        const bool allocOk =
+            alloc_and_upload_curve(tmp, src, cudaStreamOpaque, outError);
+        if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+            free_curve(tmp);
+            return false;
+        }
+        if (!allocOk) {
             outError = std::string(label) + ": " + outError;
             return false;
         }
@@ -1300,12 +1471,20 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool upload_spectral_samples_locked(Resources& resources, DeviceCurve& dst, const std::vector<float>& src, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static bool upload_spectral_samples_locked(
+        Resources& resources,
+        DeviceCurve& dst,
+        const std::vector<float>& src,
+        void* cudaStreamOpaque,
+        std::unique_lock<std::mutex>* resourcesLock,
+        const char* label,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)dst;
         (void)src;
         (void)cudaStreamOpaque;
+        (void)resourcesLock;
         (void)label;
         outError = "CUDA is not enabled";
         return false;
@@ -1321,26 +1500,29 @@ namespace JuicerCuda {
             return false;
         }
 
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst.y && dst.n == n) {
-            if (resources.lastUseEventOpaque) {
-                const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-                const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-                if (waitErr != cudaSuccess) {
-                    outError = std::string("cudaStreamWaitEvent before ") + (label ? label : "spectral samples") + " update failed: " +
-                               (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                    return false;
-                }
+            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
+            if (resourcesLock) {
+                resourcesLock->unlock();
             }
-            if (!enqueue_host_to_device_copy(
+            const bool waitOk = wait_for_last_use_event_snapshot(
+                lastUseEventOpaque,
+                cudaStreamOpaque,
+                label,
+                outError);
+            const bool copyOk = waitOk && enqueue_host_to_device_copy(
                     "upload_spectral_samples_locked",
                     label,
                     dst.y,
                     src.data(),
                     bytes,
                     cudaStreamOpaque,
-                    outError)) {
+                    outError);
+            if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+                return false;
+            }
+            if (!copyOk) {
                 return false;
             }
             dst.n = n;
@@ -1350,7 +1532,16 @@ namespace JuicerCuda {
         }
 
         DeviceCurve tmp{};
-        if (!alloc_and_upload_spectral_samples(tmp, src, cudaStreamOpaque, label, outError)) {
+        if (resourcesLock) {
+            resourcesLock->unlock();
+        }
+        const bool allocOk =
+            alloc_and_upload_spectral_samples(tmp, src, cudaStreamOpaque, label, outError);
+        if (!relock_resources_after_offlock_upload(resources, resourcesLock, outError)) {
+            free_curve(tmp);
+            return false;
+        }
+        if (!allocOk) {
             return false;
         }
 
