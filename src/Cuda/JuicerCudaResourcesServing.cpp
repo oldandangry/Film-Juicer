@@ -1415,6 +1415,7 @@
         outError = "CUDA is not enabled";
         return false;
 #else
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
         std::unique_lock<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
         if (!validate_resource_owner_locked(resources, outError, true)) {
@@ -1465,29 +1466,28 @@
 
         if (!resources.stbnData && stbnCache) {
             if (stbnView.bytes > 0) {
-                const cudaError_t allocErr =
-                    cudaMalloc(reinterpret_cast<void**>(&resources.stbnData), stbnView.bytes);
-                if (allocErr == cudaSuccess) {
-                    if (!enqueue_host_to_device_copy(
-                            "ensure_uploaded",
-                            "STBN",
-                            resources.stbnData,
-                            stbnView.data,
-                            stbnView.bytes,
-                            cudaStreamOpaque,
-                            stbnError)) {
-                        free_stbn(resources);
-                    }
-                    else {
-                        resources.stbnWidth = stbnView.width;
-                        resources.stbnHeight = stbnView.height;
-                        resources.stbnFrames = stbnView.frames;
-                    }
+                void* stbnData = nullptr;
+                if (!alloc_and_upload_bytes_locked(
+                        resources,
+                        stbnData,
+                        stbnView.data,
+                        stbnView.bytes,
+                        cudaStreamOpaque,
+                        &lock,
+                        "STBN",
+                        stbnError)) {
+                    free_stbn(resources);
+                }
+                else if (!resources.stbnData) {
+                    resources.stbnData = reinterpret_cast<std::uint8_t*>(stbnData);
+                    resources.stbnWidth = stbnView.width;
+                    resources.stbnHeight = stbnView.height;
+                    resources.stbnFrames = stbnView.frames;
                 }
                 else {
-                    stbnError = std::string("cudaMalloc(STBN) failed: ") +
-                        (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
-                    free_stbn(resources);
+                    if (stbnData) {
+                        cudaFree(stbnData);
+                    }
                 }
             }
         }
@@ -1497,43 +1497,50 @@
                 free_wang(resources);
             }
             if (wangCache && wangView.tileBytes > 0 && wangView.lutBytes > 0) {
-                const cudaError_t allocTiles =
-                    cudaMalloc(reinterpret_cast<void**>(&resources.wangTilesData), wangView.tileBytes);
-                const cudaError_t allocLut =
-                    cudaMalloc(reinterpret_cast<void**>(&resources.wangLutData), wangView.lutBytes);
-                if (allocTiles == cudaSuccess && allocLut == cudaSuccess) {
-                    const bool tilesOk = enqueue_host_to_device_copy(
-                        "ensure_uploaded",
-                        "Wang.tiles",
-                        resources.wangTilesData,
-                        wangView.tiles,
-                        wangView.tileBytes,
-                        cudaStreamOpaque,
-                        wangError);
-                    const bool lutOk = tilesOk && enqueue_host_to_device_copy(
-                        "ensure_uploaded",
-                        "Wang.lut",
-                        resources.wangLutData,
-                        wangView.lut,
-                        wangView.lutBytes,
-                        cudaStreamOpaque,
-                        wangError);
-                    if (!tilesOk || !lutOk) {
-                        free_wang(resources);
+                void* wangTilesData = nullptr;
+                void* wangLutData = nullptr;
+                const bool tilesOk = alloc_and_upload_bytes_locked(
+                    resources,
+                    wangTilesData,
+                    wangView.tiles,
+                    wangView.tileBytes,
+                    cudaStreamOpaque,
+                    &lock,
+                    "Wang.tiles",
+                    wangError);
+                const bool lutOk = tilesOk && alloc_and_upload_bytes_locked(
+                    resources,
+                    wangLutData,
+                    wangView.lut,
+                    wangView.lutBytes,
+                    cudaStreamOpaque,
+                    &lock,
+                    "Wang.lut",
+                    wangError);
+                if (!tilesOk || !lutOk) {
+                    if (wangTilesData) {
+                        cudaFree(wangTilesData);
                     }
-                    else {
-                        resources.wangWidth = wangView.width;
-                        resources.wangHeight = wangView.height;
-                        resources.wangCount = wangView.count;
-                        resources.wangColors = wangView.colors;
+                    if (wangLutData) {
+                        cudaFree(wangLutData);
                     }
+                    free_wang(resources);
+                }
+                else if (!resources.wangTilesData && !resources.wangLutData) {
+                    resources.wangTilesData = reinterpret_cast<std::uint8_t*>(wangTilesData);
+                    resources.wangLutData = reinterpret_cast<std::uint8_t*>(wangLutData);
+                    resources.wangWidth = wangView.width;
+                    resources.wangHeight = wangView.height;
+                    resources.wangCount = wangView.count;
+                    resources.wangColors = wangView.colors;
                 }
                 else {
-                    wangError = std::string("cudaMalloc(Wang) failed: ") +
-                        (cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut)
-                            ? cudaGetErrorString(allocTiles != cudaSuccess ? allocTiles : allocLut)
-                            : "(unknown)");
-                    free_wang(resources);
+                    if (wangTilesData) {
+                        cudaFree(wangTilesData);
+                    }
+                    if (wangLutData) {
+                        cudaFree(wangLutData);
+                    }
                 }
             }
         }
@@ -1553,8 +1560,11 @@
             JTRACE("CUDA", wangError);
         }
         lock.lock();
-        reap_retire_queue_locked(resources);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
+        auto reacquire_resources_phase = [&](bool requireOwner) -> bool {
+            reap_retire_queue_locked(resources);
+            return validate_resource_owner_locked(resources, outError, requireOwner);
+        };
+        if (!reacquire_resources_phase(true)) {
             return false;
         }
 
@@ -1583,14 +1593,19 @@
         // DIR-only update: avoid a full WorkingState re-upload when only the DIR pre-corrected
         // density curves changed (slider interaction).
         if (coreUpToDate && !dirUpToDate) {
-            if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, "dirDensB", outError)) return false;
-            if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, "dirDensG", outError)) return false;
-            if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, "dirDensR", outError)) return false;
+            if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, &lock, "dirDensB", outError)) return false;
+            if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, &lock, "dirDensG", outError)) return false;
+            if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, &lock, "dirDensR", outError)) return false;
 
             resources.uploadedDirHash = wsDirHash;
             resources.uploadedBuildCounter = ws.buildCounter;
             if (!includeCurrentMediumUploads) {
                 return true;
+            }
+            lock.unlock();
+            lock.lock();
+            if (!reacquire_resources_phase(true)) {
+                return false;
             }
         }
 
@@ -1603,11 +1618,11 @@
             resources.uploadedCoreHash = 0;
             resources.uploadedDirHash = 0;
 
-            if (!upload_curve_locked(resources, resources.densB, ws.densB, cudaStreamOpaque, "densB", outError))
+            if (!upload_curve_locked(resources, resources.densB, ws.densB, cudaStreamOpaque, &lock, "densB", outError))
                 return false;
-            if (!upload_curve_locked(resources, resources.densG, ws.densG, cudaStreamOpaque, "densG", outError))
+            if (!upload_curve_locked(resources, resources.densG, ws.densG, cudaStreamOpaque, &lock, "densG", outError))
                 return false;
-            if (!upload_curve_locked(resources, resources.densR, ws.densR, cudaStreamOpaque, "densR", outError))
+            if (!upload_curve_locked(resources, resources.densR, ws.densR, cudaStreamOpaque, &lock, "densR", outError))
                 return false;
 
             {
@@ -1665,6 +1680,7 @@
                                     ws.densityCurvesLayers[layer][ch].data(),
                                     layerChannelN[ch],
                                     cudaStreamOpaque,
+                                    &lock,
                                     "grain density layer",
                                     outError)) {
                                 outError = std::string("upload grain density layers failed: ") + outError;
@@ -1693,12 +1709,16 @@
                     std::string layersError;
                     for (int layer = 0; layer < 3; ++layer) {
                         for (int ch = 0; ch < 3; ++ch) {
-                            if (!alloc_and_upload_array(resources.densityCurvesLayers[layer][ch],
-                                                        ws.densityCurvesLayers[layer][ch].data(),
-                                                        layerChannelN[ch],
-                                                        cudaStreamOpaque,
-                                                        "grain density layer",
-                                                        layersError)) {
+                            if (!upload_array_locked(
+                                    resources,
+                                    resources.densityCurvesLayers[layer][ch],
+                                    0,
+                                    ws.densityCurvesLayers[layer][ch].data(),
+                                    layerChannelN[ch],
+                                    cudaStreamOpaque,
+                                    &lock,
+                                    "grain density layer",
+                                    layersError)) {
                                 outError = std::string("upload grain density layers failed: ") + layersError;
                                 free_density_layers(resources);
                                 return false;
@@ -1714,18 +1734,24 @@
             }
             }
 
-            if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, "dirDensB", outError))
+            lock.unlock();
+            lock.lock();
+            if (!reacquire_resources_phase(true)) {
                 return false;
-            if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, "dirDensG", outError))
+            }
+
+            if (!upload_curve_locked(resources, resources.dirDensB, ws.dirDensB, cudaStreamOpaque, &lock, "dirDensB", outError))
                 return false;
-            if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, "dirDensR", outError))
+            if (!upload_curve_locked(resources, resources.dirDensG, ws.dirDensG, cudaStreamOpaque, &lock, "dirDensG", outError))
+                return false;
+            if (!upload_curve_locked(resources, resources.dirDensR, ws.dirDensR, cudaStreamOpaque, &lock, "dirDensR", outError))
                 return false;
 
-            if (!upload_curve_locked(resources, resources.sensB, ws.sensB, cudaStreamOpaque, "sensB", outError))
+            if (!upload_curve_locked(resources, resources.sensB, ws.sensB, cudaStreamOpaque, &lock, "sensB", outError))
                 return false;
-            if (!upload_curve_locked(resources, resources.sensG, ws.sensG, cudaStreamOpaque, "sensG", outError))
+            if (!upload_curve_locked(resources, resources.sensG, ws.sensG, cudaStreamOpaque, &lock, "sensG", outError))
                 return false;
-            if (!upload_curve_locked(resources, resources.sensR, ws.sensR, cudaStreamOpaque, "sensR", outError))
+            if (!upload_curve_locked(resources, resources.sensR, ws.sensR, cudaStreamOpaque, &lock, "sensR", outError))
                 return false;
 
             // Upload per-instance reference illuminant tables (Ax/Ay/Az + illum) and keep a host-side copy of S_inv + ref white.
@@ -1748,13 +1774,13 @@
                     free_tables(resources);
                 }
             } else if (resources.tablesK == K && resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesIllum) {
-                if (!upload_array_locked(resources, resources.tablesAx, K, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, "tablesAx", outError))
+                if (!upload_array_locked(resources, resources.tablesAx, K, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, &lock, "tablesAx", outError))
                     return false;
-                if (!upload_array_locked(resources, resources.tablesAy, K, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, "tablesAy", outError))
+                if (!upload_array_locked(resources, resources.tablesAy, K, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, &lock, "tablesAy", outError))
                     return false;
-                if (!upload_array_locked(resources, resources.tablesAz, K, ws.tablesRef.Az.data(), K, cudaStreamOpaque, "tablesAz", outError))
+                if (!upload_array_locked(resources, resources.tablesAz, K, ws.tablesRef.Az.data(), K, cudaStreamOpaque, &lock, "tablesAz", outError))
                     return false;
-                if (!upload_array_locked(resources, resources.tablesIllum, K, ws.tablesRef.illum.data(), K, cudaStreamOpaque, "tablesIllum", outError))
+                if (!upload_array_locked(resources, resources.tablesIllum, K, ws.tablesRef.illum.data(), K, cudaStreamOpaque, &lock, "tablesIllum", outError))
                     return false;
             } else {
                 if (resources.tablesAx || resources.tablesAy || resources.tablesAz || resources.tablesIllum) {
@@ -1764,10 +1790,10 @@
                 } else {
                     free_tables(resources);
                 }
-                if (!alloc_and_upload_array(resources.tablesAx, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, "tablesAx", outError)) { free_tables(resources); return false; }
-                if (!alloc_and_upload_array(resources.tablesAy, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, "tablesAy", outError)) { free_tables(resources); return false; }
-                if (!alloc_and_upload_array(resources.tablesAz, ws.tablesRef.Az.data(), K, cudaStreamOpaque, "tablesAz", outError)) { free_tables(resources); return false; }
-                if (!alloc_and_upload_array(resources.tablesIllum, ws.tablesRef.illum.data(), K, cudaStreamOpaque, "tablesIllum", outError)) { free_tables(resources); return false; }
+                if (!upload_array_locked(resources, resources.tablesAx, 0, ws.tablesRef.Ax.data(), K, cudaStreamOpaque, &lock, "tablesAx", outError)) { free_tables(resources); return false; }
+                if (!upload_array_locked(resources, resources.tablesAy, 0, ws.tablesRef.Ay.data(), K, cudaStreamOpaque, &lock, "tablesAy", outError)) { free_tables(resources); return false; }
+                if (!upload_array_locked(resources, resources.tablesAz, 0, ws.tablesRef.Az.data(), K, cudaStreamOpaque, &lock, "tablesAz", outError)) { free_tables(resources); return false; }
+                if (!upload_array_locked(resources, resources.tablesIllum, 0, ws.tablesRef.illum.data(), K, cudaStreamOpaque, &lock, "tablesIllum", outError)) { free_tables(resources); return false; }
                 resources.tablesK = K;
             }
 
@@ -1777,6 +1803,12 @@
             } else {
                 for (int i = 0; i < 3; ++i) resources.refIllumWhiteXYZ[i] = ws.filmRaw.refIllumWhiteXYZ[i];
             }
+            }
+
+            lock.unlock();
+            lock.lock();
+            if (!reacquire_resources_phase(true)) {
+                return false;
             }
         }
 
@@ -1814,17 +1846,17 @@
                 dst.tables.epsC && dst.tables.epsM && dst.tables.epsY &&
                 dst.tables.Ax && dst.tables.Ay && dst.tables.Az;
             if (dst.tables.K == K && haveCoreArrays) {
-                if (!upload_array_locked(resources, dst.tables.epsC, K, t->epsC.data(), K, cudaStreamOpaque, "scan.epsC", outErrorLocal))
+                if (!upload_array_locked(resources, dst.tables.epsC, K, t->epsC.data(), K, cudaStreamOpaque, &lock, "scan.epsC", outErrorLocal))
                     return false;
-                if (!upload_array_locked(resources, dst.tables.epsM, K, t->epsM.data(), K, cudaStreamOpaque, "scan.epsM", outErrorLocal))
+                if (!upload_array_locked(resources, dst.tables.epsM, K, t->epsM.data(), K, cudaStreamOpaque, &lock, "scan.epsM", outErrorLocal))
                     return false;
-                if (!upload_array_locked(resources, dst.tables.epsY, K, t->epsY.data(), K, cudaStreamOpaque, "scan.epsY", outErrorLocal))
+                if (!upload_array_locked(resources, dst.tables.epsY, K, t->epsY.data(), K, cudaStreamOpaque, &lock, "scan.epsY", outErrorLocal))
                     return false;
-                if (!upload_array_locked(resources, dst.tables.Ax, K, t->Ax.data(), K, cudaStreamOpaque, "scan.Ax", outErrorLocal))
+                if (!upload_array_locked(resources, dst.tables.Ax, K, t->Ax.data(), K, cudaStreamOpaque, &lock, "scan.Ax", outErrorLocal))
                     return false;
-                if (!upload_array_locked(resources, dst.tables.Ay, K, t->Ay.data(), K, cudaStreamOpaque, "scan.Ay", outErrorLocal))
+                if (!upload_array_locked(resources, dst.tables.Ay, K, t->Ay.data(), K, cudaStreamOpaque, &lock, "scan.Ay", outErrorLocal))
                     return false;
-                if (!upload_array_locked(resources, dst.tables.Az, K, t->Az.data(), K, cudaStreamOpaque, "scan.Az", outErrorLocal))
+                if (!upload_array_locked(resources, dst.tables.Az, K, t->Az.data(), K, cudaStreamOpaque, &lock, "scan.Az", outErrorLocal))
                     return false;
             } else {
                 if (dst.tables.epsC || dst.tables.epsM || dst.tables.epsY ||
@@ -1835,14 +1867,14 @@
                 } else {
                     free_scan_medium(dst);
                 }
-                if (!alloc_and_upload_array(dst.tables.epsC, t->epsC.data(), K, cudaStreamOpaque, "scan.epsC", outErrorLocal)) { free_scan_medium(dst); return false; }
-                if (!alloc_and_upload_array(dst.tables.epsM, t->epsM.data(), K, cudaStreamOpaque, "scan.epsM", outErrorLocal)) { free_scan_medium(dst); return false; }
-                if (!alloc_and_upload_array(dst.tables.epsY, t->epsY.data(), K, cudaStreamOpaque, "scan.epsY", outErrorLocal)) { free_scan_medium(dst); return false; }
-                if (!alloc_and_upload_array(dst.tables.Ax, t->Ax.data(), K, cudaStreamOpaque, "scan.Ax", outErrorLocal)) { free_scan_medium(dst); return false; }
-                if (!alloc_and_upload_array(dst.tables.Ay, t->Ay.data(), K, cudaStreamOpaque, "scan.Ay", outErrorLocal)) { free_scan_medium(dst); return false; }
-                if (!alloc_and_upload_array(dst.tables.Az, t->Az.data(), K, cudaStreamOpaque, "scan.Az", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!upload_array_locked(resources, dst.tables.epsC, 0, t->epsC.data(), K, cudaStreamOpaque, &lock, "scan.epsC", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!upload_array_locked(resources, dst.tables.epsM, 0, t->epsM.data(), K, cudaStreamOpaque, &lock, "scan.epsM", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!upload_array_locked(resources, dst.tables.epsY, 0, t->epsY.data(), K, cudaStreamOpaque, &lock, "scan.epsY", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!upload_array_locked(resources, dst.tables.Ax, 0, t->Ax.data(), K, cudaStreamOpaque, &lock, "scan.Ax", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!upload_array_locked(resources, dst.tables.Ay, 0, t->Ay.data(), K, cudaStreamOpaque, &lock, "scan.Ay", outErrorLocal)) { free_scan_medium(dst); return false; }
+                if (!upload_array_locked(resources, dst.tables.Az, 0, t->Az.data(), K, cudaStreamOpaque, &lock, "scan.Az", outErrorLocal)) { free_scan_medium(dst); return false; }
                 if (t->hasBaseline) {
-                    if (!alloc_and_upload_array(dst.tables.baseMin, t->baseMin.data(), K, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) { free_scan_medium(dst); return false; }
+                    if (!upload_array_locked(resources, dst.tables.baseMin, 0, t->baseMin.data(), K, cudaStreamOpaque, &lock, "scan.baseMin", outErrorLocal)) { free_scan_medium(dst); return false; }
                 }
 
                 dst.tables.K = K;
@@ -1851,11 +1883,11 @@
             // Baseline can toggle without changing K; keep device pointer in sync.
             if (t->hasBaseline) {
                 if (dst.tables.baseMin && dst.tables.K == K) {
-                    if (!upload_array_locked(resources, dst.tables.baseMin, K, t->baseMin.data(), K, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) {
+                    if (!upload_array_locked(resources, dst.tables.baseMin, K, t->baseMin.data(), K, cudaStreamOpaque, &lock, "scan.baseMin", outErrorLocal)) {
                         return false;
                     }
                 } else if (!dst.tables.baseMin) {
-                    if (!alloc_and_upload_array(dst.tables.baseMin, t->baseMin.data(), K, cudaStreamOpaque, "scan.baseMin", outErrorLocal)) { free_scan_medium(dst); return false; }
+                    if (!upload_array_locked(resources, dst.tables.baseMin, 0, t->baseMin.data(), K, cudaStreamOpaque, &lock, "scan.baseMin", outErrorLocal)) { free_scan_medium(dst); return false; }
                 }
             }
             else {
@@ -1891,6 +1923,13 @@
                 !upload_scan_medium(resources.scanPrint, ws.printMediumRuntime, scanError)) {
                 outError = std::string("upload scan print failed: ") + scanError;
                 return false;
+            }
+            if (needPrintMediumUploads) {
+                lock.unlock();
+                lock.lock();
+                if (!reacquire_resources_phase(true)) {
+                    return false;
+                }
             }
         }
 
@@ -1929,7 +1968,7 @@
                         }
                         return true;
                     }
-                    if (!upload_curve_locked(resources, dst, src, cudaStreamOpaque, label, err)) {
+                    if (!upload_curve_locked(resources, dst, src, cudaStreamOpaque, &lock, label, err)) {
                         err = std::string(label) + ": " + err;
                         return false;
                     }
@@ -1960,13 +1999,13 @@
                     }
                 }
                 else {
-                    if (!upload_spectral_samples_locked(resources, resources.printSensC, p.sensC_log.linear, cudaStreamOpaque, "print sensC", outError)) {
+                    if (!upload_spectral_samples_locked(resources, resources.printSensC, p.sensC_log.linear, cudaStreamOpaque, &lock, "print sensC", outError)) {
                         return false;
                     }
-                    if (!upload_spectral_samples_locked(resources, resources.printSensM, p.sensM_log.linear, cudaStreamOpaque, "print sensM", outError)) {
+                    if (!upload_spectral_samples_locked(resources, resources.printSensM, p.sensM_log.linear, cudaStreamOpaque, &lock, "print sensM", outError)) {
                         return false;
                     }
-                    if (!upload_spectral_samples_locked(resources, resources.printSensY, p.sensY_log.linear, cudaStreamOpaque, "print sensY", outError)) {
+                    if (!upload_spectral_samples_locked(resources, resources.printSensY, p.sensY_log.linear, cudaStreamOpaque, &lock, "print sensY", outError)) {
                         return false;
                     }
                 }
@@ -2017,6 +2056,12 @@
             }
         }
 
+        lock.unlock();
+        lock.lock();
+        if (!reacquire_resources_phase(true)) {
+            return false;
+        }
+
         // Upload Hanatos LUT if available (uploaded once and reused across WorkingState rebuilds).
         {
             Spectral::SpectralContext& ctx = Spectral::context();
@@ -2047,35 +2092,41 @@
                 }
             } else {
                 if (!resources.hanatosLut || resources.hanatosN != N) {
+                    const size_t count = static_cast<size_t>(N) * static_cast<size_t>(N) * static_cast<size_t>(K);
+                    if (count > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                        outError = "Hanatos LUT value count exceeds upload helper limits";
+                        return false;
+                    }
+                    float* dHanatosLut = nullptr;
+                    lock.unlock();
+                    const bool allocOk = alloc_and_upload_array(
+                        dHanatosLut,
+                        ctx.hanSpectra.data.data(),
+                        static_cast<int>(count),
+                        cudaStreamOpaque,
+                        "Hanatos LUT",
+                        outError);
+                    if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
+                        if (dHanatosLut) {
+                            cudaFree(dHanatosLut);
+                        }
+                        return false;
+                    }
+                    if (!allocOk) {
+                        return false;
+                    }
                     if (resources.hanatosLut) {
-                        const size_t count = static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(resources.hanatosN) * static_cast<size_t>(Spectral::kNumSamples);
-                        const size_t bytes = count * sizeof(float);
-                        if (!retire_ptr_locked(resources, resources.hanatosLut, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos LUT", outError)) {
+                        const size_t oldCount =
+                            static_cast<size_t>(resources.hanatosN) *
+                            static_cast<size_t>(resources.hanatosN) *
+                            static_cast<size_t>(Spectral::kNumSamples);
+                        const size_t oldBytes = oldCount * sizeof(float);
+                        if (!retire_ptr_locked(resources, resources.hanatosLut, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Hanatos LUT", outError)) {
+                            cudaFree(dHanatosLut);
                             return false;
                         }
-                        resources.hanatosLut = nullptr;
-                        resources.hanatosN = 0;
                     }
-
-                    const size_t count = static_cast<size_t>(N) * static_cast<size_t>(N) * static_cast<size_t>(K);
-                    const size_t bytes = count * sizeof(float);
-                    cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.hanatosLut), bytes);
-                    if (err != cudaSuccess) {
-                        outError = std::string("cudaMalloc(Hanatos LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                        free_hanatos(resources);
-                        return false;
-                    }
-                    if (!enqueue_host_to_device_copy(
-                            "ensure_uploaded",
-                            "Hanatos LUT",
-                            resources.hanatosLut,
-                            ctx.hanSpectra.data.data(),
-                            bytes,
-                            cudaStreamOpaque,
-                            outError)) {
-                        free_hanatos(resources);
-                        return false;
-                    }
+                    resources.hanatosLut = dHanatosLut;
                     resources.hanatosN = N;
                 }
             }
@@ -2120,13 +2171,21 @@
                         const int valueCountInt = static_cast<int>(valueCount);
                         if (stillNeedAlloc) {
                             float* dLut = nullptr;
-                            if (!alloc_and_upload_array(
-                                    dLut,
-                                    cpu.data(),
-                                    valueCountInt,
-                                    cudaStreamOpaque,
-                                    "Hanatos integrated LUT",
-                                    outError)) {
+                            lock.unlock();
+                            const bool allocOk = alloc_and_upload_array(
+                                dLut,
+                                cpu.data(),
+                                valueCountInt,
+                                cudaStreamOpaque,
+                                "Hanatos integrated LUT",
+                                outError);
+                            if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
+                                if (dLut) {
+                                    cudaFree(dLut);
+                                }
+                                return false;
+                            }
+                            if (!allocOk) {
                                 return false;
                             }
 
@@ -2149,6 +2208,7 @@
                                     cpu.data(),
                                     valueCountInt,
                                     cudaStreamOpaque,
+                                    &lock,
                                     "Hanatos integrated LUT",
                                     outError)) {
                                 return false;
@@ -2185,34 +2245,38 @@
                 }
             }
             else if (!resources.mallettBasis || resources.mallettBasisK != K) {
+                const size_t count = static_cast<size_t>(K) * 3u;
+                if (count > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                    outError = "Mallett basis value count exceeds upload helper limits";
+                    return false;
+                }
+                float* dMallettBasis = nullptr;
+                lock.unlock();
+                const bool allocOk = alloc_and_upload_array(
+                    dMallettBasis,
+                    ctx.mallettBasis.data.data(),
+                    static_cast<int>(count),
+                    cudaStreamOpaque,
+                    "Mallett basis",
+                    outError);
+                if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
+                    if (dMallettBasis) {
+                        cudaFree(dMallettBasis);
+                    }
+                    return false;
+                }
+                if (!allocOk) {
+                    return false;
+                }
                 if (resources.mallettBasis) {
-                    const size_t count = static_cast<size_t>(resources.mallettBasisK) * 3u;
-                    const size_t bytes = count * sizeof(float);
-                    if (!retire_ptr_locked(resources, resources.mallettBasis, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Mallett basis", outError)) {
+                    const size_t oldCount = static_cast<size_t>(resources.mallettBasisK) * 3u;
+                    const size_t oldBytes = oldCount * sizeof(float);
+                    if (!retire_ptr_locked(resources, resources.mallettBasis, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "Mallett basis", outError)) {
+                        cudaFree(dMallettBasis);
                         return false;
                     }
-                    resources.mallettBasis = nullptr;
-                    resources.mallettBasisK = 0;
                 }
-                const size_t count = static_cast<size_t>(K) * 3u;
-                const size_t bytes = count * sizeof(float);
-                cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.mallettBasis), bytes);
-                if (err != cudaSuccess) {
-                    outError = std::string("cudaMalloc(Mallett basis) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                    free_mallett_basis(resources);
-                    return false;
-                }
-                if (!enqueue_host_to_device_copy(
-                        "ensure_uploaded",
-                        "Mallett basis",
-                        resources.mallettBasis,
-                        ctx.mallettBasis.data.data(),
-                        bytes,
-                        cudaStreamOpaque,
-                        outError)) {
-                    free_mallett_basis(resources);
-                    return false;
-                }
+                resources.mallettBasis = dMallettBasis;
                 resources.mallettBasisK = K;
             }
         }
@@ -2233,6 +2297,7 @@
         outError = "CUDA is not enabled";
         return false;
 #else
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
         const Scanner::ScannerMediumRuntime& medium = negativeMedium ? ws.negativeMediumRuntime : ws.printMediumRuntime;
         const Scanner::ScannerStaticKey& staticKey = negativeMedium ? ws.negativeStaticKey : ws.printStaticKey;
         const Scanner::ScannerMedium expectedMedium = negativeMedium
@@ -2295,7 +2360,7 @@
         }
 
         {
-            std::lock_guard<std::mutex> lock(resources.m);
+            std::unique_lock<std::mutex> lock(resources.m);
             if (!validate_resource_owner_locked(resources, outError, false)) {
                 return false;
             }
@@ -2305,31 +2370,26 @@
 
             const size_t bytes = cpu.size() * sizeof(double);
             if (dst->log2XYZ && dst->res == res) {
-                const cudaStream_t stream = cudaStreamOpaque
-                                                ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-                                                : nullptr;
-                if (resources.lastUseEventOpaque) {
-                    const cudaEvent_t lastUseEv =
-                        reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-                    const cudaError_t waitErr =
-                        cudaStreamWaitEvent(stream, lastUseEv, 0);
-                    if (waitErr != cudaSuccess) {
-                        outError =
-                            std::string("cudaStreamWaitEvent before scan LUT update failed: ") +
-                            (cudaGetErrorString(waitErr)
-                                 ? cudaGetErrorString(waitErr)
-                                 : "(unknown)");
-                        return false;
-                    }
-                }
-                if (!enqueue_host_to_device_copy(
+                double* const deviceLut = dst->log2XYZ;
+                void* const lastUseEventOpaque = resources.lastUseEventOpaque;
+                lock.unlock();
+                const bool waitOk = wait_for_last_use_event_snapshot(
+                    lastUseEventOpaque,
+                    cudaStreamOpaque,
+                    "scan LUT",
+                    outError);
+                const bool copyOk = waitOk && enqueue_host_to_device_copy(
                         "ensure_scan_lut",
                         "scan LUT",
-                        dst->log2XYZ,
+                        deviceLut,
                         cpu.data(),
                         bytes,
                         cudaStreamOpaque,
-                        outError)) {
+                        outError);
+                if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
+                    return false;
+                }
+                if (!copyOk) {
                     return false;
                 }
                 dst->hash = expectedHash;
@@ -2349,22 +2409,29 @@
             }
 
             double* dLut = nullptr;
+            lock.unlock();
             cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dLut), bytes);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                free_scan_lut(*dst);
-                return false;
-            }
-            if (!enqueue_host_to_device_copy(
+            const bool allocOk = (err == cudaSuccess);
+            const bool copyOk = allocOk && enqueue_host_to_device_copy(
                     "ensure_scan_lut",
                     "scan LUT",
                     dLut,
                     cpu.data(),
                     bytes,
                     cudaStreamOpaque,
-                    outError)) {
+                    outError);
+            if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
+                if (dLut) {
+                    cudaFree(dLut);
+                }
+                return false;
+            }
+            if (!allocOk) {
+                outError = std::string("cudaMalloc(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                return false;
+            }
+            if (!copyOk) {
                 cudaFree(dLut);
-                free_scan_lut(*dst);
                 return false;
             }
 
@@ -2430,6 +2497,7 @@
         outError = "CUDA is not enabled";
         return false;
 #else
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
         const int K = Spectral::gShape.K;
         if (K <= 0) {
             outError = "spectral shape invalid";
@@ -2466,8 +2534,6 @@
         const float cAmount = compose_amount(prt.neutralC, cKey);
         const std::uint64_t neutralFilterHash =
             (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
-
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
 
         {
             std::lock_guard<std::mutex> lock(resources.m);
@@ -2508,7 +2574,7 @@
             cpu[static_cast<size_t>(i)] = Ee * (fY * fM * fC);
         }
 
-        std::lock_guard<std::mutex> lock(resources.m);
+        std::unique_lock<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
@@ -2527,6 +2593,7 @@
             return true;
         }
 
+        const size_t bytes = static_cast<size_t>(K) * sizeof(float);
         const bool overwriting = (resources.printIllumFiltered != nullptr) && (resources.printIllumK == K);
         if (resources.printIllumFiltered && resources.printIllumK != K) {
             const size_t oldBytes = static_cast<size_t>(std::max(0, resources.printIllumK)) * sizeof(float);
@@ -2536,37 +2603,59 @@
             resources.printIllumFiltered = nullptr;
             resources.printIllumK = 0;
         }
-        if (!resources.printIllumFiltered) {
-            const size_t bytes = static_cast<size_t>(K) * sizeof(float);
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.printIllumFiltered), bytes);
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                resources.printIllumFiltered = nullptr;
-                resources.printIllumK = 0;
-                return false;
-            }
-            resources.printIllumK = K;
-        }
-
-        if (overwriting && resources.lastUseEventOpaque) {
-            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-            if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before print illuminant filtered update failed: ") + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                return false;
-            }
-        }
-
-        const size_t bytes = static_cast<size_t>(K) * sizeof(float);
-        if (!enqueue_host_to_device_copy(
-                "ensure_print_illuminant_filtered",
-                "print illuminant filtered",
-                resources.printIllumFiltered,
-                cpu.data(),
-                bytes,
+        if (overwriting) {
+            float* const printIllumFiltered = resources.printIllumFiltered;
+            void* const lastUseEventOpaque = resources.lastUseEventOpaque;
+            lock.unlock();
+            const bool waitOk = wait_for_last_use_event_snapshot(
+                lastUseEventOpaque,
                 cudaStreamOpaque,
-                outError)) {
-            return false;
+                "print illuminant filtered",
+                outError);
+            const bool copyOk = waitOk && enqueue_host_to_device_copy(
+                    "ensure_print_illuminant_filtered",
+                    "print illuminant filtered",
+                    printIllumFiltered,
+                    cpu.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError);
+            if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
+                return false;
+            }
+            if (!copyOk) {
+                return false;
+            }
+        }
+        else {
+            float* printIllumFiltered = nullptr;
+            lock.unlock();
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&printIllumFiltered), bytes);
+            const bool allocOk = (err == cudaSuccess);
+            const bool copyOk = allocOk && enqueue_host_to_device_copy(
+                    "ensure_print_illuminant_filtered",
+                    "print illuminant filtered",
+                    printIllumFiltered,
+                    cpu.data(),
+                    bytes,
+                    cudaStreamOpaque,
+                    outError);
+            if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
+                if (printIllumFiltered) {
+                    cudaFree(printIllumFiltered);
+                }
+                return false;
+            }
+            if (!allocOk) {
+                outError = std::string("cudaMalloc(print illuminant filtered) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                return false;
+            }
+            if (!copyOk) {
+                cudaFree(printIllumFiltered);
+                return false;
+            }
+            resources.printIllumFiltered = printIllumFiltered;
+            resources.printIllumK = K;
         }
 
         resources.printIllumYShiftSteps = yKey;

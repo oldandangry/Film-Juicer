@@ -38,9 +38,14 @@ namespace JuicerCuda {
     };
 
     struct Resources {
+        // Serializes multi-step serving mutations (`ensure_uploaded`, `ensure_scan_lut`,
+        // `ensure_print_illuminant_filtered`) so `m` can remain a short-lived leaf lock for
+        // individual resource-state access/update phases. Always take this mutex before `m`.
+        std::mutex servingUpdateMutex;
         // Leaf lock for per-device CUDA resource state. Do not hold InstanceState locks or
         // resource-manager admission/cache bookkeeping locks while taking this mutex, and do not
-        // sleep or wait on external work while it is held.
+        // sleep or wait on external work while it is held. Multi-phase serving updates should use
+        // `servingUpdateMutex` to serialize the transaction and take `m` only around leaf work.
         std::mutex m;
         int deviceId = -1;
         // CUcontext identity captured from the render slot key; used by teardown safety checks.
