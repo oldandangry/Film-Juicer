@@ -28,43 +28,6 @@
 
 extern const std::string gDataDir;
 
-namespace Pipeline {
-    struct DevelopPrintInputs {
-        const Print::Runtime* printRuntime = nullptr;
-        PrintLogRaw printLogRaw;
-    };
-
-    struct DevelopPrintOutputs {
-        PrintDensityCMY printDensity;
-    };
-
-    class DevelopPrintStage {
-    public:
-        static bool run(const DevelopPrintInputs& in, DevelopPrintOutputs& out);
-    };
-
-    struct ExposePrintInputs {
-        const Print::Runtime* printRuntime = nullptr;
-        const Print::Params* printParams = nullptr;
-        NegativeDensityCMY negativeDensity;
-        float midgrayFactor = 1.0f;
-    };
-
-    struct ExposePrintOutputs {
-        PrintRaw printRaw;
-        PrintLogRaw printLogRaw;
-    };
-
-    class ExposePrintStage {
-    public:
-        static bool run(
-            const WorkingState& ws,
-            const ExposePrintInputs& in,
-            ExposePrintOutputs& out,
-            PrintPipelineScratch& scratch);
-    };
-}
-
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #include <cuda.h>

@@ -45,48 +45,6 @@ namespace Pipeline {
         static FilmLogRaw compute_log_raw(const FilmRaw& filmRaw);
     };
 
-    struct ExposePrintInputs {
-        const Print::Runtime* printRuntime = nullptr;
-        const Print::Params* printParams = nullptr;
-        NegativeDensityCMY negativeDensity;
-        float midgrayFactor = 1.0f;
-    };
-
-    struct ExposePrintOutputs {
-        PrintRaw printRaw;
-        PrintLogRaw printLogRaw;
-    };
-
-    class ExposePrintStage {
-    public:
-        static bool run(
-            const WorkingState& ws,
-            const ExposePrintInputs& in,
-            ExposePrintOutputs& out,
-            PrintPipelineScratch& scratch);
-
-        static float compute_midgray_factor(
-            const WorkingState& ws,
-            const Print::Runtime& printRuntime,
-            const Print::Params& printParams,
-            const Couplers::Runtime& dirRT,
-            float exposureCompScale);
-    };
-
-    struct DevelopPrintInputs {
-        const Print::Runtime* printRuntime = nullptr;
-        PrintLogRaw printLogRaw;
-    };
-
-    struct DevelopPrintOutputs {
-        PrintDensityCMY printDensity;
-    };
-
-    class DevelopPrintStage {
-    public:
-        static bool run(const DevelopPrintInputs& in, DevelopPrintOutputs& out);
-    };
-
     namespace {
 
         inline float blend_dichroic_filter_linear(float curveVal, float normalizedAmount) {
