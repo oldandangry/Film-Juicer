@@ -95,6 +95,13 @@ namespace Pipeline {
         float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
     };
 
+    // Shared print preflash helper used by the CPU print stage and CUDA resource validation hooks.
+    bool compute_preflash_raw(
+        const WorkingState& ws,
+        const Print::Runtime& printRuntime,
+        float outRaw[3],
+        int& outShapeK);
+
     // Shared print-stage seam used by both pipeline orchestration and CUDA-side validation hooks.
     // Keep this centralized so the stage declarations cannot drift across TUs.
     struct ExposePrintInputs {
@@ -137,6 +144,55 @@ namespace Pipeline {
     class DevelopPrintStage {
     public:
         static bool run(const DevelopPrintInputs& in, DevelopPrintOutputs& out);
+    };
+
+    // Shared density-pipeline orchestration seam used by the CPU render path and spatial DIR helpers.
+    struct PipelineRunnerConfig {
+        bool enablePrint = true;
+    };
+
+    struct DensityPixelInputs {
+        RgbLinear rgb;
+        float exposureScale = 1.0f;
+
+        const Couplers::Runtime* dirRuntime = nullptr;
+        bool applyDirRuntime = true;
+
+        bool useFilmRawOverride = false;
+        FilmRaw filmRawOverride;
+
+        bool useSpatialDIR = false;
+        float spatialLogECorrectionsYMC[3] = { 0.0f, 0.0f, 0.0f };
+
+        const Print::Runtime* printRuntime = nullptr;
+        const Print::Params* printParams = nullptr;
+        float midgrayFactor = 1.0f;
+        PrintPipelineScratch* printScratch = nullptr;
+    };
+
+    struct DensityPixelOutputs {
+        FilmRaw filmRaw;
+        FilmLogRaw filmLogRaw;
+        NegativeDensityCMY negativeDensity;
+        PrintDensityCMY printDensity;
+        DensityMedium medium = DensityMedium::Negative;
+    };
+
+    class PipelineRunner {
+    public:
+        explicit PipelineRunner(const PipelineRunnerConfig& cfg);
+
+        bool run_density_pixel(const WorkingState& ws, const DensityPixelInputs& in, DensityPixelOutputs& out) const;
+
+        static float compute_midgray_factor(
+            const WorkingState& ws,
+            const Print::Runtime& printRuntime,
+            const Print::Params& printParams,
+            const Couplers::Runtime& dirRT,
+            float exposureCompScale);
+
+    private:
+        PipelineRunnerConfig cfg_;
     };
 
 } // namespace Pipeline

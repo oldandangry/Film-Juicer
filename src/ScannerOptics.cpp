@@ -13,9 +13,7 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Hash.h"
 #include "Logging.h"
-#include "OutputEncoding.h"
-#include "GeneratedColorSpaces.h"
-#include "ScanStage.h"
+#include "OutputColor.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "GaussianSciPy.h"
@@ -357,6 +355,109 @@ namespace {
 
 } // namespace
 
+namespace Scanner {
+
+    void normalize_density(
+        const ScannerMediumRuntime& medium,
+        const float D_cmy[3],
+        double D_norm[3])
+    {
+        if (!D_cmy || !D_norm) {
+            return;
+        }
+
+        if (medium.medium == ScannerMedium::Negative) {
+            D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(medium.range.min_cmy[0])) * static_cast<double>(medium.range.inv_max_cmy[0]);
+            D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(medium.range.min_cmy[1])) * static_cast<double>(medium.range.inv_max_cmy[1]);
+            D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(medium.range.min_cmy[2])) * static_cast<double>(medium.range.inv_max_cmy[2]);
+        }
+        else {
+            D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(medium.range.inv_max_cmy[0]);
+            D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(medium.range.inv_max_cmy[1]);
+            D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(medium.range.inv_max_cmy[2]);
+        }
+    }
+
+    void spectral_to_log_xyz(
+        const ScannerMediumRuntime& medium,
+        const double D_norm[3],
+        double logXYZ[3])
+    {
+        if (!D_norm || !logXYZ) {
+            return;
+        }
+
+        const Spectral::SpectralTables* tables = medium.tables;
+        if (!tables || tables->K <= 0) {
+            logXYZ[0] = logXYZ[1] = logXYZ[2] = std::numeric_limits<double>::quiet_NaN();
+            return;
+        }
+
+        double D_denorm[3];
+        if (medium.medium == ScannerMedium::Negative) {
+            D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]) - static_cast<double>(medium.range.min_cmy[0]);
+            D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]) - static_cast<double>(medium.range.min_cmy[1]);
+            D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]) - static_cast<double>(medium.range.min_cmy[2]);
+        }
+        else {
+            D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]);
+            D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]);
+            D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]);
+        }
+
+        const int K = tables->K;
+        const float* epsC = tables->epsC.data();
+        const float* epsM = tables->epsM.data();
+        const float* epsY = tables->epsY.data();
+        const float* Ax = tables->Ax.data();
+        const float* Ay = tables->Ay.data();
+        const float* Az = tables->Az.data();
+        const float* baseMin = tables->baseMin.data();
+
+        const bool useBaseline = tables->hasBaseline;
+
+        double X = 0.0, Y = 0.0, Z = 0.0;
+        for (int i = 0; i < K; ++i) {
+            const double baseSpectral = (useBaseline) ? static_cast<double>(baseMin[i]) : 0.0;
+            const double Dlambda = D_denorm[0] * static_cast<double>(epsC[i])
+                + D_denorm[1] * static_cast<double>(epsM[i])
+                + D_denorm[2] * static_cast<double>(epsY[i])
+                + baseSpectral;
+
+            const double transmittance = std::pow(10.0, -Dlambda);
+            const double ax = static_cast<double>(Ax[i]);
+            const double ay = static_cast<double>(Ay[i]);
+            const double az = static_cast<double>(Az[i]);
+            if (std::isfinite(ax)) {
+                const double out = transmittance * ax;
+                if (!std::isnan(out)) X += out;
+            }
+            if (std::isfinite(ay)) {
+                const double out = transmittance * ay;
+                if (!std::isnan(out)) Y += out;
+            }
+            if (std::isfinite(az)) {
+                const double out = transmittance * az;
+                if (!std::isnan(out)) Z += out;
+            }
+        }
+
+        const double invNormalization = static_cast<double>(tables->invYn);
+        const double XYZ[3] = {
+            X * invNormalization,
+            Y * invNormalization,
+            Z * invNormalization
+        };
+
+        constexpr double kEps = 1e-10;
+        // agx-emulsion parity: do not clamp XYZ before log.
+        logXYZ[0] = std::log10(XYZ[0] + kEps);
+        logXYZ[1] = std::log10(XYZ[1] + kEps);
+        logXYZ[2] = std::log10(XYZ[2] + kEps);
+    }
+
+} // namespace Scanner
+
 namespace ScannerOptics {
 
     Scanner::ColorRuntime build_color_runtime(
@@ -508,7 +609,7 @@ namespace ScannerOptics {
         }
 
         auto spectral_to_logXYZ = [&](const double D_norm[3], double logXYZ[3]) {
-            Pipeline::ScanStage::spectral_to_log_xyz(medium, D_norm, logXYZ);
+            Scanner::spectral_to_log_xyz(medium, D_norm, logXYZ);
         };
 
         // Prepare LUT if needed
@@ -722,7 +823,7 @@ namespace ScannerOptics {
                         const size_t idx = rowOffset + size_t(xOff);
                         float D_cmy[3] = { density.c[idx], density.m[idx], density.y[idx] };
                         double D_norm[3];
-                        Pipeline::ScanStage::normalize_density(medium, D_cmy, D_norm);
+                        Scanner::normalize_density(medium, D_cmy, D_norm);
                         double logXYZ[3];
                         const bool D_norm_finite =
                             std::isfinite(D_norm[0]) && std::isfinite(D_norm[1]) && std::isfinite(D_norm[2]);
@@ -730,7 +831,7 @@ namespace ScannerOptics {
                             sample_cubic(runtime.lut, D_norm, logXYZ);
                         }
                         else {
-                            Pipeline::ScanStage::spectral_to_log_xyz(medium, D_norm, logXYZ);
+                            Scanner::spectral_to_log_xyz(medium, D_norm, logXYZ);
                         }
                         double xyz[3] = {
                             std::pow(10.0, logXYZ[0]),
