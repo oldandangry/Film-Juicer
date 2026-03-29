@@ -215,8 +215,6 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp" />
     <ClCompile Include="src\DevelopFilmStage.cpp" />
-    <ClCompile Include="src\DevelopPrintStage.cpp" />
-    <ClCompile Include="src\ExposeFilmStage.cpp" />
     <ClCompile Include="src\ExposePrintStage.cpp" />
     <ClCompile Include="src\GeneratedColorSpaces.cpp" />
     <ClCompile Include="src\JuicerEffect.cpp" />
@@ -255,22 +253,16 @@
     <ClInclude Include="src\Cuda\JuicerCudaPrintPipeline.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
     <ClInclude Include="src\Cuda\JuicerCudaResourcesInternal.h" />
-    <ClInclude Include="src\Cuda\JuicerCudaSelfCheck.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceKeys.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerInternal.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceState.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceTelemetry.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceTypes.h" />
     <ClInclude Include="src\Cuda\Scan\JuicerCudaScanOutput.cuh" />
     <ClInclude Include="src\Cuda\Scan\JuicerCudaScanStage.cuh" />
-    <ClInclude Include="src\DevelopFilmStage.h" />
-    <ClInclude Include="src\DevelopPrintStage.h" />
-    <ClInclude Include="src\ExposeFilmStage.h" />
-    <ClInclude Include="src\ExposePrintStage.h" />
     <ClInclude Include="src\FilmProcessing.h" />
     <ClInclude Include="src\GaussianSciPy.h" />
     <ClInclude Include="src\GeneratedColorSpaces.h" />
@@ -281,7 +273,6 @@
     <ClInclude Include="src\JuicerState.h" />
     <ClInclude Include="src\Logging.h" />
     <ClInclude Include="src\mainProcessing.h" />
-    <ClInclude Include="src\NeutralFilters.h" />
     <ClInclude Include="src\NpyLoader.h" />
     <ClInclude Include="src\OutputEncoding.h" />
     <ClInclude Include="src\ParamNames.h" />
@@ -297,7 +288,6 @@
     <ClInclude Include="src\SpectralData.h" />
     <ClInclude Include="src\SpectralProcessing.h" />
     <ClInclude Include="src\SpectralTypes.h" />
-    <ClInclude Include="src\SpectralUpsampling.h" />
     <ClInclude Include="src\WorkingState.h" />
   </ItemGroup>
   <ItemGroup>

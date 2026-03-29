@@ -1,17 +1,92 @@
-#include "ExposePrintStage.h"
-
 #include <algorithm>
 #include <cmath>
 #include <sstream>
 
-#include "DevelopFilmStage.h"
-#include "ExposeFilmStage.h"
+#include "FilmProcessing.h"
 #include "Logging.h"
+#include "PipelineTypes.h"
 #include "Print.h"
 #include "PrintPreflashShared.h"
 #include "WorkingState.h"
 
 namespace Pipeline {
+
+    struct ExposeFilmInputs {
+        RgbLinear rgb;
+        float exposureScale = 1.0f;
+    };
+
+    struct ExposeFilmOutputs {
+        FilmRaw filmRaw;
+    };
+
+    class ExposeFilmStage {
+    public:
+        static bool run(const WorkingState& ws, const ExposeFilmInputs& in, ExposeFilmOutputs& out);
+    };
+
+    struct DevelopFilmInputs {
+        FilmRaw filmRaw;
+        const Couplers::Runtime* dirRuntime = nullptr;
+        bool applyDirRuntime = true;
+
+        bool useSpatialDIR = false;
+        float spatialLogECorrectionsYMC[3] = { 0.0f, 0.0f, 0.0f };
+    };
+
+    struct DevelopFilmOutputs {
+        FilmLogRaw filmLogRaw;
+        NegativeDensityCMY negativeDensity;
+    };
+
+    class DevelopFilmStage {
+    public:
+        static bool run(const WorkingState& ws, const DevelopFilmInputs& in, DevelopFilmOutputs& out);
+        static FilmLogRaw compute_log_raw(const FilmRaw& filmRaw);
+    };
+
+    struct ExposePrintInputs {
+        const Print::Runtime* printRuntime = nullptr;
+        const Print::Params* printParams = nullptr;
+        NegativeDensityCMY negativeDensity;
+        float midgrayFactor = 1.0f;
+    };
+
+    struct ExposePrintOutputs {
+        PrintRaw printRaw;
+        PrintLogRaw printLogRaw;
+    };
+
+    class ExposePrintStage {
+    public:
+        static bool run(
+            const WorkingState& ws,
+            const ExposePrintInputs& in,
+            ExposePrintOutputs& out,
+            PrintPipelineScratch& scratch);
+
+        static float compute_midgray_factor(
+            const WorkingState& ws,
+            const Print::Runtime& printRuntime,
+            const Print::Params& printParams,
+            const Couplers::Runtime& dirRT,
+            float exposureCompScale);
+    };
+
+    struct DevelopPrintInputs {
+        const Print::Runtime* printRuntime = nullptr;
+        PrintLogRaw printLogRaw;
+    };
+
+    struct DevelopPrintOutputs {
+        PrintDensityCMY printDensity;
+    };
+
+    class DevelopPrintStage {
+    public:
+        static bool run(const DevelopPrintInputs& in, DevelopPrintOutputs& out);
+    };
+
     namespace {
 
         inline float blend_dichroic_filter_linear(float curveVal, float normalizedAmount) {
@@ -419,6 +494,33 @@ namespace Pipeline {
         }
 
         return baseFactor;
+    }
+
+    bool DevelopPrintStage::run(const DevelopPrintInputs& in, DevelopPrintOutputs& out) {
+        out.printDensity = PrintDensityCMY{};
+
+        if (!in.printRuntime) {
+            return false;
+        }
+
+        const Print::Profile& p = in.printRuntime->profile;
+
+        auto interpolate_density_gamma = [](const Spectral::Curve& dc, float logE, float gammaFactor) {
+            if (dc.lambda_nm.empty()) {
+                return 0.0f;
+            }
+
+            const float gammaSafe = (std::isfinite(gammaFactor) && gammaFactor > 0.0f)
+                ? gammaFactor
+                : 1.0f;
+
+            return Spectral::sample_density_at_logE(dc, logE, gammaSafe);
+        };
+
+        out.printDensity.v[0] = interpolate_density_gamma(p.dcC, in.printLogRaw.v[0], p.gammaFactor[0]);
+        out.printDensity.v[1] = interpolate_density_gamma(p.dcM, in.printLogRaw.v[1], p.gammaFactor[1]);
+        out.printDensity.v[2] = interpolate_density_gamma(p.dcY, in.printLogRaw.v[2], p.gammaFactor[2]);
+        return true;
     }
 
 } // namespace Pipeline

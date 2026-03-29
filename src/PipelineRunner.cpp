@@ -1,12 +1,84 @@
 #include "PipelineRunner.h"
 
-#include "DevelopFilmStage.h"
-#include "DevelopPrintStage.h"
-#include "ExposeFilmStage.h"
-#include "ExposePrintStage.h"
 #include "Print.h"
 
 namespace Pipeline {
+
+    struct DevelopFilmInputs {
+        FilmRaw filmRaw;
+        const Couplers::Runtime* dirRuntime = nullptr;
+        bool applyDirRuntime = true;
+
+        bool useSpatialDIR = false;
+        float spatialLogECorrectionsYMC[3] = { 0.0f, 0.0f, 0.0f };
+    };
+
+    struct DevelopFilmOutputs {
+        FilmLogRaw filmLogRaw;
+        NegativeDensityCMY negativeDensity;
+    };
+
+    class DevelopFilmStage {
+    public:
+        static bool run(const WorkingState& ws, const DevelopFilmInputs& in, DevelopFilmOutputs& out);
+        static FilmLogRaw compute_log_raw(const FilmRaw& filmRaw);
+    };
+
+    struct ExposeFilmInputs {
+        RgbLinear rgb;
+        float exposureScale = 1.0f;
+    };
+
+    struct ExposeFilmOutputs {
+        FilmRaw filmRaw;
+    };
+
+    class ExposeFilmStage {
+    public:
+        static bool run(const WorkingState& ws, const ExposeFilmInputs& in, ExposeFilmOutputs& out);
+    };
+
+    struct DevelopPrintInputs {
+        const Print::Runtime* printRuntime = nullptr;
+        PrintLogRaw printLogRaw;
+    };
+
+    struct DevelopPrintOutputs {
+        PrintDensityCMY printDensity;
+    };
+
+    class DevelopPrintStage {
+    public:
+        static bool run(const DevelopPrintInputs& in, DevelopPrintOutputs& out);
+    };
+
+    struct ExposePrintInputs {
+        const Print::Runtime* printRuntime = nullptr;
+        const Print::Params* printParams = nullptr;
+        NegativeDensityCMY negativeDensity;
+        float midgrayFactor = 1.0f;
+    };
+
+    struct ExposePrintOutputs {
+        PrintRaw printRaw;
+        PrintLogRaw printLogRaw;
+    };
+
+    class ExposePrintStage {
+    public:
+        static bool run(
+            const WorkingState& ws,
+            const ExposePrintInputs& in,
+            ExposePrintOutputs& out,
+            PrintPipelineScratch& scratch);
+
+        static float compute_midgray_factor(
+            const WorkingState& ws,
+            const Print::Runtime& printRuntime,
+            const Print::Params& printParams,
+            const Couplers::Runtime& dirRT,
+            float exposureCompScale);
+    };
 
     PipelineRunner::PipelineRunner(const PipelineRunnerConfig& cfg) : cfg_(cfg) {}
 
