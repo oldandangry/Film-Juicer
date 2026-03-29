@@ -1,11 +1,10 @@
-#include "SpatialDIR.h"
+#include "mainProcessing.h"
 
 #include <algorithm>
 #include <sstream>
 
-#include "Couplers.h"
 #include "Logging.h"
-#include "PipelineRunner.h"
+#include "PipelineTypes.h"
 #include "WorkingState.h"
 
 namespace SpatialDIR {

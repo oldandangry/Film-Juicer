@@ -305,7 +305,7 @@
                 }
 
                 double cpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
-                Pipeline::ScanStage::spectral_to_log_xyz(ws.negativeMediumRuntime, D_norm, cpuLogXYZ);
+                Scanner::spectral_to_log_xyz(ws.negativeMediumRuntime, D_norm, cpuLogXYZ);
 
                 double maxDiff = 0.0;
                 for (int c = 0; c < 3; ++c) {
@@ -360,7 +360,7 @@
                 }
 
                 double cpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
-                Pipeline::ScanStage::spectral_to_log_xyz(ws.printMediumRuntime, D_norm, cpuLogXYZ);
+                Scanner::spectral_to_log_xyz(ws.printMediumRuntime, D_norm, cpuLogXYZ);
 
                 double maxDiff = 0.0;
                 for (int c = 0; c < 3; ++c) {

@@ -46,7 +46,7 @@
 #include "Couplers.h"
 #include "JuicerEffect.h"
 #include "JuicerState.h"
-#include "OutputEncoding.h"
+#include "OutputColor.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
 #include "ParamNames.h"

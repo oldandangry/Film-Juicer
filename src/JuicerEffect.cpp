@@ -20,7 +20,7 @@
 #include "Couplers.h"
 #include "Illuminants.h"
 #include "IlluminantKeys.h"
-#include "OutputEncoding.h"
+#include "OutputColor.h"
 #include "Print.h"
 #include "ParamNames.h"
 #include "Scanner.h"

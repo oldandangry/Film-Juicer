@@ -208,7 +208,6 @@
     <ClCompile Include="..\OFXS\Support\Library\ofxsProperty.cpp" />
     <ClCompile Include="..\OFXS\Support\Library\ofxsPropertyValidation.cpp" />
     <ClCompile Include="src\AkimaInterpolator.cpp" />
-    <ClCompile Include="src\Cuda\JuicerCudaPrecompute.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceFoundation.cpp" />
@@ -216,21 +215,18 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp" />
     <ClCompile Include="src\DevelopFilmStage.cpp" />
     <ClCompile Include="src\ExposePrintStage.cpp" />
-    <ClCompile Include="src\GeneratedColorSpaces.cpp" />
     <ClCompile Include="src\JuicerEffect.cpp" />
     <ClCompile Include="src\JuicerState.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\mainProcessing.cpp" />
     <ClCompile Include="src\NeutralFilters.cpp" />
-    <ClCompile Include="src\OutputEncoding.cpp" />
+    <ClCompile Include="src\OutputColor.cpp" />
     <ClCompile Include="src\PipelineRunner.cpp" />
     <ClCompile Include="src\Print.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ScannerOptics.cpp" />
-    <ClCompile Include="src\ScanStage.cpp" />
     <ClCompile Include="src\SpatialDIR.cpp" />
     <ClCompile Include="src\SpectralContext.cpp" />
-    <ClCompile Include="src\SpectralMathAVX.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp" />
@@ -252,7 +248,6 @@
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaPrintPipeline.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
-    <ClInclude Include="src\Cuda\JuicerCudaResourcesInternal.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceKeys.h" />
@@ -265,7 +260,6 @@
     <ClInclude Include="src\Cuda\Scan\JuicerCudaScanStage.cuh" />
     <ClInclude Include="src\FilmProcessing.h" />
     <ClInclude Include="src\GaussianSciPy.h" />
-    <ClInclude Include="src\GeneratedColorSpaces.h" />
     <ClInclude Include="src\Hash.h" />
     <ClInclude Include="src\IlluminantKeys.h" />
     <ClInclude Include="src\Illuminants.h" />
@@ -274,16 +268,13 @@
     <ClInclude Include="src\Logging.h" />
     <ClInclude Include="src\mainProcessing.h" />
     <ClInclude Include="src\NpyLoader.h" />
-    <ClInclude Include="src\OutputEncoding.h" />
+    <ClInclude Include="src\OutputColor.h" />
     <ClInclude Include="src\ParamNames.h" />
-    <ClInclude Include="src\PipelineRunner.h" />
     <ClInclude Include="src\PipelineTypes.h" />
     <ClInclude Include="src\Print.h" />
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\Scanner.h" />
     <ClInclude Include="src\ScannerOptics.h" />
-    <ClInclude Include="src\ScanStage.h" />
-    <ClInclude Include="src\SpatialDIR.h" />
     <ClInclude Include="src\SpectralContext.h" />
     <ClInclude Include="src\SpectralData.h" />
     <ClInclude Include="src\SpectralProcessing.h" />

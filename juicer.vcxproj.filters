@@ -19,9 +19,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\Cuda\JuicerCudaPrecompute.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
@@ -37,16 +34,10 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
-    <ClCompile Include="src\SpectralMathAVX.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\SpectralContext.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\SpatialDIR.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\ScanStage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ScannerOptics.cpp">
@@ -61,7 +52,7 @@
     <ClCompile Include="src\PipelineRunner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\OutputEncoding.cpp">
+    <ClCompile Include="src\OutputColor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\NeutralFilters.cpp">
@@ -77,9 +68,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\JuicerEffect.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\GeneratedColorSpaces.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ExposePrintStage.cpp">
@@ -152,9 +140,6 @@
     <ClInclude Include="src\Cuda\JuicerCudaResources.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaResourcesInternal.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.h">
       <Filter>Cuda</Filter>
     </ClInclude>
@@ -197,9 +182,6 @@
     <ClInclude Include="src\GaussianSciPy.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\GeneratedColorSpaces.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\Hash.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -224,13 +206,10 @@
     <ClInclude Include="src\NpyLoader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\OutputEncoding.h">
+    <ClInclude Include="src\OutputColor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ParamNames.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\PipelineRunner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\PipelineTypes.h">
@@ -246,12 +225,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ScannerOptics.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\ScanStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\SpatialDIR.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\SpectralContext.h">

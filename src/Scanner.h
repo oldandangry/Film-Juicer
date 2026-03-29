@@ -11,7 +11,7 @@
 #include "Hash.h"
 #include "ProfileJSONLoader.h"
 #include "SpectralTypes.h"
-#include "OutputEncoding.h"
+#include "OutputColor.h"
 
 namespace Spectral {
     struct SpectralTables;
@@ -111,6 +111,15 @@ namespace Scanner {
         const ColorRuntime* color = nullptr;
         ScannerStaticKey staticKey;
     };
+
+    // Canonical scanner spectral core (agx-emulsion parity):
+    // - Accepts normalized density (0..1), denormalizes per medium range
+    // - Converts dyes -> XYZ under the medium's spectral tables
+    // - Applies log10(xyz + 1e-10) without clamping
+    void spectral_to_log_xyz(const ScannerMediumRuntime& medium, const double D_norm[3], double logXYZ[3]);
+
+    // Canonical normalization for LUT coordinates (mirrors agx _normalize_* semantics).
+    void normalize_density(const ScannerMediumRuntime& medium, const float D_cmy[3], double D_norm[3]);
 
     inline std::uint64_t hash_glare(const Profiles::ProfileGlare& glare) {
         const float floats[] = {

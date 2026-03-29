@@ -6,7 +6,7 @@
 
 #include "ofxsImageEffect.h"
 #include "Scanner.h"
-#include "OutputEncoding.h"
+#include "OutputColor.h"
 
 namespace OFX {
     class Image;

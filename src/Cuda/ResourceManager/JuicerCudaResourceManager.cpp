@@ -4,7 +4,6 @@
 
 #include "Cuda/JuicerCudaLaunchGraphCounters.h"
 #include "Cuda/JuicerCudaResources.h"
-#include "Cuda/JuicerCudaResourcesInternal.h"
 #include "Cuda/ResourceManager/JuicerCudaManagerRegistry.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
@@ -74,6 +73,7 @@ bool ensure_print_illuminant_filtered(
     const Print::Params& prm,
     void* cudaStreamOpaque,
     std::string& outError);
+bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset);
 
 namespace ResourceManager {
 

@@ -32,7 +32,6 @@
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
-#include "GeneratedColorSpaces.h"
 #endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -128,11 +127,10 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 #include "Print.h"
 #include "JuicerState.h"
 #include "Scanner.h"
-#include "OutputEncoding.h"
+#include "OutputColor.h"
 #include "ScannerOptics.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
-#include "PipelineRunner.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
 bool juicer_cuda_runtime_self_check(void* cudaStreamOpaque, const char** outError);
