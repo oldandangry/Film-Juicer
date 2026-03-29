@@ -8,8 +8,6 @@
 // - H2D + kernel + D2H on that stream
 // - error propagation
 //
-#include "JuicerCudaSelfCheck.h"
-
 #include <cuda_runtime.h>
 
 #include <cmath>

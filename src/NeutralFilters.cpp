@@ -1,5 +1,3 @@
-#include "NeutralFilters.h"
-
 #include "Logging.h"
 
 #include <algorithm>
@@ -13,9 +11,15 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 #include "nlohmann/json.hpp"
+
+enum class NeutralFilterThreadClass : unsigned char {
+    Control = 0,
+    RenderWorker = 1
+};
 
 namespace {
     using Json = nlohmann::json;

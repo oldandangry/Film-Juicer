@@ -85,12 +85,6 @@
     <ClCompile Include="src\ExposePrintStage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\ExposeFilmStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\DevelopPrintStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\DevelopFilmStage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -161,9 +155,6 @@
     <ClInclude Include="src\Cuda\JuicerCudaResourcesInternal.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaSelfCheck.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.h">
       <Filter>Cuda</Filter>
     </ClInclude>
@@ -174,9 +165,6 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerInternal.h">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.h">
@@ -201,18 +189,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Couplers.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\DevelopFilmStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\DevelopPrintStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\ExposeFilmStage.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\ExposePrintStage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\FilmProcessing.h">
@@ -243,9 +219,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\mainProcessing.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\NeutralFilters.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\NpyLoader.h">
@@ -291,9 +264,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\SpectralTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\SpectralUpsampling.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\WorkingState.h">

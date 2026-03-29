@@ -20,7 +20,6 @@
 #include "Couplers.h"
 #include "Illuminants.h"
 #include "IlluminantKeys.h"
-#include "NeutralFilters.h"
 #include "OutputEncoding.h"
 #include "Print.h"
 #include "ParamNames.h"
@@ -34,6 +33,21 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #endif
+
+enum class NeutralFilterThreadClass : unsigned char {
+    Control = 0,
+    RenderWorker = 1
+};
+
+bool load_enlarger_neutral_filters(
+    const std::string& jsonPath,
+    const std::string& paperKey,
+    const std::string& illuminantKey,
+    const std::string& negativeKey,
+    std::tuple<float, float, float>& outYMC,
+    NeutralFilterThreadClass threadClass = NeutralFilterThreadClass::Control,
+    std::string* outSelectedDbVersionHash = nullptr
+);
 
 namespace {
     static std::once_flag gSpectralGlobalsOnce;

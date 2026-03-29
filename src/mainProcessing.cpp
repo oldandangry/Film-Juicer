@@ -24,10 +24,6 @@
 #endif
 #endif
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
-#include "Cuda/JuicerCudaSelfCheck.h"
-#endif
-
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
@@ -138,6 +134,65 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 #include "mainProcessing.h"
 #include "PipelineRunner.h"
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
+bool juicer_cuda_runtime_self_check(void* cudaStreamOpaque, const char** outError);
+#endif
+
+namespace JuicerProcScanner {
+
+    struct ScannerPreflightResult {
+        const Scanner::ScannerMediumRuntime* mediumRuntime = nullptr;
+        const Scanner::ColorRuntime* colorRuntime = nullptr;
+        Scanner::ScannerStaticKey staticKey{};
+    };
+
+    struct ScannerKeyBundle {
+        Scanner::ScannerRuntimeKey runtimeKey{};
+        Scanner::ScannerKey scannerKey{};
+    };
+
+    struct ScannerMediumRuntimeBinding {
+        const Scanner::ScannerMediumRuntime* selectedRuntime = nullptr;
+        Scanner::ScannerMediumRuntime printOverride{};
+        bool usesPrintOverride = false;
+        bool valid = false;
+        const char* label = "scanner";
+
+        const Scanner::ScannerMediumRuntime* runtime() const {
+            return usesPrintOverride ? &printOverride : selectedRuntime;
+        }
+    };
+
+    std::uint64_t hash_scanner_runtime_lane(
+        const WorkingState* ws,
+        const Scanner::Settings& settings,
+        const Scanner::Options& options,
+        std::uint32_t frameBoundsVersion);
+
+    ScannerMediumRuntimeBinding bind_scanner_medium_runtime(
+        const WorkingState& ws,
+        bool printActive,
+        bool hasPrintGlareOverride,
+        const Profiles::ProfileGlare* printGlareOverride,
+        bool forcePrintGlareHash);
+
+    ScannerPreflightResult validate_scanner_preflight_or_throw(
+        bool runtimeValid,
+        const char* mediumLabel,
+        const Scanner::ScannerMediumRuntime* mediumRuntime,
+        bool traceInfoEnabled,
+        bool traceVerboseEnabled,
+        const char* path,
+        const char* fatalTag);
+
+    ScannerKeyBundle make_scanner_key_bundle_or_throw(
+        const Scanner::ScannerStaticKey& staticKey,
+        const Scanner::Settings& settings,
+        const Scanner::Options& options,
+        std::uint32_t frameBoundsVersion);
+
+} // namespace JuicerProcScanner
+
 namespace {
     constexpr std::uint64_t kSeedPassGrain = 1;
     constexpr std::uint64_t kSeedPassGlare = 2;
@@ -179,10 +234,6 @@ namespace {
 
     inline std::size_t linear_row_offset(int rowOffset, int rowWidth) {
         return static_cast<std::size_t>(rowOffset) * static_cast<std::size_t>(rowWidth);
-    }
-
-    inline const char* scanner_medium_label_from_print_active(bool printActive) {
-        return printActive ? "print" : "negative";
     }
 
     inline Scanner::ScannerMedium scanner_medium_from_print_active(bool printActive) {
@@ -433,6 +484,22 @@ namespace {
         glare.compensationRemovalTransition = 0.0f;
     }
 
+    inline const char* scanner_medium_label_from_print_active(bool printActive) {
+        return printActive ? "print" : "negative";
+    }
+
+    inline std::uint64_t bool_to_u64(bool value) {
+        return value ? 1ull : 0ull;
+    }
+
+    inline std::uint64_t clamped_lut_resolution_hash_value(std::uint32_t lutResolution) {
+        return static_cast<std::uint64_t>(std::clamp(lutResolution, 17u, 128u));
+    }
+
+    inline std::uint64_t hash_or_zero_if(bool enabled, std::uint64_t hashValue) {
+        return enabled ? hashValue : 0;
+    }
+
     inline void apply_glare_override_fields(
         Profiles::ProfileGlare& dstGlare,
         const Profiles::ProfileGlare& srcGlare) {
@@ -449,6 +516,170 @@ namespace {
             return false;
         }
         mediumRuntime.staticKey.glareHash = glareHash;
+        return true;
+    }
+
+    std::uint64_t hash_scanner_settings(
+        const Scanner::Settings& settings,
+        const Scanner::Options& options) {
+        const std::uint64_t lutHash = Hash::hash_bytes(&settings.useLut, sizeof(settings.useLut));
+        const float fields[3] = {
+            options.lensBlurSigmaPx,
+            options.unsharpSigmaPx,
+            options.unsharpAmount
+        };
+        const std::uint64_t optHash = Hash::hash_float_span(fields, 3);
+        if (lutHash == 0 || optHash == 0) {
+            JTRACE("HASH", "FATAL: invalid scanner settings for hashing");
+            return 0;
+        }
+        const std::uint64_t combined[2] = { lutHash, optHash };
+        return Hash::hash_bytes(combined, sizeof(combined));
+    }
+
+    const char* scanner_medium_label_or_default(const char* mediumLabel) {
+        return nonempty_cstr_or(mediumLabel, "scanner");
+    }
+
+    struct ScannerMediumSelection {
+        const Scanner::ScannerMediumRuntime* runtime = nullptr;
+        bool valid = false;
+        const char* label = "scanner";
+    };
+
+    ScannerMediumSelection select_scanner_medium(
+        const WorkingState& ws,
+        bool printActive) {
+        ScannerMediumSelection selection{};
+        selection.label = scanner_medium_label_from_print_active(printActive);
+        if (printActive) {
+            selection.runtime = &ws.printMediumRuntime;
+            selection.valid = ws.printScannerValid;
+            return selection;
+        }
+        selection.runtime = &ws.negativeMediumRuntime;
+        selection.valid = ws.negativeScannerValid;
+        return selection;
+    }
+
+    void trace_scanner_preflight_fail_if_enabled(
+        bool traceInfoEnabled,
+        const char* path,
+        const char* mediumLabel,
+        const std::string& error,
+        const char* fatalTag) {
+        if (!traceInfoEnabled) {
+            return;
+        }
+        const char* label = scanner_medium_label_or_default(mediumLabel);
+        std::string msg;
+        msg.reserve(96 + error.size());
+        msg = "path=";
+        msg += nonempty_cstr_or(path, "unspecified");
+        msg += " result=fail medium=";
+        msg += label;
+        msg += " reason=";
+        msg += error;
+        JTRACE("MSSKV", msg);
+        std::string fatalMsg;
+        fatalMsg.reserve(8 + error.size());
+        fatalMsg = "FATAL: ";
+        fatalMsg += error;
+        JTRACE(nonempty_cstr_or(fatalTag, "SCAN"), fatalMsg);
+    }
+
+    void trace_scanner_preflight_ok_if_enabled(
+        bool traceVerboseEnabled,
+        const char* path,
+        const char* mediumLabel,
+        std::uint64_t staticKeyHash) {
+        if (!traceVerboseEnabled) {
+            return;
+        }
+        const char* label = scanner_medium_label_or_default(mediumLabel);
+        std::string msg;
+        msg.reserve(96);
+        msg = "path=";
+        msg += nonempty_cstr_or(path, "unspecified");
+        msg += " result=ok medium=";
+        msg += label;
+        msg += " static_key_hash=";
+        msg += std::to_string(staticKeyHash);
+        JTRACE_VERBOSE("MSSKV", msg);
+    }
+
+    void assign_glare_hash_or_throw(Scanner::ScannerMediumRuntime& mediumRuntime) {
+        if (assign_glare_hash(mediumRuntime)) {
+            return;
+        }
+        JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    bool validate_scanner_preflight_runtime(
+        bool runtimeValid,
+        const char* mediumLabel,
+        const Scanner::ScannerMediumRuntime* mediumRuntime,
+        JuicerProcScanner::ScannerPreflightResult& out,
+        std::string& outError) {
+        out = JuicerProcScanner::ScannerPreflightResult{};
+        outError.clear();
+
+        const char* label = scanner_medium_label_or_default(mediumLabel);
+        auto set_error = [&](const char* suffix) {
+            outError = label;
+            outError += suffix;
+        };
+        if (!runtimeValid) {
+            set_error(" scanner runtime invalid");
+            return false;
+        }
+        if (!mediumRuntime) {
+            set_error(" scanner medium runtime missing");
+            return false;
+        }
+
+        const Spectral::SpectralTables* tables = mediumRuntime->tables;
+        if (!tables || tables->K <= 0) {
+            set_error(" scanner spectral tables unavailable");
+            return false;
+        }
+
+        Scanner::ScannerStaticKey staticKey = mediumRuntime->staticKey;
+        if (tables->tablesHash != staticKey.tablesHash) {
+            set_error(" scanner tables hash mismatch for medium");
+            return false;
+        }
+        if (mediumRuntime->range.digest == 0) {
+            set_error(" scanner density range missing or invalid");
+            return false;
+        }
+
+        const std::uint64_t illumHash = tables->illuminantHash;
+        if (illumHash != 0 && mediumRuntime->illuminant.hash != 0 && illumHash != mediumRuntime->illuminant.hash) {
+            set_error(" scanner illuminant hash mismatch for medium");
+            return false;
+        }
+
+        const Scanner::ColorRuntime* colorPtr = mediumRuntime->color;
+        if (!colorPtr || colorPtr->hash == 0) {
+            set_error(" scanner color runtime missing or invalid");
+            return false;
+        }
+        if (staticKey.colorRuntimeHash != colorPtr->hash) {
+            set_error(" scanner static key color hash mismatch");
+            return false;
+        }
+
+        Scanner::finalize_static_key(staticKey);
+        if (staticKey.hash == 0) {
+            set_error(" scanner static key missing or invalid");
+            return false;
+        }
+
+        out.mediumRuntime = mediumRuntime;
+        out.colorRuntime = colorPtr;
+        out.staticKey = staticKey;
         return true;
     }
 
@@ -1102,6 +1333,131 @@ namespace {
             passId);
     }
 
+} // namespace
+
+namespace JuicerProcScanner {
+
+    std::uint64_t hash_scanner_runtime_lane(
+        const WorkingState* ws,
+        const Scanner::Settings& settings,
+        const Scanner::Options& options,
+        std::uint32_t frameBoundsVersion) {
+        if (!ws) {
+            return 0;
+        }
+        const std::uint64_t settingsHash = hash_scanner_settings(settings, options);
+        if (settingsHash == 0) {
+            return 0;
+        }
+
+        const std::uint64_t negColorHash = ws->negativeStaticKey.colorRuntimeHash;
+        const std::uint64_t negLutRes = clamped_lut_resolution_hash_value(ws->negativeStaticKey.lutResolution);
+        const bool printValid = ws->printScannerValid;
+        const std::uint64_t printColorHash = hash_or_zero_if(printValid, ws->printStaticKey.colorRuntimeHash);
+        const std::uint64_t printLutRes = hash_or_zero_if(
+            printValid,
+            clamped_lut_resolution_hash_value(ws->printStaticKey.lutResolution));
+
+        const std::uint64_t fields[] = {
+            settingsHash,
+            static_cast<std::uint64_t>(frameBoundsVersion),
+            bool_to_u64(ws->negativeScannerValid),
+            negColorHash,
+            negLutRes,
+            bool_to_u64(printValid),
+            printColorHash,
+            printLutRes
+        };
+        return Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    ScannerMediumRuntimeBinding bind_scanner_medium_runtime(
+        const WorkingState& ws,
+        bool printActive,
+        bool hasPrintGlareOverride,
+        const Profiles::ProfileGlare* printGlareOverride,
+        bool forcePrintGlareHash) {
+        ScannerMediumRuntimeBinding binding{};
+        const ScannerMediumSelection selection = select_scanner_medium(ws, printActive);
+        binding.selectedRuntime = selection.runtime;
+        binding.valid = selection.valid;
+        binding.label = selection.label;
+        binding.usesPrintOverride = false;
+        if (!printActive) {
+            return binding;
+        }
+
+        binding.printOverride = ws.printMediumRuntime;
+        if (hasPrintGlareOverride && printGlareOverride) {
+            apply_glare_override_fields(binding.printOverride.glare, *printGlareOverride);
+        }
+        if (forcePrintGlareHash || hasPrintGlareOverride) {
+            assign_glare_hash_or_throw(binding.printOverride);
+        }
+        binding.usesPrintOverride = true;
+        return binding;
+    }
+
+    ScannerPreflightResult validate_scanner_preflight_or_throw(
+        bool runtimeValid,
+        const char* mediumLabel,
+        const Scanner::ScannerMediumRuntime* mediumRuntime,
+        bool traceInfoEnabled,
+        bool traceVerboseEnabled,
+        const char* path,
+        const char* fatalTag) {
+        ScannerPreflightResult scannerPreflight{};
+        std::string scannerPreflightError;
+        if (!validate_scanner_preflight_runtime(
+                runtimeValid,
+                mediumLabel,
+                mediumRuntime,
+                scannerPreflight,
+                scannerPreflightError)) {
+            trace_scanner_preflight_fail_if_enabled(
+                traceInfoEnabled,
+                path,
+                mediumLabel,
+                scannerPreflightError,
+                fatalTag);
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        trace_scanner_preflight_ok_if_enabled(
+            traceVerboseEnabled,
+            path,
+            mediumLabel,
+            scannerPreflight.staticKey.hash);
+        return scannerPreflight;
+    }
+
+    ScannerKeyBundle make_scanner_key_bundle_or_throw(
+        const Scanner::ScannerStaticKey& staticKey,
+        const Scanner::Settings& settings,
+        const Scanner::Options& options,
+        std::uint32_t frameBoundsVersion) {
+        ScannerKeyBundle bundle{};
+        bundle.runtimeKey.settingsHash = hash_scanner_settings(settings, options);
+        bundle.runtimeKey.frameBoundsVersion = frameBoundsVersion;
+        if (bundle.runtimeKey.settingsHash == 0) {
+            JTRACE("HASH", "FATAL: scanner runtime settings hash invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        Scanner::finalize_runtime_key(bundle.runtimeKey);
+
+        bundle.scannerKey.staticKey = staticKey;
+        bundle.scannerKey.runtimeKey = bundle.runtimeKey;
+        Scanner::finalize_scanner_key(bundle.scannerKey);
+        if (bundle.scannerKey.hash == 0) {
+            JTRACE("HASH", "FATAL: scanner combined key invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        return bundle;
+    }
+
+} // namespace JuicerProcScanner
+
+namespace {
+
     std::uint64_t make_auto_exposure_reusable_key_hash(
         const OfxRectI& meterBounds,
         const OfxRectI& srcBounds,
@@ -1372,10 +1728,6 @@ static unsigned int compute_thread_count(int width, int height) {
     return std::max(1u, nCPUs);
 }
 
-inline std::uint64_t bool_to_u64(bool value) {
-    return value ? 1ull : 0ull;
-}
-
 inline unsigned int positive_u32_or(unsigned int value, unsigned int fallback) {
     return (value > 0) ? value : fallback;
 }
@@ -1386,64 +1738,6 @@ inline int positive_i32_or(int value, int fallback) {
 
 inline std::uint64_t upload_core_hash_or_core_hash(const WorkingState& ws) {
     return (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
-}
-
-inline std::uint64_t clamped_lut_resolution_hash_value(std::uint32_t lutResolution) {
-    return static_cast<std::uint64_t>(std::clamp(lutResolution, 17u, 128u));
-}
-
-inline std::uint64_t hash_or_zero_if(bool enabled, std::uint64_t hashValue) {
-    return enabled ? hashValue : 0;
-}
-
-static std::uint64_t hash_scanner_settings(const Scanner::Settings& settings, const Scanner::Options& options) {
-    const std::uint64_t lutHash = Hash::hash_bytes(&settings.useLut, sizeof(settings.useLut));
-    const float fields[3] = {
-        options.lensBlurSigmaPx,
-        options.unsharpSigmaPx,
-        options.unsharpAmount
-    };
-    const std::uint64_t optHash = Hash::hash_float_span(fields, 3);
-    if (lutHash == 0 || optHash == 0) {
-        JTRACE("HASH", "FATAL: invalid scanner settings for hashing");
-        return 0;
-    }
-    const std::uint64_t combined[2] = { lutHash, optHash };
-    return Hash::hash_bytes(combined, sizeof(combined));
-}
-
-static std::uint64_t hash_scanner_runtime_lane(
-    const WorkingState* ws,
-    const Scanner::Settings& settings,
-    const Scanner::Options& options,
-    std::uint32_t frameBoundsVersion) {
-    if (!ws) {
-        return 0;
-    }
-    const std::uint64_t settingsHash = hash_scanner_settings(settings, options);
-    if (settingsHash == 0) {
-        return 0;
-    }
-
-    const std::uint64_t negColorHash = ws->negativeStaticKey.colorRuntimeHash;
-    const std::uint64_t negLutRes = clamped_lut_resolution_hash_value(ws->negativeStaticKey.lutResolution);
-    const bool printValid = ws->printScannerValid;
-    const std::uint64_t printColorHash = hash_or_zero_if(printValid, ws->printStaticKey.colorRuntimeHash);
-    const std::uint64_t printLutRes = hash_or_zero_if(
-        printValid,
-        clamped_lut_resolution_hash_value(ws->printStaticKey.lutResolution));
-
-    const std::uint64_t fields[] = {
-        settingsHash,
-        static_cast<std::uint64_t>(frameBoundsVersion),
-        bool_to_u64(ws->negativeScannerValid),
-        negColorHash,
-        negLutRes,
-        bool_to_u64(printValid),
-        printColorHash,
-        printLutRes
-    };
-    return Hash::hash_bytes(fields, sizeof(fields));
 }
 
 static std::uint64_t make_gate_mask_hash(
@@ -1472,258 +1766,6 @@ static std::uint64_t make_gate_mask_hash(
         h = 1;
     }
     return h;
-}
-
-struct ScannerPreflightResult {
-    const Scanner::ScannerMediumRuntime* mediumRuntime = nullptr;
-    const Scanner::ColorRuntime* colorRuntime = nullptr;
-    Scanner::ScannerStaticKey staticKey{};
-};
-
-struct ScannerKeyBundle {
-    Scanner::ScannerRuntimeKey runtimeKey{};
-    Scanner::ScannerKey scannerKey{};
-};
-
-struct ScannerMediumSelection {
-    const Scanner::ScannerMediumRuntime* runtime = nullptr;
-    bool valid = false;
-    const char* label = "scanner";
-};
-
-static const char* scanner_medium_label_or_default(const char* mediumLabel) {
-    return nonempty_cstr_or(mediumLabel, "scanner");
-}
-
-static ScannerMediumSelection select_scanner_medium(
-    const WorkingState& ws,
-    bool printActive) {
-    ScannerMediumSelection selection{};
-    selection.label = scanner_medium_label_from_print_active(printActive);
-    if (printActive) {
-        selection.runtime = &ws.printMediumRuntime;
-        selection.valid = ws.printScannerValid;
-        return selection;
-    }
-    selection.runtime = &ws.negativeMediumRuntime;
-    selection.valid = ws.negativeScannerValid;
-    return selection;
-}
-
-static void trace_scanner_preflight_fail_if_enabled(
-    bool traceInfoEnabled,
-    const char* path,
-    const char* mediumLabel,
-    const std::string& error,
-    const char* fatalTag) {
-    if (!traceInfoEnabled) {
-        return;
-    }
-    const char* label = scanner_medium_label_or_default(mediumLabel);
-    std::string msg;
-    msg.reserve(96 + error.size());
-    msg = "path=";
-    msg += nonempty_cstr_or(path, "unspecified");
-    msg += " result=fail medium=";
-    msg += label;
-    msg += " reason=";
-    msg += error;
-    JTRACE("MSSKV", msg);
-    std::string fatalMsg;
-    fatalMsg.reserve(8 + error.size());
-    fatalMsg = "FATAL: ";
-    fatalMsg += error;
-    JTRACE(nonempty_cstr_or(fatalTag, "SCAN"), fatalMsg);
-}
-
-static void trace_scanner_preflight_ok_if_enabled(
-    bool traceVerboseEnabled,
-    const char* path,
-    const char* mediumLabel,
-    std::uint64_t staticKeyHash) {
-    if (!traceVerboseEnabled) {
-        return;
-    }
-    const char* label = scanner_medium_label_or_default(mediumLabel);
-    std::string msg;
-    msg.reserve(96);
-    msg = "path=";
-    msg += nonempty_cstr_or(path, "unspecified");
-    msg += " result=ok medium=";
-    msg += label;
-    msg += " static_key_hash=";
-    msg += std::to_string(staticKeyHash);
-    JTRACE_VERBOSE("MSSKV", msg);
-}
-
-static void assign_glare_hash_or_throw(Scanner::ScannerMediumRuntime& mediumRuntime) {
-    if (assign_glare_hash(mediumRuntime)) {
-        return;
-    }
-    JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
-    throw OFX::Exception::Suite(kOfxStatErrFatal);
-}
-
-struct ScannerMediumRuntimeBinding {
-    ScannerMediumSelection selection{};
-    Scanner::ScannerMediumRuntime printOverride{};
-    bool usesPrintOverride = false;
-    bool valid = false;
-    const char* label = "scanner";
-
-    const Scanner::ScannerMediumRuntime* runtime() const {
-        return usesPrintOverride ? &printOverride : selection.runtime;
-    }
-};
-
-static ScannerMediumRuntimeBinding bind_scanner_medium_runtime(
-    const WorkingState& ws,
-    bool printActive,
-    bool hasPrintGlareOverride,
-    const Profiles::ProfileGlare* printGlareOverride,
-    bool forcePrintGlareHash)
-{
-    ScannerMediumRuntimeBinding binding{};
-    binding.selection = select_scanner_medium(ws, printActive);
-    binding.valid = binding.selection.valid;
-    binding.label = binding.selection.label;
-    binding.usesPrintOverride = false;
-    if (!printActive) {
-        return binding;
-    }
-
-    binding.printOverride = ws.printMediumRuntime;
-    if (hasPrintGlareOverride && printGlareOverride) {
-        apply_glare_override_fields(binding.printOverride.glare, *printGlareOverride);
-    }
-    if (forcePrintGlareHash || hasPrintGlareOverride) {
-        assign_glare_hash_or_throw(binding.printOverride);
-    }
-    binding.usesPrintOverride = true;
-    return binding;
-}
-
-static bool validate_scanner_preflight_runtime(
-    bool runtimeValid,
-    const char* mediumLabel,
-    const Scanner::ScannerMediumRuntime* mediumRuntime,
-    ScannerPreflightResult& out,
-    std::string& outError) {
-    out = ScannerPreflightResult{};
-    outError.clear();
-
-    const char* label = scanner_medium_label_or_default(mediumLabel);
-    auto set_error = [&](const char* suffix) {
-        outError = label;
-        outError += suffix;
-    };
-    if (!runtimeValid) {
-        set_error(" scanner runtime invalid");
-        return false;
-    }
-    if (!mediumRuntime) {
-        set_error(" scanner medium runtime missing");
-        return false;
-    }
-
-    const Spectral::SpectralTables* tables = mediumRuntime->tables;
-    if (!tables || tables->K <= 0) {
-        set_error(" scanner spectral tables unavailable");
-        return false;
-    }
-
-    Scanner::ScannerStaticKey staticKey = mediumRuntime->staticKey;
-    if (tables->tablesHash != staticKey.tablesHash) {
-        set_error(" scanner tables hash mismatch for medium");
-        return false;
-    }
-    if (mediumRuntime->range.digest == 0) {
-        set_error(" scanner density range missing or invalid");
-        return false;
-    }
-
-    const std::uint64_t illumHash = tables->illuminantHash;
-    if (illumHash != 0 && mediumRuntime->illuminant.hash != 0 && illumHash != mediumRuntime->illuminant.hash) {
-        set_error(" scanner illuminant hash mismatch for medium");
-        return false;
-    }
-
-    const Scanner::ColorRuntime* colorPtr = mediumRuntime->color;
-    if (!colorPtr || colorPtr->hash == 0) {
-        set_error(" scanner color runtime missing or invalid");
-        return false;
-    }
-    if (staticKey.colorRuntimeHash != colorPtr->hash) {
-        set_error(" scanner static key color hash mismatch");
-        return false;
-    }
-
-    Scanner::finalize_static_key(staticKey);
-    if (staticKey.hash == 0) {
-        set_error(" scanner static key missing or invalid");
-        return false;
-    }
-
-    out.mediumRuntime = mediumRuntime;
-    out.colorRuntime = colorPtr;
-    out.staticKey = staticKey;
-    return true;
-}
-
-static ScannerPreflightResult validate_scanner_preflight_or_throw(
-    bool runtimeValid,
-    const char* mediumLabel,
-    const Scanner::ScannerMediumRuntime* mediumRuntime,
-    bool traceInfoEnabled,
-    bool traceVerboseEnabled,
-    const char* path,
-    const char* fatalTag) {
-    ScannerPreflightResult scannerPreflight{};
-    std::string scannerPreflightError;
-    if (!validate_scanner_preflight_runtime(
-            runtimeValid,
-            mediumLabel,
-            mediumRuntime,
-            scannerPreflight,
-            scannerPreflightError)) {
-        trace_scanner_preflight_fail_if_enabled(
-            traceInfoEnabled,
-            path,
-            mediumLabel,
-            scannerPreflightError,
-            fatalTag);
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    trace_scanner_preflight_ok_if_enabled(
-        traceVerboseEnabled,
-        path,
-        mediumLabel,
-        scannerPreflight.staticKey.hash);
-    return scannerPreflight;
-}
-
-static ScannerKeyBundle make_scanner_key_bundle_or_throw(
-    const Scanner::ScannerStaticKey& staticKey,
-    const Scanner::Settings& settings,
-    const Scanner::Options& options,
-    std::uint32_t frameBoundsVersion) {
-    ScannerKeyBundle bundle{};
-    bundle.runtimeKey.settingsHash = hash_scanner_settings(settings, options);
-    bundle.runtimeKey.frameBoundsVersion = frameBoundsVersion;
-    if (bundle.runtimeKey.settingsHash == 0) {
-        JTRACE("HASH", "FATAL: scanner runtime settings hash invalid");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    Scanner::finalize_runtime_key(bundle.runtimeKey);
-
-    bundle.scannerKey.staticKey = staticKey;
-    bundle.scannerKey.runtimeKey = bundle.runtimeKey;
-    Scanner::finalize_scanner_key(bundle.scannerKey);
-    if (bundle.scannerKey.hash == 0) {
-        JTRACE("HASH", "FATAL: scanner combined key invalid");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    return bundle;
 }
 
 bool curve_ok(const Spectral::Curve& c) {
@@ -2234,7 +2276,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
 
     // The scanner now consumes only the staged CMY density slab; legacy RGB entry points are removed.
-    const ScannerMediumRuntimeBinding scannerBinding = bind_scanner_medium_runtime(
+    const JuicerProcScanner::ScannerMediumRuntimeBinding scannerBinding = JuicerProcScanner::bind_scanner_medium_runtime(
         *_ws,
         ctx.printActive,
         _hasPrintGlareOverride,
@@ -2243,7 +2285,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     const Scanner::ScannerMediumRuntime* mediumRuntime = scannerBinding.runtime();
     const bool scannerRuntimeValid = scannerBinding.valid;
     const char* cpuMediumLabel = scannerBinding.label;
-    ScannerPreflightResult scannerPreflight = validate_scanner_preflight_or_throw(
+    JuicerProcScanner::ScannerPreflightResult scannerPreflight = JuicerProcScanner::validate_scanner_preflight_or_throw(
         scannerRuntimeValid,
         cpuMediumLabel,
         mediumRuntime,
@@ -2261,7 +2303,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
-    const ScannerKeyBundle scannerKeys = make_scanner_key_bundle_or_throw(
+    const JuicerProcScanner::ScannerKeyBundle scannerKeys = JuicerProcScanner::make_scanner_key_bundle_or_throw(
         staticKey,
         _scannerSettings,
         _scannerOptions,
@@ -2392,6 +2434,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
 
     ScannerOptics::render_density_to_rgb(optCtx);
 }
+
 
 void JuicerProcessor::processImpl() {
     if (!_srcImg || !_dstImg) return;
@@ -2821,7 +2864,7 @@ void JuicerProcessor::processImagesCUDA() {
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
         const std::uint64_t uploadCoreHash = upload_core_hash_or_core_hash(*_ws);
-        const std::uint64_t scannerRuntimeHash = hash_scanner_runtime_lane(
+        const std::uint64_t scannerRuntimeHash = JuicerProcScanner::hash_scanner_runtime_lane(
             _ws,
             _scannerSettings,
             _scannerOptions,
@@ -3359,8 +3402,16 @@ void JuicerProcessor::processImagesCUDA() {
                 ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
                 : height;
             const double filmScale = positive_finite_or(filmFormatMm, 10.0) / 10.0;
-            run.grain.seedBase = seed_base_for_pass(_instanceState, _clipToken, _frameIndex, kSeedPassGrain);
-            run.grain.seedBaseNext = seed_base_for_pass(_instanceState, _clipToken, _frameIndex + 1, kSeedPassGrain);
+            run.grain.seedBase = seed_base_for_pass(
+                _instanceState,
+                _clipToken,
+                _frameIndex,
+                kSeedPassGrain);
+            run.grain.seedBaseNext = seed_base_for_pass(
+                _instanceState,
+                _clipToken,
+                _frameIndex + 1,
+                kSeedPassGrain);
             run.grain.frameIndex = _frameIndex;
             run.grain.stbnSessionSeed = sessionSeed;
             run.grain.clipToken = static_cast<std::uint64_t>(_clipToken);
@@ -4017,8 +4068,8 @@ void JuicerProcessor::processImagesCUDA() {
     auto validate_cuda_scanner_preflight_or_throw = [&](bool scannerRuntimeValid,
                                                          const char* mediumLabel,
                                                          const Scanner::ScannerMediumRuntime* mediumRuntime)
-        -> ScannerPreflightResult {
-        return validate_scanner_preflight_or_throw(
+        -> JuicerProcScanner::ScannerPreflightResult {
+        return JuicerProcScanner::validate_scanner_preflight_or_throw(
             scannerRuntimeValid,
             mediumLabel,
             mediumRuntime,
@@ -4578,7 +4629,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto populate_common_pipeline_payload = [&](JuicerCuda::PipelineRunParams& run,
-                                                const ScannerPreflightResult& scannerPreflight) {
+                                                const JuicerProcScanner::ScannerPreflightResult& scannerPreflight) {
         run.filmRaw.inputColorSpaceIndex = Spectral::inputColorSpaceToIndex(_ws->filmRaw.inputColorSpace);
         run.filmRaw.applyCctfDecoding = bool_to_i32(_ws->filmRaw.applyCctfDecoding);
         run.filmRaw.applyInputChromaticAdapt = bool_to_i32(_ws->filmRaw.applyInputChromaticAdapt);
@@ -4695,16 +4746,16 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto initialize_medium_pipeline_run = [&](JuicerCuda::PipelineRunParams& run,
-                                              const ScannerPreflightResult& scannerPreflight) {
+                                                const JuicerProcScanner::ScannerPreflightResult& scannerPreflight) {
         initialize_pipeline_run(run);
         populate_common_pipeline_payload(run, scannerPreflight);
     };
 
     auto prepare_common_cuda_pipeline_stages_for_medium = [&](JuicerCuda::PipelineRunParams& run,
-                                                              JuicerCuda::Resources* resources,
-                                                              const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
-                                                              bool negativeMedium,
-                                                              cudaEvent_t& outScanEvent) -> bool {
+                                              JuicerCuda::Resources* resources,
+                                              const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                                              bool negativeMedium,
+                                              cudaEvent_t& outScanEvent) -> bool {
         return prepare_common_cuda_pipeline_stages(
             run,
             resources,
@@ -4865,8 +4916,8 @@ void JuicerProcessor::processImagesCUDA() {
             currentMediumUploadError);
     };
 
-    auto validate_negative_scanner_preflight_or_throw = [&]() -> ScannerPreflightResult {
-        const ScannerMediumRuntimeBinding scannerMedium = bind_scanner_medium_runtime(
+    auto validate_negative_scanner_preflight_or_throw = [&]() -> JuicerProcScanner::ScannerPreflightResult {
+        const JuicerProcScanner::ScannerMediumRuntimeBinding scannerMedium = JuicerProcScanner::bind_scanner_medium_runtime(
             *_ws,
             /*printActive*/false,
             /*hasPrintGlareOverride*/false,
@@ -4964,7 +5015,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     // RenderMode::NegativeOnly (PrintBypass=true).
     if (renderMode == RenderMode::NegativeOnly) {
-        ScannerPreflightResult scannerPreflight =
+        JuicerProcScanner::ScannerPreflightResult scannerPreflight =
             validate_negative_scanner_preflight_or_throw();
         const Scanner::ScannerMediumRuntime& negativeMediumRuntime = *scannerPreflight.mediumRuntime;
 
@@ -5021,13 +5072,13 @@ void JuicerProcessor::processImagesCUDA() {
             throw_cuda_policy_fatal("CUDA print pipeline prerequisites unavailable");
         }
 
-        const ScannerMediumRuntimeBinding printScannerBinding = bind_scanner_medium_runtime(
+        const JuicerProcScanner::ScannerMediumRuntimeBinding printScannerBinding = JuicerProcScanner::bind_scanner_medium_runtime(
             *_ws,
             /*printActive*/true,
             _hasPrintGlareOverride,
             &_printGlareOverride,
             /*forcePrintGlareHash*/false);
-        ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
+        JuicerProcScanner::ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
             printScannerBinding.valid,
             printScannerBinding.label,
             printScannerBinding.runtime());
