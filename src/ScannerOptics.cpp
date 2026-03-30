@@ -11,7 +11,7 @@
 #include "ofxsImageEffect.h"
 #include "ofxsMultiThread.h"
 
-#include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Hash.h"
 #include "Logging.h"
 #include "OutputColor.h"

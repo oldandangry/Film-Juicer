@@ -1,9 +1,7 @@
 // Cuda/ResourceManager/JuicerCudaManagerRegistry.cpp
 
-#include "Cuda/ResourceManager/JuicerCudaManagerRegistry.h"
-#include "Cuda/ResourceManager/JuicerCudaResourceConfig.h"
-#include "Cuda/ResourceManager/JuicerCudaResourceState.h"
-#include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 
 #include <algorithm>
 #include <atomic>

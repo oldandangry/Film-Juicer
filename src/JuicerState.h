@@ -139,7 +139,7 @@ namespace JuicerAtomic {
 } // namespace JuicerAtomic
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-#include "Cuda/ResourceManager/JuicerCudaResourceTypes.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 
 namespace JuicerCuda {
     struct Resources;

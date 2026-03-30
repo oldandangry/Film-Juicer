@@ -27,11 +27,9 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
-#include "Cuda/JuicerCudaAutoExposure.h"
 #include "Cuda/JuicerCudaLaunchGraphCounters.h"
-#include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"
+#include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
-#include "Cuda/ResourceManager/JuicerCudaResourceTelemetry.h"
 #endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)

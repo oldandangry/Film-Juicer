@@ -11,11 +11,227 @@
 #include "Cuda/JuicerCudaPrintPipeline.cuh"
 #include "Cuda/Film/JuicerCudaFilmExposure.cuh"
 #include "Cuda/Film/JuicerCudaFilmDevelop.cuh"
-#include "Cuda/Scan/JuicerCudaScanStage.cuh"
-#include "Cuda/Scan/JuicerCudaScanOutput.cuh"
 #include "openrand/philox.h"
 
 namespace {
+
+    __device__ __forceinline__ void scan_spectral_to_log_xyz_device(
+        const JuicerCuda::ScanTablesPayload& medium,
+        const double D_norm[3],
+        double logXYZ[3])
+    {
+        if (!D_norm || !logXYZ) {
+            return;
+        }
+        if (!medium.epsC || !medium.epsM || !medium.epsY || !medium.Ax || !medium.Ay || !medium.Az || medium.K <= 0) {
+            logXYZ[0] = logXYZ[1] = logXYZ[2] = nan("");
+            return;
+        }
+
+        double D_denorm0;
+        double D_denorm1;
+        double D_denorm2;
+        if (medium.mediumIsNegative) {
+            D_denorm0 = D_norm[0] / static_cast<double>(medium.inv_max_cmy[0]) - static_cast<double>(medium.min_cmy[0]);
+            D_denorm1 = D_norm[1] / static_cast<double>(medium.inv_max_cmy[1]) - static_cast<double>(medium.min_cmy[1]);
+            D_denorm2 = D_norm[2] / static_cast<double>(medium.inv_max_cmy[2]) - static_cast<double>(medium.min_cmy[2]);
+        }
+        else {
+            D_denorm0 = D_norm[0] / static_cast<double>(medium.inv_max_cmy[0]);
+            D_denorm1 = D_norm[1] / static_cast<double>(medium.inv_max_cmy[1]);
+            D_denorm2 = D_norm[2] / static_cast<double>(medium.inv_max_cmy[2]);
+        }
+
+        double X = 0.0;
+        double Y = 0.0;
+        double Z = 0.0;
+        for (int i = 0; i < medium.K; ++i) {
+            const double baseSpectral = (medium.hasBaseline && medium.baseMin)
+                ? static_cast<double>(ldg_f(medium.baseMin + i))
+                : 0.0;
+            const double Dlambda =
+                D_denorm0 * static_cast<double>(ldg_f(medium.epsC + i)) +
+                D_denorm1 * static_cast<double>(ldg_f(medium.epsM + i)) +
+                D_denorm2 * static_cast<double>(ldg_f(medium.epsY + i)) +
+                baseSpectral;
+
+            const double transmittance = pow(10.0, -Dlambda);
+
+            const double ax = static_cast<double>(ldg_f(medium.Ax + i));
+            const double ay = static_cast<double>(ldg_f(medium.Ay + i));
+            const double az = static_cast<double>(ldg_f(medium.Az + i));
+
+            if (isfinite(ax)) {
+                const double out = transmittance * ax;
+                if (!isnan(out)) X += out;
+            }
+            if (isfinite(ay)) {
+                const double out = transmittance * ay;
+                if (!isnan(out)) Y += out;
+            }
+            if (isfinite(az)) {
+                const double out = transmittance * az;
+                if (!isnan(out)) Z += out;
+            }
+        }
+
+        const double invNormalization = static_cast<double>(medium.invYn);
+        const double XYZ0 = X * invNormalization;
+        const double XYZ1 = Y * invNormalization;
+        const double XYZ2 = Z * invNormalization;
+
+        constexpr double kEps = 1e-10;
+        logXYZ[0] = log10(XYZ0 + kEps);
+        logXYZ[1] = log10(XYZ1 + kEps);
+        logXYZ[2] = log10(XYZ2 + kEps);
+    }
+
+    __device__ __forceinline__ void scan_log_xyz_device(
+        const JuicerCuda::ScanStagePayload& scanStage,
+        const double D_norm[3],
+        double logXYZ[3])
+    {
+        if (!logXYZ) {
+            return;
+        }
+
+        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
+        if (scanStage.scannerUseLut && scanStage.scanLutLog2XYZ && scanStage.scanLutRes > 0 && D_norm_finite) {
+            sample_cubic_scan_lut_device(scanStage.scanLutLog2XYZ, scanStage.scanLutRes, D_norm, logXYZ);
+        }
+        else {
+            scan_spectral_to_log_xyz_device(scanStage.scanTables, D_norm, logXYZ);
+        }
+    }
+
+    __device__ __forceinline__ double clamp01d_device(double v) {
+        if (v <= 0.0) return 0.0;
+        if (v >= 1.0) return 1.0;
+        return v;
+    }
+
+    __device__ __forceinline__ double encode_sRGBd_device(double v) {
+        if (v <= 0.0031308) {
+            return 12.92 * v;
+        }
+        return 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+    }
+
+    __device__ __forceinline__ double encode_gammad_signed_device(double v, double exponent) {
+        const double mag = pow(fabs(v), exponent);
+        return copysign(mag, v);
+    }
+
+    __device__ __forceinline__ double encode_BT2020d_device(double v, double a, double b) {
+        if (v < b) {
+            return v * 4.5;
+        }
+        return a * pow(v, 0.45) - (a - 1.0);
+    }
+
+    __device__ __forceinline__ double encode_ProPhotod_device(double v, double threshold, double exponent) {
+        if (v < threshold) {
+            return v * 16.0;
+        }
+        return pow(v, exponent);
+    }
+
+    __device__ __forceinline__ double encode_DaVinciIntermediated_device(double v, const JuicerCuda::CctfPayload& cctf) {
+        const double linear = fmax(0.0, v);
+        if (linear <= static_cast<double>(cctf.linearCutoff)) {
+            return linear * static_cast<double>(cctf.d);
+        }
+        return (log2(linear + static_cast<double>(cctf.a)) + static_cast<double>(cctf.b)) * static_cast<double>(cctf.c);
+    }
+
+    __device__ __forceinline__ double encode_channel_double_device(const JuicerCuda::CctfPayload& cctf, double v) {
+        switch (cctf.kind) {
+        case 0:
+            return v;
+        case 1:
+            return encode_gammad_signed_device(v, static_cast<double>(cctf.gamma));
+        case 2:
+            return encode_sRGBd_device(v);
+        case 3:
+            return encode_BT2020d_device(v, static_cast<double>(cctf.a), static_cast<double>(cctf.b));
+        case 4:
+            return encode_ProPhotod_device(v, static_cast<double>(cctf.linearCutoff), static_cast<double>(cctf.gamma));
+        case 5:
+            return encode_DaVinciIntermediated_device(v, cctf);
+        default:
+            return clamp01d_device(v);
+        }
+    }
+
+    __device__ __forceinline__ void apply_output_encoding_device(const JuicerCuda::OutputEncodingPayload& enc, double rgb[3]) {
+        if (!rgb) {
+            return;
+        }
+
+        double linear[3];
+        if (enc.inputIsOutputSpace) {
+            linear[0] = rgb[0];
+            linear[1] = rgb[1];
+            linear[2] = rgb[2];
+        }
+        else {
+            linear[0] =
+                static_cast<double>(enc.dwgToOutput[0]) * rgb[0] +
+                static_cast<double>(enc.dwgToOutput[1]) * rgb[1] +
+                static_cast<double>(enc.dwgToOutput[2]) * rgb[2];
+            linear[1] =
+                static_cast<double>(enc.dwgToOutput[3]) * rgb[0] +
+                static_cast<double>(enc.dwgToOutput[4]) * rgb[1] +
+                static_cast<double>(enc.dwgToOutput[5]) * rgb[2];
+            linear[2] =
+                static_cast<double>(enc.dwgToOutput[6]) * rgb[0] +
+                static_cast<double>(enc.dwgToOutput[7]) * rgb[1] +
+                static_cast<double>(enc.dwgToOutput[8]) * rgb[2];
+        }
+
+        if (enc.preserveLinearRange) {
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
+            return;
+        }
+
+        if (enc.applyCctfEncoding) {
+            rgb[0] = encode_channel_double_device(enc.cctf, linear[0]);
+            rgb[1] = encode_channel_double_device(enc.cctf, linear[1]);
+            rgb[2] = encode_channel_double_device(enc.cctf, linear[2]);
+        }
+        else {
+            rgb[0] = linear[0];
+            rgb[1] = linear[1];
+            rgb[2] = linear[2];
+        }
+
+        rgb[0] = clamp01d_device(rgb[0]);
+        rgb[1] = clamp01d_device(rgb[1]);
+        rgb[2] = clamp01d_device(rgb[2]);
+    }
+
+    __device__ __forceinline__ void signal_scan_error_device(int* flag) {
+        if (flag) {
+            atomicExch(flag, 1);
+        }
+    }
+
+    __device__ __forceinline__ void mat3_mul_vec_double_device(const float m9[9], const double v3[3], double out3[3]) {
+        out3[0] =
+            static_cast<double>(m9[0]) * v3[0] +
+            static_cast<double>(m9[1]) * v3[1] +
+            static_cast<double>(m9[2]) * v3[2];
+        out3[1] =
+            static_cast<double>(m9[3]) * v3[0] +
+            static_cast<double>(m9[4]) * v3[1] +
+            static_cast<double>(m9[5]) * v3[2];
+        out3[2] =
+            static_cast<double>(m9[6]) * v3[0] +
+            static_cast<double>(m9[7]) * v3[1] +
+            static_cast<double>(m9[8]) * v3[2];
+    }
 
     // --- Scanner glare parity (matches ScannerOptics.cpp) ---
     struct GlareRngDevice {
