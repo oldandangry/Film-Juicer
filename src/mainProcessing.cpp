@@ -128,7 +128,6 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 #include "JuicerState.h"
 #include "Scanner.h"
 #include "OutputColor.h"
-#include "ScannerOptics.h"
 #include "Couplers.h"
 #include "mainProcessing.h"
 

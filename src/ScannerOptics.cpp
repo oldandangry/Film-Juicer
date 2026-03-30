@@ -1,6 +1,6 @@
 // ScannerOptics.cpp
 
-#include "ScannerOptics.h"
+#include "JuicerState.h"
 
 #include <algorithm>
 #include <atomic>
@@ -8,6 +8,7 @@
 #include <limits>
 #include <sstream>
 
+#include "ofxsImageEffect.h"
 #include "ofxsMultiThread.h"
 
 #include "Cuda/ResourceManager/JuicerCudaResourceKeys.h"

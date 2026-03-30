@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
+#include "ColorTransforms.h"
 #include "FilmProcessing.h"
 #include "Logging.h"
 #include "PipelineTypes.h"
@@ -45,6 +47,72 @@ namespace Pipeline {
     };
 
     namespace {
+
+        inline bool finite_curve_domain(const Spectral::Curve& c, float& xmin, float& xmax) {
+            const size_t n = c.lambda_nm.size();
+            if (n == 0 || c.linear.size() != n) {
+                xmin = 0.0f;
+                xmax = 0.0f;
+                return false;
+            }
+
+            size_t begin = 0;
+            while (begin < n && !std::isfinite(c.lambda_nm[begin])) {
+                ++begin;
+            }
+            if (begin == n) {
+                xmin = 0.0f;
+                xmax = 0.0f;
+                return false;
+            }
+
+            size_t end = n - 1;
+            while (end > begin && !std::isfinite(c.lambda_nm[end])) {
+                --end;
+            }
+
+            xmin = c.lambda_nm[begin];
+            xmax = c.lambda_nm[end];
+            return std::isfinite(xmin) && std::isfinite(xmax) && (xmax >= xmin);
+        }
+
+        inline float sanitize_inf_logE_for_curve(float logE, const Spectral::Curve& c) {
+            if (std::isfinite(logE) || std::isnan(logE)) {
+                return logE;
+            }
+
+            float xmin = 0.0f, xmax = 0.0f;
+            if (!finite_curve_domain(c, xmin, xmax)) {
+                return logE;
+            }
+
+            if (logE > 0.0f) {
+                return xmax;
+            }
+            return xmin;
+        }
+
+        inline void sample_negative_densities_spatial_dir(
+            const WorkingState& ws,
+            const float logE_BGR[3],
+            float D_cmy_out[3])
+        {
+            const Spectral::Curve& cB = ws.dirPrecorrected ? ws.dirDensB : ws.densB;
+            const Spectral::Curve& cG = ws.dirPrecorrected ? ws.dirDensG : ws.densG;
+            const Spectral::Curve& cR = ws.dirPrecorrected ? ws.dirDensR : ws.densR;
+
+            const float leB = sanitize_inf_logE_for_curve(logE_BGR[0], cB);
+            const float leG = sanitize_inf_logE_for_curve(logE_BGR[1], cG);
+            const float leR = sanitize_inf_logE_for_curve(logE_BGR[2], cR);
+
+            const float D_Y = Spectral::sample_density_at_logE(cB, leB, ws.gammaFactorB);
+            const float D_M = Spectral::sample_density_at_logE(cG, leG, ws.gammaFactorG);
+            const float D_C = Spectral::sample_density_at_logE(cR, leR, ws.gammaFactorR);
+
+            D_cmy_out[0] = D_C;
+            D_cmy_out[1] = D_M;
+            D_cmy_out[2] = D_Y;
+        }
 
         inline float blend_dichroic_filter_linear(float curveVal, float normalizedAmount) {
             // agx-emulsion parity: do not treat non-finite curve samples as identity.
@@ -293,6 +361,84 @@ namespace Pipeline {
 
     } // namespace
 
+    bool ExposeFilmStage::run(const WorkingState& ws, const ExposeFilmInputs& in, ExposeFilmOutputs& out) {
+        float rgbIn[3] = { in.rgb.v[0], in.rgb.v[1], in.rgb.v[2] };
+        float E[3] = { 0.0f, 0.0f, 0.0f };
+
+        const float exposureScaleSafe = (std::isfinite(in.exposureScale) && in.exposureScale > 0.0f)
+            ? in.exposureScale
+            : 1.0f;
+
+        const Spectral::SpectralTables* tablesSPD =
+            (ws.spdReady && ws.tablesRef.K > 0) ? &ws.tablesRef : nullptr;
+
+        Spectral::rgb_input_to_film_raw(
+            rgbIn, E, exposureScaleSafe,
+            ws.filmRaw,
+            tablesSPD,
+            (ws.spdReady ? ws.spdSInv : nullptr),
+            ws.spdReady,
+            ws.sensB, ws.sensG, ws.sensR);
+
+        out.filmRaw.v[0] = E[0];
+        out.filmRaw.v[1] = E[1];
+        out.filmRaw.v[2] = E[2];
+        return true;
+    }
+
+    FilmLogRaw DevelopFilmStage::compute_log_raw(const FilmRaw& filmRaw) {
+        FilmLogRaw out{};
+
+        constexpr float kEps = 1e-10f;
+        out.v[0] = std::log10(fmax_agx(filmRaw.v[0], 0.0f) + kEps);
+        out.v[1] = std::log10(fmax_agx(filmRaw.v[1], 0.0f) + kEps);
+        out.v[2] = std::log10(fmax_agx(filmRaw.v[2], 0.0f) + kEps);
+
+        return out;
+    }
+
+    bool DevelopFilmStage::run(const WorkingState& ws, const DevelopFilmInputs& in, DevelopFilmOutputs& out) {
+        out.filmLogRaw = compute_log_raw(in.filmRaw);
+        out.negativeDensity = NegativeDensityCMY{};
+
+        float logE[3] = { out.filmLogRaw.v[0], out.filmLogRaw.v[1], out.filmLogRaw.v[2] };
+
+        if (in.useSpatialDIR) {
+            logE[0] -= in.spatialLogECorrectionsYMC[0]; // Y -> Blue layer
+            logE[1] -= in.spatialLogECorrectionsYMC[1]; // M -> Green layer
+            logE[2] -= in.spatialLogECorrectionsYMC[2]; // C -> Red layer
+
+            float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+            sample_negative_densities_spatial_dir(ws, logE, D_cmy);
+            out.negativeDensity.v[0] = D_cmy[0];
+            out.negativeDensity.v[1] = D_cmy[1];
+            out.negativeDensity.v[2] = D_cmy[2];
+            return true;
+        }
+
+        const Couplers::Runtime* dirRT = in.dirRuntime ? in.dirRuntime : nullptr;
+        Couplers::Runtime dummyRT{};
+        const Couplers::Runtime& runtime = dirRT ? *dirRT : dummyRT;
+
+        // Prevent +/-inf logE from collapsing to NaN in sample_density_at_logE (fast_interp parity).
+        logE[0] = sanitize_inf_logE_for_curve(logE[0], ws.densB);
+        logE[1] = sanitize_inf_logE_for_curve(logE[1], ws.densG);
+        logE[2] = sanitize_inf_logE_for_curve(logE[2], ws.densR);
+
+        float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+        sample_negative_densities(
+            ws,
+            runtime,
+            logE,
+            D_cmy,
+            in.applyDirRuntime ? DirSampleMode::ApplyRuntime : DirSampleMode::BypassRuntime);
+
+        out.negativeDensity.v[0] = D_cmy[0];
+        out.negativeDensity.v[1] = D_cmy[1];
+        out.negativeDensity.v[2] = D_cmy[2];
+        return true;
+    }
+
     bool compute_preflash_raw(
         const WorkingState& ws,
         const Print::Runtime& prt,
@@ -458,40 +604,40 @@ namespace Pipeline {
         // 1) Midgray DWG rgb at canonical brightness (AgX parity: constant 18.4% reflectance)
         const float rgbMid[3] = { 0.184f, 0.184f, 0.184f };
 
-	        // 2) DWG → per-layer exposures (negative leg); apply camera EV exactly once here.
-	        //    NOTE: Do not pre-scale rgbMid by cameraExposureScale — avoids double-applying EV.
-	        Pipeline::ExposeFilmInputs exposeIn{};
-	        exposeIn.rgb.v[0] = rgbMid[0];
-	        exposeIn.rgb.v[1] = rgbMid[1];
-	        exposeIn.rgb.v[2] = rgbMid[2];
-	        // Per agx-emulsion parity: mid-gray probe must use same exposure scaling semantics as render.
-	        exposeIn.exposureScale = printParams.exposureCompensationEnabled ? exposureCompScale : 1.0f;
+        // 2) DWG -> per-layer exposures (negative leg); apply camera EV exactly once here.
+        // NOTE: Do not pre-scale rgbMid by cameraExposureScale - avoids double-applying EV.
+        Pipeline::ExposeFilmInputs exposeIn{};
+        exposeIn.rgb.v[0] = rgbMid[0];
+        exposeIn.rgb.v[1] = rgbMid[1];
+        exposeIn.rgb.v[2] = rgbMid[2];
+        // Per agx-emulsion parity: mid-gray probe must use same exposure scaling semantics as render.
+        exposeIn.exposureScale = printParams.exposureCompensationEnabled ? exposureCompScale : 1.0f;
 
-	        Pipeline::ExposeFilmOutputs exposeOut{};
-	        if (!Pipeline::ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
-	            return 1.0f;
-	        }
+        Pipeline::ExposeFilmOutputs exposeOut{};
+        if (!Pipeline::ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
+            return 1.0f;
+        }
 
-	        Pipeline::DevelopFilmInputs devIn{};
-	        devIn.filmRaw = exposeOut.filmRaw;
-	        devIn.dirRuntime = &dirRT;
-	        devIn.applyDirRuntime = false; // midgray factor uses pre-DIR densities (legacy behavior)
+        Pipeline::DevelopFilmInputs devIn{};
+        devIn.filmRaw = exposeOut.filmRaw;
+        devIn.dirRuntime = &dirRT;
+        devIn.applyDirRuntime = false; // midgray factor uses pre-DIR densities (legacy behavior)
 
-	        Pipeline::DevelopFilmOutputs devOut{};
-	        if (!Pipeline::DevelopFilmStage::run(ws, devIn, devOut)) {
-	            return 1.0f;
-	        }
+        Pipeline::DevelopFilmOutputs devOut{};
+        if (!Pipeline::DevelopFilmStage::run(ws, devIn, devOut)) {
+            return 1.0f;
+        }
 
-	        const float D_neg[3] = {
-	            devOut.negativeDensity.v[0],
-	            devOut.negativeDensity.v[1],
-	            devOut.negativeDensity.v[2]
-	        };
+        const float D_neg[3] = {
+            devOut.negativeDensity.v[0],
+            devOut.negativeDensity.v[1],
+            devOut.negativeDensity.v[2]
+        };
 
-	        // 4) Print illuminant + negative density -> transmitted light (agx parity: NaNs collapse to 0 here only).
-	        static thread_local std::vector<float> density_spectral;
-	        static thread_local std::vector<float> print_illuminant;
-	        static thread_local std::vector<float> light;
+        // 4) Print illuminant + negative density -> transmitted light (agx parity: NaNs collapse to 0 here only).
+        static thread_local std::vector<float> density_spectral;
+        static thread_local std::vector<float> print_illuminant;
+        static thread_local std::vector<float> light;
         density_to_filtered_light_agx(
             ws, printRuntime,
             printParams.yFilter,
@@ -502,7 +648,7 @@ namespace Pipeline {
             print_illuminant,
             light);
 
-        // 5) RAW via print paper sensitivities (log domain → linear sensitivity)
+        // 5) RAW via print paper sensitivities (log domain -> linear sensitivity)
         float raw[3];
         raw_exposures_from_filtered_light(printRuntime.profile, light, raw);
 
@@ -520,6 +666,101 @@ namespace Pipeline {
         }
 
         return baseFactor;
+    }
+
+    PipelineRunner::PipelineRunner(const PipelineRunnerConfig& cfg) : cfg_(cfg) {}
+
+    float PipelineRunner::compute_midgray_factor(
+        const WorkingState& ws,
+        const Print::Runtime& printRuntime,
+        const Print::Params& printParams,
+        const Couplers::Runtime& dirRT,
+        float exposureCompScale)
+    {
+        return ExposePrintStage::compute_midgray_factor(
+            ws,
+            printRuntime,
+            printParams,
+            dirRT,
+            exposureCompScale);
+    }
+
+    bool PipelineRunner::run_density_pixel(
+        const WorkingState& ws,
+        const DensityPixelInputs& in,
+        DensityPixelOutputs& out) const
+    {
+        out = DensityPixelOutputs{};
+
+        FilmRaw filmRaw{};
+        if (in.useFilmRawOverride) {
+            filmRaw = in.filmRawOverride;
+        }
+        else {
+            ExposeFilmInputs exposeIn{};
+            exposeIn.rgb = in.rgb;
+            exposeIn.exposureScale = in.exposureScale;
+
+            ExposeFilmOutputs exposeOut{};
+            if (!ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
+                return false;
+            }
+            filmRaw = exposeOut.filmRaw;
+        }
+
+        DevelopFilmInputs devIn{};
+        devIn.filmRaw = filmRaw;
+        devIn.dirRuntime = in.dirRuntime;
+        devIn.applyDirRuntime = in.applyDirRuntime;
+        devIn.useSpatialDIR = in.useSpatialDIR;
+        devIn.spatialLogECorrectionsYMC[0] = in.spatialLogECorrectionsYMC[0];
+        devIn.spatialLogECorrectionsYMC[1] = in.spatialLogECorrectionsYMC[1];
+        devIn.spatialLogECorrectionsYMC[2] = in.spatialLogECorrectionsYMC[2];
+
+        DevelopFilmOutputs devOut{};
+        if (!DevelopFilmStage::run(ws, devIn, devOut)) {
+            return false;
+        }
+
+        out.filmRaw = filmRaw;
+        out.filmLogRaw = devOut.filmLogRaw;
+        out.negativeDensity = devOut.negativeDensity;
+        out.medium = DensityMedium::Negative;
+
+        if (!cfg_.enablePrint) {
+            return true;
+        }
+
+        if (!in.printRuntime || !in.printParams || in.printParams->bypass) {
+            return true;
+        }
+        if (!in.printScratch) {
+            return false;
+        }
+
+        ExposePrintInputs exposePrintIn{};
+        exposePrintIn.printRuntime = in.printRuntime;
+        exposePrintIn.printParams = in.printParams;
+        exposePrintIn.negativeDensity = devOut.negativeDensity;
+        exposePrintIn.midgrayFactor = in.midgrayFactor;
+
+        ExposePrintOutputs exposePrintOut{};
+        if (!ExposePrintStage::run(ws, exposePrintIn, exposePrintOut, *in.printScratch)) {
+            return false;
+        }
+
+        DevelopPrintInputs developPrintIn{};
+        developPrintIn.printRuntime = in.printRuntime;
+        developPrintIn.printLogRaw = exposePrintOut.printLogRaw;
+
+        DevelopPrintOutputs developPrintOut{};
+        if (!DevelopPrintStage::run(developPrintIn, developPrintOut)) {
+            return false;
+        }
+
+        out.printDensity = developPrintOut.printDensity;
+        out.medium = DensityMedium::Print;
+        return true;
     }
 
     bool DevelopPrintStage::run(const DevelopPrintInputs& in, DevelopPrintOutputs& out) {
