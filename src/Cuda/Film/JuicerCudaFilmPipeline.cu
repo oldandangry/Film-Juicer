@@ -6,9 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "Cuda/JuicerCudaPayloads.h"
-#include "Cuda/JuicerCudaKernelsUtil.cuh"
-#include "Cuda/JuicerCudaPipelineHelpers.cuh"
+#include "Cuda/JuicerCudaDeviceHelpers.cuh"
 #include "openrand/philox.h"
 
 __global__ void expose_film_raw_kernel(
