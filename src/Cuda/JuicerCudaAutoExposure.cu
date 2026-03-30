@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "Cuda/JuicerCudaKernelsUtil.cuh"
+#include "Cuda/JuicerCudaDeviceHelpers.cuh"
 
 namespace {
 

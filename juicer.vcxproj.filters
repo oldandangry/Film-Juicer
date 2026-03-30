@@ -95,13 +95,10 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Cuda\JuicerCudaKernelsUtil.cuh">
-      <Filter>Cuda</Filter>
-    </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaPipelineHelpers.cuh">
+    <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaResources.h">

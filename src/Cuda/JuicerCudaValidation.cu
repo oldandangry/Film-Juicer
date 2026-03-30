@@ -7,8 +7,7 @@
 #include <cstdint>
 #include <string>
 
-#include "Cuda/JuicerCudaKernelsUtil.cuh"
-#include "Cuda/JuicerCudaPipelineHelpers.cuh"
+#include "Cuda/JuicerCudaDeviceHelpers.cuh"
 
 namespace {
 
