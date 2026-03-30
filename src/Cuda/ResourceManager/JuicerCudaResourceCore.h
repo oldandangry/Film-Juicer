@@ -626,6 +626,15 @@ struct ResolvedPressurePolicy {
 // Trace schema contract: single source of truth for submission traces.
 // Bump only when required trace fields/tags or their required semantics change.
 constexpr std::uint32_t kTraceSchemaVersion = 5u;
+constexpr std::uint32_t kSubmissionKeySchemaVersion = 2u;
+
+constexpr std::uint32_t sanitize_submission_key_schema_version(std::uint32_t value) noexcept {
+    return (value == 0u) ? kSubmissionKeySchemaVersion : value;
+}
+
+constexpr bool submission_key_schema_matches_contract(std::uint32_t value) noexcept {
+    return sanitize_submission_key_schema_version(value) == kSubmissionKeySchemaVersion;
+}
 
 constexpr std::uint32_t sanitize_trace_schema_version(std::uint32_t value) noexcept {
     return (value == 0u) ? kTraceSchemaVersion : value;
@@ -637,6 +646,8 @@ constexpr bool trace_schema_matches_contract(std::uint32_t value) noexcept {
 
 static_assert(kTraceSchemaVersion >= 1u,
     "trace schema version must be a positive non-zero value");
+static_assert(kSubmissionKeySchemaVersion >= 1u,
+    "submission key schema version must be a positive non-zero value");
 
 struct SubmissionSnapshot {
     InstanceToken instanceToken{};
@@ -646,7 +657,7 @@ struct SubmissionSnapshot {
     std::uint64_t registryGeneration = 1;
     std::uint64_t contextEpoch = 1;
     KeyDigests keyDigests{};
-    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
     std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
 };
 
@@ -888,7 +899,7 @@ CacheAdmissionDecision default_cache_admission_decision() noexcept;
 
 // Phase-0 config scaffolding for ResourceManager.
 struct ResourceManagerConfigRaw {
-    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
     std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
     bool allowShadowMode = true;
     std::uint32_t maxLiveManagersPerProcess = 16;
@@ -956,7 +967,7 @@ struct ResourceManagerConfigRaw {
 };
 
 struct ResourceManagerConfigEffective {
-    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
     std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
     bool allowShadowMode = true;
     std::uint32_t maxLiveManagersPerProcess = 16;

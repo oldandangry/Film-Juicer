@@ -494,6 +494,17 @@ void finalize_submission_transaction(
     transaction.active = false;
 }
 
+void publish_committed_shadow_history(const SubmissionSnapshot& snapshot) noexcept {
+    const ShadowHistoryKey key{ snapshot.instanceToken.value, snapshot.deviceContextKey };
+    ShadowHistoryState& state = shadow_history_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    ShadowHistoryEntry& entry = state.bySubmissionKey[key];
+    entry.valid = true;
+    entry.digests = snapshot.keyDigests;
+    entry.keySchemaVersion = snapshot.keySchemaVersion;
+    entry.snapshotId = snapshot.snapshotId;
+}
+
 bool ensure_submission_active(
     const SubmissionTransaction& transaction,
     std::string& outError) {
@@ -693,6 +704,25 @@ const char* invalidation_reason(bool keySchemaChanged, bool laneChanged) noexcep
         return "lane_hash_changed";
     }
     return "policy_invalidated";
+}
+
+bool finalize_submission_end_or_trace(
+    const SubmissionTransaction& transaction,
+    const char* stage,
+    std::string* outError = nullptr) {
+    if (registry_note_submission_end(transaction.snapshot.deviceContextKey)) {
+        return true;
+    }
+    telemetry_record_module_boundary_violation();
+    telemetry_trace_module_boundary_violation(
+        transaction.transactionId,
+        transaction.snapshot.snapshotId,
+        transaction.snapshot.traceSchemaVersion,
+        trace_or(stage, "registry_submission_end_rejected"));
+    if (outError) {
+        *outError = "registry submission-end tracking rejected";
+    }
+    return false;
 }
 
 std::uint64_t submission_previous_digest_for_kind(
@@ -976,7 +1006,8 @@ bool begin_submission(
     }
     outTransaction.snapshot.registryGeneration = registryGeneration;
     outTransaction.snapshot.contextEpoch = contextEpoch;
-    outTransaction.snapshot.keySchemaVersion = std::max<std::uint32_t>(1u, outTransaction.snapshot.keySchemaVersion);
+    outTransaction.snapshot.keySchemaVersion =
+        sanitize_submission_key_schema_version(outTransaction.snapshot.keySchemaVersion);
     outTransaction.snapshot.traceSchemaVersion = sanitize_trace_schema_version(outTransaction.snapshot.traceSchemaVersion);
     outTransaction.snapshot.keyDigests = normalize_key_digests(outTransaction.snapshot.keyDigests);
 
@@ -1067,14 +1098,20 @@ bool acquire_plan(
         return trace_uniform_acquire_error(transaction, acquireId, false);
     }
 
-    if (snapshot.keySchemaVersion == 0) {
-        snapshot.keySchemaVersion = 1;
+    if (!submission_key_schema_matches_contract(snapshot.keySchemaVersion)) {
+        const std::uint32_t normalizedKeySchemaVersion =
+            sanitize_submission_key_schema_version(snapshot.keySchemaVersion);
         telemetry_record_module_boundary_violation();
         telemetry_trace_module_boundary_violation(
             transaction.transactionId,
             snapshot.snapshotId,
             snapshot.traceSchemaVersion,
-            "key_schema_version_zero_sanitized");
+            "key_schema_mismatch");
+        if (normalizedKeySchemaVersion != snapshot.keySchemaVersion) {
+            snapshot.keySchemaVersion = normalizedKeySchemaVersion;
+        }
+        outError = "key schema mismatch";
+        return trace_uniform_acquire_error(transaction, acquireId, false);
     }
 
     const KeyDigests rawDigests = snapshot.keyDigests;
@@ -1254,16 +1291,6 @@ bool acquire_plan(
             "forbidden_invalidation_edge_detected");
     }
 
-    {
-        ShadowHistoryState& state = shadow_history_state();
-        std::lock_guard<std::mutex> lock(state.mutex);
-        ShadowHistoryEntry& entry = state.bySubmissionKey[key];
-        entry.valid = true;
-        entry.digests = snapshot.keyDigests;
-        entry.keySchemaVersion = snapshot.keySchemaVersion;
-        entry.snapshotId = snapshot.snapshotId;
-    }
-
     const AcquireStatus finalStatus = combine_status(plan);
 
     telemetry_record_acquire_status(finalStatus);
@@ -1306,7 +1333,11 @@ bool commit_submission(
     if (!ensure_submission_active(transaction, outError)) {
         return false;
     }
-    (void)registry_note_submission_end(transaction.snapshot.deviceContextKey);
+    if (!finalize_submission_end_or_trace(transaction, "registry_submission_end_rejected_commit", &outError)) {
+        finalize_submission_transaction(transaction, false);
+        return false;
+    }
+    publish_committed_shadow_history(transaction.snapshot);
     finalize_submission_transaction(transaction, true);
     telemetry_record_commit_submission();
     return true;
@@ -1333,7 +1364,7 @@ void rollback_submission(
     if (!transaction.active) {
         return;
     }
-    (void)registry_note_submission_end(transaction.snapshot.deviceContextKey);
+    (void)finalize_submission_end_or_trace(transaction, "registry_submission_end_rejected_rollback");
     finalize_submission_transaction(transaction, false);
     telemetry_record_rollback_submission();
 }

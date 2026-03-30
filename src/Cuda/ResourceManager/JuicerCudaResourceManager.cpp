@@ -326,7 +326,7 @@ struct ShadowHistoryKeyHasher {
 struct ShadowHistoryEntry {
     bool valid = false;
     KeyDigests digests{};
-    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
     std::uint64_t snapshotId = 0;
 };
 
@@ -345,7 +345,7 @@ struct AutoExposureOwnershipEntry {
     std::uint64_t keyHash = 0;
     int meterWidth = 0;
     int meterHeight = 0;
-    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
 };
 
 struct AutoExposureOwnershipState {
@@ -380,7 +380,7 @@ struct FrameSnapshotEntry {
     bool valid = false;
     std::uint64_t frameToken = 0;
     KeyDigests digests{};
-    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t keySchemaVersion = kSubmissionKeySchemaVersion;
     std::uint64_t snapshotId = 0;
 };
 
@@ -4067,7 +4067,7 @@ ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& r
     constexpr std::uint64_t kMinPinnedStagingTrimBatchBytes = 1ull * kMiB;
 
     ResourceManagerConfigEffective out{};
-    out.keySchemaVersion = std::max<std::uint32_t>(1u, raw.keySchemaVersion);
+    out.keySchemaVersion = sanitize_submission_key_schema_version(raw.keySchemaVersion);
     out.traceSchemaVersion = sanitize_trace_schema_version(raw.traceSchemaVersion);
     out.allowShadowMode = raw.allowShadowMode;
     out.maxLiveManagersPerProcess = std::clamp(
@@ -4517,7 +4517,8 @@ StaleInput state_build_stale_input(
     const bool observeLease = (leaseObservationMode == LeaseObservationMode::Always) || transaction.active;
     staleInput.observedLeaseGeneration =
         foundation_observed_lease_generation(observeLease, transaction.leaseGeneration);
-    staleInput.keySchemaMismatch = (transaction.snapshot.keySchemaVersion == 0);
+    staleInput.keySchemaMismatch =
+        !submission_key_schema_matches_contract(transaction.snapshot.keySchemaVersion);
     return staleInput;
 }
 

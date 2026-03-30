@@ -548,6 +548,26 @@ namespace ScannerOptics {
             JTRACE("SCAN", "FATAL: scanner density range missing or invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
+        if (medium.range.digest != medium.staticKey.densityRangeHash) {
+            JTRACE("SCAN", "FATAL: scanner density range hash mismatch");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        const std::uint64_t expectedGlareHash = Scanner::hash_glare(medium.glare);
+        if (expectedGlareHash == 0) {
+            JTRACE("SCAN", "FATAL: scanner glare hash missing or invalid");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        if (medium.staticKey.glareHash != expectedGlareHash) {
+            JTRACE("SCAN", "FATAL: scanner glare hash mismatch");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        Scanner::ScannerStaticKey expectedStaticKey = medium.staticKey;
+        const std::uint64_t storedStaticHash = expectedStaticKey.hash;
+        Scanner::finalize_static_key(expectedStaticKey);
+        if (expectedStaticKey.hash == 0 || storedStaticHash != expectedStaticKey.hash) {
+            JTRACE("SCAN", "FATAL: scanner static key hash mismatch");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
         const double tablesInvYn = static_cast<double>(tables->invYn);
         if (!(std::isfinite(tablesInvYn) && tablesInvYn > 0.0)) {
             JTRACE("SCAN", "FATAL: scanner tables contain invalid invYn");

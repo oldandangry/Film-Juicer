@@ -603,6 +603,7 @@ namespace {
 
     void assign_glare_hash_or_throw(Scanner::ScannerMediumRuntime& mediumRuntime) {
         if (assign_glare_hash(mediumRuntime)) {
+            Scanner::finalize_static_key(mediumRuntime.staticKey);
             return;
         }
         JTRACE("HASH", "FATAL: failed to hash print glare override parameters");
@@ -647,6 +648,10 @@ namespace {
             set_error(" scanner density range missing or invalid");
             return false;
         }
+        if (mediumRuntime->range.digest != staticKey.densityRangeHash) {
+            set_error(" scanner density range hash mismatch for medium");
+            return false;
+        }
 
         const std::uint64_t illumHash = tables->illuminantHash;
         if (illumHash != 0 && mediumRuntime->illuminant.hash != 0 && illumHash != mediumRuntime->illuminant.hash) {
@@ -664,9 +669,24 @@ namespace {
             return false;
         }
 
+        const std::uint64_t expectedGlareHash = Scanner::hash_glare(mediumRuntime->glare);
+        if (expectedGlareHash == 0) {
+            set_error(" scanner glare hash missing or invalid");
+            return false;
+        }
+        if (staticKey.glareHash != expectedGlareHash) {
+            set_error(" scanner static key glare hash mismatch");
+            return false;
+        }
+
+        const std::uint64_t storedStaticHash = staticKey.hash;
         Scanner::finalize_static_key(staticKey);
         if (staticKey.hash == 0) {
             set_error(" scanner static key missing or invalid");
+            return false;
+        }
+        if (storedStaticHash != staticKey.hash) {
+            set_error(" scanner static key hash mismatch");
             return false;
         }
 
@@ -1343,23 +1363,28 @@ namespace JuicerProcScanner {
             return 0;
         }
 
-        const std::uint64_t negColorHash = ws->negativeStaticKey.colorRuntimeHash;
-        const std::uint64_t negLutRes = clamped_lut_resolution_hash_value(ws->negativeStaticKey.lutResolution);
+        std::uint64_t negStaticHash = 0;
+        if (ws->negativeScannerValid) {
+            Scanner::ScannerStaticKey negStaticKey = ws->negativeStaticKey;
+            Scanner::finalize_static_key(negStaticKey);
+            negStaticHash = negStaticKey.hash;
+        }
+
         const bool printValid = ws->printScannerValid;
-        const std::uint64_t printColorHash = hash_or_zero_if(printValid, ws->printStaticKey.colorRuntimeHash);
-        const std::uint64_t printLutRes = hash_or_zero_if(
-            printValid,
-            clamped_lut_resolution_hash_value(ws->printStaticKey.lutResolution));
+        std::uint64_t printStaticHash = 0;
+        if (printValid) {
+            Scanner::ScannerStaticKey printStaticKey = ws->printStaticKey;
+            Scanner::finalize_static_key(printStaticKey);
+            printStaticHash = printStaticKey.hash;
+        }
 
         const std::uint64_t fields[] = {
             settingsHash,
             static_cast<std::uint64_t>(frameBoundsVersion),
             bool_to_u64(ws->negativeScannerValid),
-            negColorHash,
-            negLutRes,
+            negStaticHash,
             bool_to_u64(printValid),
-            printColorHash,
-            printLutRes
+            printStaticHash
         };
         return Hash::hash_bytes(fields, sizeof(fields));
     }
@@ -2868,7 +2893,7 @@ void JuicerProcessor::processImagesCUDA() {
                 _ws->dirHash,
                 scannerRuntimeHash,
                 autoExposureReusableKeyHash);
-        snapshot.keySchemaVersion = 1;
+        snapshot.keySchemaVersion = JuicerCuda::ResourceManager::kSubmissionKeySchemaVersion;
         snapshot.traceSchemaVersion = JuicerCuda::ResourceManager::kTraceSchemaVersion;
         bool reusingSnapshotLatch = false;
         {

@@ -138,15 +138,20 @@ namespace Scanner {
         return Hash::hash_bytes(fields, sizeof(fields));
     }
 
-    inline void finalize_static_key(ScannerStaticKey& key) {
+    inline std::uint64_t compute_static_key_hash(const ScannerStaticKey& key) {
         const std::uint64_t fields[] = {
             static_cast<std::uint64_t>(key.medium),
             key.tablesHash,
             key.densityRangeHash,
+            key.glareHash,
             key.colorRuntimeHash,
             static_cast<std::uint64_t>(key.lutResolution)
         };
-        key.hash = Hash::hash_bytes(fields, sizeof(fields));
+        return Hash::hash_bytes(fields, sizeof(fields));
+    }
+
+    inline void finalize_static_key(ScannerStaticKey& key) {
+        key.hash = compute_static_key_hash(key);
     }
 
     inline std::uint64_t identity_color_runtime_hash() {
