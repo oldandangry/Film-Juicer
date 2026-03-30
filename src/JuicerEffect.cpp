@@ -19,7 +19,6 @@
 #include "ColorTransforms.h"
 #include "Couplers.h"
 #include "Illuminants.h"
-#include "IlluminantKeys.h"
 #include "OutputColor.h"
 #include "Print.h"
 #include "ParamNames.h"
@@ -28,7 +27,6 @@
 #include "Logging.h"
 #include "Hash.h"
 #include "mainProcessing.h"
-#include "WorkingState.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"

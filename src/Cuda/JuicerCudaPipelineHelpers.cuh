@@ -1,5 +1,5 @@
-// Cuda/Film/JuicerCudaFilmExposure.cuh
-// Film exposure helpers shared by CUDA stages.
+// Cuda/JuicerCudaPipelineHelpers.cuh
+// Shared CUDA pipeline helpers for film exposure, film development, and print development.
 #pragma once
 
 #include <cmath>
@@ -620,4 +620,194 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
     float filmRaw[3] = { 0.0f, 0.0f, 0.0f };
     compute_film_raw_device(params, rgbIn, filmRaw);
     compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
+}
+
+static __device__ __forceinline__ float density_to_light_sample_agx_device(float density, float illuminant) {
+    // pow(10, -d) = exp2(-d * log2(10))
+    constexpr double kLog2_10 = 3.32192809488736234787;
+    const double transmitted = exp2(-static_cast<double>(density) * kLog2_10) * static_cast<double>(illuminant);
+    const float out = static_cast<float>(transmitted);
+    return isnan(out) ? 0.0f : out;
+}
+
+static __device__ __forceinline__ void apply_print_pipeline_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const JuicerCuda::PrintDevelopPayload& develop,
+    float D_cmy[3]) {
+    if (!expose.active || !D_cmy) {
+        return;
+    }
+
+    const int K = expose.printIllumK;
+    if (K <= 0 || !expose.printIllumFiltered) {
+        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+        return;
+    }
+
+    const int negK = expose.negTables.K;
+    if (negK != K || !expose.negTables.epsC || !expose.negTables.epsM || !expose.negTables.epsY) {
+        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+        return;
+    }
+
+    const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseMin;
+
+    if (!expose.printSensC.y || !expose.printSensM.y || !expose.printSensY.y) {
+        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+        return;
+    }
+    if (expose.printSensC.n < K || expose.printSensM.n < K || expose.printSensY.n < K) {
+        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+        return;
+    }
+
+    // Negative density -> filtered enlarger light -> raw print exposures (C/M/Y).
+    double accumC = 0.0;
+    double accumM = 0.0;
+    double accumY = 0.0;
+    for (int i = 0; i < K; ++i) {
+        const float sC = ldg_f(expose.printSensC.y + i);
+        const float sM = ldg_f(expose.printSensM.y + i);
+        const float sY = ldg_f(expose.printSensY.y + i);
+
+        const bool activeC = !isnan(sC);
+        const bool activeM = !isnan(sM);
+        const bool activeY = !isnan(sY);
+        if (!activeC && !activeM && !activeY) {
+            continue;
+        }
+
+        const float baseD = haveBaseline ? ldg_f(expose.negTables.baseMin + i) : 0.0f;
+        const float densitySpectral =
+            D_cmy[0] * ldg_f(expose.negTables.epsC + i) +
+            D_cmy[1] * ldg_f(expose.negTables.epsM + i) +
+            D_cmy[2] * ldg_f(expose.negTables.epsY + i) +
+            baseD;
+
+        const float e = density_to_light_sample_agx_device(densitySpectral, ldg_f(expose.printIllumFiltered + i));
+        const double e64 = static_cast<double>(e);
+
+        if (activeC) accumC += e64 * static_cast<double>(sC);
+        if (activeM) accumM += e64 * static_cast<double>(sM);
+        if (activeY) accumY += e64 * static_cast<double>(sY);
+    }
+
+    float rawC = static_cast<float>(accumC);
+    float rawM = static_cast<float>(accumM);
+    float rawY = static_cast<float>(accumY);
+
+    float expPrint = expose.printExposure;
+    if (!isfinite(expPrint)) {
+        expPrint = 1.0f;
+    }
+    if (expPrint < 0.0f) {
+        expPrint = 0.0f;
+    }
+
+    float kMid = expose.printMidgrayFactor;
+    if (!isfinite(kMid) || !(kMid > 0.0f)) {
+        kMid = 1.0f;
+    }
+
+    const float rawScale = expPrint * kMid;
+    rawC *= rawScale;
+    rawM *= rawScale;
+    rawY *= rawScale;
+
+    const float preflash = expose.printPreflashExposure;
+    if (isfinite(preflash) && preflash > 0.0f) {
+        rawC += expose.printPreflashRaw[0] * preflash;
+        rawM += expose.printPreflashRaw[1] * preflash;
+        rawY += expose.printPreflashRaw[2] * preflash;
+    }
+
+    // RAW -> log10(raw + eps) -> print density curves.
+    constexpr float kLogEps = 1e-10f;
+    const float logC = log10f(rawC + kLogEps);
+    const float logM = log10f(rawM + kLogEps);
+    const float logY = log10f(rawY + kLogEps);
+
+    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logC, develop.printGammaC);
+    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logM, develop.printGammaM);
+    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logY, develop.printGammaY);
+}
+
+static __device__ __forceinline__ float clamp_to_curve_domain_device(float logE, const JuicerCuda::DeviceCurveView& c) {
+    if (!c.x || c.n <= 0) {
+        return logE;
+    }
+    const float xmin = ldg_f(c.x);
+    const float xmax = ldg_f(c.x + (c.n - 1));
+    if (!isfinite(logE)) {
+        return xmin;
+    }
+    float v = logE;
+    v = fmaxf(v, xmin);
+    v = fminf(v, xmax);
+    return v;
+}
+
+static __device__ __forceinline__ void apply_dir_runtime_logE_device(
+    float logE_BGR[3],
+    const float layerD_BGR[3],
+    const JuicerCuda::DirPayload& dir,
+    const JuicerCuda::DeviceCurveView& densB,
+    const JuicerCuda::DeviceCurveView& densG,
+    const JuicerCuda::DeviceCurveView& densR)
+{
+    if (!logE_BGR || !layerD_BGR) {
+        return;
+    }
+    if (!dir.active) {
+        return;
+    }
+
+    auto safe_norm = [](float D, float dmax) -> float {
+        float Din = (!isfinite(D) || D < 0.0f) ? 0.0f : D;
+        float m = (isfinite(dmax) && dmax > 1e-4f) ? dmax : 1.0f;
+        float n = Din / m;
+        if (!isfinite(n) || n < 0.0f) n = 0.0f;
+        return n;
+    };
+
+    float nB = safe_norm(layerD_BGR[0], dir.dMax[0]);
+    float nG = safe_norm(layerD_BGR[1], dir.dMax[1]);
+    float nR = safe_norm(layerD_BGR[2], dir.dMax[2]);
+
+    auto high_boost = [&](float n) -> float {
+        const float nb = n + dir.highShift * n * n;
+        if (!isfinite(nb)) {
+            return (n >= 0.0f && isfinite(n)) ? n : 0.0f;
+        }
+        return fmaxf(0.0f, nb);
+    };
+    nB = high_boost(nB);
+    nG = high_boost(nG);
+    nR = high_boost(nR);
+
+    float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
+    float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
+    float aC = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
+
+    if (!isfinite(aY)) aY = 0.0f;
+    if (!isfinite(aM)) aM = 0.0f;
+    if (!isfinite(aC)) aC = 0.0f;
+
+    auto clamp_corr = [](float v) -> float {
+        if (!isfinite(v)) return 0.0f;
+        if (v < -10.0f) return -10.0f;
+        if (v > 10.0f) return 10.0f;
+        return v;
+    };
+    aY = clamp_corr(aY);
+    aM = clamp_corr(aM);
+    aC = clamp_corr(aC);
+
+    logE_BGR[0] -= aY;
+    logE_BGR[1] -= aM;
+    logE_BGR[2] -= aC;
+
+    logE_BGR[0] = clamp_to_curve_domain_device(logE_BGR[0], densB);
+    logE_BGR[1] = clamp_to_curve_domain_device(logE_BGR[1], densG);
+    logE_BGR[2] = clamp_to_curve_domain_device(logE_BGR[2], densR);
 }

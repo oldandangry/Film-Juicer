@@ -21,8 +21,7 @@
 
 #include "nlohmann/json.hpp"
 #include "Logging.h"
-#include "IlluminantKeys.h"
-#include "SpectralTypes.h"
+#include "Illuminants.h"
 #include "SpectralData.h"
 
 namespace Profiles {

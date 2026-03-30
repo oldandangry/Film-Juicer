@@ -4,20 +4,361 @@
 
 #include <cmath>
 #include <algorithm>
-#include <vector>
 #include <array>
-#include <utility>
-#include <string>
-#include <sstream>
-#include <fstream>
-#include <stdexcept>
-#include <initializer_list>
+#include <atomic>
 #include <cstdint>
+#include <fstream>
+#include <initializer_list>
 #include <limits>
-#include "SpectralContext.h"
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "AkimaInterpolator.h"
+#include "NpyLoader.h"
 #include "Logging.h"
 #include "Hash.h"
+
+namespace Spectral {
+
+    inline constexpr float kLambdaMin = 380.0f;
+    inline constexpr float kLambdaMax = 780.0f;
+    inline constexpr float kDelta = 5.0f;
+    inline constexpr int kNumSamples = static_cast<int>((kLambdaMax - kLambdaMin) / kDelta) + 1;
+    static_assert(kNumSamples == 81, "Spectral grid must be 380..780 nm at 5 nm.");
+
+    inline constexpr float kLogExposureMin = -3.0f;
+    inline constexpr float kLogExposureMax = 4.0f;
+    inline constexpr int kLogExposureSamples = 256;
+    inline constexpr float kLogExposureDelta =
+        (kLogExposureMax - kLogExposureMin) / static_cast<float>(kLogExposureSamples - 1);
+
+    struct PrecomputeStatus {
+        std::atomic<uint64_t> illumVersion{ 0 };
+        std::atomic<uint64_t> lastPrecomputeIllumVersion{ ~uint64_t{ 0 } };
+        std::atomic<bool> dirty{ true };
+        std::atomic<uint64_t> shapeVersion{ 0 };
+        std::atomic<uint64_t> lastPrecomputeShapeVersion{ ~uint64_t{ 0 } };
+        std::atomic<uint64_t> mixVersion{ 0 };
+    };
+
+    struct BaselineCtx {
+        bool hasBaseline;
+        const float* baseMin;
+        const float* baseMid;
+        float mix;
+    };
+
+    struct Curve {
+        std::vector<float> lambda_nm;
+        std::vector<float> linear;
+
+        inline void build_from_log10_pairs(const std::vector<std::pair<float, float>>& samples) {
+            lambda_nm.clear();
+            linear.clear();
+            lambda_nm.reserve(samples.size());
+            linear.reserve(samples.size());
+            float peak = 0.0f;
+            for (auto& p : samples) {
+                lambda_nm.push_back(p.first);
+                float lin = std::pow(10.0f, p.second);
+                if (!std::isfinite(lin) || lin < 0.0f) {
+                    lin = 0.0f;
+                }
+                linear.push_back(lin);
+                if (lin > peak) peak = lin;
+            }
+            if (peak > 0.0f) {
+                for (auto& v : linear) v /= peak;
+            }
+        }
+
+        inline void build_from_linear_pairs(const std::vector<std::pair<float, float>>& samples) {
+            lambda_nm.clear();
+            linear.clear();
+            if (samples.empty()) return;
+
+            std::vector<std::pair<float, float>> s = samples;
+            std::sort(s.begin(), s.end(), [](auto& a, auto& b) { return a.first < b.first; });
+
+            lambda_nm.reserve(s.size());
+            linear.reserve(s.size());
+            for (auto& p : s) {
+                lambda_nm.push_back(p.first);
+                linear.push_back(p.second);
+            }
+        }
+
+        inline float sample(float lambda) const {
+            const size_t n = lambda_nm.size();
+            if (n == 0) return 0.0f;
+            if (lambda <= lambda_nm.front()) return linear.front();
+            if (lambda >= lambda_nm.back()) return linear.back();
+            size_t i1 = 1;
+            while (i1 < n && lambda_nm[i1] < lambda) ++i1;
+            size_t i0 = i1 - 1;
+            float x0 = lambda_nm[i0], x1 = lambda_nm[i1];
+            float y0 = linear[i0], y1 = linear[i1];
+            if (!(std::isfinite(x0) && std::isfinite(x1)) || x1 <= x0) {
+                return y0;
+            }
+            if (!std::isfinite(y0)) {
+                y0 = std::isfinite(y1) ? y1 : 0.0f;
+            }
+            if (!std::isfinite(y1)) {
+                y1 = y0;
+            }
+            float t = (lambda - x0) / (x1 - x0);
+            return y0 + t * (y1 - y0);
+        }
+    };
+
+    struct DirRuntimeSnapshot {
+        bool active = false;
+        float M[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+        float highShift = 0.0f;
+        float dMax[3] = { 1.0f, 1.0f, 1.0f };
+    };
+
+    struct SpectralShape {
+        static constexpr float lambdaMin = kLambdaMin;
+        static constexpr float lambdaMax = kLambdaMax;
+        static constexpr float delta = kDelta;
+        static constexpr int K = kNumSamples;
+
+        std::array<float, kNumSamples> wavelengths{};
+
+        constexpr SpectralShape() : wavelengths{} {
+            for (int i = 0; i < kNumSamples; ++i) {
+                wavelengths[static_cast<size_t>(i)] = lambdaMin + delta * static_cast<float>(i);
+            }
+        }
+    };
+
+    enum class SpectralMutationStage : std::uint8_t {
+        None = 0,
+        Bootstrap = 1,
+        Rebuild = 2
+    };
+
+    inline const char* to_cstr(SpectralMutationStage stage) noexcept {
+        switch (stage) {
+        case SpectralMutationStage::Bootstrap:
+            return "bootstrap";
+        case SpectralMutationStage::Rebuild:
+            return "rebuild";
+        case SpectralMutationStage::None:
+        default:
+            return "none";
+        }
+    }
+
+    class SpectralMutationScope {
+    public:
+        SpectralMutationScope(SpectralMutationStage stage, const char* owner = nullptr) noexcept;
+        ~SpectralMutationScope() noexcept;
+
+        bool active() const noexcept { return _active; }
+
+    private:
+        SpectralMutationStage _stage = SpectralMutationStage::None;
+        const char* _owner = nullptr;
+        bool _active = false;
+    };
+
+    bool spectral_mutation_scope_active() noexcept;
+    SpectralMutationStage spectral_mutation_stage() noexcept;
+    bool require_spectral_mutation_scope(const char* action) noexcept;
+
+    struct SpectralContext {
+        PrecomputeStatus precomputeStatus;
+        std::mutex precomputeMutex;
+        int lastIllumChoice = -1;
+
+        SpectralShape shape;
+        std::vector<float> epsYTable;
+        std::vector<float> epsMTable;
+        std::vector<float> epsCTable;
+        std::vector<float> xbarTable;
+        std::vector<float> ybarTable;
+        std::vector<float> zbarTable;
+        std::vector<float> baselineMinTable;
+        std::vector<float> baselineMidTable;
+        std::vector<float> illumTable;
+        std::vector<float> Ax;
+        std::vector<float> Ay;
+        std::vector<float> Az;
+        std::vector<float> lambda;
+
+        float ynNorm = 1.0f;
+        float invYn = 1.0f;
+        float deltaLambda = kDelta;
+
+        Curve illuminantCurve;
+        Curve sensBlue, sensGreen, sensRed;
+        Curve densityCurveB, densityCurveG, densityCurveR;
+        Curve epsY, epsM, epsC;
+        Curve xBar, yBar, zBar;
+        Curve baseMin, baseMid;
+        bool hasBaseline = false;
+
+        std::atomic<bool> hanatosAvailable{ false };
+        NpySpectraLUT hanSpectra;
+        std::atomic<bool> mallettAvailable{ false };
+        NpyFloat2D mallettBasis;
+
+        std::atomic<bool> spdInit{ false };
+        float sInv[9] = { 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,1.0f };
+    };
+
+    namespace detail {
+        struct SpectralMutationTlsState {
+            int depth = 0;
+            SpectralMutationStage stage = SpectralMutationStage::None;
+            const char* owner = nullptr;
+        };
+
+        inline thread_local SpectralMutationTlsState gSpectralMutationTlsState{};
+
+        inline void trace_spectral_mutation_scope_event(
+            const char* event,
+            SpectralMutationStage stage,
+            const char* owner,
+            const char* action = nullptr) {
+
+            if (!JTRACE_ENABLED(2)) {
+                return;
+            }
+
+            std::string msg = std::string("event=") + (event ? event : "unknown")
+                + " stage=" + to_cstr(stage)
+                + " depth=" + std::to_string(gSpectralMutationTlsState.depth);
+            if (owner && owner[0] != '\0') {
+                msg += " owner=";
+                msg += owner;
+            }
+            if (action && action[0] != '\0') {
+                msg += " action=";
+                msg += action;
+            }
+
+            JTRACE_LEVEL(2, "MSPEC", msg);
+        }
+    } // namespace detail
+
+    inline SpectralMutationScope::SpectralMutationScope(
+        SpectralMutationStage stage,
+        const char* owner) noexcept
+        : _stage(stage)
+        , _owner(owner) {
+
+        if (stage == SpectralMutationStage::None) {
+            return;
+        }
+
+        if (detail::gSpectralMutationTlsState.depth <= 0) {
+            detail::gSpectralMutationTlsState.depth = 1;
+            detail::gSpectralMutationTlsState.stage = stage;
+            detail::gSpectralMutationTlsState.owner = owner;
+            _active = true;
+            detail::trace_spectral_mutation_scope_event("scope_enter", stage, owner);
+            return;
+        }
+
+        if (detail::gSpectralMutationTlsState.stage == stage) {
+            ++detail::gSpectralMutationTlsState.depth;
+            _active = true;
+            detail::trace_spectral_mutation_scope_event("scope_reenter", stage, owner);
+            return;
+        }
+
+        detail::trace_spectral_mutation_scope_event(
+            "scope_rejected_nested_stage_mismatch",
+            detail::gSpectralMutationTlsState.stage,
+            detail::gSpectralMutationTlsState.owner,
+            owner);
+    }
+
+    inline SpectralMutationScope::~SpectralMutationScope() noexcept {
+        if (!_active) {
+            return;
+        }
+
+        if (detail::gSpectralMutationTlsState.depth > 0) {
+            --detail::gSpectralMutationTlsState.depth;
+        }
+
+        if (detail::gSpectralMutationTlsState.depth <= 0) {
+            detail::gSpectralMutationTlsState.depth = 0;
+            detail::gSpectralMutationTlsState.stage = SpectralMutationStage::None;
+            detail::gSpectralMutationTlsState.owner = nullptr;
+        }
+
+        detail::trace_spectral_mutation_scope_event("scope_exit", _stage, _owner);
+    }
+
+    inline bool spectral_mutation_scope_active() noexcept {
+        return detail::gSpectralMutationTlsState.depth > 0 &&
+            detail::gSpectralMutationTlsState.stage != SpectralMutationStage::None;
+    }
+
+    inline SpectralMutationStage spectral_mutation_stage() noexcept {
+        if (!spectral_mutation_scope_active()) {
+            return SpectralMutationStage::None;
+        }
+        return detail::gSpectralMutationTlsState.stage;
+    }
+
+    inline bool require_spectral_mutation_scope(const char* action) noexcept {
+        if (spectral_mutation_scope_active()) {
+            return true;
+        }
+
+        detail::trace_spectral_mutation_scope_event(
+            "mutation_guard_violation",
+            SpectralMutationStage::None,
+            nullptr,
+            action);
+        return false;
+    }
+
+    inline SpectralContext& context() {
+        static SpectralContext ctx{};
+        return ctx;
+    }
+
+    inline void mark_mixing_dirty() {
+        if (!require_spectral_mutation_scope("mark_mixing_dirty")) {
+            return;
+        }
+        context().precomputeStatus.mixVersion.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    inline void mark_spectral_tables_dirty() {
+        if (!require_spectral_mutation_scope("mark_spectral_tables_dirty")) {
+            return;
+        }
+        context().precomputeStatus.dirty.store(true, std::memory_order_release);
+    }
+
+    inline void increment_illum_version() {
+        if (!require_spectral_mutation_scope("increment_illum_version")) {
+            return;
+        }
+        context().precomputeStatus.illumVersion.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    inline void increment_shape_version() {
+        if (!require_spectral_mutation_scope("increment_shape_version")) {
+            return;
+        }
+        context().precomputeStatus.shapeVersion.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+} // namespace Spectral
 
 // AGX-compatible numeric helpers shared by the CPU spectral and print pipeline code.
 template <typename T>

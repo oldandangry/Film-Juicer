@@ -13,7 +13,6 @@
 #include <sstream>
 #include <utility>
 #include "GaussianSciPy.h"
-#include "IlluminantKeys.h"
 
 extern const std::string gDataDir;
 

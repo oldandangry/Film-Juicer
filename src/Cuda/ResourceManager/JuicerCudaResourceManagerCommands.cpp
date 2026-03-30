@@ -2144,8 +2144,8 @@ const char* launch_selected_graph_entry(
         return "kernel_param_update_failed";
     }
 
-    LaunchGraphCounters::record_graph_eligible_submission();
-    LaunchGraphCounters::record_kernel_launch();
+    JuicerCuda::LaunchGraphCounters::record_graph_eligible_submission();
+    JuicerCuda::LaunchGraphCounters::record_kernel_launch();
     cudaError_t runErr = cudaGraphLaunch(exec, stream);
     if (runErr == cudaSuccess) {
         runErr = cudaGetLastError();
@@ -2157,7 +2157,7 @@ const char* launch_selected_graph_entry(
     }
 
     if (reusedResidentGraph) {
-        LaunchGraphCounters::record_graph_replay_hit();
+        JuicerCuda::LaunchGraphCounters::record_graph_replay_hit();
     }
     outCudaErrorCode = static_cast<int>(cudaSuccess);
     return nullptr;
@@ -3684,7 +3684,7 @@ bool command_launch_base_pipeline_graph(
 
     const cudaStream_t stream = commands_cuda_stream_or_null(cudaStreamOpaque);
     auto launch_base_pipeline_direct = [&]() -> int {
-        LaunchGraphCounters::record_kernel_launch();
+        JuicerCuda::LaunchGraphCounters::record_kernel_launch();
         return static_cast<int>(launchFn(&run, reinterpret_cast<void*>(stream)));
     };
 

@@ -8,8 +8,7 @@
 
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/JuicerCudaKernelsUtil.cuh"
-#include "Cuda/Film/JuicerCudaFilmExposure.cuh"
-#include "Cuda/Film/JuicerCudaFilmDevelop.cuh"
+#include "Cuda/JuicerCudaPipelineHelpers.cuh"
 #include "openrand/philox.h"
 
 __global__ void expose_film_raw_kernel(

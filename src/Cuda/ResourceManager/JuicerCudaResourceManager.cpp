@@ -2,14 +2,12 @@
 
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 
-#include "Cuda/JuicerCudaLaunchGraphCounters.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Hash.h"
 #include "Logging.h"
 #include "Print.h"
-#include "SpectralContext.h"
-#include "WorkingState.h"
+#include "JuicerState.h"
 
 #include <algorithm>
 #include <array>
@@ -20,6 +18,8 @@
 #include <cstddef>
 #include <condition_variable>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -45,6 +45,224 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
 #endif
 
 namespace JuicerCuda {
+
+namespace LaunchGraphCounters {
+
+bool compiled_enabled() noexcept {
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+    return true;
+#else
+    return false;
+#endif
+}
+
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+namespace {
+
+struct RuntimeConfig {
+    bool runtimeEnabled = false;
+    std::filesystem::path snapshotPath{};
+};
+
+int parse_env_int(const char* name, int fallback) noexcept {
+    if (!name) {
+        return fallback;
+    }
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return fallback;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value) {
+        return fallback;
+    }
+    return static_cast<int>(parsed);
+}
+
+const RuntimeConfig& runtime_config() noexcept {
+    static const RuntimeConfig config = []() {
+        RuntimeConfig out{};
+        out.runtimeEnabled = parse_env_int("JUICER_LAUNCH_GRAPH_COUNTERS", 0) != 0;
+        const char* snapshotPathEnv = std::getenv("JUICER_LAUNCH_GRAPH_COUNTERS_PATH");
+        if (out.runtimeEnabled && snapshotPathEnv && *snapshotPathEnv) {
+            try {
+                out.snapshotPath = std::filesystem::path(snapshotPathEnv);
+                out.snapshotPath.make_preferred();
+            }
+            catch (...) {
+                out.snapshotPath.clear();
+            }
+        }
+        return out;
+    }();
+    return config;
+}
+
+std::atomic<std::uint64_t>& frames_rendered_counter() noexcept {
+    static std::atomic<std::uint64_t> counter{ 0 };
+    return counter;
+}
+
+std::atomic<std::uint64_t>& kernel_launch_total_counter() noexcept {
+    static std::atomic<std::uint64_t> counter{ 0 };
+    return counter;
+}
+
+std::atomic<std::uint64_t>& graph_eligible_submission_total_counter() noexcept {
+    static std::atomic<std::uint64_t> counter{ 0 };
+    return counter;
+}
+
+std::atomic<std::uint64_t>& graph_replay_hit_total_counter() noexcept {
+    static std::atomic<std::uint64_t> counter{ 0 };
+    return counter;
+}
+
+std::mutex& snapshot_write_mutex() noexcept {
+    static std::mutex m;
+    return m;
+}
+
+std::once_flag& snapshot_dir_once_flag() noexcept {
+    static std::once_flag flag;
+    return flag;
+}
+
+void ensure_snapshot_dir_exists_if_needed(const std::filesystem::path& path) noexcept {
+    if (path.empty() || !path.has_parent_path()) {
+        return;
+    }
+    std::call_once(snapshot_dir_once_flag(), [&]() {
+        try {
+            std::error_code ec;
+            std::filesystem::create_directories(path.parent_path(), ec);
+        }
+        catch (...) {
+        }
+    });
+}
+
+void flush_snapshot_file() noexcept {
+    const RuntimeConfig& config = runtime_config();
+    if (!config.runtimeEnabled || config.snapshotPath.empty()) {
+        return;
+    }
+
+    try {
+        // Keep the snapshot write best-effort so telemetry never interferes with rendering.
+        ensure_snapshot_dir_exists_if_needed(config.snapshotPath);
+        const Snapshot current = snapshot();
+
+        std::lock_guard<std::mutex> lock(snapshot_write_mutex());
+        std::ofstream out(config.snapshotPath, std::ios::out | std::ios::trunc);
+        if (!out.is_open()) {
+            return;
+        }
+        out.setf(std::ios::fixed, std::ios::floatfield);
+        out.precision(6);
+        out << "format_version=1\n";
+        out << "compiled=1\n";
+        out << "runtime_enabled=1\n";
+        out << "frames_rendered=" << current.framesRendered << "\n";
+        out << "kernel_launch_total=" << current.kernelLaunchTotal << "\n";
+        out << "graph_eligible_submission_total=" << current.graphEligibleSubmissionTotal << "\n";
+        out << "graph_replay_hit_total=" << current.graphReplayHitTotal << "\n";
+        out << "kernel_launches_per_frame=" << kernel_launches_per_frame(current) << "\n";
+        out << "cuda_graph_replay_hit_rate=" << cuda_graph_replay_hit_rate(current) << "\n";
+    }
+    catch (...) {
+    }
+}
+
+} // namespace
+#endif
+
+Snapshot snapshot() noexcept {
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+    Snapshot out{};
+    out.framesRendered = frames_rendered_counter().load(std::memory_order_relaxed);
+    out.kernelLaunchTotal = kernel_launch_total_counter().load(std::memory_order_relaxed);
+    out.graphEligibleSubmissionTotal =
+        graph_eligible_submission_total_counter().load(std::memory_order_relaxed);
+    out.graphReplayHitTotal =
+        graph_replay_hit_total_counter().load(std::memory_order_relaxed);
+    return out;
+#else
+    return {};
+#endif
+}
+
+double kernel_launches_per_frame(const Snapshot& snapshot) noexcept {
+    if (snapshot.framesRendered == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(snapshot.kernelLaunchTotal) /
+        static_cast<double>(snapshot.framesRendered);
+}
+
+double cuda_graph_replay_hit_rate(const Snapshot& snapshot) noexcept {
+    if (snapshot.graphEligibleSubmissionTotal == 0) {
+        return 0.0;
+    }
+    return (100.0 * static_cast<double>(snapshot.graphReplayHitTotal)) /
+        static_cast<double>(snapshot.graphEligibleSubmissionTotal);
+}
+
+bool runtime_enabled() noexcept {
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+    return runtime_config().runtimeEnabled;
+#else
+    return false;
+#endif
+}
+
+void record_kernel_launch(std::uint64_t delta) noexcept {
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+    if (delta == 0 || !runtime_enabled()) {
+        return;
+    }
+    kernel_launch_total_counter().fetch_add(delta, std::memory_order_relaxed);
+#else
+    (void)delta;
+#endif
+}
+
+void record_graph_eligible_submission(std::uint64_t delta) noexcept {
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+    if (delta == 0 || !runtime_enabled()) {
+        return;
+    }
+    graph_eligible_submission_total_counter().fetch_add(delta, std::memory_order_relaxed);
+#else
+    (void)delta;
+#endif
+}
+
+void record_graph_replay_hit(std::uint64_t delta) noexcept {
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+    if (delta == 0 || !runtime_enabled()) {
+        return;
+    }
+    graph_replay_hit_total_counter().fetch_add(delta, std::memory_order_relaxed);
+#else
+    (void)delta;
+#endif
+}
+
+void record_frame_completed(std::uint64_t delta) noexcept {
+#if JUICER_LAUNCH_GRAPH_COUNTERS_COMPILED
+    if (delta == 0 || !runtime_enabled()) {
+        return;
+    }
+    frames_rendered_counter().fetch_add(delta, std::memory_order_relaxed);
+    flush_snapshot_file();
+#else
+    (void)delta;
+#endif
+}
+
+} // namespace LaunchGraphCounters
 
 // Internal resource-acquire helpers are intentionally consumed only by command wrappers
 // in this module; they are not part of the public JuicerCudaResources API surface.

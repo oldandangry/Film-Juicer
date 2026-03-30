@@ -11,14 +11,13 @@
 #include "ColorTransforms.h"
 #include "PipelineTypes.h"
 #include "SpectralProcessing.h"
-#include "WorkingState.h"
 #include "Print.h"
+#include "JuicerState.h"
 
 #include "GaussianSciPy.h"
 
 #include "Logging.h"
 #include "Hash.h"
-#include "SpectralContext.h"
 #include "nlohmann/json.hpp"
 
 extern const std::string gDataDir;

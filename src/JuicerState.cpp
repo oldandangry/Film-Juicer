@@ -1,7 +1,6 @@
 #include "JuicerState.h"
 
 #include "Couplers.h"
-#include "WorkingState.h"
 
 namespace RebuildWorkingState {
 
@@ -96,7 +95,6 @@ void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) co
 #include "nlohmann/json.hpp"
 
 #include "Illuminants.h"
-#include "IlluminantKeys.h"
 
 namespace WorkingStateSharing {
 

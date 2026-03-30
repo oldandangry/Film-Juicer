@@ -27,7 +27,6 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
-#include "Cuda/JuicerCudaLaunchGraphCounters.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #endif
@@ -121,7 +120,6 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 #include "Hash.h"
 #include "SpectralData.h"
 #include "ColorTransforms.h"
-#include "WorkingState.h"
 #include "Print.h"
 #include "JuicerState.h"
 #include "Scanner.h"

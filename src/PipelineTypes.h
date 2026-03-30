@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "SpectralTypes.h"
+#include "SpectralData.h"
 
 struct WorkingState;
 namespace Print {

@@ -9,7 +9,7 @@
 #include "mainProcessing.h"
 #include "PipelineTypes.h"
 #include "Print.h"
-#include "WorkingState.h"
+#include "JuicerState.h"
 
 namespace Pipeline {
 
