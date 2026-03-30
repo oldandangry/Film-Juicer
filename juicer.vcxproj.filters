@@ -31,9 +31,6 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
     <ClCompile Include="src\SpectralContext.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -47,9 +44,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\Print.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\PipelineRunner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\OutputColor.cpp">
@@ -70,10 +64,7 @@
     <ClCompile Include="src\JuicerEffect.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\ExposePrintStage.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\DevelopFilmStage.cpp">
+    <ClCompile Include="src\PipelineStages.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\AkimaInterpolator.cpp">
@@ -115,12 +106,6 @@
       <Filter>Cuda</Filter>
     </None>
     <None Include="src\Cuda\JuicerCudaResourcesServing.cpp">
-      <Filter>Cuda</Filter>
-    </None>
-    <None Include="src\Cuda\JuicerCudaResourcesScratch.cpp">
-      <Filter>Cuda</Filter>
-    </None>
-    <None Include="src\Cuda\JuicerCudaResourcesValidation.cpp">
       <Filter>Cuda</Filter>
     </None>
   </ItemGroup>
@@ -224,9 +209,6 @@
     <ClInclude Include="src\Scanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\ScannerOptics.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\SpectralContext.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -259,31 +241,13 @@
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
-    <CudaCompile Include="src\Cuda\JuicerCudaSelfCheck.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
     <CudaCompile Include="src\Cuda\JuicerCudaValidation.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
-    <CudaCompile Include="src\Cuda\Dir\JuicerCudaSpatialDIR.cu">
+    <CudaCompile Include="src\Cuda\Film\JuicerCudaFilmPipeline.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
-    <CudaCompile Include="src\Cuda\Film\JuicerCudaDevelopFilm.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="src\Cuda\Film\JuicerCudaExposeFilm.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="src\Cuda\Print\JuicerCudaDevelopPrint.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="src\Cuda\Print\JuicerCudaExposePrint.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScannerOptics.cu">
-      <Filter>Cuda</Filter>
-    </CudaCompile>
-    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanStage.cu">
+    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanPipeline.cu">
       <Filter>Cuda</Filter>
     </CudaCompile>
   </ItemGroup>

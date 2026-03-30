@@ -212,16 +212,13 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceFoundation.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.cpp" />
-    <ClCompile Include="src\DevelopFilmStage.cpp" />
-    <ClCompile Include="src\ExposePrintStage.cpp" />
+    <ClCompile Include="src\PipelineStages.cpp" />
     <ClCompile Include="src\JuicerEffect.cpp" />
     <ClCompile Include="src\JuicerState.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\mainProcessing.cpp" />
     <ClCompile Include="src\NeutralFilters.cpp" />
     <ClCompile Include="src\OutputColor.cpp" />
-    <ClCompile Include="src\PipelineRunner.cpp" />
     <ClCompile Include="src\Print.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ScannerOptics.cpp" />
@@ -233,8 +230,6 @@
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.cpp" />
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp" />
     <None Include="src\Cuda\JuicerCudaResourcesServing.cpp" />
-    <None Include="src\Cuda\JuicerCudaResourcesScratch.cpp" />
-    <None Include="src\Cuda\JuicerCudaResourcesValidation.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AgxNanSemantics.h" />
@@ -274,7 +269,6 @@
     <ClInclude Include="src\Print.h" />
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\Scanner.h" />
-    <ClInclude Include="src\ScannerOptics.h" />
     <ClInclude Include="src\SpectralContext.h" />
     <ClInclude Include="src\SpectralData.h" />
     <ClInclude Include="src\SpectralProcessing.h" />
@@ -282,16 +276,10 @@
     <ClInclude Include="src\WorkingState.h" />
   </ItemGroup>
   <ItemGroup>
-    <CudaCompile Include="src\Cuda\Dir\JuicerCudaSpatialDIR.cu" />
-    <CudaCompile Include="src\Cuda\Film\JuicerCudaDevelopFilm.cu" />
-    <CudaCompile Include="src\Cuda\Film\JuicerCudaExposeFilm.cu" />
+    <CudaCompile Include="src\Cuda\Film\JuicerCudaFilmPipeline.cu" />
     <CudaCompile Include="src\Cuda\JuicerCudaAutoExposure.cu" />
-    <CudaCompile Include="src\Cuda\JuicerCudaSelfCheck.cu" />
     <CudaCompile Include="src\Cuda\JuicerCudaValidation.cu" />
-    <CudaCompile Include="src\Cuda\Print\JuicerCudaDevelopPrint.cu" />
-    <CudaCompile Include="src\Cuda\Print\JuicerCudaExposePrint.cu" />
-    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScannerOptics.cu" />
-    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanStage.cu" />
+    <CudaCompile Include="src\Cuda\Scan\JuicerCudaScanPipeline.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
