@@ -1,6 +1,6 @@
-// Cuda/ResourceManager/JuicerCudaResourceTypes.h
+// Cuda/ResourceManager/JuicerCudaResourceCore.h
 //
-// Phase-0 ResourceManager scaffolding types.
+// Phase-0 ResourceManager foundational scaffolding.
 // These are intentionally lightweight and non-intrusive: no serving behavior changes.
 #pragma once
 
@@ -658,6 +658,372 @@ struct SubmissionTransaction {
     bool active = false;
     bool committed = false;
 };
+
+// Phase-0 key scaffolding.
+constexpr std::uint32_t kLutKeySchemaVersion = 1u;
+constexpr std::uint32_t kScanLutFormatVersion = 1u;
+constexpr std::uint32_t kScanLutResolutionMin = 17u;
+constexpr std::uint32_t kScanLutResolutionMax = 128u;
+
+std::uint64_t normalize_key_u64(std::uint64_t value) noexcept;
+std::uint64_t normalize_key_float(double value, double scale) noexcept;
+std::uint32_t normalize_scan_lut_resolution(std::uint32_t value) noexcept;
+
+std::uint64_t make_scan_lut_key_digest(
+    std::uint32_t medium,
+    std::uint64_t tablesHash,
+    std::uint64_t densityRangeHash,
+    std::uint32_t lutResolution,
+    std::uint32_t lutFormatVersion = kScanLutFormatVersion,
+    std::uint32_t keySchemaVersion = kLutKeySchemaVersion) noexcept;
+
+KeyDigests make_key_digests(
+    std::uint64_t uploadCoreHash,
+    std::uint64_t dirHash,
+    std::uint64_t scannerHash,
+    std::uint64_t autoExposureHash) noexcept;
+
+std::uint64_t key_digest_for_kind(const KeyDigests& digests, ResourceKind kind) noexcept;
+void set_key_digest_for_kind(KeyDigests& digests, ResourceKind kind, std::uint64_t hashValue) noexcept;
+
+KeyDigests normalize_key_digests(const KeyDigests& digests) noexcept;
+
+// Phase-0 policy scaffolding.
+enum class AcquireStatus : std::uint8_t {
+    Hit = 0,
+    Miss = 1,
+    Busy = 2,
+    Exhausted = 3,
+    Error = 4
+};
+
+enum class StaleReason : std::uint8_t {
+    None = 0,
+    RegistryGenerationMismatch = 1,
+    ContextEpochMismatch = 2,
+    LeaseGenerationMismatch = 3,
+    KeySchemaMismatch = 4
+};
+
+enum class PressureState : std::uint8_t {
+    Normal = 0,
+    Constrained = 1,
+    Critical = 2,
+    Emergency = 3
+};
+
+enum class ReservationKind : std::uint8_t {
+    TransientNonManager = 0,
+    UploadCopy = 1,
+    BuilderWork = 2
+};
+
+enum class HeadroomSource : std::uint8_t {
+    FreeVramOnly = 0,
+    AllocatorPool = 1
+};
+
+enum class CacheAdmissionClass : std::uint8_t {
+    Normal = 0,
+    Probation = 1,
+    TooLargeToCache = 2
+};
+
+struct AcquireDecision {
+    AcquireStatus status = AcquireStatus::Miss;
+    bool shouldBuild = true;
+};
+
+struct StaleInput {
+    std::uint64_t expectedRegistryGeneration = 0;
+    std::uint64_t observedRegistryGeneration = 0;
+    std::uint64_t expectedContextEpoch = 0;
+    std::uint64_t observedContextEpoch = 0;
+    std::uint64_t expectedLeaseGeneration = 0;
+    std::uint64_t observedLeaseGeneration = 0;
+    bool keySchemaMismatch = false;
+};
+
+struct StaleDecision {
+    bool hardStale = false;
+    bool hardMiss = false;
+    StaleReason reason = StaleReason::None;
+};
+
+struct ShadowKeyDelta {
+    bool hasPrevious = false;
+    bool keySchemaChanged = false;
+    bool uploadCoreChanged = false;
+    bool dirChanged = false;
+    bool scannerChanged = false;
+    bool autoExposureChanged = false;
+};
+
+struct ResourcePlanEntry {
+    AcquireDecision acquire{};
+    bool invalidated = false;
+};
+
+struct ResourcePlan {
+    ResourcePlanEntry uploadCore{};
+    ResourcePlanEntry dir{};
+    ResourcePlanEntry scanner{};
+    ResourcePlanEntry autoExposure{};
+};
+
+struct PressureInput {
+    std::uint64_t softTargetBytes = 0;
+    std::uint64_t reserveBytes = 0;
+    std::uint64_t effectiveReserveBytes = 0;
+    bool freezeOpportunisticBelowReserve = true;
+    std::uint64_t managerResidentBytes = 0;
+    std::uint64_t retirePendingBytes = 0;
+    std::uint64_t transientNonManagerBytes = 0;
+    std::uint64_t effectiveHeadroomBytes = 0;
+    std::uint64_t driverFreeBytes = 0;
+    std::uint64_t allocatorPoolReservedBytes = 0;
+    std::uint64_t allocatorPoolUsedBytes = 0;
+    HeadroomSource headroomSource = HeadroomSource::FreeVramOnly;
+};
+
+struct PressureDecision {
+    PressureState state = PressureState::Normal;
+    bool allowOpportunistic = true;
+    bool freezeOpportunistic = false;
+    bool requestReclaimPass = false;
+    bool shouldShedNonCritical = false;
+    std::uint64_t effectiveReserveBytes = 0;
+    std::uint64_t effectiveHeadroomBytes = 0;
+    HeadroomSource headroomSource = HeadroomSource::FreeVramOnly;
+};
+
+struct ReservationInput {
+    ReservationKind kind = ReservationKind::TransientNonManager;
+    std::uint64_t requestBytes = 0;
+    std::uint64_t bytesInFlight = 0;
+    std::uint64_t capBytes = 0;
+    bool criticalCurrentFrame = false;
+};
+
+struct ReservationDecision {
+    bool granted = true;
+    bool shouldWait = false;
+    std::uint32_t waitMs = 0;
+    const char* reason = "granted";
+};
+
+struct CacheAdmissionInput {
+    std::uint64_t requestBytes = 0;
+    std::uint64_t cacheTargetBytes = 0;
+    std::uint64_t maxCacheableEntryBytes = 0;
+    std::uint32_t maxCacheableEntryPctOfTarget = 0;
+    std::uint64_t largeEntryProbationThresholdBytes = 0;
+    std::uint32_t largeEntryProbationHitsRequired = 2;
+    std::uint32_t observedProbationHits = 0;
+    bool criticalCurrentFrame = false;
+};
+
+struct CacheAdmissionDecision {
+    CacheAdmissionClass admissionClass = CacheAdmissionClass::Normal;
+    bool allowDurableAdmission = true;
+    bool probationApplied = false;
+    std::uint32_t probationHitsRequired = 0;
+    std::uint64_t maxDurableBytes = 0;
+    const char* reason = "normal";
+};
+
+struct BurstDebtInput {
+    std::uint32_t burstDebtHalfLifeMs = 0;
+    std::uint32_t maxBurstDebtPct = 100;
+    std::uint32_t currentDebtPct = 0;
+    bool criticalCurrentFrame = false;
+    bool burstConsumed = false;
+    std::uint64_t burstOverTargetBytes = 0;
+    std::uint64_t burstCapBytes = 0;
+};
+
+struct BurstDebtDecision {
+    bool enabled = false;
+    bool accrueDebt = false;
+    std::uint32_t debtIncrementPct = 0;
+    bool throttleOpportunistic = false;
+    const char* reason = "disabled";
+};
+
+struct SupersededBuilderCancelInput {
+    bool enabled = false;
+    bool criticalCurrentFrame = false;
+    bool superseded = false;
+};
+
+struct SupersededBuilderCancelDecision {
+    bool cancel = false;
+    const char* reason = "disabled";
+};
+
+AcquireDecision classify_shadow_acquire(bool hasPrevious, bool invalidated) noexcept;
+ResourcePlan build_shadow_resource_plan(const ShadowKeyDelta& delta) noexcept;
+bool shadow_key_changed_for_kind(const ShadowKeyDelta& delta, ResourceKind kind) noexcept;
+ResourcePlanEntry& resource_plan_entry(ResourcePlan& plan, ResourceKind kind) noexcept;
+const ResourcePlanEntry& resource_plan_entry(const ResourcePlan& plan, ResourceKind kind) noexcept;
+const char* to_cstr(AcquireStatus status) noexcept;
+StaleDecision classify_stale_path(const StaleInput& input) noexcept;
+const char* to_cstr(StaleReason reason) noexcept;
+const char* to_cstr(PressureState state) noexcept;
+int pressure_state_rank(PressureState state) noexcept;
+const char* to_cstr(ReservationKind kind) noexcept;
+const char* to_cstr(HeadroomSource source) noexcept;
+const char* to_cstr(CacheAdmissionClass value) noexcept;
+PressureDecision classify_pressure(const PressureInput& input) noexcept;
+ReservationDecision classify_reservation(const ReservationInput& input) noexcept;
+CacheAdmissionDecision classify_cache_admission(const CacheAdmissionInput& input) noexcept;
+BurstDebtDecision classify_burst_debt(const BurstDebtInput& input) noexcept;
+SupersededBuilderCancelDecision classify_superseded_builder_cancel(
+    const SupersededBuilderCancelInput& input) noexcept;
+
+AcquireDecision default_acquire_decision() noexcept;
+PressureDecision default_pressure_decision() noexcept;
+ReservationDecision default_reservation_decision() noexcept;
+CacheAdmissionDecision default_cache_admission_decision() noexcept;
+
+// Phase-0 config scaffolding for ResourceManager.
+struct ResourceManagerConfigRaw {
+    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
+    bool allowShadowMode = true;
+    std::uint32_t maxLiveManagersPerProcess = 16;
+    std::uint32_t managerIdleReapMs = 3000;
+    std::uint64_t managerSoftTargetBytes = 0;
+    std::uint64_t managerReserveBytes = 0;
+    std::uint64_t reserveSafetyMarginBytes = 256ull * 1024ull * 1024ull;
+    std::uint64_t reserveAdaptUpStepBytes = 128ull * 1024ull * 1024ull;
+    std::uint64_t reserveAdaptDownStepBytes = 64ull * 1024ull * 1024ull;
+    bool freezeOpportunisticBelowReserve = true;
+    bool allowActiveFrameBurst = true;
+    std::uint64_t maxActiveBurstBytes = 512ull * 1024ull * 1024ull;
+    std::uint32_t maxActiveBurstPctOfTarget = 20;
+    std::uint32_t maxActiveBurstMs = 250;
+    std::uint32_t pressureSampleIntervalMs = 250;
+    std::uint32_t pressurePollIntervalMs = 250;
+    std::uint32_t pressurePollIntervalMsNormal = 250;
+    std::uint32_t pressurePollIntervalMsCritical = 100;
+    std::uint32_t pressureStateMinDwellMs = 250;
+    std::uint32_t pressureStateMaxTransitionsPerMin = 12;
+    std::uint32_t reclaimRetryMaxAttempts = 1;
+    std::uint32_t tierErrorWindowMs = 1000;
+    std::uint32_t tierErrorThreshold = 3;
+    std::uint32_t tierCircuitOpenMs = 2000;
+    bool fragmentationRecoveryEnabled = true;
+    std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
+    std::uint32_t hostAssetIdleTrimMs = 5000;
+    std::uint64_t hostAssetTrimBatchBytes = 64ull * 1024ull * 1024ull;
+    std::uint32_t allocatorBackendPreference = 3;
+    std::uint32_t asyncMempoolReleaseThresholdMB = 256;
+    std::uint32_t privateLutFallbackPerMediumCap = 1;
+    std::uint32_t privateLutFallbackPerInstanceCap = 2;
+    std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
+    std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
+    std::uint64_t pinnedUploadStagingTrimBatchBytes = 32ull * 1024ull * 1024ull;
+    std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
+    std::uint32_t lutBuilderBytesInFlightLimitMB = 128;
+    std::uint32_t graphBuilderBytesInFlightLimitMB = 128;
+    std::uint32_t builderFairnessTokensPerTick = 1;
+    std::uint32_t criticalBuilderReservedTokens = 1;
+    std::uint32_t uploadBytesInFlightLimitMB = 256;
+    std::uint32_t uploadFairnessTokensPerTick = 1;
+    std::uint32_t criticalUploadReservedTokens = 1;
+    std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
+    std::uint32_t maxCacheableEntryPctOfTarget = 20;
+    std::uint64_t graphLargeEntryThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint64_t graphLargeEntryQuarantineMaxBytes = 512ull * 1024ull * 1024ull;
+    std::uint32_t graphLargeEntryQuarantineMaxEntries = 2;
+    std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint32_t largeEntryProbationHitsRequired = 2;
+    std::uint32_t keepHotMs = 0;
+    std::uint32_t admissionChurnWindowMs = 0;
+    std::uint32_t admissionChurnEnterOneHitRatePct = 75;
+    std::uint32_t admissionChurnExitOneHitRatePct = 60;
+    std::uint32_t admissionChurnProbationHitBonus = 0;
+    std::uint32_t largeEntryReadmitCooldownMs = 0;
+    std::uint32_t largeEntryGhostHitsForReadmit = 0;
+    std::uint32_t burstDebtHalfLifeMs = 0;
+    std::uint32_t maxBurstDebtPct = 100;
+    bool cancelSupersededBuilders = false;
+    std::uint64_t tierTargetImmutableBp = 2500;
+    std::uint64_t tierTargetLutBp = 2500;
+    std::uint64_t tierTargetScratchBp = 3000;
+    std::uint64_t tierTargetGraphBp = 2000;
+};
+
+struct ResourceManagerConfigEffective {
+    std::uint32_t keySchemaVersion = 1;
+    std::uint32_t traceSchemaVersion = kTraceSchemaVersion;
+    bool allowShadowMode = true;
+    std::uint32_t maxLiveManagersPerProcess = 16;
+    std::uint32_t managerIdleReapMs = 3000;
+    std::uint64_t managerSoftTargetBytes = 0;
+    std::uint64_t managerReserveBytes = 0;
+    std::uint64_t reserveSafetyMarginBytes = 256ull * 1024ull * 1024ull;
+    std::uint64_t reserveAdaptUpStepBytes = 128ull * 1024ull * 1024ull;
+    std::uint64_t reserveAdaptDownStepBytes = 64ull * 1024ull * 1024ull;
+    bool freezeOpportunisticBelowReserve = true;
+    bool allowActiveFrameBurst = true;
+    std::uint64_t maxActiveBurstBytes = 512ull * 1024ull * 1024ull;
+    std::uint32_t maxActiveBurstPctOfTarget = 20;
+    std::uint32_t maxActiveBurstMs = 250;
+    std::uint32_t pressureSampleIntervalMs = 250;
+    std::uint32_t pressurePollIntervalMs = 250;
+    std::uint32_t pressurePollIntervalMsNormal = 250;
+    std::uint32_t pressurePollIntervalMsCritical = 100;
+    std::uint32_t pressureStateMinDwellMs = 250;
+    std::uint32_t pressureStateMaxTransitionsPerMin = 12;
+    std::uint32_t reclaimRetryMaxAttempts = 1;
+    std::uint32_t tierErrorWindowMs = 1000;
+    std::uint32_t tierErrorThreshold = 3;
+    std::uint32_t tierCircuitOpenMs = 2000;
+    bool fragmentationRecoveryEnabled = true;
+    std::uint64_t hostAssetCacheMaxBytes = 256ull * 1024ull * 1024ull;
+    std::uint32_t hostAssetIdleTrimMs = 5000;
+    std::uint64_t hostAssetTrimBatchBytes = 64ull * 1024ull * 1024ull;
+    std::uint32_t allocatorBackendPreference = 3;
+    std::uint32_t asyncMempoolReleaseThresholdMB = 256;
+    std::uint32_t privateLutFallbackPerMediumCap = 1;
+    std::uint32_t privateLutFallbackPerInstanceCap = 2;
+    std::uint64_t pinnedUploadStagingMaxBytes = 128ull * 1024ull * 1024ull;
+    std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
+    std::uint64_t pinnedUploadStagingTrimBatchBytes = 32ull * 1024ull * 1024ull;
+    std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
+    std::uint32_t lutBuilderBytesInFlightLimitMB = 128;
+    std::uint32_t graphBuilderBytesInFlightLimitMB = 128;
+    std::uint32_t builderFairnessTokensPerTick = 1;
+    std::uint32_t criticalBuilderReservedTokens = 1;
+    std::uint32_t uploadBytesInFlightLimitMB = 256;
+    std::uint32_t uploadFairnessTokensPerTick = 1;
+    std::uint32_t criticalUploadReservedTokens = 1;
+    std::uint64_t maxCacheableEntryBytes = 256ull * 1024ull * 1024ull;
+    std::uint32_t maxCacheableEntryPctOfTarget = 20;
+    std::uint64_t graphLargeEntryThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint64_t graphLargeEntryQuarantineMaxBytes = 512ull * 1024ull * 1024ull;
+    std::uint32_t graphLargeEntryQuarantineMaxEntries = 2;
+    std::uint64_t largeEntryProbationThresholdBytes = 128ull * 1024ull * 1024ull;
+    std::uint32_t largeEntryProbationHitsRequired = 2;
+    std::uint32_t keepHotMs = 0;
+    std::uint32_t admissionChurnWindowMs = 0;
+    std::uint32_t admissionChurnEnterOneHitRatePct = 75;
+    std::uint32_t admissionChurnExitOneHitRatePct = 60;
+    std::uint32_t admissionChurnProbationHitBonus = 0;
+    std::uint32_t largeEntryReadmitCooldownMs = 0;
+    std::uint32_t largeEntryGhostHitsForReadmit = 0;
+    std::uint32_t burstDebtHalfLifeMs = 0;
+    std::uint32_t maxBurstDebtPct = 100;
+    bool cancelSupersededBuilders = false;
+    std::uint64_t tierTargetImmutableBp = 2500;
+    std::uint64_t tierTargetLutBp = 2500;
+    std::uint64_t tierTargetScratchBp = 3000;
+    std::uint64_t tierTargetGraphBp = 2000;
+};
+
+ResourceManagerConfigEffective sanitize_config(const ResourceManagerConfigRaw& raw);
 
 } // namespace ResourceManager
 } // namespace JuicerCuda

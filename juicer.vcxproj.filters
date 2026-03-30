@@ -25,17 +25,8 @@
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp">
       <Filter>Cuda</Filter>
     </ClCompile>
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceFoundation.cpp">
-      <Filter>Cuda</Filter>
-    </ClCompile>
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp">
       <Filter>Cuda</Filter>
-    </ClCompile>
-    <ClCompile Include="src\SpectralContext.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\SpatialDIR.cpp">
-      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\ScannerOptics.cpp">
       <Filter>Source Files</Filter>
@@ -110,9 +101,6 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\Cuda\JuicerCudaAutoExposure.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaKernelsUtil.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
@@ -125,32 +113,11 @@
     <ClInclude Include="src\Cuda\JuicerCudaResources.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceKeys.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.h">
+    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h">
       <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceState.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceTelemetry.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceTypes.h">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\AgxNanSemantics.h">
-      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\AkimaInterpolator.h">
       <Filter>Header Files</Filter>
@@ -228,12 +195,6 @@
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\Film\JuicerCudaFilmExposure.cuh">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\Scan\JuicerCudaScanOutput.cuh">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\Scan\JuicerCudaScanStage.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
   </ItemGroup>

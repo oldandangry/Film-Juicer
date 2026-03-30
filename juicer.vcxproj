@@ -210,7 +210,6 @@
     <ClCompile Include="src\AkimaInterpolator.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
-    <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceFoundation.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
     <ClCompile Include="src\PipelineStages.cpp" />
     <ClCompile Include="src\JuicerEffect.cpp" />
@@ -222,8 +221,6 @@
     <ClCompile Include="src\Print.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ScannerOptics.cpp" />
-    <ClCompile Include="src\SpatialDIR.cpp" />
-    <ClCompile Include="src\SpectralContext.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp" />
@@ -232,27 +229,17 @@
     <None Include="src\Cuda\JuicerCudaResourcesServing.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\AgxNanSemantics.h" />
     <ClInclude Include="src\AkimaInterpolator.h" />
     <ClInclude Include="src\ColorTransforms.h" />
     <ClInclude Include="src\Couplers.h" />
     <ClInclude Include="src\Cuda\Film\JuicerCudaFilmDevelop.cuh" />
     <ClInclude Include="src\Cuda\Film\JuicerCudaFilmExposure.cuh" />
-    <ClInclude Include="src\Cuda\JuicerCudaAutoExposure.h" />
     <ClInclude Include="src\Cuda\JuicerCudaKernelsUtil.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaPrintPipeline.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceConfig.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceKeys.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourcePolicy.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceState.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceTelemetry.h" />
-    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceTypes.h" />
-    <ClInclude Include="src\Cuda\Scan\JuicerCudaScanOutput.cuh" />
-    <ClInclude Include="src\Cuda\Scan\JuicerCudaScanStage.cuh" />
+    <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h" />
     <ClInclude Include="src\FilmProcessing.h" />
     <ClInclude Include="src\GaussianSciPy.h" />
     <ClInclude Include="src\Hash.h" />

@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <vector>
 
-#include "AgxNanSemantics.h"
 #include "SpectralTypes.h"
 
 struct WorkingState;

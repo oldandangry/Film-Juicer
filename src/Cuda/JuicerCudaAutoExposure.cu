@@ -4,7 +4,7 @@
 //
 // This is a parity-oriented port of the CPU meter in JuicerEffect.cpp, adapted for device pointers.
 //
-#include "Cuda/JuicerCudaAutoExposure.h"
+#include "Cuda/JuicerCudaResources.h"
 
 #include <cuda_runtime.h>
 
