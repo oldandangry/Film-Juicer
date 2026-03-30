@@ -26,12 +26,13 @@
 #include "Print.h"
 #include "ProfileJSONLoader.h"
 #include "ColorTransforms.h"
+#include "FilmProcessing.h"
+#include "Couplers.h"
 #include "Scanner.h"
 #include "SpectralData.h"
 #include "ofxImageEffect.h"
 
 extern const std::string gDataDir;
-struct WorkingState;
 
 namespace OFX {
     class Image;
@@ -203,6 +204,138 @@ struct BaseState {
     Profiles::HalationMetadata halation;
     Profiles::ProfileGlare glare;
 };
+
+namespace WorkingStateSharing {
+    struct WorkingStateCoreShared;
+}
+
+// Per-instance, derived state used for rendering.
+// Built from BaseState in rebuild_working_state() and never mutated in render().
+struct WorkingState {
+    Spectral::Curve densB;
+    Spectral::Curve densG;
+    Spectral::Curve densR;
+    std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{};
+    bool hasDensityCurvesLayers = false;
+    Profiles::GrainMetadata grain;
+    Profiles::HalationMetadata halation;
+    Profiles::ProfileGlare negativeGlare;
+    Profiles::ProfileGlare printGlare;
+
+    Spectral::Curve sensB;
+    Spectral::Curve sensG;
+    Spectral::Curve sensR;
+
+    Spectral::Curve negSensB;
+    Spectral::Curve negSensG;
+    Spectral::Curve negSensR;
+
+    Spectral::Curve baseMin;
+    Spectral::Curve baseMid;
+    bool hasBaseline = false;
+    float baselineMixReference = 0.0f;
+    float printBaselineMixReference = 0.0f;
+
+    float gammaFactorB = 1.0f;
+    float gammaFactorG = 1.0f;
+    float gammaFactorR = 1.0f;
+
+    Couplers::Runtime dirRT;
+
+    Spectral::Curve dirDensB;
+    Spectral::Curve dirDensG;
+    Spectral::Curve dirDensR;
+
+    bool dirPrecorrected = false;
+    float dMax[3] = { 1.0f, 1.0f, 1.0f };
+
+    Spectral::SpectralTables tablesView;
+    Spectral::SpectralTables tablesPrint;
+    Spectral::SpectralTables tablesRef;
+    Spectral::SpectralTables tablesScan;
+    Scanner::ScannerIlluminant negativeScannerIlluminant;
+    Scanner::ScannerDensityRange negativeDensityRange;
+    Scanner::ScannerStaticKey negativeStaticKey;
+    Scanner::ColorRuntime negativeColorRuntime;
+    Scanner::ScannerMediumRuntime negativeMediumRuntime;
+
+    Scanner::ScannerIlluminant printScannerIlluminant;
+    Scanner::ScannerDensityRange printDensityRange;
+    Scanner::ScannerStaticKey printStaticKey;
+    Scanner::ColorRuntime printColorRuntime;
+    Scanner::ScannerMediumRuntime printMediumRuntime;
+
+    bool negativeScannerValid = false;
+    bool printScannerValid = false;
+    bool printGlareCompensated = false;
+
+    float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
+    bool spdReady = false;
+    Spectral::FilmRawConfig filmRaw;
+    std::shared_ptr<const Print::Runtime> printRT;
+    Spectral::NegativeCouplerParams negParams{};
+
+    std::uint64_t fullHash = 0;
+    std::uint64_t uploadCoreHash = 0;
+    std::uint64_t coreHash = 0;
+    std::uint64_t coreShareHash = 0;
+    std::uint64_t dirHash = 0;
+    std::uint64_t buildCounter = 0;
+    std::shared_ptr<const WorkingStateSharing::WorkingStateCoreShared> sharedCore;
+};
+
+enum class DirSampleMode {
+    ApplyRuntime,
+    BypassRuntime
+};
+
+inline void sample_negative_densities(
+    const WorkingState& ws,
+    const Couplers::Runtime& dirRT,
+    const float logE[3],
+    float D_out[3],
+    DirSampleMode mode = DirSampleMode::ApplyRuntime)
+{
+    auto sample_layers = [&](const Spectral::Curve& cB,
+        const Spectral::Curve& cG,
+        const Spectral::Curve& cR,
+        const float le[3],
+        float layerD_out[3]) {
+            layerD_out[0] = Spectral::sample_density_at_logE(cB, le[0], ws.gammaFactorB);
+            layerD_out[1] = Spectral::sample_density_at_logE(cG, le[1], ws.gammaFactorG);
+            layerD_out[2] = Spectral::sample_density_at_logE(cR, le[2], ws.gammaFactorR);
+        };
+
+    auto write_cmy = [](const float layerD[3], float D_out_local[3]) {
+        D_out_local[0] = layerD[2];
+        D_out_local[1] = layerD[1];
+        D_out_local[2] = layerD[0];
+    };
+
+    const Spectral::Curve& precorrectedB = ws.dirPrecorrected ? ws.dirDensB : ws.densB;
+    const Spectral::Curve& precorrectedG = ws.dirPrecorrected ? ws.dirDensG : ws.densG;
+    const Spectral::Curve& precorrectedR = ws.dirPrecorrected ? ws.dirDensR : ws.densR;
+
+#ifdef JUICER_ENABLE_COUPLERS
+    if (mode == DirSampleMode::ApplyRuntime && dirRT.active) {
+        float layerPre[3];
+        sample_layers(ws.densB, ws.densG, ws.densR, logE, layerPre);
+        Couplers::ApplyInputLogE io{ {logE[0], logE[1], logE[2]}, {layerPre[0], layerPre[1], layerPre[2]} };
+        Couplers::apply_runtime_logE_with_curves(io, dirRT, ws.densB, ws.densG, ws.densR);
+        float layerPost[3];
+        sample_layers(precorrectedB, precorrectedG, precorrectedR, io.logE, layerPost);
+        write_cmy(layerPost, D_out);
+        return;
+    }
+#else
+    (void)dirRT;
+    (void)mode;
+#endif
+
+    float layerD[3];
+    sample_layers(ws.densB, ws.densG, ws.densR, logE, layerD);
+    write_cmy(layerD, D_out);
+}
 
 struct ParamSnapshot {
     int filmStockIndex = 0;

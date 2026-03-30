@@ -18,7 +18,6 @@
 #include <sstream>
 #endif
 #include "SpectralData.h"
-#include "SpectralContext.h"
 #include "NpyLoader.h"
 #include "AkimaInterpolator.h"
 

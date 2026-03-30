@@ -207,7 +207,6 @@
     <ClCompile Include="..\OFXS\Support\Library\ofxsParams.cpp" />
     <ClCompile Include="..\OFXS\Support\Library\ofxsProperty.cpp" />
     <ClCompile Include="..\OFXS\Support\Library\ofxsPropertyValidation.cpp" />
-    <ClCompile Include="src\AkimaInterpolator.cpp" />
     <ClCompile Include="src\Cuda\JuicerCudaResources.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaManagerRegistry.cpp" />
     <ClCompile Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.cpp" />
@@ -217,7 +216,6 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\mainProcessing.cpp" />
     <ClCompile Include="src\NeutralFilters.cpp" />
-    <ClCompile Include="src\OutputColor.cpp" />
     <ClCompile Include="src\Print.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ScannerOptics.cpp" />
@@ -232,18 +230,15 @@
     <ClInclude Include="src\AkimaInterpolator.h" />
     <ClInclude Include="src\ColorTransforms.h" />
     <ClInclude Include="src\Couplers.h" />
-    <ClInclude Include="src\Cuda\Film\JuicerCudaFilmDevelop.cuh" />
-    <ClInclude Include="src\Cuda\Film\JuicerCudaFilmExposure.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaKernelsUtil.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
-    <ClInclude Include="src\Cuda\JuicerCudaPrintPipeline.cuh" />
+    <ClInclude Include="src\Cuda\JuicerCudaPipelineHelpers.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceCore.h" />
     <ClInclude Include="src\FilmProcessing.h" />
     <ClInclude Include="src\GaussianSciPy.h" />
     <ClInclude Include="src\Hash.h" />
-    <ClInclude Include="src\IlluminantKeys.h" />
     <ClInclude Include="src\Illuminants.h" />
     <ClInclude Include="src\JuicerEffect.h" />
     <ClInclude Include="src\JuicerState.h" />
@@ -256,11 +251,8 @@
     <ClInclude Include="src\Print.h" />
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\Scanner.h" />
-    <ClInclude Include="src\SpectralContext.h" />
     <ClInclude Include="src\SpectralData.h" />
     <ClInclude Include="src\SpectralProcessing.h" />
-    <ClInclude Include="src\SpectralTypes.h" />
-    <ClInclude Include="src\WorkingState.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="src\Cuda\Film\JuicerCudaFilmPipeline.cu" />

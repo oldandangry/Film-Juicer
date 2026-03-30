@@ -37,9 +37,6 @@
     <ClCompile Include="src\Print.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\OutputColor.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="src\NeutralFilters.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -56,9 +53,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\PipelineStages.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\AkimaInterpolator.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp">
@@ -107,7 +101,7 @@
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h">
       <Filter>Cuda</Filter>
     </ClInclude>
-    <ClInclude Include="src\Cuda\JuicerCudaPrintPipeline.cuh">
+    <ClInclude Include="src\Cuda\JuicerCudaPipelineHelpers.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaResources.h">
@@ -135,9 +129,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Hash.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\IlluminantKeys.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Illuminants.h">
@@ -176,26 +167,11 @@
     <ClInclude Include="src\Scanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\SpectralContext.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\SpectralData.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\SpectralProcessing.h">
       <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\SpectralTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\WorkingState.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\Film\JuicerCudaFilmDevelop.cuh">
-      <Filter>Cuda</Filter>
-    </ClInclude>
-    <ClInclude Include="src\Cuda\Film\JuicerCudaFilmExposure.cuh">
-      <Filter>Cuda</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

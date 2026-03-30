@@ -8,7 +8,7 @@
 #include <string>
 
 #include "Cuda/JuicerCudaKernelsUtil.cuh"
-#include "Cuda/JuicerCudaPrintPipeline.cuh"
+#include "Cuda/JuicerCudaPipelineHelpers.cuh"
 
 namespace {
 

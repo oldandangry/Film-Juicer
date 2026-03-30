@@ -10,12 +10,8 @@
 
 #include "Hash.h"
 #include "ProfileJSONLoader.h"
-#include "SpectralTypes.h"
+#include "SpectralData.h"
 #include "OutputColor.h"
-
-namespace Spectral {
-    struct SpectralTables;
-}
 
 namespace Scanner {
 
