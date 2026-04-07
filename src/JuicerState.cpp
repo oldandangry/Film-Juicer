@@ -578,17 +578,6 @@ namespace {
         std::memcpy(dst, src, 3u * sizeof(float));
     }
 
-    struct CouplerDirtySnapshot {
-        bool active = false;
-        bool amount = false;
-        bool ratioR = false;
-        bool ratioG = false;
-        bool ratioB = false;
-        bool sigma = false;
-        bool high = false;
-        bool spatialSigma = false;
-    };
-
     struct RebuildStateSnapshot {
         BaseState base;
         std::shared_ptr<const WorkingState> activeWorkingState;
@@ -599,24 +588,8 @@ namespace {
         std::string dataDir;
         bool baseLoaded = false;
         IlluminantOverrideFlags illuminantOverride;
-        bool couplerProfileSpatialSigmaValid = false;
-        double couplerProfileSpatialSigmaMicrometers = 0.0;
-        CouplerDirtySnapshot couplerDirty;
         std::string filmReferenceIlluminant;
     };
-
-    inline CouplerDirtySnapshot snapshot_coupler_dirty(const CouplerDirtyFlags& flags) {
-        CouplerDirtySnapshot snapshot{};
-        snapshot.active = flags.active.load(std::memory_order_acquire);
-        snapshot.amount = flags.amount.load(std::memory_order_acquire);
-        snapshot.ratioR = flags.ratioR.load(std::memory_order_acquire);
-        snapshot.ratioG = flags.ratioG.load(std::memory_order_acquire);
-        snapshot.ratioB = flags.ratioB.load(std::memory_order_acquire);
-        snapshot.sigma = flags.sigma.load(std::memory_order_acquire);
-        snapshot.high = flags.high.load(std::memory_order_acquire);
-        snapshot.spatialSigma = flags.spatialSigma.load(std::memory_order_acquire);
-        return snapshot;
-    }
 
     inline RebuildStateSnapshot snapshot_rebuild_state_locked(InstanceState& state) {
         RebuildStateSnapshot snapshot{};
@@ -629,9 +602,6 @@ namespace {
         snapshot.dataDir = state.dataDir;
         snapshot.baseLoaded = state.baseLoaded;
         snapshot.illuminantOverride = state.illuminantOverride;
-        snapshot.couplerProfileSpatialSigmaValid = state.couplerProfileSpatialSigmaValid;
-        snapshot.couplerProfileSpatialSigmaMicrometers = state.couplerProfileSpatialSigmaMicrometers;
-        snapshot.couplerDirty = snapshot_coupler_dirty(state.couplerDirty);
         snapshot.filmReferenceIlluminant = state.filmReferenceIlluminant;
         return snapshot;
     }
@@ -659,16 +629,6 @@ namespace {
 
     inline bool is_finite(double value) {
         return std::isfinite(value);
-    }
-
-    inline double sanitize_profile_value(float value, double fallback, double lo, double hi) {
-        double out = static_cast<double>(value);
-        if (!is_finite(out)) {
-            return fallback;
-        }
-        if (out < lo) out = lo;
-        if (out > hi) out = hi;
-        return out;
     }
 
     inline double clamp_finite_or(double value, double fallback, double lo, double hi) {
@@ -939,56 +899,16 @@ namespace {
     }
 
     void recompute_working_state_dir_overlay(const RebuildStateSnapshot& snapshot, const ParamSnapshot& P, WorkingState& target) {
-        auto approx_equal_local = [](double a, double b, double eps = 1e-6) {
-            return std::fabs(a - b) <= eps;
-            };
-
-        const Profiles::DirCouplersProfile& dirCfg = snapshot.base.dirCouplers;
-
-        int effectiveCouplersActive = P.couplersActive;
-        double effectiveCouplersAmount = P.couplersAmount;
-        double effectiveRatioB = P.ratioB;
-        double effectiveRatioG = P.ratioG;
-        double effectiveRatioR = P.ratioR;
-        double effectiveCouplersSigma = P.sigma;
-        double effectiveCouplersHigh = P.high;
-        const bool spatialSigmaIsUiDefault = approx_equal_local(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma);
-        double effectiveSpatialSigma = P.spatialSigmaMicrometers;
-        if (spatialSigmaIsUiDefault && snapshot.couplerProfileSpatialSigmaValid) {
-            effectiveSpatialSigma = snapshot.couplerProfileSpatialSigmaMicrometers;
-        }
-
-#ifdef JUICER_ENABLE_COUPLERS
-        if (dirCfg.hasData) {
-            if (!snapshot.couplerDirty.active && effectiveCouplersActive == kFactoryCouplersActive) {
-                effectiveCouplersActive = dirCfg.active ? 1 : 0;
-            }
-            if (!snapshot.couplerDirty.amount && approx_equal_local(effectiveCouplersAmount, kFactoryCouplersAmount)) {
-                effectiveCouplersAmount = sanitize_profile_value(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
-            }
-            if (!snapshot.couplerDirty.ratioB && approx_equal_local(effectiveRatioB, kFactoryCouplersRatioB)) {
-                effectiveRatioB = sanitize_profile_value(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
-            }
-            if (!snapshot.couplerDirty.ratioG && approx_equal_local(effectiveRatioG, kFactoryCouplersRatioG)) {
-                effectiveRatioG = sanitize_profile_value(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
-            }
-            if (!snapshot.couplerDirty.ratioR && approx_equal_local(effectiveRatioR, kFactoryCouplersRatioR)) {
-                effectiveRatioR = sanitize_profile_value(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
-            }
-            if (!snapshot.couplerDirty.sigma && approx_equal_local(effectiveCouplersSigma, kFactoryCouplersSigma)) {
-                effectiveCouplersSigma = sanitize_profile_value(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
-            }
-            if (!snapshot.couplerDirty.high && approx_equal_local(effectiveCouplersHigh, kFactoryCouplersHigh)) {
-                effectiveCouplersHigh = sanitize_profile_value(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
-            }
-            if (!snapshot.couplerDirty.spatialSigma && spatialSigmaIsUiDefault) {
-                const double profileSpatialSigma = snapshot.couplerProfileSpatialSigmaValid
-                    ? snapshot.couplerProfileSpatialSigmaMicrometers
-                    : static_cast<double>(dirCfg.diffusionSizeUm);
-                effectiveSpatialSigma = sanitize_profile_value(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
-            }
-        }
-#endif
+        (void)snapshot;
+        const int effectiveCouplersActive = (P.couplersActive != 0) ? 1 : 0;
+        const double effectiveCouplersAmount = clamp_finite_or(P.couplersAmount, kFactoryCouplersAmount, 0.0, 2.0);
+        const double effectiveRatioB = clamp_finite_or(P.ratioB, kFactoryCouplersRatioB, 0.0, 1.0);
+        const double effectiveRatioG = clamp_finite_or(P.ratioG, kFactoryCouplersRatioG, 0.0, 1.0);
+        const double effectiveRatioR = clamp_finite_or(P.ratioR, kFactoryCouplersRatioR, 0.0, 1.0);
+        const double effectiveCouplersSigma = clamp_finite_or(P.sigma, kFactoryCouplersSigma, 0.0, 4.0);
+        const double effectiveCouplersHigh = clamp_finite_or(P.high, kFactoryCouplersHigh, 0.0, 1.0);
+        const double effectiveSpatialSigma =
+            clamp_finite_or(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma, 0.0, 50.0);
 
         const std::array<float, 3> densityMaxPostDir{
             curve_max_clamped_or_default(target.densB),
@@ -2643,50 +2563,15 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     const Profiles::DirCouplersProfile& dirCfg = base.dirCouplers;
 
-    int effectiveCouplersActive = P.couplersActive;
-    double effectiveCouplersAmount = P.couplersAmount;
-    double effectiveRatioB = P.ratioB;
-    double effectiveRatioG = P.ratioG;
-    double effectiveRatioR = P.ratioR;
-    double effectiveCouplersSigma = P.sigma;
-    double effectiveCouplersHigh = P.high;
-    const bool spatialSigmaIsUiDefault = approx_equal(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma);
-    double effectiveSpatialSigma = P.spatialSigmaMicrometers;
-    if (spatialSigmaIsUiDefault && snapshot.couplerProfileSpatialSigmaValid) {
-        effectiveSpatialSigma = snapshot.couplerProfileSpatialSigmaMicrometers;
-    }
-
-#ifdef JUICER_ENABLE_COUPLERS
-    if (dirCfg.hasData) {
-        if (!snapshot.couplerDirty.active && effectiveCouplersActive == kFactoryCouplersActive) {
-            effectiveCouplersActive = dirCfg.active ? 1 : 0;
-        }
-        if (!snapshot.couplerDirty.amount && approx_equal(effectiveCouplersAmount, kFactoryCouplersAmount)) {
-            effectiveCouplersAmount = sanitize_profile_value(dirCfg.amount, effectiveCouplersAmount, 0.0, 2.0);
-        }
-        if (!snapshot.couplerDirty.ratioB && approx_equal(effectiveRatioB, kFactoryCouplersRatioB)) {
-            effectiveRatioB = sanitize_profile_value(dirCfg.ratioRGB[0], effectiveRatioB, 0.0, 1.0);
-        }
-        if (!snapshot.couplerDirty.ratioG && approx_equal(effectiveRatioG, kFactoryCouplersRatioG)) {
-            effectiveRatioG = sanitize_profile_value(dirCfg.ratioRGB[1], effectiveRatioG, 0.0, 1.0);
-        }
-        if (!snapshot.couplerDirty.ratioR && approx_equal(effectiveRatioR, kFactoryCouplersRatioR)) {
-            effectiveRatioR = sanitize_profile_value(dirCfg.ratioRGB[2], effectiveRatioR, 0.0, 1.0);
-        }
-        if (!snapshot.couplerDirty.sigma && approx_equal(effectiveCouplersSigma, kFactoryCouplersSigma)) {
-            effectiveCouplersSigma = sanitize_profile_value(dirCfg.diffusionInterlayer, effectiveCouplersSigma, 0.0, 4.0);
-        }
-        if (!snapshot.couplerDirty.high && approx_equal(effectiveCouplersHigh, kFactoryCouplersHigh)) {
-            effectiveCouplersHigh = sanitize_profile_value(dirCfg.highExposureShift, effectiveCouplersHigh, 0.0, 1.0);
-        }
-        if (!snapshot.couplerDirty.spatialSigma && spatialSigmaIsUiDefault) {
-            const double profileSpatialSigma = snapshot.couplerProfileSpatialSigmaValid
-                ? snapshot.couplerProfileSpatialSigmaMicrometers
-                : static_cast<double>(dirCfg.diffusionSizeUm);
-            effectiveSpatialSigma = sanitize_profile_value(static_cast<float>(profileSpatialSigma), effectiveSpatialSigma, 0.0, 50.0);
-        }
-    }
-#endif
+    const int effectiveCouplersActive = (P.couplersActive != 0) ? 1 : 0;
+    const double effectiveCouplersAmount = clamp_finite_or(P.couplersAmount, kFactoryCouplersAmount, 0.0, 2.0);
+    const double effectiveRatioB = clamp_finite_or(P.ratioB, kFactoryCouplersRatioB, 0.0, 1.0);
+    const double effectiveRatioG = clamp_finite_or(P.ratioG, kFactoryCouplersRatioG, 0.0, 1.0);
+    const double effectiveRatioR = clamp_finite_or(P.ratioR, kFactoryCouplersRatioR, 0.0, 1.0);
+    const double effectiveCouplersSigma = clamp_finite_or(P.sigma, kFactoryCouplersSigma, 0.0, 4.0);
+    const double effectiveCouplersHigh = clamp_finite_or(P.high, kFactoryCouplersHigh, 0.0, 1.0);
+    const double effectiveSpatialSigma =
+        clamp_finite_or(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma, 0.0, 50.0);
 
     bool precorrectApplied = false;
     Couplers::Runtime dirRT{};

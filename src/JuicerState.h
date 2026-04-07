@@ -380,17 +380,6 @@ uint64_t hash_params(const ParamSnapshot& p);
 uint64_t hash_params_core(const ParamSnapshot& p);
 uint64_t hash_params_dir(const ParamSnapshot& p);
 
-struct CouplerDirtyFlags {
-    std::atomic<bool> active{ false };
-    std::atomic<bool> amount{ false };
-    std::atomic<bool> ratioR{ false };
-    std::atomic<bool> ratioG{ false };
-    std::atomic<bool> ratioB{ false };
-    std::atomic<bool> sigma{ false };
-    std::atomic<bool> high{ false };
-    std::atomic<bool> spatialSigma{ false };
-};
-
 struct IlluminantOverrideFlags {
     bool reference = false;
     bool enlarger = false;
@@ -437,7 +426,6 @@ struct InstanceState {
     std::uint64_t instanceToken = 0;
     std::atomic<std::uint64_t> submissionSnapshotIdNext{ 1 };
 
-    CouplerDirtyFlags couplerDirty;
     IlluminantOverrideFlags illuminantOverride;
 
     bool couplerProfileSpatialSigmaValid = false;

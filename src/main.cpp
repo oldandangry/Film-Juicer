@@ -367,6 +367,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             if (grpCouplers) p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
+        {
+            OFX::IntParamDescriptor* p = desc.defineIntParam(JuicerParams::kDirCouplersInitVersion);
+            p->setLabel("DIR couplers init version");
+            p->setDefault(0);
+            p->setRange(0, 1024);
+            p->setDisplayRange(0, 1024);
+            p->setIsSecret(true);
+        }
     }
 
 #endif
