@@ -566,7 +566,7 @@ namespace {
     }
 
 #ifdef JUICER_ENABLE_COUPLERS
-    constexpr int kDirCouplersInitVersionCurrent = 1;
+    constexpr int kDirCouplersInitVersionCurrent = 2;
 
     enum class CouplerParamKind {
         None = 0,
@@ -607,6 +607,48 @@ namespace {
             return CouplerParamKind::SpatialSigma;
         }
         return CouplerParamKind::None;
+    }
+
+    constexpr int kCouplerFollowStockActive = 1 << 0;
+    constexpr int kCouplerFollowStockAmount = 1 << 1;
+    constexpr int kCouplerFollowStockRatioB = 1 << 2;
+    constexpr int kCouplerFollowStockRatioG = 1 << 3;
+    constexpr int kCouplerFollowStockRatioR = 1 << 4;
+    constexpr int kCouplerFollowStockSigma = 1 << 5;
+    constexpr int kCouplerFollowStockHigh = 1 << 6;
+    constexpr int kCouplerFollowStockSpatialSigma = 1 << 7;
+    constexpr int kCouplerFollowStockAllMask =
+        kCouplerFollowStockActive |
+        kCouplerFollowStockAmount |
+        kCouplerFollowStockRatioB |
+        kCouplerFollowStockRatioG |
+        kCouplerFollowStockRatioR |
+        kCouplerFollowStockSigma |
+        kCouplerFollowStockHigh |
+        kCouplerFollowStockSpatialSigma;
+
+    inline int coupler_follow_stock_bit(CouplerParamKind kind) {
+        switch (kind) {
+        case CouplerParamKind::Active:
+            return kCouplerFollowStockActive;
+        case CouplerParamKind::Amount:
+            return kCouplerFollowStockAmount;
+        case CouplerParamKind::RatioB:
+            return kCouplerFollowStockRatioB;
+        case CouplerParamKind::RatioG:
+            return kCouplerFollowStockRatioG;
+        case CouplerParamKind::RatioR:
+            return kCouplerFollowStockRatioR;
+        case CouplerParamKind::Sigma:
+            return kCouplerFollowStockSigma;
+        case CouplerParamKind::High:
+            return kCouplerFollowStockHigh;
+        case CouplerParamKind::SpatialSigma:
+            return kCouplerFollowStockSpatialSigma;
+        case CouplerParamKind::None:
+        default:
+            return 0;
+        }
     }
 
     inline bool is_coupler_param_name(const char* changedName) {
@@ -1335,6 +1377,108 @@ namespace {
             param->setValue(value);
         }
     }
+
+#ifdef JUICER_ENABLE_COUPLERS
+    struct CouplerProfileDefaults {
+        bool active = true;
+        double amount = kFactoryCouplersAmount;
+        double ratioB = kFactoryCouplersRatioB;
+        double ratioG = kFactoryCouplersRatioG;
+        double ratioR = kFactoryCouplersRatioR;
+        double sigma = kFactoryCouplersSigma;
+        double high = kFactoryCouplersHigh;
+        double spatialSigmaMicrometers = kFactoryCouplersSpatialSigma;
+    };
+
+    inline CouplerProfileDefaults build_coupler_profile_defaults(
+        const Profiles::DirCouplersProfile& dirCfg,
+        bool spatialSigmaValid,
+        double spatialSigmaMicrometers,
+        const ParamSnapshot& fallback) {
+        CouplerProfileDefaults defaults{};
+        defaults.active = dirCfg.active;
+        defaults.amount = sanitize_finite_clamped(
+            static_cast<double>(dirCfg.amount),
+            fallback.couplersAmount,
+            0.0,
+            2.0);
+        defaults.ratioB = sanitize_finite_clamped(
+            static_cast<double>(dirCfg.ratioRGB[0]),
+            fallback.ratioB,
+            0.0,
+            1.0);
+        defaults.ratioG = sanitize_finite_clamped(
+            static_cast<double>(dirCfg.ratioRGB[1]),
+            fallback.ratioG,
+            0.0,
+            1.0);
+        defaults.ratioR = sanitize_finite_clamped(
+            static_cast<double>(dirCfg.ratioRGB[2]),
+            fallback.ratioR,
+            0.0,
+            1.0);
+        defaults.sigma = sanitize_finite_clamped(
+            static_cast<double>(dirCfg.diffusionInterlayer),
+            fallback.sigma,
+            0.0,
+            4.0);
+        defaults.high = sanitize_finite_clamped(
+            static_cast<double>(dirCfg.highExposureShift),
+            fallback.high,
+            0.0,
+            1.0);
+        defaults.spatialSigmaMicrometers = sanitize_finite_clamped(
+            spatialSigmaValid ? spatialSigmaMicrometers : static_cast<double>(dirCfg.diffusionSizeUm),
+            fallback.spatialSigmaMicrometers,
+            0.0,
+            50.0);
+        return defaults;
+    }
+
+    inline int sanitize_coupler_follow_stock_mask(int mask) {
+        return mask & kCouplerFollowStockAllMask;
+    }
+
+    inline bool coupler_follow_stock_enabled(int mask, CouplerParamKind kind) {
+        const int bit = coupler_follow_stock_bit(kind);
+        return bit != 0 && ((mask & bit) != 0);
+    }
+
+    inline int infer_coupler_follow_stock_mask(
+        const ParamSnapshot& current,
+        const CouplerProfileDefaults& defaults) {
+        auto approx_equal_double = [](double a, double b, double eps = 1e-6) {
+            return std::fabs(a - b) <= eps;
+        };
+
+        int followMask = 0;
+        if (current.couplersActive == bool_to_i32(defaults.active)) {
+            followMask |= kCouplerFollowStockActive;
+        }
+        if (approx_equal_double(current.couplersAmount, defaults.amount)) {
+            followMask |= kCouplerFollowStockAmount;
+        }
+        if (approx_equal_double(current.ratioB, defaults.ratioB)) {
+            followMask |= kCouplerFollowStockRatioB;
+        }
+        if (approx_equal_double(current.ratioG, defaults.ratioG)) {
+            followMask |= kCouplerFollowStockRatioG;
+        }
+        if (approx_equal_double(current.ratioR, defaults.ratioR)) {
+            followMask |= kCouplerFollowStockRatioR;
+        }
+        if (approx_equal_double(current.sigma, defaults.sigma)) {
+            followMask |= kCouplerFollowStockSigma;
+        }
+        if (approx_equal_double(current.high, defaults.high)) {
+            followMask |= kCouplerFollowStockHigh;
+        }
+        if (approx_equal_double(current.spatialSigmaMicrometers, defaults.spatialSigmaMicrometers)) {
+            followMask |= kCouplerFollowStockSpatialSigma;
+        }
+        return followMask;
+    }
+#endif
 
     inline bool apply_illuminant_choice_from_source(
         OFX::ChoiceParam* param,
@@ -3271,6 +3415,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pCouplersHigh = fetchDoubleParam(Couplers::kParamCouplersHighExpShift);
         _pCouplersSpatialSigma = fetchDoubleParam(Couplers::kParamCouplersSpatialSigma);
         _pCouplersInitVersion = fetchIntParam(JuicerParams::kDirCouplersInitVersion);
+        _pCouplersFollowMask = fetchIntParam(JuicerParams::kDirCouplersFollowStockMask);
 #endif
 
         _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
@@ -4344,81 +4489,165 @@ void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) 
     const ScopedParamEventSuppression suppressEvents(_state.get());
 
     const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
+    CouplerProfileDefaults factoryDefaults{};
+    factoryDefaults.active = (kFactoryCouplersActive != 0);
+    factoryDefaults.amount = kFactoryCouplersAmount;
+    factoryDefaults.ratioB = kFactoryCouplersRatioB;
+    factoryDefaults.ratioG = kFactoryCouplersRatioG;
+    factoryDefaults.ratioR = kFactoryCouplersRatioR;
+    factoryDefaults.sigma = kFactoryCouplersSigma;
+    factoryDefaults.high = kFactoryCouplersHigh;
+    factoryDefaults.spatialSigmaMicrometers = kFactoryCouplersSpatialSigma;
+
     if (!dirCfg.hasData) {
+        set_int_param_if(_pCouplersFollowMask, infer_coupler_follow_stock_mask(P, factoryDefaults));
         set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
         return;
     }
 
-    auto approx_equal_double = [](double a, double b, double eps = 1e-6) {
-        return std::fabs(a - b) <= eps;
-    };
+    const CouplerProfileDefaults profileDefaults = build_coupler_profile_defaults(
+        dirCfg,
+        _state->couplerProfileSpatialSigmaValid,
+        _state->couplerProfileSpatialSigmaMicrometers,
+        P);
 
-    const double profileAmount = sanitize_finite_clamped(
-        static_cast<double>(dirCfg.amount),
-        P.couplersAmount,
-        0.0,
-        2.0);
-    const double profileRatioB = sanitize_finite_clamped(
-        static_cast<double>(dirCfg.ratioRGB[0]),
-        P.ratioB,
-        0.0,
-        1.0);
-    const double profileRatioG = sanitize_finite_clamped(
-        static_cast<double>(dirCfg.ratioRGB[1]),
-        P.ratioG,
-        0.0,
-        1.0);
-    const double profileRatioR = sanitize_finite_clamped(
-        static_cast<double>(dirCfg.ratioRGB[2]),
-        P.ratioR,
-        0.0,
-        1.0);
-    const double profileSigma = sanitize_finite_clamped(
-        static_cast<double>(dirCfg.diffusionInterlayer),
-        P.sigma,
-        0.0,
-        4.0);
-    const double profileHigh = sanitize_finite_clamped(
-        static_cast<double>(dirCfg.highExposureShift),
-        P.high,
-        0.0,
-        1.0);
-    const double profileSpatialSigma = sanitize_finite_clamped(
-        _state->couplerProfileSpatialSigmaValid
-            ? _state->couplerProfileSpatialSigmaMicrometers
-            : static_cast<double>(dirCfg.diffusionSizeUm),
-        P.spatialSigmaMicrometers,
-        0.0,
-        50.0);
-
-    const bool matchesProfileDefaults =
-        (P.couplersActive == bool_to_i32(dirCfg.active)) &&
-        approx_equal_double(P.couplersAmount, profileAmount) &&
-        approx_equal_double(P.ratioB, profileRatioB) &&
-        approx_equal_double(P.ratioG, profileRatioG) &&
-        approx_equal_double(P.ratioR, profileRatioR) &&
-        approx_equal_double(P.sigma, profileSigma) &&
-        approx_equal_double(P.high, profileHigh) &&
-        approx_equal_double(P.spatialSigmaMicrometers, profileSpatialSigma);
-
+    const int profileFollowMask = infer_coupler_follow_stock_mask(P, profileDefaults);
+    const bool matchesProfileDefaults = profileFollowMask == kCouplerFollowStockAllMask;
     const bool matchesFactoryDefaults =
-        (P.couplersActive == kFactoryCouplersActive) &&
-        approx_equal_double(P.couplersAmount, kFactoryCouplersAmount) &&
-        approx_equal_double(P.ratioB, kFactoryCouplersRatioB) &&
-        approx_equal_double(P.ratioG, kFactoryCouplersRatioG) &&
-        approx_equal_double(P.ratioR, kFactoryCouplersRatioR) &&
-        approx_equal_double(P.sigma, kFactoryCouplersSigma) &&
-        approx_equal_double(P.high, kFactoryCouplersHigh) &&
-        approx_equal_double(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma);
+        infer_coupler_follow_stock_mask(P, factoryDefaults) == kCouplerFollowStockAllMask;
 
+    int followMask = profileFollowMask;
     // Legacy instances without the init-version param can only be distinguished by their
     // visible values: untouched factory defaults get the stock-profile initialization once,
     // while any other restored values are preserved as authored state.
     if (!matchesProfileDefaults && matchesFactoryDefaults) {
         applyCouplerProfileDefaults(P);
+        followMask = kCouplerFollowStockAllMask;
     }
 
+    set_int_param_if(_pCouplersFollowMask, sanitize_coupler_follow_stock_mask(followMask));
     set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
+}
+
+void JuicerEffect::syncCouplerParamsFromProfileFollowMask(ParamSnapshot& P) {
+    if (!_state) {
+        return;
+    }
+
+    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
+    if (!dirCfg.hasData) {
+        return;
+    }
+
+    const int followMask = sanitize_coupler_follow_stock_mask(
+        read_int_param_or(_pCouplersFollowMask, kCouplerFollowStockAllMask));
+    if (followMask == 0) {
+        return;
+    }
+
+    const ScopedParamEventSuppression suppressEvents(_state.get());
+    const CouplerProfileDefaults profileDefaults = build_coupler_profile_defaults(
+        dirCfg,
+        _state->couplerProfileSpatialSigmaValid,
+        _state->couplerProfileSpatialSigmaMicrometers,
+        P);
+
+    auto apply_if_following = [&](CouplerParamKind kind,
+                                  double source,
+                                  double fallback,
+                                  double lo,
+                                  double hi,
+                                  OFX::DoubleParam* param,
+                                  double& target) {
+        if (!coupler_follow_stock_enabled(followMask, kind)) {
+            return;
+        }
+        const double value = sanitize_finite_clamped(source, fallback, lo, hi);
+        set_double_param_if(param, value);
+        target = value;
+    };
+
+    if (coupler_follow_stock_enabled(followMask, CouplerParamKind::Active)) {
+        set_bool_param_if(_pCouplersActive, profileDefaults.active);
+        P.couplersActive = bool_to_i32(profileDefaults.active);
+    }
+
+    apply_if_following(
+        CouplerParamKind::Amount,
+        profileDefaults.amount,
+        P.couplersAmount,
+        0.0,
+        2.0,
+        _pCouplersAmount,
+        P.couplersAmount);
+    apply_if_following(
+        CouplerParamKind::RatioB,
+        profileDefaults.ratioB,
+        P.ratioB,
+        0.0,
+        1.0,
+        _pCouplersAmountB,
+        P.ratioB);
+    apply_if_following(
+        CouplerParamKind::RatioG,
+        profileDefaults.ratioG,
+        P.ratioG,
+        0.0,
+        1.0,
+        _pCouplersAmountG,
+        P.ratioG);
+    apply_if_following(
+        CouplerParamKind::RatioR,
+        profileDefaults.ratioR,
+        P.ratioR,
+        0.0,
+        1.0,
+        _pCouplersAmountR,
+        P.ratioR);
+    apply_if_following(
+        CouplerParamKind::Sigma,
+        profileDefaults.sigma,
+        P.sigma,
+        0.0,
+        4.0,
+        _pCouplersSigma,
+        P.sigma);
+    apply_if_following(
+        CouplerParamKind::High,
+        profileDefaults.high,
+        P.high,
+        0.0,
+        1.0,
+        _pCouplersHigh,
+        P.high);
+    apply_if_following(
+        CouplerParamKind::SpatialSigma,
+        profileDefaults.spatialSigmaMicrometers,
+        P.spatialSigmaMicrometers,
+        0.0,
+        50.0,
+        _pCouplersSpatialSigma,
+        P.spatialSigmaMicrometers);
+}
+
+void JuicerEffect::clearCouplerFollowStockForParam(const char* changedNameOrNull) {
+    if (!_state || !_pCouplersFollowMask) {
+        return;
+    }
+
+    const CouplerParamKind kind = coupler_param_kind(changedNameOrNull);
+    const int bit = coupler_follow_stock_bit(kind);
+    if (bit == 0) {
+        return;
+    }
+
+    const int followMask = sanitize_coupler_follow_stock_mask(read_int_param_or(_pCouplersFollowMask, 0));
+    if ((followMask & bit) == 0) {
+        return;
+    }
+
+    const ScopedParamEventSuppression suppressEvents(_state.get());
+    set_int_param_if(_pCouplersFollowMask, followMask & ~bit);
 }
 
 void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
@@ -4529,6 +4758,12 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     trace_param_change_verbose_if(traceVerbose, P, *_state, changedNameOrNull);
     Print::Runtime nextPrintRuntime = snapshot_print_runtime_locked(*_state);
 
+#ifdef JUICER_ENABLE_COUPLERS
+    if (changed.couplerParam) {
+        clearCouplerFollowStockForParam(changedNameOrNull);
+    }
+#endif
+
     // Track user overrides for illuminant choices.
     mark_illuminant_override_if_changed(*_state, changed);
 
@@ -4555,6 +4790,9 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
 
     apply_when_film_reloaded(reloadStatus.filmReloaded, [&]() {
         applyHalationProfileDefaults();
+#ifdef JUICER_ENABLE_COUPLERS
+        syncCouplerParamsFromProfileFollowMask(P);
+#endif
     });
 
     apply_when_reload_requires_illuminant_refresh(reloadStatus, [&]() {
