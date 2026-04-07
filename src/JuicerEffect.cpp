@@ -3830,6 +3830,12 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
 
     const bool userEdit = (args.reason == OFX::eChangeUserEdit);
 
+#ifdef JUICER_ENABLE_COUPLERS
+    if (userEdit && is_coupler_param_name(paramName.c_str())) {
+        clearCouplerFollowStockForParam(paramName.c_str());
+    }
+#endif
+
     auto should_apply_halation_revert_defaults = [&]() {
         return halation_revert_param_changed(paramName);
     };
@@ -4757,12 +4763,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     const ChangedParamFlags changed = classify_changed_param(changedNameOrNull);
     trace_param_change_verbose_if(traceVerbose, P, *_state, changedNameOrNull);
     Print::Runtime nextPrintRuntime = snapshot_print_runtime_locked(*_state);
-
-#ifdef JUICER_ENABLE_COUPLERS
-    if (changed.couplerParam) {
-        clearCouplerFollowStockForParam(changedNameOrNull);
-    }
-#endif
 
     // Track user overrides for illuminant choices.
     mark_illuminant_override_if_changed(*_state, changed);
