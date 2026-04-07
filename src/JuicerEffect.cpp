@@ -566,6 +566,8 @@ namespace {
     }
 
 #ifdef JUICER_ENABLE_COUPLERS
+    constexpr int kDirCouplersInitVersionCurrent = 1;
+
     enum class CouplerParamKind {
         None = 0,
         Active,
@@ -605,42 +607,6 @@ namespace {
             return CouplerParamKind::SpatialSigma;
         }
         return CouplerParamKind::None;
-    }
-
-    inline void mark_dirty_release(std::atomic<bool>& dirtyFlag) {
-        dirtyFlag.store(true, std::memory_order_release);
-    }
-
-    inline bool mark_coupler_dirty_if_known(InstanceState& state, const char* changedName) {
-        switch (coupler_param_kind(changedName)) {
-        case CouplerParamKind::Active:
-            mark_dirty_release(state.couplerDirty.active);
-            return true;
-        case CouplerParamKind::Amount:
-            mark_dirty_release(state.couplerDirty.amount);
-            return true;
-        case CouplerParamKind::RatioB:
-            mark_dirty_release(state.couplerDirty.ratioB);
-            return true;
-        case CouplerParamKind::RatioG:
-            mark_dirty_release(state.couplerDirty.ratioG);
-            return true;
-        case CouplerParamKind::RatioR:
-            mark_dirty_release(state.couplerDirty.ratioR);
-            return true;
-        case CouplerParamKind::Sigma:
-            mark_dirty_release(state.couplerDirty.sigma);
-            return true;
-        case CouplerParamKind::High:
-            mark_dirty_release(state.couplerDirty.high);
-            return true;
-        case CouplerParamKind::SpatialSigma:
-            mark_dirty_release(state.couplerDirty.spatialSigma);
-            return true;
-        case CouplerParamKind::None:
-        default:
-            return false;
-        }
     }
 
     inline bool is_coupler_param_name(const char* changedName) {
@@ -764,7 +730,6 @@ namespace {
     }
 
     struct ChangedParamFlags {
-        bool hasName = false;
         bool referenceIlluminant = false;
         bool enlargerIlluminant = false;
         bool printPaper = false;
@@ -775,8 +740,7 @@ namespace {
 
     inline ChangedParamFlags classify_changed_param(const char* changedName) {
         ChangedParamFlags flags{};
-        flags.hasName = (changedName != nullptr);
-        if (!flags.hasName) {
+        if (changedName == nullptr) {
             return flags;
         }
 
@@ -801,16 +765,6 @@ namespace {
     }
 
 #ifdef JUICER_ENABLE_COUPLERS
-    inline void maybe_mark_coupler_dirty(
-        const ChangedParamFlags& changed,
-        InstanceState& state,
-        const char* changedNameOrNull) {
-        if (!changed.hasName) {
-            return;
-        }
-        (void)mark_coupler_dirty_if_known(state, changedNameOrNull);
-    }
-
     inline void maybe_notify_coupler_param_change(
         const ChangedParamFlags& changed,
         const char* changedNameOrNull) {
@@ -1039,14 +993,6 @@ namespace {
         const ChangedParamFlags& changed,
         ApplyFn&& applyFn) {
         if (!changed.enlargerIlluminant) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_when_base_state_loaded(const InstanceState* state, ApplyFn&& applyFn) {
-        if (!has_loaded_base_state(state)) {
             return;
         }
         std::forward<ApplyFn>(applyFn)();
@@ -1379,6 +1325,12 @@ namespace {
     }
 
     inline void set_choice_param_if(OFX::ChoiceParam* param, int value) {
+        if (param) {
+            param->setValue(value);
+        }
+    }
+
+    inline void set_int_param_if(OFX::IntParam* param, int value) {
         if (param) {
             param->setValue(value);
         }
@@ -3318,6 +3270,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pCouplersSigma = fetchDoubleParam(Couplers::kParamCouplersLayerSigma);
         _pCouplersHigh = fetchDoubleParam(Couplers::kParamCouplersHighExpShift);
         _pCouplersSpatialSigma = fetchDoubleParam(Couplers::kParamCouplersSpatialSigma);
+        _pCouplersInitVersion = fetchIntParam(JuicerParams::kDirCouplersInitVersion);
 #endif
 
         _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
@@ -4243,7 +4196,7 @@ void JuicerEffect::bootstrap_after_attach() {
 
     if (has_loaded_base_state(_state.get())) {
 #ifdef JUICER_ENABLE_COUPLERS
-        applyCouplerProfileDefaults(P);
+        initializeCouplerParamsFromProfileIfNeeded(P);
 #endif
         rebuild_working_state(this->getHandle(), *_state, P);
     }
@@ -4378,6 +4331,96 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print
 }
 
 #ifdef JUICER_ENABLE_COUPLERS
+void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) {
+    if (!_state) {
+        return;
+    }
+
+    const int initVersion = read_int_param_or(_pCouplersInitVersion, 0);
+    if (initVersion >= kDirCouplersInitVersionCurrent) {
+        return;
+    }
+
+    const ScopedParamEventSuppression suppressEvents(_state.get());
+
+    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
+    if (!dirCfg.hasData) {
+        set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
+        return;
+    }
+
+    auto approx_equal_double = [](double a, double b, double eps = 1e-6) {
+        return std::fabs(a - b) <= eps;
+    };
+
+    const double profileAmount = sanitize_finite_clamped(
+        static_cast<double>(dirCfg.amount),
+        P.couplersAmount,
+        0.0,
+        2.0);
+    const double profileRatioB = sanitize_finite_clamped(
+        static_cast<double>(dirCfg.ratioRGB[0]),
+        P.ratioB,
+        0.0,
+        1.0);
+    const double profileRatioG = sanitize_finite_clamped(
+        static_cast<double>(dirCfg.ratioRGB[1]),
+        P.ratioG,
+        0.0,
+        1.0);
+    const double profileRatioR = sanitize_finite_clamped(
+        static_cast<double>(dirCfg.ratioRGB[2]),
+        P.ratioR,
+        0.0,
+        1.0);
+    const double profileSigma = sanitize_finite_clamped(
+        static_cast<double>(dirCfg.diffusionInterlayer),
+        P.sigma,
+        0.0,
+        4.0);
+    const double profileHigh = sanitize_finite_clamped(
+        static_cast<double>(dirCfg.highExposureShift),
+        P.high,
+        0.0,
+        1.0);
+    const double profileSpatialSigma = sanitize_finite_clamped(
+        _state->couplerProfileSpatialSigmaValid
+            ? _state->couplerProfileSpatialSigmaMicrometers
+            : static_cast<double>(dirCfg.diffusionSizeUm),
+        P.spatialSigmaMicrometers,
+        0.0,
+        50.0);
+
+    const bool matchesProfileDefaults =
+        (P.couplersActive == bool_to_i32(dirCfg.active)) &&
+        approx_equal_double(P.couplersAmount, profileAmount) &&
+        approx_equal_double(P.ratioB, profileRatioB) &&
+        approx_equal_double(P.ratioG, profileRatioG) &&
+        approx_equal_double(P.ratioR, profileRatioR) &&
+        approx_equal_double(P.sigma, profileSigma) &&
+        approx_equal_double(P.high, profileHigh) &&
+        approx_equal_double(P.spatialSigmaMicrometers, profileSpatialSigma);
+
+    const bool matchesFactoryDefaults =
+        (P.couplersActive == kFactoryCouplersActive) &&
+        approx_equal_double(P.couplersAmount, kFactoryCouplersAmount) &&
+        approx_equal_double(P.ratioB, kFactoryCouplersRatioB) &&
+        approx_equal_double(P.ratioG, kFactoryCouplersRatioG) &&
+        approx_equal_double(P.ratioR, kFactoryCouplersRatioR) &&
+        approx_equal_double(P.sigma, kFactoryCouplersSigma) &&
+        approx_equal_double(P.high, kFactoryCouplersHigh) &&
+        approx_equal_double(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma);
+
+    // Legacy instances without the init-version param can only be distinguished by their
+    // visible values: untouched factory defaults get the stock-profile initialization once,
+    // while any other restored values are preserved as authored state.
+    if (!matchesProfileDefaults && matchesFactoryDefaults) {
+        applyCouplerProfileDefaults(P);
+    }
+
+    set_int_param_if(_pCouplersInitVersion, kDirCouplersInitVersionCurrent);
+}
+
 void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
     if (!_state) {
         return;
@@ -4390,29 +4433,22 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
 
     const ScopedParamEventSuppression suppressEvents(_state.get());
 
-    auto apply_clean_double = [&](bool dirty,
-                                  double source,
-                                  double fallback,
-                                  double lo,
-                                  double hi,
-                                  OFX::DoubleParam* param,
-                                  double& target) {
-        if (dirty) {
-            return;
-        }
+    auto apply_profile_double = [&](double source,
+                                    double fallback,
+                                    double lo,
+                                    double hi,
+                                    OFX::DoubleParam* param,
+                                    double& target) {
         const double value = sanitize_finite_clamped(source, fallback, lo, hi);
         set_double_param_if(param, value);
         target = value;
     };
 
-    if (!_state->couplerDirty.active.load(std::memory_order_acquire)) {
-        const bool active = dirCfg.active;
-        set_bool_param_if(_pCouplersActive, active);
-        P.couplersActive = bool_to_i32(active);
-    }
+    const bool active = dirCfg.active;
+    set_bool_param_if(_pCouplersActive, active);
+    P.couplersActive = bool_to_i32(active);
 
-    apply_clean_double(
-        _state->couplerDirty.amount.load(std::memory_order_acquire),
+    apply_profile_double(
         static_cast<double>(dirCfg.amount),
         P.couplersAmount,
         0.0,
@@ -4420,8 +4456,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         _pCouplersAmount,
         P.couplersAmount);
 
-    apply_clean_double(
-        _state->couplerDirty.ratioB.load(std::memory_order_acquire),
+    apply_profile_double(
         static_cast<double>(dirCfg.ratioRGB[0]),
         P.ratioB,
         0.0,
@@ -4429,8 +4464,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         _pCouplersAmountB,
         P.ratioB);
 
-    apply_clean_double(
-        _state->couplerDirty.ratioG.load(std::memory_order_acquire),
+    apply_profile_double(
         static_cast<double>(dirCfg.ratioRGB[1]),
         P.ratioG,
         0.0,
@@ -4438,8 +4472,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         _pCouplersAmountG,
         P.ratioG);
 
-    apply_clean_double(
-        _state->couplerDirty.ratioR.load(std::memory_order_acquire),
+    apply_profile_double(
         static_cast<double>(dirCfg.ratioRGB[2]),
         P.ratioR,
         0.0,
@@ -4447,8 +4480,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         _pCouplersAmountR,
         P.ratioR);
 
-    apply_clean_double(
-        _state->couplerDirty.sigma.load(std::memory_order_acquire),
+    apply_profile_double(
         static_cast<double>(dirCfg.diffusionInterlayer),
         P.sigma,
         0.0,
@@ -4456,8 +4488,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         _pCouplersSigma,
         P.sigma);
 
-    apply_clean_double(
-        _state->couplerDirty.high.load(std::memory_order_acquire),
+    apply_profile_double(
         static_cast<double>(dirCfg.highExposureShift),
         P.high,
         0.0,
@@ -4468,8 +4499,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
     const float profileSpatialSigma = _state->couplerProfileSpatialSigmaValid
         ? static_cast<float>(_state->couplerProfileSpatialSigmaMicrometers)
         : dirCfg.diffusionSizeUm;
-    apply_clean_double(
-        _state->couplerDirty.spatialSigma.load(std::memory_order_acquire),
+    apply_profile_double(
         static_cast<double>(profileSpatialSigma),
         P.spatialSigmaMicrometers,
         0.0,
@@ -4498,9 +4528,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     const ChangedParamFlags changed = classify_changed_param(changedNameOrNull);
     trace_param_change_verbose_if(traceVerbose, P, *_state, changedNameOrNull);
     Print::Runtime nextPrintRuntime = snapshot_print_runtime_locked(*_state);
-#ifdef JUICER_ENABLE_COUPLERS
-    maybe_mark_coupler_dirty(changed, *_state, changedNameOrNull);
-#endif
 
     // Track user overrides for illuminant choices.
     mark_illuminant_override_if_changed(*_state, changed);
@@ -4549,13 +4576,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     apply_when_enlarger_illuminant_changed(changed, [&]() {
         applyNeutralFilters(P, nextPrintRuntime);
         printRuntimeDirty = true;
-    });
-
-    // Rebuild if any effective param changed
-    apply_when_base_state_loaded(_state.get(), [&]() {
-#ifdef JUICER_ENABLE_COUPLERS
-        applyCouplerProfileDefaults(P);
-#endif
     });
 
     if (printRuntimeDirty) {

@@ -138,6 +138,7 @@ private:
     void applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& runtime);
     bool applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print::Runtime& runtime);
 #ifdef JUICER_ENABLE_COUPLERS
+    void initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P);
     void applyCouplerProfileDefaults(ParamSnapshot& P);
 #endif
 
@@ -171,6 +172,7 @@ private:
     OFX::DoubleParam* _pCouplersSigma = nullptr;
     OFX::DoubleParam* _pCouplersHigh = nullptr;
     OFX::DoubleParam* _pCouplersSpatialSigma = nullptr;
+    OFX::IntParam* _pCouplersInitVersion = nullptr;
 #endif
 
     // Scanner and print params
