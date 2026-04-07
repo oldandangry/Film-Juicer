@@ -139,6 +139,8 @@ private:
     bool applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print::Runtime& runtime);
 #ifdef JUICER_ENABLE_COUPLERS
     void initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P);
+    void syncCouplerParamsFromProfileFollowMask(ParamSnapshot& P);
+    void clearCouplerFollowStockForParam(const char* changedNameOrNull);
     void applyCouplerProfileDefaults(ParamSnapshot& P);
 #endif
 
@@ -173,6 +175,7 @@ private:
     OFX::DoubleParam* _pCouplersHigh = nullptr;
     OFX::DoubleParam* _pCouplersSpatialSigma = nullptr;
     OFX::IntParam* _pCouplersInitVersion = nullptr;
+    OFX::IntParam* _pCouplersFollowMask = nullptr;
 #endif
 
     // Scanner and print params

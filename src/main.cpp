@@ -375,6 +375,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0, 1024);
             p->setIsSecret(true);
         }
+        {
+            OFX::IntParamDescriptor* p = desc.defineIntParam(JuicerParams::kDirCouplersFollowStockMask);
+            p->setLabel("DIR couplers follow stock mask");
+            p->setDefault(0);
+            p->setRange(0, 255);
+            p->setDisplayRange(0, 255);
+            p->setIsSecret(true);
+        }
     }
 
 #endif
