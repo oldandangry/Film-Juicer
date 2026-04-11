@@ -2,6 +2,8 @@
 
 #include <mutex>
 
+#include "ResourceAssetLibrary.h"
+
 struct InstanceState;
 
 namespace JuicerProcess {
@@ -17,11 +19,13 @@ namespace JuicerProcess {
 
         void ensure_bootstrap(BootstrapFn callback);
         void retire_idle_contexts(InstanceState& state) noexcept;
+        JuicerAssets::Library& assets() noexcept;
 
     private:
         Root() = default;
 
         std::once_flag _bootstrapOnce;
+        JuicerAssets::Library _assets;
     };
 
     Root& root() noexcept;

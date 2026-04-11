@@ -39,6 +39,10 @@ namespace JuicerProcess {
         std::call_once(_bootstrapOnce, callback);
     }
 
+    JuicerAssets::Library& Root::assets() noexcept {
+        return _assets;
+    }
+
     void Root::retire_idle_contexts(InstanceState& state) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         const bool traceInfo = JTRACE_ENABLED(1);

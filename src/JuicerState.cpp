@@ -1,6 +1,7 @@
 #include "JuicerState.h"
 
 #include "Couplers.h"
+#include "ProcessRoot.h"
 
 namespace RebuildWorkingState {
 
@@ -74,25 +75,20 @@ void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) co
 #include <array>
 #include <cstring>
 #include <filesystem>
-#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <mutex>
 #include <sstream>
-#include <system_error>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <cstdlib>
 #include <cstdint>
 #include <iterator>
-
-#include "nlohmann/json.hpp"
 
 #include "Illuminants.h"
 
@@ -493,52 +489,6 @@ namespace RebuildWorkingState {
 
 namespace {
     namespace fs = std::filesystem;
-
-    struct FilmStockDefinition {
-        std::string optionLabel;
-        std::string jsonKey;
-    };
-
-    struct PrintPaperDefinition {
-        std::string optionLabel;
-        std::string folderName;
-        std::string jsonKey;
-    };
-
-    using FilmStockFallback = std::array<FilmStockDefinition, 5>;
-    using PrintPaperFallback = std::array<PrintPaperDefinition, 2>;
-
-    static const FilmStockFallback kFallbackFilmStocks{ {
-        { "Vision3 250D", "kodak_vision3_250d_uc" },
-        { "Vision3 50D",  "kodak_vision3_50d_uc" },
-        { "Vision3 200T", "kodak_vision3_200t_uc" },
-        { "Vision3 500T", "kodak_vision3_500t_uc" },
-        { "Portra 400",   "kodak_portra_400_auc" }
-    } };
-
-    static const PrintPaperFallback kFallbackPrintPapers{ {
-        { "2383", "kodak_2383", "kodak_2383_uc" },
-        { "2393", "kodak_2393", "kodak_2393_uc" }
-    } };
-
-    std::vector<FilmStockDefinition>& film_stock_definitions() {
-        static std::vector<FilmStockDefinition> defs;
-        return defs;
-    }
-
-    std::vector<PrintPaperDefinition>& print_paper_definitions() {
-        static std::vector<PrintPaperDefinition> defs;
-        return defs;
-    }
-
-    std::once_flag gProfileCatalogOnce;
-
-    struct FilterCatalog {
-        std::vector<std::string> paperKeys;
-        std::vector<std::string> filmKeys;
-        std::unordered_set<std::string> paperKeySet;
-        std::unordered_set<std::string> filmKeySet;
-    };
 
     void trace_working_state_core_share(
         const WorkingStateSharing::AcquireCoreSharedResult& result,
@@ -1075,373 +1025,12 @@ namespace {
         return true;
     }
 
-    std::string sanitize_identifier(const std::string& value) {
-        std::string out;
-        out.reserve(value.size());
-        const char* inData = value.data();
-        const char* const inEnd = inData + value.size();
-        for (; inData < inEnd; ++inData) {
-            unsigned char uc = static_cast<unsigned char>(*inData);
-            if (std::isalnum(uc)) {
-                out.push_back(static_cast<char>(std::tolower(uc)));
-            }
-        }
-        return out;
+    const JuicerAssets::FilmStockAsset& film_stock_for_index(int filmIndex) {
+        return JuicerProcess::root().assets().film_stock_for_index(filmIndex);
     }
 
-    bool equals_ignore_case(const std::string& a, const std::string& b) {
-        if (a.size() != b.size()) {
-            return false;
-        }
-        const char* aData = a.data();
-        const char* bData = b.data();
-        const char* const aEnd = aData + a.size();
-        for (; aData < aEnd; ++aData, ++bData) {
-            if (std::tolower(static_cast<unsigned char>(*aData)) !=
-                std::tolower(static_cast<unsigned char>(*bData))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    FilterCatalog load_filter_catalog(const fs::path& filterPath) {
-        FilterCatalog catalog;
-        std::error_code ec;
-        if (!fs::exists(filterPath, ec) || fs::is_directory(filterPath, ec)) {
-            return catalog;
-        }
-
-        std::ifstream file(filterPath, std::ios::binary);
-        if (!file.is_open()) {
-            return catalog;
-        }
-
-        nlohmann::json root = nlohmann::json::parse(file, nullptr, false);
-        if (root.is_discarded() || !root.is_object()) {
-            return catalog;
-        }
-        const size_t paperCount = root.size();
-        catalog.paperKeys.reserve(paperCount);
-        catalog.paperKeySet.reserve(paperCount);
-        catalog.filmKeys.reserve(paperCount * 4);
-        catalog.filmKeySet.reserve(paperCount * 4);
-
-        for (auto it = root.begin(); it != root.end(); ++it) {
-            if (!it.value().is_object()) {
-                continue;
-            }
-            const std::string paperKey = it.key();
-            if (catalog.paperKeySet.insert(paperKey).second) {
-                catalog.paperKeys.emplace_back(paperKey);
-            }
-            for (auto illumIt = it.value().begin(); illumIt != it.value().end(); ++illumIt) {
-                if (!illumIt.value().is_object()) {
-                    continue;
-                }
-                for (auto filmIt = illumIt.value().begin(); filmIt != illumIt.value().end(); ++filmIt) {
-                    const std::string filmKey = filmIt.key();
-                    if (catalog.filmKeySet.insert(filmKey).second) {
-                        catalog.filmKeys.emplace_back(filmKey);
-                    }
-                }
-            }
-        }
-        return catalog;
-    }
-
-    void populate_profile_catalogs() {
-        auto& filmDefs = film_stock_definitions();
-        auto& paperDefs = print_paper_definitions();
-        const bool traceCatalog = JTRACE_ENABLED(1);
-        filmDefs.clear();
-        paperDefs.clear();
-
-        fs::path base = fs::path(gDataDir);
-        fs::path profilesDir = base / "profiles";
-        fs::path paperDir = base / "paper";
-
-        std::unordered_map<std::string, Profiles::ProfileInfoSummary> infoByKey;
-        std::vector<std::string> missingFilmKeys;
-        std::vector<std::string> missingPaperKeys;
-        std::error_code ec;
-        if (!gDataDir.empty() && fs::exists(profilesDir, ec) && fs::is_directory(profilesDir, ec)) {
-            for (fs::directory_iterator it(profilesDir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-                if (!it->is_regular_file(ec)) {
-                    continue;
-                }
-                if (it->path().extension() != ".json") {
-                    continue;
-                }
-                Profiles::ProfileInfoSummary info;
-                const std::string jsonPath = it->path().string();
-                if (Profiles::load_profile_info(jsonPath, info)) {
-                    infoByKey[info.stock] = std::move(info);
-                }
-            }
-        }
-        filmDefs.reserve(infoByKey.size());
-        paperDefs.reserve(infoByKey.size());
-
-        FilterCatalog filters = load_filter_catalog(profilesDir / "enlarger_neutral_ymc_filters.json");
-        if (traceCatalog) {
-            missingFilmKeys.reserve(filters.filmKeys.size());
-            missingPaperKeys.reserve(filters.paperKeys.size());
-        }
-
-        auto pushFilm = [&](const std::string& key) {
-            auto it = infoByKey.find(key);
-            if (it == infoByKey.end()) {
-                if (traceCatalog) {
-                    missingFilmKeys.push_back(key + " (profile missing)");
-                }
-                return;
-            }
-            if (!equals_ignore_case(it->second.type, "negative")) {
-                if (traceCatalog) {
-                    std::string reason = key + " (type='" + it->second.type + "')";
-                    missingFilmKeys.push_back(std::move(reason));
-                }
-                return;
-            }
-            std::string label = it->second.name.empty() ? it->second.stock : it->second.name;
-            filmDefs.emplace_back(FilmStockDefinition{ std::move(label), it->second.stock });
-            };
-
-        for (const std::string& key : filters.filmKeys) {
-            pushFilm(key);
-        }
-
-        if (filmDefs.empty()) {
-            for (const auto& pair : infoByKey) {
-                if (!equals_ignore_case(pair.second.type, "negative")) {
-                    continue;
-                }
-                std::string label = pair.second.name.empty() ? pair.second.stock : pair.second.name;
-                filmDefs.emplace_back(FilmStockDefinition{ std::move(label), pair.second.stock });
-            }
-            std::sort(filmDefs.begin(), filmDefs.end(),
-                [](const FilmStockDefinition& a, const FilmStockDefinition& b) {
-                    return a.optionLabel < b.optionLabel;
-                });
-        }
-
-        if (filmDefs.empty()) {
-            if (traceCatalog) {
-                if (!missingFilmKeys.empty()) {
-                    std::ostringstream oss;
-                    oss << "catalog fallback: film profiles unavailable for keys: ";
-                    const size_t missingCount = missingFilmKeys.size();
-                    const std::string* missingData = missingFilmKeys.data();
-                    for (size_t i = 0; i < missingCount; ++i, ++missingData) {
-                        if (i > 0) {
-                            oss << ", ";
-                        }
-                        oss << *missingData;
-                    }
-                    JTRACE("CATALOG", oss.str());
-                }
-                else {
-                    JTRACE("CATALOG", "catalog fallback: no film profiles discovered; using defaults");
-                }
-            }
-            filmDefs.assign(kFallbackFilmStocks.begin(), kFallbackFilmStocks.end());
-        }
-
-        struct PrintFolderInfo {
-            std::string name;
-            std::string sanitized;
-            bool used = false;
-        };
-
-        std::vector<PrintFolderInfo> folders;
-        if (!gDataDir.empty() && fs::exists(paperDir, ec) && fs::is_directory(paperDir, ec)) {
-            for (fs::directory_iterator it(paperDir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-                if (it->is_directory(ec)) {
-                    std::string folder = it->path().filename().string();
-                    if (!folder.empty()) {
-                        folders.emplace_back(PrintFolderInfo{ folder, sanitize_identifier(folder), false });
-                    }
-                }
-            }
-        }
-
-        auto claimFolder = [&](const Profiles::ProfileInfoSummary& info, const std::string& key) -> std::string {
-            std::string keySan = sanitize_identifier(key);
-            std::string nameSan = sanitize_identifier(info.name);
-            size_t bestScore = 0;
-            int bestIndex = -1;
-            PrintFolderInfo* folderData = folders.data();
-            const size_t folderCount = folders.size();
-            PrintFolderInfo* folderIt = folderData;
-            for (size_t i = 0; i < folderCount; ++i, ++folderIt) {
-                if (folderIt->used) {
-                    continue;
-                }
-                const std::string& folderSan = folderIt->sanitized;
-                if (folderSan.empty()) {
-                    continue;
-                }
-                size_t score = 0;
-                bool match = false;
-                if (!keySan.empty() && keySan.find(folderSan) != std::string::npos) {
-                    match = true;
-                    score = folderSan.size() * 4;
-                }
-                if (!match && !nameSan.empty() && nameSan.find(folderSan) != std::string::npos) {
-                    match = true;
-                    score = folderSan.size() * 3;
-                }
-                if (!match && !keySan.empty() && folderSan.find(keySan) != std::string::npos) {
-                    match = true;
-                    score = keySan.size() * 2;
-                }
-                if (!match && !nameSan.empty() && folderSan.find(nameSan) != std::string::npos) {
-                    match = true;
-                    score = nameSan.size();
-                }
-                if (match && score > bestScore) {
-                    bestScore = score;
-                    bestIndex = static_cast<int>(i);
-                }
-            }
-            if (bestIndex >= 0) {
-                folderData[bestIndex].used = true;
-                return folderData[bestIndex].name;
-            }
-            return {};
-            };
-
-        auto pushPaper = [&](const std::string& key) {
-            auto it = infoByKey.find(key);
-            if (it == infoByKey.end()) {
-                if (traceCatalog) {
-                    missingPaperKeys.push_back(key + " (profile missing)");
-                }
-                return;
-            }
-            const auto& info = it->second;
-            if (!equals_ignore_case(info.type, "paper")) {
-                if (traceCatalog) {
-                    std::string reason = key + " (type='" + info.type + "')";
-                    missingPaperKeys.push_back(std::move(reason));
-                }
-                return;
-            }
-            std::string folder = claimFolder(info, key);
-            std::string label = info.name.empty() ? key : info.name;
-            paperDefs.emplace_back(PrintPaperDefinition{ std::move(label), std::move(folder), key });
-            };
-
-        for (const std::string& key : filters.paperKeys) {
-            pushPaper(key);
-        }
-
-        if (paperDefs.empty()) {
-            for (auto& folderInfo : folders) {
-                if (folderInfo.used || folderInfo.sanitized.empty()) {
-                    continue;
-                }
-                std::string bestKey;
-                Profiles::ProfileInfoSummary bestInfo;
-                size_t bestScore = 0;
-                for (const auto& pair : infoByKey) {
-                    if (!equals_ignore_case(pair.second.type, "paper")) {
-                        continue;
-                    }
-                    std::string keySan = sanitize_identifier(pair.first);
-                    std::string nameSan = sanitize_identifier(pair.second.name);
-                    size_t score = 0;
-                    bool match = false;
-                    if (!keySan.empty() && keySan.find(folderInfo.sanitized) != std::string::npos) {
-                        match = true;
-                        score = folderInfo.sanitized.size() * 4;
-                    }
-                    if (!match && !nameSan.empty() && nameSan.find(folderInfo.sanitized) != std::string::npos) {
-                        match = true;
-                        score = folderInfo.sanitized.size() * 3;
-                    }
-                    if (!match && !keySan.empty() && folderInfo.sanitized.find(keySan) != std::string::npos) {
-                        match = true;
-                        score = keySan.size() * 2;
-                    }
-                    if (!match && !nameSan.empty() && folderInfo.sanitized.find(nameSan) != std::string::npos) {
-                        match = true;
-                        score = nameSan.size();
-                    }
-                    if (match && score > bestScore) {
-                        bestScore = score;
-                        bestKey = pair.first;
-                        bestInfo = pair.second;
-                    }
-                }
-                if (!bestKey.empty()) {
-                    folderInfo.used = true;
-                    std::string label = folderInfo.name;
-                    paperDefs.emplace_back(PrintPaperDefinition{ std::move(label), folderInfo.name, bestKey });
-                }
-            }
-        }
-
-        if (paperDefs.empty()) {
-            if (traceCatalog) {
-                if (!missingPaperKeys.empty()) {
-                    std::ostringstream oss;
-                    oss << "catalog fallback: print profiles unavailable for keys: ";
-                    const size_t missingCount = missingPaperKeys.size();
-                    const std::string* missingData = missingPaperKeys.data();
-                    for (size_t i = 0; i < missingCount; ++i, ++missingData) {
-                        if (i > 0) {
-                            oss << ", ";
-                        }
-                        oss << *missingData;
-                    }
-                    JTRACE("CATALOG", oss.str());
-                }
-                else {
-                    JTRACE("CATALOG", "catalog fallback: no print profiles discovered; using defaults");
-                }
-            }
-            paperDefs.assign(kFallbackPrintPapers.begin(), kFallbackPrintPapers.end());
-        }
-    }
-
-    void ensure_profile_catalogs() {
-        std::call_once(gProfileCatalogOnce, populate_profile_catalogs);
-        auto& films = film_stock_definitions();
-        auto& papers = print_paper_definitions();
-        if (films.empty()) {
-            films.assign(kFallbackFilmStocks.begin(), kFallbackFilmStocks.end());
-        }
-        if (papers.empty()) {
-            papers.assign(kFallbackPrintPapers.begin(), kFallbackPrintPapers.end());
-        }
-    }
-
-    static const FilmStockDefinition& film_stock_for_index(int filmIndex) {
-        ensure_profile_catalogs();
-        auto& films = film_stock_definitions();
-        if (films.empty()) {
-            static const FilmStockDefinition dummy{ "", "" };
-            return dummy;
-        }
-        if (filmIndex < 0 || filmIndex >= static_cast<int>(films.size())) {
-            filmIndex = 0;
-        }
-        return films[filmIndex];
-    }
-
-    static const PrintPaperDefinition& print_paper_for_index(int index) {
-        ensure_profile_catalogs();
-        auto& papers = print_paper_definitions();
-        if (papers.empty()) {
-            static const PrintPaperDefinition dummy{ "", "", "" };
-            return dummy;
-        }
-        if (index < 0 || index >= static_cast<int>(papers.size())) {
-            index = 0;
-        }
-        return papers[index];
+    const JuicerAssets::PrintPaperAsset& print_paper_for_index(int index) {
+        return JuicerProcess::root().assets().print_paper_for_index(index);
     }
 
     inline bool approx_equal(double a, double b, double eps = 1e-6) {
@@ -1868,58 +1457,45 @@ uint64_t hash_params_dir(const ParamSnapshot& p) {
 }
 
 std::string print_dir_for_index(int index) {
-    const PrintPaperDefinition& paper = print_paper_for_index(index);
-    if (paper.folderName.empty() || gDataDir.empty()) {
-        return {};
-    }
+    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
+    return paper.paperDir;
+}
 
-    std::filesystem::path base = std::filesystem::path(gDataDir);
-    std::filesystem::path dir = base / "paper" / paper.folderName;
-    dir.make_preferred();
-    std::string result = dir.string();
-#ifdef _WIN32
-    const char separator = '\\';
-#else
-    const char separator = '/';
-#endif
-    if (!result.empty() && result.back() != separator) {
-        result.push_back(separator);
-    }
-    return result;
+std::string print_profile_json_path_for_index(int index) {
+    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
+    return paper.profileJsonPath;
 }
 
 const char* print_paper_json_key_for_index(int index) {
-    const PrintPaperDefinition& paper = print_paper_for_index(index);
+    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
     return paper.jsonKey.empty() ? nullptr : paper.jsonKey.c_str();
 }
 
 const char* negative_json_key_for_stock_index(int filmIndex) {
-    const FilmStockDefinition& stock = film_stock_for_index(filmIndex);
+    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(filmIndex);
     return stock.jsonKey.empty() ? nullptr : stock.jsonKey.c_str();
 }
 
 int film_stock_option_count() {
-    ensure_profile_catalogs();
-    return static_cast<int>(film_stock_definitions().size());
+    return JuicerProcess::root().assets().film_stock_count();
 }
 
 const char* film_stock_option_label(int index) {
-    const FilmStockDefinition& stock = film_stock_for_index(index);
+    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(index);
     return stock.optionLabel.empty() ? "" : stock.optionLabel.c_str();
 }
 
 int print_paper_option_count() {
-    ensure_profile_catalogs();
-    return static_cast<int>(print_paper_definitions().size());
+    return JuicerProcess::root().assets().print_paper_count();
 }
 
 const char* print_paper_option_label(int index) {
-    const PrintPaperDefinition& paper = print_paper_for_index(index);
+    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
     return paper.optionLabel.empty() ? "" : paper.optionLabel.c_str();
 }
 
 bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
-    const FilmStockDefinition& stock = film_stock_for_index(filmIndex);
+    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(filmIndex);
     const bool stockTraceEnabled = JTRACE_ENABLED(1);
     JTRACE_SCOPE("STOCK", "load_film_stock_into_base");
     auto trace_stock_key = [&](const char* prefix) {
@@ -1974,9 +1550,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         JTRACE("STOCK", "film stock missing JSON key; cannot load profile");
         return false;
     }
-    const std::string jsonPath = data_dir_string("profiles", stock.jsonKey + ".json");
     Profiles::AgxFilmProfile profile;
-    if (!Profiles::load_agx_film_profile_json(jsonPath, profile)) {
+    if (!Profiles::load_agx_film_profile_json(stock.profileJsonPath, profile)) {
         trace_stock_key("failed to load agx profile json: ");
         return false;
     }

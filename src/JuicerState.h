@@ -507,6 +507,7 @@ struct InstanceState {
 };
 
 std::string print_dir_for_index(int index);
+std::string print_profile_json_path_for_index(int index);
 const char* print_paper_json_key_for_index(int index);
 const char* negative_json_key_for_stock_index(int filmIndex);
 int film_stock_option_count();

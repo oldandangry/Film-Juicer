@@ -68,15 +68,6 @@ namespace {
         }
     }
 
-    std::string profile_json_path_for_key_or_empty(const char* jsonKey) {
-        if (!jsonKey) {
-            return {};
-        }
-        std::string profileName(jsonKey);
-        profileName += ".json";
-        return data_dir_string("profiles", profileName);
-    }
-
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
     static int illuminant_choice_index_from_string(const std::string& value);
 
@@ -363,7 +354,7 @@ namespace {
         PrintProfileLoadInputs inputs{};
         inputs.labels = resolve_profile_key_labels(snapshot);
         inputs.printDir = print_dir_for_index(snapshot.printPaperIndex);
-        inputs.printProfileJson = profile_json_path_for_key_or_empty(inputs.labels.paperKey);
+        inputs.printProfileJson = print_profile_json_path_for_index(snapshot.printPaperIndex);
         return inputs;
     }
 
