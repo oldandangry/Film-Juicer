@@ -55,6 +55,9 @@
     <ClCompile Include="src\PipelineStages.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\ProcessRoot.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -159,6 +162,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ProfileJSONLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProcessRoot.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Scanner.h">

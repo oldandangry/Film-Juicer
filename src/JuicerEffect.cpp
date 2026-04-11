@@ -22,15 +22,12 @@
 #include "OutputColor.h"
 #include "Print.h"
 #include "ParamNames.h"
+#include "ProcessRoot.h"
 #include "Scanner.h"
 #include "SpectralData.h"
 #include "Logging.h"
 #include "Hash.h"
 #include "mainProcessing.h"
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
-#endif
 
 enum class NeutralFilterThreadClass : unsigned char {
     Control = 0,
@@ -48,8 +45,6 @@ bool load_enlarger_neutral_filters(
 );
 
 namespace {
-    static std::once_flag gSpectralGlobalsOnce;
-
     enum class MeteringMethod : int {
         CenterWeighted = 0,
         Median = 1
@@ -3317,7 +3312,7 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
     }
     else {
-        // Fallback to legacy geometry if pixelSizeUm was not available
+        // Fallback to cached geometry if pixelSizeUm was not available
         const double filmLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
 
         const double widthPx = static_cast<double>(fullWidth);
@@ -3376,7 +3371,7 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
 JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     : OFX::ImageEffect(handle)
 {
-    // Cache clips (wrappers) for Step 2; safe even if render still uses legacy path.
+    // Cache clips (wrappers) for Step 2; safe even if render still uses the existing path.
     try {
         _src = fetchClip(kOfxImageEffectSimpleSourceClipName); // "Source"
         _dst = fetchClip(kOfxImageEffectOutputClipName);       // "Output"
@@ -3567,40 +3562,7 @@ JuicerEffect::~JuicerEffect() {
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (_state) {
-        const bool traceInfo = JTRACE_ENABLED(1);
-        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
-        {
-            std::lock_guard<std::mutex> lock(_state->cudaMutex);
-            keys.reserve(_state->cudaByDevice.size());
-            for (const auto& entry : _state->cudaByDevice) {
-                keys.emplace_back(entry.first);
-            }
-        }
-        const JuicerCuda::ResourceManager::DeviceContextKey* keyData = keys.data();
-        const size_t keyCount = keys.size();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            const auto& key = *keyData;
-            std::string retireError;
-            const bool retireOk = JuicerCuda::ResourceManager::command_retire_context_idle(key, retireError);
-            if (!retireOk || !retireError.empty()) {
-                if (traceInfo) {
-                    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-                    std::string msg;
-                    msg.reserve(192);
-                    msg = "teardown_retire_idle_failed device_id=";
-                    msg += std::to_string(key.deviceId);
-                    msg += " context=";
-                    msg += std::to_string(contextBits);
-                    msg += " accepted=";
-                    msg += std::to_string(bool_to_i32(retireOk));
-                    if (!retireError.empty()) {
-                        msg += " error=";
-                        msg += retireError;
-                    }
-                    JTRACE("MSLCY", msg);
-                }
-            }
-        }
+        JuicerProcess::root().retire_idle_contexts(*_state);
     }
 #endif
     _state.reset();
@@ -4312,7 +4274,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
 
 void JuicerEffect::bootstrap_after_attach() {
     // Initialize Spectral globals exactly once per process.
-    std::call_once(gSpectralGlobalsOnce, init_spectral_globals_once);
+    JuicerProcess::root().ensure_bootstrap(init_spectral_globals_once);
     JTRACE("BUILD", "spectral globals ensured once; proceeding to profile and film stock load");
     // Suppress re-entrant param events during bootstrap
     _state->inBootstrap = true;

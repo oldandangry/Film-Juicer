@@ -218,6 +218,7 @@
     <ClCompile Include="src\NeutralFilters.cpp" />
     <ClCompile Include="src\Print.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
+    <ClCompile Include="src\ProcessRoot.cpp" />
     <ClCompile Include="src\ScannerOptics.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -249,6 +250,7 @@
     <ClInclude Include="src\PipelineTypes.h" />
     <ClInclude Include="src\Print.h" />
     <ClInclude Include="src\ProfileJSONLoader.h" />
+    <ClInclude Include="src\ProcessRoot.h" />
     <ClInclude Include="src\Scanner.h" />
     <ClInclude Include="src\SpectralData.h" />
     <ClInclude Include="src\SpectralProcessing.h" />
