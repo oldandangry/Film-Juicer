@@ -163,6 +163,19 @@ namespace JuicerAssets {
             return asset;
         }
 
+        IlluminantFilterAssetSet make_illuminant_filter_assets() {
+            IlluminantFilterAssetSet asset;
+            asset.d65Path = data_path_string({"illuminants", "D65.csv"});
+            asset.d55Path = data_path_string({"illuminants", "D55.csv"});
+            asset.d50Path = data_path_string({"illuminants", "D50.csv"});
+            asset.tungstenPath = data_path_string({"illuminants", "T.csv"});
+            asset.kinoton75PPath = data_path_string({"illuminants", "K75P.csv"});
+            asset.kg3Path = data_path_string({"filters", "heat_absorbing", "schott", "KG3.csv"});
+            asset.lensTransmissionPath = data_path_string({"filters", "lens_transmission", "canon", "canon_24_f28_is.csv"});
+            asset.version = Library::kProcessAssetVersion;
+            return asset;
+        }
+
         void append_default_film_stocks(std::vector<FilmStockAsset>& out) {
             out.clear();
             out.reserve(kDefaultFilmStocks.size());
@@ -332,6 +345,12 @@ namespace JuicerAssets {
     void Library::ensure_dichroic_filter_sets() {
         std::call_once(_dichroicFilterOnce, [this]() {
             load_dichroic_filter_sets();
+        });
+    }
+
+    void Library::ensure_illuminant_filter_assets() {
+        std::call_once(_illuminantFilterOnce, [this]() {
+            load_illuminant_filter_assets();
         });
     }
 
@@ -548,6 +567,10 @@ namespace JuicerAssets {
         _dichroicFilterSets[2] = make_dichroic_filter_set("edmund_optics");
     }
 
+    void Library::load_illuminant_filter_assets() {
+        _illuminantFilterAssets = make_illuminant_filter_assets();
+    }
+
     const FilmStockAsset& Library::film_stock_for_index(int index) {
         ensure_catalogs();
         static const FilmStockAsset empty{};
@@ -591,6 +614,11 @@ namespace JuicerAssets {
             dichroicSetChoice = 0;
         }
         return _dichroicFilterSets[static_cast<size_t>(dichroicSetChoice)];
+    }
+
+    const IlluminantFilterAssetSet& Library::illuminant_filter_assets() {
+        ensure_illuminant_filter_assets();
+        return _illuminantFilterAssets;
     }
 
     int Library::film_stock_count() {

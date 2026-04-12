@@ -74,7 +74,6 @@ void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) co
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <filesystem>
 #include <cfloat>
 #include <cmath>
 #include <mutex>
@@ -82,7 +81,6 @@ void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) co
 #include <limits>
 #include <memory>
 #include <optional>
-#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -488,8 +486,6 @@ namespace RebuildWorkingState {
 } // namespace RebuildWorkingState
 
 namespace {
-    namespace fs = std::filesystem;
-
     void trace_working_state_core_share(
         const WorkingStateSharing::AcquireCoreSharedResult& result,
         std::uint64_t buildCounter,
@@ -1068,84 +1064,67 @@ namespace {
         return curve;
     }
 
-    static std::string make_data_subpath(
-        const std::string& baseDir,
-        std::initializer_list<std::string_view> segments)
-    {
-        fs::path path(baseDir);
-        for (std::string_view seg : segments) {
-            if (!seg.empty()) {
-                path /= seg;
-            }
-        }
-        path = path.lexically_normal();
-        path.make_preferred();
-        return path.string();
-    }
-
-    static Spectral::Curve build_illuminant_from_string(
-        const std::string& dataDir,
-        const std::string& source)
-    {
+    static Spectral::Curve build_illuminant_from_string(const std::string& source) {
         const std::string normalized = IlluminantKeys::normalize(source);
+        const JuicerAssets::IlluminantFilterAssetSet& sourceAssets =
+            JuicerProcess::root().assets().illuminant_filter_assets();
 
         auto build_or_log = [&](auto builder, const char* label) -> Spectral::Curve {
             try {
                 return builder();
-            }
-            catch (const std::exception& e) {
+            } catch (const std::exception& e) {
                 std::ostringstream oss;
                 oss << "failed to load illuminant '" << source << "' (" << label
                     << "): " << e.what();
                 JTRACE("ILLUM", oss.str());
-            }
-            catch (...) {
+            } catch (...) {
                 std::ostringstream oss;
                 oss << "failed to load illuminant '" << source << "' (" << label
                     << "): unknown error";
                 JTRACE("ILLUM", oss.str());
             }
             return Spectral::Curve{};
-            };
+        };
 
-        if (IlluminantKeys::matches_any(normalized, { "D65" })) {
+        if (IlluminantKeys::matches_any(normalized, {"D65"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D65_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D65.csv" }));
-                }, "D65");
+                return Spectral::build_curve_D65_pinned(sourceAssets.d65Path);
+            },
+                                "D65");
         }
-        if (IlluminantKeys::matches_any(normalized, { "D55" })) {
+        if (IlluminantKeys::matches_any(normalized, {"D55"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D55_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D55.csv" }));
-                }, "D55");
+                return Spectral::build_curve_D55_pinned(sourceAssets.d55Path);
+            },
+                                "D55");
         }
-        if (IlluminantKeys::matches_any(normalized, { "D50" })) {
+        if (IlluminantKeys::matches_any(normalized, {"D50"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D50_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D50.csv" }));
-                }, "D50");
+                return Spectral::build_curve_D50_pinned(sourceAssets.d50Path);
+            },
+                                "D50");
         }
-        if (IlluminantKeys::matches_any(normalized, { "TH-KG3-L", "THKG3L", "TH-KG3L" })) {
+        if (IlluminantKeys::matches_any(normalized, {"TH-KG3-L", "THKG3L", "TH-KG3L"})) {
             return build_or_log([&]() {
                 return Spectral::build_curve_TH_KG3_L_pinned(
-                    make_data_subpath(dataDir, { "filters", "heat_absorbing", "schott", "KG3.csv" }),
-                    make_data_subpath(dataDir, { "filters", "lens_transmission", "canon", "canon_24_f28_is.csv" }));
-                }, "TH-KG3-L");
+                    sourceAssets.kg3Path,
+                    sourceAssets.lensTransmissionPath);
+            },
+                                "TH-KG3-L");
         }
-        if (IlluminantKeys::matches_any(normalized, { "T", "INCANDESCENT" })) {
+        if (IlluminantKeys::matches_any(normalized, {"T", "INCANDESCENT"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_T_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "T.csv" }));
-                }, "T");
+                return Spectral::build_curve_T_pinned(sourceAssets.tungstenPath);
+            },
+                                "T");
         }
-        if (IlluminantKeys::matches_any(normalized, { "K75P", "KINOTON75P" })) {
+        if (IlluminantKeys::matches_any(normalized, {"K75P", "KINOTON75P"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_K75P_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "K75P.csv" }));
-                }, "K75P");
+                return Spectral::build_curve_K75P_pinned(sourceAssets.kinoton75PPath);
+            },
+                                "K75P");
         }
-        if (IlluminantKeys::matches_any(normalized, { "EQUAL", "EQUALENERGY", "EQUAL-ENERGY" })) {
+        if (IlluminantKeys::matches_any(normalized, {"EQUAL", "EQUALENERGY", "EQUAL-ENERGY"})) {
             return Spectral::build_curve_equal_energy_pinned();
         }
 
@@ -1192,11 +1171,9 @@ namespace {
     }
 
     static bool build_scanner_illuminant(
-        const std::string& dataDir,
         const std::string& source,
         const char* label,
-        Scanner::ScannerIlluminant& out)
-    {
+        Scanner::ScannerIlluminant& out) {
         out = Scanner::ScannerIlluminant{};
         if (source.empty()) {
             std::ostringstream oss;
@@ -1205,7 +1182,7 @@ namespace {
             return false;
         }
 
-        Spectral::Curve curve = build_illuminant_from_string(dataDir, source);
+        Spectral::Curve curve = build_illuminant_from_string(source);
         if (!curve_matches_reference_axis(curve)) {
             std::ostringstream oss;
             oss << "FATAL: viewing illuminant '" << source
@@ -1989,9 +1966,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("MSWSC", "event=core_share_fastpath_fallback reason=scanner_runtime_rebuild_failed");
     }
 
-    Print::build_illuminant_from_choice(P.enlIll, printRT, dataDir, /*forEnlarger*/true);
+    Print::build_illuminant_from_choice(P.enlIll, printRT, dataDir, /*forEnlarger*/ true);
     Scanner::ScannerIlluminant printScannerIlluminant;
-    if (!build_scanner_illuminant(dataDir, printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
+    if (!build_scanner_illuminant(printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
         return;
     }
     printRT.illumView = printScannerIlluminant.curve;
@@ -2003,7 +1980,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     Scanner::ScannerIlluminant negativeScannerIlluminant;
-    if (!build_scanner_illuminant(dataDir, base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
+    if (!build_scanner_illuminant(base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
         return;
     }
     Scanner::ScannerDensityRange negativeDensityRange;
@@ -2028,8 +2005,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     const bool hasBaseline = base.hasBaseline;
     const float dyeDensityMinScale =
         (is_finite(base.dyeDensityMinFactor) && base.dyeDensityMinFactor >= 0.0f)
-        ? base.dyeDensityMinFactor
-        : 1.0f;
+            ? base.dyeDensityMinFactor
+            : 1.0f;
     if (hasBaseline && !approx_equal(dyeDensityMinScale, 1.0f)) {
         scale_finite_curve_samples(baseMin, dyeDensityMinScale, true);
     }
@@ -2049,16 +2026,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
         Spectral::Curve profileRefIll;
         if (!snapshot.illuminantOverride.reference && !snapshot.filmReferenceIlluminant.empty()) {
-            profileRefIll = build_illuminant_from_string(dataDir, snapshot.filmReferenceIlluminant);
+            profileRefIll = build_illuminant_from_string(snapshot.filmReferenceIlluminant);
         }
 
         if (!profileRefIll.linear.empty() &&
-            static_cast<int>(profileRefIll.linear.size()) == Spectral::gShape.K)
-        {
+            static_cast<int>(profileRefIll.linear.size()) == Spectral::gShape.K) {
             tmpRT.illumView = profileRefIll;
-        }
-        else {
-            Print::build_illuminant_from_choice(P.refIll, tmpRT, dataDir, /*forEnlarger*/false);
+        } else {
+            Print::build_illuminant_from_choice(P.refIll, tmpRT, dataDir, /*forEnlarger*/ false);
         }
 
         illumRef = tmpRT.illumView;
