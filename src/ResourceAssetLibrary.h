@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace JuicerAssets {
@@ -28,6 +30,17 @@ namespace JuicerAssets {
         std::string selectedPath;
         std::string defaultPath;
         std::uint64_t version = 0;
+    };
+
+    enum class NeutralFilterLookupThread : unsigned char {
+        Control = 0,
+        RenderWorker = 1
+    };
+
+    struct NeutralFilterLookupResult {
+        bool found = false;
+        std::tuple<float, float, float> ymc{};
+        std::string selectedDbVersionHash;
     };
 
     struct StaticNoiseAssetSet {
@@ -65,9 +78,18 @@ namespace JuicerAssets {
     public:
         static constexpr std::uint64_t kProcessAssetVersion = 1ull;
 
+        Library();
+        ~Library();
+
         const FilmStockAsset& film_stock_for_index(int index);
         const PrintPaperAsset& print_paper_for_index(int index);
         const NeutralFilterDatabaseAsset& neutral_filter_database_for_dichroic_set(int dichroicSetChoice);
+        NeutralFilterLookupResult lookup_neutral_filters(
+            const std::string& jsonPath,
+            const std::string& paperKey,
+            const std::string& illuminantKey,
+            const std::string& negativeKey,
+            NeutralFilterLookupThread threadClass);
         const StaticNoiseAssetSet& static_noise_assets();
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const IlluminantFilterAssetSet& illuminant_filter_assets();
@@ -88,6 +110,8 @@ namespace JuicerAssets {
         void load_dichroic_filter_sets();
         void load_illuminant_filter_assets();
 
+        struct NeutralFilterCacheState;
+
         std::once_flag _catalogOnce;
         std::once_flag _neutralFilterOnce;
         std::once_flag _staticNoiseOnce;
@@ -99,6 +123,7 @@ namespace JuicerAssets {
         StaticNoiseAssetSet _staticNoiseAssets;
         std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
         IlluminantFilterAssetSet _illuminantFilterAssets;
+        std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
     };
 
 } // namespace JuicerAssets
