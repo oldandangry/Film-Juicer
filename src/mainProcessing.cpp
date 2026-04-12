@@ -2874,10 +2874,10 @@ void JuicerProcessor::processImagesCUDA() {
 
         ~SubmissionTxnScope() {
             if (transaction && !committed) {
-                JuicerCuda::ResourceManager::rollback_submission(*transaction, "scope_exit");
+                JuicerProcess::root().rollback_submission(*transaction, "scope_exit");
             }
         }
-    } submissionTxnScope{ &submissionTxn, false };
+    } submissionTxnScope{&submissionTxn, false};
     {
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
         snapshot.instanceToken.value = instance_token_or_session_seed(_instanceState);
@@ -2943,10 +2943,10 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         std::string submissionError;
-        if (!JuicerCuda::ResourceManager::begin_submission(submissionTxn, snapshot, submissionError)) {
+        if (!JuicerProcess::root().begin_submission(submissionTxn, snapshot, submissionError)) {
             throw_submission_fatal("begin_submission", "begin_submission failed", submissionError);
         }
-        if (!JuicerCuda::ResourceManager::acquire_plan(submissionTxn, submissionError)) {
+        if (!JuicerProcess::root().acquire_submission_plan(submissionTxn, submissionError)) {
             throw_submission_fatal("acquire_plan", "acquire_plan failed", submissionError);
         }
     }
@@ -3938,7 +3938,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto commit_submission_or_throw = [&]() {
         std::string commitError;
-        if (!JuicerCuda::ResourceManager::commit_submission(submissionTxn, _pCudaStream, commitError)) {
+        if (!JuicerProcess::root().commit_submission(submissionTxn, _pCudaStream, commitError)) {
             throw_submission_fatal("commit_submission", "commit_submission failed", commitError);
         }
         submissionTxnScope.committed = true;

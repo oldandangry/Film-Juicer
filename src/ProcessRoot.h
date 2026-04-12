@@ -18,7 +18,11 @@ namespace WorkingStateSharing {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace JuicerCuda {
     struct Resources;
-}
+    namespace ResourceManager {
+        struct SubmissionSnapshot;
+        struct SubmissionTransaction;
+    } // namespace ResourceManager
+} // namespace JuicerCuda
 #endif
 
 namespace JuicerProcess {
@@ -60,6 +64,20 @@ namespace JuicerProcess {
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         void destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept;
+        bool begin_submission(
+            JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            std::string& outError);
+        bool acquire_submission_plan(
+            JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+            std::string& outError);
+        bool commit_submission(
+            JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+            void* cudaStreamOpaque,
+            std::string& outError);
+        void rollback_submission(
+            JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+            const char* reason) noexcept;
 #endif
         JuicerAssets::Library& assets() noexcept;
         WorkingStateSharing::AcquireCoreSharedResult acquire_working_state_core(
@@ -71,6 +89,7 @@ namespace JuicerProcess {
 
         void retire_known_contexts() noexcept;
         void release_working_state_cores() noexcept;
+        void finish_shutdown() noexcept;
         void finish_frame_preparation() noexcept;
         void resume_frame_preparation() noexcept;
         void stop_frame_preparation() noexcept;
@@ -81,8 +100,8 @@ namespace JuicerProcess {
         std::mutex _framePreparationMutex;
         std::condition_variable _framePreparationCv;
         std::uint32_t _activeFramePreparations = 0;
+        std::uint32_t _activeShutdowns = 0;
         bool _acceptFramePreparation = true;
-        bool _shutdownActive = false;
     };
 
     Root& root() noexcept;

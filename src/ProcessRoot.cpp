@@ -136,12 +136,7 @@ namespace JuicerProcess {
         retire_known_contexts();
         release_working_state_cores();
         _assets.release_cached_payloads();
-        try {
-            std::lock_guard<std::mutex> lock(_framePreparationMutex);
-            _shutdownActive = false;
-            _framePreparationCv.notify_all();
-        } catch (...) {
-        }
+        finish_shutdown();
     }
 
     JuicerAssets::Library& Root::assets() noexcept {
@@ -192,6 +187,32 @@ namespace JuicerProcess {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     void Root::destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept {
         JuicerCuda::destroy(resources);
+    }
+
+    bool Root::begin_submission(
+        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        std::string& outError) {
+        return JuicerCuda::ResourceManager::begin_submission(transaction, snapshot, outError);
+    }
+
+    bool Root::acquire_submission_plan(
+        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+        std::string& outError) {
+        return JuicerCuda::ResourceManager::acquire_plan(transaction, outError);
+    }
+
+    bool Root::commit_submission(
+        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        return JuicerCuda::ResourceManager::commit_submission(transaction, cudaStreamOpaque, outError);
+    }
+
+    void Root::rollback_submission(
+        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+        const char* reason) noexcept {
+        JuicerCuda::ResourceManager::rollback_submission(transaction, reason);
     }
 #endif
 
@@ -249,6 +270,17 @@ namespace JuicerProcess {
 #endif
     }
 
+    void Root::finish_shutdown() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            if (_activeShutdowns > 0) {
+                --_activeShutdowns;
+            }
+            _framePreparationCv.notify_all();
+        } catch (...) {
+        }
+    }
+
     void Root::finish_frame_preparation() noexcept {
         try {
             std::lock_guard<std::mutex> lock(_framePreparationMutex);
@@ -265,7 +297,7 @@ namespace JuicerProcess {
     void Root::resume_frame_preparation() noexcept {
         try {
             std::lock_guard<std::mutex> lock(_framePreparationMutex);
-            if (!_shutdownActive) {
+            if (_activeShutdowns == 0) {
                 _acceptFramePreparation = true;
             }
         } catch (...) {
@@ -276,7 +308,7 @@ namespace JuicerProcess {
         try {
             std::lock_guard<std::mutex> lock(_framePreparationMutex);
             _acceptFramePreparation = false;
-            _shutdownActive = true;
+            ++_activeShutdowns;
             if (_activeFramePreparations == 0) {
                 _framePreparationCv.notify_all();
             }
