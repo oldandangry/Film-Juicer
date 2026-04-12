@@ -3492,6 +3492,11 @@ JuicerEffect::~JuicerEffect() {
 }
 
 void JuicerEffect::render(const OFX::RenderArguments& args) {
+    auto framePreparation = JuicerProcess::root().begin_frame_preparation();
+    if (!framePreparation.active()) {
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
     // Fetch images via wrappers
     std::unique_ptr<OFX::Image> srcImg(_src ? _src->fetchImage(args.time) : nullptr);
     std::unique_ptr<OFX::Image> dstImg(_dst ? _dst->fetchImage(args.time) : nullptr);

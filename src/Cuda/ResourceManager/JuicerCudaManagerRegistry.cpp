@@ -1239,6 +1239,16 @@ bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleS
     return true;
 }
 
+void registry_snapshot_context_keys(std::vector<DeviceContextKey>& outKeys) {
+    outKeys.clear();
+    RegistryState& state = registry_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    outKeys.reserve(state.byDeviceContext.size());
+    for (const auto& entry : state.byDeviceContext) {
+        outKeys.push_back(entry.first);
+    }
+}
+
 bool registry_validate_lifecycle_stage(
     const DeviceContextKey& key,
     bool allowNonActiveRelease,

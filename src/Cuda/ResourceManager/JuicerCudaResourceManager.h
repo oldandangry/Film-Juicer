@@ -143,6 +143,8 @@ bool command_retire_context_idle(
     const DeviceContextKey& key,
     std::string& outError);
 
+bool command_retire_all_contexts_idle(std::string& outError);
+
 bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,

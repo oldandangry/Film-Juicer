@@ -84,6 +84,38 @@ namespace JuicerProcess {
 
     } // namespace
 
+    Root::FramePreparationToken::FramePreparationToken(Root* root) noexcept
+        : _root(root) {
+    }
+
+    Root::FramePreparationToken::~FramePreparationToken() {
+        reset();
+    }
+
+    Root::FramePreparationToken::FramePreparationToken(FramePreparationToken&& other) noexcept
+        : _root(std::exchange(other._root, nullptr)) {
+    }
+
+    Root::FramePreparationToken& Root::FramePreparationToken::operator=(FramePreparationToken&& other) noexcept {
+        if (this != &other) {
+            reset();
+            _root = std::exchange(other._root, nullptr);
+        }
+        return *this;
+    }
+
+    bool Root::FramePreparationToken::active() const noexcept {
+        return _root != nullptr;
+    }
+
+    void Root::FramePreparationToken::reset() noexcept {
+        Root* root = _root;
+        _root = nullptr;
+        if (root) {
+            root->finish_frame_preparation();
+        }
+    }
+
     Root& Root::instance() noexcept {
         static Root root;
         return root;
@@ -94,16 +126,39 @@ namespace JuicerProcess {
     }
 
     void Root::ensure_bootstrap() {
+        resume_frame_preparation();
         std::call_once(_bootstrapOnce, load_spectral_globals);
     }
 
     void Root::shutdown() noexcept {
+        stop_frame_preparation();
+        wait_for_frame_preparation();
+        retire_known_contexts();
         release_working_state_cores();
         _assets.release_cached_payloads();
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            _shutdownActive = false;
+            _framePreparationCv.notify_all();
+        } catch (...) {
+        }
     }
 
     JuicerAssets::Library& Root::assets() noexcept {
         return _assets;
+    }
+
+    Root::FramePreparationToken Root::begin_frame_preparation() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            if (!_acceptFramePreparation) {
+                return FramePreparationToken{};
+            }
+            ++_activeFramePreparations;
+            return FramePreparationToken(this);
+        } catch (...) {
+            return FramePreparationToken{};
+        }
     }
 
     bool Root::retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept {
@@ -185,6 +240,58 @@ namespace JuicerProcess {
 #else
         (void)state;
 #endif
+    }
+
+    void Root::retire_known_contexts() noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        std::string retireError;
+        (void)JuicerCuda::ResourceManager::command_retire_all_contexts_idle(retireError);
+#endif
+    }
+
+    void Root::finish_frame_preparation() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            if (_activeFramePreparations > 0) {
+                --_activeFramePreparations;
+            }
+            if (_activeFramePreparations == 0) {
+                _framePreparationCv.notify_all();
+            }
+        } catch (...) {
+        }
+    }
+
+    void Root::resume_frame_preparation() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            if (!_shutdownActive) {
+                _acceptFramePreparation = true;
+            }
+        } catch (...) {
+        }
+    }
+
+    void Root::stop_frame_preparation() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            _acceptFramePreparation = false;
+            _shutdownActive = true;
+            if (_activeFramePreparations == 0) {
+                _framePreparationCv.notify_all();
+            }
+        } catch (...) {
+        }
+    }
+
+    void Root::wait_for_frame_preparation() noexcept {
+        try {
+            std::unique_lock<std::mutex> lock(_framePreparationMutex);
+            _framePreparationCv.wait(lock, [this]() {
+                return _activeFramePreparations == 0;
+            });
+        } catch (...) {
+        }
     }
 
 } // namespace JuicerProcess

@@ -48,6 +48,8 @@ std::uint32_t bool_u32(bool value) noexcept {
     return 0u;
 }
 
+void registry_snapshot_context_keys(std::vector<DeviceContextKey>& outKeys);
+
 const char* commands_error_or_cstr(const std::string& error, const char* fallback) noexcept {
     if (error.empty()) {
         return fallback;
@@ -2869,6 +2871,29 @@ bool command_retire_context_idle(
         RegistryRetireReason::Idle,
         "command_retire_context_idle",
         outError);
+}
+
+bool command_retire_all_contexts_idle(std::string& outError) {
+    outError.clear();
+    std::vector<DeviceContextKey> keys;
+    try {
+        registry_snapshot_context_keys(keys);
+    } catch (...) {
+        outError = "context key snapshot failed";
+        return false;
+    }
+
+    bool ok = true;
+    for (const DeviceContextKey& key : keys) {
+        std::string retireError;
+        if (!command_retire_context_idle(key, retireError)) {
+            ok = false;
+            if (outError.empty()) {
+                outError = retireError.empty() ? "context retire failed" : retireError;
+            }
+        }
+    }
+    return ok;
 }
 
 namespace {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -24,6 +25,28 @@ namespace JuicerProcess {
 
     class Root {
     public:
+        class FramePreparationToken final {
+        public:
+            FramePreparationToken() noexcept = default;
+            ~FramePreparationToken();
+
+            FramePreparationToken(const FramePreparationToken&) = delete;
+            FramePreparationToken& operator=(const FramePreparationToken&) = delete;
+
+            FramePreparationToken(FramePreparationToken&& other) noexcept;
+            FramePreparationToken& operator=(FramePreparationToken&& other) noexcept;
+
+            bool active() const noexcept;
+
+        private:
+            friend class Root;
+
+            explicit FramePreparationToken(Root* root) noexcept;
+            void reset() noexcept;
+
+            Root* _root = nullptr;
+        };
+
         static Root& instance() noexcept;
 
         Root(const Root&) = delete;
@@ -31,6 +54,7 @@ namespace JuicerProcess {
 
         void ensure_bootstrap();
         void shutdown() noexcept;
+        FramePreparationToken begin_frame_preparation() noexcept;
         void retire_idle_contexts(InstanceState& state) noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
@@ -45,10 +69,20 @@ namespace JuicerProcess {
     private:
         Root() = default;
 
+        void retire_known_contexts() noexcept;
         void release_working_state_cores() noexcept;
+        void finish_frame_preparation() noexcept;
+        void resume_frame_preparation() noexcept;
+        void stop_frame_preparation() noexcept;
+        void wait_for_frame_preparation() noexcept;
 
         std::once_flag _bootstrapOnce;
         JuicerAssets::Library _assets;
+        std::mutex _framePreparationMutex;
+        std::condition_variable _framePreparationCv;
+        std::uint32_t _activeFramePreparations = 0;
+        bool _acceptFramePreparation = true;
+        bool _shutdownActive = false;
     };
 
     Root& root() noexcept;
