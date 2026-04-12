@@ -75,6 +75,13 @@ namespace JuicerAssets {
             return data_path_string({"profiles", fileName});
         }
 
+        std::string noise_asset_path(std::initializer_list<const char*> segments) {
+            if (gDataDir.empty()) {
+                return {};
+            }
+            return data_path_string(segments);
+        }
+
         std::string paper_dir_for_folder(const std::string& folderName) {
             if (folderName.empty() || gDataDir.empty()) {
                 return {};
@@ -120,6 +127,15 @@ namespace JuicerAssets {
             NeutralFilterDatabaseAsset asset;
             asset.selectedPath = profile_asset_path(selectedFileName);
             asset.defaultPath = profile_asset_path("enlarger_neutral_ymc_filters.json");
+            asset.version = Library::kProcessAssetVersion;
+            return asset;
+        }
+
+        StaticNoiseAssetSet make_static_noise_assets() {
+            StaticNoiseAssetSet asset;
+            asset.stbnPath = noise_asset_path({"Noise", "stbn_scalar_512x512x256_u8.bin"});
+            asset.wangTilesPath = noise_asset_path({"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
+            asset.wangMetadataPath = noise_asset_path({"Noise", "Wang", "tiles.json"});
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -281,6 +297,12 @@ namespace JuicerAssets {
     void Library::ensure_neutral_filter_databases() {
         std::call_once(_neutralFilterOnce, [this]() {
             load_neutral_filter_databases();
+        });
+    }
+
+    void Library::ensure_static_noise_assets() {
+        std::call_once(_staticNoiseOnce, [this]() {
+            load_static_noise_assets();
         });
     }
 
@@ -487,6 +509,10 @@ namespace JuicerAssets {
         _neutralFilterDatabases[2] = make_neutral_filter_database("enlarger_neutral_ymc_filters_edmund.json");
     }
 
+    void Library::load_static_noise_assets() {
+        _staticNoiseAssets = make_static_noise_assets();
+    }
+
     const FilmStockAsset& Library::film_stock_for_index(int index) {
         ensure_catalogs();
         static const FilmStockAsset empty{};
@@ -517,6 +543,11 @@ namespace JuicerAssets {
             dichroicSetChoice = 0;
         }
         return _neutralFilterDatabases[static_cast<size_t>(dichroicSetChoice)];
+    }
+
+    const StaticNoiseAssetSet& Library::static_noise_assets() {
+        ensure_static_noise_assets();
+        return _staticNoiseAssets;
     }
 
     int Library::film_stock_count() {

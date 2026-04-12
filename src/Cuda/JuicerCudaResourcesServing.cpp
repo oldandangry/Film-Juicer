@@ -1068,12 +1068,13 @@
     }
 
     static bool load_stbn_cpu_uncached(const StbnCpuCache& cache, std::vector<std::uint8_t>& outData, std::string& outError) {
-        if (gDataDir.empty()) {
+        const JuicerAssets::StaticNoiseAssetSet& noiseAssets = JuicerProcess::root().assets().static_noise_assets();
+        if (noiseAssets.stbnPath.empty()) {
             outError = "STBN load failed: data directory missing";
             return false;
         }
 
-        std::filesystem::path path = std::filesystem::path(gDataDir) / "Noise" / "stbn_scalar_512x512x256_u8.bin";
+        std::filesystem::path path = std::filesystem::path(noiseAssets.stbnPath);
         path.make_preferred();
 
         std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -1089,8 +1090,8 @@
         }
 
         const std::size_t expected = static_cast<std::size_t>(cache.width) *
-            static_cast<std::size_t>(cache.height) *
-            static_cast<std::size_t>(cache.frames);
+                                     static_cast<std::size_t>(cache.height) *
+                                     static_cast<std::size_t>(cache.frames);
         if (static_cast<std::size_t>(size) != expected) {
             outError = std::string("STBN load failed: unexpected size for ") + path.string();
             return false;
@@ -1109,7 +1110,8 @@
     static std::size_t wang_lut_index(int l, int r, int t, int b, int colors) {
         const std::size_t c = static_cast<std::size_t>(colors);
         return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
-                  static_cast<std::size_t>(t)) * c +
+                 static_cast<std::size_t>(t)) *
+                    c +
                 static_cast<std::size_t>(b));
     }
 
@@ -1123,15 +1125,17 @@
     };
 
     static bool load_wang_cpu_uncached(WangCpuLoadedData& outData, std::string& outError) {
-        if (gDataDir.empty()) {
+        const JuicerAssets::StaticNoiseAssetSet& noiseAssets = JuicerProcess::root().assets().static_noise_assets();
+        if (noiseAssets.wangTilesPath.empty() || noiseAssets.wangMetadataPath.empty()) {
             outError = "Wang tiles load failed: data directory missing";
             return false;
         }
 
-        std::filesystem::path base = std::filesystem::path(gDataDir) / "Noise" / "Wang";
-        base.make_preferred();
-        std::filesystem::path binPath = base / "wang_tiles_256x256x16_u8.bin";
-        std::filesystem::path jsonPath = base / "tiles.json";
+        std::filesystem::path binPath = std::filesystem::path(noiseAssets.wangTilesPath);
+        std::filesystem::path jsonPath = std::filesystem::path(noiseAssets.wangMetadataPath);
+        binPath.make_preferred();
+        jsonPath.make_preferred();
+        std::filesystem::path base = jsonPath.parent_path();
 
         if (!std::filesystem::exists(binPath) || !std::filesystem::exists(jsonPath)) {
             outError = std::string("Wang tiles load failed: missing assets under ") + base.string();

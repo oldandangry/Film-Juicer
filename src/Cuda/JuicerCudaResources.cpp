@@ -13,6 +13,7 @@
 #include "SpectralProcessing.h"
 #include "Print.h"
 #include "JuicerState.h"
+#include "ProcessRoot.h"
 
 #include "GaussianSciPy.h"
 
