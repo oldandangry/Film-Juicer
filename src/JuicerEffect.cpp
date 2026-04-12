@@ -59,15 +59,6 @@ namespace {
         }
     }
 
-    const char* enlarger_neutral_filters_json_for_choice(int choice) {
-        switch (choice) {
-        case 1: return "enlarger_neutral_ymc_filters_thorlabs.json";
-        case 2: return "enlarger_neutral_ymc_filters_edmund.json";
-        case 0:
-        default: return "enlarger_neutral_ymc_filters.json";
-        }
-    }
-
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
     static int illuminant_choice_index_from_string(const std::string& value);
 
@@ -4339,8 +4330,10 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     float neutralC = Print::kDefaultNeutralC;
     bool loaded = false;
 
-    const std::string jsonPathPrimary = data_dir_string("profiles", enlarger_neutral_filters_json_for_choice(P.enlDichroicSet));
-    const std::string jsonPathFallback = data_dir_string("profiles", "enlarger_neutral_ymc_filters.json");
+    const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb =
+        JuicerProcess::root().assets().neutral_filter_database_for_dichroic_set(P.enlDichroicSet);
+    const std::string& jsonPathSelected = neutralDb.selectedPath;
+    const std::string& jsonPathDefault = neutralDb.defaultPath;
     std::tuple<float, float, float> ymc{};
     std::string selectedDbVersionHash;
     const std::string* illumKeyData = illumKeys.data();
@@ -4350,9 +4343,9 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
         if (illumKey.empty()) {
             continue;
         }
-        if (load_enlarger_neutral_filters(jsonPathPrimary, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash) ||
-            (jsonPathPrimary != jsonPathFallback &&
-                load_enlarger_neutral_filters(jsonPathFallback, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash))) {
+        if (load_enlarger_neutral_filters(jsonPathSelected, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash) ||
+            (jsonPathSelected != jsonPathDefault &&
+             load_enlarger_neutral_filters(jsonPathDefault, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash))) {
             neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);

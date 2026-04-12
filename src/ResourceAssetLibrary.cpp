@@ -71,6 +71,10 @@ namespace JuicerAssets {
             return data_path_string({"profiles", fileName.c_str()});
         }
 
+        std::string profile_asset_path(const char* fileName) {
+            return data_path_string({"profiles", fileName});
+        }
+
         std::string paper_dir_for_folder(const std::string& folderName) {
             if (folderName.empty() || gDataDir.empty()) {
                 return {};
@@ -108,6 +112,14 @@ namespace JuicerAssets {
             asset.jsonKey = std::move(jsonKey);
             asset.profileJsonPath = profile_json_path_for_key(asset.jsonKey);
             asset.paperDir = paper_dir_for_folder(asset.folderName);
+            asset.version = Library::kProcessAssetVersion;
+            return asset;
+        }
+
+        NeutralFilterDatabaseAsset make_neutral_filter_database(const char* selectedFileName) {
+            NeutralFilterDatabaseAsset asset;
+            asset.selectedPath = profile_asset_path(selectedFileName);
+            asset.defaultPath = profile_asset_path("enlarger_neutral_ymc_filters.json");
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -263,6 +275,12 @@ namespace JuicerAssets {
     void Library::ensure_catalogs() {
         std::call_once(_catalogOnce, [this]() {
             load_catalogs();
+        });
+    }
+
+    void Library::ensure_neutral_filter_databases() {
+        std::call_once(_neutralFilterOnce, [this]() {
+            load_neutral_filter_databases();
         });
     }
 
@@ -463,6 +481,12 @@ namespace JuicerAssets {
         }
     }
 
+    void Library::load_neutral_filter_databases() {
+        _neutralFilterDatabases[0] = make_neutral_filter_database("enlarger_neutral_ymc_filters.json");
+        _neutralFilterDatabases[1] = make_neutral_filter_database("enlarger_neutral_ymc_filters_thorlabs.json");
+        _neutralFilterDatabases[2] = make_neutral_filter_database("enlarger_neutral_ymc_filters_edmund.json");
+    }
+
     const FilmStockAsset& Library::film_stock_for_index(int index) {
         ensure_catalogs();
         static const FilmStockAsset empty{};
@@ -485,6 +509,14 @@ namespace JuicerAssets {
             index = 0;
         }
         return _printPapers[static_cast<size_t>(index)];
+    }
+
+    const NeutralFilterDatabaseAsset& Library::neutral_filter_database_for_dichroic_set(int dichroicSetChoice) {
+        ensure_neutral_filter_databases();
+        if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_neutralFilterDatabases.size())) {
+            dichroicSetChoice = 0;
+        }
+        return _neutralFilterDatabases[static_cast<size_t>(dichroicSetChoice)];
     }
 
     int Library::film_stock_count() {
