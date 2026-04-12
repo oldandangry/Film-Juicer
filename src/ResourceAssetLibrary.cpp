@@ -1154,6 +1154,20 @@ namespace JuicerAssets {
         return true;
     }
 
+    void Library::release_cached_payloads() noexcept {
+        try {
+            if (_neutralFilterCache) {
+                std::lock_guard<std::mutex> lock(_neutralFilterCache->mutex);
+                _neutralFilterCache->entries.clear();
+            }
+            if (_profileCache) {
+                std::lock_guard<std::mutex> lock(_profileCache->mutex);
+                _profileCache->profiles.clear();
+            }
+        } catch (...) {
+        }
+    }
+
     int Library::film_stock_count() {
         ensure_catalogs();
         return static_cast<int>(_filmStocks.size());

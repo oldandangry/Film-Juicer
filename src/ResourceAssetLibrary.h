@@ -99,6 +99,7 @@ namespace JuicerAssets {
         const IlluminantFilterAssetSet& illuminant_filter_assets();
         PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
         bool load_agx_film_profile(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
+        void release_cached_payloads() noexcept;
 
         int film_stock_count();
         int print_paper_count();

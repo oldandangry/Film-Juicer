@@ -51,6 +51,7 @@
 #include "ColorTransforms.h"
 #include "ParamNames.h"
 #include "Print.h"
+#include "ProcessRoot.h"
 #include "ProfileJSONLoader.h"
 
 namespace {
@@ -166,9 +167,14 @@ public:
 
     void describe(OFX::ImageEffectDescriptor& desc) override;
     void describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context) override;
+    void unload() override;
     OFX::ImageEffect* createInstance(OfxImageEffectHandle handle, OFX::ContextEnum context) override;
 };
 
+
+void JuicerPluginFactory::unload() {
+    JuicerProcess::root().shutdown();
+}
 
 void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc)
 {

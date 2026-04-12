@@ -325,6 +325,14 @@ namespace WorkingStateSharing {
             return out;
         }
 
+        void release_entries() noexcept {
+            try {
+                std::lock_guard<std::mutex> lock(mutex_);
+                entries_.clear();
+            } catch (...) {
+            }
+        }
+
     private:
         struct CacheEntry {
             std::weak_ptr<WorkingStateCoreShared> shared;
@@ -337,8 +345,7 @@ namespace WorkingStateSharing {
             for (auto it = entries_.begin(); it != entries_.end();) {
                 if (it->second.shared.expired()) {
                     it = entries_.erase(it);
-                }
-                else {
+                } else {
                     ++it;
                 }
             }
@@ -368,14 +375,23 @@ namespace WorkingStateSharing {
         std::uint64_t identitySequence_ = 0;
     };
 
-    inline AcquireCoreSharedResult acquire_or_create_shared_core(
+} // namespace WorkingStateSharing
+
+namespace JuicerProcess {
+
+    WorkingStateSharing::AcquireCoreSharedResult Root::acquire_working_state_core(
         std::uint64_t keyHash,
-        std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr)
-    {
-        return WorkingStateCoreSharedCache::instance().acquire_or_create(keyHash, std::move(insertPayload));
+        std::shared_ptr<const WorkingStateSharing::WorkingStateCorePayload> insertPayload) {
+        return WorkingStateSharing::WorkingStateCoreSharedCache::instance().acquire_or_create(
+            keyHash,
+            std::move(insertPayload));
     }
 
-} // namespace WorkingStateSharing
+    void Root::release_working_state_cores() noexcept {
+        WorkingStateSharing::WorkingStateCoreSharedCache::instance().release_entries();
+    }
+
+} // namespace JuicerProcess
 
 namespace RebuildWorkingState {
     namespace curve_inversion {
@@ -1930,7 +1946,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
-        WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
+        JuicerProcess::root().acquire_working_state_core(coreShareHash);
     const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
     if (coreShare.sharedCore && coreShare.sharedCore->payload) {
         WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
@@ -2854,7 +2870,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         auto corePayload = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
         WorkingStateSharing::capture_working_state_core_payload(*target, *corePayload);
         const WorkingStateSharing::AcquireCoreSharedResult coreShareSeed =
-            WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash, std::move(corePayload));
+            JuicerProcess::root().acquire_working_state_core(target->coreShareHash, std::move(corePayload));
         target->sharedCore = coreShareSeed.sharedCore;
         trace_working_state_core_share(coreShareInitial, target->buildCounter, "full_rebuild_shell_acquire");
         trace_working_state_core_share(coreShareSeed, target->buildCounter, "full_rebuild");
@@ -2899,7 +2915,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     }
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
-        WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
+        JuicerProcess::root().acquire_working_state_core(coreShareHash);
     const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
     std::shared_ptr<const WorkingState> src;
     if (!(coreShare.sharedCore && coreShare.sharedCore->payload)) {
@@ -2911,12 +2927,11 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
         }
         auto payloadSeed = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
         WorkingStateSharing::capture_working_state_core_payload(*src, *payloadSeed);
-        coreShare = WorkingStateSharing::acquire_or_create_shared_core(coreShareHash, std::move(payloadSeed));
+        coreShare = JuicerProcess::root().acquire_working_state_core(coreShareHash, std::move(payloadSeed));
     }
     if (coreShare.sharedCore && coreShare.sharedCore->payload) {
         WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
-    }
-    else {
+    } else {
         WorkingStateSharing::WorkingStateCorePayload fallbackPayload{};
         WorkingStateSharing::capture_working_state_core_payload(*src, fallbackPayload);
         WorkingStateSharing::apply_working_state_core_payload(fallbackPayload, *target);

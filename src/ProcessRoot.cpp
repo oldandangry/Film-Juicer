@@ -97,6 +97,11 @@ namespace JuicerProcess {
         std::call_once(_bootstrapOnce, load_spectral_globals);
     }
 
+    void Root::shutdown() noexcept {
+        release_working_state_cores();
+        _assets.release_cached_payloads();
+    }
+
     JuicerAssets::Library& Root::assets() noexcept {
         return _assets;
     }
