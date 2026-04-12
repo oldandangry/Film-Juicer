@@ -8,6 +8,10 @@
 #include <tuple>
 #include <vector>
 
+namespace Profiles {
+    struct AgxFilmProfile;
+}
+
 namespace JuicerAssets {
 
     struct FilmStockAsset {
@@ -94,6 +98,7 @@ namespace JuicerAssets {
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const IlluminantFilterAssetSet& illuminant_filter_assets();
         PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
+        bool load_agx_film_profile(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
 
         int film_stock_count();
         int print_paper_count();
@@ -111,6 +116,7 @@ namespace JuicerAssets {
         void load_illuminant_filter_assets();
 
         struct NeutralFilterCacheState;
+        struct ProfileCacheState;
 
         std::once_flag _catalogOnce;
         std::once_flag _neutralFilterOnce;
@@ -124,6 +130,7 @@ namespace JuicerAssets {
         std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
         IlluminantFilterAssetSet _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
+        std::unique_ptr<ProfileCacheState> _profileCache;
     };
 
 } // namespace JuicerAssets

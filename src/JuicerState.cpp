@@ -1528,7 +1528,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         return false;
     }
     Profiles::AgxFilmProfile profile;
-    if (!Profiles::load_agx_film_profile_json(stock.profileJsonPath, profile)) {
+    if (!JuicerProcess::root().assets().load_agx_film_profile(stock.profileJsonPath, profile)) {
         trace_stock_key("failed to load agx profile json: ");
         return false;
     }

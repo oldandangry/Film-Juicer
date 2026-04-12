@@ -316,19 +316,12 @@ namespace Profiles {
             std::int64_t writeTimeTicks = 0;
         };
 
-        struct CachedAgxFilmProfileEntry {
-            std::string cacheKey;
-            FileStamp stamp;
-            AgxFilmProfile profile;
-        };
-
         struct CachedProfileInfoEntry {
             std::string cacheKey;
             FileStamp stamp;
             ProfileInfoSummary info;
         };
 
-        constexpr std::size_t kAgxFilmProfileCacheCapacity = 2;
         constexpr std::size_t kProfileInfoCacheCapacity = 8;
 
         FileStamp read_profile_file_stamp(const std::string& jsonPath) {
@@ -361,73 +354,6 @@ namespace Profiles {
             std::filesystem::path path(jsonPath);
             path.make_preferred();
             return to_lower_ascii(path.lexically_normal().string());
-        }
-
-        std::mutex& agx_film_profile_cache_mutex() {
-            static std::mutex cacheMutex;
-            return cacheMutex;
-        }
-
-        std::vector<CachedAgxFilmProfileEntry>& agx_film_profile_cache() {
-            static std::vector<CachedAgxFilmProfileEntry> cache;
-            return cache;
-        }
-
-        bool try_load_cached_agx_film_profile(
-            const std::string& cacheKey,
-            const FileStamp& stamp,
-            AgxFilmProfile& outProfile)
-        {
-            if (cacheKey.empty() || !stamp.valid) {
-                return false;
-            }
-
-            std::lock_guard<std::mutex> lock(agx_film_profile_cache_mutex());
-            auto& cache = agx_film_profile_cache();
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                CachedAgxFilmProfileEntry& entry = cache[i];
-                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
-                    continue;
-                }
-
-                if (i != 0) {
-                    std::swap(cache[0], cache[i]);
-                }
-                outProfile = cache[0].profile;
-                return true;
-            }
-
-            return false;
-        }
-
-        void store_cached_agx_film_profile(
-            std::string cacheKey,
-            const FileStamp& stamp,
-            const AgxFilmProfile& profile)
-        {
-            if (cacheKey.empty() || !stamp.valid) {
-                return;
-            }
-
-            std::lock_guard<std::mutex> lock(agx_film_profile_cache_mutex());
-            auto& cache = agx_film_profile_cache();
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                if (cache[i].cacheKey == cacheKey) {
-                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
-                    break;
-                }
-            }
-
-            cache.insert(
-                cache.begin(),
-                CachedAgxFilmProfileEntry{
-                    std::move(cacheKey),
-                    stamp,
-                    profile
-                });
-            if (cache.size() > kAgxFilmProfileCacheCapacity) {
-                cache.resize(kAgxFilmProfileCacheCapacity);
-            }
         }
 
         std::mutex& profile_info_cache_mutex() {
@@ -774,7 +700,7 @@ namespace Profiles {
 
     } // namespace
 
-    static bool load_agx_film_profile_json_uncached(const std::string& jsonPath, AgxFilmProfile& outProfile) {
+    static bool parse_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
         outProfile = AgxFilmProfile{};
 
         Json root;
@@ -1336,22 +1262,7 @@ namespace Profiles {
     }
 
     bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
-        outProfile = AgxFilmProfile{};
-
-        const FileStamp stamp = read_profile_file_stamp(jsonPath);
-        const std::string cacheKey = normalize_profile_cache_key(jsonPath);
-        if (try_load_cached_agx_film_profile(cacheKey, stamp, outProfile)) {
-            return true;
-        }
-
-        AgxFilmProfile parsedProfile;
-        if (!load_agx_film_profile_json_uncached(jsonPath, parsedProfile)) {
-            return false;
-        }
-
-        store_cached_agx_film_profile(cacheKey, stamp, parsedProfile);
-        outProfile = std::move(parsedProfile);
-        return true;
+        return parse_agx_film_profile_json(jsonPath, outProfile);
     }
 
     bool load_profile_info(const std::string& jsonPath, ProfileInfoSummary& outInfo) {

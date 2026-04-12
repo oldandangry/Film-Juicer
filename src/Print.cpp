@@ -284,11 +284,10 @@ namespace Print {
             Profiles::AgxFilmProfile profile;
         };
 
-        JsonProfileContext load_json_profile(const std::string& jsonProfilePath)
-        {
+        JsonProfileContext load_json_profile(const std::string& jsonProfilePath) {
             JsonProfileContext ctx;
             if (!jsonProfilePath.empty()) {
-                ctx.hasProfile = Profiles::load_agx_film_profile_json(jsonProfilePath, ctx.profile);
+                ctx.hasProfile = JuicerProcess::root().assets().load_agx_film_profile(jsonProfilePath, ctx.profile);
             }
             return ctx;
         }

@@ -67,6 +67,12 @@ namespace JuicerAssets {
             std::int64_t writeTimeTicks = 0;
         };
 
+        struct ProfileFileStamp {
+            bool valid = false;
+            std::uint64_t sizeBytes = 0;
+            std::int64_t writeTimeTicks = 0;
+        };
+
         struct ParsedNeutralFilterDb {
             std::unordered_map<std::string, std::tuple<float, float, float>> lookup;
             NeutralFilterFileStamp stamp;
@@ -83,6 +89,14 @@ namespace JuicerAssets {
             std::shared_ptr<const ParsedNeutralFilterDb> db;
             bool stop = false;
         };
+
+        struct ProfileCacheEntry {
+            std::string cacheKey;
+            ProfileFileStamp stamp;
+            Profiles::AgxFilmProfile profile;
+        };
+
+        constexpr std::size_t kProfileCacheCapacity = 2;
 
         std::string to_lower(std::string s) {
             std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -138,6 +152,10 @@ namespace JuicerAssets {
             return a.valid && b.valid && a.sizeBytes == b.sizeBytes && a.writeTimeTicks == b.writeTimeTicks;
         }
 
+        bool same_file_stamp(const ProfileFileStamp& a, const ProfileFileStamp& b) {
+            return a.valid && b.valid && a.sizeBytes == b.sizeBytes && a.writeTimeTicks == b.writeTimeTicks;
+        }
+
         NeutralFilterFileStamp read_file_stamp(const std::string& jsonPath) {
             fs::path path(jsonPath);
             std::error_code ec;
@@ -155,6 +173,77 @@ namespace JuicerAssets {
             stamp.sizeBytes = static_cast<std::uint64_t>(sizeBytes);
             stamp.writeTimeTicks = static_cast<std::int64_t>(writeTime.time_since_epoch().count());
             return stamp;
+        }
+
+        ProfileFileStamp read_profile_file_stamp(const std::string& jsonPath) {
+            fs::path path(jsonPath);
+            std::error_code ec;
+            const auto sizeBytes = fs::file_size(path, ec);
+            if (ec) {
+                return {};
+            }
+            const auto writeTime = fs::last_write_time(path, ec);
+            if (ec) {
+                return {};
+            }
+
+            ProfileFileStamp stamp;
+            stamp.valid = true;
+            stamp.sizeBytes = static_cast<std::uint64_t>(sizeBytes);
+            stamp.writeTimeTicks = static_cast<std::int64_t>(writeTime.time_since_epoch().count());
+            return stamp;
+        }
+
+        bool get_profile(
+            std::vector<ProfileCacheEntry>& cache,
+            const std::string& cacheKey,
+            const ProfileFileStamp& stamp,
+            Profiles::AgxFilmProfile& outProfile) {
+            if (cacheKey.empty() || !stamp.valid) {
+                return false;
+            }
+
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                ProfileCacheEntry& entry = cache[i];
+                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
+                    continue;
+                }
+
+                if (i != 0) {
+                    std::swap(cache[0], cache[i]);
+                }
+                outProfile = cache[0].profile;
+                return true;
+            }
+
+            return false;
+        }
+
+        void store_profile(
+            std::vector<ProfileCacheEntry>& cache,
+            std::string cacheKey,
+            const ProfileFileStamp& stamp,
+            const Profiles::AgxFilmProfile& profile) {
+            if (cacheKey.empty() || !stamp.valid) {
+                return;
+            }
+
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                if (cache[i].cacheKey == cacheKey) {
+                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
+                    break;
+                }
+            }
+
+            cache.insert(
+                cache.begin(),
+                ProfileCacheEntry{
+                    std::move(cacheKey),
+                    stamp,
+                    profile});
+            if (cache.size() > kProfileCacheCapacity) {
+                cache.resize(kProfileCacheCapacity);
+            }
         }
 
         bool parse_array_triplet(const Json& arrNode, std::tuple<float, float, float>& outYMC) {
@@ -680,8 +769,13 @@ namespace JuicerAssets {
         std::unordered_map<std::string, NeutralFilterCacheEntry> entries;
     };
 
+    struct Library::ProfileCacheState {
+        std::mutex mutex;
+        std::vector<ProfileCacheEntry> profiles;
+    };
+
     Library::Library()
-        : _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()) {
+        : _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()), _profileCache(std::make_unique<ProfileCacheState>()) {
     }
 
     Library::~Library() = default;
@@ -1033,6 +1127,31 @@ namespace JuicerAssets {
         assets.dichroicFilters = dichroic_filter_set_for_choice(dichroicSetChoice);
         assets.illuminantFilters = illuminant_filter_assets();
         return assets;
+    }
+
+    bool Library::load_agx_film_profile(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile) {
+        outProfile = Profiles::AgxFilmProfile{};
+
+        const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
+        const ProfileFileStamp stamp = read_profile_file_stamp(jsonPath);
+        {
+            std::lock_guard<std::mutex> lock(_profileCache->mutex);
+            if (get_profile(_profileCache->profiles, cacheKey, stamp, outProfile)) {
+                return true;
+            }
+        }
+
+        Profiles::AgxFilmProfile parsedProfile;
+        if (!Profiles::load_agx_film_profile_json(jsonPath, parsedProfile)) {
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_profileCache->mutex);
+            store_profile(_profileCache->profiles, cacheKey, stamp, parsedProfile);
+        }
+        outProfile = std::move(parsedProfile);
+        return true;
     }
 
     int Library::film_stock_count() {
