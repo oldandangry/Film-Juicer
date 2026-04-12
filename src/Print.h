@@ -5,32 +5,16 @@
 #include <array>
 #include <cstdint>
 #include <cmath>
-#include <filesystem>
-#include <initializer_list>
 #include <utility>
 #include "SpectralData.h"
 #include "Illuminants.h"
 #include "ProfileJSONLoader.h"
+#include "ProcessRoot.h"
 #include <sstream>
 #include <algorithm>
 #include <limits>
 
 namespace Print {
-
-    inline std::string make_data_subpath(
-        const std::string& baseDir,
-        std::initializer_list<const char*> segments)
-    {
-        std::filesystem::path path(baseDir);
-        for (const char* seg : segments) {
-            if (seg && *seg) {
-                path /= seg;
-            }
-        }
-        path = path.lexically_normal();
-        path.make_preferred();
-        return path.string();
-    }
 
     constexpr float kEnlargerSteps = 170.0f;
     constexpr float kDefaultNeutralY = 0.9f;
@@ -58,7 +42,7 @@ namespace Print {
         float glareCompensationDensity = 1.2f;
         float glareCompensationTransition = 0.3f;
         Profiles::ProfileGlare glare;
-        float logEOffC = 0.0f, logEOffM = 0.0f, logEOffY = 0.0f; // legacy per-channel logE offsets (unused)
+        float logEOffC = 0.0f, logEOffM = 0.0f, logEOffY = 0.0f; // retained per-channel logE offsets (unused)
         std::array<float, 3> gammaFactor{ {1.0f, 1.0f, 1.0f} };
 
         // Optional neutral density target for mid-scale metameric patch (agx parity)
@@ -181,11 +165,13 @@ namespace Print {
     bool remove_glare_compensation_from_curves(Profile& profile, DensityCurves& curves);
     bool rebuild_density_curves(Profile& profile, const DensityCurves& curves);
     void recompute_mid_neutral(Profile& profile, Runtime* runtime = nullptr);
-    void load_profile_from_dir(const std::string& dir, Profile& out,
-        const std::string& jsonProfilePath = std::string(), Runtime* runtime = nullptr);
+    void load_profile_from_dir(const std::string& dir, Profile& out, const std::string& jsonProfilePath = std::string(), Runtime* runtime = nullptr);
 
     // Build an illuminant pinned to shape from choice. Choices align with your UI (0:D65,1:D55,2:D50,3:TH-KG3-L,4:T,5:K75P,6:Equal)
-    inline void build_illuminant_from_choice(int choice, Runtime& rt, const std::string& dataDir, bool forEnlarger) {
+    inline void build_illuminant_from_choice(int choice, Runtime& rt, const std::string&, bool forEnlarger) {
+        const JuicerAssets::IlluminantFilterAssetSet& sourceAssets =
+            JuicerProcess::root().assets().illuminant_filter_assets();
+
         auto log_failure = [&](const char* label, const char* extra = nullptr) {
             std::ostringstream oss;
             oss << "failed to load " << label << " illuminant";
@@ -194,83 +180,83 @@ namespace Print {
             }
             oss << "; selection=" << choice;
             JTRACE("ILLUM", oss.str());
-            };
+        };
 
         auto build_or_log = [&](auto builder, const char* label) -> Spectral::Curve {
             try {
                 return builder();
-            }
-            catch (const std::exception& e) {
+            } catch (const std::exception& e) {
                 log_failure(label, e.what());
-            }
-            catch (...) {
+            } catch (...) {
                 log_failure(label, "unknown error");
             }
             return Spectral::Curve{};
-            };
+        };
 
         Spectral::Curve c;
         switch (choice) {
-        case 0:
-            c = build_or_log([&]() {
-                return Spectral::build_curve_D65_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D65.csv" }));
-                }, "D65");
-            break;
-        case 1:
-            c = build_or_log([&]() {
-                return Spectral::build_curve_D55_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D55.csv" }));
-                }, "D55");
-            break;
-        case 2:
-            c = build_or_log([&]() {
-                return Spectral::build_curve_D50_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D50.csv" }));
-                }, "D50");
-            break;
-        case 3:
-            c = build_or_log([&]() {
-                return Spectral::build_curve_TH_KG3_L_pinned(
-                    make_data_subpath(dataDir, { "filters", "heat_absorbing", "schott", "KG3.csv" }),
-                    make_data_subpath(dataDir, { "filters", "lens_transmission", "canon", "canon_24_f28_is.csv" }));
-                }, "TH-KG3-L");
-            break;
-        case 4:
-            c = build_or_log([&]() {
-                return Spectral::build_curve_T_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "T.csv" }));
-                }, "T");
-            break;
-        case 5:
-            c = build_or_log([&]() {
-                return Spectral::build_curve_K75P_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "K75P.csv" }));
-                }, "K75P");
-            break;
-        case 6:
-            c = Spectral::build_curve_equal_energy_pinned();
-            break;
-        default:
-            log_failure("unknown choice");
-            break;
+            case 0:
+                c = build_or_log([&]() {
+                    return Spectral::build_curve_D65_pinned(sourceAssets.d65Path);
+                },
+                                 "D65");
+                break;
+            case 1:
+                c = build_or_log([&]() {
+                    return Spectral::build_curve_D55_pinned(sourceAssets.d55Path);
+                },
+                                 "D55");
+                break;
+            case 2:
+                c = build_or_log([&]() {
+                    return Spectral::build_curve_D50_pinned(sourceAssets.d50Path);
+                },
+                                 "D50");
+                break;
+            case 3:
+                c = build_or_log([&]() {
+                    return Spectral::build_curve_TH_KG3_L_pinned(
+                        sourceAssets.kg3Path,
+                        sourceAssets.lensTransmissionPath);
+                },
+                                 "TH-KG3-L");
+                break;
+            case 4:
+                c = build_or_log([&]() {
+                    return Spectral::build_curve_T_pinned(sourceAssets.tungstenPath);
+                },
+                                 "T");
+                break;
+            case 5:
+                c = build_or_log([&]() {
+                    return Spectral::build_curve_K75P_pinned(sourceAssets.kinoton75PPath);
+                },
+                                 "K75P");
+                break;
+            case 6:
+                c = Spectral::build_curve_equal_energy_pinned();
+                break;
+            default:
+                log_failure("unknown choice");
+                break;
         }
 
         if (forEnlarger) {
             rt.illumEnlarger = std::move(c);
-        }
-        else {
+        } else {
             rt.illumView = std::move(c);
         }
     }
 
     inline void load_dichroic_filters_from_csvs(
-        const std::string& dirYMC, Runtime& rt)
-    {
+        const std::string& dirYMC, Runtime& rt) {
         auto load_pairs_silent = [](const std::string& path) {
-            try { return Spectral::load_csv_pairs(path); }
-            catch (...) { return std::vector<std::pair<float, float>>{}; }
-            };
+            try {
+                return Spectral::load_csv_pairs(path);
+            } catch (...) {
+                return std::vector<std::pair<float, float>>{};
+            }
+        };
 
         // Try Durst Digital Light first
         std::string yPath = dirYMC + "filter_y.csv";
@@ -282,10 +268,10 @@ namespace Print {
         auto c_pairs = load_pairs_silent(cPath);
 
 
-        // If not found, try Edmund Optics / Thorlabs fallbacks (same filenames under their dirs)
+        // If not found, try Edmund Optics / Thorlabs paths with the same filenames under their dirs.
         if (y_pairs.empty() || m_pairs.empty() || c_pairs.empty()) {
             std::string alt1 = dirYMC; // allow caller to pass different vendor dirs if desired
-            // Identity fallback will be used below if still empty.
+            // Identity curve will be used below if still empty.
         }
 
         Spectral::assign_reference_axis(rt.filterY.lambda_nm);

@@ -6,15 +6,12 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
-#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <optional>
 #include <sstream>
 #include <utility>
 #include "GaussianSciPy.h"
-
-extern const std::string gDataDir;
 
 namespace Print {
     namespace {
@@ -81,89 +78,30 @@ namespace Print {
             return c;
         }
 
-        Spectral::Curve build_reference_illuminant_curve(const std::string& label)
-        {
+        Spectral::Curve build_reference_illuminant_curve(const std::string& label) {
             const std::string normalized = IlluminantKeys::normalize(label);
-
-            const bool hasDataDir = !gDataDir.empty();
-            const std::filesystem::path base = hasDataDir
-                ? std::filesystem::path(gDataDir)
-                : std::filesystem::path();
-
-            auto illuminantPath = [&](const char* file) -> std::string {
-                if (!hasDataDir) {
-                    return {};
-                }
-                // Note: agx-emulsion uses colour-science library for illuminants, not CSVs
-                // We keep CSV loading for backward compatibility; verify data matches colour-science
-                std::filesystem::path p = base / "illuminants" / file;
-                p.make_preferred();
-                return p.string();
-                };
-            auto filterPath = [&](const char* file) -> std::string {
-                if (!hasDataDir) {
-                    return {};
-                }
-                std::filesystem::path p = base / "filters" / "heat_absorbing" / "schott" / file;
-                p.make_preferred();
-                return p.string();
-                };
-            auto lensPath = [&](const char* file) -> std::string {
-                if (!hasDataDir) {
-                    return {};
-                }
-                // Using Canon 24mm f/2.8 IS lens transmission data from agx-emulsion
-                std::filesystem::path p = base / "filters" / "lens_transmission" / "canon" / file;
-                p.make_preferred();
-                return p.string();
-                };
-
-            auto fallback = []() -> Spectral::Curve {
-                return Spectral::build_curve_equal_energy_pinned();
-                };
+            const JuicerAssets::IlluminantFilterAssetSet& sourceAssets =
+                JuicerProcess::root().assets().illuminant_filter_assets();
 
             if (normalized.empty() || normalized == "D65") {
-                const std::string path = illuminantPath("D65.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_D65_pinned(path);
+                return Spectral::build_curve_D65_pinned(sourceAssets.d65Path);
             }
             if (normalized == "D55") {
-                const std::string path = illuminantPath("D55.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_D55_pinned(path);
+                return Spectral::build_curve_D55_pinned(sourceAssets.d55Path);
             }
             if (normalized == "D50") {
-                const std::string path = illuminantPath("D50.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_D50_pinned(path);
+                return Spectral::build_curve_D50_pinned(sourceAssets.d50Path);
             }
             if (normalized == "T" || normalized == "INCANDESCENT") {
-                const std::string path = illuminantPath("T.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_T_pinned(path);
+                return Spectral::build_curve_T_pinned(sourceAssets.tungstenPath);
             }
             if (normalized == "K75P") {
-                const std::string path = illuminantPath("K75P.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_K75P_pinned(path);
+                return Spectral::build_curve_K75P_pinned(sourceAssets.kinoton75PPath);
             }
             if (normalized == "TH-KG3-L" || normalized == "TH-KG3") {
-                const std::string kg3 = filterPath("KG3.csv");
-                const std::string lens = lensPath("canon_24_f28_is.csv");
-                if (kg3.empty() || lens.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_TH_KG3_L_pinned(kg3, lens);
+                return Spectral::build_curve_TH_KG3_L_pinned(
+                    sourceAssets.kg3Path,
+                    sourceAssets.lensTransmissionPath);
             }
             if (normalized == "EQUAL-ENERGY") {
                 return Spectral::build_curve_equal_energy_pinned();
@@ -184,30 +122,28 @@ namespace Print {
                     if (temp > 0.0) {
                         return build_blackbody_curve(temp);
                     }
-                }
-                catch (...) {
-                    // fall through to fallback
+                } catch (...) {
+                    // Use equal-energy below.
                 }
             }
-            return fallback();
+            return Spectral::build_curve_equal_energy_pinned();
         }
 
-        // DEPRECATED: This function was previously used to balance print paper sensitivities,
+        // Reference-only: this function was previously used to balance print paper sensitivities,
         // but that approach violates agx-emulsion parity. Per the Python reference, only FILM
         // sensitivities are balanced (using balance_negative_under_reference_non_global in
         // SpectralMath.h). Print paper sensitivities should be used as-is from the profile.
-        // This function is kept for reference but is no longer called.
+        // It is retained for reference but is no longer called.
         // See claude-review.md for detailed analysis of why print balancing causes color shifts.
         bool balance_log_sensitivities(const Spectral::Curve& illuminant,
-            FloatPairs& r_sens,
-            FloatPairs& g_sens,
-            FloatPairs& b_sens,
-            std::array<float, 3>& outCorrection,
-            std::array<float, 3>* outLogExposureOffsets = nullptr)
-        {
-            outCorrection = { 1.0f, 1.0f, 1.0f };
+                                       FloatPairs& r_sens,
+                                       FloatPairs& g_sens,
+                                       FloatPairs& b_sens,
+                                       std::array<float, 3>& outCorrection,
+                                       std::array<float, 3>* outLogExposureOffsets = nullptr) {
+            outCorrection = {1.0f, 1.0f, 1.0f};
             if (outLogExposureOffsets) {
-                *outLogExposureOffsets = { 0.0f, 0.0f, 0.0f };
+                *outLogExposureOffsets = {0.0f, 0.0f, 0.0f};
             }
             if (illuminant.linear.empty()) {
                 return false;
@@ -243,7 +179,7 @@ namespace Print {
                     return std::numeric_limits<double>::quiet_NaN();
                 }
                 return sum;
-                };
+            };
 
             std::array<double, 3> exposures{
                 integrate_channel(r_sens),
@@ -492,11 +428,11 @@ namespace Print {
 
                     if (is_finite(out.midNeutralDensity[0])) {
                         float* outMidNeutralData = out.midNeutralDensity.data();
-                        const float fallback = *outMidNeutralData;
+                        const float firstFiniteDensity = *outMidNeutralData;
                         ++outMidNeutralData;
                         for (int i = 1; i < 3; ++i, ++outMidNeutralData) {
                             if (!is_finite(*outMidNeutralData)) {
-                                *outMidNeutralData = fallback;
+                                *outMidNeutralData = firstFiniteDensity;
                             }
                         }
                     }
@@ -829,7 +765,7 @@ namespace Print {
             }
         }
 
-        // DEPRECATED: This function was used to align print density curves for parity with
+        // Reference-only: this function was used to align print density curves for parity with
         // agx-emulsion. However, per the Python reference, only FILM density curves undergo
         // parity alignment. Print paper curves should be used as-is from the profile.
         // This function is no longer called. See claude-review.md for details.
@@ -875,9 +811,9 @@ namespace Print {
 
         }
 
-        // DEPRECATED: This function was used to shift print density curves based on sensitivity
+        // Reference-only: this function was used to shift print density curves based on sensitivity
         // balancing offsets. However, print sensitivities should not be balanced per agx-emulsion
-        // parity, so these offsets should never be computed or applied. This function is kept for
+        // parity, so these offsets should never be computed or applied. This function is retained for
         // reference but is no longer called. See claude-review.md for details.
         void apply_density_log_exposure_offsets(DoublePairs& c_dc,
             DoublePairs& m_dc,
@@ -982,9 +918,9 @@ namespace Print {
             oss << ']';
         }
 
-        // DEPRECATED: This diagnostic function was used to emit a neutral exposure probe after
+        // Reference-only: this diagnostic function was used to emit a neutral exposure probe after
         // print sensitivity balancing. Since print sensitivities are no longer balanced per
-        // agx-emulsion parity, this probe is no longer needed. Kept for reference only.
+        // agx-emulsion parity, this probe is no longer needed. Retained for reference only.
         void emit_neutral_exposure_probe(const DensityCurves& curves,
             const std::array<float, 3>& neutralDensity,
             const std::vector<float>& referenceLogExposure)
