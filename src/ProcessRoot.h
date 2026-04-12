@@ -7,6 +7,12 @@
 
 struct InstanceState;
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+namespace JuicerCuda {
+    struct Resources;
+}
+#endif
+
 namespace JuicerProcess {
 
     using BootstrapFn = void (*)();
@@ -20,13 +26,15 @@ namespace JuicerProcess {
 
         void ensure_bootstrap(BootstrapFn callback);
         void retire_idle_contexts(InstanceState& state) noexcept;
+        bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        void destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept;
+#endif
         JuicerAssets::Library& assets() noexcept;
 
     private:
         Root() = default;
-
-        bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
 
         std::once_flag _bootstrapOnce;
         JuicerAssets::Library _assets;

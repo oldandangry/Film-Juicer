@@ -1876,11 +1876,8 @@ namespace JuicerCuda {
         std::string managerRetireError;
         if (ownerDeviceId >= 0 && ownerContextOpaque) {
             managerRetireAttempted = true;
-            ResourceManager::DeviceContextKey ownerKey{};
-            ownerKey.deviceId = ownerDeviceId;
-            ownerKey.contextOpaque = ownerContextOpaque;
             managerRetireAccepted =
-                ResourceManager::command_retire_context_idle(ownerKey, managerRetireError);
+                JuicerProcess::root().retire_idle_context(ownerDeviceId, ownerContextOpaque, managerRetireError);
         }
 
         std::size_t deferredQueueDepth = 0;

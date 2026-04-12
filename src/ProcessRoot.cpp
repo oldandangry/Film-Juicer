@@ -71,6 +71,12 @@ namespace JuicerProcess {
 #endif
     }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    void Root::destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept {
+        JuicerCuda::destroy(resources);
+    }
+#endif
+
     void Root::retire_idle_contexts(InstanceState& state) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         const bool traceInfo = JTRACE_ENABLED(1);
