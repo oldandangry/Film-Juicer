@@ -2378,59 +2378,6 @@ namespace {
         return static_cast<double>((low + high) * 0.5f);
     }
 
-    void init_spectral_globals_once() {
-        Spectral::SpectralMutationScope mutationScope(
-            Spectral::SpectralMutationStage::Bootstrap,
-            "init_spectral_globals_once");
-        (void)mutationScope;
-
-        try {
-            Spectral::lock_shape_to_reference_axis();
-            const auto cmf = Spectral::load_csv_triplets(data_dir_string("cie1931_2deg.csv"));
-            if (!Spectral::cmf_triplets_match_reference_axis(cmf)) {
-                JTRACE("INIT", "FATAL: CMF wavelengths do not match 380-780@5nm grid");
-                throw std::runtime_error("CMF grid mismatch");
-            }
-            Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
-            Spectral::ensure_precomputed_up_to_date();
-            Spectral::disable_hanatos_if_reference_mismatch();
-        }
-        catch (...) {
-            // Leave globals as-is; instance guards will pass-through if shape is invalid.
-        }
-
-        // Hanatos LUT: load once and set availability flag atomically.
-        try {
-            const std::string lutPath = data_dir_string("luts", "spectral_upsampling", "irradiance_xy_tc.npy");
-            Spectral::load_hanatos_spectra_lut(lutPath);
-        }
-        catch (...) {
-            Spectral::set_hanatos_available(false);
-        }
-
-        // Mallett 2019 basis: load once for sRGB basis reconstruction.
-        try {
-            const std::string basisPath = data_dir_string("luts", "spectral_upsampling", "mallett2019_basis.npy");
-            Spectral::load_mallett2019_basis_npy(basisPath);
-        }
-        catch (...) {
-            Spectral::set_mallett_available(false);
-        }
-
-        // KG3 filter fallback: set once if not present; safe idempotently.
-        std::vector<std::pair<float, float>> kg3_pairs_raw;
-        try { kg3_pairs_raw = Spectral::load_csv_pairs(data_dir_string("filters", "heat_absorbing", "schott", "KG3.csv")); }
-        catch (...) { kg3_pairs_raw.clear(); }
-        if (kg3_pairs_raw.empty()) {
-            kg3_pairs_raw = {
-                { Spectral::gShape.lambdaMin, 1.0f },
-                { Spectral::gShape.lambdaMax, 1.0f }
-            };
-        }
-        Spectral::set_filter_KG3_from_pairs(kg3_pairs_raw);
-    }
-
-
     static std::vector<std::string> enlarger_illuminant_keys_for_choice(int choice) {
         switch (choice) {
         case 0: return { "D65", "d65" };
@@ -4250,7 +4197,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
 
 void JuicerEffect::bootstrap_after_attach() {
     // Initialize Spectral globals exactly once per process.
-    JuicerProcess::root().ensure_bootstrap(init_spectral_globals_once);
+    JuicerProcess::root().ensure_bootstrap();
     JTRACE("BUILD", "spectral globals ensured once; proceeding to profile and film stock load");
     // Suppress re-entrant param events during bootstrap
     _state->inBootstrap = true;

@@ -15,8 +15,6 @@ namespace JuicerCuda {
 
 namespace JuicerProcess {
 
-    using BootstrapFn = void (*)();
-
     class Root {
     public:
         static Root& instance() noexcept;
@@ -24,7 +22,7 @@ namespace JuicerProcess {
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
 
-        void ensure_bootstrap(BootstrapFn callback);
+        void ensure_bootstrap();
         void retire_idle_contexts(InstanceState& state) noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;

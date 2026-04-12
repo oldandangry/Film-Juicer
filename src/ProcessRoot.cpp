@@ -3,11 +3,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "Illuminants.h"
 #include "JuicerState.h"
 #include "Logging.h"
+#include "SpectralData.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
@@ -21,6 +25,63 @@ namespace JuicerProcess {
             return value ? 1 : 0;
         }
 
+        void load_spectral_globals() {
+            Spectral::SpectralMutationScope mutationScope(
+                Spectral::SpectralMutationStage::Bootstrap,
+                "process_bootstrap");
+            (void)mutationScope;
+
+            try {
+                Spectral::lock_shape_to_reference_axis();
+                const auto cmf = Spectral::load_csv_triplets(data_dir_string("cie1931_2deg.csv"));
+                if (!Spectral::cmf_triplets_match_reference_axis(cmf)) {
+                    JTRACE("INIT", "FATAL: CMF wavelengths do not match 380-780@5nm grid");
+                    throw std::runtime_error("CMF grid mismatch");
+                }
+                Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
+                Spectral::ensure_precomputed_up_to_date();
+                Spectral::disable_hanatos_if_reference_mismatch();
+            } catch (...) {
+            }
+
+            try {
+                const std::string lutPath = data_dir_string(
+                    "luts",
+                    "spectral_upsampling",
+                    "irradiance_xy_tc.npy");
+                Spectral::load_hanatos_spectra_lut(lutPath);
+            } catch (...) {
+                Spectral::set_hanatos_available(false);
+            }
+
+            try {
+                const std::string basisPath = data_dir_string(
+                    "luts",
+                    "spectral_upsampling",
+                    "mallett2019_basis.npy");
+                Spectral::load_mallett2019_basis_npy(basisPath);
+            } catch (...) {
+                Spectral::set_mallett_available(false);
+            }
+
+            std::vector<std::pair<float, float>> kg3Pairs;
+            try {
+                kg3Pairs = Spectral::load_csv_pairs(data_dir_string(
+                    "filters",
+                    "heat_absorbing",
+                    "schott",
+                    "KG3.csv"));
+            } catch (...) {
+                kg3Pairs.clear();
+            }
+            if (kg3Pairs.empty()) {
+                kg3Pairs = {
+                    {Spectral::gShape.lambdaMin, 1.0f},
+                    {Spectral::gShape.lambdaMax, 1.0f}};
+            }
+            Spectral::set_filter_KG3_from_pairs(kg3Pairs);
+        }
+
     } // namespace
 
     Root& Root::instance() noexcept {
@@ -32,11 +93,8 @@ namespace JuicerProcess {
         return Root::instance();
     }
 
-    void Root::ensure_bootstrap(BootstrapFn callback) {
-        if (!callback) {
-            return;
-        }
-        std::call_once(_bootstrapOnce, callback);
+    void Root::ensure_bootstrap() {
+        std::call_once(_bootstrapOnce, load_spectral_globals);
     }
 
     JuicerAssets::Library& Root::assets() noexcept {
