@@ -82,6 +82,22 @@ namespace JuicerAssets {
             return data_path_string(segments);
         }
 
+        std::string data_directory_path(std::initializer_list<const char*> segments) {
+            if (gDataDir.empty()) {
+                return {};
+            }
+            std::string result = data_path_string(segments);
+#ifdef _WIN32
+            const char separator = '\\';
+#else
+            const char separator = '/';
+#endif
+            if (!result.empty() && result.back() != separator) {
+                result.push_back(separator);
+            }
+            return result;
+        }
+
         std::string paper_dir_for_folder(const std::string& folderName) {
             if (folderName.empty() || gDataDir.empty()) {
                 return {};
@@ -136,6 +152,13 @@ namespace JuicerAssets {
             asset.stbnPath = noise_asset_path({"Noise", "stbn_scalar_512x512x256_u8.bin"});
             asset.wangTilesPath = noise_asset_path({"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
             asset.wangMetadataPath = noise_asset_path({"Noise", "Wang", "tiles.json"});
+            asset.version = Library::kProcessAssetVersion;
+            return asset;
+        }
+
+        DichroicFilterAssetSet make_dichroic_filter_set(const char* folderName) {
+            DichroicFilterAssetSet asset;
+            asset.directory = data_directory_path({"filters", "dichroics", folderName});
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -303,6 +326,12 @@ namespace JuicerAssets {
     void Library::ensure_static_noise_assets() {
         std::call_once(_staticNoiseOnce, [this]() {
             load_static_noise_assets();
+        });
+    }
+
+    void Library::ensure_dichroic_filter_sets() {
+        std::call_once(_dichroicFilterOnce, [this]() {
+            load_dichroic_filter_sets();
         });
     }
 
@@ -513,6 +542,12 @@ namespace JuicerAssets {
         _staticNoiseAssets = make_static_noise_assets();
     }
 
+    void Library::load_dichroic_filter_sets() {
+        _dichroicFilterSets[0] = make_dichroic_filter_set("durst_digital_light");
+        _dichroicFilterSets[1] = make_dichroic_filter_set("thorlabs");
+        _dichroicFilterSets[2] = make_dichroic_filter_set("edmund_optics");
+    }
+
     const FilmStockAsset& Library::film_stock_for_index(int index) {
         ensure_catalogs();
         static const FilmStockAsset empty{};
@@ -548,6 +583,14 @@ namespace JuicerAssets {
     const StaticNoiseAssetSet& Library::static_noise_assets() {
         ensure_static_noise_assets();
         return _staticNoiseAssets;
+    }
+
+    const DichroicFilterAssetSet& Library::dichroic_filter_set_for_choice(int dichroicSetChoice) {
+        ensure_dichroic_filter_sets();
+        if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_dichroicFilterSets.size())) {
+            dichroicSetChoice = 0;
+        }
+        return _dichroicFilterSets[static_cast<size_t>(dichroicSetChoice)];
     }
 
     int Library::film_stock_count() {

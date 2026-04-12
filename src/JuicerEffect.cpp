@@ -50,15 +50,6 @@ namespace {
         Median = 1
     };
 
-    const char* dichroic_dir_name_for_choice(int choice) {
-        switch (choice) {
-        case 1: return "thorlabs";
-        case 2: return "edmund_optics";
-        case 0:
-        default: return "durst_digital_light";
-        }
-    }
-
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
     static int illuminant_choice_index_from_string(const std::string& value);
 
@@ -67,7 +58,6 @@ namespace {
         const std::string& dichroicDir,
         const char* detail,
         const char* fallbackState) {
-
         if (!JTRACE_ENABLED(1)) {
             return;
         }
@@ -94,16 +84,15 @@ namespace {
         Print::Runtime& runtime,
         const char* operation,
         const char* fallbackState) {
-        const std::string dichroicDir = ensure_trailing_separator(
-            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(dichroicSetChoice)));
+        const JuicerAssets::DichroicFilterAssetSet& dichroicAssets =
+            JuicerProcess::root().assets().dichroic_filter_set_for_choice(dichroicSetChoice);
+        const std::string& dichroicDir = dichroicAssets.directory;
         try {
             Print::load_dichroic_filters_from_csvs(dichroicDir, runtime);
             return true;
-        }
-        catch (const std::exception& ex) {
+        } catch (const std::exception& ex) {
             trace_dichroic_load_failure(operation, dichroicDir, ex.what(), fallbackState);
-        }
-        catch (...) {
+        } catch (...) {
             trace_dichroic_load_failure(operation, dichroicDir, nullptr, fallbackState);
         }
         return false;
