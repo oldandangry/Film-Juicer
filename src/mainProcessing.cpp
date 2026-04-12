@@ -121,6 +121,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 #include "SpectralData.h"
 #include "ColorTransforms.h"
 #include "Print.h"
+#include "ProcessRoot.h"
 #include "JuicerState.h"
 #include "Scanner.h"
 #include "OutputColor.h"
@@ -1130,8 +1131,9 @@ namespace {
         const char* stageName = nonempty_cstr_or(stage, "unknown_stage");
         const bool traceInfo = JTRACE_ENABLED(1);
         std::string retireError;
-        const bool retireAccepted = JuicerCuda::ResourceManager::command_retire_context_reset(
-            key,
+        const bool retireAccepted = JuicerProcess::root().retire_reset_context(
+            key.deviceId,
+            key.contextOpaque,
             retireError);
 
         bool slotErased = false;

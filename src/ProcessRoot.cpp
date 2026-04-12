@@ -43,6 +43,34 @@ namespace JuicerProcess {
         return _assets;
     }
 
+    bool Root::retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        JuicerCuda::ResourceManager::DeviceContextKey key{};
+        key.deviceId = deviceId;
+        key.contextOpaque = contextOpaque;
+        return JuicerCuda::ResourceManager::command_retire_context_idle(key, outError);
+#else
+        (void)deviceId;
+        (void)contextOpaque;
+        outError.clear();
+        return true;
+#endif
+    }
+
+    bool Root::retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        JuicerCuda::ResourceManager::DeviceContextKey key{};
+        key.deviceId = deviceId;
+        key.contextOpaque = contextOpaque;
+        return JuicerCuda::ResourceManager::command_retire_context_reset(key, outError);
+#else
+        (void)deviceId;
+        (void)contextOpaque;
+        outError.clear();
+        return true;
+#endif
+    }
+
     void Root::retire_idle_contexts(InstanceState& state) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         const bool traceInfo = JTRACE_ENABLED(1);
@@ -65,7 +93,7 @@ namespace JuicerProcess {
         for (size_t i = 0; i < keyCount; ++i, ++keyData) {
             const auto& key = *keyData;
             std::string retireError;
-            const bool retireOk = JuicerCuda::ResourceManager::command_retire_context_idle(key, retireError);
+            const bool retireOk = retire_idle_context(key.deviceId, key.contextOpaque, retireError);
             if (!retireOk || !retireError.empty()) {
                 if (traceInfo) {
                     const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);

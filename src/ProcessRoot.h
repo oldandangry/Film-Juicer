@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mutex>
+#include <string>
 
 #include "ResourceAssetLibrary.h"
 
@@ -19,10 +20,13 @@ namespace JuicerProcess {
 
         void ensure_bootstrap(BootstrapFn callback);
         void retire_idle_contexts(InstanceState& state) noexcept;
+        bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         JuicerAssets::Library& assets() noexcept;
 
     private:
         Root() = default;
+
+        bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
 
         std::once_flag _bootstrapOnce;
         JuicerAssets::Library _assets;
