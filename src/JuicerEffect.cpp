@@ -320,6 +320,7 @@ namespace {
 
     struct PrintProfileLoadInputs {
         ProfileKeyLabels labels{};
+        JuicerAssets::PrintRuntimeAssetSet printAssets{};
         std::string printDir;
         std::string printProfileJson;
     };
@@ -333,8 +334,12 @@ namespace {
     inline PrintProfileLoadInputs build_print_profile_load_inputs(const ParamSnapshot& snapshot) {
         PrintProfileLoadInputs inputs{};
         inputs.labels = resolve_profile_key_labels(snapshot);
-        inputs.printDir = print_dir_for_index(snapshot.printPaperIndex);
-        inputs.printProfileJson = print_profile_json_path_for_index(snapshot.printPaperIndex);
+        inputs.printAssets = JuicerProcess::root().assets().print_runtime_assets_for_choices(
+            snapshot.filmStockIndex,
+            snapshot.printPaperIndex,
+            snapshot.enlDichroicSet);
+        inputs.printDir = inputs.printAssets.printPaper.paperDir;
+        inputs.printProfileJson = inputs.printAssets.printPaper.profileJsonPath;
         return inputs;
     }
 
@@ -4299,17 +4304,24 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     }
     const bool traceInfo = JTRACE_ENABLED(1);
 
-    const ProfileKeyLabels labels = resolve_profile_key_labels(P);
-    const char* paperKey = labels.paperKey;
-    const char* negativeKey = labels.filmKey;
+    const JuicerAssets::PrintRuntimeAssetSet printAssets =
+        JuicerProcess::root().assets().print_runtime_assets_for_choices(
+            P.filmStockIndex,
+            P.printPaperIndex,
+            P.enlDichroicSet);
+    const char* paperKey = printAssets.printPaper.jsonKey.empty()
+                               ? nullptr
+                               : printAssets.printPaper.jsonKey.c_str();
+    const char* negativeKey = printAssets.filmStock.jsonKey.empty()
+                                  ? nullptr
+                                  : printAssets.filmStock.jsonKey.c_str();
     const std::vector<std::string> illumKeys = enlarger_illuminant_keys_for_choice(P.enlIll);
 
     if (!(paperKey && negativeKey && !illumKeys.empty())) {
         if (traceInfo) {
             JTRACE(
                 "PRINT",
-                "Neutral filter lookup prerequisites missing: "
-                + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
+                "Neutral filter lookup prerequisites missing: " + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
         }
         throw std::runtime_error("Neutral filter metadata incomplete for current selection");
     }
@@ -4319,8 +4331,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     float neutralC = Print::kDefaultNeutralC;
     bool loaded = false;
 
-    const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb =
-        JuicerProcess::root().assets().neutral_filter_database_for_dichroic_set(P.enlDichroicSet);
+    const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb = printAssets.neutralFilters;
     const std::string& jsonPathSelected = neutralDb.selectedPath;
     const std::string& jsonPathDefault = neutralDb.defaultPath;
     std::tuple<float, float, float> ymc{};

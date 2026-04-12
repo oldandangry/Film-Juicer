@@ -621,6 +621,16 @@ namespace JuicerAssets {
         return _illuminantFilterAssets;
     }
 
+    PrintRuntimeAssetSet Library::print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice) {
+        PrintRuntimeAssetSet assets;
+        assets.filmStock = film_stock_for_index(filmIndex);
+        assets.printPaper = print_paper_for_index(printPaperIndex);
+        assets.neutralFilters = neutral_filter_database_for_dichroic_set(dichroicSetChoice);
+        assets.dichroicFilters = dichroic_filter_set_for_choice(dichroicSetChoice);
+        assets.illuminantFilters = illuminant_filter_assets();
+        return assets;
+    }
+
     int Library::film_stock_count() {
         ensure_catalogs();
         return static_cast<int>(_filmStocks.size());

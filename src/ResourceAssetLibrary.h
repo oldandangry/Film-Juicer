@@ -53,6 +53,14 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct PrintRuntimeAssetSet {
+        FilmStockAsset filmStock;
+        PrintPaperAsset printPaper;
+        NeutralFilterDatabaseAsset neutralFilters;
+        DichroicFilterAssetSet dichroicFilters;
+        IlluminantFilterAssetSet illuminantFilters;
+    };
+
     class Library {
     public:
         static constexpr std::uint64_t kProcessAssetVersion = 1ull;
@@ -63,6 +71,7 @@ namespace JuicerAssets {
         const StaticNoiseAssetSet& static_noise_assets();
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const IlluminantFilterAssetSet& illuminant_filter_assets();
+        PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
 
         int film_stock_count();
         int print_paper_count();
