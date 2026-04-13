@@ -21,8 +21,6 @@
 #include "Hash.h"
 #include "nlohmann/json.hpp"
 
-extern const std::string gDataDir;
-
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #include <cuda.h>

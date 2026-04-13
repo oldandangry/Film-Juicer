@@ -2,11 +2,21 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include "Illuminants.h"
 #include "JuicerState.h"
@@ -23,6 +33,100 @@ namespace JuicerProcess {
 
         inline int bool_to_i32(bool value) noexcept {
             return value ? 1 : 0;
+        }
+
+        std::string compute_process_data_dir() {
+            namespace fs = std::filesystem;
+
+#if defined(_WIN32)
+            HMODULE module = nullptr;
+            if (!GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(&compute_process_data_dir),
+                    &module)) {
+                return std::string();
+            }
+
+            std::wstring buffer(MAX_PATH, L'\0');
+            DWORD length = 0;
+            for (;;) {
+                SetLastError(ERROR_SUCCESS);
+                length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+                if (length == 0) {
+                    return std::string();
+                }
+                if (length < buffer.size()) {
+                    buffer.resize(length);
+                    break;
+                }
+                if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+                    buffer.resize(length);
+                    break;
+                }
+                buffer.resize(buffer.size() * 2);
+            }
+
+            fs::path modulePath(buffer);
+            fs::path moduleDir = modulePath.parent_path();
+            if (moduleDir.empty()) {
+                return std::string();
+            }
+            fs::path contentsDir = moduleDir.parent_path();
+            if (contentsDir.empty()) {
+                return std::string();
+            }
+
+            fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
+            resourcesDir.make_preferred();
+            std::wstring native = resourcesDir.native();
+            if (!native.empty() && native.back() != L'\\') {
+                native.push_back(L'\\');
+            }
+
+            if (native.empty()) {
+                return std::string();
+            }
+
+            int required = WideCharToMultiByte(
+                CP_UTF8,
+                0,
+                native.c_str(),
+                static_cast<int>(native.size()),
+                nullptr,
+                0,
+                nullptr,
+                nullptr);
+            if (required <= 0) {
+                return std::string();
+            }
+
+            std::string path(static_cast<size_t>(required), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), path.data(), required, nullptr, nullptr);
+            return path;
+#else
+            Dl_info info{};
+            if (dladdr(reinterpret_cast<const void*>(&compute_process_data_dir), &info) == 0 || info.dli_fname == nullptr) {
+                return std::string();
+            }
+
+            fs::path modulePath(info.dli_fname);
+            fs::path moduleDir = modulePath.parent_path();
+            if (moduleDir.empty()) {
+                return std::string();
+            }
+            fs::path contentsDir = moduleDir.parent_path();
+            if (contentsDir.empty()) {
+                return std::string();
+            }
+
+            fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
+            resourcesDir.make_preferred();
+            std::string path = resourcesDir.u8string();
+            if (!path.empty() && path.back() != '/') {
+                path.push_back('/');
+            }
+            return path;
+#endif
         }
 
         void load_spectral_globals() {
@@ -116,6 +220,34 @@ namespace JuicerProcess {
         }
     }
 
+    Root::ShutdownToken::ShutdownToken(Root* root) noexcept
+        : _root(root) {
+    }
+
+    Root::ShutdownToken::~ShutdownToken() {
+        reset();
+    }
+
+    Root::ShutdownToken::ShutdownToken(ShutdownToken&& other) noexcept
+        : _root(std::exchange(other._root, nullptr)) {
+    }
+
+    Root::ShutdownToken& Root::ShutdownToken::operator=(ShutdownToken&& other) noexcept {
+        if (this != &other) {
+            reset();
+            _root = std::exchange(other._root, nullptr);
+        }
+        return *this;
+    }
+
+    void Root::ShutdownToken::reset() noexcept {
+        Root* root = _root;
+        _root = nullptr;
+        if (root) {
+            root->finish_shutdown();
+        }
+    }
+
     Root& Root::instance() noexcept {
         static Root root;
         return root;
@@ -125,18 +257,25 @@ namespace JuicerProcess {
         return Root::instance();
     }
 
+    Root::Root()
+        : _dataDir(compute_process_data_dir()), _assets(_dataDir) {
+    }
+
+    const std::string& Root::data_dir() const noexcept {
+        return _dataDir;
+    }
+
     void Root::ensure_bootstrap() {
         resume_frame_preparation();
         std::call_once(_bootstrapOnce, load_spectral_globals);
     }
 
     void Root::shutdown() noexcept {
-        stop_frame_preparation();
+        ShutdownToken shutdown = begin_shutdown();
+        (void)shutdown;
         wait_for_frame_preparation();
         retire_known_contexts();
-        release_working_state_cores();
-        _assets.release_cached_payloads();
-        finish_shutdown();
+        release_process_host_services();
     }
 
     JuicerAssets::Library& Root::assets() noexcept {
@@ -270,6 +409,25 @@ namespace JuicerProcess {
 #endif
     }
 
+    void Root::release_process_host_services() noexcept {
+        release_working_state_cores();
+        _assets.release_cached_payloads();
+    }
+
+    Root::ShutdownToken Root::begin_shutdown() noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            _acceptFramePreparation = false;
+            ++_activeShutdowns;
+            if (_activeFramePreparations == 0) {
+                _framePreparationCv.notify_all();
+            }
+            return ShutdownToken(this);
+        } catch (...) {
+            return ShutdownToken{};
+        }
+    }
+
     void Root::finish_shutdown() noexcept {
         try {
             std::lock_guard<std::mutex> lock(_framePreparationMutex);
@@ -299,18 +457,6 @@ namespace JuicerProcess {
             std::lock_guard<std::mutex> lock(_framePreparationMutex);
             if (_activeShutdowns == 0) {
                 _acceptFramePreparation = true;
-            }
-        } catch (...) {
-        }
-    }
-
-    void Root::stop_frame_preparation() noexcept {
-        try {
-            std::lock_guard<std::mutex> lock(_framePreparationMutex);
-            _acceptFramePreparation = false;
-            ++_activeShutdowns;
-            if (_activeFramePreparations == 0) {
-                _framePreparationCv.notify_all();
             }
         } catch (...) {
         }

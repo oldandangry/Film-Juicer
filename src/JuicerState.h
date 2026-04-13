@@ -23,6 +23,7 @@
 #include <vector>
 #include <unordered_map>
 
+#include "ProcessRoot.h"
 #include "Print.h"
 #include "ProfileJSONLoader.h"
 #include "ColorTransforms.h"
@@ -31,8 +32,6 @@
 #include "Scanner.h"
 #include "SpectralData.h"
 #include "ofxImageEffect.h"
-
-extern const std::string gDataDir;
 
 namespace OFX {
     class Image;
@@ -153,17 +152,16 @@ struct JuicerCudaResourcesDeleter {
 #endif
 
 inline std::filesystem::path data_dir_path() {
-    std::filesystem::path path(gDataDir);
+    std::filesystem::path path(JuicerProcess::root().data_dir());
     path.make_preferred();
     return path;
 }
 
 template <typename... Parts>
 inline std::filesystem::path data_dir_path(Parts&&... parts) {
-    std::filesystem::path path(gDataDir);
+    std::filesystem::path path(JuicerProcess::root().data_dir());
     (void)std::initializer_list<int>{
-        ((path /= std::filesystem::path(std::forward<Parts>(parts))), 0)...
-    };
+        ((path /= std::filesystem::path(std::forward<Parts>(parts))), 0)...};
     path.make_preferred();
     return path;
 }

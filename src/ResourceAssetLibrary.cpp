@@ -21,8 +21,6 @@
 #include "ProfileJSONLoader.h"
 #include "nlohmann/json.hpp"
 
-extern const std::string gDataDir;
-
 namespace JuicerAssets {
 
     namespace {
@@ -491,8 +489,8 @@ namespace JuicerAssets {
             return result;
         }
 
-        std::string data_path_string(std::initializer_list<const char*> segments) {
-            fs::path path(gDataDir);
+        std::string data_path_string(const std::string& dataDir, std::initializer_list<const char*> segments) {
+            fs::path path(dataDir);
             for (const char* segment : segments) {
                 if (segment && *segment) {
                     path /= segment;
@@ -502,31 +500,31 @@ namespace JuicerAssets {
             return path.string();
         }
 
-        std::string profile_json_path_for_key(const std::string& jsonKey) {
+        std::string profile_json_path_for_key(const std::string& dataDir, const std::string& jsonKey) {
             if (jsonKey.empty()) {
                 return {};
             }
             std::string fileName = jsonKey;
             fileName += ".json";
-            return data_path_string({"profiles", fileName.c_str()});
+            return data_path_string(dataDir, {"profiles", fileName.c_str()});
         }
 
-        std::string profile_asset_path(const char* fileName) {
-            return data_path_string({"profiles", fileName});
+        std::string profile_asset_path(const std::string& dataDir, const char* fileName) {
+            return data_path_string(dataDir, {"profiles", fileName});
         }
 
-        std::string noise_asset_path(std::initializer_list<const char*> segments) {
-            if (gDataDir.empty()) {
+        std::string noise_asset_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
+            if (dataDir.empty()) {
                 return {};
             }
-            return data_path_string(segments);
+            return data_path_string(dataDir, segments);
         }
 
-        std::string data_directory_path(std::initializer_list<const char*> segments) {
-            if (gDataDir.empty()) {
+        std::string data_directory_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
+            if (dataDir.empty()) {
                 return {};
             }
-            std::string result = data_path_string(segments);
+            std::string result = data_path_string(dataDir, segments);
 #ifdef _WIN32
             const char separator = '\\';
 #else
@@ -538,11 +536,11 @@ namespace JuicerAssets {
             return result;
         }
 
-        std::string paper_dir_for_folder(const std::string& folderName) {
-            if (folderName.empty() || gDataDir.empty()) {
+        std::string paper_dir_for_folder(const std::string& dataDir, const std::string& folderName) {
+            if (folderName.empty() || dataDir.empty()) {
                 return {};
             }
-            fs::path dir = fs::path(gDataDir) / "paper" / folderName;
+            fs::path dir = fs::path(dataDir) / "paper" / folderName;
             dir.make_preferred();
             std::string result = dir.string();
 #ifdef _WIN32
@@ -556,16 +554,20 @@ namespace JuicerAssets {
             return result;
         }
 
-        FilmStockAsset make_film_stock(std::string optionLabel, std::string jsonKey) {
+        FilmStockAsset make_film_stock(
+            const std::string& dataDir,
+            std::string optionLabel,
+            std::string jsonKey) {
             FilmStockAsset asset;
             asset.optionLabel = std::move(optionLabel);
             asset.jsonKey = std::move(jsonKey);
-            asset.profileJsonPath = profile_json_path_for_key(asset.jsonKey);
+            asset.profileJsonPath = profile_json_path_for_key(dataDir, asset.jsonKey);
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
         PrintPaperAsset make_print_paper(
+            const std::string& dataDir,
             std::string optionLabel,
             std::string folderName,
             std::string jsonKey) {
@@ -573,62 +575,64 @@ namespace JuicerAssets {
             asset.optionLabel = std::move(optionLabel);
             asset.folderName = std::move(folderName);
             asset.jsonKey = std::move(jsonKey);
-            asset.profileJsonPath = profile_json_path_for_key(asset.jsonKey);
-            asset.paperDir = paper_dir_for_folder(asset.folderName);
+            asset.profileJsonPath = profile_json_path_for_key(dataDir, asset.jsonKey);
+            asset.paperDir = paper_dir_for_folder(dataDir, asset.folderName);
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
-        NeutralFilterDatabaseAsset make_neutral_filter_database(const char* selectedFileName) {
+        NeutralFilterDatabaseAsset make_neutral_filter_database(const std::string& dataDir, const char* selectedFileName) {
             NeutralFilterDatabaseAsset asset;
-            asset.selectedPath = profile_asset_path(selectedFileName);
-            asset.defaultPath = profile_asset_path("enlarger_neutral_ymc_filters.json");
+            asset.selectedPath = profile_asset_path(dataDir, selectedFileName);
+            asset.defaultPath = profile_asset_path(dataDir, "enlarger_neutral_ymc_filters.json");
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
-        StaticNoiseAssetSet make_static_noise_assets() {
+        StaticNoiseAssetSet make_static_noise_assets(const std::string& dataDir) {
             StaticNoiseAssetSet asset;
-            asset.stbnPath = noise_asset_path({"Noise", "stbn_scalar_512x512x256_u8.bin"});
-            asset.wangTilesPath = noise_asset_path({"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
-            asset.wangMetadataPath = noise_asset_path({"Noise", "Wang", "tiles.json"});
+            asset.stbnPath = noise_asset_path(dataDir, {"Noise", "stbn_scalar_512x512x256_u8.bin"});
+            asset.wangTilesPath = noise_asset_path(dataDir, {"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
+            asset.wangMetadataPath = noise_asset_path(dataDir, {"Noise", "Wang", "tiles.json"});
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
-        DichroicFilterAssetSet make_dichroic_filter_set(const char* folderName) {
+        DichroicFilterAssetSet make_dichroic_filter_set(const std::string& dataDir, const char* folderName) {
             DichroicFilterAssetSet asset;
-            asset.directory = data_directory_path({"filters", "dichroics", folderName});
+            asset.directory = data_directory_path(dataDir, {"filters", "dichroics", folderName});
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
-        IlluminantFilterAssetSet make_illuminant_filter_assets() {
+        IlluminantFilterAssetSet make_illuminant_filter_assets(const std::string& dataDir) {
             IlluminantFilterAssetSet asset;
-            asset.d65Path = data_path_string({"illuminants", "D65.csv"});
-            asset.d55Path = data_path_string({"illuminants", "D55.csv"});
-            asset.d50Path = data_path_string({"illuminants", "D50.csv"});
-            asset.tungstenPath = data_path_string({"illuminants", "T.csv"});
-            asset.kinoton75PPath = data_path_string({"illuminants", "K75P.csv"});
-            asset.kg3Path = data_path_string({"filters", "heat_absorbing", "schott", "KG3.csv"});
-            asset.lensTransmissionPath = data_path_string({"filters", "lens_transmission", "canon", "canon_24_f28_is.csv"});
+            asset.d65Path = data_path_string(dataDir, {"illuminants", "D65.csv"});
+            asset.d55Path = data_path_string(dataDir, {"illuminants", "D55.csv"});
+            asset.d50Path = data_path_string(dataDir, {"illuminants", "D50.csv"});
+            asset.tungstenPath = data_path_string(dataDir, {"illuminants", "T.csv"});
+            asset.kinoton75PPath = data_path_string(dataDir, {"illuminants", "K75P.csv"});
+            asset.kg3Path = data_path_string(dataDir, {"filters", "heat_absorbing", "schott", "KG3.csv"});
+            asset.lensTransmissionPath = data_path_string(
+                dataDir,
+                {"filters", "lens_transmission", "canon", "canon_24_f28_is.csv"});
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
-        void append_default_film_stocks(std::vector<FilmStockAsset>& out) {
+        void append_default_film_stocks(const std::string& dataDir, std::vector<FilmStockAsset>& out) {
             out.clear();
             out.reserve(kDefaultFilmStocks.size());
             for (const FilmStockSeed& seed : kDefaultFilmStocks) {
-                out.emplace_back(make_film_stock(seed.optionLabel, seed.jsonKey));
+                out.emplace_back(make_film_stock(dataDir, seed.optionLabel, seed.jsonKey));
             }
         }
 
-        void append_default_print_papers(std::vector<PrintPaperAsset>& out) {
+        void append_default_print_papers(const std::string& dataDir, std::vector<PrintPaperAsset>& out) {
             out.clear();
             out.reserve(kDefaultPrintPapers.size());
             for (const PrintPaperSeed& seed : kDefaultPrintPapers) {
-                out.emplace_back(make_print_paper(seed.optionLabel, seed.folderName, seed.jsonKey));
+                out.emplace_back(make_print_paper(dataDir, seed.optionLabel, seed.folderName, seed.jsonKey));
             }
         }
 
@@ -774,8 +778,10 @@ namespace JuicerAssets {
         std::vector<ProfileCacheEntry> profiles;
     };
 
-    Library::Library()
-        : _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()), _profileCache(std::make_unique<ProfileCacheState>()) {
+    Library::Library(std::string dataDir)
+        : _dataDir(std::move(dataDir)),
+          _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
+          _profileCache(std::make_unique<ProfileCacheState>()) {
     }
 
     Library::~Library() = default;
@@ -815,7 +821,8 @@ namespace JuicerAssets {
         _filmStocks.clear();
         _printPapers.clear();
 
-        fs::path base = fs::path(gDataDir);
+        const std::string& dataDir = _dataDir;
+        fs::path base = fs::path(dataDir);
         fs::path profilesDir = base / "profiles";
         fs::path paperDir = base / "paper";
 
@@ -823,7 +830,7 @@ namespace JuicerAssets {
         std::vector<std::string> missingFilmKeys;
         std::vector<std::string> missingPaperKeys;
         std::error_code ec;
-        if (!gDataDir.empty() && fs::exists(profilesDir, ec) && fs::is_directory(profilesDir, ec)) {
+        if (!dataDir.empty() && fs::exists(profilesDir, ec) && fs::is_directory(profilesDir, ec)) {
             for (fs::directory_iterator it(profilesDir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
                 if (!it->is_regular_file(ec)) {
                     continue;
@@ -863,7 +870,7 @@ namespace JuicerAssets {
                 return;
             }
             std::string label = it->second.name.empty() ? it->second.stock : it->second.name;
-            _filmStocks.emplace_back(make_film_stock(std::move(label), it->second.stock));
+            _filmStocks.emplace_back(make_film_stock(dataDir, std::move(label), it->second.stock));
         };
 
         for (const std::string& key : filters.filmKeys) {
@@ -876,7 +883,7 @@ namespace JuicerAssets {
                     continue;
                 }
                 std::string label = pair.second.name.empty() ? pair.second.stock : pair.second.name;
-                _filmStocks.emplace_back(make_film_stock(std::move(label), pair.second.stock));
+                _filmStocks.emplace_back(make_film_stock(dataDir, std::move(label), pair.second.stock));
             }
             std::sort(_filmStocks.begin(), _filmStocks.end(), [](const FilmStockAsset& a, const FilmStockAsset& b) {
                 return a.optionLabel < b.optionLabel;
@@ -901,11 +908,11 @@ namespace JuicerAssets {
                     JTRACE("CATALOG", "catalog default: no film profiles discovered; using defaults");
                 }
             }
-            append_default_film_stocks(_filmStocks);
+            append_default_film_stocks(dataDir, _filmStocks);
         }
 
         std::vector<PrintFolderInfo> folders;
-        if (!gDataDir.empty() && fs::exists(paperDir, ec) && fs::is_directory(paperDir, ec)) {
+        if (!dataDir.empty() && fs::exists(paperDir, ec) && fs::is_directory(paperDir, ec)) {
             for (fs::directory_iterator it(paperDir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
                 if (it->is_directory(ec)) {
                     std::string folder = it->path().filename().string();
@@ -934,7 +941,7 @@ namespace JuicerAssets {
             }
             std::string folder = claim_print_folder(info, key, folders);
             std::string label = info.name.empty() ? key : info.name;
-            _printPapers.emplace_back(make_print_paper(std::move(label), std::move(folder), key));
+            _printPapers.emplace_back(make_print_paper(dataDir, std::move(label), std::move(folder), key));
         };
 
         for (const std::string& key : filters.paperKeys) {
@@ -980,7 +987,7 @@ namespace JuicerAssets {
                 if (!bestKey.empty()) {
                     folderInfo.used = true;
                     std::string label = folderInfo.name;
-                    _printPapers.emplace_back(make_print_paper(std::move(label), folderInfo.name, bestKey));
+                    _printPapers.emplace_back(make_print_paper(dataDir, std::move(label), folderInfo.name, bestKey));
                 }
             }
         }
@@ -1003,14 +1010,14 @@ namespace JuicerAssets {
                     JTRACE("CATALOG", "catalog default: no print profiles discovered; using defaults");
                 }
             }
-            append_default_print_papers(_printPapers);
+            append_default_print_papers(dataDir, _printPapers);
         }
     }
 
     void Library::load_neutral_filter_databases() {
-        _neutralFilterDatabases[0] = make_neutral_filter_database("enlarger_neutral_ymc_filters.json");
-        _neutralFilterDatabases[1] = make_neutral_filter_database("enlarger_neutral_ymc_filters_thorlabs.json");
-        _neutralFilterDatabases[2] = make_neutral_filter_database("enlarger_neutral_ymc_filters_edmund.json");
+        _neutralFilterDatabases[0] = make_neutral_filter_database(_dataDir, "enlarger_neutral_ymc_filters.json");
+        _neutralFilterDatabases[1] = make_neutral_filter_database(_dataDir, "enlarger_neutral_ymc_filters_thorlabs.json");
+        _neutralFilterDatabases[2] = make_neutral_filter_database(_dataDir, "enlarger_neutral_ymc_filters_edmund.json");
     }
 
     NeutralFilterLookupResult Library::lookup_neutral_filters(
@@ -1056,17 +1063,17 @@ namespace JuicerAssets {
     }
 
     void Library::load_static_noise_assets() {
-        _staticNoiseAssets = make_static_noise_assets();
+        _staticNoiseAssets = make_static_noise_assets(_dataDir);
     }
 
     void Library::load_dichroic_filter_sets() {
-        _dichroicFilterSets[0] = make_dichroic_filter_set("durst_digital_light");
-        _dichroicFilterSets[1] = make_dichroic_filter_set("thorlabs");
-        _dichroicFilterSets[2] = make_dichroic_filter_set("edmund_optics");
+        _dichroicFilterSets[0] = make_dichroic_filter_set(_dataDir, "durst_digital_light");
+        _dichroicFilterSets[1] = make_dichroic_filter_set(_dataDir, "thorlabs");
+        _dichroicFilterSets[2] = make_dichroic_filter_set(_dataDir, "edmund_optics");
     }
 
     void Library::load_illuminant_filter_assets() {
-        _illuminantFilterAssets = make_illuminant_filter_assets();
+        _illuminantFilterAssets = make_illuminant_filter_assets(_dataDir);
     }
 
     const FilmStockAsset& Library::film_stock_for_index(int index) {

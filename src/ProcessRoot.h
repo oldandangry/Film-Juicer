@@ -56,6 +56,7 @@ namespace JuicerProcess {
         Root(const Root&) = delete;
         Root& operator=(const Root&) = delete;
 
+        const std::string& data_dir() const noexcept;
         void ensure_bootstrap();
         void shutdown() noexcept;
         FramePreparationToken begin_frame_preparation() noexcept;
@@ -85,17 +86,39 @@ namespace JuicerProcess {
             std::shared_ptr<const WorkingStateSharing::WorkingStateCorePayload> insertPayload = nullptr);
 
     private:
-        Root() = default;
+        class ShutdownToken final {
+        public:
+            ShutdownToken() noexcept = default;
+            ~ShutdownToken();
 
+            ShutdownToken(const ShutdownToken&) = delete;
+            ShutdownToken& operator=(const ShutdownToken&) = delete;
+
+            ShutdownToken(ShutdownToken&& other) noexcept;
+            ShutdownToken& operator=(ShutdownToken&& other) noexcept;
+
+        private:
+            friend class Root;
+
+            explicit ShutdownToken(Root* root) noexcept;
+            void reset() noexcept;
+
+            Root* _root = nullptr;
+        };
+
+        Root();
+
+        ShutdownToken begin_shutdown() noexcept;
         void retire_known_contexts() noexcept;
+        void release_process_host_services() noexcept;
         void release_working_state_cores() noexcept;
         void finish_shutdown() noexcept;
         void finish_frame_preparation() noexcept;
         void resume_frame_preparation() noexcept;
-        void stop_frame_preparation() noexcept;
         void wait_for_frame_preparation() noexcept;
 
         std::once_flag _bootstrapOnce;
+        std::string _dataDir;
         JuicerAssets::Library _assets;
         std::mutex _framePreparationMutex;
         std::condition_variable _framePreparationCv;

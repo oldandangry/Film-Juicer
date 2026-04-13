@@ -7,17 +7,7 @@
 #include "ofxImageEffect.h" // OfxImageEffectSuiteV1, OfxRectI, OfxRectD, image effect props
 #include "ofxPixels.h"      // Pixel/rect helpers used by some 1.4 distributions
 
-#include <filesystem>
-#include <string>
-
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
+#include <cstddef>
 
 // Resolve OFX support library C++ wrappers (OpenFX 1.4 compliant)
 #pragma warning(push)
@@ -53,100 +43,6 @@
 #include "Print.h"
 #include "ProcessRoot.h"
 #include "ProfileJSONLoader.h"
-
-namespace {
-
-    static std::string computeDataDir()
-    {
-        namespace fs = std::filesystem;
-
-#if defined(_WIN32)
-        HMODULE module = nullptr;
-        if (!GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&computeDataDir),
-            &module)) {
-            return std::string();
-        }
-
-        std::wstring buffer(MAX_PATH, L'\0');
-        DWORD length = 0;
-        for (;;) {
-            SetLastError(ERROR_SUCCESS);
-            length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
-            if (length == 0) {
-                return std::string();
-            }
-            if (length < buffer.size()) {
-                buffer.resize(length);
-                break;
-            }
-            if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-                buffer.resize(length);
-                break;
-            }
-            buffer.resize(buffer.size() * 2);
-        }
-
-        fs::path modulePath(buffer);
-        fs::path moduleDir = modulePath.parent_path();
-        if (moduleDir.empty()) {
-            return std::string();
-        }
-        fs::path contentsDir = moduleDir.parent_path();
-        if (contentsDir.empty()) {
-            return std::string();
-        }
-
-        fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
-        resourcesDir.make_preferred();
-        std::wstring native = resourcesDir.native();
-        if (!native.empty() && native.back() != L'\\') {
-            native.push_back(L'\\');
-        }
-
-        if (native.empty()) {
-            return std::string();
-        }
-
-        int required = WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), nullptr, 0, nullptr, nullptr);
-        if (required <= 0) {
-            return std::string();
-        }
-
-        std::string path(static_cast<size_t>(required), '\0');
-        WideCharToMultiByte(CP_UTF8, 0, native.c_str(), static_cast<int>(native.size()), path.data(), required, nullptr, nullptr);
-        return path;
-#else
-        Dl_info info{};
-        if (dladdr(reinterpret_cast<const void*>(&computeDataDir), &info) == 0 || info.dli_fname == nullptr) {
-            return std::string();
-        }
-
-        fs::path modulePath(info.dli_fname);
-        fs::path moduleDir = modulePath.parent_path();
-        if (moduleDir.empty()) {
-            return std::string();
-        }
-        fs::path contentsDir = moduleDir.parent_path();
-        if (contentsDir.empty()) {
-            return std::string();
-        }
-
-        fs::path resourcesDir = (contentsDir / "Resources").lexically_normal();
-        resourcesDir.make_preferred();
-        std::string path = resourcesDir.u8string();
-        if (!path.empty() && path.back() != '/') {
-            path.push_back('/');
-        }
-        return path;
-#endif
-    }
-
-} // namespace
-
-// Plugin data directory (immutable)
-const std::string gDataDir = computeDataDir();
 
 // === Resolve support library factory (Step 1) ===
 // The factory owns the plugin identity and wires descriptor/instance creation.

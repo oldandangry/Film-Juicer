@@ -82,7 +82,7 @@ namespace JuicerAssets {
     public:
         static constexpr std::uint64_t kProcessAssetVersion = 1ull;
 
-        Library();
+        explicit Library(std::string dataDir);
         ~Library();
 
         const FilmStockAsset& film_stock_for_index(int index);
@@ -124,6 +124,7 @@ namespace JuicerAssets {
         std::once_flag _staticNoiseOnce;
         std::once_flag _dichroicFilterOnce;
         std::once_flag _illuminantFilterOnce;
+        std::string _dataDir;
         std::vector<FilmStockAsset> _filmStocks;
         std::vector<PrintPaperAsset> _printPapers;
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
