@@ -109,13 +109,15 @@ namespace JuicerProcess {
         Root();
 
         ShutdownToken begin_shutdown() noexcept;
-        void retire_known_contexts() noexcept;
+        bool retire_known_contexts(std::string& outError) noexcept;
+        void release_cuda_host_asset_caches() noexcept;
         void release_process_host_services() noexcept;
         void release_working_state_cores() noexcept;
         void finish_shutdown() noexcept;
         void finish_frame_preparation() noexcept;
         void resume_frame_preparation() noexcept;
         void wait_for_frame_preparation() noexcept;
+        void set_shutdown_retire_blocked(bool blocked) noexcept;
 
         std::once_flag _bootstrapOnce;
         std::string _dataDir;
@@ -125,6 +127,7 @@ namespace JuicerProcess {
         std::uint32_t _activeFramePreparations = 0;
         std::uint32_t _activeShutdowns = 0;
         bool _acceptFramePreparation = true;
+        bool _shutdownRetireBlocked = false;
     };
 
     Root& root() noexcept;

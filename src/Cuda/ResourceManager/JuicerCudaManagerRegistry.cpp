@@ -1444,33 +1444,43 @@ bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexce
     return true;
 }
 
-void registry_retire(
+bool registry_retire(
     RegistryHandle handle,
     RegistryRetireReason reason,
     const DeviceContextKey* managerKey) noexcept {
     MetadataMutationGuard mutationGuard("registry_retire", managerKey);
     if (!mutationGuard.ok()) {
-        return;
+        return false;
     }
     if (handle.value == 0) {
-        return;
+        return true;
     }
     RegistryState& state = registry_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     auto keyIt = state.keyByHandle.find(handle.value);
     if (keyIt == state.keyByHandle.end()) {
-        return;
+        return true;
     }
     auto entryIt = state.byDeviceContext.find(keyIt->second);
     if (entryIt == state.byDeviceContext.end()) {
         state.keyByHandle.erase(keyIt);
         publish_registry_live_count(state.byDeviceContext.size());
-        return;
+        return true;
     }
     RegistryEntry& entry = entryIt->second;
     const DeviceContextKey deviceKey = keyIt->second;
     const std::uint64_t nowMs = monotonic_time_ms();
     entry.lastTouchedMs = nowMs;
+    if (reason == RegistryRetireReason::Idle && entry.activeSubmissionCount != 0) {
+        trace_registry_event_current(
+            &deviceKey,
+            &entry,
+            "retire",
+            false,
+            "active_submissions",
+            0);
+        return false;
+    }
     if (reason == RegistryRetireReason::ContextReset) {
         const bool barrierOk = run_freeze_drain_bump_resume_locked(
             deviceKey,
@@ -1491,10 +1501,10 @@ void registry_retire(
         telemetry_counter_add(global_state().lifecycleTransitionCalls, 1);
         telemetry_counter_add(global_state().lifecycleTransitionRejects, 1);
         trace_lifecycle_transition(deviceKey, entry.handle, entry.lifecycleState, desired, false, "retire_unsupported");
-        return;
+        return false;
     }
     if (!transition_entry_to_retired_locked(deviceKey, entry, "retire")) {
-        return;
+        return false;
     }
     RegistryEntry removed = entry;
     (void)erase_registry_entry_locked(
@@ -1505,6 +1515,7 @@ void registry_retire(
         registry_retire_reason_name(reason),
         false,
         0);
+    return true;
 }
 
 } // namespace ResourceManager

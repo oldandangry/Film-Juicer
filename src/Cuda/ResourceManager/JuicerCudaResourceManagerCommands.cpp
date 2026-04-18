@@ -2810,47 +2810,47 @@ bool command_freeze_drain_bump_resume(
 }
 
 namespace {
-bool command_retire_context_with_reason(
-    const DeviceContextKey& key,
-    RegistryRetireReason reason,
-    const char* commandName,
-    std::string& outError) {
-    outError.clear();
-    const char* stageName = trace_or(commandName, "command_retire_context");
-    MetadataMutationGuard mutationGuard(stageName, &key);
-    if (!mutationGuard.ok()) {
-        outError = std::string("metadata mutation guard rejected ") + stageName;
-        return false;
-    }
+    bool command_retire_context_with_reason(
+        const DeviceContextKey& key,
+        RegistryRetireReason reason,
+        const char* commandName,
+        std::string& outError) {
+        outError.clear();
+        const char* stageName = trace_or(commandName, "command_retire_context");
+        MetadataMutationGuard mutationGuard(stageName, &key);
+        if (!mutationGuard.ok()) {
+            outError = std::string("metadata mutation guard rejected ") + stageName;
+            return false;
+        }
+
+        RegistryHandle handle{};
+        const bool hasRegistryEntry = registry_get(key, handle) && handle.value != 0;
+        if (hasRegistryEntry && !registry_retire(handle, reason, &key)) {
+            outError = std::string(stageName) + " registry retire rejected";
+            return false;
+        }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    JuicerCuda::purge_shared_gaussian_kernels_for_context(
-        key.deviceId,
-        key.contextOpaque);
-    JuicerCuda::purge_pinned_upload_staging_for_context(
-        key.deviceId,
-        key.contextOpaque);
-    retire_base_graph_cache_for_context(key);
+        JuicerCuda::purge_shared_gaussian_kernels_for_context(
+            key.deviceId,
+            key.contextOpaque);
+        JuicerCuda::purge_pinned_upload_staging_for_context(
+            key.deviceId,
+            key.contextOpaque);
+        retire_base_graph_cache_for_context(key);
 #endif
-    tier_circuit_retire_context(key);
-    pressure_policy_retire_context(key);
-    scratch_normalization_retire_context(key);
-    admission_churn_retire_context(key);
-    optional_heuristic_trace_retire_context(key);
-    allocator_backend_retire_context(key);
-    state_clear_latest_snapshot_for_context(key);
-
-    RegistryHandle handle{};
-    if (!registry_get(key, handle) || handle.value == 0) {
+        tier_circuit_retire_context(key);
+        pressure_policy_retire_context(key);
+        scratch_normalization_retire_context(key);
+        admission_churn_retire_context(key);
+        optional_heuristic_trace_retire_context(key);
+        allocator_backend_retire_context(key);
+        state_clear_latest_snapshot_for_context(key);
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        JuicerCuda::purge_host_asset_caches_if_registry_idle(stageName);
+#endif
         return true;
     }
-
-    registry_retire(handle, reason, &key);
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    JuicerCuda::purge_host_asset_caches_if_registry_idle(stageName);
-#endif
-    return true;
-}
 } // namespace
 
 bool command_retire_context_reset(
@@ -2891,6 +2891,22 @@ bool command_retire_all_contexts_idle(std::string& outError) {
             if (outError.empty()) {
                 outError = retireError.empty() ? "context retire failed" : retireError;
             }
+        }
+    }
+    try {
+        keys.clear();
+        registry_snapshot_context_keys(keys);
+    } catch (...) {
+        if (outError.empty()) {
+            outError = "context key verification failed";
+        }
+        return false;
+    }
+    if (!keys.empty()) {
+        ok = false;
+        if (outError.empty()) {
+            outError = std::string("context retire incomplete; live_contexts=") +
+                       std::to_string(static_cast<unsigned long long>(keys.size()));
         }
     }
     return ok;

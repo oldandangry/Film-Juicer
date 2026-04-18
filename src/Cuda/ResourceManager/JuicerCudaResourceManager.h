@@ -105,7 +105,7 @@ bool registry_transition_lifecycle_state(
 bool registry_freeze_drain_bump_resume(
     const DeviceContextKey& key,
     const char* reason) noexcept;
-void registry_retire(
+bool registry_retire(
     RegistryHandle handle,
     RegistryRetireReason reason,
     const DeviceContextKey* managerKey = nullptr) noexcept;

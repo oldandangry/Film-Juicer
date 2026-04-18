@@ -24,6 +24,7 @@
 #include "SpectralData.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #endif
 
@@ -129,7 +130,15 @@ namespace JuicerProcess {
 #endif
         }
 
-        void load_spectral_globals() {
+        template <typename... Parts>
+        std::string data_file_string(const std::string& dataDir, Parts&&... parts) {
+            std::filesystem::path path(dataDir);
+            ((path /= std::filesystem::path(std::forward<Parts>(parts))), ...);
+            path.make_preferred();
+            return path.string();
+        }
+
+        void load_spectral_globals(const std::string& dataDir) {
             Spectral::SpectralMutationScope mutationScope(
                 Spectral::SpectralMutationStage::Bootstrap,
                 "process_bootstrap");
@@ -137,7 +146,7 @@ namespace JuicerProcess {
 
             try {
                 Spectral::lock_shape_to_reference_axis();
-                const auto cmf = Spectral::load_csv_triplets(data_dir_string("cie1931_2deg.csv"));
+                const auto cmf = Spectral::load_csv_triplets(data_file_string(dataDir, "cie1931_2deg.csv"));
                 if (!Spectral::cmf_triplets_match_reference_axis(cmf)) {
                     JTRACE("INIT", "FATAL: CMF wavelengths do not match 380-780@5nm grid");
                     throw std::runtime_error("CMF grid mismatch");
@@ -149,7 +158,8 @@ namespace JuicerProcess {
             }
 
             try {
-                const std::string lutPath = data_dir_string(
+                const std::string lutPath = data_file_string(
+                    dataDir,
                     "luts",
                     "spectral_upsampling",
                     "irradiance_xy_tc.npy");
@@ -159,7 +169,8 @@ namespace JuicerProcess {
             }
 
             try {
-                const std::string basisPath = data_dir_string(
+                const std::string basisPath = data_file_string(
+                    dataDir,
                     "luts",
                     "spectral_upsampling",
                     "mallett2019_basis.npy");
@@ -170,7 +181,8 @@ namespace JuicerProcess {
 
             std::vector<std::pair<float, float>> kg3Pairs;
             try {
-                kg3Pairs = Spectral::load_csv_pairs(data_dir_string(
+                kg3Pairs = Spectral::load_csv_pairs(data_file_string(
+                    dataDir,
                     "filters",
                     "heat_absorbing",
                     "schott",
@@ -267,14 +279,31 @@ namespace JuicerProcess {
 
     void Root::ensure_bootstrap() {
         resume_frame_preparation();
-        std::call_once(_bootstrapOnce, load_spectral_globals);
+        std::call_once(_bootstrapOnce, [this]() {
+            load_spectral_globals(_dataDir);
+        });
     }
 
     void Root::shutdown() noexcept {
         ShutdownToken shutdown = begin_shutdown();
         (void)shutdown;
         wait_for_frame_preparation();
-        retire_known_contexts();
+        std::string retireError;
+        if (!retire_known_contexts(retireError)) {
+            set_shutdown_retire_blocked(true);
+            if (JTRACE_ENABLED(1)) {
+                std::string msg;
+                msg.reserve(160);
+                msg = "process_shutdown_retire_failed release_host_services=0";
+                if (!retireError.empty()) {
+                    msg += " error=";
+                    msg += retireError;
+                }
+                JTRACE("MSLCY", msg);
+            }
+            return;
+        }
+        set_shutdown_retire_blocked(false);
         release_process_host_services();
     }
 
@@ -402,15 +431,29 @@ namespace JuicerProcess {
 #endif
     }
 
-    void Root::retire_known_contexts() noexcept {
+    bool Root::retire_known_contexts(std::string& outError) noexcept {
+        outError.clear();
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        std::string retireError;
-        (void)JuicerCuda::ResourceManager::command_retire_all_contexts_idle(retireError);
+        try {
+            return JuicerCuda::ResourceManager::command_retire_all_contexts_idle(outError);
+        } catch (...) {
+            outError = "registry-wide context retire threw";
+            return false;
+        }
+#else
+        return true;
+#endif
+    }
+
+    void Root::release_cuda_host_asset_caches() noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        JuicerCuda::purge_host_asset_caches_if_registry_idle("process_shutdown");
 #endif
     }
 
     void Root::release_process_host_services() noexcept {
         release_working_state_cores();
+        release_cuda_host_asset_caches();
         _assets.release_cached_payloads();
     }
 
@@ -455,7 +498,7 @@ namespace JuicerProcess {
     void Root::resume_frame_preparation() noexcept {
         try {
             std::lock_guard<std::mutex> lock(_framePreparationMutex);
-            if (_activeShutdowns == 0) {
+            if (_activeShutdowns == 0 && !_shutdownRetireBlocked) {
                 _acceptFramePreparation = true;
             }
         } catch (...) {
@@ -468,6 +511,17 @@ namespace JuicerProcess {
             _framePreparationCv.wait(lock, [this]() {
                 return _activeFramePreparations == 0;
             });
+        } catch (...) {
+        }
+    }
+
+    void Root::set_shutdown_retire_blocked(bool blocked) noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(_framePreparationMutex);
+            _shutdownRetireBlocked = blocked;
+            if (blocked) {
+                _acceptFramePreparation = false;
+            }
         } catch (...) {
         }
     }
