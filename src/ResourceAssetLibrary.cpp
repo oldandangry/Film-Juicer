@@ -609,6 +609,186 @@ namespace JuicerAssets {
             return asset;
         }
 
+        StbnNoisePayload load_stbn_noise_payload(const StaticNoiseAssetSet& assets) {
+            StbnNoisePayload payload;
+            payload.width = 512;
+            payload.height = 512;
+            payload.frames = 256;
+            payload.version = assets.version;
+
+            if (assets.stbnPath.empty()) {
+                payload.error = "STBN load failed: data directory missing";
+                return payload;
+            }
+
+            fs::path path = fs::path(assets.stbnPath);
+            path.make_preferred();
+
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            if (!file) {
+                payload.error = std::string("STBN load failed: cannot open ") + path.string();
+                return payload;
+            }
+
+            const std::streamsize size = file.tellg();
+            if (size <= 0) {
+                payload.error = std::string("STBN load failed: empty file ") + path.string();
+                return payload;
+            }
+
+            const std::size_t expected = static_cast<std::size_t>(payload.width) *
+                                         static_cast<std::size_t>(payload.height) *
+                                         static_cast<std::size_t>(payload.frames);
+            if (static_cast<std::size_t>(size) != expected) {
+                payload.error = std::string("STBN load failed: unexpected size for ") + path.string();
+                return payload;
+            }
+
+            payload.data.resize(expected);
+            file.seekg(0, std::ios::beg);
+            if (!file.read(reinterpret_cast<char*>(payload.data.data()), size)) {
+                payload.error = std::string("STBN load failed: read error for ") + path.string();
+                payload.data.clear();
+                return payload;
+            }
+
+            payload.valid = true;
+            return payload;
+        }
+
+        std::size_t wang_lut_index(int l, int r, int t, int b, int colors) {
+            const std::size_t c = static_cast<std::size_t>(colors);
+            return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
+                     static_cast<std::size_t>(t)) *
+                        c +
+                    static_cast<std::size_t>(b));
+        }
+
+        WangNoisePayload load_wang_noise_payload(const StaticNoiseAssetSet& assets) {
+            WangNoisePayload payload;
+            payload.version = assets.version;
+
+            if (assets.wangTilesPath.empty() || assets.wangMetadataPath.empty()) {
+                payload.error = "Wang tiles load failed: data directory missing";
+                return payload;
+            }
+
+            fs::path binPath = fs::path(assets.wangTilesPath);
+            fs::path jsonPath = fs::path(assets.wangMetadataPath);
+            binPath.make_preferred();
+            jsonPath.make_preferred();
+            fs::path base = jsonPath.parent_path();
+
+            if (!fs::exists(binPath) || !fs::exists(jsonPath)) {
+                payload.error = std::string("Wang tiles load failed: missing assets under ") + base.string();
+                return payload;
+            }
+
+            std::ifstream jf(jsonPath);
+            if (!jf) {
+                payload.error = std::string("Wang tiles load failed: cannot open ") + jsonPath.string();
+                return payload;
+            }
+
+            Json root;
+            try {
+                jf >> root;
+            } catch (const std::exception& e) {
+                payload.error = std::string("Wang tiles load failed: invalid JSON ") + e.what();
+                return payload;
+            }
+
+            if (!root.contains("resolution") || !root.contains("tiles") || !root.contains("colors") ||
+                !root.contains("mapping")) {
+                payload.error = "Wang tiles load failed: tiles.json missing required fields";
+                return payload;
+            }
+
+            const int width = root.value("resolution", 0);
+            const int height = width;
+            const int count = root.value("tiles", 0);
+            const int colors = root.value("colors", 0);
+            if (width <= 0 || height <= 0 || count <= 0 || colors <= 0) {
+                payload.error = "Wang tiles load failed: invalid metadata in tiles.json";
+                return payload;
+            }
+
+            const std::size_t lutSize = static_cast<std::size_t>(colors) *
+                                        static_cast<std::size_t>(colors) *
+                                        static_cast<std::size_t>(colors) *
+                                        static_cast<std::size_t>(colors);
+            std::vector<std::uint8_t> lut(lutSize, 0);
+
+            const auto& mapping = root["mapping"];
+            if (!mapping.is_array()) {
+                payload.error = "Wang tiles load failed: mapping is not an array";
+                return payload;
+            }
+
+            for (const auto& entry : mapping) {
+                if (!entry.contains("index") || !entry.contains("labels")) {
+                    continue;
+                }
+                const int idx = entry.value("index", 0);
+                const auto& labels = entry["labels"];
+                const int l = labels.value("L", 0);
+                const int r = labels.value("R", 0);
+                const int t = labels.value("T", 0);
+                const int b = labels.value("B", 0);
+                if (l < 0 || r < 0 || t < 0 || b < 0 ||
+                    l >= colors || r >= colors || t >= colors || b >= colors) {
+                    continue;
+                }
+                const std::size_t lutIndex = wang_lut_index(l, r, t, b, colors);
+                if (lutIndex < lut.size() && idx >= 0 && idx < count) {
+                    lut[lutIndex] = static_cast<std::uint8_t>(idx);
+                }
+            }
+
+            std::ifstream bin(binPath, std::ios::binary | std::ios::ate);
+            if (!bin) {
+                payload.error = std::string("Wang tiles load failed: cannot open ") + binPath.string();
+                return payload;
+            }
+            const std::streamsize size = bin.tellg();
+            if (size <= 0) {
+                payload.error = std::string("Wang tiles load failed: empty file ") + binPath.string();
+                return payload;
+            }
+            const std::size_t expected = static_cast<std::size_t>(width) *
+                                         static_cast<std::size_t>(height) *
+                                         static_cast<std::size_t>(count);
+            if (static_cast<std::size_t>(size) != expected) {
+                payload.error = std::string("Wang tiles load failed: unexpected size for ") + binPath.string();
+                return payload;
+            }
+
+            std::vector<std::uint8_t> tiles(expected);
+            bin.seekg(0, std::ios::beg);
+            if (!bin.read(reinterpret_cast<char*>(tiles.data()), size)) {
+                payload.error = std::string("Wang tiles load failed: read error for ") + binPath.string();
+                return payload;
+            }
+
+            payload.tiles = std::move(tiles);
+            payload.lut = std::move(lut);
+            payload.width = width;
+            payload.height = height;
+            payload.count = count;
+            payload.colors = colors;
+            payload.valid = true;
+            return payload;
+        }
+
+        StaticNoisePayloadSet load_static_noise_payloads(const StaticNoiseAssetSet& assets) {
+            StaticNoisePayloadSet payloads;
+            payloads.assets = assets;
+            payloads.stbn = load_stbn_noise_payload(assets);
+            payloads.wang = load_wang_noise_payload(assets);
+            payloads.version = assets.version;
+            return payloads;
+        }
+
         DichroicFilterAssetSet make_dichroic_filter_set(const std::string& dataDir, const char* folderName) {
             DichroicFilterAssetSet asset;
             asset.directory = data_directory_path(dataDir, {"filters", "dichroics", folderName});
@@ -865,6 +1045,11 @@ namespace JuicerAssets {
         std::unordered_map<std::string, NeutralFilterCacheEntry> entries;
     };
 
+    struct Library::StaticNoisePayloadCacheState {
+        std::mutex mutex;
+        std::shared_ptr<const StaticNoisePayloadSet> payloads;
+    };
+
     struct Library::DichroicFilterCurveCacheState {
         std::mutex mutex;
         std::array<DichroicFilterCurveCacheEntry, 3> entries{};
@@ -883,6 +1068,7 @@ namespace JuicerAssets {
     Library::Library(std::string dataDir)
         : _dataDir(std::move(dataDir)),
           _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
+          _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
           _profileCache(std::make_unique<ProfileCacheState>()) {
@@ -1217,6 +1403,16 @@ namespace JuicerAssets {
         return _staticNoiseAssets;
     }
 
+    std::shared_ptr<const StaticNoisePayloadSet> Library::static_noise_payloads() {
+        ensure_static_noise_assets();
+        std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
+        if (!_staticNoisePayloadCache->payloads) {
+            _staticNoisePayloadCache->payloads =
+                std::make_shared<StaticNoisePayloadSet>(load_static_noise_payloads(_staticNoiseAssets));
+        }
+        return _staticNoisePayloadCache->payloads;
+    }
+
     const DichroicFilterAssetSet& Library::dichroic_filter_set_for_choice(int dichroicSetChoice) {
         ensure_dichroic_filter_sets();
         if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_dichroicFilterSets.size())) {
@@ -1297,6 +1493,10 @@ namespace JuicerAssets {
             if (_neutralFilterCache) {
                 std::lock_guard<std::mutex> lock(_neutralFilterCache->mutex);
                 _neutralFilterCache->entries.clear();
+            }
+            if (_staticNoisePayloadCache) {
+                std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
+                _staticNoisePayloadCache->payloads.reset();
             }
             if (_dichroicFilterCurveCache) {
                 std::lock_guard<std::mutex> lock(_dichroicFilterCurveCache->mutex);

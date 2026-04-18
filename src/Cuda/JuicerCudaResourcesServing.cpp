@@ -1067,52 +1067,25 @@
         cache.lastTouchedMs = host_asset_now_ms();
     }
 
-    static bool load_stbn_cpu_uncached(const StbnCpuCache& cache, std::vector<std::uint8_t>& outData, std::string& outError) {
-        const JuicerAssets::StaticNoiseAssetSet& noiseAssets = JuicerProcess::root().assets().static_noise_assets();
-        if (noiseAssets.stbnPath.empty()) {
-            outError = "STBN load failed: data directory missing";
+    struct StbnCpuLoadedData {
+        std::vector<std::uint8_t> data;
+        int width = 0;
+        int height = 0;
+        int frames = 0;
+    };
+
+    static bool load_stbn_cpu_from_assets(StbnCpuLoadedData& outData, std::string& outError) {
+        const auto payloads = JuicerProcess::root().assets().static_noise_payloads();
+        if (!payloads || !payloads->stbn.valid) {
+            outError = payloads ? payloads->stbn.error : "STBN load failed: asset payload unavailable";
             return false;
         }
 
-        std::filesystem::path path = std::filesystem::path(noiseAssets.stbnPath);
-        path.make_preferred();
-
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file) {
-            outError = std::string("STBN load failed: cannot open ") + path.string();
-            return false;
-        }
-
-        const std::streamsize size = file.tellg();
-        if (size <= 0) {
-            outError = std::string("STBN load failed: empty file ") + path.string();
-            return false;
-        }
-
-        const std::size_t expected = static_cast<std::size_t>(cache.width) *
-                                     static_cast<std::size_t>(cache.height) *
-                                     static_cast<std::size_t>(cache.frames);
-        if (static_cast<std::size_t>(size) != expected) {
-            outError = std::string("STBN load failed: unexpected size for ") + path.string();
-            return false;
-        }
-
-        outData.resize(expected);
-        file.seekg(0, std::ios::beg);
-        if (!file.read(reinterpret_cast<char*>(outData.data()), size)) {
-            outError = std::string("STBN load failed: read error for ") + path.string();
-            outData.clear();
-            return false;
-        }
+        outData.data = payloads->stbn.data;
+        outData.width = payloads->stbn.width;
+        outData.height = payloads->stbn.height;
+        outData.frames = payloads->stbn.frames;
         return true;
-    }
-
-    static std::size_t wang_lut_index(int l, int r, int t, int b, int colors) {
-        const std::size_t c = static_cast<std::size_t>(colors);
-        return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
-                 static_cast<std::size_t>(t)) *
-                    c +
-                static_cast<std::size_t>(b));
     }
 
     struct WangCpuLoadedData {
@@ -1124,113 +1097,19 @@
         int colors = 0;
     };
 
-    static bool load_wang_cpu_uncached(WangCpuLoadedData& outData, std::string& outError) {
-        const JuicerAssets::StaticNoiseAssetSet& noiseAssets = JuicerProcess::root().assets().static_noise_assets();
-        if (noiseAssets.wangTilesPath.empty() || noiseAssets.wangMetadataPath.empty()) {
-            outError = "Wang tiles load failed: data directory missing";
+    static bool load_wang_cpu_from_assets(WangCpuLoadedData& outData, std::string& outError) {
+        const auto payloads = JuicerProcess::root().assets().static_noise_payloads();
+        if (!payloads || !payloads->wang.valid) {
+            outError = payloads ? payloads->wang.error : "Wang tiles load failed: asset payload unavailable";
             return false;
         }
 
-        std::filesystem::path binPath = std::filesystem::path(noiseAssets.wangTilesPath);
-        std::filesystem::path jsonPath = std::filesystem::path(noiseAssets.wangMetadataPath);
-        binPath.make_preferred();
-        jsonPath.make_preferred();
-        std::filesystem::path base = jsonPath.parent_path();
-
-        if (!std::filesystem::exists(binPath) || !std::filesystem::exists(jsonPath)) {
-            outError = std::string("Wang tiles load failed: missing assets under ") + base.string();
-            return false;
-        }
-
-        std::ifstream jf(jsonPath);
-        if (!jf) {
-            outError = std::string("Wang tiles load failed: cannot open ") + jsonPath.string();
-            return false;
-        }
-
-        nlohmann::json root;
-        try {
-            jf >> root;
-        } catch (const std::exception& e) {
-            outError = std::string("Wang tiles load failed: invalid JSON ") + e.what();
-            return false;
-        }
-
-        if (!root.contains("resolution") || !root.contains("tiles") || !root.contains("colors") || !root.contains("mapping")) {
-            outError = "Wang tiles load failed: tiles.json missing required fields";
-            return false;
-        }
-
-        const int width = root.value("resolution", 0);
-        const int height = width;
-        const int count = root.value("tiles", 0);
-        const int colors = root.value("colors", 0);
-        if (width <= 0 || height <= 0 || count <= 0 || colors <= 0) {
-            outError = "Wang tiles load failed: invalid metadata in tiles.json";
-            return false;
-        }
-
-        const std::size_t lutSize = static_cast<std::size_t>(colors) *
-            static_cast<std::size_t>(colors) *
-            static_cast<std::size_t>(colors) *
-            static_cast<std::size_t>(colors);
-        outData.lut.assign(lutSize, 0);
-
-        const auto& mapping = root["mapping"];
-        if (!mapping.is_array()) {
-            outError = "Wang tiles load failed: mapping is not an array";
-            return false;
-        }
-
-        for (const auto& entry : mapping) {
-            if (!entry.contains("index") || !entry.contains("labels")) {
-                continue;
-            }
-            const int idx = entry.value("index", 0);
-            const auto& labels = entry["labels"];
-            const int l = labels.value("L", 0);
-            const int r = labels.value("R", 0);
-            const int t = labels.value("T", 0);
-            const int b = labels.value("B", 0);
-            if (l < 0 || r < 0 || t < 0 || b < 0 ||
-                l >= colors || r >= colors || t >= colors || b >= colors) {
-                continue;
-            }
-            const std::size_t lutIndex = wang_lut_index(l, r, t, b, colors);
-            if (lutIndex < outData.lut.size() && idx >= 0 && idx < count) {
-                outData.lut[lutIndex] = static_cast<std::uint8_t>(idx);
-            }
-        }
-
-        std::ifstream bin(binPath, std::ios::binary | std::ios::ate);
-        if (!bin) {
-            outError = std::string("Wang tiles load failed: cannot open ") + binPath.string();
-            return false;
-        }
-        const std::streamsize size = bin.tellg();
-        if (size <= 0) {
-            outError = std::string("Wang tiles load failed: empty file ") + binPath.string();
-            return false;
-        }
-        const std::size_t expected = static_cast<std::size_t>(width) *
-            static_cast<std::size_t>(height) *
-            static_cast<std::size_t>(count);
-        if (static_cast<std::size_t>(size) != expected) {
-            outError = std::string("Wang tiles load failed: unexpected size for ") + binPath.string();
-            return false;
-        }
-        outData.tiles.resize(expected);
-        bin.seekg(0, std::ios::beg);
-        if (!bin.read(reinterpret_cast<char*>(outData.tiles.data()), size)) {
-            outError = std::string("Wang tiles load failed: read error for ") + binPath.string();
-            outData.tiles.clear();
-            return false;
-        }
-
-        outData.width = width;
-        outData.height = height;
-        outData.count = count;
-        outData.colors = colors;
+        outData.tiles = payloads->wang.tiles;
+        outData.lut = payloads->wang.lut;
+        outData.width = payloads->wang.width;
+        outData.height = payloads->wang.height;
+        outData.count = payloads->wang.count;
+        outData.colors = payloads->wang.colors;
         return true;
     }
 
@@ -1262,21 +1141,23 @@
             }
         }
 
-        std::vector<std::uint8_t> loadedData;
+        StbnCpuLoadedData loadedData;
         std::string loadError;
-        const bool ok = load_stbn_cpu_uncached(cache, loadedData, loadError);
+        const bool ok = load_stbn_cpu_from_assets(loadedData, loadError);
         {
             std::lock_guard<std::mutex> lock(cache.mutex);
             cache.loaded = true;
             cache.valid = ok;
             if (ok) {
-                cache.data = std::move(loadedData);
+                cache.data = std::move(loadedData.data);
+                cache.width = loadedData.width;
+                cache.height = loadedData.height;
+                cache.frames = loadedData.frames;
                 cache.failureReason.clear();
                 cache.state = HostCacheLoadState::Ready;
                 cache.lastTouchedMs = host_asset_now_ms();
                 trace_host_asset_event("stbn", "load", cache.data.size());
-            }
-            else {
+            } else {
                 release_vector_storage(cache.data);
                 cache.failureReason = loadError.empty() ? "STBN load failed: unknown error" : loadError;
                 cache.state = HostCacheLoadState::Failed;
@@ -1319,7 +1200,7 @@
 
         WangCpuLoadedData loadedData;
         std::string loadError;
-        const bool ok = load_wang_cpu_uncached(loadedData, loadError);
+        const bool ok = load_wang_cpu_from_assets(loadedData, loadError);
         {
             std::lock_guard<std::mutex> lock(cache.mutex);
             cache.loaded = true;
@@ -1335,8 +1216,7 @@
                 cache.state = HostCacheLoadState::Ready;
                 cache.lastTouchedMs = host_asset_now_ms();
                 trace_host_asset_event("wang", "load", cache.tiles.size() + cache.lut.size());
-            }
-            else {
+            } else {
                 release_vector_storage(cache.tiles);
                 release_vector_storage(cache.lut);
                 cache.width = 0;

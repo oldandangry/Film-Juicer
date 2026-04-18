@@ -56,6 +56,35 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct StbnNoisePayload {
+        std::vector<std::uint8_t> data;
+        int width = 512;
+        int height = 512;
+        int frames = 256;
+        bool valid = false;
+        std::string error;
+        std::uint64_t version = 0;
+    };
+
+    struct WangNoisePayload {
+        std::vector<std::uint8_t> tiles;
+        std::vector<std::uint8_t> lut;
+        int width = 0;
+        int height = 0;
+        int count = 0;
+        int colors = 0;
+        bool valid = false;
+        std::string error;
+        std::uint64_t version = 0;
+    };
+
+    struct StaticNoisePayloadSet {
+        StaticNoiseAssetSet assets;
+        StbnNoisePayload stbn;
+        WangNoisePayload wang;
+        std::uint64_t version = 0;
+    };
+
     struct DichroicFilterAssetSet {
         std::string directory;
         std::uint64_t version = 0;
@@ -114,6 +143,7 @@ namespace JuicerAssets {
             const std::string& negativeKey,
             NeutralFilterLookupThread threadClass);
         const StaticNoiseAssetSet& static_noise_assets();
+        std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterAssetSet& illuminant_filter_assets();
@@ -138,6 +168,7 @@ namespace JuicerAssets {
         void load_illuminant_filter_assets();
 
         struct NeutralFilterCacheState;
+        struct StaticNoisePayloadCacheState;
         struct DichroicFilterCurveCacheState;
         struct IlluminantFilterCurveCacheState;
         struct ProfileCacheState;
@@ -155,6 +186,7 @@ namespace JuicerAssets {
         std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
         IlluminantFilterAssetSet _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
+        std::unique_ptr<StaticNoisePayloadCacheState> _staticNoisePayloadCache;
         std::unique_ptr<DichroicFilterCurveCacheState> _dichroicFilterCurveCache;
         std::unique_ptr<IlluminantFilterCurveCacheState> _illuminantFilterCurveCache;
         std::unique_ptr<ProfileCacheState> _profileCache;
