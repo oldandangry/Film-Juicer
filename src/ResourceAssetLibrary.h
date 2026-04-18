@@ -8,6 +8,8 @@
 #include <tuple>
 #include <vector>
 
+#include "SpectralData.h"
+
 namespace Profiles {
     struct AgxFilmProfile;
 }
@@ -59,6 +61,13 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct DichroicFilterCurveSet {
+        Spectral::Curve filterY;
+        Spectral::Curve filterM;
+        Spectral::Curve filterC;
+        std::uint64_t version = 0;
+    };
+
     struct IlluminantFilterAssetSet {
         std::string d65Path;
         std::string d55Path;
@@ -96,6 +105,7 @@ namespace JuicerAssets {
             NeutralFilterLookupThread threadClass);
         const StaticNoiseAssetSet& static_noise_assets();
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
+        const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterAssetSet& illuminant_filter_assets();
         PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
         bool load_agx_film_profile(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
@@ -117,6 +127,7 @@ namespace JuicerAssets {
         void load_illuminant_filter_assets();
 
         struct NeutralFilterCacheState;
+        struct DichroicFilterCurveCacheState;
         struct ProfileCacheState;
 
         std::once_flag _catalogOnce;
@@ -132,6 +143,7 @@ namespace JuicerAssets {
         std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
         IlluminantFilterAssetSet _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
+        std::unique_ptr<DichroicFilterCurveCacheState> _dichroicFilterCurveCache;
         std::unique_ptr<ProfileCacheState> _profileCache;
     };
 

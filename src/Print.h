@@ -248,65 +248,13 @@ namespace Print {
         }
     }
 
-    inline void load_dichroic_filters_from_csvs(
-        const std::string& dirYMC, Runtime& rt) {
-        auto load_pairs_silent = [](const std::string& path) {
-            try {
-                return Spectral::load_csv_pairs(path);
-            } catch (...) {
-                return std::vector<std::pair<float, float>>{};
-            }
-        };
+    inline void load_dichroic_filters_from_assets(
+        const JuicerAssets::DichroicFilterCurveSet& curves,
+        Runtime& rt) {
+        rt.filterY = curves.filterY;
+        rt.filterM = curves.filterM;
+        rt.filterC = curves.filterC;
 
-        // Try Durst Digital Light first
-        std::string yPath = dirYMC + "filter_y.csv";
-        std::string mPath = dirYMC + "filter_m.csv";
-        std::string cPath = dirYMC + "filter_c.csv";
-
-        auto y_pairs = load_pairs_silent(yPath);
-        auto m_pairs = load_pairs_silent(mPath);
-        auto c_pairs = load_pairs_silent(cPath);
-
-
-        // If not found, try Edmund Optics / Thorlabs paths with the same filenames under their dirs.
-        if (y_pairs.empty() || m_pairs.empty() || c_pairs.empty()) {
-            std::string alt1 = dirYMC; // allow caller to pass different vendor dirs if desired
-            // Identity curve will be used below if still empty.
-        }
-
-        Spectral::assign_reference_axis(rt.filterY.lambda_nm);
-        Spectral::assign_reference_axis(rt.filterM.lambda_nm);
-        Spectral::assign_reference_axis(rt.filterC.lambda_nm);
-
-        rt.filterY.linear.resize(Spectral::gShape.K);
-        rt.filterM.linear.resize(Spectral::gShape.K);
-        rt.filterC.linear.resize(Spectral::gShape.K);
-
-        auto sample_curve = [](const std::vector<std::pair<float, float>>& pairs,
-            Spectral::Curve& dst) {
-                dst.linear.assign((size_t)Spectral::gShape.K, 1.0f);
-                if (pairs.size() < 2) {
-                    return;
-                }
-
-                // agx-emulsion loads Durst dichroics via SciPy Akima without extrapolation:
-                // out-of-domain wavelengths are NaN (not clamped to endpoints).
-                const std::vector<std::pair<float, float>> resampled =
-                    Spectral::resample_pairs_akima_to_reference_axis(pairs);
-                if (resampled.empty() || resampled.size() != static_cast<size_t>(Spectral::gShape.K)) {
-                    return;
-                }
-
-                for (size_t i = 0; i < resampled.size(); ++i) {
-                    dst.linear[i] = resampled[i].second * 0.01f;
-                }
-            };
-
-        sample_curve(y_pairs, rt.filterY);
-        sample_curve(m_pairs, rt.filterM);
-        sample_curve(c_pairs, rt.filterC);
-
-        // Diagnostics
         {
             std::ostringstream oss;
             oss << "DICHROICS loaded K=" << Spectral::gShape.K

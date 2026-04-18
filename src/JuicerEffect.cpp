@@ -88,7 +88,9 @@ namespace {
             JuicerProcess::root().assets().dichroic_filter_set_for_choice(dichroicSetChoice);
         const std::string& dichroicDir = dichroicAssets.directory;
         try {
-            Print::load_dichroic_filters_from_csvs(dichroicDir, runtime);
+            const JuicerAssets::DichroicFilterCurveSet& curves =
+                JuicerProcess::root().assets().dichroic_filter_curves_for_choice(dichroicSetChoice);
+            Print::load_dichroic_filters_from_assets(curves, runtime);
             return true;
         } catch (const std::exception& ex) {
             trace_dichroic_load_failure(operation, dichroicDir, ex.what(), fallbackState);
