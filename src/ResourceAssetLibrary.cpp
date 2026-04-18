@@ -18,6 +18,7 @@
 #include <utility>
 
 #include "Logging.h"
+#include "Illuminants.h"
 #include "ProfileJSONLoader.h"
 #include "nlohmann/json.hpp"
 
@@ -85,6 +86,11 @@ namespace JuicerAssets {
 
         struct DichroicFilterCurveCacheEntry {
             DichroicFilterCurveSet curves;
+            bool ready = false;
+        };
+
+        struct IlluminantFilterCurveCacheEntry {
+            IlluminantFilterCurveSet curves;
             bool ready = false;
         };
 
@@ -678,6 +684,34 @@ namespace JuicerAssets {
             return asset;
         }
 
+        IlluminantFilterCurveSet load_illuminant_filter_curves(const IlluminantFilterAssetSet& asset) {
+            IlluminantFilterCurveSet curves;
+            curves.d65 = Spectral::build_curve_D65_pinned(asset.d65Path);
+            curves.d55 = Spectral::build_curve_D55_pinned(asset.d55Path);
+            curves.d50 = Spectral::build_curve_D50_pinned(asset.d50Path);
+            curves.tungsten = Spectral::build_curve_T_pinned(asset.tungstenPath);
+            curves.kinoton75P = Spectral::build_curve_K75P_pinned(asset.kinoton75PPath);
+            curves.tungstenKg3Lens = Spectral::build_curve_TH_KG3_L_pinned(
+                asset.kg3Path,
+                asset.lensTransmissionPath);
+            curves.version = asset.version;
+            return curves;
+        }
+
+        bool curve_is_on_reference_axis(const Spectral::Curve& curve) {
+            const size_t expected = static_cast<size_t>(Spectral::gShape.K);
+            return curve.lambda_nm.size() == expected && curve.linear.size() == expected;
+        }
+
+        bool illuminant_filter_curves_complete(const IlluminantFilterCurveSet& curves) {
+            return curve_is_on_reference_axis(curves.d65) &&
+                   curve_is_on_reference_axis(curves.d55) &&
+                   curve_is_on_reference_axis(curves.d50) &&
+                   curve_is_on_reference_axis(curves.tungsten) &&
+                   curve_is_on_reference_axis(curves.kinoton75P) &&
+                   curve_is_on_reference_axis(curves.tungstenKg3Lens);
+        }
+
         void append_default_film_stocks(const std::string& dataDir, std::vector<FilmStockAsset>& out) {
             out.clear();
             out.reserve(kDefaultFilmStocks.size());
@@ -836,6 +870,11 @@ namespace JuicerAssets {
         std::array<DichroicFilterCurveCacheEntry, 3> entries{};
     };
 
+    struct Library::IlluminantFilterCurveCacheState {
+        std::mutex mutex;
+        IlluminantFilterCurveCacheEntry entry;
+    };
+
     struct Library::ProfileCacheState {
         std::mutex mutex;
         std::vector<ProfileCacheEntry> profiles;
@@ -845,6 +884,7 @@ namespace JuicerAssets {
         : _dataDir(std::move(dataDir)),
           _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
+          _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
           _profileCache(std::make_unique<ProfileCacheState>()) {
     }
 
@@ -1206,6 +1246,17 @@ namespace JuicerAssets {
         return _illuminantFilterAssets;
     }
 
+    const IlluminantFilterCurveSet& Library::illuminant_filter_curves() {
+        ensure_illuminant_filter_assets();
+        std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+        IlluminantFilterCurveCacheEntry& entry = _illuminantFilterCurveCache->entry;
+        if (!entry.ready) {
+            entry.curves = load_illuminant_filter_curves(_illuminantFilterAssets);
+            entry.ready = illuminant_filter_curves_complete(entry.curves);
+        }
+        return entry.curves;
+    }
+
     PrintRuntimeAssetSet Library::print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice) {
         PrintRuntimeAssetSet assets;
         assets.filmStock = film_stock_for_index(filmIndex);
@@ -1252,6 +1303,10 @@ namespace JuicerAssets {
                 for (DichroicFilterCurveCacheEntry& entry : _dichroicFilterCurveCache->entries) {
                     entry = DichroicFilterCurveCacheEntry{};
                 }
+            }
+            if (_illuminantFilterCurveCache) {
+                std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
+                _illuminantFilterCurveCache->entry = IlluminantFilterCurveCacheEntry{};
             }
             if (_profileCache) {
                 std::lock_guard<std::mutex> lock(_profileCache->mutex);

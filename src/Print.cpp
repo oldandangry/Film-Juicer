@@ -80,28 +80,26 @@ namespace Print {
 
         Spectral::Curve build_reference_illuminant_curve(const std::string& label) {
             const std::string normalized = IlluminantKeys::normalize(label);
-            const JuicerAssets::IlluminantFilterAssetSet& sourceAssets =
-                JuicerProcess::root().assets().illuminant_filter_assets();
+            const JuicerAssets::IlluminantFilterCurveSet& curveAssets =
+                JuicerProcess::root().assets().illuminant_filter_curves();
 
             if (normalized.empty() || normalized == "D65") {
-                return Spectral::build_curve_D65_pinned(sourceAssets.d65Path);
+                return curveAssets.d65;
             }
             if (normalized == "D55") {
-                return Spectral::build_curve_D55_pinned(sourceAssets.d55Path);
+                return curveAssets.d55;
             }
             if (normalized == "D50") {
-                return Spectral::build_curve_D50_pinned(sourceAssets.d50Path);
+                return curveAssets.d50;
             }
             if (normalized == "T" || normalized == "INCANDESCENT") {
-                return Spectral::build_curve_T_pinned(sourceAssets.tungstenPath);
+                return curveAssets.tungsten;
             }
             if (normalized == "K75P") {
-                return Spectral::build_curve_K75P_pinned(sourceAssets.kinoton75PPath);
+                return curveAssets.kinoton75P;
             }
             if (normalized == "TH-KG3-L" || normalized == "TH-KG3") {
-                return Spectral::build_curve_TH_KG3_L_pinned(
-                    sourceAssets.kg3Path,
-                    sourceAssets.lensTransmissionPath);
+                return curveAssets.tungstenKg3Lens;
             }
             if (normalized == "EQUAL-ENERGY") {
                 return Spectral::build_curve_equal_energy_pinned();

@@ -1082,8 +1082,8 @@ namespace {
 
     static Spectral::Curve build_illuminant_from_string(const std::string& source) {
         const std::string normalized = IlluminantKeys::normalize(source);
-        const JuicerAssets::IlluminantFilterAssetSet& sourceAssets =
-            JuicerProcess::root().assets().illuminant_filter_assets();
+        const JuicerAssets::IlluminantFilterCurveSet& curveAssets =
+            JuicerProcess::root().assets().illuminant_filter_curves();
 
         auto build_or_log = [&](auto builder, const char* label) -> Spectral::Curve {
             try {
@@ -1104,39 +1104,37 @@ namespace {
 
         if (IlluminantKeys::matches_any(normalized, {"D65"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D65_pinned(sourceAssets.d65Path);
+                return curveAssets.d65;
             },
                                 "D65");
         }
         if (IlluminantKeys::matches_any(normalized, {"D55"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D55_pinned(sourceAssets.d55Path);
+                return curveAssets.d55;
             },
                                 "D55");
         }
         if (IlluminantKeys::matches_any(normalized, {"D50"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D50_pinned(sourceAssets.d50Path);
+                return curveAssets.d50;
             },
                                 "D50");
         }
         if (IlluminantKeys::matches_any(normalized, {"TH-KG3-L", "THKG3L", "TH-KG3L"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_TH_KG3_L_pinned(
-                    sourceAssets.kg3Path,
-                    sourceAssets.lensTransmissionPath);
+                return curveAssets.tungstenKg3Lens;
             },
                                 "TH-KG3-L");
         }
         if (IlluminantKeys::matches_any(normalized, {"T", "INCANDESCENT"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_T_pinned(sourceAssets.tungstenPath);
+                return curveAssets.tungsten;
             },
                                 "T");
         }
         if (IlluminantKeys::matches_any(normalized, {"K75P", "KINOTON75P"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_K75P_pinned(sourceAssets.kinoton75PPath);
+                return curveAssets.kinoton75P;
             },
                                 "K75P");
         }

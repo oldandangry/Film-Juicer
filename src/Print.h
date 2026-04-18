@@ -169,8 +169,8 @@ namespace Print {
 
     // Build an illuminant pinned to shape from choice. Choices align with your UI (0:D65,1:D55,2:D50,3:TH-KG3-L,4:T,5:K75P,6:Equal)
     inline void build_illuminant_from_choice(int choice, Runtime& rt, const std::string&, bool forEnlarger) {
-        const JuicerAssets::IlluminantFilterAssetSet& sourceAssets =
-            JuicerProcess::root().assets().illuminant_filter_assets();
+        const JuicerAssets::IlluminantFilterCurveSet& curveAssets =
+            JuicerProcess::root().assets().illuminant_filter_curves();
 
         auto log_failure = [&](const char* label, const char* extra = nullptr) {
             std::ostringstream oss;
@@ -197,39 +197,37 @@ namespace Print {
         switch (choice) {
             case 0:
                 c = build_or_log([&]() {
-                    return Spectral::build_curve_D65_pinned(sourceAssets.d65Path);
+                    return curveAssets.d65;
                 },
                                  "D65");
                 break;
             case 1:
                 c = build_or_log([&]() {
-                    return Spectral::build_curve_D55_pinned(sourceAssets.d55Path);
+                    return curveAssets.d55;
                 },
                                  "D55");
                 break;
             case 2:
                 c = build_or_log([&]() {
-                    return Spectral::build_curve_D50_pinned(sourceAssets.d50Path);
+                    return curveAssets.d50;
                 },
                                  "D50");
                 break;
             case 3:
                 c = build_or_log([&]() {
-                    return Spectral::build_curve_TH_KG3_L_pinned(
-                        sourceAssets.kg3Path,
-                        sourceAssets.lensTransmissionPath);
+                    return curveAssets.tungstenKg3Lens;
                 },
                                  "TH-KG3-L");
                 break;
             case 4:
                 c = build_or_log([&]() {
-                    return Spectral::build_curve_T_pinned(sourceAssets.tungstenPath);
+                    return curveAssets.tungsten;
                 },
                                  "T");
                 break;
             case 5:
                 c = build_or_log([&]() {
-                    return Spectral::build_curve_K75P_pinned(sourceAssets.kinoton75PPath);
+                    return curveAssets.kinoton75P;
                 },
                                  "K75P");
                 break;

@@ -79,6 +79,16 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct IlluminantFilterCurveSet {
+        Spectral::Curve d65;
+        Spectral::Curve d55;
+        Spectral::Curve d50;
+        Spectral::Curve tungsten;
+        Spectral::Curve kinoton75P;
+        Spectral::Curve tungstenKg3Lens;
+        std::uint64_t version = 0;
+    };
+
     struct PrintRuntimeAssetSet {
         FilmStockAsset filmStock;
         PrintPaperAsset printPaper;
@@ -107,6 +117,7 @@ namespace JuicerAssets {
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterAssetSet& illuminant_filter_assets();
+        const IlluminantFilterCurveSet& illuminant_filter_curves();
         PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
         bool load_agx_film_profile(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
         void release_cached_payloads() noexcept;
@@ -128,6 +139,7 @@ namespace JuicerAssets {
 
         struct NeutralFilterCacheState;
         struct DichroicFilterCurveCacheState;
+        struct IlluminantFilterCurveCacheState;
         struct ProfileCacheState;
 
         std::once_flag _catalogOnce;
@@ -144,6 +156,7 @@ namespace JuicerAssets {
         IlluminantFilterAssetSet _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
         std::unique_ptr<DichroicFilterCurveCacheState> _dichroicFilterCurveCache;
+        std::unique_ptr<IlluminantFilterCurveCacheState> _illuminantFilterCurveCache;
         std::unique_ptr<ProfileCacheState> _profileCache;
     };
 
