@@ -89,11 +89,6 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
-    struct DichroicFilterAssetSet {
-        std::string directory;
-        std::uint64_t version = 0;
-    };
-
     struct DichroicFilterCurveSet {
         Spectral::Curve filterY;
         Spectral::Curve filterM;
@@ -120,6 +115,7 @@ namespace JuicerAssets {
     class Library {
     public:
         struct StaticNoiseAssetSet;
+        struct DichroicFilterAssetSet;
         struct IlluminantFilterAssetSet;
 
         static constexpr std::uint64_t kProcessAssetVersion = 1ull;
@@ -139,7 +135,6 @@ namespace JuicerAssets {
             const std::string& negativeKey,
             NeutralFilterLookupThread threadClass);
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
-        const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterCurveSet& illuminant_filter_curves();
         PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
@@ -186,7 +181,7 @@ namespace JuicerAssets {
         std::vector<PrintPaperAsset> _printPapers;
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
         std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
-        std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
+        std::unique_ptr<DichroicFilterAssetSet[]> _dichroicFilterSets;
         std::unique_ptr<IlluminantFilterAssetSet> _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
         std::unique_ptr<PrintPaperFolderProfilePayloadCacheState> _printPaperFolderProfilePayloadCache;

@@ -40,7 +40,6 @@ namespace {
 
     void trace_dichroic_load_failure(
         const char* operation,
-        const std::string& dichroicDir,
         const char* detail,
         const char* fallbackState) {
         if (!JTRACE_ENABLED(1)) {
@@ -48,11 +47,9 @@ namespace {
         }
         const char* errorDetail = cstr_or_default_if_null(detail, "unknown error");
         std::string msg;
-        msg.reserve(160 + dichroicDir.size());
+        msg.reserve(160);
         msg = cstr_or_default_if_null(operation, "dichroic load failed");
-        msg += " at '";
-        msg += dichroicDir;
-        msg += "' (";
+        msg += " (";
         msg += errorDetail;
         msg += "); ";
         msg += cstr_or_default_if_null(fallbackState, "using identity filters");
@@ -69,18 +66,15 @@ namespace {
         Print::Runtime& runtime,
         const char* operation,
         const char* fallbackState) {
-        const JuicerAssets::DichroicFilterAssetSet& dichroicAssets =
-            JuicerProcess::root().assets().dichroic_filter_set_for_choice(dichroicSetChoice);
-        const std::string& dichroicDir = dichroicAssets.directory;
         try {
             const JuicerAssets::DichroicFilterCurveSet& curves =
                 JuicerProcess::root().assets().dichroic_filter_curves_for_choice(dichroicSetChoice);
             Print::load_dichroic_filters_from_assets(curves, runtime);
             return true;
         } catch (const std::exception& ex) {
-            trace_dichroic_load_failure(operation, dichroicDir, ex.what(), fallbackState);
+            trace_dichroic_load_failure(operation, ex.what(), fallbackState);
         } catch (...) {
-            trace_dichroic_load_failure(operation, dichroicDir, nullptr, fallbackState);
+            trace_dichroic_load_failure(operation, nullptr, fallbackState);
         }
         return false;
     }

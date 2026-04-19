@@ -31,6 +31,11 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct Library::DichroicFilterAssetSet {
+        std::string directory;
+        std::uint64_t version = 0;
+    };
+
     struct Library::IlluminantFilterAssetSet {
         std::string d65Path;
         std::string d55Path;
@@ -50,6 +55,7 @@ namespace JuicerAssets {
         constexpr std::int64_t kNeutralFilterDiagnosticsReloadCheckMs = 1000;
         constexpr std::uint64_t kFnvOffsetBasis64 = 1469598103934665603ull;
         constexpr std::uint64_t kFnvPrime64 = 1099511628211ull;
+        constexpr int kDichroicFilterSetCount = 3;
 
         struct FilmStockSeed {
             const char* optionLabel;
@@ -810,8 +816,8 @@ namespace JuicerAssets {
             return payloads;
         }
 
-        DichroicFilterAssetSet make_dichroic_filter_set(const std::string& dataDir, const char* folderName) {
-            DichroicFilterAssetSet asset;
+        Library::DichroicFilterAssetSet make_dichroic_filter_set(const std::string& dataDir, const char* folderName) {
+            Library::DichroicFilterAssetSet asset;
             asset.directory = data_directory_path(dataDir, {"filters", "dichroics", folderName});
             asset.version = Library::kProcessAssetVersion;
             return asset;
@@ -891,7 +897,7 @@ namespace JuicerAssets {
             }
         }
 
-        DichroicFilterCurveSet load_dichroic_filter_curves(const DichroicFilterAssetSet& asset) {
+        DichroicFilterCurveSet load_dichroic_filter_curves(const Library::DichroicFilterAssetSet& asset) {
             DichroicFilterCurveSet curves;
             curves.version = asset.version;
             prepare_identity_dichroic_curve(curves.filterY);
@@ -1139,6 +1145,7 @@ namespace JuicerAssets {
           _printPaperFolderProfilePayloadCache(std::make_unique<PrintPaperFolderProfilePayloadCacheState>()),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
+          _dichroicFilterSets(std::make_unique<DichroicFilterAssetSet[]>(kDichroicFilterSetCount)),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
@@ -1515,17 +1522,9 @@ namespace JuicerAssets {
         return _staticNoisePayloadCache->payloads;
     }
 
-    const DichroicFilterAssetSet& Library::dichroic_filter_set_for_choice(int dichroicSetChoice) {
-        ensure_dichroic_filter_sets();
-        if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_dichroicFilterSets.size())) {
-            dichroicSetChoice = 0;
-        }
-        return _dichroicFilterSets[static_cast<size_t>(dichroicSetChoice)];
-    }
-
     const DichroicFilterCurveSet& Library::dichroic_filter_curves_for_choice(int dichroicSetChoice) {
         ensure_dichroic_filter_sets();
-        if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_dichroicFilterSets.size())) {
+        if (dichroicSetChoice < 0 || dichroicSetChoice >= kDichroicFilterSetCount) {
             dichroicSetChoice = 0;
         }
 
