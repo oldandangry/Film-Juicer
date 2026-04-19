@@ -101,17 +101,6 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
-    struct IlluminantFilterAssetSet {
-        std::string d65Path;
-        std::string d55Path;
-        std::string d50Path;
-        std::string tungstenPath;
-        std::string kinoton75PPath;
-        std::string kg3Path;
-        std::string lensTransmissionPath;
-        std::uint64_t version = 0;
-    };
-
     struct IlluminantFilterCurveSet {
         Spectral::Curve d65;
         Spectral::Curve d55;
@@ -127,12 +116,12 @@ namespace JuicerAssets {
         PrintPaperAsset printPaper;
         NeutralFilterDatabaseAsset neutralFilters;
         DichroicFilterAssetSet dichroicFilters;
-        IlluminantFilterAssetSet illuminantFilters;
     };
 
     class Library {
     public:
         struct StaticNoiseAssetSet;
+        struct IlluminantFilterAssetSet;
 
         static constexpr std::uint64_t kProcessAssetVersion = 1ull;
 
@@ -153,7 +142,6 @@ namespace JuicerAssets {
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
-        const IlluminantFilterAssetSet& illuminant_filter_assets();
         const IlluminantFilterCurveSet& illuminant_filter_curves();
         PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
         bool load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile);
@@ -200,7 +188,7 @@ namespace JuicerAssets {
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
         std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
         std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
-        IlluminantFilterAssetSet _illuminantFilterAssets;
+        std::unique_ptr<IlluminantFilterAssetSet> _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
         std::unique_ptr<PrintPaperFolderProfilePayloadCacheState> _printPaperFolderProfilePayloadCache;
         std::unique_ptr<StaticNoisePayloadCacheState> _staticNoisePayloadCache;

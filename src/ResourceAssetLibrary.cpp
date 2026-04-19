@@ -31,6 +31,17 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct Library::IlluminantFilterAssetSet {
+        std::string d65Path;
+        std::string d55Path;
+        std::string d50Path;
+        std::string tungstenPath;
+        std::string kinoton75PPath;
+        std::string kg3Path;
+        std::string lensTransmissionPath;
+        std::uint64_t version = 0;
+    };
+
     namespace {
         namespace fs = std::filesystem;
         using Clock = std::chrono::steady_clock;
@@ -901,8 +912,8 @@ namespace JuicerAssets {
             return curves;
         }
 
-        IlluminantFilterAssetSet make_illuminant_filter_assets(const std::string& dataDir) {
-            IlluminantFilterAssetSet asset;
+        Library::IlluminantFilterAssetSet make_illuminant_filter_assets(const std::string& dataDir) {
+            Library::IlluminantFilterAssetSet asset;
             asset.d65Path = data_path_string(dataDir, {"illuminants", "D65.csv"});
             asset.d55Path = data_path_string(dataDir, {"illuminants", "D55.csv"});
             asset.d50Path = data_path_string(dataDir, {"illuminants", "D50.csv"});
@@ -916,7 +927,7 @@ namespace JuicerAssets {
             return asset;
         }
 
-        IlluminantFilterCurveSet load_illuminant_filter_curves(const IlluminantFilterAssetSet& asset) {
+        IlluminantFilterCurveSet load_illuminant_filter_curves(const Library::IlluminantFilterAssetSet& asset) {
             IlluminantFilterCurveSet curves;
             curves.d65 = Spectral::build_curve_D65_pinned(asset.d65Path);
             curves.d55 = Spectral::build_curve_D55_pinned(asset.d55Path);
@@ -1129,6 +1140,7 @@ namespace JuicerAssets {
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
+          _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
           _profileCache(std::make_unique<ProfileCacheState>()) {
     }
@@ -1445,7 +1457,7 @@ namespace JuicerAssets {
     }
 
     void Library::load_illuminant_filter_assets() {
-        _illuminantFilterAssets = make_illuminant_filter_assets(_dataDir);
+        *_illuminantFilterAssets = make_illuminant_filter_assets(_dataDir);
     }
 
     const FilmStockAsset& Library::film_stock_for_index(int index) {
@@ -1527,17 +1539,12 @@ namespace JuicerAssets {
         return entry.curves;
     }
 
-    const IlluminantFilterAssetSet& Library::illuminant_filter_assets() {
-        ensure_illuminant_filter_assets();
-        return _illuminantFilterAssets;
-    }
-
     const IlluminantFilterCurveSet& Library::illuminant_filter_curves() {
         ensure_illuminant_filter_assets();
         std::lock_guard<std::mutex> lock(_illuminantFilterCurveCache->mutex);
         IlluminantFilterCurveCacheEntry& entry = _illuminantFilterCurveCache->entry;
         if (!entry.ready) {
-            entry.curves = load_illuminant_filter_curves(_illuminantFilterAssets);
+            entry.curves = load_illuminant_filter_curves(*_illuminantFilterAssets);
             entry.ready = illuminant_filter_curves_complete(entry.curves);
         }
         return entry.curves;
@@ -1549,7 +1556,6 @@ namespace JuicerAssets {
         assets.printPaper = print_paper_for_index(printPaperIndex);
         assets.neutralFilters = neutral_filter_database_for_dichroic_set(dichroicSetChoice);
         assets.dichroicFilters = dichroic_filter_set_for_choice(dichroicSetChoice);
-        assets.illuminantFilters = illuminant_filter_assets();
         return assets;
     }
 
