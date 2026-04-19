@@ -1447,16 +1447,6 @@ uint64_t hash_params_dir(const ParamSnapshot& p) {
     return h;
 }
 
-std::string print_dir_for_index(int index) {
-    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
-    return paper.paperDir;
-}
-
-std::string print_profile_json_path_for_index(int index) {
-    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
-    return paper.profileJsonPath;
-}
-
 const char* print_paper_json_key_for_index(int index) {
     const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
     return paper.jsonKey.empty() ? nullptr : paper.jsonKey.c_str();
