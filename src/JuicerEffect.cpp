@@ -801,15 +801,13 @@ namespace {
             return;
         }
         const ProfileKeyLabels& labels = printLoad.labels;
-        const JuicerAssets::PrintPaperAsset& printPaper = printLoad.printAssets.printPaper;
+        const std::uint64_t paperVersion = printLoad.printAssets.printPaper.version;
         std::string msg;
         msg.reserve(256);
         msg = "print reload key=";
         msg += labels.paperLabel;
-        msg += " dir=";
-        msg += printPaper.paperDir;
-        msg += " json=";
-        msg += printPaper.profileJsonPath;
+        msg += " assetVersion=";
+        msg += std::to_string(paperVersion);
         msg += " ref=";
         msg += runtime.referenceIlluminant;
         msg += " view=";
