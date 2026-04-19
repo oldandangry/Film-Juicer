@@ -26,7 +26,6 @@ namespace JuicerAssets {
         std::string optionLabel;
         std::string folderName;
         std::string jsonKey;
-        std::string profileJsonPath;
         std::string paperDir;
         std::uint64_t version = 0;
     };

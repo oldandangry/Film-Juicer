@@ -579,9 +579,8 @@ namespace Print {
         }
 
         DensityCurves load_density_curves(const JsonProfileContext& ctx,
-            const std::string& dir,
-            const std::string& jsonProfilePath)
-        {
+                                          const std::string& dir,
+                                          const std::string& profileKey) {
             DensityCurves curves;
             const bool traceInfo = JTRACE_ENABLED(1);
             if (ctx.hasProfile) {
@@ -590,15 +589,15 @@ namespace Print {
                 const auto& jsonG = profileJson.densityCurveG;
                 const auto& jsonB = profileJson.densityCurveB;
                 if (!jsonR.empty() && !jsonG.empty() && !jsonB.empty()) {
-                    curves.cyan = promote_pairs(jsonR);  // R -> C
+                    curves.cyan = promote_pairs(jsonR);    // R -> C
                     curves.magenta = promote_pairs(jsonG); // G -> M
-                    curves.yellow = promote_pairs(jsonB); // B -> Y
+                    curves.yellow = promote_pairs(jsonB);  // B -> Y
                     curves.usedJson = true;
                     if (traceInfo) {
                         std::string msg;
-                        msg.reserve(128 + jsonProfilePath.size());
-                        msg = "PROFILE_LOAD density curves from JSON '";
-                        msg += jsonProfilePath;
+                        msg.reserve(128 + profileKey.size());
+                        msg = "PROFILE_LOAD density curves from JSON profile key '";
+                        msg += profileKey;
                         msg += "' samples C/M/Y=";
                         msg += std::to_string(jsonR.size());
                         msg += "/";
@@ -606,17 +605,15 @@ namespace Print {
                         msg += "/";
                         msg += std::to_string(jsonB.size());
                         JTRACE("PRINT",
-                            msg);
+                               msg);
                     }
-                }
-                else if (traceInfo) {
+                } else if (traceInfo) {
                     JTRACE("PRINT",
-                        "PROFILE_LOAD missing JSON density curves in '" + jsonProfilePath + "'");
+                           "PROFILE_LOAD missing JSON density curves for profile key '" + profileKey + "'");
                 }
-            }
-            else if (traceInfo) {
+            } else if (traceInfo) {
                 JTRACE("PRINT",
-                    "PROFILE_LOAD no JSON profile for density curves in '" + dir + "'");
+                       "PROFILE_LOAD no JSON profile for density curves in '" + dir + "'");
             }
 
             return curves;
@@ -1527,17 +1524,17 @@ namespace Print {
 
         reset_profile_state(out, runtime);
         const std::string& dir = asset.paperDir;
-        const std::string& jsonProfilePath = asset.profileJsonPath;
+        const std::string profileKey = asset.jsonKey.empty() ? std::string("<null>") : asset.jsonKey;
         const bool traceInfo = JTRACE_ENABLED(1);
         auto trace_print_json_profile = [&](const char* prefix, const char* suffix) {
             if (!traceInfo) {
                 return;
             }
             std::string msg;
-            msg.reserve((prefix ? std::strlen(prefix) : 0u) + jsonProfilePath.size() + (suffix ? std::strlen(suffix) : 0u) + 2);
+            msg.reserve((prefix ? std::strlen(prefix) : 0u) + profileKey.size() + (suffix ? std::strlen(suffix) : 0u) + 2);
             msg = prefix ? prefix : "";
             msg.push_back('\'');
-            msg += jsonProfilePath;
+            msg += profileKey;
             msg.push_back('\'');
             if (suffix) {
                 msg += suffix;
@@ -1591,8 +1588,7 @@ namespace Print {
 
         bool usedJsonEps = false;
         bool usedJsonSens = false;
-        apply_json_dye_and_sensitivity_overrides(jsonCtx, out, runtime,
-            c_eps, m_eps, y_eps, r_sens, g_sens, b_sens, usedJsonEps, usedJsonSens);
+        apply_json_dye_and_sensitivity_overrides(jsonCtx, out, runtime, c_eps, m_eps, y_eps, r_sens, g_sens, b_sens, usedJsonEps, usedJsonSens);
 
         if (jsonCtx.hasProfile && usedJsonEps) {
             trace_print_json_profile("PROFILE_LOAD dye densities from JSON ", "");
@@ -1604,7 +1600,7 @@ namespace Print {
             return;
         }
 
-        DensityCurves densityCurves = load_density_curves(jsonCtx, dir, jsonProfilePath);
+        DensityCurves densityCurves = load_density_curves(jsonCtx, dir, profileKey);
         if (!densityCurves.usedJson) {
             densityCurves.cyan.clear();
             densityCurves.magenta.clear();
@@ -1686,9 +1682,7 @@ namespace Print {
             if (!dir.empty()) {
                 fatal << " dir='" << dir << "'";
             }
-            if (!jsonProfilePath.empty()) {
-                fatal << " json='" << jsonProfilePath << "'";
-            }
+            fatal << " profileKey='" << profileKey << "'";
             JTRACE("PRINT", fatal.str());
             return;
         }
