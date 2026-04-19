@@ -24,7 +24,6 @@ namespace JuicerAssets {
 
     struct PrintPaperAsset {
         std::string optionLabel;
-        std::string folderName;
         std::string jsonKey;
         std::uint64_t version = 0;
     };
@@ -152,6 +151,7 @@ namespace JuicerAssets {
         void load_static_noise_assets();
         void load_dichroic_filter_sets();
         void load_illuminant_filter_assets();
+        std::string print_paper_folder_name_for_asset(const PrintPaperAsset& asset);
         NeutralFilterLookupResult lookup_neutral_filter_path(
             const std::string& jsonPath,
             const std::string& paperKey,
@@ -176,6 +176,7 @@ namespace JuicerAssets {
         std::string _dataDir;
         std::vector<FilmStockAsset> _filmStocks;
         std::vector<PrintPaperAsset> _printPapers;
+        std::vector<std::string> _printPaperFolderNames;
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
         std::unique_ptr<NeutralFilterDatabasePathSet[]> _neutralFilterDatabasePaths;
         std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
