@@ -1555,7 +1555,6 @@ namespace JuicerAssets {
         assets.filmStock = film_stock_for_index(filmIndex);
         assets.printPaper = print_paper_for_index(printPaperIndex);
         assets.neutralFilters = neutral_filter_database_for_dichroic_set(dichroicSetChoice);
-        assets.dichroicFilters = dichroic_filter_set_for_choice(dichroicSetChoice);
         return assets;
     }
 

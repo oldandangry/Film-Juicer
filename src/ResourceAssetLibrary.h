@@ -115,7 +115,6 @@ namespace JuicerAssets {
         FilmStockAsset filmStock;
         PrintPaperAsset printPaper;
         NeutralFilterDatabaseAsset neutralFilters;
-        DichroicFilterAssetSet dichroicFilters;
     };
 
     class Library {
