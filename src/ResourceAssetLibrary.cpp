@@ -47,6 +47,12 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct Library::NeutralFilterDatabasePathSet {
+        std::string selectedPath;
+        std::string defaultPath;
+        std::uint64_t version = 0;
+    };
+
     namespace {
         namespace fs = std::filesystem;
         using Clock = std::chrono::steady_clock;
@@ -55,6 +61,7 @@ namespace JuicerAssets {
         constexpr std::int64_t kNeutralFilterDiagnosticsReloadCheckMs = 1000;
         constexpr std::uint64_t kFnvOffsetBasis64 = 1469598103934665603ull;
         constexpr std::uint64_t kFnvPrime64 = 1099511628211ull;
+        constexpr int kNeutralFilterDatabaseCount = 3;
         constexpr int kDichroicFilterSetCount = 3;
 
         struct FilmStockSeed {
@@ -616,10 +623,9 @@ namespace JuicerAssets {
             return asset;
         }
 
-        NeutralFilterDatabaseAsset make_neutral_filter_database(const std::string& dataDir, const char* selectedFileName) {
+        NeutralFilterDatabaseAsset make_neutral_filter_database(std::uint32_t databaseId) {
             NeutralFilterDatabaseAsset asset;
-            asset.selectedPath = profile_asset_path(dataDir, selectedFileName);
-            asset.defaultPath = profile_asset_path(dataDir, "enlarger_neutral_ymc_filters.json");
+            asset.databaseId = databaseId;
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -1142,6 +1148,7 @@ namespace JuicerAssets {
     Library::Library(std::string dataDir)
         : _dataDir(std::move(dataDir)),
           _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
+          _neutralFilterDatabasePaths(std::make_unique<NeutralFilterDatabasePathSet[]>(kNeutralFilterDatabaseCount)),
           _printPaperFolderProfilePayloadCache(std::make_unique<PrintPaperFolderProfilePayloadCacheState>()),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
@@ -1383,9 +1390,20 @@ namespace JuicerAssets {
     }
 
     void Library::load_neutral_filter_databases() {
-        _neutralFilterDatabases[0] = make_neutral_filter_database(_dataDir, "enlarger_neutral_ymc_filters.json");
-        _neutralFilterDatabases[1] = make_neutral_filter_database(_dataDir, "enlarger_neutral_ymc_filters_thorlabs.json");
-        _neutralFilterDatabases[2] = make_neutral_filter_database(_dataDir, "enlarger_neutral_ymc_filters_edmund.json");
+        auto makePaths = [this](const char* selectedFileName) {
+            NeutralFilterDatabasePathSet paths;
+            paths.selectedPath = profile_asset_path(_dataDir, selectedFileName);
+            paths.defaultPath = profile_asset_path(_dataDir, "enlarger_neutral_ymc_filters.json");
+            paths.version = Library::kProcessAssetVersion;
+            return paths;
+        };
+
+        _neutralFilterDatabases[0] = make_neutral_filter_database(0);
+        _neutralFilterDatabasePaths[0] = makePaths("enlarger_neutral_ymc_filters.json");
+        _neutralFilterDatabases[1] = make_neutral_filter_database(1);
+        _neutralFilterDatabasePaths[1] = makePaths("enlarger_neutral_ymc_filters_thorlabs.json");
+        _neutralFilterDatabases[2] = make_neutral_filter_database(2);
+        _neutralFilterDatabasePaths[2] = makePaths("enlarger_neutral_ymc_filters_edmund.json");
     }
 
     NeutralFilterLookupResult Library::lookup_neutral_filter_path(
@@ -1436,17 +1454,28 @@ namespace JuicerAssets {
         const std::string& illuminantKey,
         const std::string& negativeKey,
         NeutralFilterLookupThread threadClass) {
+        ensure_neutral_filter_databases();
+        const std::size_t databaseIndex = static_cast<std::size_t>(database.databaseId);
+        if (!_neutralFilterDatabasePaths || database.version == 0 || databaseIndex >= _neutralFilterDatabases.size()) {
+            return {};
+        }
+
+        const NeutralFilterDatabasePathSet& paths = _neutralFilterDatabasePaths[databaseIndex];
+        if (paths.version != database.version) {
+            return {};
+        }
+
         NeutralFilterLookupResult result = lookup_neutral_filter_path(
-            database.selectedPath,
+            paths.selectedPath,
             paperKey,
             illuminantKey,
             negativeKey,
             threadClass);
-        if (result.found || database.selectedPath == database.defaultPath) {
+        if (result.found || paths.selectedPath == paths.defaultPath) {
             return result;
         }
         return lookup_neutral_filter_path(
-            database.defaultPath,
+            paths.defaultPath,
             paperKey,
             illuminantKey,
             negativeKey,

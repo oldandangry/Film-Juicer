@@ -42,8 +42,7 @@ namespace JuicerAssets {
     };
 
     struct NeutralFilterDatabaseAsset {
-        std::string selectedPath;
-        std::string defaultPath;
+        std::uint32_t databaseId = 0;
         std::uint64_t version = 0;
     };
 
@@ -162,6 +161,7 @@ namespace JuicerAssets {
         bool load_agx_profile_path(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
 
         struct NeutralFilterCacheState;
+        struct NeutralFilterDatabasePathSet;
         struct PrintPaperFolderProfilePayloadCacheState;
         struct StaticNoisePayloadCacheState;
         struct DichroicFilterCurveCacheState;
@@ -177,6 +177,7 @@ namespace JuicerAssets {
         std::vector<FilmStockAsset> _filmStocks;
         std::vector<PrintPaperAsset> _printPapers;
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
+        std::unique_ptr<NeutralFilterDatabasePathSet[]> _neutralFilterDatabasePaths;
         std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
         std::unique_ptr<DichroicFilterAssetSet[]> _dichroicFilterSets;
         std::unique_ptr<IlluminantFilterAssetSet> _illuminantFilterAssets;
