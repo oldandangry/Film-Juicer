@@ -61,13 +61,6 @@ namespace JuicerAssets {
         std::string selectedDbVersionHash;
     };
 
-    struct StaticNoiseAssetSet {
-        std::string stbnPath;
-        std::string wangTilesPath;
-        std::string wangMetadataPath;
-        std::uint64_t version = 0;
-    };
-
     struct StbnNoisePayload {
         std::vector<std::uint8_t> data;
         int width = 512;
@@ -91,7 +84,6 @@ namespace JuicerAssets {
     };
 
     struct StaticNoisePayloadSet {
-        StaticNoiseAssetSet assets;
         StbnNoisePayload stbn;
         WangNoisePayload wang;
         std::uint64_t version = 0;
@@ -140,6 +132,8 @@ namespace JuicerAssets {
 
     class Library {
     public:
+        struct StaticNoiseAssetSet;
+
         static constexpr std::uint64_t kProcessAssetVersion = 1ull;
 
         explicit Library(std::string dataDir);
@@ -156,7 +150,6 @@ namespace JuicerAssets {
             const std::string& illuminantKey,
             const std::string& negativeKey,
             NeutralFilterLookupThread threadClass);
-        const StaticNoiseAssetSet& static_noise_assets();
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const DichroicFilterAssetSet& dichroic_filter_set_for_choice(int dichroicSetChoice);
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
@@ -205,7 +198,7 @@ namespace JuicerAssets {
         std::vector<FilmStockAsset> _filmStocks;
         std::vector<PrintPaperAsset> _printPapers;
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
-        StaticNoiseAssetSet _staticNoiseAssets;
+        std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;
         std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
         IlluminantFilterAssetSet _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;

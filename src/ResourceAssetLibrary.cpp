@@ -24,6 +24,13 @@
 
 namespace JuicerAssets {
 
+    struct Library::StaticNoiseAssetSet {
+        std::string stbnPath;
+        std::string wangTilesPath;
+        std::string wangMetadataPath;
+        std::uint64_t version = 0;
+    };
+
     namespace {
         namespace fs = std::filesystem;
         using Clock = std::chrono::steady_clock;
@@ -604,8 +611,8 @@ namespace JuicerAssets {
             return asset;
         }
 
-        StaticNoiseAssetSet make_static_noise_assets(const std::string& dataDir) {
-            StaticNoiseAssetSet asset;
+        Library::StaticNoiseAssetSet make_static_noise_assets(const std::string& dataDir) {
+            Library::StaticNoiseAssetSet asset;
             asset.stbnPath = noise_asset_path(dataDir, {"Noise", "stbn_scalar_512x512x256_u8.bin"});
             asset.wangTilesPath = noise_asset_path(dataDir, {"Noise", "Wang", "wang_tiles_256x256x16_u8.bin"});
             asset.wangMetadataPath = noise_asset_path(dataDir, {"Noise", "Wang", "tiles.json"});
@@ -613,7 +620,7 @@ namespace JuicerAssets {
             return asset;
         }
 
-        StbnNoisePayload load_stbn_noise_payload(const StaticNoiseAssetSet& assets) {
+        StbnNoisePayload load_stbn_noise_payload(const Library::StaticNoiseAssetSet& assets) {
             StbnNoisePayload payload;
             payload.width = 512;
             payload.height = 512;
@@ -668,7 +675,7 @@ namespace JuicerAssets {
                     static_cast<std::size_t>(b));
         }
 
-        WangNoisePayload load_wang_noise_payload(const StaticNoiseAssetSet& assets) {
+        WangNoisePayload load_wang_noise_payload(const Library::StaticNoiseAssetSet& assets) {
             WangNoisePayload payload;
             payload.version = assets.version;
 
@@ -784,9 +791,8 @@ namespace JuicerAssets {
             return payload;
         }
 
-        StaticNoisePayloadSet load_static_noise_payloads(const StaticNoiseAssetSet& assets) {
+        StaticNoisePayloadSet load_static_noise_payloads(const Library::StaticNoiseAssetSet& assets) {
             StaticNoisePayloadSet payloads;
-            payloads.assets = assets;
             payloads.stbn = load_stbn_noise_payload(assets);
             payloads.wang = load_wang_noise_payload(assets);
             payloads.version = assets.version;
@@ -1120,6 +1126,7 @@ namespace JuicerAssets {
         : _dataDir(std::move(dataDir)),
           _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
           _printPaperFolderProfilePayloadCache(std::make_unique<PrintPaperFolderProfilePayloadCacheState>()),
+          _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
@@ -1428,7 +1435,7 @@ namespace JuicerAssets {
     }
 
     void Library::load_static_noise_assets() {
-        _staticNoiseAssets = make_static_noise_assets(_dataDir);
+        *_staticNoiseAssets = make_static_noise_assets(_dataDir);
     }
 
     void Library::load_dichroic_filter_sets() {
@@ -1486,17 +1493,12 @@ namespace JuicerAssets {
         return _neutralFilterDatabases[static_cast<size_t>(dichroicSetChoice)];
     }
 
-    const StaticNoiseAssetSet& Library::static_noise_assets() {
-        ensure_static_noise_assets();
-        return _staticNoiseAssets;
-    }
-
     std::shared_ptr<const StaticNoisePayloadSet> Library::static_noise_payloads() {
         ensure_static_noise_assets();
         std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);
         if (!_staticNoisePayloadCache->payloads) {
             _staticNoisePayloadCache->payloads =
-                std::make_shared<StaticNoisePayloadSet>(load_static_noise_payloads(_staticNoiseAssets));
+                std::make_shared<StaticNoisePayloadSet>(load_static_noise_payloads(*_staticNoiseAssets));
         }
         return _staticNoisePayloadCache->payloads;
     }
