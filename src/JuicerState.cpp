@@ -1887,8 +1887,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
     const BaseState& base = snapshot.base;
     Print::Runtime printRT = snapshot.printRT;
-    const std::string& dataDir = snapshot.dataDir;
-
     if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "enter with baseLoaded=" << (snapshot.baseLoaded ? 1 : 0);
@@ -1970,7 +1968,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("MSWSC", "event=core_share_fastpath_fallback reason=scanner_runtime_rebuild_failed");
     }
 
-    Print::build_illuminant_from_choice(P.enlIll, printRT, dataDir, /*forEnlarger*/ true);
+    Print::build_illuminant_from_choice(P.enlIll, printRT, /*forEnlarger*/ true);
     Scanner::ScannerIlluminant printScannerIlluminant;
     if (!build_scanner_illuminant(printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
         return;
@@ -2037,7 +2035,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             static_cast<int>(profileRefIll.linear.size()) == Spectral::gShape.K) {
             tmpRT.illumView = profileRefIll;
         } else {
-            Print::build_illuminant_from_choice(P.refIll, tmpRT, dataDir, /*forEnlarger*/ false);
+            Print::build_illuminant_from_choice(P.refIll, tmpRT, /*forEnlarger*/ false);
         }
 
         illumRef = tmpRT.illumView;

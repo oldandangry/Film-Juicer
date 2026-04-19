@@ -646,9 +646,8 @@ namespace {
 
     inline void update_print_illuminant_runtime(
         const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        const std::string& dataDir) {
-        Print::build_illuminant_from_choice(snapshot.enlIll, runtime, dataDir, /*forEnlarger*/true);
+        Print::Runtime& runtime) {
+        Print::build_illuminant_from_choice(snapshot.enlIll, runtime, /*forEnlarger*/true);
     }
 
     template <typename MediumRuntimeT>
@@ -4195,7 +4194,7 @@ void JuicerEffect::bootstrap_after_attach() {
 
     // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
     applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-    update_print_illuminant_runtime(P, nextPrintRuntime, _state->dataDir);
+    update_print_illuminant_runtime(P, nextPrintRuntime);
 
     // Load dichroic filters (set selection controls which vendor curves are used).
     // Identity fallback is already handled in loader via 1.0 curves.
@@ -4671,7 +4670,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
 
     apply_when_reload_requires_illuminant_refresh(reloadStatus, [&]() {
         applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-        update_print_illuminant_runtime(P, nextPrintRuntime, _state->dataDir);
+        update_print_illuminant_runtime(P, nextPrintRuntime);
         printRuntimeDirty = true;
     });
 

@@ -171,7 +171,7 @@ namespace Print {
         Runtime* runtime = nullptr);
 
     // Build an illuminant pinned to shape from choice. Choices align with your UI (0:D65,1:D55,2:D50,3:TH-KG3-L,4:T,5:K75P,6:Equal)
-    inline void build_illuminant_from_choice(int choice, Runtime& rt, const std::string&, bool forEnlarger) {
+    inline void build_illuminant_from_choice(int choice, Runtime& rt, bool forEnlarger) {
         const JuicerAssets::IlluminantFilterCurveSet& curveAssets =
             JuicerProcess::root().assets().illuminant_filter_curves();
 
