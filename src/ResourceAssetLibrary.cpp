@@ -600,7 +600,6 @@ namespace JuicerAssets {
             FilmStockAsset asset;
             asset.optionLabel = std::move(optionLabel);
             asset.jsonKey = std::move(jsonKey);
-            asset.profileJsonPath = profile_json_path_for_key(dataDir, asset.jsonKey);
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -1558,11 +1557,12 @@ namespace JuicerAssets {
     }
 
     bool Library::load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        if (asset.profileJsonPath.empty()) {
+        const std::string jsonPath = profile_json_path_for_key(_dataDir, asset.jsonKey);
+        if (jsonPath.empty()) {
             outProfile = Profiles::AgxFilmProfile{};
             return false;
         }
-        return load_agx_profile_path(asset.profileJsonPath, outProfile);
+        return load_agx_profile_path(jsonPath, outProfile);
     }
 
     bool Library::load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile) {

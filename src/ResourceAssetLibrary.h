@@ -19,7 +19,6 @@ namespace JuicerAssets {
     struct FilmStockAsset {
         std::string optionLabel;
         std::string jsonKey;
-        std::string profileJsonPath;
         std::uint64_t version = 0;
     };
 
