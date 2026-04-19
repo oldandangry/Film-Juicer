@@ -664,13 +664,13 @@ namespace JuicerAssets {
 
             std::ifstream file(path, std::ios::binary | std::ios::ate);
             if (!file) {
-                payload.error = std::string("STBN load failed: cannot open ") + path.string();
+                payload.error = "STBN load failed: cannot open logical noise asset";
                 return payload;
             }
 
             const std::streamsize size = file.tellg();
             if (size <= 0) {
-                payload.error = std::string("STBN load failed: empty file ") + path.string();
+                payload.error = "STBN load failed: logical noise asset is empty";
                 return payload;
             }
 
@@ -678,14 +678,14 @@ namespace JuicerAssets {
                                          static_cast<std::size_t>(payload.height) *
                                          static_cast<std::size_t>(payload.frames);
             if (static_cast<std::size_t>(size) != expected) {
-                payload.error = std::string("STBN load failed: unexpected size for ") + path.string();
+                payload.error = "STBN load failed: logical noise asset has unexpected size";
                 return payload;
             }
 
             payload.data.resize(expected);
             file.seekg(0, std::ios::beg);
             if (!file.read(reinterpret_cast<char*>(payload.data.data()), size)) {
-                payload.error = std::string("STBN load failed: read error for ") + path.string();
+                payload.error = "STBN load failed: logical noise asset read error";
                 payload.data.clear();
                 return payload;
             }
@@ -715,16 +715,15 @@ namespace JuicerAssets {
             fs::path jsonPath = fs::path(assets.wangMetadataPath);
             binPath.make_preferred();
             jsonPath.make_preferred();
-            fs::path base = jsonPath.parent_path();
 
             if (!fs::exists(binPath) || !fs::exists(jsonPath)) {
-                payload.error = std::string("Wang tiles load failed: missing assets under ") + base.string();
+                payload.error = "Wang tiles load failed: logical noise asset set is incomplete";
                 return payload;
             }
 
             std::ifstream jf(jsonPath);
             if (!jf) {
-                payload.error = std::string("Wang tiles load failed: cannot open ") + jsonPath.string();
+                payload.error = "Wang tiles load failed: cannot open logical metadata asset";
                 return payload;
             }
 
@@ -785,26 +784,26 @@ namespace JuicerAssets {
 
             std::ifstream bin(binPath, std::ios::binary | std::ios::ate);
             if (!bin) {
-                payload.error = std::string("Wang tiles load failed: cannot open ") + binPath.string();
+                payload.error = "Wang tiles load failed: cannot open logical tile asset";
                 return payload;
             }
             const std::streamsize size = bin.tellg();
             if (size <= 0) {
-                payload.error = std::string("Wang tiles load failed: empty file ") + binPath.string();
+                payload.error = "Wang tiles load failed: logical tile asset is empty";
                 return payload;
             }
             const std::size_t expected = static_cast<std::size_t>(width) *
                                          static_cast<std::size_t>(height) *
                                          static_cast<std::size_t>(count);
             if (static_cast<std::size_t>(size) != expected) {
-                payload.error = std::string("Wang tiles load failed: unexpected size for ") + binPath.string();
+                payload.error = "Wang tiles load failed: logical tile asset has unexpected size";
                 return payload;
             }
 
             std::vector<std::uint8_t> tiles(expected);
             bin.seekg(0, std::ios::beg);
             if (!bin.read(reinterpret_cast<char*>(tiles.data()), size)) {
-                payload.error = std::string("Wang tiles load failed: read error for ") + binPath.string();
+                payload.error = "Wang tiles load failed: logical tile asset read error";
                 return payload;
             }
 
