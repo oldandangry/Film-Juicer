@@ -32,6 +32,18 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    struct PrintPaperFolderProfilePayload {
+        std::vector<std::pair<float, float>> dyeC;
+        std::vector<std::pair<float, float>> dyeM;
+        std::vector<std::pair<float, float>> dyeY;
+        std::vector<std::pair<float, float>> logSensR;
+        std::vector<std::pair<float, float>> logSensG;
+        std::vector<std::pair<float, float>> logSensB;
+        std::vector<std::pair<float, float>> baseMin;
+        std::vector<std::pair<float, float>> baseMid;
+        std::uint64_t version = 0;
+    };
+
     struct NeutralFilterDatabaseAsset {
         std::string selectedPath;
         std::string defaultPath;
@@ -135,9 +147,11 @@ namespace JuicerAssets {
 
         const FilmStockAsset& film_stock_for_index(int index);
         const PrintPaperAsset& print_paper_for_index(int index);
+        std::shared_ptr<const PrintPaperFolderProfilePayload> print_paper_folder_profile_payload(
+            const PrintPaperAsset& asset);
         const NeutralFilterDatabaseAsset& neutral_filter_database_for_dichroic_set(int dichroicSetChoice);
         NeutralFilterLookupResult lookup_neutral_filters(
-            const std::string& jsonPath,
+            const NeutralFilterDatabaseAsset& database,
             const std::string& paperKey,
             const std::string& illuminantKey,
             const std::string& negativeKey,
@@ -166,8 +180,15 @@ namespace JuicerAssets {
         void load_static_noise_assets();
         void load_dichroic_filter_sets();
         void load_illuminant_filter_assets();
+        NeutralFilterLookupResult lookup_neutral_filter_path(
+            const std::string& jsonPath,
+            const std::string& paperKey,
+            const std::string& illuminantKey,
+            const std::string& negativeKey,
+            NeutralFilterLookupThread threadClass);
 
         struct NeutralFilterCacheState;
+        struct PrintPaperFolderProfilePayloadCacheState;
         struct StaticNoisePayloadCacheState;
         struct DichroicFilterCurveCacheState;
         struct IlluminantFilterCurveCacheState;
@@ -186,6 +207,7 @@ namespace JuicerAssets {
         std::array<DichroicFilterAssetSet, 3> _dichroicFilterSets{};
         IlluminantFilterAssetSet _illuminantFilterAssets;
         std::unique_ptr<NeutralFilterCacheState> _neutralFilterCache;
+        std::unique_ptr<PrintPaperFolderProfilePayloadCacheState> _printPaperFolderProfilePayloadCache;
         std::unique_ptr<StaticNoisePayloadCacheState> _staticNoisePayloadCache;
         std::unique_ptr<DichroicFilterCurveCacheState> _dichroicFilterCurveCache;
         std::unique_ptr<IlluminantFilterCurveCacheState> _illuminantFilterCurveCache;

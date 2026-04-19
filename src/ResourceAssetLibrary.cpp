@@ -94,6 +94,10 @@ namespace JuicerAssets {
             bool ready = false;
         };
 
+        struct PrintPaperFolderProfilePayloadCacheEntry {
+            std::shared_ptr<const PrintPaperFolderProfilePayload> payload;
+        };
+
         struct FilterDbRead {
             std::shared_ptr<const ParsedNeutralFilterDb> db;
             bool stop = false;
@@ -804,6 +808,48 @@ namespace JuicerAssets {
             }
         }
 
+        std::string print_paper_file_path(const PrintPaperAsset& asset, const char* fileName) {
+            if (asset.paperDir.empty()) {
+                return {};
+            }
+            fs::path path(asset.paperDir);
+            path /= fileName;
+            path.make_preferred();
+            return path.string();
+        }
+
+        std::vector<std::pair<float, float>> load_print_paper_pairs(
+            const PrintPaperAsset& asset,
+            const char* fileName) {
+            const std::string path = print_paper_file_path(asset, fileName);
+            if (path.empty()) {
+                return {};
+            }
+            return load_pairs_silent(path);
+        }
+
+        PrintPaperFolderProfilePayload load_print_paper_folder_profile_payload(const PrintPaperAsset& asset) {
+            PrintPaperFolderProfilePayload payload;
+            payload.dyeC = load_print_paper_pairs(asset, "dye_density_c.csv");
+            payload.dyeM = load_print_paper_pairs(asset, "dye_density_m.csv");
+            payload.dyeY = load_print_paper_pairs(asset, "dye_density_y.csv");
+            payload.logSensR = load_print_paper_pairs(asset, "log_sensitivity_r.csv");
+            payload.logSensG = load_print_paper_pairs(asset, "log_sensitivity_g.csv");
+            payload.logSensB = load_print_paper_pairs(asset, "log_sensitivity_b.csv");
+            payload.baseMin = load_print_paper_pairs(asset, "dye_density_min.csv");
+            payload.baseMid = load_print_paper_pairs(asset, "dye_density_mid.csv");
+            payload.version = asset.version;
+            return payload;
+        }
+
+        std::string print_paper_folder_profile_payload_key(const PrintPaperAsset& asset) {
+            std::ostringstream key;
+            key << asset.version << '\n'
+                << asset.jsonKey << '\n'
+                << asset.paperDir;
+            return key.str();
+        }
+
         void prepare_identity_dichroic_curve(Spectral::Curve& curve) {
             Spectral::assign_reference_axis(curve.lambda_nm);
             curve.linear.assign(static_cast<size_t>(Spectral::gShape.K), 1.0f);
@@ -1045,6 +1091,11 @@ namespace JuicerAssets {
         std::unordered_map<std::string, NeutralFilterCacheEntry> entries;
     };
 
+    struct Library::PrintPaperFolderProfilePayloadCacheState {
+        std::mutex mutex;
+        std::unordered_map<std::string, PrintPaperFolderProfilePayloadCacheEntry> entries;
+    };
+
     struct Library::StaticNoisePayloadCacheState {
         std::mutex mutex;
         std::shared_ptr<const StaticNoisePayloadSet> payloads;
@@ -1068,6 +1119,7 @@ namespace JuicerAssets {
     Library::Library(std::string dataDir)
         : _dataDir(std::move(dataDir)),
           _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
+          _printPaperFolderProfilePayloadCache(std::make_unique<PrintPaperFolderProfilePayloadCacheState>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
@@ -1310,7 +1362,7 @@ namespace JuicerAssets {
         _neutralFilterDatabases[2] = make_neutral_filter_database(_dataDir, "enlarger_neutral_ymc_filters_edmund.json");
     }
 
-    NeutralFilterLookupResult Library::lookup_neutral_filters(
+    NeutralFilterLookupResult Library::lookup_neutral_filter_path(
         const std::string& jsonPath,
         const std::string& paperKey,
         const std::string& illuminantKey,
@@ -1352,6 +1404,29 @@ namespace JuicerAssets {
         return lookup_filter_ymc(*dbRead.db, lookupKey, threadClass);
     }
 
+    NeutralFilterLookupResult Library::lookup_neutral_filters(
+        const NeutralFilterDatabaseAsset& database,
+        const std::string& paperKey,
+        const std::string& illuminantKey,
+        const std::string& negativeKey,
+        NeutralFilterLookupThread threadClass) {
+        NeutralFilterLookupResult result = lookup_neutral_filter_path(
+            database.selectedPath,
+            paperKey,
+            illuminantKey,
+            negativeKey,
+            threadClass);
+        if (result.found || database.selectedPath == database.defaultPath) {
+            return result;
+        }
+        return lookup_neutral_filter_path(
+            database.defaultPath,
+            paperKey,
+            illuminantKey,
+            negativeKey,
+            threadClass);
+    }
+
     void Library::load_static_noise_assets() {
         _staticNoiseAssets = make_static_noise_assets(_dataDir);
     }
@@ -1388,6 +1463,19 @@ namespace JuicerAssets {
             index = 0;
         }
         return _printPapers[static_cast<size_t>(index)];
+    }
+
+    std::shared_ptr<const PrintPaperFolderProfilePayload> Library::print_paper_folder_profile_payload(
+        const PrintPaperAsset& asset) {
+        const std::string cacheKey = print_paper_folder_profile_payload_key(asset);
+        std::lock_guard<std::mutex> lock(_printPaperFolderProfilePayloadCache->mutex);
+        PrintPaperFolderProfilePayloadCacheEntry& entry =
+            _printPaperFolderProfilePayloadCache->entries[cacheKey];
+        if (!entry.payload) {
+            entry.payload =
+                std::make_shared<PrintPaperFolderProfilePayload>(load_print_paper_folder_profile_payload(asset));
+        }
+        return entry.payload;
     }
 
     const NeutralFilterDatabaseAsset& Library::neutral_filter_database_for_dichroic_set(int dichroicSetChoice) {
@@ -1493,6 +1581,10 @@ namespace JuicerAssets {
             if (_neutralFilterCache) {
                 std::lock_guard<std::mutex> lock(_neutralFilterCache->mutex);
                 _neutralFilterCache->entries.clear();
+            }
+            if (_printPaperFolderProfilePayloadCache) {
+                std::lock_guard<std::mutex> lock(_printPaperFolderProfilePayloadCache->mutex);
+                _printPaperFolderProfilePayloadCache->entries.clear();
             }
             if (_staticNoisePayloadCache) {
                 std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);

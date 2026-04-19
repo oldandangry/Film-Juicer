@@ -165,7 +165,10 @@ namespace Print {
     bool remove_glare_compensation_from_curves(Profile& profile, DensityCurves& curves);
     bool rebuild_density_curves(Profile& profile, const DensityCurves& curves);
     void recompute_mid_neutral(Profile& profile, Runtime* runtime = nullptr);
-    void load_profile_from_dir(const std::string& dir, Profile& out, const std::string& jsonProfilePath = std::string(), Runtime* runtime = nullptr);
+    void load_profile_from_asset(
+        const JuicerAssets::PrintPaperAsset& asset,
+        Profile& out,
+        Runtime* runtime = nullptr);
 
     // Build an illuminant pinned to shape from choice. Choices align with your UI (0:D65,1:D55,2:D50,3:TH-KG3-L,4:T,5:K75P,6:Equal)
     inline void build_illuminant_from_choice(int choice, Runtime& rt, const std::string&, bool forEnlarger) {

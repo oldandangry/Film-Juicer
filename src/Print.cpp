@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -238,12 +239,6 @@ namespace Print {
                 *outLogExposureOffsets = logCorr;
             }
             return true;
-        }
-
-        FloatPairs load_csv_pairs_silent(const std::string& path)
-        {
-            try { return Spectral::load_csv_pairs(path); }
-            catch (...) { return {}; }
         }
 
         void reset_profile_state(Profile& out, Runtime* runtime)
@@ -1399,27 +1394,16 @@ namespace Print {
             FloatPairs midPairs;
         };
 
-        BaselineCurves load_baseline_csvs(
-            const std::string& dir,
-            bool loadMinCsv,
-            bool loadMidCsv)
-        {
+        BaselineCurves load_baseline_pairs(
+            const JuicerAssets::PrintPaperFolderProfilePayload& payload,
+            bool loadMinPairs,
+            bool loadMidPairs) {
             BaselineCurves curves;
-            if (loadMinCsv) {
-                try {
-                    curves.minPairs = Spectral::load_csv_pairs(dir + "dye_density_min.csv");
-                }
-                catch (...) {
-                    curves.minPairs.clear();
-                }
+            if (loadMinPairs) {
+                curves.minPairs = payload.baseMin;
             }
-            if (loadMidCsv) {
-                try {
-                    curves.midPairs = Spectral::load_csv_pairs(dir + "dye_density_mid.csv");
-                }
-                catch (...) {
-                    curves.midPairs.clear();
-                }
+            if (loadMidPairs) {
+                curves.midPairs = payload.baseMid;
             }
             return curves;
         }
@@ -1537,14 +1521,15 @@ namespace Print {
         }
     }
 
-    void load_profile_from_dir(const std::string& dir,
+    void load_profile_from_asset(
+        const JuicerAssets::PrintPaperAsset& asset,
         Profile& out,
-        const std::string& jsonProfilePath,
-        Runtime* runtime)
-    {
+        Runtime* runtime) {
         using Spectral::build_curve_on_reference_axis_from_log10_pairs;
 
         reset_profile_state(out, runtime);
+        const std::string& dir = asset.paperDir;
+        const std::string& jsonProfilePath = asset.profileJsonPath;
         const bool traceInfo = JTRACE_ENABLED(1);
         auto trace_print_json_profile = [&](const char* prefix, const char* suffix) {
             if (!traceInfo) {
@@ -1577,24 +1562,33 @@ namespace Print {
             runtime->glare = out.glare;
         }
 
+        const bool needCsvDyes = !json_profile_has_complete_print_dyes(jsonCtx);
+        const bool needCsvSens = !json_profile_has_complete_print_sensitivities(jsonCtx);
+        const bool needCsvBaselineMin =
+            !json_profile_has_complete_print_baseline_min(jsonCtx);
+        const bool needCsvBaselineMid =
+            !json_profile_has_complete_print_baseline_mid(jsonCtx);
+        std::shared_ptr<const JuicerAssets::PrintPaperFolderProfilePayload> folderPayload;
+        if (needCsvDyes || needCsvSens || needCsvBaselineMin || needCsvBaselineMid) {
+            folderPayload = JuicerProcess::root().assets().print_paper_folder_profile_payload(asset);
+        }
+
         FloatPairs c_eps;
         FloatPairs m_eps;
         FloatPairs y_eps;
-        const bool needCsvDyes = !json_profile_has_complete_print_dyes(jsonCtx);
-        if (needCsvDyes) {
-            c_eps = load_csv_pairs_silent(dir + "dye_density_c.csv");
-            m_eps = load_csv_pairs_silent(dir + "dye_density_m.csv");
-            y_eps = load_csv_pairs_silent(dir + "dye_density_y.csv");
+        if (needCsvDyes && folderPayload) {
+            c_eps = folderPayload->dyeC;
+            m_eps = folderPayload->dyeM;
+            y_eps = folderPayload->dyeY;
         }
 
         FloatPairs r_sens;
         FloatPairs g_sens;
         FloatPairs b_sens;
-        const bool needCsvSens = !json_profile_has_complete_print_sensitivities(jsonCtx);
-        if (needCsvSens) {
-            r_sens = load_csv_pairs_silent(dir + "log_sensitivity_r.csv");
-            g_sens = load_csv_pairs_silent(dir + "log_sensitivity_g.csv");
-            b_sens = load_csv_pairs_silent(dir + "log_sensitivity_b.csv");
+        if (needCsvSens && folderPayload) {
+            r_sens = folderPayload->logSensR;
+            g_sens = folderPayload->logSensG;
+            b_sens = folderPayload->logSensB;
         }
 
         bool usedJsonEps = false;
@@ -1676,14 +1670,10 @@ namespace Print {
         // (Neutral exposure probing applies only to film development, not print paper.)
         const bool densityCurvesOk = rebuild_density_curves(out, densityCurves);
 
-        const bool needCsvBaselineMin =
-            !json_profile_has_complete_print_baseline_min(jsonCtx);
-        const bool needCsvBaselineMid =
-            !json_profile_has_complete_print_baseline_mid(jsonCtx);
-        BaselineCurves baselineCurves = load_baseline_csvs(
-            dir,
-            needCsvBaselineMin,
-            needCsvBaselineMid);
+        BaselineCurves baselineCurves =
+            folderPayload
+                ? load_baseline_pairs(*folderPayload, needCsvBaselineMin, needCsvBaselineMid)
+                : BaselineCurves{};
         merge_baseline_with_json(jsonCtx, baselineCurves);
         apply_baseline_to_profile(baselineCurves, out);
         recompute_mid_neutral(out, runtime);

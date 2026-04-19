@@ -29,21 +29,6 @@
 #include "Hash.h"
 #include "mainProcessing.h"
 
-enum class NeutralFilterThreadClass : unsigned char {
-    Control = 0,
-    RenderWorker = 1
-};
-
-bool load_enlarger_neutral_filters(
-    const std::string& jsonPath,
-    const std::string& paperKey,
-    const std::string& illuminantKey,
-    const std::string& negativeKey,
-    std::tuple<float, float, float>& outYMC,
-    NeutralFilterThreadClass threadClass = NeutralFilterThreadClass::Control,
-    std::string* outSelectedDbVersionHash = nullptr
-);
-
 namespace {
     enum class MeteringMethod : int {
         CenterWeighted = 0,
@@ -323,13 +308,10 @@ namespace {
     struct PrintProfileLoadInputs {
         ProfileKeyLabels labels{};
         JuicerAssets::PrintRuntimeAssetSet printAssets{};
-        std::string printDir;
-        std::string printProfileJson;
     };
 
     inline void load_print_profile_into_runtime(
-        const std::string& printDir,
-        const std::string& printProfileJson,
+        const JuicerAssets::PrintPaperAsset& printPaper,
         Print::Runtime& runtime,
         bool moveMidNeutralVectors);
 
@@ -340,8 +322,6 @@ namespace {
             snapshot.filmStockIndex,
             snapshot.printPaperIndex,
             snapshot.enlDichroicSet);
-        inputs.printDir = inputs.printAssets.printPaper.paperDir;
-        inputs.printProfileJson = inputs.printAssets.printPaper.profileJsonPath;
         return inputs;
     }
 
@@ -351,8 +331,7 @@ namespace {
         bool moveMidNeutralVectors) {
         PrintProfileLoadInputs inputs = build_print_profile_load_inputs(snapshot);
         load_print_profile_into_runtime(
-            inputs.printDir,
-            inputs.printProfileJson,
+            inputs.printAssets.printPaper,
             runtime,
             moveMidNeutralVectors);
         return inputs;
@@ -372,11 +351,10 @@ namespace {
     }
 
     inline void load_print_profile_into_runtime(
-        const std::string& printDir,
-        const std::string& printProfileJson,
+        const JuicerAssets::PrintPaperAsset& printPaper,
         Print::Runtime& runtime,
         bool moveMidNeutralVectors) {
-        Print::load_profile_from_dir(printDir, runtime.profile, printProfileJson, &runtime);
+        Print::load_profile_from_asset(printPaper, runtime.profile, &runtime);
         sync_print_runtime_mid_neutral_from_profile(runtime, moveMidNeutralVectors);
     }
 
@@ -829,14 +807,15 @@ namespace {
             return;
         }
         const ProfileKeyLabels& labels = printLoad.labels;
+        const JuicerAssets::PrintPaperAsset& printPaper = printLoad.printAssets.printPaper;
         std::string msg;
         msg.reserve(256);
         msg = "print reload key=";
         msg += labels.paperLabel;
         msg += " dir=";
-        msg += printLoad.printDir;
+        msg += printPaper.paperDir;
         msg += " json=";
-        msg += printLoad.printProfileJson;
+        msg += printPaper.profileJsonPath;
         msg += " ref=";
         msg += runtime.referenceIlluminant;
         msg += " view=";
@@ -4286,8 +4265,6 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     bool loaded = false;
 
     const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb = printAssets.neutralFilters;
-    const std::string& jsonPathSelected = neutralDb.selectedPath;
-    const std::string& jsonPathDefault = neutralDb.defaultPath;
     std::tuple<float, float, float> ymc{};
     std::string selectedDbVersionHash;
     const std::string* illumKeyData = illumKeys.data();
@@ -4297,9 +4274,16 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
         if (illumKey.empty()) {
             continue;
         }
-        if (load_enlarger_neutral_filters(jsonPathSelected, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash) ||
-            (jsonPathSelected != jsonPathDefault &&
-             load_enlarger_neutral_filters(jsonPathDefault, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash))) {
+        const JuicerAssets::NeutralFilterLookupResult lookup =
+            JuicerProcess::root().assets().lookup_neutral_filters(
+                neutralDb,
+                paperKey,
+                illumKey,
+                negativeKey,
+                JuicerAssets::NeutralFilterLookupThread::Control);
+        if (lookup.found) {
+            ymc = lookup.ymc;
+            selectedDbVersionHash = lookup.selectedDbVersionHash;
             neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
@@ -4323,9 +4307,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
         if (traceInfo) {
             JTRACE(
                 "PRINT",
-                "Neutral filters missing for "
-                + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys))
-                + "; aborting print path");
+                "Neutral filters missing for " + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)) + "; aborting print path");
         }
         throw std::runtime_error("Neutral filter database entry not found");
     }
