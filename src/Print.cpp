@@ -578,9 +578,7 @@ namespace Print {
             return cast_pairs<FloatPairs>(in);
         }
 
-        DensityCurves load_density_curves(const JsonProfileContext& ctx,
-                                          const std::string& dir,
-                                          const std::string& profileKey) {
+        DensityCurves load_density_curves(const JsonProfileContext& ctx, const std::string& profileKey) {
             DensityCurves curves;
             const bool traceInfo = JTRACE_ENABLED(1);
             if (ctx.hasProfile) {
@@ -613,7 +611,7 @@ namespace Print {
                 }
             } else if (traceInfo) {
                 JTRACE("PRINT",
-                       "PROFILE_LOAD no JSON profile for density curves in '" + dir + "'");
+                       "PROFILE_LOAD no JSON profile for density curves for profile key '" + profileKey + "'");
             }
 
             return curves;
@@ -1523,7 +1521,6 @@ namespace Print {
         using Spectral::build_curve_on_reference_axis_from_log10_pairs;
 
         reset_profile_state(out, runtime);
-        const std::string& dir = asset.paperDir;
         const std::string profileKey = asset.jsonKey.empty() ? std::string("<null>") : asset.jsonKey;
         const bool traceInfo = JTRACE_ENABLED(1);
         auto trace_print_json_profile = [&](const char* prefix, const char* suffix) {
@@ -1600,7 +1597,7 @@ namespace Print {
             return;
         }
 
-        DensityCurves densityCurves = load_density_curves(jsonCtx, dir, profileKey);
+        DensityCurves densityCurves = load_density_curves(jsonCtx, profileKey);
         if (!densityCurves.usedJson) {
             densityCurves.cyan.clear();
             densityCurves.magenta.clear();
@@ -1679,9 +1676,6 @@ namespace Print {
         if (!densityCurvesOk) {
             std::ostringstream fatal;
             fatal << "FATAL: missing spectral data (print profile)";
-            if (!dir.empty()) {
-                fatal << " dir='" << dir << "'";
-            }
             fatal << " profileKey='" << profileKey << "'";
             JTRACE("PRINT", fatal.str());
             return;

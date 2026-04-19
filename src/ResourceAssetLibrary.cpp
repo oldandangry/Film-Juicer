@@ -605,7 +605,6 @@ namespace JuicerAssets {
         }
 
         PrintPaperAsset make_print_paper(
-            const std::string& dataDir,
             std::string optionLabel,
             std::string folderName,
             std::string jsonKey) {
@@ -613,7 +612,6 @@ namespace JuicerAssets {
             asset.optionLabel = std::move(optionLabel);
             asset.folderName = std::move(folderName);
             asset.jsonKey = std::move(jsonKey);
-            asset.paperDir = paper_dir_for_folder(dataDir, asset.folderName);
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -829,36 +827,40 @@ namespace JuicerAssets {
             }
         }
 
-        std::string print_paper_file_path(const PrintPaperAsset& asset, const char* fileName) {
-            if (asset.paperDir.empty()) {
+        std::string print_paper_file_path(const std::string& dataDir, const PrintPaperAsset& asset, const char* fileName) {
+            const std::string paperDir = paper_dir_for_folder(dataDir, asset.folderName);
+            if (paperDir.empty()) {
                 return {};
             }
-            fs::path path(asset.paperDir);
+            fs::path path(paperDir);
             path /= fileName;
             path.make_preferred();
             return path.string();
         }
 
         std::vector<std::pair<float, float>> load_print_paper_pairs(
+            const std::string& dataDir,
             const PrintPaperAsset& asset,
             const char* fileName) {
-            const std::string path = print_paper_file_path(asset, fileName);
+            const std::string path = print_paper_file_path(dataDir, asset, fileName);
             if (path.empty()) {
                 return {};
             }
             return load_pairs_silent(path);
         }
 
-        PrintPaperFolderProfilePayload load_print_paper_folder_profile_payload(const PrintPaperAsset& asset) {
+        PrintPaperFolderProfilePayload load_print_paper_folder_profile_payload(
+            const std::string& dataDir,
+            const PrintPaperAsset& asset) {
             PrintPaperFolderProfilePayload payload;
-            payload.dyeC = load_print_paper_pairs(asset, "dye_density_c.csv");
-            payload.dyeM = load_print_paper_pairs(asset, "dye_density_m.csv");
-            payload.dyeY = load_print_paper_pairs(asset, "dye_density_y.csv");
-            payload.logSensR = load_print_paper_pairs(asset, "log_sensitivity_r.csv");
-            payload.logSensG = load_print_paper_pairs(asset, "log_sensitivity_g.csv");
-            payload.logSensB = load_print_paper_pairs(asset, "log_sensitivity_b.csv");
-            payload.baseMin = load_print_paper_pairs(asset, "dye_density_min.csv");
-            payload.baseMid = load_print_paper_pairs(asset, "dye_density_mid.csv");
+            payload.dyeC = load_print_paper_pairs(dataDir, asset, "dye_density_c.csv");
+            payload.dyeM = load_print_paper_pairs(dataDir, asset, "dye_density_m.csv");
+            payload.dyeY = load_print_paper_pairs(dataDir, asset, "dye_density_y.csv");
+            payload.logSensR = load_print_paper_pairs(dataDir, asset, "log_sensitivity_r.csv");
+            payload.logSensG = load_print_paper_pairs(dataDir, asset, "log_sensitivity_g.csv");
+            payload.logSensB = load_print_paper_pairs(dataDir, asset, "log_sensitivity_b.csv");
+            payload.baseMin = load_print_paper_pairs(dataDir, asset, "dye_density_min.csv");
+            payload.baseMid = load_print_paper_pairs(dataDir, asset, "dye_density_mid.csv");
             payload.version = asset.version;
             return payload;
         }
@@ -867,7 +869,7 @@ namespace JuicerAssets {
             std::ostringstream key;
             key << asset.version << '\n'
                 << asset.jsonKey << '\n'
-                << asset.paperDir;
+                << asset.folderName;
             return key.str();
         }
 
@@ -967,11 +969,11 @@ namespace JuicerAssets {
             }
         }
 
-        void append_default_print_papers(const std::string& dataDir, std::vector<PrintPaperAsset>& out) {
+        void append_default_print_papers(std::vector<PrintPaperAsset>& out) {
             out.clear();
             out.reserve(kDefaultPrintPapers.size());
             for (const PrintPaperSeed& seed : kDefaultPrintPapers) {
-                out.emplace_back(make_print_paper(dataDir, seed.optionLabel, seed.folderName, seed.jsonKey));
+                out.emplace_back(make_print_paper(seed.optionLabel, seed.folderName, seed.jsonKey));
             }
         }
 
@@ -1307,7 +1309,7 @@ namespace JuicerAssets {
             }
             std::string folder = claim_print_folder(info, key, folders);
             std::string label = info.name.empty() ? key : info.name;
-            _printPapers.emplace_back(make_print_paper(dataDir, std::move(label), std::move(folder), key));
+            _printPapers.emplace_back(make_print_paper(std::move(label), std::move(folder), key));
         };
 
         for (const std::string& key : filters.paperKeys) {
@@ -1353,7 +1355,7 @@ namespace JuicerAssets {
                 if (!bestKey.empty()) {
                     folderInfo.used = true;
                     std::string label = folderInfo.name;
-                    _printPapers.emplace_back(make_print_paper(dataDir, std::move(label), folderInfo.name, bestKey));
+                    _printPapers.emplace_back(make_print_paper(std::move(label), folderInfo.name, bestKey));
                 }
             }
         }
@@ -1376,7 +1378,7 @@ namespace JuicerAssets {
                     JTRACE("CATALOG", "catalog default: no print profiles discovered; using defaults");
                 }
             }
-            append_default_print_papers(dataDir, _printPapers);
+            append_default_print_papers(_printPapers);
         }
     }
 
@@ -1497,7 +1499,7 @@ namespace JuicerAssets {
             _printPaperFolderProfilePayloadCache->entries[cacheKey];
         if (!entry.payload) {
             entry.payload =
-                std::make_shared<PrintPaperFolderProfilePayload>(load_print_paper_folder_profile_payload(asset));
+                std::make_shared<PrintPaperFolderProfilePayload>(load_print_paper_folder_profile_payload(_dataDir, asset));
         }
         return entry.payload;
     }
