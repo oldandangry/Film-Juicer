@@ -163,7 +163,8 @@ namespace JuicerAssets {
         const IlluminantFilterAssetSet& illuminant_filter_assets();
         const IlluminantFilterCurveSet& illuminant_filter_curves();
         PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
-        bool load_agx_film_profile(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
+        bool load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile);
+        bool load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile);
         void release_cached_payloads() noexcept;
 
         int film_stock_count();
@@ -186,6 +187,7 @@ namespace JuicerAssets {
             const std::string& illuminantKey,
             const std::string& negativeKey,
             NeutralFilterLookupThread threadClass);
+        bool load_agx_profile_path(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
 
         struct NeutralFilterCacheState;
         struct PrintPaperFolderProfilePayloadCacheState;

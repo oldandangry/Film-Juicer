@@ -277,11 +277,9 @@ namespace Print {
             Profiles::AgxFilmProfile profile;
         };
 
-        JsonProfileContext load_json_profile(const std::string& jsonProfilePath) {
+        JsonProfileContext load_json_profile(const JuicerAssets::PrintPaperAsset& asset) {
             JsonProfileContext ctx;
-            if (!jsonProfilePath.empty()) {
-                ctx.hasProfile = JuicerProcess::root().assets().load_agx_film_profile(jsonProfilePath, ctx.profile);
-            }
+            ctx.hasProfile = JuicerProcess::root().assets().load_agx_print_profile(asset, ctx.profile);
             return ctx;
         }
 
@@ -1547,7 +1545,7 @@ namespace Print {
             JTRACE("PRINT", msg);
         };
 
-        JsonProfileContext jsonCtx = load_json_profile(jsonProfilePath);
+        JsonProfileContext jsonCtx = load_json_profile(asset);
         if (!jsonCtx.hasProfile) {
             trace_print_json_profile("FATAL: missing JSON profile ", " for print paper (glare metadata required)");
             return;

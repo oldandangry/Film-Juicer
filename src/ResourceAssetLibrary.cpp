@@ -1551,7 +1551,23 @@ namespace JuicerAssets {
         return assets;
     }
 
-    bool Library::load_agx_film_profile(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile) {
+    bool Library::load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile) {
+        if (asset.profileJsonPath.empty()) {
+            outProfile = Profiles::AgxFilmProfile{};
+            return false;
+        }
+        return load_agx_profile_path(asset.profileJsonPath, outProfile);
+    }
+
+    bool Library::load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile) {
+        if (asset.profileJsonPath.empty()) {
+            outProfile = Profiles::AgxFilmProfile{};
+            return false;
+        }
+        return load_agx_profile_path(asset.profileJsonPath, outProfile);
+    }
+
+    bool Library::load_agx_profile_path(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile) {
         outProfile = Profiles::AgxFilmProfile{};
 
         const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
