@@ -250,20 +250,26 @@ namespace WorkingStateSharing {
     }
 
     struct WorkingStateCoreShared {
-        std::uint64_t keyHash = 0;
-        std::uint64_t identity = 0;
-        std::shared_ptr<const WorkingStateCorePayload> payload;
+        WorkingStateCoreShared(
+            std::uint64_t keyHash_,
+            std::uint64_t identity_,
+            std::shared_ptr<const WorkingStateCorePayload> payload_)
+            : keyHash(keyHash_), identity(identity_), payload(std::move(payload_)) {
+        }
+
+        const std::uint64_t keyHash = 0;
+        const std::uint64_t identity = 0;
+        const std::shared_ptr<const WorkingStateCorePayload> payload;
     };
 
     struct AcquireCoreSharedResult {
-        std::shared_ptr<WorkingStateCoreShared> sharedCore;
+        std::shared_ptr<const WorkingStateCoreShared> sharedCore;
         std::uint64_t keyHash = 0;
         std::uint64_t identity = 0;
         std::uint32_t cacheEntries = 0;
         bool hit = false;
         bool inserted = false;
         bool payloadPresent = false;
-        bool payloadBackfilled = false;
     };
 
     class WorkingStateCoreSharedCache final {
@@ -275,8 +281,7 @@ namespace WorkingStateSharing {
 
         AcquireCoreSharedResult acquire_or_create(
             std::uint64_t keyHash,
-            std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr)
-        {
+            std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr) {
             AcquireCoreSharedResult out{};
             out.keyHash = keyHash;
             if (keyHash == 0) {
@@ -289,12 +294,8 @@ namespace WorkingStateSharing {
 
             auto it = entries_.find(keyHash);
             if (it != entries_.end()) {
-                std::shared_ptr<WorkingStateCoreShared> shared = it->second.shared.lock();
+                std::shared_ptr<const WorkingStateCoreShared> shared = it->second.shared.lock();
                 if (shared) {
-                    if (!shared->payload && insertPayload) {
-                        shared->payload = std::move(insertPayload);
-                        out.payloadBackfilled = true;
-                    }
                     it->second.lastTouchSequence = touchSequence_;
                     out.sharedCore = std::move(shared);
                     out.identity = out.sharedCore->identity;
@@ -306,10 +307,15 @@ namespace WorkingStateSharing {
                 entries_.erase(it);
             }
 
-            auto created = std::make_shared<WorkingStateCoreShared>();
-            created->keyHash = keyHash;
-            created->identity = ++identitySequence_;
-            created->payload = std::move(insertPayload);
+            if (!insertPayload) {
+                out.cacheEntries = static_cast<std::uint32_t>(entries_.size());
+                return out;
+            }
+
+            auto created = std::make_shared<const WorkingStateCoreShared>(
+                keyHash,
+                ++identitySequence_,
+                std::move(insertPayload));
 
             CacheEntry entry{};
             entry.shared = created;
@@ -335,12 +341,14 @@ namespace WorkingStateSharing {
 
     private:
         struct CacheEntry {
-            std::weak_ptr<WorkingStateCoreShared> shared;
+            std::weak_ptr<const WorkingStateCoreShared> shared;
             std::uint64_t lastTouchSequence = 0;
         };
 
         static constexpr std::size_t kMaxEntries = 256;
 
+        // Shared cores are immutable once visible from the cache; live WorkingState
+        // references keep payloads alive even after their lookup entries expire.
         void prune_expired_locked() {
             for (auto it = entries_.begin(); it != entries_.end();) {
                 if (it->second.shared.expired()) {
@@ -529,8 +537,6 @@ namespace {
         msg += std::to_string(result.inserted ? 1 : 0);
         msg += " payload_present=";
         msg += std::to_string(result.payloadPresent ? 1 : 0);
-        msg += " payload_backfilled=";
-        msg += std::to_string(result.payloadBackfilled ? 1 : 0);
         msg += " cache_entries=";
         msg += std::to_string(static_cast<unsigned long long>(result.cacheEntries));
         JTRACE("MSWSC", msg);
