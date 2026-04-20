@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -198,6 +199,37 @@ namespace JuicerProcess {
             Spectral::set_filter_KG3_from_pairs(kg3Pairs);
         }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        bool resolve_cuda_frame_resources(
+            InstanceState& instanceState,
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            JuicerCuda::Resources*& outResources,
+            std::string& outError) {
+            std::lock_guard<std::mutex> lock(instanceState.cudaMutex);
+            auto& slot = instanceState.cudaByDevice[deviceContextKey];
+            if (!slot) {
+                slot.reset(JuicerCuda::create());
+                if (!slot) {
+                    JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
+                    outError = "failed to allocate CUDA resources";
+                    return false;
+                }
+            }
+            if (slot->deviceId < 0) {
+                slot->deviceId = deviceContextKey.deviceId;
+            }
+            if (!slot->ownerContextOpaque) {
+                slot->ownerContextOpaque = deviceContextKey.contextOpaque;
+            }
+            outResources = slot.get();
+            if (!outResources) {
+                outError = "CUDA resources missing after allocation";
+                return false;
+            }
+            return true;
+        }
+#endif
+
     } // namespace
 
     Root::FramePreparationToken::FramePreparationToken(Root* root) noexcept
@@ -231,6 +263,79 @@ namespace JuicerProcess {
             root->finish_frame_preparation();
         }
     }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    struct Root::PreparedCudaFrame::State {
+        Root* root = nullptr;
+        JuicerCuda::Resources* resources = nullptr;
+        JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
+        const char* failureStageTag = "prepare_frame";
+        const char* failurePrefix = "CUDA prepared frame failed";
+
+        void set_failure(const char* stageTag, const char* prefix) noexcept {
+            failureStageTag = stageTag;
+            failurePrefix = prefix;
+        }
+    };
+
+    Root::PreparedCudaFrame::PreparedCudaFrame(std::unique_ptr<State> state) noexcept
+        : _state(std::move(state)) {
+    }
+
+    Root::PreparedCudaFrame::~PreparedCudaFrame() {
+        abort("prepared_frame_scope_exit");
+    }
+
+    Root::PreparedCudaFrame::PreparedCudaFrame(PreparedCudaFrame&& other) noexcept
+        : _state(std::move(other._state)) {
+    }
+
+    Root::PreparedCudaFrame& Root::PreparedCudaFrame::operator=(PreparedCudaFrame&& other) noexcept {
+        if (this != &other) {
+            abort("prepared_frame_move_assignment");
+            _state = std::move(other._state);
+        }
+        return *this;
+    }
+
+    bool Root::PreparedCudaFrame::active() const noexcept {
+        return _state &&
+               _state->resources &&
+               _state->transaction.active &&
+               !_state->transaction.committed;
+    }
+
+    bool Root::PreparedCudaFrame::finish(void* cudaStreamOpaque, std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->root || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return _state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError);
+    }
+
+    void Root::PreparedCudaFrame::abort(const char* reason) noexcept {
+        if (_state && _state->root && _state->transaction.active && !_state->transaction.committed) {
+            _state->root->rollback_submission(_state->transaction, reason);
+        }
+    }
+
+    JuicerCuda::Resources* Root::PreparedCudaFrame::resources() const noexcept {
+        return _state ? _state->resources : nullptr;
+    }
+
+    JuicerCuda::ResourceManager::SubmissionTransaction& Root::PreparedCudaFrame::submission() noexcept {
+        return _state->transaction;
+    }
+
+    const char* Root::PreparedCudaFrame::failure_stage_tag() const noexcept {
+        return _state ? _state->failureStageTag : "prepare_frame";
+    }
+
+    const char* Root::PreparedCudaFrame::failure_prefix() const noexcept {
+        return _state ? _state->failurePrefix : "CUDA prepared frame failed";
+    }
+#endif
 
     Root::ShutdownToken::ShutdownToken(Root* root) noexcept
         : _root(root) {
@@ -355,6 +460,38 @@ namespace JuicerProcess {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     void Root::destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept {
         JuicerCuda::destroy(resources);
+    }
+
+    Root::PreparedCudaFrame Root::prepare_cuda_frame(
+        InstanceState& instanceState,
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        std::string& outError) {
+        outError.clear();
+        std::unique_ptr<PreparedCudaFrame::State> state;
+        try {
+            state = std::make_unique<PreparedCudaFrame::State>();
+        } catch (...) {
+            outError = "failed to allocate CUDA prepared frame";
+            return PreparedCudaFrame{};
+        }
+
+        PreparedCudaFrame frame(std::move(state));
+        frame._state->root = this;
+        frame._state->set_failure("prepare_frame", "CUDA prepared frame failed");
+        if (!resolve_cuda_frame_resources(instanceState, deviceContextKey, frame._state->resources, outError)) {
+            return frame;
+        }
+        if (!begin_submission(frame._state->transaction, snapshot, outError)) {
+            frame._state->set_failure("begin_submission", "begin_submission failed");
+            return frame;
+        }
+        if (!acquire_submission_plan(frame._state->transaction, outError)) {
+            frame._state->set_failure("acquire_plan", "acquire_plan failed");
+            frame.abort("prepared_frame_acquire_failed");
+            return frame;
+        }
+        return frame;
     }
 
     bool Root::begin_submission(

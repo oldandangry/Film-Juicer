@@ -19,6 +19,7 @@ namespace WorkingStateSharing {
 namespace JuicerCuda {
     struct Resources;
     namespace ResourceManager {
+        struct DeviceContextKey;
         struct SubmissionSnapshot;
         struct SubmissionTransaction;
     } // namespace ResourceManager
@@ -64,7 +65,42 @@ namespace JuicerProcess {
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        class PreparedCudaFrame final {
+        public:
+            PreparedCudaFrame() noexcept = default;
+            ~PreparedCudaFrame();
+
+            PreparedCudaFrame(const PreparedCudaFrame&) = delete;
+            PreparedCudaFrame& operator=(const PreparedCudaFrame&) = delete;
+
+            PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
+            PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
+
+            bool active() const noexcept;
+            bool finish(void* cudaStreamOpaque, std::string& outError);
+            void abort(const char* reason) noexcept;
+
+            JuicerCuda::Resources* resources() const noexcept;
+            JuicerCuda::ResourceManager::SubmissionTransaction& submission() noexcept;
+            const char* failure_stage_tag() const noexcept;
+            const char* failure_prefix() const noexcept;
+
+        private:
+            friend class Root;
+
+            struct State;
+
+            explicit PreparedCudaFrame(std::unique_ptr<State> state) noexcept;
+
+            std::unique_ptr<State> _state;
+        };
+
         void destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept;
+        PreparedCudaFrame prepare_cuda_frame(
+            InstanceState& instanceState,
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            std::string& outError);
         bool begin_submission(
             JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
