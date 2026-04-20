@@ -13,6 +13,7 @@
 #include <vector>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 
 struct InstanceState;
 struct WorkingState;
@@ -96,7 +97,46 @@ class JuicerProcessor : public OFX::ImageProcessor {
 public:
     explicit JuicerProcessor(OFX::ImageEffect& effect);
 
+    struct FrameRequest {
+        std::shared_ptr<const WorkingState> workingState;
+        const Print::Runtime* printRuntime = nullptr;
+        bool workingStateReady = false;
+        bool printRuntimeReady = false;
+
+        int components = 0;
+        OfxRectI renderWindow{0, 0, 0, 0};
+        Scanner::Options scannerOptions;
+        Scanner::Settings scannerSettings;
+        Print::Params printParams;
+        Profiles::HalationMetadata halationOverride{};
+        bool hasHalationOverride = false;
+        Profiles::GrainMetadata grainOverride{};
+        bool hasGrainOverride = false;
+        Profiles::ProfileGlare printGlareOverride{};
+        bool hasPrintGlareOverride = false;
+        Couplers::Runtime dirRuntime;
+        float exposureScale = 1.0f;
+        bool cameraAutoEnabled = false;
+        int cameraMeteringMethod = 0;
+        double cameraSliderEV = 0.0;
+        OfxRectI autoExposureMeterBounds{0, 0, 0, 0};
+        bool autoExposureMeterBoundsValid = false;
+        OutputEncoding::Params outputEncoding;
+        std::uint64_t sessionSeed = 1;
+        std::uint64_t instanceToken = 1;
+        std::uintptr_t clipToken = 0;
+        double gateWeaveAmount = 1.0;
+        double frameTime = 0.0;
+        double frameRate = 0.0;
+        std::uint32_t frameBoundsVersion = 0;
+        float pixelSizeUm = 0.0f;
+        bool interactiveRenderStatus = false;
+        bool renderQualityDraft = false;
+        bool sequentialRenderStatus = false;
+    };
+
     void setSrcDst(OFX::Image* src, OFX::Image* dst);
+    void setFrameRequest(const FrameRequest& request);
     void setRenderWindowRect(const OfxRectI& rect);
     void setComponents(int n);
     void setScannerOptions(const Scanner::Options& o);
@@ -161,6 +201,7 @@ private:
 
     const Print::Runtime* _prt;
     const WorkingState* _ws;
+    std::shared_ptr<const WorkingState> _wsHold;
     InstanceState* _instanceState = nullptr;
     bool _wsReady;
     bool _printReady;

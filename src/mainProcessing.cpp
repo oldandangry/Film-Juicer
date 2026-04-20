@@ -1782,6 +1782,7 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
     , _dirRT{}
     , _prt(nullptr)
     , _ws(nullptr)
+    , _wsHold{}
     , _wsReady(false)
     , _printReady(false)
     , _exposureScale(1.0f)
@@ -1796,6 +1797,50 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
 void JuicerProcessor::setSrcDst(OFX::Image* src, OFX::Image* dst) {
     _srcImg = src;
     setDstImg(dst);
+}
+
+void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
+    setRenderWindowRect(request.renderWindow);
+    setComponents(request.components);
+    _scannerOptions = request.scannerOptions;
+    _scannerSettings = request.scannerSettings;
+    _printParams = request.printParams;
+    _halationOverride = request.halationOverride;
+    _hasHalationOverride = request.hasHalationOverride;
+    _grainOverride = request.grainOverride;
+    _hasGrainOverride = request.hasGrainOverride;
+    _printGlareOverride = request.printGlareOverride;
+    if (request.hasPrintGlareOverride) {
+        clear_glare_compensation_fields(_printGlareOverride);
+    }
+    _hasPrintGlareOverride = request.hasPrintGlareOverride;
+    _dirRT = request.dirRuntime;
+
+    _wsHold = request.workingState;
+    setWorkingState(_wsHold.get(), request.workingStateReady);
+    setPrintRuntime(
+        request.printRuntime ? request.printRuntime : ((_ws && _ws->printRT) ? _ws->printRT.get() : nullptr),
+        request.printRuntimeReady);
+    setExposure(request.exposureScale);
+    setCameraAutoExposure(
+        request.cameraAutoEnabled,
+        request.cameraMeteringMethod,
+        request.cameraSliderEV);
+    setAutoExposureMeterBounds(
+        request.autoExposureMeterBounds,
+        request.autoExposureMeterBoundsValid);
+    _outputEncoding = request.outputEncoding;
+    setSessionTokens(request.sessionSeed, request.instanceToken);
+    setClipToken(request.clipToken);
+    setGateWeaveAmount(request.gateWeaveAmount);
+    setFrameTime(request.frameTime);
+    setFrameRate(request.frameRate);
+    setFrameBoundsVersion(request.frameBoundsVersion);
+    setPixelSizeUm(request.pixelSizeUm);
+    setRenderHints(
+        request.interactiveRenderStatus,
+        request.renderQualityDraft,
+        request.sequentialRenderStatus);
 }
 
 void JuicerProcessor::setRenderWindowRect(const OfxRectI& rect) { setRenderWindow(rect); }
@@ -1818,6 +1863,9 @@ void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare)
 }
 void JuicerProcessor::setDirRuntime(const Couplers::Runtime& rt) { _dirRT = rt; }
 void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
+    if (_wsHold.get() != ws) {
+        _wsHold.reset();
+    }
     _ws = ws;
     _wsReady = wsReady;
     // Align DIR normalization constants to per-instance maxima if available
