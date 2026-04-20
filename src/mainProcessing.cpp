@@ -2766,26 +2766,6 @@ void JuicerProcessor::processImagesCUDA() {
         }
     } contextLossRecoveryScope{ &run_pending_context_loss_recovery_noexcept };
 
-    JuicerCuda::Resources* cudaResources = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(_instanceState->cudaMutex);
-        auto& slot = _instanceState->cudaByDevice[deviceContextKey];
-        if (!slot) {
-            slot.reset(JuicerCuda::create());
-            if (!slot) {
-                JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-            }
-        }
-        if (slot->deviceId < 0) {
-            slot->deviceId = deviceContextKey.deviceId;
-        }
-        if (!slot->ownerContextOpaque) {
-            slot->ownerContextOpaque = deviceContextKey.contextOpaque;
-        }
-        cudaResources = slot.get();
-    }
-
     auto record_cuda_use = [&](JuicerCuda::Resources* resources) {
         if (!resources) {
             return;
@@ -2854,6 +2834,108 @@ void JuicerProcessor::processImagesCUDA() {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     };
 
+    struct CudaPreparedFrame {
+        JuicerCuda::Resources* resources = nullptr;
+        JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
+        const char* failureStageTag = "prepare_frame";
+        const char* failurePrefix = "CUDA prepared frame failed";
+
+        CudaPreparedFrame() = default;
+        CudaPreparedFrame(const CudaPreparedFrame&) = delete;
+        CudaPreparedFrame& operator=(const CudaPreparedFrame&) = delete;
+
+        ~CudaPreparedFrame() {
+            abort("prepared_frame_scope_exit");
+        }
+
+        bool begin(
+            InstanceState& instanceState,
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            std::string& outError) {
+            outError.clear();
+            set_failure("prepare_frame", "CUDA prepared frame failed");
+            if (!resolve_resources(instanceState, deviceContextKey, outError)) {
+                return false;
+            }
+            if (!JuicerProcess::root().begin_submission(transaction, snapshot, outError)) {
+                set_failure("begin_submission", "begin_submission failed");
+                return false;
+            }
+            if (!JuicerProcess::root().acquire_submission_plan(transaction, outError)) {
+                set_failure("acquire_plan", "acquire_plan failed");
+                abort("prepared_frame_acquire_failed");
+                return false;
+            }
+            return true;
+        }
+
+        bool finish(void* cudaStreamOpaque, std::string& outError) {
+            outError.clear();
+            if (!transaction.active || transaction.committed) {
+                outError = "prepared frame is not active";
+                return false;
+            }
+            return JuicerProcess::root().commit_submission(transaction, cudaStreamOpaque, outError);
+        }
+
+        void abort(const char* reason) noexcept {
+            if (transaction.active && !transaction.committed) {
+                JuicerProcess::root().rollback_submission(transaction, reason);
+            }
+        }
+
+        JuicerCuda::Resources* resources_ptr() const noexcept {
+            return resources;
+        }
+
+        JuicerCuda::ResourceManager::SubmissionTransaction& submission() noexcept {
+            return transaction;
+        }
+
+        const char* failure_stage_tag() const noexcept {
+            return failureStageTag;
+        }
+
+        const char* failure_prefix() const noexcept {
+            return failurePrefix;
+        }
+
+    private:
+        void set_failure(const char* stageTag, const char* prefix) noexcept {
+            failureStageTag = stageTag;
+            failurePrefix = prefix;
+        }
+
+        bool resolve_resources(
+            InstanceState& instanceState,
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            std::string& outError) {
+            std::lock_guard<std::mutex> lock(instanceState.cudaMutex);
+            auto& slot = instanceState.cudaByDevice[deviceContextKey];
+            if (!slot) {
+                slot.reset(JuicerCuda::create());
+                if (!slot) {
+                    JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
+                    outError = "failed to allocate CUDA resources";
+                    return false;
+                }
+            }
+            if (slot->deviceId < 0) {
+                slot->deviceId = deviceContextKey.deviceId;
+            }
+            if (!slot->ownerContextOpaque) {
+                slot->ownerContextOpaque = deviceContextKey.contextOpaque;
+            }
+            resources = slot.get();
+            if (!resources) {
+                outError = "CUDA resources missing after allocation";
+                return false;
+            }
+            return true;
+        }
+    };
+
     auto copy_scan_tables_payload = [&](auto& dstTables,
                                         auto& dstMediumIsNegative,
                                         float* dstMinCmy,
@@ -2893,19 +2975,8 @@ void JuicerProcessor::processImagesCUDA() {
         _ws->filmRaw,
         _cameraMeteringMethod);
 
-    JuicerCuda::ResourceManager::SubmissionTransaction submissionTxn{};
-    struct SubmissionTxnScope {
-        JuicerCuda::ResourceManager::SubmissionTransaction* transaction = nullptr;
-        bool committed = false;
-
-        ~SubmissionTxnScope() {
-            if (transaction && !committed) {
-                JuicerProcess::root().rollback_submission(*transaction, "scope_exit");
-            }
-        }
-    } submissionTxnScope{&submissionTxn, false};
+    JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
     {
-        JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
         snapshot.instanceToken.value = instance_token_or_session_seed(_instanceToken, _sessionSeed);
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
@@ -2942,8 +3013,7 @@ void JuicerProcessor::processImagesCUDA() {
                 latched.snapshotId != 0) {
                 snapshot = latched;
                 reusingSnapshotLatch = true;
-            }
-            else {
+            } else {
                 std::uint64_t nextSnapshotId =
                     _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
                 if (nextSnapshotId == 0) {
@@ -2967,15 +3037,18 @@ void JuicerProcessor::processImagesCUDA() {
             msg += std::to_string(snapshot.instanceToken.value);
             JTRACE_VERBOSE("MSSNP", msg);
         }
-
-        std::string submissionError;
-        if (!JuicerProcess::root().begin_submission(submissionTxn, snapshot, submissionError)) {
-            throw_submission_fatal("begin_submission", "begin_submission failed", submissionError);
-        }
-        if (!JuicerProcess::root().acquire_submission_plan(submissionTxn, submissionError)) {
-            throw_submission_fatal("acquire_plan", "acquire_plan failed", submissionError);
-        }
     }
+
+    CudaPreparedFrame preparedFrame{};
+    std::string prepareFrameError;
+    if (!preparedFrame.begin(*_instanceState, deviceContextKey, snapshot, prepareFrameError)) {
+        throw_submission_fatal(
+            preparedFrame.failure_stage_tag(),
+            preparedFrame.failure_prefix(),
+            prepareFrameError);
+    }
+    JuicerCuda::Resources* cudaResources = preparedFrame.resources_ptr();
+    JuicerCuda::ResourceManager::SubmissionTransaction& submissionTxn = preparedFrame.submission();
 
     std::string uploadError;
     if (!cudaResources) {
@@ -3957,10 +4030,9 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto commit_submission_or_throw = [&]() {
         std::string commitError;
-        if (!JuicerProcess::root().commit_submission(submissionTxn, _pCudaStream, commitError)) {
-            throw_submission_fatal("commit_submission", "commit_submission failed", commitError);
+        if (!preparedFrame.finish(_pCudaStream, commitError)) {
+            throw_submission_fatal("prepared_frame_finish", "prepared frame finish failed", commitError);
         }
-        submissionTxnScope.committed = true;
     };
 
     auto is_scratch_contention_exhausted = [](const std::string& error) -> bool {
