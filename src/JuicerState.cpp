@@ -720,6 +720,14 @@ namespace {
     }
 
     template <typename MixFn>
+    inline void mix_hash_string(uint64_t& h, const std::string& value, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(value.size()));
+        if (!value.empty()) {
+            h = mix(h, Hash::hash_bytes(value.data(), value.size()));
+        }
+    }
+
+    template <typename MixFn>
     inline void mix_hash_field_scaled(uint64_t& h, double value, double scale, const MixFn& mix) {
         h = mix(h, static_cast<uint64_t>(value * scale));
     }
@@ -765,8 +773,19 @@ namespace {
 
     template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        mix_hash_field(h, p.filmStockIndex, mix);
-        mix_hash_field(h, p.printPaperIndex, mix);
+        const JuicerAssets::PrintRuntimeAssetSet assets =
+            JuicerProcess::root().assets().print_runtime_assets_for_choices(
+                p.filmStockIndex,
+                p.printPaperIndex,
+                p.enlDichroicSet);
+
+        // Shared host derivation follows logical asset identity, not UI catalog positions.
+        mix_hash_string(h, assets.filmStock.jsonKey, mix);
+        mix_hash_field(h, assets.filmStock.version, mix);
+        mix_hash_string(h, assets.printPaper.jsonKey, mix);
+        mix_hash_field(h, assets.printPaper.version, mix);
+        mix_hash_field(h, assets.neutralFilters.databaseId, mix);
+        mix_hash_field(h, assets.neutralFilters.version, mix);
         mix_hash_field(h, p.spectralUpsamplingMode, mix);
         mix_hash_field(h, p.refIll, mix);
         mix_hash_field(h, p.enlIll, mix);
