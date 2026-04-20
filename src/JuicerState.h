@@ -455,8 +455,6 @@ struct InstanceState {
     int autoExposureCacheInputColorSpaceIndex =
         Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     bool autoExposureCacheApplyCctfDecoding = false;
-    bool autoExposureCanonicalValid = false;
-    OfxRectI autoExposureCanonicalBounds{ 0, 0, 0, 0 };
     bool autoExposureMaskValid = false;
     int autoExposureMaskWidth = 0;
     int autoExposureMaskHeight = 0;

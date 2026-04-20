@@ -1188,18 +1188,12 @@ namespace {
         return static_cast<std::int64_t>(std::floor(finite_or(time, 0.0)));
     }
 
-    std::uint64_t safe_session_seed(const InstanceState* state) {
-        if (state && state->sessionSeed != 0) {
-            return state->sessionSeed;
-        }
-        return 1;
+    std::uint64_t session_seed_or_default(std::uint64_t sessionSeed) {
+        return (sessionSeed != 0) ? sessionSeed : 1;
     }
 
-    std::uint64_t instance_token_or_session_seed(const InstanceState* state) {
-        if (state && state->instanceToken != 0) {
-            return state->instanceToken;
-        }
-        return safe_session_seed(state);
+    std::uint64_t instance_token_or_session_seed(std::uint64_t instanceToken, std::uint64_t sessionSeed) {
+        return (instanceToken != 0) ? instanceToken : session_seed_or_default(sessionSeed);
     }
 
     const char* runtime_lease_outcome_label(bool waitedForLease) {
@@ -1337,14 +1331,14 @@ namespace {
     }
 
     std::uint64_t seed_base_for_pass(
-        const InstanceState* state,
+        std::uint64_t sessionSeed,
         std::uintptr_t clipToken,
         std::int64_t frameIndex,
         std::uint64_t passId) {
         return make_seed_base(
             clipToken,
             frameIndex,
-            safe_session_seed(state),
+            session_seed_or_default(sessionSeed),
             passId);
     }
 
@@ -1880,12 +1874,22 @@ void JuicerProcessor::setCameraAutoExposure(bool enabled, int meteringMethod, do
     _cameraSliderEV = sliderEV;
 }
 
+void JuicerProcessor::setAutoExposureMeterBounds(const OfxRectI& bounds, bool valid) {
+    _autoExposureMeterBounds = bounds;
+    _autoExposureMeterBoundsValid = valid;
+}
+
 void JuicerProcessor::setOutputEncoding(const OutputEncoding::Params& p) {
     _outputEncoding = p;
 }
 
 void JuicerProcessor::setInstanceState(InstanceState* s) {
     _instanceState = s;
+}
+
+void JuicerProcessor::setSessionTokens(std::uint64_t sessionSeed, std::uint64_t instanceToken) {
+    _sessionSeed = session_seed_or_default(sessionSeed);
+    _instanceToken = instance_token_or_session_seed(instanceToken, _sessionSeed);
 }
 
 void JuicerProcessor::setClipToken(std::uintptr_t token) {
@@ -2419,7 +2423,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     }
 
     const std::uint64_t seedBase = seed_base_for_pass(
-        _instanceState,
+        _sessionSeed,
         _clipToken,
         _frameIndex,
         kSeedPassGlare);
@@ -2880,7 +2884,7 @@ void JuicerProcessor::processImagesCUDA() {
     } submissionTxnScope{&submissionTxn, false};
     {
         JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
-        snapshot.instanceToken.value = instance_token_or_session_seed(_instanceState);
+        snapshot.instanceToken.value = instance_token_or_session_seed(_instanceToken, _sessionSeed);
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
         const std::uint64_t uploadCoreHash = upload_core_hash_or_core_hash(*_ws);
@@ -3107,11 +3111,8 @@ void JuicerProcessor::processImagesCUDA() {
     const RenderMode renderMode = render_mode_from_print_bypass(_printParams.bypass);
 
     OfxRectI meterBounds = srcBounds;
-    if (_cameraAutoEnabled && _instanceState) {
-        std::lock_guard<std::mutex> lock(_instanceState->autoExposureMutex);
-        if (_instanceState->autoExposureCanonicalValid) {
-            meterBounds = _instanceState->autoExposureCanonicalBounds;
-        }
+    if (_cameraAutoEnabled && _autoExposureMeterBoundsValid) {
+        meterBounds = _autoExposureMeterBounds;
     }
     auto clamp_rect = [](OfxRectI r, const OfxRectI& bounds) {
         r.x1 = std::clamp(r.x1, bounds.x1, bounds.x2);
@@ -3386,7 +3387,7 @@ void JuicerProcessor::processImagesCUDA() {
         run.grain = JuicerCuda::GrainPayload{};
         run.grainKernels = JuicerCuda::GrainKernelPayload{};
         {
-            const std::uint64_t sessionSeed = safe_session_seed(_instanceState);
+            const std::uint64_t sessionSeed = session_seed_or_default(_sessionSeed);
             const double fps = positive_finite_or(_frameRate, 24.0);
             const double timeFrames = finite_or(_timeFrames, static_cast<double>(_frameIndex));
             const double alphaFrames = timeFrames - static_cast<double>(_frameIndex);
@@ -3423,12 +3424,12 @@ void JuicerProcessor::processImagesCUDA() {
                 : height;
             const double filmScale = positive_finite_or(filmFormatMm, 10.0) / 10.0;
             run.grain.seedBase = seed_base_for_pass(
-                _instanceState,
+                _sessionSeed,
                 _clipToken,
                 _frameIndex,
                 kSeedPassGrain);
             run.grain.seedBaseNext = seed_base_for_pass(
-                _instanceState,
+                _sessionSeed,
                 _clipToken,
                 _frameIndex + 1,
                 kSeedPassGrain);
@@ -4491,7 +4492,7 @@ void JuicerProcessor::processImagesCUDA() {
         result.blurSigmaPx = medium.glare.blur;
 
         const std::uint64_t seedBase = seed_base_for_pass(
-            _instanceState,
+            _sessionSeed,
             _clipToken,
             _frameIndex,
             kSeedPassGlare);

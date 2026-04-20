@@ -183,6 +183,24 @@ namespace {
         return state ? state->instanceToken : 0ull;
     }
 
+    struct SessionTokenSnapshot {
+        std::uint64_t sessionSeed = 1;
+        std::uint64_t instanceToken = 1;
+    };
+
+    inline SessionTokenSnapshot snapshot_session_tokens(const InstanceState* state) {
+        SessionTokenSnapshot snapshot{};
+        if (state && state->sessionSeed != 0) {
+            snapshot.sessionSeed = state->sessionSeed;
+        }
+        if (state && state->instanceToken != 0) {
+            snapshot.instanceToken = state->instanceToken;
+        } else {
+            snapshot.instanceToken = snapshot.sessionSeed;
+        }
+        return snapshot;
+    }
+
     inline std::uint64_t working_state_build_counter_or_zero(const WorkingState* ws) {
         return ws ? ws->buildCounter : 0ull;
     }
@@ -3052,12 +3070,8 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
             // Ignore failures; fall back to full bounds.
         }
     }
-
-    if (state) {
-        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-        state->autoExposureCanonicalBounds = meterBounds;
-        state->autoExposureCanonicalValid = true;
-    }
+    result.meterBounds = meterBounds;
+    result.meterBoundsValid = true;
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     // CUDA path: metering + exposure scale are computed and applied entirely on the GPU to avoid
@@ -3651,6 +3665,8 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setWorkingState(ws, wsReady);
     proc.setPrintRuntime(prt, printReady);
     proc.setInstanceState(_state.get());
+    const SessionTokenSnapshot sessionTokens = snapshot_session_tokens(_state.get());
+    proc.setSessionTokens(sessionTokens.sessionSeed, sessionTokens.instanceToken);
     const std::uint32_t frameVersion = frame_bounds_version_or_zero(_state.get());
     proc.setFrameBoundsVersion(frameVersion);
     proc.setPixelSizeUm(pixelSizeUm);
@@ -3658,6 +3674,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     float filmExposureScale = static_cast<float>(sanitize_positive_finite_or(autoExposure.exposureScale, 1.0));
     proc.setExposure(filmExposureScale);
     proc.setCameraAutoExposure(exposureParams.cameraAutoEnabled, exposureParams.meteringMethod, exposureParams.sliderEV);
+    proc.setAutoExposureMeterBounds(autoExposure.meterBounds, autoExposure.meterBoundsValid);
     proc.setOutputEncoding(outputEncodingParams);
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
     proc.setClipToken(renderClipToken);

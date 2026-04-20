@@ -110,8 +110,10 @@ public:
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
     void setExposure(float exposureScale);
     void setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV);
+    void setAutoExposureMeterBounds(const OfxRectI& bounds, bool valid);
     void setOutputEncoding(const OutputEncoding::Params& p);
     void setInstanceState(InstanceState* s);
+    void setSessionTokens(std::uint64_t sessionSeed, std::uint64_t instanceToken);
     void setClipToken(std::uintptr_t token);
     void setGateWeaveAmount(double amount);
     void setFrameTime(double time);
@@ -167,7 +169,11 @@ private:
     bool _cameraAutoEnabled = false;
     int _cameraMeteringMethod = 0;
     double _cameraSliderEV = 0.0;
+    OfxRectI _autoExposureMeterBounds{0, 0, 0, 0};
+    bool _autoExposureMeterBoundsValid = false;
     OutputEncoding::Params _outputEncoding;
+    std::uint64_t _sessionSeed = 1;
+    std::uint64_t _instanceToken = 1;
     std::uintptr_t _clipToken = 0;
     std::uint64_t _frameTimeHash = 0;
     std::int64_t _frameIndex = 0;

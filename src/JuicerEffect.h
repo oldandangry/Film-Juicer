@@ -96,6 +96,8 @@ private:
     struct AutoExposureResult {
         float exposureScale = 1.0f;
         double autoEV = 0.0;
+        OfxRectI meterBounds{0, 0, 0, 0};
+        bool meterBoundsValid = false;
     };
 
     struct WorkingStateInfo {
