@@ -1494,37 +1494,15 @@ namespace {
         return h;
     }
 
-    inline std::uint64_t neutral_filter_hash_or_default(const Print::Runtime& prt) {
-        return (prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
-    }
-
-    float compute_print_midgray_factor_cached(
-        InstanceState* instanceState,
+    float compute_print_midgray_factor(
         const WorkingState& ws,
         const Print::Runtime& prt,
         const Print::Params& printParams,
         const Couplers::Runtime& dirRT)
     {
-        const float yKey = finite_or_zero(printParams.yFilter);
-        const float mKey = finite_or_zero(printParams.mFilter);
-        const float cKey = finite_or_zero(printParams.cFilter);
-        const std::uint64_t neutralFilterHash = neutral_filter_hash_or_default(prt);
         const float exposureCompScale = printParams.exposureCompensationEnabled
             ? printParams.exposureCompensationScale
             : 1.0f;
-
-        if (instanceState) {
-            std::lock_guard<std::mutex> lock(instanceState->printMidgrayMutex);
-            if (instanceState->printMidgrayValid &&
-                instanceState->printMidgrayBuildCounter == ws.buildCounter &&
-                instanceState->printMidgrayYShiftSteps == yKey &&
-                instanceState->printMidgrayMShiftSteps == mKey &&
-                instanceState->printMidgrayCShiftSteps == cKey &&
-                instanceState->printMidgrayNeutralFilterHash == neutralFilterHash &&
-                instanceState->printMidgrayExposureCompScale == exposureCompScale) {
-                return instanceState->printMidgrayFactor;
-            }
-        }
 
         float kMid = Pipeline::PipelineRunner::compute_midgray_factor(
             ws,
@@ -1533,18 +1511,6 @@ namespace {
             dirRT,
             exposureCompScale);
         kMid = positive_finite_or(kMid, 1.0f);
-
-        if (instanceState) {
-            std::lock_guard<std::mutex> lock(instanceState->printMidgrayMutex);
-            instanceState->printMidgrayValid = true;
-            instanceState->printMidgrayBuildCounter = ws.buildCounter;
-            instanceState->printMidgrayYShiftSteps = yKey;
-            instanceState->printMidgrayMShiftSteps = mKey;
-            instanceState->printMidgrayCShiftSteps = cKey;
-            instanceState->printMidgrayNeutralFilterHash = neutralFilterHash;
-            instanceState->printMidgrayExposureCompScale = exposureCompScale;
-            instanceState->printMidgrayFactor = kMid;
-        }
 
         return kMid;
     }
@@ -1944,8 +1910,7 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
 
     ctx.kMidSpectral = 1.0f;
     if (ctx.printActive) {
-        ctx.kMidSpectral = compute_print_midgray_factor_cached(
-            _instanceState,
+        ctx.kMidSpectral = compute_print_midgray_factor(
             *_ws,
             *_prt,
             _printParams,
@@ -2689,6 +2654,15 @@ void JuicerProcessor::processImagesCUDA() {
         JTRACE("CUDA", "FATAL: instance state missing; cannot serve CUDA render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
+    const bool printActiveForRender = print_pipeline_active(
+        wsReady,
+        _ws,
+        _printReady,
+        _prt,
+        _printParams.bypass);
+    const float printMidgrayFactor = printActiveForRender
+        ? compute_print_midgray_factor(*_ws, *_prt, _printParams, _dirRT)
+        : 1.0f;
 
     JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
     deviceContextKey.deviceId = deviceId;
@@ -3018,19 +2992,15 @@ void JuicerProcessor::processImagesCUDA() {
                 throw OFX::Exception::Suite(kOfxStatErrFatal);
             }
 
-            if (print_pipeline_active(
-                    true,
-                    _ws,
-                    _printReady,
-                    _prt,
-                    _printParams.bypass)) {
-                const float kMidSpectral = compute_print_midgray_factor_cached(
-                    _instanceState,
-                    *_ws,
-                    *_prt,
-                    _printParams,
-                    _dirRT);
-                if (!JuicerCuda::validate_print_primitives(*cudaResources, *_ws, *_prt, _printParams, kMidSpectral, _pCudaStream, validateError)) {
+            if (printActiveForRender) {
+                if (!JuicerCuda::validate_print_primitives(
+                        *cudaResources,
+                        *_ws,
+                        *_prt,
+                        _printParams,
+                        printMidgrayFactor,
+                        _pCudaStream,
+                        validateError)) {
                     std::string msg;
                     msg.reserve(44 + validateError.size());
                     msg = "FATAL: CUDA print validation failed: ";
@@ -5105,13 +5075,8 @@ void JuicerProcessor::processImagesCUDA() {
             printScannerBinding.runtime());
         const Scanner::ScannerMediumRuntime& printMediumRuntime = *scannerPreflight.mediumRuntime;
 
-        // Print exposure compensation factor is computed on CPU (no image reads; safe for CUDA renders).
-        const float kMidSpectral = compute_print_midgray_factor_cached(
-            _instanceState,
-            *_ws,
-            *_prt,
-            _printParams,
-            _dirRT);
+        // Print exposure compensation factor was captured on CPU before CUDA pipeline setup.
+        const float kMidSpectral = printMidgrayFactor;
 
         JuicerCuda::PipelineRunParams run{};
         initialize_medium_pipeline_run(run, scannerPreflight);
