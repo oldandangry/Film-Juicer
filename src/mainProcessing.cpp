@@ -4123,17 +4123,14 @@ void JuicerProcessor::processImagesCUDA() {
                 opticsError);
         }
         mark_context_and_throw_cuda_policy_fatal(
-            "command_ensure_optics_scratch",
-            "CUDA optics scratch allocation failed",
+            preparedFrame.failure_stage_tag(),
+            preparedFrame.failure_prefix(),
             opticsError);
     };
 
-    auto ensure_optics_scratch_or_throw = [&](JuicerCuda::Resources* resources,
-                                              const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+    auto ensure_optics_scratch_or_throw = [&](const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                                               std::string& opticsError) {
-        if (JuicerCuda::ResourceManager::command_ensure_optics_scratch(
-                submissionTxn,
-                *resources,
+        if (preparedFrame.prepare_optics_scratch(
                 scratchRequest,
                 _pCudaStream,
                 opticsError)) {
@@ -4514,7 +4511,6 @@ void JuicerProcessor::processImagesCUDA() {
 
         std::string opticsError;
         ensure_optics_scratch_or_throw(
-            cudaResources,
             scratchRequest,
             opticsError);
         if (!setup_gate_mask_if_needed(

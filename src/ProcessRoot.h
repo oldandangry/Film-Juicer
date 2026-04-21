@@ -104,6 +104,10 @@ namespace JuicerProcess {
                 const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            bool prepare_optics_scratch(
+                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                void* cudaStreamOpaque,
+                std::string& outError);
             bool prepare_print_illuminant_filtered(
                 const WorkingState& workingState,
                 const Print::Runtime& printRuntime,

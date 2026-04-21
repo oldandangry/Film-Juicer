@@ -378,6 +378,30 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::prepare_optics_scratch(
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
+                _state->transaction,
+                *_state->resources,
+                scratchRequest,
+                cudaStreamOpaque,
+                outError)) {
+            _state->set_failure(
+                "command_ensure_optics_scratch",
+                "CUDA optics scratch allocation failed");
+            return false;
+        }
+        return true;
+    }
+
     bool Root::PreparedCudaFrame::prepare_print_illuminant_filtered(
         const WorkingState& workingState,
         const Print::Runtime& printRuntime,
