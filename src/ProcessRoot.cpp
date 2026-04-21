@@ -320,6 +320,34 @@ namespace JuicerProcess {
         }
     }
 
+    bool Root::PreparedCudaFrame::prepare_current_medium(
+        const WorkingState& workingState,
+        bool negativeMedium,
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        const char* stageTag = negativeMedium ? "command_ensure_current_medium_uploaded_negative"
+                                              : "command_ensure_current_medium_uploaded_print";
+        if (!JuicerCuda::ResourceManager::command_ensure_current_medium_uploaded(
+                _state->transaction,
+                *_state->resources,
+                workingState,
+                negativeMedium,
+                scratchRequest,
+                cudaStreamOpaque,
+                outError)) {
+            _state->set_failure(stageTag, "CUDA current-medium upload failed");
+            return false;
+        }
+        return true;
+    }
+
     JuicerCuda::Resources* Root::PreparedCudaFrame::resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }

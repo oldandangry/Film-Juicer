@@ -4880,28 +4880,23 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
-    auto ensure_current_medium_uploaded_or_throw = [&](
-        bool negativeMedium,
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest) {
-        const char* stageTag = negativeMedium
-            ? "command_ensure_current_medium_uploaded_negative"
-            : "command_ensure_current_medium_uploaded_print";
-        std::string currentMediumUploadError;
-        if (JuicerCuda::ResourceManager::command_ensure_current_medium_uploaded(
-                submissionTxn,
-                *cudaResources,
-                *_ws,
-                negativeMedium,
-                scratchRequest,
-                _pCudaStream,
-                currentMediumUploadError)) {
-            return;
-        }
-        mark_context_and_throw_cuda_policy_fatal(
-            stageTag,
-            "CUDA current-medium upload failed",
-            currentMediumUploadError);
-    };
+    auto ensure_current_medium_uploaded_or_throw =
+        [&](bool negativeMedium,
+            const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest) {
+            std::string currentMediumUploadError;
+            if (preparedFrame.prepare_current_medium(
+                    *_ws,
+                    negativeMedium,
+                    scratchRequest,
+                    _pCudaStream,
+                    currentMediumUploadError)) {
+                return;
+            }
+            mark_context_and_throw_cuda_policy_fatal(
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
+                currentMediumUploadError);
+        };
 
     auto validate_negative_scanner_preflight_or_throw = [&]() -> JuicerProcScanner::ScannerPreflightResult {
         const JuicerProcScanner::ScannerMediumRuntimeBinding scannerMedium = JuicerProcScanner::bind_scanner_medium_runtime(

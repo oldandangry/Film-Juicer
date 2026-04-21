@@ -21,6 +21,7 @@ namespace JuicerCuda {
     struct Resources;
     namespace ResourceManager {
         struct DeviceContextKey;
+        struct ScratchRequestDescriptor;
         struct SubmissionSnapshot;
         struct SubmissionTransaction;
     } // namespace ResourceManager
@@ -87,6 +88,12 @@ namespace JuicerProcess {
             bool active() const noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
+            bool prepare_current_medium(
+                const WorkingState& workingState,
+                bool negativeMedium,
+                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                void* cudaStreamOpaque,
+                std::string& outError);
 
             JuicerCuda::Resources* resources() const noexcept;
             JuicerCuda::ResourceManager::SubmissionTransaction& submission() noexcept;
