@@ -10,6 +10,10 @@
 
 struct InstanceState;
 struct WorkingState;
+namespace Print {
+    struct Params;
+    struct Runtime;
+} // namespace Print
 
 namespace WorkingStateSharing {
     struct AcquireCoreSharedResult;
@@ -91,6 +95,13 @@ namespace JuicerProcess {
             bool prepare_current_medium(
                 const WorkingState& workingState,
                 bool negativeMedium,
+                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_print_illuminant_filtered(
+                const WorkingState& workingState,
+                const Print::Runtime& printRuntime,
+                const Print::Params& printParams,
                 const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                 void* cudaStreamOpaque,
                 std::string& outError);

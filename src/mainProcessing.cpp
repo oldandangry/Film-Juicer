@@ -4066,26 +4066,23 @@ void JuicerProcessor::processImagesCUDA() {
             "CUDA");
     };
 
-    auto ensure_print_illuminant_filtered_or_throw = [&](
-        JuicerCuda::Resources* resources,
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest) {
-        std::string illumError;
-        if (JuicerCuda::ResourceManager::command_ensure_print_illuminant_filtered(
-                submissionTxn,
-                *resources,
-                *_ws,
-                *_prt,
-                _printParams,
-                scratchRequest,
-                _pCudaStream,
-                illumError)) {
-            return;
-        }
-        mark_context_and_throw_cuda_policy_fatal(
-            "command_ensure_print_illuminant_filtered",
-            "CUDA print illuminant upload failed",
-            illumError);
-    };
+    auto ensure_print_illuminant_filtered_or_throw =
+        [&](const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest) {
+            std::string illumError;
+            if (preparedFrame.prepare_print_illuminant_filtered(
+                    *_ws,
+                    *_prt,
+                    _printParams,
+                    scratchRequest,
+                    _pCudaStream,
+                    illumError)) {
+                return;
+            }
+            mark_context_and_throw_cuda_policy_fatal(
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
+                illumError);
+        };
 
     auto trace_print_payload_verbose = [&](JuicerCuda::Resources* resources) {
         if (!traceVerbose || !resources) {
@@ -5090,7 +5087,7 @@ void JuicerProcessor::processImagesCUDA() {
             ensure_current_medium_uploaded_or_throw(false, scratchRequest);
 
             // Ensure the print illuminant filtered is available for current print params.
-            ensure_print_illuminant_filtered_or_throw(cudaResources, scratchRequest);
+            ensure_print_illuminant_filtered_or_throw(scratchRequest);
             trace_print_payload_verbose(cudaResources);
 
             cudaEvent_t scanEvent = nullptr;
