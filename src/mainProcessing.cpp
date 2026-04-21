@@ -3819,17 +3819,6 @@ void JuicerProcessor::processImagesCUDA() {
     auto prepare_scan_error_stage = [&](JuicerCuda::Resources* resources,
                                         JuicerCuda::PipelineRunParams& run,
                                         cudaStream_t stream) -> cudaEvent_t {
-        std::string scanFlagError;
-        if (!JuicerCuda::ResourceManager::command_ensure_scan_error_flag(
-                submissionTxn,
-                *resources,
-                _pCudaStream,
-                scanFlagError)) {
-            mark_context_and_throw_cuda_policy_fatal(
-                "command_ensure_scan_error_flag",
-                "CUDA scan error flag allocation failed",
-                scanFlagError);
-        }
         run.scanStage.scanErrorFlag = resources->scanErrorFlag;
         if (!run.scanStage.scanErrorFlag) {
             JTRACE("CUDA", "FATAL: scan error flag missing after allocation");
