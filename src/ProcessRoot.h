@@ -90,10 +90,24 @@ namespace JuicerProcess {
             PreparedCudaFrame(const PreparedCudaFrame&) = delete;
             PreparedCudaFrame& operator=(const PreparedCudaFrame&) = delete;
 
+            struct GrainStaticAssets {
+                const std::uint8_t* stbn = nullptr;
+                int stbnWidth = 0;
+                int stbnHeight = 0;
+                int stbnFrames = 0;
+                const std::uint8_t* wangTiles = nullptr;
+                const std::uint8_t* wangLut = nullptr;
+                int wangWidth = 0;
+                int wangHeight = 0;
+                int wangCount = 0;
+                int wangColors = 0;
+            };
+
             PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
             bool active() const noexcept;
+            GrainStaticAssets grain_static_assets() const noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             bool prepare_current_medium(

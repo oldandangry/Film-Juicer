@@ -3358,6 +3358,8 @@ void JuicerProcessor::processImagesCUDA() {
         run.grain = JuicerCuda::GrainPayload{};
         run.grainKernels = JuicerCuda::GrainKernelPayload{};
         {
+            const JuicerProcess::Root::PreparedCudaFrame::GrainStaticAssets grainStaticAssets =
+                preparedFrame.grain_static_assets();
             const std::uint64_t sessionSeed = session_seed_or_default(_sessionSeed);
             const double fps = positive_finite_or(_frameRate, 24.0);
             const double timeFrames = finite_or(_timeFrames, static_cast<double>(_frameIndex));
@@ -3427,25 +3429,25 @@ void JuicerProcessor::processImagesCUDA() {
                 sanitize_finite_clamped_or(static_cast<double>(grainUi.clumpTemporalMix), 0.0, 0.0, 0.30));
             run.grain.clumpMorphPeriodFrames = clumpMorphPeriodFrames;
             run.grain.wangCellMm = 2.0f;
-            if (cudaResources && cudaResources->stbnData &&
-                cudaResources->stbnWidth > 0 && cudaResources->stbnHeight > 0 && cudaResources->stbnFrames > 0) {
-                run.grain.stbn = cudaResources->stbnData;
-                run.grain.stbnWidth = cudaResources->stbnWidth;
-                run.grain.stbnHeight = cudaResources->stbnHeight;
-                run.grain.stbnFrames = cudaResources->stbnFrames;
+            if (grainStaticAssets.stbn &&
+                grainStaticAssets.stbnWidth > 0 && grainStaticAssets.stbnHeight > 0 && grainStaticAssets.stbnFrames > 0) {
+                run.grain.stbn = grainStaticAssets.stbn;
+                run.grain.stbnWidth = grainStaticAssets.stbnWidth;
+                run.grain.stbnHeight = grainStaticAssets.stbnHeight;
+                run.grain.stbnFrames = grainStaticAssets.stbnFrames;
                 run.grain.stbnOffsetX = stbn_offset(sessionSeed, run.grain.stbnWidth, 0xA5u);
                 run.grain.stbnOffsetY = stbn_offset(sessionSeed, run.grain.stbnHeight, 0x5Au);
                 run.grain.stbnFrame = stbn_frame_index(_frameIndex, run.grain.stbnFrames, sessionSeed);
             }
-            if (cudaResources && cudaResources->wangTilesData && cudaResources->wangLutData &&
-                cudaResources->wangWidth > 0 && cudaResources->wangHeight > 0 &&
-                cudaResources->wangCount > 0 && cudaResources->wangColors > 0) {
-                run.grain.wangTiles = cudaResources->wangTilesData;
-                run.grain.wangLut = cudaResources->wangLutData;
-                run.grain.wangWidth = cudaResources->wangWidth;
-                run.grain.wangHeight = cudaResources->wangHeight;
-                run.grain.wangCount = cudaResources->wangCount;
-                run.grain.wangColors = cudaResources->wangColors;
+            if (grainStaticAssets.wangTiles && grainStaticAssets.wangLut &&
+                grainStaticAssets.wangWidth > 0 && grainStaticAssets.wangHeight > 0 &&
+                grainStaticAssets.wangCount > 0 && grainStaticAssets.wangColors > 0) {
+                run.grain.wangTiles = grainStaticAssets.wangTiles;
+                run.grain.wangLut = grainStaticAssets.wangLut;
+                run.grain.wangWidth = grainStaticAssets.wangWidth;
+                run.grain.wangHeight = grainStaticAssets.wangHeight;
+                run.grain.wangCount = grainStaticAssets.wangCount;
+                run.grain.wangColors = grainStaticAssets.wangColors;
             }
         }
         if (wantGrain) {

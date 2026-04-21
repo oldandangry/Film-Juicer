@@ -585,6 +585,32 @@ namespace JuicerProcess {
         return true;
     }
 
+    Root::PreparedCudaFrame::GrainStaticAssets Root::PreparedCudaFrame::grain_static_assets() const noexcept {
+        GrainStaticAssets assets{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return assets;
+        }
+
+        const JuicerCuda::Resources& resources = *_state->resources;
+        if (resources.stbnData && resources.stbnWidth > 0 && resources.stbnHeight > 0 && resources.stbnFrames > 0) {
+            assets.stbn = resources.stbnData;
+            assets.stbnWidth = resources.stbnWidth;
+            assets.stbnHeight = resources.stbnHeight;
+            assets.stbnFrames = resources.stbnFrames;
+        }
+        if (resources.wangTilesData && resources.wangLutData &&
+            resources.wangWidth > 0 && resources.wangHeight > 0 &&
+            resources.wangCount > 0 && resources.wangColors > 0) {
+            assets.wangTiles = resources.wangTilesData;
+            assets.wangLut = resources.wangLutData;
+            assets.wangWidth = resources.wangWidth;
+            assets.wangHeight = resources.wangHeight;
+            assets.wangCount = resources.wangCount;
+            assets.wangColors = resources.wangColors;
+        }
+        return assets;
+    }
+
     JuicerCuda::Resources* Root::PreparedCudaFrame::resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }
