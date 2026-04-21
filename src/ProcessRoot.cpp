@@ -467,6 +467,7 @@ namespace JuicerProcess {
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const WorkingState& workingState,
+        const AutoExposureBufferRequest& autoExposureBufferRequest,
         void* cudaStreamOpaque,
         std::string& outError) {
         outError.clear();
@@ -510,6 +511,21 @@ namespace JuicerProcess {
                 outError)) {
             frame._state->set_failure("command_ensure_scan_error_flag", "CUDA scan error flag allocation failed");
             frame.abort("prepared_frame_scan_error_flag_failed");
+            return frame;
+        }
+        if (autoExposureBufferRequest.enabled &&
+            !JuicerCuda::ResourceManager::command_ensure_auto_exposure_buffers(
+                frame._state->transaction,
+                *frame._state->resources,
+                autoExposureBufferRequest.meterWidth,
+                autoExposureBufferRequest.meterHeight,
+                autoExposureBufferRequest.reusableKeyHash,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure(
+                "command_ensure_auto_exposure_buffers",
+                "CUDA auto-exposure buffer allocation failed");
+            frame.abort("prepared_frame_auto_exposure_failed");
             return frame;
         }
         return frame;

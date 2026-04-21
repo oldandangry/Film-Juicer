@@ -66,6 +66,13 @@ namespace JuicerProcess {
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        struct AutoExposureBufferRequest {
+            bool enabled = false;
+            int meterWidth = 0;
+            int meterHeight = 0;
+            std::uint64_t reusableKeyHash = 0;
+        };
+
         class PreparedCudaFrame final {
         public:
             PreparedCudaFrame() noexcept = default;
@@ -102,6 +109,7 @@ namespace JuicerProcess {
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const WorkingState& workingState,
+            const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
             std::string& outError);
         bool begin_submission(

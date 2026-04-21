@@ -2872,6 +2872,42 @@ void JuicerProcessor::processImagesCUDA() {
         _nComponents,
         _ws->filmRaw,
         _cameraMeteringMethod);
+    OfxRectI meterBounds = srcBounds;
+    if (_cameraAutoEnabled && _autoExposureMeterBoundsValid) {
+        meterBounds = _autoExposureMeterBounds;
+    }
+    auto clamp_rect = [](OfxRectI r, const OfxRectI& bounds) {
+        r.x1 = std::clamp(r.x1, bounds.x1, bounds.x2);
+        r.x2 = std::clamp(r.x2, bounds.x1, bounds.x2);
+        r.y1 = std::clamp(r.y1, bounds.y1, bounds.y2);
+        r.y2 = std::clamp(r.y2, bounds.y1, bounds.y2);
+        if (r.x2 < r.x1) {
+            const int tmp = r.x1;
+            r.x1 = r.x2;
+            r.x2 = tmp;
+        }
+        if (r.y2 < r.y1) {
+            const int tmp = r.y1;
+            r.y1 = r.y2;
+            r.y2 = tmp;
+        }
+        return r;
+    };
+    meterBounds = clamp_rect(meterBounds, srcBounds);
+    if ((meterBounds.x2 - meterBounds.x1) <= 0 || (meterBounds.y2 - meterBounds.y1) <= 0) {
+        meterBounds = srcBounds;
+    }
+    const int autoExposureMeterWidth = meterBounds.x2 - meterBounds.x1;
+    const int autoExposureMeterHeight = meterBounds.y2 - meterBounds.y1;
+    JuicerProcess::Root::AutoExposureBufferRequest autoExposureBufferRequest{};
+    autoExposureBufferRequest.enabled =
+        _cameraAutoEnabled &&
+        (_nComponents == 3 || _nComponents == 4) &&
+        autoExposureMeterWidth > 0 &&
+        autoExposureMeterHeight > 0;
+    autoExposureBufferRequest.meterWidth = autoExposureMeterWidth;
+    autoExposureBufferRequest.meterHeight = autoExposureMeterHeight;
+    autoExposureBufferRequest.reusableKeyHash = autoExposureReusableKeyHash;
 
     JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
     {
@@ -2939,7 +2975,14 @@ void JuicerProcessor::processImagesCUDA() {
 
     std::string prepareFrameError;
     JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-        JuicerProcess::root().prepare_cuda_frame(*_instanceState, deviceContextKey, snapshot, *_ws, _pCudaStream, prepareFrameError);
+        JuicerProcess::root().prepare_cuda_frame(
+            *_instanceState,
+            deviceContextKey,
+            snapshot,
+            *_ws,
+            autoExposureBufferRequest,
+            _pCudaStream,
+            prepareFrameError);
     if (!preparedFrame.active()) {
         throw_submission_fatal(
             preparedFrame.failure_stage_tag(),
@@ -3088,32 +3131,6 @@ void JuicerProcessor::processImagesCUDA() {
 
     const RenderMode renderMode = render_mode_from_print_bypass(_printParams.bypass);
 
-    OfxRectI meterBounds = srcBounds;
-    if (_cameraAutoEnabled && _autoExposureMeterBoundsValid) {
-        meterBounds = _autoExposureMeterBounds;
-    }
-    auto clamp_rect = [](OfxRectI r, const OfxRectI& bounds) {
-        r.x1 = std::clamp(r.x1, bounds.x1, bounds.x2);
-        r.x2 = std::clamp(r.x2, bounds.x1, bounds.x2);
-        r.y1 = std::clamp(r.y1, bounds.y1, bounds.y2);
-        r.y2 = std::clamp(r.y2, bounds.y1, bounds.y2);
-        if (r.x2 < r.x1) {
-            const int tmp = r.x1;
-            r.x1 = r.x2;
-            r.x2 = tmp;
-        }
-        if (r.y2 < r.y1) {
-            const int tmp = r.y1;
-            r.y1 = r.y2;
-            r.y2 = tmp;
-        }
-        return r;
-    };
-    meterBounds = clamp_rect(meterBounds, srcBounds);
-    if ((meterBounds.x2 - meterBounds.x1) <= 0 || (meterBounds.y2 - meterBounds.y1) <= 0) {
-        meterBounds = srcBounds;
-    }
-
     auto setup_camera_auto_exposure = [&](
         JuicerCuda::PipelineRunParams& run,
         JuicerCuda::Resources* cudaResources) {
@@ -3127,9 +3144,7 @@ void JuicerProcessor::processImagesCUDA() {
             return;
         }
 
-        const int meterWidth = meterBounds.x2 - meterBounds.x1;
-        const int meterHeight = meterBounds.y2 - meterBounds.y1;
-        if (meterWidth <= 0 || meterHeight <= 0) {
+        if (autoExposureMeterWidth <= 0 || autoExposureMeterHeight <= 0) {
             return;
         }
 
@@ -3138,20 +3153,6 @@ void JuicerProcessor::processImagesCUDA() {
                 nonempty_cstr_or(prefix, "CUDA auto-exposure failed"),
                 detail_or_unknown(detail));
         };
-
-        std::string aeError;
-        if (!JuicerCuda::ResourceManager::command_ensure_auto_exposure_buffers(
-                submissionTxn,
-                *cudaResources,
-                meterWidth,
-                meterHeight,
-                autoExposureReusableKeyHash,
-                _pCudaStream,
-                aeError)) {
-            throw_auto_exposure_mode_fatal(
-                "CUDA auto-exposure buffer allocation failed",
-                cstr_or_null_if_empty(aeError));
-        }
 
         JuicerCudaAutoExposureScratch scratch{};
         scratch.partialsA = cudaResources->autoExposureScratch.partialsA;
@@ -3196,11 +3197,11 @@ void JuicerProcessor::processImagesCUDA() {
         if (needMeter) {
             if (_cameraMeteringMethod == 0) {
                 if (!scratch.weightsX || !scratch.weightsY ||
-                    cudaResources->autoExposureScratch.weightsWidth != meterWidth ||
-                    cudaResources->autoExposureScratch.weightsHeight != meterHeight) {
+                    cudaResources->autoExposureScratch.weightsWidth != autoExposureMeterWidth ||
+                    cudaResources->autoExposureScratch.weightsHeight != autoExposureMeterHeight) {
                     const int rcW = juicer_cuda_auto_exposure_build_center_weight_tables(
-                        meterWidth,
-                        meterHeight,
+                        autoExposureMeterWidth,
+                        autoExposureMeterHeight,
                         scratch.weightsX,
                         scratch.weightsY,
                         _pCudaStream,
@@ -3210,8 +3211,8 @@ void JuicerProcessor::processImagesCUDA() {
                             "CUDA auto-exposure weight build failed",
                             errMsg);
                     }
-                    cudaResources->autoExposureScratch.weightsWidth = meterWidth;
-                    cudaResources->autoExposureScratch.weightsHeight = meterHeight;
+                    cudaResources->autoExposureScratch.weightsWidth = autoExposureMeterWidth;
+                    cudaResources->autoExposureScratch.weightsHeight = autoExposureMeterHeight;
                 }
             }
 
@@ -3243,8 +3244,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
             cudaResources->autoExposureKeyHash = meterStateKey;
             cudaResources->autoExposureSliderEV = _cameraSliderEV;
-        }
-        else if (needSliderUpdate) {
+        } else if (needSliderUpdate) {
             const int rc = juicer_cuda_auto_exposure_update_scale_to_device(
                 _cameraSliderEV,
                 state,
