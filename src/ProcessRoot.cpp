@@ -466,6 +466,8 @@ namespace JuicerProcess {
         InstanceState& instanceState,
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        const WorkingState& workingState,
+        void* cudaStreamOpaque,
         std::string& outError) {
         outError.clear();
         std::unique_ptr<PreparedCudaFrame::State> state;
@@ -489,6 +491,16 @@ namespace JuicerProcess {
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
             frame._state->set_failure("acquire_plan", "acquire_plan failed");
             frame.abort("prepared_frame_acquire_failed");
+            return frame;
+        }
+        if (!JuicerCuda::ResourceManager::command_ensure_uploaded(
+                frame._state->transaction,
+                *frame._state->resources,
+                workingState,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure("command_ensure_uploaded", "CUDA WorkingState upload failed");
+            frame.abort("prepared_frame_upload_failed");
             return frame;
         }
         return frame;

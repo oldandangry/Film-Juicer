@@ -9,6 +9,7 @@
 #include "ResourceAssetLibrary.h"
 
 struct InstanceState;
+struct WorkingState;
 
 namespace WorkingStateSharing {
     struct AcquireCoreSharedResult;
@@ -100,6 +101,8 @@ namespace JuicerProcess {
             InstanceState& instanceState,
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            const WorkingState& workingState,
+            void* cudaStreamOpaque,
             std::string& outError);
         bool begin_submission(
             JuicerCuda::ResourceManager::SubmissionTransaction& transaction,

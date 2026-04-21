@@ -2939,7 +2939,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     std::string prepareFrameError;
     JuicerProcess::Root::PreparedCudaFrame preparedFrame =
-        JuicerProcess::root().prepare_cuda_frame(*_instanceState, deviceContextKey, snapshot, prepareFrameError);
+        JuicerProcess::root().prepare_cuda_frame(*_instanceState, deviceContextKey, snapshot, *_ws, _pCudaStream, prepareFrameError);
     if (!preparedFrame.active()) {
         throw_submission_fatal(
             preparedFrame.failure_stage_tag(),
@@ -2949,21 +2949,9 @@ void JuicerProcessor::processImagesCUDA() {
     JuicerCuda::Resources* cudaResources = preparedFrame.resources();
     JuicerCuda::ResourceManager::SubmissionTransaction& submissionTxn = preparedFrame.submission();
 
-    std::string uploadError;
     if (!cudaResources) {
         JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-    if (!JuicerCuda::ResourceManager::command_ensure_uploaded(
-            submissionTxn,
-            *cudaResources,
-            *_ws,
-            _pCudaStream,
-            uploadError)) {
-        mark_context_and_throw_cuda_policy_fatal(
-            "command_ensure_uploaded",
-            "CUDA WorkingState upload failed",
-            uploadError);
     }
     if (traceVerbose) {
         std::lock_guard<std::mutex> resLock(cudaResources->m);
