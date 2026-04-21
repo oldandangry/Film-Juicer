@@ -2984,7 +2984,6 @@ void JuicerProcessor::processImagesCUDA() {
             prepareFrameError);
     }
     JuicerCuda::Resources* cudaResources = preparedFrame.resources();
-    JuicerCuda::ResourceManager::SubmissionTransaction& submissionTxn = preparedFrame.submission();
 
     if (!cudaResources) {
         JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
@@ -3795,16 +3794,15 @@ void JuicerProcessor::processImagesCUDA() {
                                           JuicerCuda::PipelineRunParams& run) -> cudaError_t {
         std::string graphError;
         int graphErrCode = static_cast<int>(cudaErrorUnknown);
-        if (!JuicerCuda::ResourceManager::command_launch_base_pipeline_graph(
-                submissionTxn,
+        if (!preparedFrame.launch_base_pipeline_graph(
                 run,
                 renderModeKey,
                 _pCudaStream,
                 graphErrCode,
                 graphError)) {
             mark_context_and_throw_cuda_policy_fatal(
-                "command_launch_base_pipeline_graph",
-                "CUDA base graph launch command failed",
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
                 graphError);
         }
         return static_cast<cudaError_t>(graphErrCode);
@@ -3993,9 +3991,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         std::string dirError;
-        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
-                submissionTxn,
-                *resources,
+        if (!preparedFrame.prepare_spatial_dir_scratch(
                 scratchRequest,
                 _pCudaStream,
                 dirError)) {
@@ -4005,20 +4001,17 @@ void JuicerProcessor::processImagesCUDA() {
                     dirError);
             }
             mark_context_and_throw_cuda_policy_fatal(
-                "command_ensure_spatial_dir_scratch",
-                "CUDA spatial DIR scratch allocation failed",
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
                 dirError);
         }
-        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
-                submissionTxn,
-                *resources,
-                resources->spatialDirKernel,
+        if (!preparedFrame.prepare_spatial_dir_kernel(
                 _dirRT.spatialSigmaPixels,
                 _pCudaStream,
                 dirError)) {
             mark_context_and_throw_cuda_policy_fatal(
-                "command_ensure_spatial_dir_kernel",
-                "CUDA spatial DIR kernel upload failed",
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
                 dirError);
         }
 
@@ -4189,9 +4182,7 @@ void JuicerProcessor::processImagesCUDA() {
                                                float sigma,
                                                const char* kernelLabel,
                                                std::string& opticsError) {
-        if (JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
-                submissionTxn,
-                *cudaResources,
+        if (preparedFrame.prepare_gaussian_kernel(
                 kernel,
                 sigma,
                 _pCudaStream,
@@ -4207,9 +4198,7 @@ void JuicerProcessor::processImagesCUDA() {
                                                float sigma,
                                                const char* kernelLabel,
                                                std::string& opticsError) {
-        if (JuicerCuda::ResourceManager::command_ensure_halation_kernel(
-                submissionTxn,
-                *cudaResources,
+        if (preparedFrame.prepare_halation_kernel(
                 kernel,
                 sigma,
                 _pCudaStream,
@@ -4849,15 +4838,13 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         std::string scratchPhaseError;
-        if (!JuicerCuda::ResourceManager::command_checkpoint_scratch_phase(
-                submissionTxn,
-                *cudaResources,
+        if (!preparedFrame.checkpoint_scratch_phase(
                 scratchRequest,
                 stageTag,
                 scratchPhaseError)) {
             mark_context_and_throw_cuda_policy_fatal(
-                stageTag,
-                "CUDA scratch phase checkpoint failed",
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
                 scratchPhaseError);
         }
     };

@@ -402,6 +402,30 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::prepare_spatial_dir_scratch(
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
+                _state->transaction,
+                *_state->resources,
+                scratchRequest,
+                cudaStreamOpaque,
+                outError)) {
+            _state->set_failure(
+                "command_ensure_spatial_dir_scratch",
+                "CUDA spatial DIR scratch allocation failed");
+            return false;
+        }
+        return true;
+    }
+
     bool Root::PreparedCudaFrame::prepare_print_illuminant_filtered(
         const WorkingState& workingState,
         const Print::Runtime& printRuntime,
@@ -432,12 +456,137 @@ namespace JuicerProcess {
         return true;
     }
 
-    JuicerCuda::Resources* Root::PreparedCudaFrame::resources() const noexcept {
-        return _state ? _state->resources : nullptr;
+    bool Root::PreparedCudaFrame::checkpoint_scratch_phase(
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        const char* stageTag,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        const char* failureStageTag = stageTag ? stageTag : "command_checkpoint_scratch_phase";
+        if (!JuicerCuda::ResourceManager::command_checkpoint_scratch_phase(
+                _state->transaction,
+                *_state->resources,
+                scratchRequest,
+                failureStageTag,
+                outError)) {
+            _state->set_failure(
+                failureStageTag,
+                "CUDA scratch phase checkpoint failed");
+            return false;
+        }
+        return true;
     }
 
-    JuicerCuda::ResourceManager::SubmissionTransaction& Root::PreparedCudaFrame::submission() noexcept {
-        return _state->transaction;
+    bool Root::PreparedCudaFrame::prepare_spatial_dir_kernel(
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
+                _state->transaction,
+                *_state->resources,
+                _state->resources->spatialDirKernel,
+                sigma,
+                cudaStreamOpaque,
+                outError)) {
+            _state->set_failure(
+                "command_ensure_spatial_dir_kernel",
+                "CUDA spatial DIR kernel upload failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::prepare_gaussian_kernel(
+        JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        if (!JuicerCuda::ResourceManager::command_ensure_gaussian_kernel(
+                _state->transaction,
+                *_state->resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                outError)) {
+            _state->set_failure(
+                "command_ensure_gaussian_kernel",
+                "CUDA gaussian kernel upload failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::prepare_halation_kernel(
+        JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        if (!JuicerCuda::ResourceManager::command_ensure_halation_kernel(
+                _state->transaction,
+                *_state->resources,
+                kernel,
+                sigma,
+                cudaStreamOpaque,
+                outError)) {
+            _state->set_failure(
+                "command_ensure_halation_kernel",
+                "CUDA halation kernel upload failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::launch_base_pipeline_graph(
+        JuicerCuda::PipelineRunParams& run,
+        int renderModeKey,
+        void* cudaStreamOpaque,
+        int& outCudaErrorCode,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        if (!JuicerCuda::ResourceManager::command_launch_base_pipeline_graph(
+                _state->transaction,
+                run,
+                renderModeKey,
+                cudaStreamOpaque,
+                outCudaErrorCode,
+                outError)) {
+            _state->set_failure(
+                "command_launch_base_pipeline_graph",
+                "CUDA base graph launch command failed");
+            return false;
+        }
+        return true;
+    }
+
+    JuicerCuda::Resources* Root::PreparedCudaFrame::resources() const noexcept {
+        return _state ? _state->resources : nullptr;
     }
 
     const char* Root::PreparedCudaFrame::failure_stage_tag() const noexcept {

@@ -8,6 +8,10 @@
 
 #include "ResourceAssetLibrary.h"
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/JuicerCudaResources.h"
+#endif
+
 struct InstanceState;
 struct WorkingState;
 namespace Print {
@@ -22,7 +26,7 @@ namespace WorkingStateSharing {
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace JuicerCuda {
-    struct Resources;
+    struct PipelineRunParams;
     namespace ResourceManager {
         struct DeviceContextKey;
         struct ScratchRequestDescriptor;
@@ -108,6 +112,10 @@ namespace JuicerProcess {
                 const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            bool prepare_spatial_dir_scratch(
+                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                void* cudaStreamOpaque,
+                std::string& outError);
             bool prepare_print_illuminant_filtered(
                 const WorkingState& workingState,
                 const Print::Runtime& printRuntime,
@@ -115,9 +123,32 @@ namespace JuicerProcess {
                 const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            bool checkpoint_scratch_phase(
+                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                const char* stageTag,
+                std::string& outError);
+            bool prepare_spatial_dir_kernel(
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_gaussian_kernel(
+                JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_halation_kernel(
+                JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool launch_base_pipeline_graph(
+                JuicerCuda::PipelineRunParams& run,
+                int renderModeKey,
+                void* cudaStreamOpaque,
+                int& outCudaErrorCode,
+                std::string& outError);
 
             JuicerCuda::Resources* resources() const noexcept;
-            JuicerCuda::ResourceManager::SubmissionTransaction& submission() noexcept;
             const char* failure_stage_tag() const noexcept;
             const char* failure_prefix() const noexcept;
 
