@@ -348,6 +348,36 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::prepare_scan_lut(
+        const WorkingState& workingState,
+        bool negativeMedium,
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        const char* stageTag = negativeMedium ? "command_ensure_scan_lut_negative"
+                                              : "command_ensure_scan_lut_print";
+        const char* failurePrefix = negativeMedium ? "CUDA scan LUT upload failed"
+                                                   : "CUDA print scan LUT upload failed";
+        if (!JuicerCuda::ResourceManager::command_ensure_scan_lut(
+                _state->transaction,
+                *_state->resources,
+                workingState,
+                negativeMedium,
+                scratchRequest,
+                cudaStreamOpaque,
+                outError)) {
+            _state->set_failure(stageTag, failurePrefix);
+            return false;
+        }
+        return true;
+    }
+
     bool Root::PreparedCudaFrame::prepare_print_illuminant_filtered(
         const WorkingState& workingState,
         const Print::Runtime& printRuntime,

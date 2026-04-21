@@ -249,12 +249,6 @@ namespace {
         return negativeMedium ? "scan" : "print scan";
     }
 
-    inline const char* scan_lut_stage_tag_from_negative_medium(bool negativeMedium) {
-        return negativeMedium
-            ? "command_ensure_scan_lut_negative"
-            : "command_ensure_scan_lut_print";
-    }
-
     template <typename T>
     inline const T* ptr_if_enabled(bool enabled, const T* ptr) {
         return enabled ? ptr : nullptr;
@@ -3917,7 +3911,6 @@ void JuicerProcessor::processImagesCUDA() {
 
     struct ScanStageMediumSelection {
         const char* scanLabel = "scan";
-        const char* ensureLutStageTag = "command_ensure_scan_lut_negative";
         const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
         const JuicerCuda::Resources::DeviceScanMedium* scanMedium = nullptr;
     };
@@ -3926,7 +3919,6 @@ void JuicerProcessor::processImagesCUDA() {
                                         bool negativeMedium) -> ScanStageMediumSelection {
         ScanStageMediumSelection selection{};
         selection.scanLabel = scan_stage_label_from_negative_medium(negativeMedium);
-        selection.ensureLutStageTag = scan_lut_stage_tag_from_negative_medium(negativeMedium);
         selection.scanLut = negative_or_print_ptr(
             negativeMedium,
             resources->scanNegativeLut,
@@ -3950,18 +3942,15 @@ void JuicerProcessor::processImagesCUDA() {
         run.scanStage.scanLutRes = 0;
         if (run.scanStage.scannerUseLut) {
             std::string lutError;
-            if (!JuicerCuda::ResourceManager::command_ensure_scan_lut(
-                    submissionTxn,
-                    *resources,
+            if (!preparedFrame.prepare_scan_lut(
                     *_ws,
                     negativeMedium,
                     scratchRequest,
                     _pCudaStream,
                     lutError)) {
-                const std::string prefix = make_cuda_prefixed_failure(scanLabel, " LUT upload failed");
                 mark_context_and_throw_cuda_policy_fatal(
-                    selection.ensureLutStageTag,
-                    prefix.c_str(),
+                    preparedFrame.failure_stage_tag(),
+                    preparedFrame.failure_prefix(),
                     lutError);
             }
             const JuicerCuda::Resources::DeviceSpectralLut& scanLut = *selection.scanLut;
