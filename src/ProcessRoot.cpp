@@ -298,11 +298,72 @@ namespace JuicerProcess {
         return *this;
     }
 
+    Root::PreparedCudaFrame::WorkspaceLeaseMarker::WorkspaceLeaseMarker(
+        const WorkspaceRequest& request,
+        std::uint64_t leaseGeneration) noexcept
+        : _request(request)
+        , _leaseGeneration(leaseGeneration)
+        , _active(leaseGeneration != 0) {
+    }
+
+    bool Root::PreparedCudaFrame::WorkspaceLeaseMarker::active() const noexcept {
+        return _active;
+    }
+
+    bool Root::PreparedCudaFrame::WorkspaceLeaseMarker::has_any_family() const noexcept {
+        return _active && (_request.needOptics || _request.needSpatialDir);
+    }
+
+    std::uint64_t Root::PreparedCudaFrame::WorkspaceLeaseMarker::lease_generation() const noexcept {
+        return _active ? _leaseGeneration : 0;
+    }
+
     bool Root::PreparedCudaFrame::active() const noexcept {
         return _state &&
                _state->resources &&
                _state->transaction.active &&
                !_state->transaction.committed;
+    }
+
+    Root::PreparedCudaFrame::WorkspaceLeaseMarker Root::PreparedCudaFrame::bind_workspace_request(
+        const WorkspaceRequest& request) const noexcept {
+        if (!active()) {
+            return WorkspaceLeaseMarker{};
+        }
+        return WorkspaceLeaseMarker(request, _state->transaction.leaseGeneration);
+    }
+
+    JuicerCuda::ResourceManager::ScratchRequestDescriptor Root::PreparedCudaFrame::make_scratch_request_descriptor(
+        const WorkspaceLeaseMarker& workspace) noexcept {
+        return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
+            workspace._request.needOptics,
+            workspace._request.needSpatialDir,
+            workspace._request.requestedWidth,
+            workspace._request.requestedHeight,
+            workspace._request.needBlurred,
+            workspace._request.needAux,
+            workspace._request.needGrainTriplet,
+            workspace._request.needGrainShared,
+            workspace._request.needGateMask);
+    }
+
+    bool Root::PreparedCudaFrame::validate_workspace_lease_marker(
+        const WorkspaceLeaseMarker& workspace,
+        std::string& outError) const {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        if (!workspace.active()) {
+            outError = "prepared frame workspace marker is not active";
+            return false;
+        }
+        if (workspace.lease_generation() != _state->transaction.leaseGeneration) {
+            outError = "prepared frame workspace marker does not match current lease";
+            return false;
+        }
+        return true;
     }
 
     bool Root::PreparedCudaFrame::finish(void* cudaStreamOpaque, std::string& outError) {
@@ -323,15 +384,15 @@ namespace JuicerProcess {
     bool Root::PreparedCudaFrame::prepare_current_medium(
         const WorkingState& workingState,
         bool negativeMedium,
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
         std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
+        if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
 
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
         const char* stageTag = negativeMedium ? "command_ensure_current_medium_uploaded_negative"
                                               : "command_ensure_current_medium_uploaded_print";
         if (!JuicerCuda::ResourceManager::command_ensure_current_medium_uploaded(
@@ -351,15 +412,15 @@ namespace JuicerProcess {
     bool Root::PreparedCudaFrame::prepare_scan_lut(
         const WorkingState& workingState,
         bool negativeMedium,
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
         std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
+        if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
 
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
         const char* stageTag = negativeMedium ? "command_ensure_scan_lut_negative"
                                               : "command_ensure_scan_lut_print";
         const char* failurePrefix = negativeMedium ? "CUDA scan LUT upload failed"
@@ -379,15 +440,15 @@ namespace JuicerProcess {
     }
 
     bool Root::PreparedCudaFrame::prepare_optics_scratch(
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
         std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
+        if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
 
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
         if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
                 _state->transaction,
                 *_state->resources,
@@ -403,15 +464,15 @@ namespace JuicerProcess {
     }
 
     bool Root::PreparedCudaFrame::prepare_spatial_dir_scratch(
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
         std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
+        if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
 
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
         if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
                 _state->transaction,
                 *_state->resources,
@@ -430,15 +491,15 @@ namespace JuicerProcess {
         const WorkingState& workingState,
         const Print::Runtime& printRuntime,
         const Print::Params& printParams,
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
         std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
+        if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
 
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
         if (!JuicerCuda::ResourceManager::command_ensure_print_illuminant_filtered(
                 _state->transaction,
                 *_state->resources,
@@ -457,15 +518,15 @@ namespace JuicerProcess {
     }
 
     bool Root::PreparedCudaFrame::checkpoint_scratch_phase(
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        const WorkspaceLeaseMarker& workspace,
         const char* stageTag,
         std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
+        if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
 
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
         const char* failureStageTag = stageTag ? stageTag : "command_checkpoint_scratch_phase";
         if (!JuicerCuda::ResourceManager::command_checkpoint_scratch_phase(
                 _state->transaction,

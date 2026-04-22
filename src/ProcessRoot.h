@@ -90,6 +90,36 @@ namespace JuicerProcess {
             PreparedCudaFrame(const PreparedCudaFrame&) = delete;
             PreparedCudaFrame& operator=(const PreparedCudaFrame&) = delete;
 
+            struct WorkspaceRequest {
+                bool needOptics = false;
+                bool needSpatialDir = false;
+                int requestedWidth = 0;
+                int requestedHeight = 0;
+                bool needBlurred = false;
+                bool needAux = false;
+                bool needGrainTriplet = false;
+                bool needGrainShared = false;
+                bool needGateMask = false;
+            };
+
+            class WorkspaceLeaseMarker final {
+            public:
+                WorkspaceLeaseMarker() noexcept = default;
+
+                bool active() const noexcept;
+                bool has_any_family() const noexcept;
+                std::uint64_t lease_generation() const noexcept;
+
+            private:
+                friend class PreparedCudaFrame;
+
+                explicit WorkspaceLeaseMarker(const WorkspaceRequest& request, std::uint64_t leaseGeneration) noexcept;
+
+                WorkspaceRequest _request{};
+                std::uint64_t _leaseGeneration = 0;
+                bool _active = false;
+            };
+
             struct GrainStaticAssets {
                 const std::uint8_t* stbn = nullptr;
                 int stbnWidth = 0;
@@ -107,38 +137,39 @@ namespace JuicerProcess {
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
             bool active() const noexcept;
+            WorkspaceLeaseMarker bind_workspace_request(const WorkspaceRequest& request) const noexcept;
             GrainStaticAssets grain_static_assets() const noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             bool prepare_current_medium(
                 const WorkingState& workingState,
                 bool negativeMedium,
-                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_scan_lut(
                 const WorkingState& workingState,
                 bool negativeMedium,
-                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_optics_scratch(
-                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_spatial_dir_scratch(
-                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_print_illuminant_filtered(
                 const WorkingState& workingState,
                 const Print::Runtime& printRuntime,
                 const Print::Params& printParams,
-                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool checkpoint_scratch_phase(
-                const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
+                const WorkspaceLeaseMarker& workspace,
                 const char* stageTag,
                 std::string& outError);
             bool prepare_spatial_dir_kernel(
@@ -172,6 +203,12 @@ namespace JuicerProcess {
             struct State;
 
             explicit PreparedCudaFrame(std::unique_ptr<State> state) noexcept;
+
+            static JuicerCuda::ResourceManager::ScratchRequestDescriptor make_scratch_request_descriptor(
+                const WorkspaceLeaseMarker& workspace) noexcept;
+            bool validate_workspace_lease_marker(
+                const WorkspaceLeaseMarker& workspace,
+                std::string& outError) const;
 
             std::unique_ptr<State> _state;
         };
