@@ -271,10 +271,12 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
+        bool failureMarksContextLoss = true;
 
-        void set_failure(const char* stageTag, const char* prefix) noexcept {
+        void set_failure(const char* stageTag, const char* prefix, bool marksContextLoss = true) noexcept {
             failureStageTag = stageTag;
             failurePrefix = prefix;
+            failureMarksContextLoss = marksContextLoss;
         }
     };
 
@@ -455,9 +457,13 @@ namespace JuicerProcess {
                 scratchRequest,
                 cudaStreamOpaque,
                 outError)) {
+            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
                 "command_ensure_optics_scratch",
-                "CUDA optics scratch allocation failed");
+                marksContextLoss
+                    ? "CUDA optics scratch allocation failed"
+                    : "CUDA optics scratch deferred by contention policy",
+                marksContextLoss);
             return false;
         }
         return true;
@@ -479,9 +485,13 @@ namespace JuicerProcess {
                 scratchRequest,
                 cudaStreamOpaque,
                 outError)) {
+            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
                 "command_ensure_spatial_dir_scratch",
-                "CUDA spatial DIR scratch allocation failed");
+                marksContextLoss
+                    ? "CUDA spatial DIR scratch allocation failed"
+                    : "CUDA spatial DIR scratch deferred by contention policy",
+                marksContextLoss);
             return false;
         }
         return true;
@@ -682,6 +692,10 @@ namespace JuicerProcess {
 
     const char* Root::PreparedCudaFrame::failure_prefix() const noexcept {
         return _state ? _state->failurePrefix : "CUDA prepared frame failed";
+    }
+
+    bool Root::PreparedCudaFrame::failure_marks_context_loss() const noexcept {
+        return _state ? _state->failureMarksContextLoss : true;
     }
 #endif
 

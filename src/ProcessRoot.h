@@ -196,6 +196,7 @@ namespace JuicerProcess {
             JuicerCuda::Resources* resources() const noexcept;
             const char* failure_stage_tag() const noexcept;
             const char* failure_prefix() const noexcept;
+            bool failure_marks_context_loss() const noexcept;
 
         private:
             friend class Root;

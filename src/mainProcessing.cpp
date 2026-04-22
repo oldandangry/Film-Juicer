@@ -2807,13 +2807,6 @@ void JuicerProcessor::processImagesCUDA() {
         trace_and_throw_cuda_policy_fatal(prefix, cstr_or_null_if_empty(detail));
     };
 
-    auto trace_contention_and_throw_cuda_policy_fatal = [&](const char* prefix,
-                                                            const std::string& detail) {
-        throw_cuda_policy_fatal(
-            nonempty_cstr_or(prefix, "CUDA work deferred by contention policy"),
-            cstr_or_null_if_empty(detail));
-    };
-
     auto throw_submission_fatal = [&](const char* stageTag,
                                       const char* failurePrefix,
                                       const std::string& error) {
@@ -3792,6 +3785,18 @@ void JuicerProcessor::processImagesCUDA() {
             grainState.wantGrainMix);
     };
 
+    auto throw_prepared_frame_failure = [&](const std::string& detail) {
+        if (preparedFrame.failure_marks_context_loss()) {
+            mark_context_and_throw_cuda_policy_fatal(
+                preparedFrame.failure_stage_tag(),
+                preparedFrame.failure_prefix(),
+                detail);
+        }
+        trace_and_throw_cuda_policy_fatal(
+            preparedFrame.failure_prefix(),
+            cstr_or_null_if_empty(detail));
+    };
+
     auto launch_base_pipeline_graph = [&](int renderModeKey,
                                           JuicerCuda::PipelineRunParams& run) -> cudaError_t {
         std::string graphError;
@@ -3802,10 +3807,7 @@ void JuicerProcessor::processImagesCUDA() {
                 _pCudaStream,
                 graphErrCode,
                 graphError)) {
-            mark_context_and_throw_cuda_policy_fatal(
-                preparedFrame.failure_stage_tag(),
-                preparedFrame.failure_prefix(),
-                graphError);
+            throw_prepared_frame_failure(graphError);
         }
         return static_cast<cudaError_t>(graphErrCode);
     };
@@ -3905,10 +3907,6 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
-    auto is_scratch_contention_exhausted = [](const std::string& error) -> bool {
-        return JuicerCuda::ResourceManager::error_is_scratch_exhausted(error);
-    };
-
     struct ScanStageMediumSelection {
         const char* scanLabel = "scan";
         const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
@@ -3948,10 +3946,7 @@ void JuicerProcessor::processImagesCUDA() {
                     workspace,
                     _pCudaStream,
                     lutError)) {
-                mark_context_and_throw_cuda_policy_fatal(
-                    preparedFrame.failure_stage_tag(),
-                    preparedFrame.failure_prefix(),
-                    lutError);
+                throw_prepared_frame_failure(lutError);
             }
             const JuicerCuda::Resources::DeviceSpectralLut& scanLut = *selection.scanLut;
             run.scanStage.scanLutLog2XYZ = scanLut.log2XYZ;
@@ -3997,24 +3992,13 @@ void JuicerProcessor::processImagesCUDA() {
                 workspace,
                 _pCudaStream,
                 dirError)) {
-            if (is_scratch_contention_exhausted(dirError)) {
-                trace_contention_and_throw_cuda_policy_fatal(
-                    "CUDA spatial DIR scratch deferred by contention policy",
-                    dirError);
-            }
-            mark_context_and_throw_cuda_policy_fatal(
-                preparedFrame.failure_stage_tag(),
-                preparedFrame.failure_prefix(),
-                dirError);
+            throw_prepared_frame_failure(dirError);
         }
         if (!preparedFrame.prepare_spatial_dir_kernel(
                 _dirRT.spatialSigmaPixels,
                 _pCudaStream,
                 dirError)) {
-            mark_context_and_throw_cuda_policy_fatal(
-                preparedFrame.failure_stage_tag(),
-                preparedFrame.failure_prefix(),
-                dirError);
+            throw_prepared_frame_failure(dirError);
         }
 
         run.filmDevelop.spatialDir.corrY = resources->spatialDirScratch.corrY;
@@ -4062,10 +4046,7 @@ void JuicerProcessor::processImagesCUDA() {
                     illumError)) {
                 return;
             }
-            mark_context_and_throw_cuda_policy_fatal(
-                preparedFrame.failure_stage_tag(),
-                preparedFrame.failure_prefix(),
-                illumError);
+            throw_prepared_frame_failure(illumError);
         };
 
     auto trace_print_payload_verbose = [&](JuicerCuda::Resources* resources) {
@@ -4111,18 +4092,6 @@ void JuicerProcessor::processImagesCUDA() {
         JTRACE_VERBOSE("PRINTDBG", msg);
     };
 
-    auto throw_cuda_optics_scratch_failure = [&](const std::string& opticsError) {
-        if (is_scratch_contention_exhausted(opticsError)) {
-            trace_contention_and_throw_cuda_policy_fatal(
-                "CUDA optics scratch deferred by contention policy",
-                opticsError);
-        }
-        mark_context_and_throw_cuda_policy_fatal(
-            preparedFrame.failure_stage_tag(),
-            preparedFrame.failure_prefix(),
-            opticsError);
-    };
-
     auto ensure_optics_scratch_or_throw = [&](const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                               std::string& opticsError) {
         if (preparedFrame.prepare_optics_scratch(
@@ -4131,7 +4100,7 @@ void JuicerProcessor::processImagesCUDA() {
                 opticsError)) {
             return;
         }
-        throw_cuda_optics_scratch_failure(opticsError);
+        throw_prepared_frame_failure(opticsError);
     };
 
     auto throw_cuda_gate_mask_build_failure = [&](const char* stageTag, cudaError_t gateErr) {
@@ -4845,10 +4814,7 @@ void JuicerProcessor::processImagesCUDA() {
                 workspace,
                 stageTag,
                 scratchPhaseError)) {
-            mark_context_and_throw_cuda_policy_fatal(
-                preparedFrame.failure_stage_tag(),
-                preparedFrame.failure_prefix(),
-                scratchPhaseError);
+            throw_prepared_frame_failure(scratchPhaseError);
         }
     };
 
@@ -4864,10 +4830,7 @@ void JuicerProcessor::processImagesCUDA() {
                     currentMediumUploadError)) {
                 return;
             }
-            mark_context_and_throw_cuda_policy_fatal(
-                preparedFrame.failure_stage_tag(),
-                preparedFrame.failure_prefix(),
-                currentMediumUploadError);
+            throw_prepared_frame_failure(currentMediumUploadError);
         };
 
     auto validate_negative_scanner_preflight_or_throw = [&]() -> JuicerProcScanner::ScannerPreflightResult {
