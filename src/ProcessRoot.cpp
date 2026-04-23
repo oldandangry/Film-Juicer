@@ -232,6 +232,7 @@ namespace JuicerProcess {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     struct Root::PreparedCudaFrame::State {
         Root* root = nullptr;
+        Root::CudaResourceOwner resourceOwner;
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         const char* failureStageTag = "prepare_frame";
@@ -792,8 +793,10 @@ namespace JuicerProcess {
     bool Root::resolve_cuda_frame_resources(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
+        CudaResourceOwner& outResourceOwner,
         JuicerCuda::Resources*& outResources,
         std::string& outError) {
+        outResourceOwner.reset();
         outResources = nullptr;
         outError.clear();
         if (deviceContextKey.deviceId < 0 || !deviceContextKey.contextOpaque) {
@@ -806,30 +809,46 @@ namespace JuicerProcess {
         }
 
         const ContextCudaResourceKey resourceKey{ deviceContextKey, contextEpoch };
-        std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-        ContextCudaResourceSlot& slot = _cudaResourcesByContext[resourceKey];
-        if (!slot.resources) {
-            std::unique_ptr<JuicerCuda::Resources, CudaResourcesDeleter> resources(JuicerCuda::create());
-            if (!resources) {
-                JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
-                outError = "failed to allocate CUDA resources";
-                return false;
+        std::vector<CudaResourceOwner> retiredOwners;
+        {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            CudaResourceOwner& resourceOwner = _cudaResourcesByContext[resourceKey];
+            if (!resourceOwner) {
+                CudaResourceOwner resources(JuicerCuda::create(), CudaResourcesDeleter{});
+                if (!resources) {
+                    JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
+                    outError = "failed to allocate CUDA resources";
+                    return false;
+                }
+                if (resources->deviceId < 0) {
+                    resources->deviceId = deviceContextKey.deviceId;
+                }
+                if (!resources->ownerContextOpaque) {
+                    resources->ownerContextOpaque = deviceContextKey.contextOpaque;
+                }
+                if (resources->deviceId != deviceContextKey.deviceId ||
+                    resources->ownerContextOpaque != deviceContextKey.contextOpaque) {
+                    outError = "CUDA resources resolved for a different context";
+                    return false;
+                }
+                resourceOwner = std::move(resources);
             }
-            if (resources->deviceId < 0) {
-                resources->deviceId = deviceContextKey.deviceId;
+
+            outResourceOwner = resourceOwner;
+            for (auto it = _cudaResourcesByContext.begin(); it != _cudaResourcesByContext.end();) {
+                if (!(it->first.deviceContextKey == deviceContextKey) ||
+                    it->first.contextEpoch >= contextEpoch) {
+                    ++it;
+                    continue;
+                }
+                if (it->second) {
+                    retiredOwners.emplace_back(std::move(it->second));
+                }
+                it = _cudaResourcesByContext.erase(it);
             }
-            if (!resources->ownerContextOpaque) {
-                resources->ownerContextOpaque = deviceContextKey.contextOpaque;
-            }
-            if (resources->deviceId != deviceContextKey.deviceId ||
-                resources->ownerContextOpaque != deviceContextKey.contextOpaque) {
-                outError = "CUDA resources resolved for a different context";
-                return false;
-            }
-            slot.resources = std::move(resources);
         }
 
-        outResources = slot.resources.get();
+        outResources = outResourceOwner.get();
         if (!outResources) {
             outError = "CUDA resources missing after allocation";
             return false;
@@ -863,6 +882,7 @@ namespace JuicerProcess {
         if (!resolve_cuda_frame_resources(
                 deviceContextKey,
                 frame._state->transaction.snapshot.contextEpoch,
+                frame._state->resourceOwner,
                 frame._state->resources,
                 outError)) {
             frame._state->set_failure("resolve_cuda_resources", "CUDA resource acquisition failed");

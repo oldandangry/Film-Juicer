@@ -284,6 +284,8 @@ namespace JuicerProcess {
         std::uint32_t _activeFramePreparations = 0;
         std::uint32_t _activeShutdowns = 0;
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        using CudaResourceOwner = std::shared_ptr<JuicerCuda::Resources>;
+
         struct CudaResourcesDeleter final {
             void operator()(JuicerCuda::Resources* resources) const noexcept;
         };
@@ -307,13 +309,10 @@ namespace JuicerProcess {
             }
         };
 
-        struct ContextCudaResourceSlot final {
-            std::unique_ptr<JuicerCuda::Resources, CudaResourcesDeleter> resources;
-        };
-
         bool resolve_cuda_frame_resources(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
+            CudaResourceOwner& outResourceOwner,
             JuicerCuda::Resources*& outResources,
             std::string& outError);
 #endif
@@ -324,7 +323,7 @@ namespace JuicerProcess {
         std::mutex _cudaResourcesMutex;
         std::unordered_map<
             ContextCudaResourceKey,
-            ContextCudaResourceSlot,
+            CudaResourceOwner,
             ContextCudaResourceKeyHash> _cudaResourcesByContext;
 #endif
     };
