@@ -214,6 +214,16 @@ namespace JuicerProcess {
                 KernelView halationScatter[3] = {};
             };
 
+            struct AutoExposureBufferView {
+                JuicerCudaAutoExposureScratch scratch{};
+                JuicerCudaAutoExposureDeviceState deviceState{};
+                int weightsWidth = 0;
+                int weightsHeight = 0;
+                std::uint64_t keyHash = 0;
+                double sliderEV = 0.0;
+                bool active = false;
+            };
+
             PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
@@ -222,6 +232,10 @@ namespace JuicerProcess {
             GrainStaticAssets grain_static_assets() const noexcept;
             DurableBundleView durable_bundle() const noexcept;
             OpticsKernelView optics_kernels() const noexcept;
+            AutoExposureBufferView auto_exposure_buffers() const noexcept;
+            void mark_auto_exposure_weights_built(int weightsWidth, int weightsHeight) noexcept;
+            void mark_auto_exposure_metered(std::uint64_t keyHash, double sliderEV) noexcept;
+            void mark_auto_exposure_slider_updated(double sliderEV) noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             bool prepare_current_medium(

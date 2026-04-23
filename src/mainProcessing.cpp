@@ -3104,10 +3104,8 @@ void JuicerProcessor::processImagesCUDA() {
 
     const RenderMode renderMode = render_mode_from_print_bypass(_printParams.bypass);
 
-    auto setup_camera_auto_exposure = [&](
-        JuicerCuda::PipelineRunParams& run,
-        JuicerCuda::Resources* cudaResources) {
-        if (!_cameraAutoEnabled || !cudaResources) {
+    auto setup_camera_auto_exposure = [&](JuicerCuda::PipelineRunParams& run) {
+        if (!_cameraAutoEnabled) {
             return;
         }
         if (should_abort_effect()) {
@@ -3127,19 +3125,16 @@ void JuicerProcessor::processImagesCUDA() {
                 detail_or_unknown(detail));
         };
 
-        JuicerCudaAutoExposureScratch scratch{};
-        scratch.partialsA = cudaResources->autoExposureScratch.partialsA;
-        scratch.partialsB = cudaResources->autoExposureScratch.partialsB;
-        scratch.partialCapacity = cudaResources->autoExposureScratch.partialCapacity;
-        scratch.maxYBits = cudaResources->autoExposureScratch.maxYBits;
-        scratch.histogram = cudaResources->autoExposureScratch.histogram;
-        scratch.weightsX = cudaResources->autoExposureScratch.weightsX;
-        scratch.weightsY = cudaResources->autoExposureScratch.weightsY;
+        const JuicerProcess::Root::PreparedCudaFrame::AutoExposureBufferView autoExposureBuffers =
+            preparedFrame.auto_exposure_buffers();
+        if (!autoExposureBuffers.active) {
+            throw_auto_exposure_mode_fatal(
+                "CUDA auto-exposure buffers missing",
+                "auto-exposure buffers missing after allocation");
+        }
 
-        JuicerCudaAutoExposureDeviceState state{};
-        state.exposureScale = cudaResources->autoExposureExposureScale;
-        state.autoEV = cudaResources->autoExposureAutoEV;
-        state.valid = cudaResources->autoExposureValid;
+        const JuicerCudaAutoExposureScratch scratch = autoExposureBuffers.scratch;
+        const JuicerCudaAutoExposureDeviceState state = autoExposureBuffers.deviceState;
 
         std::uint64_t meterStateKey = Hash::kFnvOffset;
         const double timeFrames = finite_or(_timeFrames, 0.0);
@@ -3164,14 +3159,14 @@ void JuicerProcessor::processImagesCUDA() {
             return std::abs(a - b) <= 1e-12;
         };
 
-        const bool needMeter = (cudaResources->autoExposureKeyHash != meterStateKey);
-        const bool needSliderUpdate = !slider_equal(cudaResources->autoExposureSliderEV, _cameraSliderEV);
+        const bool needMeter = (autoExposureBuffers.keyHash != meterStateKey);
+        const bool needSliderUpdate = !slider_equal(autoExposureBuffers.sliderEV, _cameraSliderEV);
         const char* errMsg = nullptr;
         if (needMeter) {
             if (_cameraMeteringMethod == 0) {
                 if (!scratch.weightsX || !scratch.weightsY ||
-                    cudaResources->autoExposureScratch.weightsWidth != autoExposureMeterWidth ||
-                    cudaResources->autoExposureScratch.weightsHeight != autoExposureMeterHeight) {
+                    autoExposureBuffers.weightsWidth != autoExposureMeterWidth ||
+                    autoExposureBuffers.weightsHeight != autoExposureMeterHeight) {
                     const int rcW = juicer_cuda_auto_exposure_build_center_weight_tables(
                         autoExposureMeterWidth,
                         autoExposureMeterHeight,
@@ -3184,8 +3179,9 @@ void JuicerProcessor::processImagesCUDA() {
                             "CUDA auto-exposure weight build failed",
                             errMsg);
                     }
-                    cudaResources->autoExposureScratch.weightsWidth = autoExposureMeterWidth;
-                    cudaResources->autoExposureScratch.weightsHeight = autoExposureMeterHeight;
+                    preparedFrame.mark_auto_exposure_weights_built(
+                        autoExposureMeterWidth,
+                        autoExposureMeterHeight);
                 }
             }
 
@@ -3215,8 +3211,7 @@ void JuicerProcessor::processImagesCUDA() {
                     "CUDA auto-exposure metering failed",
                     errMsg);
             }
-            cudaResources->autoExposureKeyHash = meterStateKey;
-            cudaResources->autoExposureSliderEV = _cameraSliderEV;
+            preparedFrame.mark_auto_exposure_metered(meterStateKey, _cameraSliderEV);
         } else if (needSliderUpdate) {
             const int rc = juicer_cuda_auto_exposure_update_scale_to_device(
                 _cameraSliderEV,
@@ -3228,10 +3223,10 @@ void JuicerProcessor::processImagesCUDA() {
                     "CUDA auto-exposure slider update failed",
                     errMsg);
             }
-            cudaResources->autoExposureSliderEV = _cameraSliderEV;
+            preparedFrame.mark_auto_exposure_slider_updated(_cameraSliderEV);
         }
 
-        run.filmExpose.exposureScaleDevice = cudaResources->autoExposureExposureScale;
+        run.filmExpose.exposureScaleDevice = autoExposureBuffers.deviceState.exposureScale;
         run.filmExpose.exposureScale = 1.0f;
     };
 
@@ -4618,7 +4613,7 @@ void JuicerProcessor::processImagesCUDA() {
                                                    const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                                    bool useSpatialDIR,
                                                    bool negativeMedium) -> bool {
-        setup_camera_auto_exposure(run, resources);
+        setup_camera_auto_exposure(run);
         populate_film_runtime_payload(run);
         if (!setup_scan_stage_resources(run, workspace, stream, negativeMedium)) {
             return false;

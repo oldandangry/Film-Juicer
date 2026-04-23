@@ -870,6 +870,70 @@ namespace JuicerProcess {
         return kernels;
     }
 
+    Root::PreparedCudaFrame::AutoExposureBufferView Root::PreparedCudaFrame::auto_exposure_buffers() const noexcept {
+        AutoExposureBufferView view{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return view;
+        }
+
+        const JuicerCuda::Resources& resources = *_state->resources;
+        view.scratch.partialsA = resources.autoExposureScratch.partialsA;
+        view.scratch.partialsB = resources.autoExposureScratch.partialsB;
+        view.scratch.partialCapacity = resources.autoExposureScratch.partialCapacity;
+        view.scratch.maxYBits = resources.autoExposureScratch.maxYBits;
+        view.scratch.histogram = resources.autoExposureScratch.histogram;
+        view.scratch.weightsX = resources.autoExposureScratch.weightsX;
+        view.scratch.weightsY = resources.autoExposureScratch.weightsY;
+        view.deviceState.exposureScale = resources.autoExposureExposureScale;
+        view.deviceState.autoEV = resources.autoExposureAutoEV;
+        view.deviceState.valid = resources.autoExposureValid;
+        view.weightsWidth = resources.autoExposureScratch.weightsWidth;
+        view.weightsHeight = resources.autoExposureScratch.weightsHeight;
+        view.keyHash = resources.autoExposureKeyHash;
+        view.sliderEV = resources.autoExposureSliderEV;
+        view.active =
+            view.scratch.partialsA &&
+            view.scratch.partialsB &&
+            view.scratch.partialCapacity > 0 &&
+            view.scratch.maxYBits &&
+            view.scratch.histogram &&
+            view.scratch.weightsX &&
+            view.scratch.weightsY &&
+            view.deviceState.exposureScale &&
+            view.deviceState.autoEV &&
+            view.deviceState.valid;
+        return view;
+    }
+
+    void Root::PreparedCudaFrame::mark_auto_exposure_weights_built(
+        int weightsWidth,
+        int weightsHeight) noexcept {
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return;
+        }
+        JuicerCuda::Resources& resources = *_state->resources;
+        resources.autoExposureScratch.weightsWidth = weightsWidth;
+        resources.autoExposureScratch.weightsHeight = weightsHeight;
+    }
+
+    void Root::PreparedCudaFrame::mark_auto_exposure_metered(
+        std::uint64_t keyHash,
+        double sliderEV) noexcept {
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return;
+        }
+        JuicerCuda::Resources& resources = *_state->resources;
+        resources.autoExposureKeyHash = keyHash;
+        resources.autoExposureSliderEV = sliderEV;
+    }
+
+    void Root::PreparedCudaFrame::mark_auto_exposure_slider_updated(double sliderEV) noexcept {
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return;
+        }
+        _state->resources->autoExposureSliderEV = sliderEV;
+    }
+
     JuicerCuda::Resources* Root::PreparedCudaFrame::runtime_resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }
