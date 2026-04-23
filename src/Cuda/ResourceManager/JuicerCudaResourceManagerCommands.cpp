@@ -1226,8 +1226,6 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
 
     bool coreUpToDate = false;
     bool dirUpToDate = false;
-    bool needStbnUpload = false;
-    bool needWangUpload = false;
     bool needHanatosUpload = false;
     bool needHanatosIntegratedUpload = false;
     bool needMallettUpload = false;
@@ -1261,8 +1259,6 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
         std::lock_guard<std::mutex> lock(resources.m);
         coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
         dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
-        needStbnUpload = (resources.stbnData == nullptr);
-        needWangUpload = (resources.wangTilesData == nullptr) || (resources.wangLutData == nullptr);
         needHanatosUpload = wantHanatos &&
                             (!resources.hanatosLut || resources.hanatosN != hanatosN);
         needHanatosIntegratedUpload = wantHanatosIntegrated &&
@@ -1270,17 +1266,6 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
                                        (resources.hanatosIntegratedBuildCounter != ws.buildCounter));
         needMallettUpload = wantMallett &&
                             (!resources.mallettBasis || resources.mallettBasisK != mallettK);
-        if (needStbnUpload) {
-            add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimate.growthBytes, overflow);
-            add_estimate_bytes_u64(kStbnUploadDefaultBytes, estimate.reservationBytes, overflow);
-        }
-        if (needWangUpload) {
-            add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimate.growthBytes, overflow);
-            add_estimate_bytes_u64(kWangTilesUploadDefaultBytes, estimate.reservationBytes, overflow);
-            add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimate.growthBytes, overflow);
-            add_estimate_bytes_u64(kWangLutUploadDefaultBytes, estimate.reservationBytes, overflow);
-        }
-
         if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads) {
             if (overflow) {
                 estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();

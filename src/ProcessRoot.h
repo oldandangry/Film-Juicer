@@ -309,7 +309,25 @@ namespace JuicerProcess {
             }
         };
 
+        using ContextCudaResourceMap = std::unordered_map<
+            ContextCudaResourceKey,
+            CudaResourceOwner,
+            ContextCudaResourceKeyHash>;
+
+        bool resolve_context_cuda_resources(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            std::uint64_t contextEpoch,
+            ContextCudaResourceMap& contextMap,
+            CudaResourceOwner& outResourceOwner,
+            JuicerCuda::Resources*& outResources,
+            std::string& outError);
         bool resolve_cuda_frame_resources(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            std::uint64_t contextEpoch,
+            CudaResourceOwner& outResourceOwner,
+            JuicerCuda::Resources*& outResources,
+            std::string& outError);
+        bool resolve_cuda_grain_static_resources(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             std::uint64_t contextEpoch,
             CudaResourceOwner& outResourceOwner,
@@ -321,10 +339,8 @@ namespace JuicerProcess {
         bool _shutdownRetireBlocked = false;
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         std::mutex _cudaResourcesMutex;
-        std::unordered_map<
-            ContextCudaResourceKey,
-            CudaResourceOwner,
-            ContextCudaResourceKeyHash> _cudaResourcesByContext;
+        ContextCudaResourceMap _cudaResourcesByContext;
+        ContextCudaResourceMap _cudaGrainStaticByContext;
 #endif
     };
 

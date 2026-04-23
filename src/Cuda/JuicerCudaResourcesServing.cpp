@@ -1283,18 +1283,12 @@
     }
 
 
-    bool ensure_uploaded(
+    bool ensure_grain_static_assets_uploaded(
         Resources& resources,
-        const WorkingState& ws,
-        bool includeCurrentMediumUploads,
-        bool negativeMedium,
         void* cudaStreamOpaque,
         std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
-        (void)ws;
-        (void)includeCurrentMediumUploads;
-        (void)negativeMedium;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
         return false;
@@ -1305,11 +1299,15 @@
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+
         const bool needStbnUpload = !resources.stbnData;
         const bool needWangUpload = !resources.wangTilesData || !resources.wangLutData;
+        if (!needStbnUpload && !needWangUpload) {
+            return true;
+        }
         lock.unlock();
 
-        enforce_host_asset_cache_policy("ensure_uploaded_pre");
+        enforce_host_asset_cache_policy("ensure_grain_static_pre");
 
         StbnCpuCache* stbnCache = nullptr;
         StbnCpuView stbnView{};
@@ -1368,10 +1366,8 @@
                     resources.stbnHeight = stbnView.height;
                     resources.stbnFrames = stbnView.frames;
                 }
-                else {
-                    if (stbnData) {
-                        cudaFree(stbnData);
-                    }
+                else if (stbnData) {
+                    cudaFree(stbnData);
                 }
             }
         }
@@ -1436,7 +1432,7 @@
         if (wangCache) {
             release_wang_cpu_view(*wangCache);
         }
-        enforce_host_asset_cache_policy("ensure_uploaded_post");
+        enforce_host_asset_cache_policy("ensure_grain_static_post");
         if (!stbnError.empty() && !gStbnWarned.exchange(true)) {
             JTRACE("CUDA", stbnError);
         }
@@ -1444,13 +1440,37 @@
             JTRACE("CUDA", wangError);
         }
         lock.lock();
+        reap_retire_queue_locked(resources);
+        return validate_resource_owner_locked(resources, outError, true);
+#endif
+    }
+
+    bool ensure_uploaded(
+        Resources& resources,
+        const WorkingState& ws,
+        bool includeCurrentMediumUploads,
+        bool negativeMedium,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ws;
+        (void)includeCurrentMediumUploads;
+        (void)negativeMedium;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
+        std::unique_lock<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
         auto reacquire_resources_phase = [&](bool requireOwner) -> bool {
             reap_retire_queue_locked(resources);
             return validate_resource_owner_locked(resources, outError, requireOwner);
         };
-        if (!reacquire_resources_phase(true)) {
-            return false;
-        }
 
         if (ws.buildCounter == 0) {
             outError = "WorkingState buildCounter is 0";

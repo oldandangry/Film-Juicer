@@ -233,7 +233,9 @@ namespace JuicerProcess {
     struct Root::PreparedCudaFrame::State {
         Root* root = nullptr;
         Root::CudaResourceOwner resourceOwner;
+        Root::CudaResourceOwner grainStaticOwner;
         JuicerCuda::Resources* resources = nullptr;
+        JuicerCuda::Resources* grainStaticResources = nullptr;
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
@@ -624,11 +626,11 @@ namespace JuicerProcess {
 
     Root::PreparedCudaFrame::GrainStaticAssets Root::PreparedCudaFrame::grain_static_assets() const noexcept {
         GrainStaticAssets assets{};
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+        if (!_state || !_state->grainStaticResources || !_state->transaction.active || _state->transaction.committed) {
             return assets;
         }
 
-        const JuicerCuda::Resources& resources = *_state->resources;
+        const JuicerCuda::Resources& resources = *_state->grainStaticResources;
         if (resources.stbnData && resources.stbnWidth > 0 && resources.stbnHeight > 0 && resources.stbnFrames > 0) {
             assets.stbn = resources.stbnData;
             assets.stbnWidth = resources.stbnWidth;
@@ -790,9 +792,10 @@ namespace JuicerProcess {
         JuicerCuda::destroy(resources);
     }
 
-    bool Root::resolve_cuda_frame_resources(
+    bool Root::resolve_context_cuda_resources(
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         std::uint64_t contextEpoch,
+        ContextCudaResourceMap& contextMap,
         CudaResourceOwner& outResourceOwner,
         JuicerCuda::Resources*& outResources,
         std::string& outError) {
@@ -812,7 +815,7 @@ namespace JuicerProcess {
         std::vector<CudaResourceOwner> retiredOwners;
         {
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
-            CudaResourceOwner& resourceOwner = _cudaResourcesByContext[resourceKey];
+            CudaResourceOwner& resourceOwner = contextMap[resourceKey];
             if (!resourceOwner) {
                 CudaResourceOwner resources(JuicerCuda::create(), CudaResourcesDeleter{});
                 if (!resources) {
@@ -835,7 +838,7 @@ namespace JuicerProcess {
             }
 
             outResourceOwner = resourceOwner;
-            for (auto it = _cudaResourcesByContext.begin(); it != _cudaResourcesByContext.end();) {
+            for (auto it = contextMap.begin(); it != contextMap.end();) {
                 if (!(it->first.deviceContextKey == deviceContextKey) ||
                     it->first.contextEpoch >= contextEpoch) {
                     ++it;
@@ -844,7 +847,7 @@ namespace JuicerProcess {
                 if (it->second) {
                     retiredOwners.emplace_back(std::move(it->second));
                 }
-                it = _cudaResourcesByContext.erase(it);
+                it = contextMap.erase(it);
             }
         }
 
@@ -854,6 +857,36 @@ namespace JuicerProcess {
             return false;
         }
         return true;
+    }
+
+    bool Root::resolve_cuda_frame_resources(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        std::uint64_t contextEpoch,
+        CudaResourceOwner& outResourceOwner,
+        JuicerCuda::Resources*& outResources,
+        std::string& outError) {
+        return resolve_context_cuda_resources(
+            deviceContextKey,
+            contextEpoch,
+            _cudaResourcesByContext,
+            outResourceOwner,
+            outResources,
+            outError);
+    }
+
+    bool Root::resolve_cuda_grain_static_resources(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        std::uint64_t contextEpoch,
+        CudaResourceOwner& outResourceOwner,
+        JuicerCuda::Resources*& outResources,
+        std::string& outError) {
+        return resolve_context_cuda_resources(
+            deviceContextKey,
+            contextEpoch,
+            _cudaGrainStaticByContext,
+            outResourceOwner,
+            outResources,
+            outError);
     }
 
     Root::PreparedCudaFrame Root::prepare_cuda_frame(
@@ -889,6 +922,16 @@ namespace JuicerProcess {
             frame.abort("prepared_frame_resource_acquire_failed");
             return frame;
         }
+        if (!resolve_cuda_grain_static_resources(
+                deviceContextKey,
+                frame._state->transaction.snapshot.contextEpoch,
+                frame._state->grainStaticOwner,
+                frame._state->grainStaticResources,
+                outError)) {
+            frame._state->set_failure("resolve_grain_static_resources", "CUDA grain-static resource acquisition failed");
+            frame.abort("prepared_frame_grain_static_acquire_failed");
+            return frame;
+        }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
             frame._state->set_failure("acquire_plan", "acquire_plan failed");
             frame.abort("prepared_frame_acquire_failed");
@@ -902,6 +945,16 @@ namespace JuicerProcess {
                 outError)) {
             frame._state->set_failure("command_ensure_uploaded", "CUDA WorkingState upload failed");
             frame.abort("prepared_frame_upload_failed");
+            return frame;
+        }
+        if (!JuicerCuda::ensure_grain_static_assets_uploaded(
+                *frame._state->grainStaticResources,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure(
+                "ensure_grain_static_assets_uploaded",
+                "CUDA grain-static asset upload failed");
+            frame.abort("prepared_frame_grain_static_upload_failed");
             return frame;
         }
         if (!JuicerCuda::ResourceManager::command_ensure_scan_error_flag(

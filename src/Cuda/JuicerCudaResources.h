@@ -413,6 +413,9 @@ namespace JuicerCuda {
     Resources* create() noexcept;
     void destroy(Resources* resources) noexcept;
 
+    // Narrow context-static serving helper used by the process-owned Root grain slots.
+    bool ensure_grain_static_assets_uploaded(Resources& resources, void* cudaStreamOpaque, std::string& outError);
+
     // Runtime serving acquisition/rebuild calls are intentionally manager-only via
     // ResourceManager::command_* wrappers.
 
