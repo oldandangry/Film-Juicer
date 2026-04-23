@@ -2963,7 +2963,7 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.failure_prefix(),
             prepareFrameError);
     }
-    JuicerCuda::Resources* cudaResources = preparedFrame.resources();
+    JuicerCuda::Resources* cudaResources = preparedFrame.runtime_resources();
 
     if (!cudaResources) {
         JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
@@ -3541,7 +3541,9 @@ void JuicerProcessor::processImagesCUDA() {
                     zero_float2(run.grain.microStructure);
                 }
 
-                if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && cudaResources->hasDensityCurvesLayers) {
+                const JuicerProcess::Root::PreparedCudaFrame::DurableBundleView durableBundle =
+                    preparedFrame.durable_bundle();
+                if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && durableBundle.film.hasDensityCurvesLayers) {
                     float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
                                                      {0.0f, 0.0f, 0.0f},
                                                      {0.0f, 0.0f, 0.0f} };
@@ -3580,7 +3582,7 @@ void JuicerProcessor::processImagesCUDA() {
                                 run.grain.densityMaxLayers[layer][ch] = maxLayer;
                                 run.grain.nParticlesLayers[layer][ch] = finite_or_zero(nParticlesLayer);
                                 run.grain.odParticleLayers[layer][ch] = finite_or_zero(odParticle);
-                                run.grain.densityCurvesLayers[layer][ch] = cudaResources->densityCurvesLayers[layer][ch];
+                                run.grain.densityCurvesLayers[layer][ch] = durableBundle.film.densityCurvesLayers[layer][ch];
                                 const float dyeSigma = run.grain.blurDyeCloudsUm * std::sqrt(std::max(0.0f, run.grain.odParticleLayers[layer][ch]));
                                 grainDyeSigmaPx[layer][ch] = finite_or_zero(dyeSigma);
                             }
@@ -3900,18 +3902,13 @@ void JuicerProcessor::processImagesCUDA() {
         const JuicerCuda::Resources::DeviceScanMedium* scanMedium = nullptr;
     };
 
-    auto select_scan_stage_medium = [&](JuicerCuda::Resources* resources,
-                                        bool negativeMedium) -> ScanStageMediumSelection {
+    auto select_scan_stage_medium = [&](bool negativeMedium) -> ScanStageMediumSelection {
+        const JuicerProcess::Root::PreparedCudaFrame::DurableBundleView durableBundle =
+            preparedFrame.durable_bundle();
         ScanStageMediumSelection selection{};
         selection.scanLabel = scan_stage_label_from_negative_medium(negativeMedium);
-        selection.scanLut = negative_or_print_ptr(
-            negativeMedium,
-            resources->scanNegativeLut,
-            resources->scanPrintLut);
-        selection.scanMedium = negative_or_print_ptr(
-            negativeMedium,
-            resources->scanNegative,
-            resources->scanPrint);
+        selection.scanLut = durableBundle.scan.lut(negativeMedium);
+        selection.scanMedium = durableBundle.scan.medium(negativeMedium);
         return selection;
     };
 
@@ -3920,7 +3917,7 @@ void JuicerProcessor::processImagesCUDA() {
                                           const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                           cudaStream_t stream,
                                           bool negativeMedium) -> cudaEvent_t {
-        const ScanStageMediumSelection selection = select_scan_stage_medium(resources, negativeMedium);
+        const ScanStageMediumSelection selection = select_scan_stage_medium(negativeMedium);
         const char* scanLabel = selection.scanLabel;
         run.scanStage.scannerUseLut = bool_to_i32(_scannerSettings.useLut);
         run.scanStage.scanLutLog2XYZ = nullptr;
@@ -4570,29 +4567,32 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto populate_film_runtime_payload = [&](JuicerCuda::PipelineRunParams& run) {
-        run.filmDevelop.densB = { cudaResources->densB.x, cudaResources->densB.y, cudaResources->densB.n, cudaResources->densB.domainBegin, cudaResources->densB.domainEnd };
-        run.filmDevelop.densG = { cudaResources->densG.x, cudaResources->densG.y, cudaResources->densG.n, cudaResources->densG.domainBegin, cudaResources->densG.domainEnd };
-        run.filmDevelop.densR = { cudaResources->densR.x, cudaResources->densR.y, cudaResources->densR.n, cudaResources->densR.domainBegin, cudaResources->densR.domainEnd };
-        run.filmDevelop.dirDensB = { cudaResources->dirDensB.x, cudaResources->dirDensB.y, cudaResources->dirDensB.n, cudaResources->dirDensB.domainBegin, cudaResources->dirDensB.domainEnd };
-        run.filmDevelop.dirDensG = { cudaResources->dirDensG.x, cudaResources->dirDensG.y, cudaResources->dirDensG.n, cudaResources->dirDensG.domainBegin, cudaResources->dirDensG.domainEnd };
-        run.filmDevelop.dirDensR = { cudaResources->dirDensR.x, cudaResources->dirDensR.y, cudaResources->dirDensR.n, cudaResources->dirDensR.domainBegin, cudaResources->dirDensR.domainEnd };
-        run.filmExpose.sensB = { cudaResources->sensB.x, cudaResources->sensB.y, cudaResources->sensB.n, cudaResources->sensB.domainBegin, cudaResources->sensB.domainEnd };
-        run.filmExpose.sensG = { cudaResources->sensG.x, cudaResources->sensG.y, cudaResources->sensG.n, cudaResources->sensG.domainBegin, cudaResources->sensG.domainEnd };
-        run.filmExpose.sensR = { cudaResources->sensR.x, cudaResources->sensR.y, cudaResources->sensR.n, cudaResources->sensR.domainBegin, cudaResources->sensR.domainEnd };
+        const JuicerProcess::Root::PreparedCudaFrame::DurableBundleView durableBundle =
+            preparedFrame.durable_bundle();
+        const auto& film = durableBundle.film;
+        run.filmDevelop.densB = { film.densB->x, film.densB->y, film.densB->n, film.densB->domainBegin, film.densB->domainEnd };
+        run.filmDevelop.densG = { film.densG->x, film.densG->y, film.densG->n, film.densG->domainBegin, film.densG->domainEnd };
+        run.filmDevelop.densR = { film.densR->x, film.densR->y, film.densR->n, film.densR->domainBegin, film.densR->domainEnd };
+        run.filmDevelop.dirDensB = { film.dirDensB->x, film.dirDensB->y, film.dirDensB->n, film.dirDensB->domainBegin, film.dirDensB->domainEnd };
+        run.filmDevelop.dirDensG = { film.dirDensG->x, film.dirDensG->y, film.dirDensG->n, film.dirDensG->domainBegin, film.dirDensG->domainEnd };
+        run.filmDevelop.dirDensR = { film.dirDensR->x, film.dirDensR->y, film.dirDensR->n, film.dirDensR->domainBegin, film.dirDensR->domainEnd };
+        run.filmExpose.sensB = { film.sensB->x, film.sensB->y, film.sensB->n, film.sensB->domainBegin, film.sensB->domainEnd };
+        run.filmExpose.sensG = { film.sensG->x, film.sensG->y, film.sensG->n, film.sensG->domainBegin, film.sensG->domainEnd };
+        run.filmExpose.sensR = { film.sensR->x, film.sensR->y, film.sensR->n, film.sensR->domainBegin, film.sensR->domainEnd };
 
-        run.filmExpose.tablesAx = cudaResources->tablesAx;
-        run.filmExpose.tablesAy = cudaResources->tablesAy;
-        run.filmExpose.tablesAz = cudaResources->tablesAz;
-        run.filmExpose.tablesIllum = cudaResources->tablesIllum;
-        run.filmExpose.tablesK = cudaResources->tablesK;
-        copy_float9(run.filmExpose.spdSInv, cudaResources->spdSInv);
+        run.filmExpose.tablesAx = film.tablesAx;
+        run.filmExpose.tablesAy = film.tablesAy;
+        run.filmExpose.tablesAz = film.tablesAz;
+        run.filmExpose.tablesIllum = film.tablesIllum;
+        run.filmExpose.tablesK = film.tablesK;
+        copy_float9(run.filmExpose.spdSInv, film.spdSInv);
 
-        run.filmExpose.hanatosLut = cudaResources->hanatosLut;
-        run.filmExpose.hanatosN = cudaResources->hanatosN;
-        run.filmExpose.hanatosLutIntegrated = cudaResources->hanatosLutIntegrated;
-        run.filmExpose.hanatosNIntegrated = cudaResources->hanatosNIntegrated;
-        run.filmExpose.mallettBasis = cudaResources->mallettBasis;
-        run.filmExpose.mallettBasisK = cudaResources->mallettBasisK;
+        run.filmExpose.hanatosLut = film.hanatosLut;
+        run.filmExpose.hanatosN = film.hanatosN;
+        run.filmExpose.hanatosLutIntegrated = film.hanatosLutIntegrated;
+        run.filmExpose.hanatosNIntegrated = film.hanatosNIntegrated;
+        run.filmExpose.mallettBasis = film.mallettBasis;
+        run.filmExpose.mallettBasisK = film.mallettBasisK;
     };
 
     const ScannerOpticsParams scannerOptics = resolve_scanner_optics_params();
@@ -4745,31 +4745,34 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto populate_print_pipeline_payload = [&](JuicerCuda::PipelineRunParams& run,
-                                               JuicerCuda::Resources* resources,
                                                float midgrayFactor) {
+        const JuicerProcess::Root::PreparedCudaFrame::DurableBundleView durableBundle =
+            preparedFrame.durable_bundle();
+        const auto& scan = durableBundle.scan;
+        const auto& print = durableBundle.print;
         run.printExpose.active = 1;
         copy_scan_tables_payload(
             run.printExpose.negTables,
             run.printExpose.negTables.mediumIsNegative,
             run.printExpose.negTables.min_cmy,
             run.printExpose.negTables.inv_max_cmy,
-            resources->scanNegative);
+            *scan.negativeMedium);
 
-        run.printExpose.printIllumFiltered = resources->printIllumFiltered;
-        run.printExpose.printIllumK = resources->printIllumK;
-        run.printExpose.printSensC = { resources->printSensC.x, resources->printSensC.y, resources->printSensC.n, resources->printSensC.domainBegin, resources->printSensC.domainEnd };
-        run.printExpose.printSensM = { resources->printSensM.x, resources->printSensM.y, resources->printSensM.n, resources->printSensM.domainBegin, resources->printSensM.domainEnd };
-        run.printExpose.printSensY = { resources->printSensY.x, resources->printSensY.y, resources->printSensY.n, resources->printSensY.domainBegin, resources->printSensY.domainEnd };
-        run.printDevelop.printDcC = { resources->printDcC.x, resources->printDcC.y, resources->printDcC.n, resources->printDcC.domainBegin, resources->printDcC.domainEnd };
-        run.printDevelop.printDcM = { resources->printDcM.x, resources->printDcM.y, resources->printDcM.n, resources->printDcM.domainBegin, resources->printDcM.domainEnd };
-        run.printDevelop.printDcY = { resources->printDcY.x, resources->printDcY.y, resources->printDcY.n, resources->printDcY.domainBegin, resources->printDcY.domainEnd };
-        run.printDevelop.printGammaC = resources->printGammaC;
-        run.printDevelop.printGammaM = resources->printGammaM;
-        run.printDevelop.printGammaY = resources->printGammaY;
+        run.printExpose.printIllumFiltered = print.printIllumFiltered;
+        run.printExpose.printIllumK = print.printIllumK;
+        run.printExpose.printSensC = { print.printSensC->x, print.printSensC->y, print.printSensC->n, print.printSensC->domainBegin, print.printSensC->domainEnd };
+        run.printExpose.printSensM = { print.printSensM->x, print.printSensM->y, print.printSensM->n, print.printSensM->domainBegin, print.printSensM->domainEnd };
+        run.printExpose.printSensY = { print.printSensY->x, print.printSensY->y, print.printSensY->n, print.printSensY->domainBegin, print.printSensY->domainEnd };
+        run.printDevelop.printDcC = { print.printDcC->x, print.printDcC->y, print.printDcC->n, print.printDcC->domainBegin, print.printDcC->domainEnd };
+        run.printDevelop.printDcM = { print.printDcM->x, print.printDcM->y, print.printDcM->n, print.printDcM->domainBegin, print.printDcM->domainEnd };
+        run.printDevelop.printDcY = { print.printDcY->x, print.printDcY->y, print.printDcY->n, print.printDcY->domainBegin, print.printDcY->domainEnd };
+        run.printDevelop.printGammaC = print.printGammaC;
+        run.printDevelop.printGammaM = print.printGammaM;
+        run.printDevelop.printGammaY = print.printGammaY;
         run.printExpose.printExposure = _printParams.exposure;
         run.printExpose.printPreflashExposure = _printParams.preflashExposure;
         run.printExpose.printMidgrayFactor = midgrayFactor;
-        copy_float3(run.printExpose.printPreflashRaw, resources->printPreflashRaw);
+        copy_float3(run.printExpose.printPreflashRaw, print.printPreflashRaw);
     };
 
     auto print_pipeline_payloads_ready = [&](const JuicerCuda::PipelineRunParams& run) -> bool {
@@ -5030,7 +5033,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             // Print pipeline payloads.
-            populate_print_pipeline_payload(run, cudaResources, kMidSpectral);
+            populate_print_pipeline_payload(run, kMidSpectral);
             throw_if_print_payloads_missing(run);
 
             if (!run_medium_optics_pipeline_or_abort(

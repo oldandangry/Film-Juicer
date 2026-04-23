@@ -650,7 +650,66 @@ namespace JuicerProcess {
         return assets;
     }
 
-    JuicerCuda::Resources* Root::PreparedCudaFrame::resources() const noexcept {
+    Root::PreparedCudaFrame::DurableBundleView Root::PreparedCudaFrame::durable_bundle() const noexcept {
+        DurableBundleView bundle{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return bundle;
+        }
+
+        const JuicerCuda::Resources& resources = *_state->resources;
+        bundle.film.densB = &resources.densB;
+        bundle.film.densG = &resources.densG;
+        bundle.film.densR = &resources.densR;
+        bundle.film.dirDensB = &resources.dirDensB;
+        bundle.film.dirDensG = &resources.dirDensG;
+        bundle.film.dirDensR = &resources.dirDensR;
+        bundle.film.sensB = &resources.sensB;
+        bundle.film.sensG = &resources.sensG;
+        bundle.film.sensR = &resources.sensR;
+        bundle.film.hasDensityCurvesLayers = resources.hasDensityCurvesLayers;
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                bundle.film.densityCurvesLayers[layer][ch] = resources.densityCurvesLayers[layer][ch];
+            }
+        }
+        bundle.film.tablesAx = resources.tablesAx;
+        bundle.film.tablesAy = resources.tablesAy;
+        bundle.film.tablesAz = resources.tablesAz;
+        bundle.film.tablesIllum = resources.tablesIllum;
+        bundle.film.tablesK = resources.tablesK;
+        for (int i = 0; i < 9; ++i) {
+            bundle.film.spdSInv[i] = resources.spdSInv[i];
+        }
+        bundle.film.hanatosLut = resources.hanatosLut;
+        bundle.film.hanatosN = resources.hanatosN;
+        bundle.film.hanatosLutIntegrated = resources.hanatosLutIntegrated;
+        bundle.film.hanatosNIntegrated = resources.hanatosNIntegrated;
+        bundle.film.mallettBasis = resources.mallettBasis;
+        bundle.film.mallettBasisK = resources.mallettBasisK;
+
+        bundle.scan.negativeMedium = &resources.scanNegative;
+        bundle.scan.printMedium = &resources.scanPrint;
+        bundle.scan.negativeLut = &resources.scanNegativeLut;
+        bundle.scan.printLut = &resources.scanPrintLut;
+
+        bundle.print.printIllumFiltered = resources.printIllumFiltered;
+        bundle.print.printIllumK = resources.printIllumK;
+        bundle.print.printSensC = &resources.printSensC;
+        bundle.print.printSensM = &resources.printSensM;
+        bundle.print.printSensY = &resources.printSensY;
+        bundle.print.printDcC = &resources.printDcC;
+        bundle.print.printDcM = &resources.printDcM;
+        bundle.print.printDcY = &resources.printDcY;
+        bundle.print.printGammaC = resources.printGammaC;
+        bundle.print.printGammaM = resources.printGammaM;
+        bundle.print.printGammaY = resources.printGammaY;
+        for (int i = 0; i < 3; ++i) {
+            bundle.print.printPreflashRaw[i] = resources.printPreflashRaw[i];
+        }
+        return bundle;
+    }
+
+    JuicerCuda::Resources* Root::PreparedCudaFrame::runtime_resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }
 

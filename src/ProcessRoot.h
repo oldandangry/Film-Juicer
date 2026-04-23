@@ -134,12 +134,75 @@ namespace JuicerProcess {
                 int wangColors = 0;
             };
 
+            struct DurableBundleView {
+                struct FilmRuntimeView {
+                    const JuicerCuda::DeviceCurve* densB = nullptr;
+                    const JuicerCuda::DeviceCurve* densG = nullptr;
+                    const JuicerCuda::DeviceCurve* densR = nullptr;
+                    const JuicerCuda::DeviceCurve* dirDensB = nullptr;
+                    const JuicerCuda::DeviceCurve* dirDensG = nullptr;
+                    const JuicerCuda::DeviceCurve* dirDensR = nullptr;
+                    const JuicerCuda::DeviceCurve* sensB = nullptr;
+                    const JuicerCuda::DeviceCurve* sensG = nullptr;
+                    const JuicerCuda::DeviceCurve* sensR = nullptr;
+                    bool hasDensityCurvesLayers = false;
+                    const float* densityCurvesLayers[3][3] = { { nullptr, nullptr, nullptr }, { nullptr, nullptr, nullptr }, { nullptr, nullptr, nullptr } };
+                    const float* tablesAx = nullptr;
+                    const float* tablesAy = nullptr;
+                    const float* tablesAz = nullptr;
+                    const float* tablesIllum = nullptr;
+                    int tablesK = 0;
+                    float spdSInv[9] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+                    const float* hanatosLut = nullptr;
+                    int hanatosN = 0;
+                    const float* hanatosLutIntegrated = nullptr;
+                    int hanatosNIntegrated = 0;
+                    const float* mallettBasis = nullptr;
+                    int mallettBasisK = 0;
+                };
+
+                struct ScanRuntimeView {
+                    const JuicerCuda::Resources::DeviceScanMedium* negativeMedium = nullptr;
+                    const JuicerCuda::Resources::DeviceScanMedium* printMedium = nullptr;
+                    const JuicerCuda::Resources::DeviceSpectralLut* negativeLut = nullptr;
+                    const JuicerCuda::Resources::DeviceSpectralLut* printLut = nullptr;
+
+                    const JuicerCuda::Resources::DeviceScanMedium* medium(bool negative) const noexcept {
+                        return negative ? negativeMedium : printMedium;
+                    }
+
+                    const JuicerCuda::Resources::DeviceSpectralLut* lut(bool negative) const noexcept {
+                        return negative ? negativeLut : printLut;
+                    }
+                };
+
+                struct PrintRuntimeView {
+                    const float* printIllumFiltered = nullptr;
+                    int printIllumK = 0;
+                    const JuicerCuda::DeviceCurve* printSensC = nullptr;
+                    const JuicerCuda::DeviceCurve* printSensM = nullptr;
+                    const JuicerCuda::DeviceCurve* printSensY = nullptr;
+                    const JuicerCuda::DeviceCurve* printDcC = nullptr;
+                    const JuicerCuda::DeviceCurve* printDcM = nullptr;
+                    const JuicerCuda::DeviceCurve* printDcY = nullptr;
+                    float printGammaC = 1.0f;
+                    float printGammaM = 1.0f;
+                    float printGammaY = 1.0f;
+                    float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
+                };
+
+                FilmRuntimeView film{};
+                ScanRuntimeView scan{};
+                PrintRuntimeView print{};
+            };
+
             PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
             bool active() const noexcept;
             WorkspaceLeaseMarker bind_workspace_request(const WorkspaceRequest& request) const noexcept;
             GrainStaticAssets grain_static_assets() const noexcept;
+            DurableBundleView durable_bundle() const noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             bool prepare_current_medium(
@@ -194,7 +257,7 @@ namespace JuicerProcess {
                 int& outCudaErrorCode,
                 std::string& outError);
 
-            JuicerCuda::Resources* resources() const noexcept;
+            JuicerCuda::Resources* runtime_resources() const noexcept;
             const char* failure_stage_tag() const noexcept;
             const char* failure_prefix() const noexcept;
             bool failure_marks_context_loss() const noexcept;
