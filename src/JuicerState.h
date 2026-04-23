@@ -141,14 +141,6 @@ namespace JuicerAtomic {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 
-namespace JuicerCuda {
-    struct Resources;
-    void destroy(Resources* resources) noexcept;
-}
-
-struct JuicerCudaResourcesDeleter {
-    void operator()(JuicerCuda::Resources* resources) const noexcept;
-};
 #endif
 
 inline std::filesystem::path data_dir_path() {
@@ -474,15 +466,6 @@ struct InstanceState {
     std::atomic<bool> scannerRuntimeBInUse{ false };
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    // CUDA: per-instance GPU cache keyed by WorkingState.buildCounter.
-    // This is kept on InstanceState so the CPU and CUDA render paths share the same invalidation
-    // boundary (the atomic WorkingState swap).
-    std::mutex cudaMutex;
-    std::unordered_map<
-        JuicerCuda::ResourceManager::DeviceContextKey,
-        std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter>,
-        JuicerCuda::ResourceManager::DeviceContextKeyHash> cudaByDevice;
-
     // Snapshot latch: all submissions for the same frame token reuse one immutable snapshot payload.
     std::mutex submissionSnapshotLatchMutex;
     bool submissionSnapshotLatchValid = false;

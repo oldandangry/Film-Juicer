@@ -1109,7 +1109,7 @@ namespace {
         return false;
     }
 
-    void recover_context_loss_slot(
+    void recover_context_loss_state(
         InstanceState* instanceState,
         const JuicerCuda::ResourceManager::DeviceContextKey& key,
         const char* stage,
@@ -1129,16 +1129,6 @@ namespace {
             key.deviceId,
             key.contextOpaque,
             retireError);
-
-        bool slotErased = false;
-        {
-            std::lock_guard<std::mutex> lock(instanceState->cudaMutex);
-            const auto it = instanceState->cudaByDevice.find(key);
-            if (it != instanceState->cudaByDevice.end()) {
-                instanceState->cudaByDevice.erase(it);
-                slotErased = true;
-            }
-        }
 
         bool latchCleared = false;
         {
@@ -1165,8 +1155,6 @@ namespace {
             msg += std::to_string(static_cast<int>(error));
             msg += " retire_accepted=";
             msg += std::to_string(bool_to_i32(retireAccepted));
-            msg += " slot_erased=";
-            msg += std::to_string(bool_to_i32(slotErased));
             msg += " latch_cleared=";
             msg += std::to_string(bool_to_i32(latchCleared));
             if (!retireError.empty()) {
@@ -2734,7 +2722,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!pendingContextLossRecovery.pending) {
             return;
         }
-        recover_context_loss_slot(
+        recover_context_loss_state(
             _instanceState,
             deviceContextKey,
             pendingContextLossRecovery.stage,
@@ -2963,7 +2951,6 @@ void JuicerProcessor::processImagesCUDA() {
     std::string prepareFrameError;
     JuicerProcess::Root::PreparedCudaFrame preparedFrame =
         JuicerProcess::root().prepare_cuda_frame(
-            *_instanceState,
             deviceContextKey,
             snapshot,
             *_ws,

@@ -65,12 +65,6 @@ namespace RebuildWorkingState {
 
 } // namespace RebuildWorkingState
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) const noexcept {
-    JuicerProcess::root().destroy_cuda_resources(resources);
-}
-#endif
-
 #include <algorithm>
 #include <array>
 #include <cstring>

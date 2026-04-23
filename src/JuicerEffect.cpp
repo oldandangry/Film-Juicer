@@ -3469,11 +3469,6 @@ JuicerEffect::~JuicerEffect() {
             "instance_destroy");
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    if (_state) {
-        JuicerProcess::root().retire_idle_contexts(*_state);
-    }
-#endif
     _state.reset();
 }
 

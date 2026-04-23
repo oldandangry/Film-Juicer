@@ -33,10 +33,6 @@ namespace JuicerProcess {
 
     namespace {
 
-        inline int bool_to_i32(bool value) noexcept {
-            return value ? 1 : 0;
-        }
-
         std::string compute_process_data_dir() {
             namespace fs = std::filesystem;
 
@@ -198,37 +194,6 @@ namespace JuicerProcess {
             }
             Spectral::set_filter_KG3_from_pairs(kg3Pairs);
         }
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        bool resolve_cuda_frame_resources(
-            InstanceState& instanceState,
-            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
-            JuicerCuda::Resources*& outResources,
-            std::string& outError) {
-            std::lock_guard<std::mutex> lock(instanceState.cudaMutex);
-            auto& slot = instanceState.cudaByDevice[deviceContextKey];
-            if (!slot) {
-                slot.reset(JuicerCuda::create());
-                if (!slot) {
-                    JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
-                    outError = "failed to allocate CUDA resources";
-                    return false;
-                }
-            }
-            if (slot->deviceId < 0) {
-                slot->deviceId = deviceContextKey.deviceId;
-            }
-            if (!slot->ownerContextOpaque) {
-                slot->ownerContextOpaque = deviceContextKey.contextOpaque;
-            }
-            outResources = slot.get();
-            if (!outResources) {
-                outError = "CUDA resources missing after allocation";
-                return false;
-            }
-            return true;
-        }
-#endif
 
     } // namespace
 
@@ -820,12 +785,59 @@ namespace JuicerProcess {
     }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    void Root::destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept {
+    void Root::CudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) const noexcept {
         JuicerCuda::destroy(resources);
     }
 
+    bool Root::resolve_cuda_frame_resources(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        std::uint64_t contextEpoch,
+        JuicerCuda::Resources*& outResources,
+        std::string& outError) {
+        outResources = nullptr;
+        outError.clear();
+        if (deviceContextKey.deviceId < 0 || !deviceContextKey.contextOpaque) {
+            outError = "invalid CUDA context key";
+            return false;
+        }
+        if (contextEpoch == 0) {
+            outError = "invalid CUDA context epoch";
+            return false;
+        }
+
+        const ContextCudaResourceKey resourceKey{ deviceContextKey, contextEpoch };
+        std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+        ContextCudaResourceSlot& slot = _cudaResourcesByContext[resourceKey];
+        if (!slot.resources) {
+            std::unique_ptr<JuicerCuda::Resources, CudaResourcesDeleter> resources(JuicerCuda::create());
+            if (!resources) {
+                JTRACE("CUDA", "FATAL: failed to allocate CUDA resources");
+                outError = "failed to allocate CUDA resources";
+                return false;
+            }
+            if (resources->deviceId < 0) {
+                resources->deviceId = deviceContextKey.deviceId;
+            }
+            if (!resources->ownerContextOpaque) {
+                resources->ownerContextOpaque = deviceContextKey.contextOpaque;
+            }
+            if (resources->deviceId != deviceContextKey.deviceId ||
+                resources->ownerContextOpaque != deviceContextKey.contextOpaque) {
+                outError = "CUDA resources resolved for a different context";
+                return false;
+            }
+            slot.resources = std::move(resources);
+        }
+
+        outResources = slot.resources.get();
+        if (!outResources) {
+            outError = "CUDA resources missing after allocation";
+            return false;
+        }
+        return true;
+    }
+
     Root::PreparedCudaFrame Root::prepare_cuda_frame(
-        InstanceState& instanceState,
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const WorkingState& workingState,
@@ -844,11 +856,17 @@ namespace JuicerProcess {
         PreparedCudaFrame frame(std::move(state));
         frame._state->root = this;
         frame._state->set_failure("prepare_frame", "CUDA prepared frame failed");
-        if (!resolve_cuda_frame_resources(instanceState, deviceContextKey, frame._state->resources, outError)) {
-            return frame;
-        }
         if (!begin_submission(frame._state->transaction, snapshot, outError)) {
             frame._state->set_failure("begin_submission", "begin_submission failed");
+            return frame;
+        }
+        if (!resolve_cuda_frame_resources(
+                deviceContextKey,
+                frame._state->transaction.snapshot.contextEpoch,
+                frame._state->resources,
+                outError)) {
+            frame._state->set_failure("resolve_cuda_resources", "CUDA resource acquisition failed");
+            frame.abort("prepared_frame_resource_acquire_failed");
             return frame;
         }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
@@ -919,53 +937,6 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::rollback_submission(transaction, reason);
     }
 #endif
-
-    void Root::retire_idle_contexts(InstanceState& state) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        const bool traceInfo = JTRACE_ENABLED(1);
-        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
-        try {
-            std::lock_guard<std::mutex> lock(state.cudaMutex);
-            keys.reserve(state.cudaByDevice.size());
-            for (const auto& entry : state.cudaByDevice) {
-                keys.emplace_back(entry.first);
-            }
-        } catch (...) {
-            if (traceInfo) {
-                JTRACE("MSLCY", "teardown_retire_idle_failed error=context_key_snapshot_failed");
-            }
-            return;
-        }
-
-        const JuicerCuda::ResourceManager::DeviceContextKey* keyData = keys.data();
-        const size_t keyCount = keys.size();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            const auto& key = *keyData;
-            std::string retireError;
-            const bool retireOk = retire_idle_context(key.deviceId, key.contextOpaque, retireError);
-            if (!retireOk || !retireError.empty()) {
-                if (traceInfo) {
-                    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-                    std::string msg;
-                    msg.reserve(192);
-                    msg = "teardown_retire_idle_failed device_id=";
-                    msg += std::to_string(key.deviceId);
-                    msg += " context=";
-                    msg += std::to_string(contextBits);
-                    msg += " accepted=";
-                    msg += std::to_string(bool_to_i32(retireOk));
-                    if (!retireError.empty()) {
-                        msg += " error=";
-                        msg += retireError;
-                    }
-                    JTRACE("MSLCY", msg);
-                }
-            }
-        }
-#else
-        (void)state;
-#endif
-    }
 
     bool Root::retire_known_contexts(std::string& outError) noexcept {
         outError.clear();

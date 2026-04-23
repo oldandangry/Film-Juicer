@@ -1,10 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "ResourceAssetLibrary.h"
 
@@ -71,7 +73,6 @@ namespace JuicerProcess {
         void ensure_bootstrap();
         void shutdown() noexcept;
         FramePreparationToken begin_frame_preparation() noexcept;
-        void retire_idle_contexts(InstanceState& state) noexcept;
         bool retire_idle_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
         bool retire_reset_context(int deviceId, void* contextOpaque, std::string& outError) noexcept;
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -214,9 +215,7 @@ namespace JuicerProcess {
             std::unique_ptr<State> _state;
         };
 
-        void destroy_cuda_resources(JuicerCuda::Resources* resources) noexcept;
         PreparedCudaFrame prepare_cuda_frame(
-            InstanceState& instanceState,
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const WorkingState& workingState,
@@ -284,8 +283,50 @@ namespace JuicerProcess {
         std::condition_variable _framePreparationCv;
         std::uint32_t _activeFramePreparations = 0;
         std::uint32_t _activeShutdowns = 0;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        struct CudaResourcesDeleter final {
+            void operator()(JuicerCuda::Resources* resources) const noexcept;
+        };
+
+        struct ContextCudaResourceKey final {
+            JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
+            std::uint64_t contextEpoch = 0;
+
+            bool operator==(const ContextCudaResourceKey& other) const noexcept {
+                return deviceContextKey == other.deviceContextKey &&
+                    contextEpoch == other.contextEpoch;
+            }
+        };
+
+        struct ContextCudaResourceKeyHash final {
+            std::size_t operator()(const ContextCudaResourceKey& key) const noexcept {
+                const std::size_t hContext =
+                    JuicerCuda::ResourceManager::DeviceContextKeyHash{}(key.deviceContextKey);
+                const std::size_t hEpoch = std::hash<std::uint64_t>{}(key.contextEpoch);
+                return hContext ^ (hEpoch + 0x9e3779b9u + (hContext << 6u) + (hContext >> 2u));
+            }
+        };
+
+        struct ContextCudaResourceSlot final {
+            std::unique_ptr<JuicerCuda::Resources, CudaResourcesDeleter> resources;
+        };
+
+        bool resolve_cuda_frame_resources(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            std::uint64_t contextEpoch,
+            JuicerCuda::Resources*& outResources,
+            std::string& outError);
+#endif
+
         bool _acceptFramePreparation = true;
         bool _shutdownRetireBlocked = false;
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        std::mutex _cudaResourcesMutex;
+        std::unordered_map<
+            ContextCudaResourceKey,
+            ContextCudaResourceSlot,
+            ContextCudaResourceKeyHash> _cudaResourcesByContext;
+#endif
     };
 
     Root& root() noexcept;
