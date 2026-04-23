@@ -3801,90 +3801,36 @@ void JuicerProcessor::processImagesCUDA() {
         return static_cast<cudaError_t>(graphErrCode);
     };
 
-    auto prepare_scan_error_stage = [&](JuicerCuda::Resources* resources,
-                                        JuicerCuda::PipelineRunParams& run,
-                                        cudaStream_t stream) -> cudaEvent_t {
-        run.scanStage.scanErrorFlag = resources->scanErrorFlag;
-        if (!run.scanStage.scanErrorFlag) {
-            JTRACE("CUDA", "FATAL: scan error flag missing after allocation");
-            throw OFX::Exception::Suite(kOfxStatErrFatal);
+    auto prepare_scan_error_stage = [&](JuicerCuda::PipelineRunParams& run,
+                                        cudaStream_t stream) -> bool {
+        std::string scanErrorError;
+        if (!preparedFrame.prepare_scan_error_stage(
+                run.scanStage.scanErrorFlag,
+                stream,
+                scanErrorError)) {
+            throw_prepared_frame_failure(scanErrorError);
         }
-
-        cudaEvent_t scanEvent = resources->scanErrorEventOpaque
-            ? reinterpret_cast<cudaEvent_t>(resources->scanErrorEventOpaque)
-            : nullptr;
-        if (resources->scanErrorPending && scanEvent && resources->scanErrorHost) {
-            cudaError_t pollErr = cudaEventQuery(scanEvent);
-            if (pollErr == cudaSuccess) {
-                resources->scanErrorPending = 0;
-                if (*resources->scanErrorHost != 0) {
-                    JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
-                    throw OFX::Exception::Suite(kOfxStatErrFatal);
-                }
-            }
-            else if (pollErr == cudaErrorNotReady) {
-                // Do not block the CPU in steady-state: order this stream after the pending readback
-                // and reuse the staging/event on this submission.
-                const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
-                if (waitErr != cudaSuccess) {
-                    throw_cuda_stage_fatal("scan_error_stream_wait", "CUDA scan error stream wait failed", waitErr);
-                }
-                resources->scanErrorPending = 0;
-            }
-            else {
-                throw_cuda_stage_fatal("scan_error_event_query", "CUDA scan error event query failed", pollErr);
-            }
-        }
-
-        cudaError_t flagErr = cudaMemsetAsync(run.scanStage.scanErrorFlag, 0, sizeof(int), stream);
-        if (flagErr != cudaSuccess) {
-            throw_cuda_stage_fatal(
-                "scan_error_flag_memset",
-                "CUDA scan error flag memset failed",
-                flagErr);
-        }
-
-        return scanEvent;
+        return true;
     };
 
-    auto finalize_scan_error_stage = [&](JuicerCuda::Resources* resources,
-                                         const JuicerCuda::PipelineRunParams& run,
-                                         cudaStream_t stream,
-                                         cudaEvent_t scanEvent,
-                                         const char* stageLabel) {
-        const char* stage = nonempty_cstr_or(stageLabel, "pipeline");
-        cudaError_t flagErr = cudaSuccess;
-        if (resources->scanErrorHost && scanEvent) {
-            flagErr = cudaMemcpyAsync(resources->scanErrorHost, run.scanStage.scanErrorFlag, sizeof(int), cudaMemcpyDeviceToHost, stream);
-            if (flagErr != cudaSuccess) {
-                throw_cuda_stage_fatal(
-                    "scan_error_flag_readback",
-                    "CUDA scan error flag readback failed",
-                    flagErr);
-            }
-            cudaError_t evErr = cudaEventRecord(scanEvent, stream);
-            if (evErr != cudaSuccess) {
-                throw_cuda_stage_fatal("scan_error_event_record", "CUDA scan error event record failed", evErr);
-            }
-            resources->scanErrorPending = 1;
-        }
-        else {
-            static std::atomic<bool> sScanErrorReadbackUnavailableWarned{ false };
-            if (!sScanErrorReadbackUnavailableWarned.exchange(true)) {
-                JTRACE("CUDA", "scan error host/event staging unavailable; skipping asynchronous scan-error readback validation");
-            }
+    auto finalize_scan_error_stage = [&](const JuicerCuda::PipelineRunParams& run,
+                                         cudaStream_t stream) {
+        std::string scanErrorError;
+        if (!preparedFrame.finalize_scan_error_stage(
+                run.scanStage.scanErrorFlag,
+                stream,
+                scanErrorError)) {
+            throw_prepared_frame_failure(scanErrorError);
         }
     };
 
     auto finalize_cuda_pipeline_tail_or_abort = [&](JuicerCuda::Resources* resources,
                                                     const JuicerCuda::PipelineRunParams& run,
-                                                    cudaStream_t pipelineStream,
-                                                    cudaEvent_t scanEvent,
-                                                    const char* stageLabel) -> bool {
+                                                    cudaStream_t pipelineStream) -> bool {
         if (abort_cuda_path_if_requested(resources)) {
             return false;
         }
-        finalize_scan_error_stage(resources, run, pipelineStream, scanEvent, stageLabel);
+        finalize_scan_error_stage(run, pipelineStream);
         record_cuda_use(resources);
         return true;
     };
@@ -3912,11 +3858,10 @@ void JuicerProcessor::processImagesCUDA() {
         return selection;
     };
 
-    auto setup_scan_stage_resources = [&](JuicerCuda::Resources* resources,
-                                          JuicerCuda::PipelineRunParams& run,
+    auto setup_scan_stage_resources = [&](JuicerCuda::PipelineRunParams& run,
                                           const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                           cudaStream_t stream,
-                                          bool negativeMedium) -> cudaEvent_t {
+                                          bool negativeMedium) -> bool {
         const ScanStageMediumSelection selection = select_scan_stage_medium(negativeMedium);
         const char* scanLabel = selection.scanLabel;
         run.scanStage.scannerUseLut = bool_to_i32(_scannerSettings.useLut);
@@ -3951,7 +3896,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.scanStage.scanTables.inv_max_cmy,
             scanMedium);
 
-        return prepare_scan_error_stage(resources, run, stream);
+        return prepare_scan_error_stage(run, stream);
     };
 
     auto setup_spatial_dir_stage = [&](JuicerCuda::Resources* resources,
@@ -4654,11 +4599,12 @@ void JuicerProcessor::processImagesCUDA() {
                                                    JuicerCuda::Resources* resources,
                                                    const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                                    bool useSpatialDIR,
-                                                   bool negativeMedium,
-                                                   cudaEvent_t& outScanEvent) -> bool {
+                                                   bool negativeMedium) -> bool {
         setup_camera_auto_exposure(run, resources);
         populate_film_runtime_payload(run);
-        outScanEvent = setup_scan_stage_resources(resources, run, workspace, stream, negativeMedium);
+        if (!setup_scan_stage_resources(run, workspace, stream, negativeMedium)) {
+            return false;
+        }
         return setup_spatial_dir_stage(resources, run, workspace, width, height, useSpatialDIR);
     };
 
@@ -4671,15 +4617,13 @@ void JuicerProcessor::processImagesCUDA() {
     auto prepare_common_cuda_pipeline_stages_for_medium = [&](JuicerCuda::PipelineRunParams& run,
                                               JuicerCuda::Resources* resources,
                                               const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
-                                              bool negativeMedium,
-                                              cudaEvent_t& outScanEvent) -> bool {
+                                              bool negativeMedium) -> bool {
         return prepare_common_cuda_pipeline_stages(
             run,
             resources,
             workspace,
             useSpatialDIR,
-            negativeMedium,
-            outScanEvent);
+            negativeMedium);
     };
 
     auto launch_negative_optics_kernel = [&](JuicerCuda::PipelineRunParams& run,
@@ -4838,10 +4782,8 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto finalize_pipeline_launch_or_abort = [&](const PipelineLaunchResult& launchResult,
                                                  JuicerCuda::PipelineRunParams& run,
-                                                 cudaEvent_t scanEvent,
                                                  const char* launchStageTag,
-                                                 const char* launchFailurePrefix,
-                                                 const char* stageLabel) -> bool {
+                                                 const char* launchFailurePrefix) -> bool {
         if (launchResult.shouldReturnEarly) {
             return false;
         }
@@ -4852,9 +4794,7 @@ void JuicerProcessor::processImagesCUDA() {
         return finalize_cuda_pipeline_tail_or_abort(
             cudaResources,
             run,
-            stream,
-            scanEvent,
-            stageLabel);
+            stream);
     };
 
     auto launch_and_finalize_medium_pipeline_or_abort = [&](JuicerCuda::PipelineRunParams& run,
@@ -4863,9 +4803,7 @@ void JuicerProcessor::processImagesCUDA() {
                                                             const char* gateStageTag,
                                                             const char* launchStageTag,
                                                             const char* launchFailurePrefix,
-                                                            const char* stageLabel,
-                                                            auto&& launchOpticsKernel,
-                                                            cudaEvent_t scanEvent) -> bool {
+                                                            auto&& launchOpticsKernel) -> bool {
         if (abort_cuda_path_if_requested(cudaResources)) {
             return false;
         }
@@ -4893,10 +4831,8 @@ void JuicerProcessor::processImagesCUDA() {
         return finalize_pipeline_launch_or_abort(
             launchResult,
             run,
-            scanEvent,
             launchStageTag,
-            launchFailurePrefix,
-            stageLabel);
+            launchFailurePrefix);
     };
 
     auto run_medium_optics_pipeline_or_abort = [&](JuicerCuda::PipelineRunParams& run,
@@ -4905,9 +4841,7 @@ void JuicerProcessor::processImagesCUDA() {
                                                    const char* gateStageTag,
                                                    const char* launchStageTag,
                                                    const char* launchFailurePrefix,
-                                                   const char* stageLabel,
-                                                   auto&& launchOpticsKernel,
-                                                   cudaEvent_t scanEvent) -> bool {
+                                                   auto&& launchOpticsKernel) -> bool {
         return launch_and_finalize_medium_pipeline_or_abort(
             run,
             workspace,
@@ -4915,9 +4849,7 @@ void JuicerProcessor::processImagesCUDA() {
             gateStageTag,
             launchStageTag,
             launchFailurePrefix,
-            stageLabel,
-            launchOpticsKernel,
-            scanEvent);
+            launchOpticsKernel);
     };
 
     // RenderMode::NegativeOnly (PrintBypass=true).
@@ -4947,13 +4879,11 @@ void JuicerProcessor::processImagesCUDA() {
                 workspace);
             ensure_current_medium_uploaded_or_throw(true, workspace);
 
-            cudaEvent_t scanEvent = nullptr;
             if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
                     cudaResources,
                     workspace,
-                    true,
-                    scanEvent)) {
+                    true)) {
                 return;
             }
 
@@ -4964,9 +4894,7 @@ void JuicerProcessor::processImagesCUDA() {
                     "build_gate_mask_negative",
                     "negative_pipeline_kernel_launch",
                     "negative pipeline kernel launch failed",
-                    "negative",
-                    launch_negative_optics_kernel,
-                    scanEvent)) {
+                    launch_negative_optics_kernel)) {
                 return;
             }
         }
@@ -5022,13 +4950,11 @@ void JuicerProcessor::processImagesCUDA() {
             ensure_print_illuminant_filtered_or_throw(workspace);
             trace_print_payload_verbose(cudaResources);
 
-            cudaEvent_t scanEvent = nullptr;
             if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
                     cudaResources,
                     workspace,
-                    false,
-                    scanEvent)) {
+                    false)) {
                 return;
             }
 
@@ -5043,9 +4969,7 @@ void JuicerProcessor::processImagesCUDA() {
                     "build_gate_mask_print",
                     "print_pipeline_kernel_launch",
                     "print pipeline kernel launch failed",
-                    "print",
-                    launch_print_optics_kernel,
-                    scanEvent)) {
+                    launch_print_optics_kernel)) {
                 return;
             }
         }

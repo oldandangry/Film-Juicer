@@ -1,5 +1,6 @@
 #include "ProcessRoot.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +26,7 @@
 #include "SpectralData.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include <cuda_runtime.h>
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
 #endif
@@ -491,6 +493,133 @@ namespace JuicerProcess {
                 "command_ensure_print_illuminant_filtered",
                 "CUDA print illuminant upload failed");
             return false;
+        }
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::prepare_scan_error_stage(
+        int*& outScanErrorFlag,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        outScanErrorFlag = nullptr;
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+
+        JuicerCuda::Resources& resources = *_state->resources;
+        outScanErrorFlag = resources.scanErrorFlag;
+        if (!outScanErrorFlag) {
+            _state->set_failure(
+                "scan_error_flag_missing",
+                "CUDA scan error validation failed",
+                false);
+            outError = "scan error flag missing after allocation";
+            return false;
+        }
+
+        cudaEvent_t scanEvent = resources.scanErrorEventOpaque
+            ? reinterpret_cast<cudaEvent_t>(resources.scanErrorEventOpaque)
+            : nullptr;
+        cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        if (resources.scanErrorPending && scanEvent && resources.scanErrorHost) {
+            cudaError_t pollErr = cudaEventQuery(scanEvent);
+            if (pollErr == cudaSuccess) {
+                resources.scanErrorPending = 0;
+                if (*resources.scanErrorHost != 0) {
+                    JTRACE("CUDA", "FATAL: previous scan produced non-finite RGB");
+                    _state->set_failure(
+                        "scan_error_previous_readback",
+                        "CUDA scan error validation failed",
+                        false);
+                    outError = "previous scan produced non-finite RGB";
+                    return false;
+                }
+            }
+            else if (pollErr == cudaErrorNotReady) {
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, scanEvent, 0);
+                if (waitErr != cudaSuccess) {
+                    _state->set_failure(
+                        "scan_error_stream_wait",
+                        "CUDA scan error validation failed");
+                    outError = "CUDA scan error stream wait failed";
+                    return false;
+                }
+                resources.scanErrorPending = 0;
+            }
+            else {
+                _state->set_failure(
+                    "scan_error_event_query",
+                    "CUDA scan error validation failed");
+                outError = "CUDA scan error event query failed";
+                return false;
+            }
+        }
+
+        const cudaError_t flagErr = cudaMemsetAsync(outScanErrorFlag, 0, sizeof(int), stream);
+        if (flagErr != cudaSuccess) {
+            _state->set_failure(
+                "scan_error_flag_memset",
+                "CUDA scan error validation failed");
+            outError = "CUDA scan error flag memset failed";
+            return false;
+        }
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::finalize_scan_error_stage(
+        int* scanErrorFlag,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        if (!scanErrorFlag) {
+            _state->set_failure(
+                "scan_error_flag_missing",
+                "CUDA scan error validation failed",
+                false);
+            outError = "scan error flag missing after allocation";
+            return false;
+        }
+
+        JuicerCuda::Resources& resources = *_state->resources;
+        cudaEvent_t scanEvent = resources.scanErrorEventOpaque
+            ? reinterpret_cast<cudaEvent_t>(resources.scanErrorEventOpaque)
+            : nullptr;
+        cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
+        if (resources.scanErrorHost && scanEvent) {
+            cudaError_t flagErr = cudaMemcpyAsync(
+                resources.scanErrorHost,
+                scanErrorFlag,
+                sizeof(int),
+                cudaMemcpyDeviceToHost,
+                stream);
+            if (flagErr != cudaSuccess) {
+                _state->set_failure(
+                    "scan_error_flag_readback",
+                    "CUDA scan error validation failed");
+                outError = "CUDA scan error flag readback failed";
+                return false;
+            }
+            const cudaError_t evErr = cudaEventRecord(scanEvent, stream);
+            if (evErr != cudaSuccess) {
+                _state->set_failure(
+                    "scan_error_event_record",
+                    "CUDA scan error validation failed");
+                outError = "CUDA scan error event record failed";
+                return false;
+            }
+            resources.scanErrorPending = 1;
+        }
+        else {
+            static std::atomic<bool> sScanErrorReadbackUnavailableWarned{ false };
+            if (!sScanErrorReadbackUnavailableWarned.exchange(true)) {
+                JTRACE("CUDA", "scan error host/event staging unavailable; skipping asynchronous scan-error readback validation");
+            }
         }
         return true;
     }

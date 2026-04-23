@@ -232,6 +232,14 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            bool prepare_scan_error_stage(
+                int*& outScanErrorFlag,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool finalize_scan_error_stage(
+                int* scanErrorFlag,
+                void* cudaStreamOpaque,
+                std::string& outError);
             bool checkpoint_scratch_phase(
                 const WorkspaceLeaseMarker& workspace,
                 const char* stageTag,
