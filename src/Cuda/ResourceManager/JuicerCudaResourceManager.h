@@ -90,6 +90,10 @@ const char* to_cstr(LifecycleStageDecision decision) noexcept;
 // Registry lookups and lifecycle transitions for device-context managers.
 RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept;
 bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexcept;
+bool registry_get_snapshot_generations(
+    const DeviceContextKey& key,
+    std::uint64_t& outRegistryGeneration,
+    std::uint64_t& outContextEpoch) noexcept;
 bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept;
 bool registry_validate_lifecycle_stage(
     const DeviceContextKey& key,

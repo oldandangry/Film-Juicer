@@ -4508,11 +4508,17 @@ StaleInput state_build_stale_input(
     const SubmissionTransaction& transaction,
     LeaseObservationMode leaseObservationMode) noexcept {
     StaleInput staleInput{};
-    ResourceManagerState& state = global_state();
     staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
-    staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
     staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
-    staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+    std::uint64_t observedRegistryGeneration = 0;
+    std::uint64_t observedContextEpoch = 0;
+    if (registry_get_snapshot_generations(
+            transaction.snapshot.deviceContextKey,
+            observedRegistryGeneration,
+            observedContextEpoch)) {
+        staleInput.observedRegistryGeneration = observedRegistryGeneration;
+        staleInput.observedContextEpoch = observedContextEpoch;
+    }
     staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
     const bool observeLease = (leaseObservationMode == LeaseObservationMode::Always) || transaction.active;
     staleInput.observedLeaseGeneration =

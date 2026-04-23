@@ -28,6 +28,8 @@ struct RegistryEntry {
     std::uint64_t createOrder = 0;
     std::uint64_t lastTouchedMs = 0;
     std::uint64_t activeSubmissionCount = 0;
+    std::uint64_t registryGeneration = 1;
+    std::uint64_t contextEpoch = 1;
 };
 
 struct RegistryState {
@@ -418,6 +420,12 @@ inline std::uint64_t next_nonzero_counter(std::atomic<std::uint64_t>& counter) n
     return value;
 }
 
+inline void assign_entry_generations(RegistryEntry& entry) noexcept {
+    ResourceManagerState& rmState = global_state();
+    entry.registryGeneration = next_nonzero_counter(rmState.registryGeneration);
+    entry.contextEpoch = next_nonzero_counter(rmState.contextEpoch);
+}
+
 std::uint64_t registry_entry_handle_value_or_zero(const RegistryEntry* entry) noexcept {
     if (entry) {
         return entry->handle.value;
@@ -594,31 +602,19 @@ std::uint64_t lifecycle_timeout_ms_for_state(
 
 void bump_registry_epoch_locked(
     const DeviceContextKey& key,
-    RegistryHandle handle,
+    RegistryEntry& entry,
     bool accepted,
     const char* reason) noexcept {
-    ResourceManagerState& rmState = global_state();
-    const std::uint64_t prevRegistryGeneration =
-        rmState.registryGeneration.fetch_add(1, std::memory_order_relaxed);
-    std::uint64_t newRegistryGeneration = prevRegistryGeneration + 1;
-    if (newRegistryGeneration == 0) {
-        newRegistryGeneration = 1;
-        rmState.registryGeneration.store(newRegistryGeneration, std::memory_order_relaxed);
-    }
-    const std::uint64_t prevContextEpoch =
-        rmState.contextEpoch.fetch_add(1, std::memory_order_relaxed);
-    std::uint64_t newContextEpoch = prevContextEpoch + 1;
-    if (newContextEpoch == 0) {
-        newContextEpoch = 1;
-        rmState.contextEpoch.store(newContextEpoch, std::memory_order_relaxed);
-    }
+    const std::uint64_t prevRegistryGeneration = entry.registryGeneration;
+    const std::uint64_t prevContextEpoch = entry.contextEpoch;
+    assign_entry_generations(entry);
     trace_lifecycle_bump(
         key,
-        handle,
+        entry.handle,
         prevRegistryGeneration,
-        newRegistryGeneration,
+        entry.registryGeneration,
         prevContextEpoch,
-        newContextEpoch,
+        entry.contextEpoch,
         accepted,
         reason);
 }
@@ -865,7 +861,7 @@ bool run_freeze_drain_bump_resume_locked(const DeviceContextKey& key,
 
     bump_registry_epoch_locked(
         key,
-        entry.handle,
+        entry,
         ok,
         registry_trace_or(reason, "barrier_bump"));
 
@@ -1186,6 +1182,7 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
     entry.lastTouchedMs = nowMs;
     entry.lifecycleSinceMs = nowMs;
     entry.activeSubmissionCount = 0;
+    assign_entry_generations(entry);
 
     auto inserted = state.byDeviceContext.emplace(key, entry);
     RegistryEntry& insertedEntry = inserted.first->second;
@@ -1225,6 +1222,24 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
 
     maybe_reap_idle_locked(state, &key);
     return insertedEntry.handle;
+}
+
+bool registry_get_snapshot_generations(
+    const DeviceContextKey& key,
+    std::uint64_t& outRegistryGeneration,
+    std::uint64_t& outContextEpoch) noexcept {
+    RegistryState& state = registry_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto it = state.byDeviceContext.find(key);
+    if (it == state.byDeviceContext.end() ||
+        it->second.lifecycleState == ContextLifecycleState::Retired) {
+        outRegistryGeneration = 0;
+        outContextEpoch = 0;
+        return false;
+    }
+    outRegistryGeneration = it->second.registryGeneration;
+    outContextEpoch = it->second.contextEpoch;
+    return true;
 }
 
 bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept {
@@ -1286,7 +1301,7 @@ bool registry_validate_lifecycle_stage(
 
         bool escalated = false;
         if (entry.activeSubmissionCount == 0) {
-            bump_registry_epoch_locked(key, observedHandle, true, "watchdog_timeout_bump");
+            bump_registry_epoch_locked(key, entry, true, "watchdog_timeout_bump");
             if (transition_entry_locked(
                     key,
                     entry,

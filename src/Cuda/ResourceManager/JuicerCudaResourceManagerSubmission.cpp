@@ -996,16 +996,6 @@ bool begin_submission(
         return false;
     }
 
-    std::uint64_t registryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
-    std::uint64_t contextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
-    if (registryGeneration == 0) {
-        registryGeneration = 1;
-    }
-    if (contextEpoch == 0) {
-        contextEpoch = 1;
-    }
-    outTransaction.snapshot.registryGeneration = registryGeneration;
-    outTransaction.snapshot.contextEpoch = contextEpoch;
     outTransaction.snapshot.keySchemaVersion =
         sanitize_submission_key_schema_version(outTransaction.snapshot.keySchemaVersion);
     outTransaction.snapshot.traceSchemaVersion = sanitize_trace_schema_version(outTransaction.snapshot.traceSchemaVersion);
@@ -1020,6 +1010,24 @@ bool begin_submission(
         return false;
     }
 
+    const RegistryHandle registryHandle = registry_get_or_create(outTransaction.snapshot.deviceContextKey);
+    if (registryHandle.value == 0) {
+        outError = "registry get/create failed";
+        return false;
+    }
+
+    std::uint64_t registryGeneration = 0;
+    std::uint64_t contextEpoch = 0;
+    if (!registry_get_snapshot_generations(
+            outTransaction.snapshot.deviceContextKey,
+            registryGeneration,
+            contextEpoch)) {
+        outError = "registry epoch snapshot unavailable";
+        return false;
+    }
+    outTransaction.snapshot.registryGeneration = registryGeneration;
+    outTransaction.snapshot.contextEpoch = contextEpoch;
+
     std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
     if (leaseGeneration == 0) {
         leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -1028,7 +1036,6 @@ bool begin_submission(
     outTransaction.active = true;
     outTransaction.committed = false;
 
-    (void)registry_get_or_create(outTransaction.snapshot.deviceContextKey);
     if (!validate_lifecycle_for_stage(outTransaction, "begin", false, &outError)) {
         finalize_submission_transaction(outTransaction, false);
         return false;
