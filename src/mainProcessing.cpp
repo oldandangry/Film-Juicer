@@ -3934,14 +3934,16 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmDevelop.spatialDir.corrM = resources->spatialDirScratch.corrM;
         run.filmDevelop.spatialDir.corrC = resources->spatialDirScratch.corrC;
 
+        const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
+            preparedFrame.optics_kernels();
         const cudaError_t dirErr = juicer_cuda_build_spatial_dir(
             &run,
             resources->spatialDirScratch.corrY,
             resources->spatialDirScratch.corrM,
             resources->spatialDirScratch.corrC,
             resources->spatialDirScratch.tmp,
-            resources->spatialDirKernel.weights,
-            resources->spatialDirKernel.radius,
+            opticsKernels.spatialDir.weights,
+            opticsKernels.spatialDir.radius,
             _pCudaStream);
         if (dirErr != cudaSuccess) {
             throw_cuda_stage_fatal("build_spatial_dir", "spatial DIR build failed", dirErr);
@@ -4177,9 +4179,17 @@ void JuicerProcessor::processImagesCUDA() {
                     cudaResources->grainDyeKernel[layer][ch],
                     sigma,
                     opticsError);
+            }
+        }
+
+        const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
+            preparedFrame.optics_kernels();
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                const float sigma = grainSetup.grainDyeSigmaPx[layer][ch];
                 if (sigma > 0.0f) {
-                    run.grainKernels.dyeKernel[layer][ch] = cudaResources->grainDyeKernel[layer][ch].weights;
-                    run.grainKernels.dyeRadius[layer][ch] = cudaResources->grainDyeKernel[layer][ch].radius;
+                    run.grainKernels.dyeKernel[layer][ch] = opticsKernels.grainDye[layer][ch].weights;
+                    run.grainKernels.dyeRadius[layer][ch] = opticsKernels.grainDye[layer][ch].radius;
                 }
             }
         }
@@ -4204,8 +4214,10 @@ void JuicerProcessor::processImagesCUDA() {
                     *sigmaIt,
                     "halation",
                     opticsError);
-                run.halationKernels.halationKernel[i] = cudaResources->halationKernel[i].weights;
-                run.halationKernels.halationRadius[i] = cudaResources->halationKernel[i].radius;
+                const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
+                    preparedFrame.optics_kernels();
+                run.halationKernels.halationKernel[i] = opticsKernels.halation[i].weights;
+                run.halationKernels.halationRadius[i] = opticsKernels.halation[i].radius;
             }
             if (*scatterStrengthIt > 0.0f && *scatterSigmaIt > 0.0f) {
                 ensure_halation_kernel_or_throw(
@@ -4213,8 +4225,10 @@ void JuicerProcessor::processImagesCUDA() {
                     *scatterSigmaIt,
                     "halation scatter",
                     opticsError);
-                run.halationKernels.scatteringKernel[i] = cudaResources->halationScatterKernel[i].weights;
-                run.halationKernels.scatteringRadius[i] = cudaResources->halationScatterKernel[i].radius;
+                const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
+                    preparedFrame.optics_kernels();
+                run.halationKernels.scatteringKernel[i] = opticsKernels.halationScatter[i].weights;
+                run.halationKernels.scatteringRadius[i] = opticsKernels.halationScatter[i].radius;
             }
         }
     };
@@ -4252,9 +4266,11 @@ void JuicerProcessor::processImagesCUDA() {
                 sigma_if_enabled(wantGrainBlur, grainBlurSigmaPx),
                 "grain blur",
                 opticsError);
+            const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
+                preparedFrame.optics_kernels();
             if (wantGrainBlur) {
-                run.grainKernels.blurKernel = cudaResources->grainBlurKernel.weights;
-                run.grainKernels.blurRadius = cudaResources->grainBlurKernel.radius;
+                run.grainKernels.blurKernel = opticsKernels.grainBlur.weights;
+                run.grainKernels.blurRadius = opticsKernels.grainBlur.radius;
             }
             if (wantGrainMix) {
                 ensure_gaussian_kernel_or_throw(
@@ -4267,10 +4283,12 @@ void JuicerProcessor::processImagesCUDA() {
                     grainSetup.grainBlurSigmaCoarsePx,
                     "grain coarse blur",
                     opticsError);
-                run.grainKernels.blurKernelMid = cudaResources->grainBlurKernelMid.weights;
-                run.grainKernels.blurRadiusMid = cudaResources->grainBlurKernelMid.radius;
-                run.grainKernels.blurKernelCoarse = cudaResources->grainBlurKernelCoarse.weights;
-                run.grainKernels.blurRadiusCoarse = cudaResources->grainBlurKernelCoarse.radius;
+                const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView mixedOpticsKernels =
+                    preparedFrame.optics_kernels();
+                run.grainKernels.blurKernelMid = mixedOpticsKernels.grainBlurMid.weights;
+                run.grainKernels.blurRadiusMid = mixedOpticsKernels.grainBlurMid.radius;
+                run.grainKernels.blurKernelCoarse = mixedOpticsKernels.grainBlurCoarse.weights;
+                run.grainKernels.blurRadiusCoarse = mixedOpticsKernels.grainBlurCoarse.radius;
             }
 
             if (wantGrainSublayers) {
@@ -4630,6 +4648,8 @@ void JuicerProcessor::processImagesCUDA() {
                                              std::uint64_t glareSeedValue,
                                              float glarePercentValue,
                                              float glareRoughnessValue) -> cudaError_t {
+        const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
+            preparedFrame.optics_kernels();
         return juicer_cuda_negative_pipeline_optics(
             &run,
             cudaResources->scannerScratch.rgbR,
@@ -4642,18 +4662,18 @@ void JuicerProcessor::processImagesCUDA() {
             cudaResources->scannerScratch.grainTmpShared,
             cudaResources->scannerScratch.grainTmpMid,
             cudaResources->scannerScratch.grainTmpCoarse,
-            cudaResources->scannerLensBlurKernel.weights,
-            cudaResources->scannerLensBlurKernel.radius,
-            cudaResources->scannerUnsharpKernel.weights,
-            cudaResources->scannerUnsharpKernel.radius,
+            opticsKernels.scannerLensBlur.weights,
+            opticsKernels.scannerLensBlur.radius,
+            opticsKernels.scannerUnsharp.weights,
+            opticsKernels.scannerUnsharp.radius,
             scannerOptics.unsharpAmount,
             win.x1,
             win.y1,
             glareSeedValue,
             glarePercentValue,
             glareRoughnessValue,
-            cudaResources->scannerGlareKernel.weights,
-            cudaResources->scannerGlareKernel.radius,
+            opticsKernels.scannerGlare.weights,
+            opticsKernels.scannerGlare.radius,
             _pCudaStream);
     };
 
@@ -4661,6 +4681,8 @@ void JuicerProcessor::processImagesCUDA() {
                                           std::uint64_t glareSeedValue,
                                           float glarePercentValue,
                                           float glareRoughnessValue) -> cudaError_t {
+        const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
+            preparedFrame.optics_kernels();
         return juicer_cuda_print_pipeline_optics(
             &run,
             cudaResources->scannerScratch.rgbR,
@@ -4673,18 +4695,18 @@ void JuicerProcessor::processImagesCUDA() {
             cudaResources->scannerScratch.grainTmpShared,
             cudaResources->scannerScratch.grainTmpMid,
             cudaResources->scannerScratch.grainTmpCoarse,
-            cudaResources->scannerLensBlurKernel.weights,
-            cudaResources->scannerLensBlurKernel.radius,
-            cudaResources->scannerUnsharpKernel.weights,
-            cudaResources->scannerUnsharpKernel.radius,
+            opticsKernels.scannerLensBlur.weights,
+            opticsKernels.scannerLensBlur.radius,
+            opticsKernels.scannerUnsharp.weights,
+            opticsKernels.scannerUnsharp.radius,
             scannerOptics.unsharpAmount,
             win.x1,
             win.y1,
             glareSeedValue,
             glarePercentValue,
             glareRoughnessValue,
-            cudaResources->scannerGlareKernel.weights,
-            cudaResources->scannerGlareKernel.radius,
+            opticsKernels.scannerGlare.weights,
+            opticsKernels.scannerGlare.radius,
             _pCudaStream);
     };
 

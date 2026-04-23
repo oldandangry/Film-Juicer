@@ -838,6 +838,38 @@ namespace JuicerProcess {
         return bundle;
     }
 
+    Root::PreparedCudaFrame::OpticsKernelView Root::PreparedCudaFrame::optics_kernels() const noexcept {
+        OpticsKernelView kernels{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return kernels;
+        }
+
+        const JuicerCuda::Resources& resources = *_state->resources;
+        kernels.spatialDir = { resources.spatialDirKernel.weights, resources.spatialDirKernel.radius };
+        kernels.scannerLensBlur = { resources.scannerLensBlurKernel.weights, resources.scannerLensBlurKernel.radius };
+        kernels.scannerUnsharp = { resources.scannerUnsharpKernel.weights, resources.scannerUnsharpKernel.radius };
+        kernels.scannerGlare = { resources.scannerGlareKernel.weights, resources.scannerGlareKernel.radius };
+        kernels.grainBlur = { resources.grainBlurKernel.weights, resources.grainBlurKernel.radius };
+        kernels.grainBlurMid = { resources.grainBlurKernelMid.weights, resources.grainBlurKernelMid.radius };
+        kernels.grainBlurCoarse = { resources.grainBlurKernelCoarse.weights, resources.grainBlurKernelCoarse.radius };
+        for (int layer = 0; layer < 3; ++layer) {
+            for (int ch = 0; ch < 3; ++ch) {
+                kernels.grainDye[layer][ch] = {
+                    resources.grainDyeKernel[layer][ch].weights,
+                    resources.grainDyeKernel[layer][ch].radius
+                };
+            }
+        }
+        for (int i = 0; i < 3; ++i) {
+            kernels.halation[i] = { resources.halationKernel[i].weights, resources.halationKernel[i].radius };
+            kernels.halationScatter[i] = {
+                resources.halationScatterKernel[i].weights,
+                resources.halationScatterKernel[i].radius
+            };
+        }
+        return kernels;
+    }
+
     JuicerCuda::Resources* Root::PreparedCudaFrame::runtime_resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }

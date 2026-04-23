@@ -196,6 +196,24 @@ namespace JuicerProcess {
                 PrintRuntimeView print{};
             };
 
+            struct KernelView {
+                const float* weights = nullptr;
+                int radius = 0;
+            };
+
+            struct OpticsKernelView {
+                KernelView spatialDir{};
+                KernelView scannerLensBlur{};
+                KernelView scannerUnsharp{};
+                KernelView scannerGlare{};
+                KernelView grainBlur{};
+                KernelView grainBlurMid{};
+                KernelView grainBlurCoarse{};
+                KernelView grainDye[3][3] = {};
+                KernelView halation[3] = {};
+                KernelView halationScatter[3] = {};
+            };
+
             PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
@@ -203,6 +221,7 @@ namespace JuicerProcess {
             WorkspaceLeaseMarker bind_workspace_request(const WorkspaceRequest& request) const noexcept;
             GrainStaticAssets grain_static_assets() const noexcept;
             DurableBundleView durable_bundle() const noexcept;
+            OpticsKernelView optics_kernels() const noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             bool prepare_current_medium(
