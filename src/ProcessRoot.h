@@ -224,6 +224,14 @@ namespace JuicerProcess {
                 bool active = false;
             };
 
+            struct SpatialDirScratchView {
+                float* corrY = nullptr;
+                float* corrM = nullptr;
+                float* corrC = nullptr;
+                float* tmp = nullptr;
+                bool active = false;
+            };
+
             PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
@@ -233,6 +241,7 @@ namespace JuicerProcess {
             DurableBundleView durable_bundle() const noexcept;
             OpticsKernelView optics_kernels() const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
+            SpatialDirScratchView spatial_dir_scratch() const noexcept;
             void mark_auto_exposure_weights_built(int weightsWidth, int weightsHeight) noexcept;
             void mark_auto_exposure_metered(std::uint64_t keyHash, double sliderEV) noexcept;
             void mark_auto_exposure_slider_updated(double sliderEV) noexcept;

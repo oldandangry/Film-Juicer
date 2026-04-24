@@ -3925,18 +3925,26 @@ void JuicerProcessor::processImagesCUDA() {
             throw_prepared_frame_failure(dirError);
         }
 
-        run.filmDevelop.spatialDir.corrY = resources->spatialDirScratch.corrY;
-        run.filmDevelop.spatialDir.corrM = resources->spatialDirScratch.corrM;
-        run.filmDevelop.spatialDir.corrC = resources->spatialDirScratch.corrC;
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView spatialDirScratch =
+            preparedFrame.spatial_dir_scratch();
+        if (!spatialDirScratch.active) {
+            trace_and_throw_cuda_policy_fatal(
+                "CUDA spatial DIR scratch missing",
+                "spatial DIR scratch missing after allocation");
+        }
+
+        run.filmDevelop.spatialDir.corrY = spatialDirScratch.corrY;
+        run.filmDevelop.spatialDir.corrM = spatialDirScratch.corrM;
+        run.filmDevelop.spatialDir.corrC = spatialDirScratch.corrC;
 
         const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
             preparedFrame.optics_kernels();
         const cudaError_t dirErr = juicer_cuda_build_spatial_dir(
             &run,
-            resources->spatialDirScratch.corrY,
-            resources->spatialDirScratch.corrM,
-            resources->spatialDirScratch.corrC,
-            resources->spatialDirScratch.tmp,
+            spatialDirScratch.corrY,
+            spatialDirScratch.corrM,
+            spatialDirScratch.corrC,
+            spatialDirScratch.tmp,
             opticsKernels.spatialDir.weights,
             opticsKernels.spatialDir.radius,
             _pCudaStream);

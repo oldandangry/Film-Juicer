@@ -934,6 +934,21 @@ namespace JuicerProcess {
         _state->resources->autoExposureSliderEV = sliderEV;
     }
 
+    Root::PreparedCudaFrame::SpatialDirScratchView Root::PreparedCudaFrame::spatial_dir_scratch() const noexcept {
+        SpatialDirScratchView view{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return view;
+        }
+
+        const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch = _state->resources->spatialDirScratch;
+        view.corrY = scratch.corrY;
+        view.corrM = scratch.corrM;
+        view.corrC = scratch.corrC;
+        view.tmp = scratch.tmp;
+        view.active = view.corrY && view.corrM && view.corrC && view.tmp;
+        return view;
+    }
+
     JuicerCuda::Resources* Root::PreparedCudaFrame::runtime_resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }
