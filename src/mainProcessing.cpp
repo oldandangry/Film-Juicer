@@ -2748,18 +2748,15 @@ void JuicerProcessor::processImagesCUDA() {
         }
     } contextLossRecoveryScope{ &run_pending_context_loss_recovery_noexcept };
 
-    auto record_cuda_use = [&](JuicerCuda::Resources* resources) {
-        if (!resources) {
-            return;
-        }
-        JuicerCuda::record_use(*resources, _pCudaStream);
+    auto record_cuda_use = [&](JuicerProcess::Root::PreparedCudaFrame& frame) {
+        frame.record_use(_pCudaStream);
     };
 
-    auto abort_cuda_path_if_requested = [&](JuicerCuda::Resources* resources) -> bool {
+    auto abort_cuda_path_if_requested = [&](JuicerProcess::Root::PreparedCudaFrame& frame) -> bool {
         if (!should_abort_effect()) {
             return false;
         }
-        record_cuda_use(resources);
+        record_cuda_use(frame);
         return true;
     };
 
@@ -2984,7 +2981,7 @@ void JuicerProcessor::processImagesCUDA() {
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
-    if (abort_cuda_path_if_requested(cudaResources)) {
+    if (abort_cuda_path_if_requested(preparedFrame)) {
         return;
     }
 
@@ -3034,7 +3031,7 @@ void JuicerProcessor::processImagesCUDA() {
                 }
             }
 
-            record_cuda_use(cudaResources);
+            record_cuda_use(preparedFrame);
         }
     }
 #endif
@@ -3098,7 +3095,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (err != cudaSuccess) {
             throw_cuda_stage_fatal("copy_alpha_memcpy2d", "cudaMemcpy2DAsync failed", err);
         }
-        record_cuda_use(cudaResources);
+        record_cuda_use(preparedFrame);
         return;
     }
 
@@ -3819,14 +3816,13 @@ void JuicerProcessor::processImagesCUDA() {
         }
     };
 
-    auto finalize_cuda_pipeline_tail_or_abort = [&](JuicerCuda::Resources* resources,
-                                                    const JuicerCuda::PipelineRunParams& run,
+    auto finalize_cuda_pipeline_tail_or_abort = [&](const JuicerCuda::PipelineRunParams& run,
                                                     cudaStream_t pipelineStream) -> bool {
-        if (abort_cuda_path_if_requested(resources)) {
+        if (abort_cuda_path_if_requested(preparedFrame)) {
             return false;
         }
         finalize_scan_error_stage(run, pipelineStream);
-        record_cuda_use(resources);
+        record_cuda_use(preparedFrame);
         return true;
     };
 
@@ -3894,8 +3890,7 @@ void JuicerProcessor::processImagesCUDA() {
         return prepare_scan_error_stage(run, stream);
     };
 
-    auto setup_spatial_dir_stage = [&](JuicerCuda::Resources* resources,
-                                       JuicerCuda::PipelineRunParams& run,
+    auto setup_spatial_dir_stage = [&](JuicerCuda::PipelineRunParams& run,
                                        const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                        int frameWidth,
                                        int frameHeight,
@@ -3907,7 +3902,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!useSpatialDir) {
             return true;
         }
-        if (abort_cuda_path_if_requested(resources)) {
+        if (abort_cuda_path_if_requested(preparedFrame)) {
             return false;
         }
 
@@ -4078,7 +4073,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.gateDustAmount,
             run.grain.gateScratchAmount);
         if (gateHash != opticsScratch.gateMaskHash) {
-            if (abort_cuda_path_if_requested(resources)) {
+            if (abort_cuda_path_if_requested(preparedFrame)) {
                 return false;
             }
             cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
@@ -4634,7 +4629,6 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto prepare_common_cuda_pipeline_stages = [&](JuicerCuda::PipelineRunParams& run,
-                                                   JuicerCuda::Resources* resources,
                                                    const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                                    bool useSpatialDIR,
                                                    bool negativeMedium) -> bool {
@@ -4643,7 +4637,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!setup_scan_stage_resources(run, workspace, stream, negativeMedium)) {
             return false;
         }
-        return setup_spatial_dir_stage(resources, run, workspace, width, height, useSpatialDIR);
+        return setup_spatial_dir_stage(run, workspace, width, height, useSpatialDIR);
     };
 
     auto initialize_medium_pipeline_run = [&](JuicerCuda::PipelineRunParams& run,
@@ -4653,12 +4647,10 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto prepare_common_cuda_pipeline_stages_for_medium = [&](JuicerCuda::PipelineRunParams& run,
-                                              JuicerCuda::Resources* resources,
                                               const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                               bool negativeMedium) -> bool {
         return prepare_common_cuda_pipeline_stages(
             run,
-            resources,
             workspace,
             useSpatialDIR,
             negativeMedium);
@@ -4782,7 +4774,7 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto begin_medium_pipeline_or_abort = [&](const char* stageLabel) -> bool {
         ensure_cuda_resources_or_throw(cudaResources, stageLabel);
-        return !abort_cuda_path_if_requested(cudaResources);
+        return !abort_cuda_path_if_requested(preparedFrame);
     };
 
     auto checkpoint_medium_scratch_phase_or_throw = [&](const char* stageTag,
@@ -4840,7 +4832,6 @@ void JuicerProcessor::processImagesCUDA() {
             launchStageTag,
             launchFailurePrefix);
         return finalize_cuda_pipeline_tail_or_abort(
-            cudaResources,
             run,
             stream);
     };
@@ -4852,7 +4843,7 @@ void JuicerProcessor::processImagesCUDA() {
                                                             const char* launchStageTag,
                                                             const char* launchFailurePrefix,
                                                             auto&& launchOpticsKernel) -> bool {
-        if (abort_cuda_path_if_requested(cudaResources)) {
+        if (abort_cuda_path_if_requested(preparedFrame)) {
             return false;
         }
         const PipelineLaunchResult launchResult = launch_pipeline_with_optional_optics(
@@ -4930,7 +4921,6 @@ void JuicerProcessor::processImagesCUDA() {
 
             if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
-                    cudaResources,
                     workspace,
                     true)) {
                 return;
@@ -5001,7 +4991,6 @@ void JuicerProcessor::processImagesCUDA() {
 
             if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
-                    cudaResources,
                     workspace,
                     false)) {
                 return;

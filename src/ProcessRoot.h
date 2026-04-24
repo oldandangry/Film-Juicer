@@ -266,6 +266,7 @@ namespace JuicerProcess {
             void mark_auto_exposure_metered(std::uint64_t keyHash, double sliderEV) noexcept;
             void mark_auto_exposure_slider_updated(double sliderEV) noexcept;
             void mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept;
+            void record_use(void* cudaStreamOpaque) noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             bool prepare_current_medium(

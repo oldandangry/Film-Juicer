@@ -994,6 +994,13 @@ namespace JuicerProcess {
         _state->resources->scannerScratch.gateMaskHash = gateMaskHash;
     }
 
+    void Root::PreparedCudaFrame::record_use(void* cudaStreamOpaque) noexcept {
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return;
+        }
+        JuicerCuda::record_use(*_state->resources, cudaStreamOpaque);
+    }
+
     JuicerCuda::Resources* Root::PreparedCudaFrame::runtime_resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }
