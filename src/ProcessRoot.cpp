@@ -319,6 +319,16 @@ namespace JuicerProcess {
             workspace._request.needGateMask);
     }
 
+    bool Root::PreparedCudaFrame::workspace_marker_matches_current_frame(
+        const WorkspaceLeaseMarker& workspace) const noexcept {
+        return _state &&
+               _state->resources &&
+               _state->transaction.active &&
+               !_state->transaction.committed &&
+               workspace.active() &&
+               workspace.lease_generation() == _state->transaction.leaseGeneration;
+    }
+
     bool Root::PreparedCudaFrame::validate_workspace_lease_marker(
         const WorkspaceLeaseMarker& workspace,
         std::string& outError) const {
@@ -934,9 +944,10 @@ namespace JuicerProcess {
         _state->resources->autoExposureSliderEV = sliderEV;
     }
 
-    Root::PreparedCudaFrame::SpatialDirScratchView Root::PreparedCudaFrame::spatial_dir_scratch() const noexcept {
+    Root::PreparedCudaFrame::SpatialDirScratchView Root::PreparedCudaFrame::spatial_dir_scratch(
+        const WorkspaceLeaseMarker& workspace) const noexcept {
         SpatialDirScratchView view{};
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+        if (!workspace_marker_matches_current_frame(workspace) || !workspace._request.needSpatialDir) {
             return view;
         }
 
@@ -949,9 +960,10 @@ namespace JuicerProcess {
         return view;
     }
 
-    Root::PreparedCudaFrame::ScannerOpticsScratchView Root::PreparedCudaFrame::scanner_optics_scratch() const noexcept {
+    Root::PreparedCudaFrame::ScannerOpticsScratchView Root::PreparedCudaFrame::scanner_optics_scratch(
+        const WorkspaceLeaseMarker& workspace) const noexcept {
         ScannerOpticsScratchView view{};
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+        if (!workspace_marker_matches_current_frame(workspace) || !workspace._request.needOptics) {
             return view;
         }
 

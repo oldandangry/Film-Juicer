@@ -260,8 +260,8 @@ namespace JuicerProcess {
             DurableBundleView durable_bundle() const noexcept;
             OpticsKernelView optics_kernels() const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
-            SpatialDirScratchView spatial_dir_scratch() const noexcept;
-            ScannerOpticsScratchView scanner_optics_scratch() const noexcept;
+            SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
+            ScannerOpticsScratchView scanner_optics_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             void mark_auto_exposure_weights_built(int weightsWidth, int weightsHeight) noexcept;
             void mark_auto_exposure_metered(std::uint64_t keyHash, double sliderEV) noexcept;
             void mark_auto_exposure_slider_updated(double sliderEV) noexcept;
@@ -342,6 +342,7 @@ namespace JuicerProcess {
 
             static JuicerCuda::ResourceManager::ScratchRequestDescriptor make_scratch_request_descriptor(
                 const WorkspaceLeaseMarker& workspace) noexcept;
+            bool workspace_marker_matches_current_frame(const WorkspaceLeaseMarker& workspace) const noexcept;
             bool validate_workspace_lease_marker(
                 const WorkspaceLeaseMarker& workspace,
                 std::string& outError) const;

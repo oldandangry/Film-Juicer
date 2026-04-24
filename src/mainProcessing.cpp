@@ -3926,7 +3926,7 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView spatialDirScratch =
-            preparedFrame.spatial_dir_scratch();
+            preparedFrame.spatial_dir_scratch(workspace);
         if (!spatialDirScratch.active) {
             trace_and_throw_cuda_policy_fatal(
                 "CUDA spatial DIR scratch missing",
@@ -4042,9 +4042,10 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto scanner_optics_scratch_or_throw =
-        [&]() -> JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView {
+        [&](const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace)
+            -> JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView {
             const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView scratch =
-                preparedFrame.scanner_optics_scratch();
+                preparedFrame.scanner_optics_scratch(workspace);
             if (!scratch.active) {
                 trace_and_throw_cuda_policy_fatal(
                     "CUDA scanner optics scratch missing",
@@ -4055,13 +4056,14 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto setup_gate_mask_if_needed = [&](JuicerCuda::PipelineRunParams& run,
                                          JuicerCuda::Resources* resources,
+                                         const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                          bool needGateMask,
                                          const char* stageTag) -> bool {
         run.grain.gateMask = nullptr;
         run.grain.gateMaskWidth = 0;
         run.grain.gateMaskHeight = 0;
         const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView opticsScratch =
-            scanner_optics_scratch_or_throw();
+            scanner_optics_scratch_or_throw(workspace);
         if (!(needGateMask && resources && opticsScratch.hasGateMask)) {
             return true;
         }
@@ -4440,6 +4442,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!setup_gate_mask_if_needed(
                 run,
                 cudaResources,
+                workspace,
                 opticsIntent.needGateMask,
                 gateStageTag)) {
             result.shouldReturnEarly = true;
@@ -4662,13 +4665,14 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto launch_negative_optics_kernel = [&](JuicerCuda::PipelineRunParams& run,
+                                             const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                              std::uint64_t glareSeedValue,
                                              float glarePercentValue,
                                              float glareRoughnessValue) -> cudaError_t {
         const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
             preparedFrame.optics_kernels();
         const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView opticsScratch =
-            scanner_optics_scratch_or_throw();
+            scanner_optics_scratch_or_throw(workspace);
         return juicer_cuda_negative_pipeline_optics(
             &run,
             opticsScratch.rgbR,
@@ -4697,13 +4701,14 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto launch_print_optics_kernel = [&](JuicerCuda::PipelineRunParams& run,
+                                          const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                           std::uint64_t glareSeedValue,
                                           float glarePercentValue,
                                           float glareRoughnessValue) -> cudaError_t {
         const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
             preparedFrame.optics_kernels();
         const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView opticsScratch =
-            scanner_optics_scratch_or_throw();
+            scanner_optics_scratch_or_throw(workspace);
         return juicer_cuda_print_pipeline_optics(
             &run,
             opticsScratch.rgbR,
@@ -4867,6 +4872,7 @@ void JuicerProcessor::processImagesCUDA() {
             [&](std::uint64_t glareSeedValue, float glarePercentValue, float glareRoughnessValue) {
                 return launchOpticsKernel(
                     run,
+                    workspace,
                     glareSeedValue,
                     glarePercentValue,
                     glareRoughnessValue);
