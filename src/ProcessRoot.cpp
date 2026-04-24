@@ -949,6 +949,39 @@ namespace JuicerProcess {
         return view;
     }
 
+    Root::PreparedCudaFrame::ScannerOpticsScratchView Root::PreparedCudaFrame::scanner_optics_scratch() const noexcept {
+        ScannerOpticsScratchView view{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return view;
+        }
+
+        const JuicerCuda::Resources::DeviceOpticsScratch& scratch = _state->resources->scannerScratch;
+        view.rgbR = scratch.rgbR;
+        view.rgbG = scratch.rgbG;
+        view.rgbB = scratch.rgbB;
+        view.tmp = scratch.tmp;
+        view.blurred = scratch.blurred;
+        view.aux = scratch.aux;
+        view.grainTmp = scratch.grainTmp;
+        view.grainTmpShared = scratch.grainTmpShared;
+        view.grainTmpMid = scratch.grainTmpMid;
+        view.grainTmpCoarse = scratch.grainTmpCoarse;
+        view.gateMask = scratch.gateMask;
+        view.gateMaskWidth = scratch.gateWidth;
+        view.gateMaskHeight = scratch.gateHeight;
+        view.gateMaskHash = scratch.gateMaskHash;
+        view.active = view.rgbR && view.rgbG && view.rgbB && view.tmp;
+        view.hasGateMask = view.gateMask && view.gateMaskWidth > 0 && view.gateMaskHeight > 0;
+        return view;
+    }
+
+    void Root::PreparedCudaFrame::mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept {
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return;
+        }
+        _state->resources->scannerScratch.gateMaskHash = gateMaskHash;
+    }
+
     JuicerCuda::Resources* Root::PreparedCudaFrame::runtime_resources() const noexcept {
         return _state ? _state->resources : nullptr;
     }

@@ -4041,6 +4041,18 @@ void JuicerProcessor::processImagesCUDA() {
         throw_cuda_stage_fatal(stageTag, "gate defect mask build failed", gateErr);
     };
 
+    auto scanner_optics_scratch_or_throw =
+        [&]() -> JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView {
+            const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView scratch =
+                preparedFrame.scanner_optics_scratch();
+            if (!scratch.active) {
+                trace_and_throw_cuda_policy_fatal(
+                    "CUDA scanner optics scratch missing",
+                    "scanner optics scratch missing after allocation");
+            }
+            return scratch;
+        };
+
     auto setup_gate_mask_if_needed = [&](JuicerCuda::PipelineRunParams& run,
                                          JuicerCuda::Resources* resources,
                                          bool needGateMask,
@@ -4048,7 +4060,9 @@ void JuicerProcessor::processImagesCUDA() {
         run.grain.gateMask = nullptr;
         run.grain.gateMaskWidth = 0;
         run.grain.gateMaskHeight = 0;
-        if (!(needGateMask && resources && resources->scannerScratch.gateMask)) {
+        const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView opticsScratch =
+            scanner_optics_scratch_or_throw();
+        if (!(needGateMask && resources && opticsScratch.hasGateMask)) {
             return true;
         }
 
@@ -4061,25 +4075,25 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.pixelSizeUm,
             run.grain.gateDustAmount,
             run.grain.gateScratchAmount);
-        if (gateHash != resources->scannerScratch.gateMaskHash) {
+        if (gateHash != opticsScratch.gateMaskHash) {
             if (abort_cuda_path_if_requested(resources)) {
                 return false;
             }
             cudaError_t gateErr = juicer_cuda_build_gate_defect_mask(
                 &run,
-                resources->scannerScratch.gateMask,
-                resources->scannerScratch.gateWidth,
-                resources->scannerScratch.gateHeight,
+                opticsScratch.gateMask,
+                opticsScratch.gateMaskWidth,
+                opticsScratch.gateMaskHeight,
                 _pCudaStream);
             if (gateErr != cudaSuccess) {
                 throw_cuda_gate_mask_build_failure(stageTag, gateErr);
             }
-            resources->scannerScratch.gateMaskHash = gateHash;
+            preparedFrame.mark_gate_mask_built(gateHash);
         }
 
-        run.grain.gateMask = resources->scannerScratch.gateMask;
-        run.grain.gateMaskWidth = resources->scannerScratch.gateWidth;
-        run.grain.gateMaskHeight = resources->scannerScratch.gateHeight;
+        run.grain.gateMask = opticsScratch.gateMask;
+        run.grain.gateMaskWidth = opticsScratch.gateMaskWidth;
+        run.grain.gateMaskHeight = opticsScratch.gateMaskHeight;
         return true;
     };
 
@@ -4653,18 +4667,20 @@ void JuicerProcessor::processImagesCUDA() {
                                              float glareRoughnessValue) -> cudaError_t {
         const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
             preparedFrame.optics_kernels();
+        const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView opticsScratch =
+            scanner_optics_scratch_or_throw();
         return juicer_cuda_negative_pipeline_optics(
             &run,
-            cudaResources->scannerScratch.rgbR,
-            cudaResources->scannerScratch.rgbG,
-            cudaResources->scannerScratch.rgbB,
-            cudaResources->scannerScratch.tmp,
-            cudaResources->scannerScratch.blurred,
-            cudaResources->scannerScratch.aux,
-            cudaResources->scannerScratch.grainTmp,
-            cudaResources->scannerScratch.grainTmpShared,
-            cudaResources->scannerScratch.grainTmpMid,
-            cudaResources->scannerScratch.grainTmpCoarse,
+            opticsScratch.rgbR,
+            opticsScratch.rgbG,
+            opticsScratch.rgbB,
+            opticsScratch.tmp,
+            opticsScratch.blurred,
+            opticsScratch.aux,
+            opticsScratch.grainTmp,
+            opticsScratch.grainTmpShared,
+            opticsScratch.grainTmpMid,
+            opticsScratch.grainTmpCoarse,
             opticsKernels.scannerLensBlur.weights,
             opticsKernels.scannerLensBlur.radius,
             opticsKernels.scannerUnsharp.weights,
@@ -4686,18 +4702,20 @@ void JuicerProcessor::processImagesCUDA() {
                                           float glareRoughnessValue) -> cudaError_t {
         const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
             preparedFrame.optics_kernels();
+        const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView opticsScratch =
+            scanner_optics_scratch_or_throw();
         return juicer_cuda_print_pipeline_optics(
             &run,
-            cudaResources->scannerScratch.rgbR,
-            cudaResources->scannerScratch.rgbG,
-            cudaResources->scannerScratch.rgbB,
-            cudaResources->scannerScratch.tmp,
-            cudaResources->scannerScratch.blurred,
-            cudaResources->scannerScratch.aux,
-            cudaResources->scannerScratch.grainTmp,
-            cudaResources->scannerScratch.grainTmpShared,
-            cudaResources->scannerScratch.grainTmpMid,
-            cudaResources->scannerScratch.grainTmpCoarse,
+            opticsScratch.rgbR,
+            opticsScratch.rgbG,
+            opticsScratch.rgbB,
+            opticsScratch.tmp,
+            opticsScratch.blurred,
+            opticsScratch.aux,
+            opticsScratch.grainTmp,
+            opticsScratch.grainTmpShared,
+            opticsScratch.grainTmpMid,
+            opticsScratch.grainTmpCoarse,
             opticsKernels.scannerLensBlur.weights,
             opticsKernels.scannerLensBlur.radius,
             opticsKernels.scannerUnsharp.weights,

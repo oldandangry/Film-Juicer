@@ -232,6 +232,25 @@ namespace JuicerProcess {
                 bool active = false;
             };
 
+            struct ScannerOpticsScratchView {
+                float* rgbR = nullptr;
+                float* rgbG = nullptr;
+                float* rgbB = nullptr;
+                float* tmp = nullptr;
+                float* blurred = nullptr;
+                float* aux = nullptr;
+                float* grainTmp = nullptr;
+                float* grainTmpShared = nullptr;
+                float* grainTmpMid = nullptr;
+                float* grainTmpCoarse = nullptr;
+                float* gateMask = nullptr;
+                int gateMaskWidth = 0;
+                int gateMaskHeight = 0;
+                std::uint64_t gateMaskHash = 0;
+                bool active = false;
+                bool hasGateMask = false;
+            };
+
             PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
@@ -242,9 +261,11 @@ namespace JuicerProcess {
             OpticsKernelView optics_kernels() const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
             SpatialDirScratchView spatial_dir_scratch() const noexcept;
+            ScannerOpticsScratchView scanner_optics_scratch() const noexcept;
             void mark_auto_exposure_weights_built(int weightsWidth, int weightsHeight) noexcept;
             void mark_auto_exposure_metered(std::uint64_t keyHash, double sliderEV) noexcept;
             void mark_auto_exposure_slider_updated(double sliderEV) noexcept;
+            void mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
             bool prepare_current_medium(
