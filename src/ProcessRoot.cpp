@@ -254,6 +254,7 @@ namespace JuicerProcess {
         JuicerCuda::Resources* grainStaticResources = nullptr;
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
+        void* lastCudaStreamOpaque = nullptr;
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
         bool failureMarksContextLoss = true;
@@ -262,6 +263,12 @@ namespace JuicerProcess {
             failureStageTag = stageTag;
             failurePrefix = prefix;
             failureMarksContextLoss = marksContextLoss;
+        }
+
+        void remember_stream(void* cudaStreamOpaque) noexcept {
+            if (cudaStreamOpaque) {
+                lastCudaStreamOpaque = cudaStreamOpaque;
+            }
         }
 
         bool allocate_auto_exposure_workspace(
@@ -349,7 +356,14 @@ namespace JuicerProcess {
         }
 
         try {
-            bool retiredAll = (resources != nullptr);
+            if (!resources) {
+                outError = "CUDA resources unavailable for frame auto-exposure retire";
+                return false;
+            }
+
+            remember_stream(cudaStreamOpaque);
+            void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
+            bool retiredAll = true;
             auto retire_ptr = [&](auto*& ptr, std::size_t bytes, const char* label) {
                 if (!ptr || !retiredAll) {
                     return;
@@ -360,14 +374,17 @@ namespace JuicerProcess {
                         *resources,
                         raw,
                         bytes,
-                        cudaStreamOpaque,
+                        retireStreamOpaque,
                         label,
                         localError)) {
                     ptr = nullptr;
                     return;
                 }
                 retiredAll = false;
-                if (!localError.empty()) {
+                if (localError.empty()) {
+                    outError = std::string(label ? label : "frame auto-exposure buffer") +
+                        " retire failed";
+                } else {
                     outError = localError;
                 }
             };
@@ -403,7 +420,9 @@ namespace JuicerProcess {
         } catch (...) {
             outError = "frame auto-exposure retire threw";
         }
-        free_auto_exposure_workspace_now();
+        if (outError.empty()) {
+            outError = "frame auto-exposure retire failed";
+        }
         return false;
     }
 
@@ -543,29 +562,48 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        if (!_state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError)) {
+        _state->remember_stream(cudaStreamOpaque);
+        std::string releaseError;
+        if (!_state->release_auto_exposure_workspace_after_use(cudaStreamOpaque, releaseError)) {
+            outError = releaseError.empty() ? "frame auto-exposure retire failed" : releaseError;
+            if (JTRACE_ENABLED(1)) {
+                std::string msg = "frame_auto_exposure_retire_failed finish=1 error=";
+                msg += outError;
+                JTRACE("CUDA", msg);
+            }
             return false;
         }
 
-        std::string releaseError;
-        if (!_state->release_auto_exposure_workspace_after_use(cudaStreamOpaque, releaseError) &&
-            JTRACE_ENABLED(1)) {
-            std::string msg = "frame_auto_exposure_retire_failed";
-            if (!releaseError.empty()) {
-                msg += " error=";
-                msg += releaseError;
-            }
-            JTRACE("CUDA", msg);
+        if (!_state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError)) {
+            return false;
         }
         return true;
     }
 
     void Root::PreparedCudaFrame::abort(const char* reason) noexcept {
+        if (_state) {
+            try {
+                std::string releaseError;
+                if (!_state->release_auto_exposure_workspace_after_use(
+                        _state->lastCudaStreamOpaque,
+                        releaseError) &&
+                    JTRACE_ENABLED(1)) {
+                    std::string msg = "frame_auto_exposure_retire_failed abort=1";
+                    if (reason && reason[0]) {
+                        msg += " reason=";
+                        msg += reason;
+                    }
+                    if (!releaseError.empty()) {
+                        msg += " error=";
+                        msg += releaseError;
+                    }
+                    JTRACE("CUDA", msg);
+                }
+            } catch (...) {
+            }
+        }
         if (_state && _state->root && _state->transaction.active && !_state->transaction.committed) {
             _state->root->rollback_submission(_state->transaction, reason);
-        }
-        if (_state) {
-            _state->free_auto_exposure_workspace_now();
         }
     }
 
@@ -1357,6 +1395,7 @@ namespace JuicerProcess {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             return;
         }
+        _state->remember_stream(cudaStreamOpaque);
         JuicerCuda::record_use(*_state->resources, cudaStreamOpaque);
     }
 
@@ -1617,6 +1656,7 @@ namespace JuicerProcess {
 
         PreparedCudaFrame frame(std::move(state));
         frame._state->root = this;
+        frame._state->remember_stream(cudaStreamOpaque);
         frame._state->set_failure("prepare_frame", "CUDA prepared frame failed");
         if (!begin_submission(frame._state->transaction, snapshot, outError)) {
             frame._state->set_failure("begin_submission", "begin_submission failed");
