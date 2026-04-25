@@ -350,7 +350,7 @@ namespace JuicerCuda {
 
         float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
         bool printPreflashValid = false;
-        std::uint64_t printPreflashBuildCounter = 0;
+        std::uint64_t printPreflashKeyHash = 0;
         int printPreflashShapeK = 0;
 
         // Cached enlarger illuminant filtered by dichroic Y/M/C for the current print params.
@@ -369,11 +369,11 @@ namespace JuicerCuda {
         float* hanatosLut = nullptr;
         int hanatosN = 0;
 
-        // Hanatos LUT preintegrated with per-instance sensitivities.
+        // Hanatos LUT preintegrated with recipe sensitivities.
         // Layout: ((x*N + y) * 4 + c), c=0..2 (RGB), c=3 unused/padding.
         float* hanatosLutIntegrated = nullptr;
         int hanatosNIntegrated = 0;
-        std::uint64_t hanatosIntegratedBuildCounter = 0;
+        std::uint64_t hanatosIntegratedKeyHash = 0;
 
         // Device-side flag for scan-stage non-finite detection (set by kernels).
         int* scanErrorFlag = nullptr;

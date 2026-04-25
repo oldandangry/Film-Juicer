@@ -1028,7 +1028,7 @@ namespace JuicerCuda {
         }
 #endif
         resources.hanatosNIntegrated = 0;
-        resources.hanatosIntegratedBuildCounter = 0;
+        resources.hanatosIntegratedKeyHash = 0;
     }
 
     static void free_mallett_basis(Resources& resources) noexcept {
@@ -1071,7 +1071,7 @@ namespace JuicerCuda {
 
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
-        resources.printPreflashBuildCounter = 0;
+        resources.printPreflashKeyHash = 0;
         resources.printPreflashShapeK = 0;
     }
 
@@ -1113,7 +1113,7 @@ namespace JuicerCuda {
 
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
-        resources.printPreflashBuildCounter = 0;
+        resources.printPreflashKeyHash = 0;
         resources.printPreflashShapeK = 0;
         return true;
 #endif

@@ -1227,8 +1227,12 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
     bool coreUpToDate = false;
     bool dirUpToDate = false;
     bool needHanatosUpload = false;
+    bool needHanatosRetire = false;
     bool needHanatosIntegratedUpload = false;
+    bool needHanatosIntegratedRetire = false;
     bool needMallettUpload = false;
+    bool needMallettRetire = false;
+    bool needAuxiliaryPackageUpdate = false;
     std::uint64_t hanatosUploadCount = 0;
     std::uint64_t hanatosIntegratedUploadCount = 0;
     std::uint64_t mallettUploadCount = 0;
@@ -1261,12 +1265,22 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
         dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
         needHanatosUpload = wantHanatos &&
                             (!resources.hanatosLut || resources.hanatosN != hanatosN);
+        needHanatosRetire = !wantHanatos && resources.hanatosLut;
         needHanatosIntegratedUpload = wantHanatosIntegrated &&
                                       ((!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != hanatosN) ||
-                                       (resources.hanatosIntegratedBuildCounter != ws.buildCounter));
+                                       (resources.hanatosIntegratedKeyHash != wsCoreHash));
+        needHanatosIntegratedRetire = !wantHanatosIntegrated && resources.hanatosLutIntegrated;
         needMallettUpload = wantMallett &&
                             (!resources.mallettBasis || resources.mallettBasisK != mallettK);
-        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads) {
+        needMallettRetire = !wantMallett && resources.mallettBasis;
+        needAuxiliaryPackageUpdate =
+            needHanatosUpload ||
+            needHanatosRetire ||
+            needHanatosIntegratedUpload ||
+            needHanatosIntegratedRetire ||
+            needMallettUpload ||
+            needMallettRetire;
+        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads && !needAuxiliaryPackageUpdate) {
             if (overflow) {
                 estimate.growthBytes = std::numeric_limits<std::uint64_t>::max();
                 estimate.reservationBytes = std::numeric_limits<std::uint64_t>::max();
@@ -1345,7 +1359,7 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
         if (needHanatosUpload) {
             add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimate.growthBytes, overflow);
         }
-        if (wantHanatosIntegrated &&
+        if (needHanatosIntegratedUpload &&
             (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != hanatosN)) {
             add_count_upload_estimate_bytes(
                 hanatosIntegratedUploadCount,
@@ -1400,6 +1414,18 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
         }
     }
 
+    if (coreUpToDate) {
+        if (needHanatosUpload) {
+            add_count_upload_estimate_bytes(hanatosUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+        if (needHanatosIntegratedUpload) {
+            add_count_upload_estimate_bytes(hanatosIntegratedUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+        if (needMallettUpload) {
+            add_count_upload_estimate_bytes(mallettUploadCount, sizeof(float), estimate.reservationBytes, overflow);
+        }
+    }
+
     if (includeCurrentMediumUploads) {
         add_scan_medium_upload_estimate_bytes(
             ws.negativeMediumRuntime,
@@ -1428,8 +1454,8 @@ UploadWorkEstimate estimate_upload_core_request_bytes(
         return estimate;
     }
 
-    // Keep a deterministic floor so large rebuilds always enter upload reservation admission.
-    if (!coreUpToDate &&
+    // Keep a deterministic floor so rebuilds and retire-only auxiliary updates enter upload admission.
+    if ((!coreUpToDate || needAuxiliaryPackageUpdate) &&
         estimate.reservationBytes < kUploadReservationThresholdDefaultBytes) {
         estimate.reservationBytes = kUploadReservationThresholdDefaultBytes;
     }

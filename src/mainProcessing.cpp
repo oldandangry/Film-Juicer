@@ -2976,8 +2976,8 @@ void JuicerProcessor::processImagesCUDA() {
         msg += std::to_string(cudaResources->uploadedBuildCounter);
         msg += " printIllumBuild=";
         msg += std::to_string(cudaResources->printIllumBuildCounter);
-        msg += " printPreflashBuild=";
-        msg += std::to_string(cudaResources->printPreflashBuildCounter);
+        msg += " printPreflashKey=";
+        msg += std::to_string(cudaResources->printPreflashKeyHash);
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
@@ -4016,8 +4016,8 @@ void JuicerProcessor::processImagesCUDA() {
         msg += std::to_string(resources->printIllumCShiftSteps);
         msg += " preflashValid=";
         msg += std::to_string(bool_to_i32(resources->printPreflashValid));
-        msg += " preflashBuild=";
-        msg += std::to_string(resources->printPreflashBuildCounter);
+        msg += " preflashKey=";
+        msg += std::to_string(resources->printPreflashKeyHash);
         JTRACE_VERBOSE("PRINTDBG", msg);
     };
 

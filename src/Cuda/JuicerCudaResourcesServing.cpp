@@ -1489,7 +1489,53 @@
         const bool coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
         const bool dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
 
-        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads) {
+        Spectral::SpectralContext& earlyCtx = Spectral::context();
+        const bool earlyHanatosAvailable = earlyCtx.hanatosAvailable.load(std::memory_order_acquire);
+        const int earlyHanatosN = earlyCtx.hanSpectra.size;
+        const int earlyHanatosK = earlyCtx.hanSpectra.numSamples;
+        const bool earlyWantHanatos =
+            earlyHanatosAvailable &&
+            earlyHanatosN > 0 &&
+            earlyHanatosK == Spectral::kNumSamples &&
+            !earlyCtx.hanSpectra.data.empty();
+        const bool earlyWantHanatosIntegrated =
+            earlyWantHanatos &&
+            static_cast<int>(ws.sensB.linear.size()) == earlyHanatosK &&
+            static_cast<int>(ws.sensG.linear.size()) == earlyHanatosK &&
+            static_cast<int>(ws.sensR.linear.size()) == earlyHanatosK;
+        const bool earlyNeedHanatosUpload =
+            earlyWantHanatos &&
+            (!resources.hanatosLut || resources.hanatosN != earlyHanatosN);
+        const bool earlyNeedHanatosRetire =
+            !earlyWantHanatos && resources.hanatosLut;
+        const bool earlyNeedHanatosIntegratedUpload =
+            earlyWantHanatosIntegrated &&
+            ((!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != earlyHanatosN) ||
+             resources.hanatosIntegratedKeyHash != wsCoreHash);
+        const bool earlyNeedHanatosIntegratedRetire =
+            !earlyWantHanatosIntegrated && resources.hanatosLutIntegrated;
+        const bool earlyMallettAvailable = earlyCtx.mallettAvailable.load(std::memory_order_acquire);
+        const int earlyMallettK = earlyCtx.mallettBasis.rows;
+        const int earlyMallettCols = earlyCtx.mallettBasis.cols;
+        const bool earlyWantMallett =
+            earlyMallettAvailable &&
+            earlyMallettK == Spectral::kNumSamples &&
+            earlyMallettCols == 3 &&
+            !earlyCtx.mallettBasis.data.empty();
+        const bool earlyNeedMallettUpload =
+            earlyWantMallett &&
+            (!resources.mallettBasis || resources.mallettBasisK != earlyMallettK);
+        const bool earlyNeedMallettRetire =
+            !earlyWantMallett && resources.mallettBasis;
+        const bool auxiliaryPackageNeedsUpdate =
+            earlyNeedHanatosUpload ||
+            earlyNeedHanatosRetire ||
+            earlyNeedHanatosIntegratedUpload ||
+            earlyNeedHanatosIntegratedRetire ||
+            earlyNeedMallettUpload ||
+            earlyNeedMallettRetire;
+
+        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads && !auxiliaryPackageNeedsUpdate) {
             resources.uploadedBuildCounter = ws.buildCounter;
             return true;
         }
@@ -1503,7 +1549,7 @@
 
             resources.uploadedDirHash = wsDirHash;
             resources.uploadedBuildCounter = ws.buildCounter;
-            if (!includeCurrentMediumUploads) {
+            if (!includeCurrentMediumUploads && !auxiliaryPackageNeedsUpdate) {
                 return true;
             }
             lock.unlock();
@@ -1921,10 +1967,10 @@
                 resources.printGammaM = gamma_safe(p.gammaFactor[1]);
                 resources.printGammaY = gamma_safe(p.gammaFactor[2]);
 
-                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState build.
+                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached by recipe key.
                 const bool needPreflashBuild =
                     !resources.printPreflashValid ||
-                    resources.printPreflashBuildCounter != ws.buildCounter ||
+                    resources.printPreflashKeyHash != wsCoreHash ||
                     resources.printPreflashShapeK != Spectral::gShape.K;
                 if (needPreflashBuild) {
                     float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
@@ -1938,13 +1984,13 @@
 
                     const bool stillNeedPreflashBuild =
                         !resources.printPreflashValid ||
-                        resources.printPreflashBuildCounter != ws.buildCounter ||
+                        resources.printPreflashKeyHash != wsCoreHash ||
                         resources.printPreflashShapeK != Spectral::gShape.K;
                     if (stillNeedPreflashBuild) {
                         if (!ok) {
                             resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
                             resources.printPreflashValid = false;
-                            resources.printPreflashBuildCounter = ws.buildCounter;
+                            resources.printPreflashKeyHash = wsCoreHash;
                             resources.printPreflashShapeK = 0;
                         }
                         else {
@@ -1952,7 +1998,7 @@
                             resources.printPreflashRaw[1] = preflashRaw[1];
                             resources.printPreflashRaw[2] = preflashRaw[2];
                             resources.printPreflashValid = true;
-                            resources.printPreflashBuildCounter = ws.buildCounter;
+                            resources.printPreflashKeyHash = wsCoreHash;
                             resources.printPreflashShapeK = shapeK;
                         }
                     }
@@ -1992,7 +2038,7 @@
                     }
                     resources.hanatosLutIntegrated = nullptr;
                     resources.hanatosNIntegrated = 0;
-                    resources.hanatosIntegratedBuildCounter = 0;
+                    resources.hanatosIntegratedKeyHash = 0;
                 }
             } else {
                 if (!resources.hanatosLut || resources.hanatosN != N) {
@@ -2035,7 +2081,7 @@
                 }
             }
 
-            // Build + upload the Hanatos LUT preintegrated with per-instance sensitivities.
+            // Build + upload the Hanatos LUT preintegrated with recipe sensitivities.
             const bool sensOk =
                 static_cast<int>(ws.sensB.linear.size()) == K &&
                 static_cast<int>(ws.sensG.linear.size()) == K &&
@@ -2050,12 +2096,12 @@
                     }
                     resources.hanatosLutIntegrated = nullptr;
                     resources.hanatosNIntegrated = 0;
-                    resources.hanatosIntegratedBuildCounter = 0;
+                    resources.hanatosIntegratedKeyHash = 0;
                 }
             }
             else {
                 const bool needAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
-                const bool needUpload = needAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
+                const bool needUpload = needAlloc || resources.hanatosIntegratedKeyHash != wsCoreHash;
                 if (needUpload) {
                     // Build CPU LUT outside the resources lock.
                     lock.unlock();
@@ -2065,7 +2111,7 @@
                     reap_retire_queue_locked(resources);
 
                     const bool stillNeedAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
-                    const bool stillNeedUpload = stillNeedAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
+                    const bool stillNeedUpload = stillNeedAlloc || resources.hanatosIntegratedKeyHash != wsCoreHash;
                     if (stillNeedUpload) {
                         const std::size_t valueCount = cpu.size();
                         if (valueCount > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -2119,7 +2165,7 @@
                             }
                         }
                         resources.hanatosNIntegrated = N;
-                        resources.hanatosIntegratedBuildCounter = ws.buildCounter;
+                        resources.hanatosIntegratedKeyHash = wsCoreHash;
                     }
                 }
             }
