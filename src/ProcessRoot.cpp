@@ -1,9 +1,11 @@
 #include "ProcessRoot.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -233,12 +235,25 @@ namespace JuicerProcess {
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     struct Root::PreparedCudaFrame::State {
+        struct AutoExposureFrameWorkspace {
+            JuicerCudaAutoExposureScratch scratch{};
+            JuicerCudaAutoExposureDeviceState deviceState{};
+            int weightsWidth = 0;
+            int weightsHeight = 0;
+            int weightsXCapacity = 0;
+            int weightsYCapacity = 0;
+            std::uint64_t keyHash = 0;
+            double sliderEV = std::numeric_limits<double>::quiet_NaN();
+            bool active = false;
+        };
+
         Root* root = nullptr;
         Root::CudaResourceOwner resourceOwner;
         Root::CudaResourceOwner grainStaticOwner;
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::Resources* grainStaticResources = nullptr;
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
+        AutoExposureFrameWorkspace autoExposureWorkspace{};
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
         bool failureMarksContextLoss = true;
@@ -248,7 +263,181 @@ namespace JuicerProcess {
             failurePrefix = prefix;
             failureMarksContextLoss = marksContextLoss;
         }
+
+        bool allocate_auto_exposure_workspace(
+            int meterWidth,
+            int meterHeight,
+            std::string& outError);
+        bool release_auto_exposure_workspace_after_use(
+            void* cudaStreamOpaque,
+            std::string& outError);
+        void free_auto_exposure_workspace_now() noexcept;
     };
+
+    bool Root::PreparedCudaFrame::State::allocate_auto_exposure_workspace(
+        int meterWidth,
+        int meterHeight,
+        std::string& outError) {
+        outError.clear();
+        free_auto_exposure_workspace_now();
+        if (meterWidth <= 0 || meterHeight <= 0) {
+            outError = "auto-exposure meter dimensions invalid";
+            return false;
+        }
+
+        const int blockX = 16;
+        const int blockY = 16;
+        const int gridX = (meterWidth + blockX - 1) / blockX;
+        const int gridY = (meterHeight + blockY - 1) / blockY;
+        const int neededPartials = gridX * gridY;
+        if (neededPartials <= 0) {
+            outError = "auto-exposure partial count invalid";
+            return false;
+        }
+
+        auto alloc_device = [&](auto*& ptr, std::size_t bytes, const char* label) -> bool {
+            const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
+            if (err != cudaSuccess) {
+                outError = std::string("cudaMalloc(") + label + ") failed: " +
+                    (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                ptr = nullptr;
+                return false;
+            }
+            return true;
+        };
+
+        AutoExposureFrameWorkspace next{};
+        if (!alloc_device(next.deviceState.exposureScale, sizeof(float), "frame auto-exposure scale") ||
+            !alloc_device(next.deviceState.autoEV, sizeof(double), "frame auto-exposure autoEV") ||
+            !alloc_device(next.deviceState.valid, sizeof(int), "frame auto-exposure valid") ||
+            !alloc_device(next.scratch.maxYBits, sizeof(unsigned int), "frame auto-exposure maxYBits") ||
+            !alloc_device(next.scratch.histogram, sizeof(unsigned int) * 2048u, "frame auto-exposure histogram") ||
+            !alloc_device(next.scratch.weightsX, static_cast<std::size_t>(meterWidth) * sizeof(float), "frame auto-exposure weightsX") ||
+            !alloc_device(next.scratch.weightsY, static_cast<std::size_t>(meterHeight) * sizeof(float), "frame auto-exposure weightsY") ||
+            !alloc_device(
+                next.scratch.partialsA,
+                static_cast<std::size_t>(neededPartials) * sizeof(JuicerCudaAutoExposurePartial),
+                "frame auto-exposure partialsA") ||
+            !alloc_device(
+                next.scratch.partialsB,
+                static_cast<std::size_t>(neededPartials) * sizeof(JuicerCudaAutoExposurePartial),
+                "frame auto-exposure partialsB")) {
+            autoExposureWorkspace = next;
+            free_auto_exposure_workspace_now();
+            return false;
+        }
+
+        next.scratch.partialCapacity = neededPartials;
+        next.weightsXCapacity = meterWidth;
+        next.weightsYCapacity = meterHeight;
+        next.weightsWidth = 0;
+        next.weightsHeight = 0;
+        next.keyHash = 0;
+        next.sliderEV = std::numeric_limits<double>::quiet_NaN();
+        next.active = true;
+        autoExposureWorkspace = next;
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::release_auto_exposure_workspace_after_use(
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        AutoExposureFrameWorkspace& workspace = autoExposureWorkspace;
+        if (!workspace.active) {
+            return true;
+        }
+
+        try {
+            bool retiredAll = (resources != nullptr);
+            auto retire_ptr = [&](auto*& ptr, std::size_t bytes, const char* label) {
+                if (!ptr || !retiredAll) {
+                    return;
+                }
+                void* raw = ptr;
+                std::string localError;
+                if (JuicerCuda::retire_frame_scratch_allocation(
+                        *resources,
+                        raw,
+                        bytes,
+                        cudaStreamOpaque,
+                        label,
+                        localError)) {
+                    ptr = nullptr;
+                    return;
+                }
+                retiredAll = false;
+                if (!localError.empty()) {
+                    outError = localError;
+                }
+            };
+
+            retire_ptr(workspace.deviceState.exposureScale, sizeof(float), "frame auto-exposure scale");
+            retire_ptr(workspace.deviceState.autoEV, sizeof(double), "frame auto-exposure autoEV");
+            retire_ptr(workspace.deviceState.valid, sizeof(int), "frame auto-exposure valid");
+            retire_ptr(workspace.scratch.maxYBits, sizeof(unsigned int), "frame auto-exposure maxYBits");
+            retire_ptr(workspace.scratch.histogram, sizeof(unsigned int) * 2048u, "frame auto-exposure histogram");
+            retire_ptr(
+                workspace.scratch.weightsX,
+                static_cast<std::size_t>(std::max(0, workspace.weightsXCapacity)) * sizeof(float),
+                "frame auto-exposure weightsX");
+            retire_ptr(
+                workspace.scratch.weightsY,
+                static_cast<std::size_t>(std::max(0, workspace.weightsYCapacity)) * sizeof(float),
+                "frame auto-exposure weightsY");
+            retire_ptr(
+                workspace.scratch.partialsA,
+                static_cast<std::size_t>(std::max(0, workspace.scratch.partialCapacity)) *
+                    sizeof(JuicerCudaAutoExposurePartial),
+                "frame auto-exposure partialsA");
+            retire_ptr(
+                workspace.scratch.partialsB,
+                static_cast<std::size_t>(std::max(0, workspace.scratch.partialCapacity)) *
+                    sizeof(JuicerCudaAutoExposurePartial),
+                "frame auto-exposure partialsB");
+
+            if (retiredAll) {
+                workspace = AutoExposureFrameWorkspace{};
+                return true;
+            }
+        } catch (...) {
+            outError = "frame auto-exposure retire threw";
+        }
+        free_auto_exposure_workspace_now();
+        return false;
+    }
+
+    void Root::PreparedCudaFrame::State::free_auto_exposure_workspace_now() noexcept {
+        AutoExposureFrameWorkspace& workspace = autoExposureWorkspace;
+        if (workspace.scratch.partialsA) {
+            cudaFree(workspace.scratch.partialsA);
+        }
+        if (workspace.scratch.partialsB) {
+            cudaFree(workspace.scratch.partialsB);
+        }
+        if (workspace.scratch.maxYBits) {
+            cudaFree(workspace.scratch.maxYBits);
+        }
+        if (workspace.scratch.histogram) {
+            cudaFree(workspace.scratch.histogram);
+        }
+        if (workspace.scratch.weightsX) {
+            cudaFree(workspace.scratch.weightsX);
+        }
+        if (workspace.scratch.weightsY) {
+            cudaFree(workspace.scratch.weightsY);
+        }
+        if (workspace.deviceState.exposureScale) {
+            cudaFree(workspace.deviceState.exposureScale);
+        }
+        if (workspace.deviceState.autoEV) {
+            cudaFree(workspace.deviceState.autoEV);
+        }
+        if (workspace.deviceState.valid) {
+            cudaFree(workspace.deviceState.valid);
+        }
+        workspace = AutoExposureFrameWorkspace{};
+    }
 
     Root::PreparedCudaFrame::PreparedCudaFrame(std::unique_ptr<State> state) noexcept
         : _state(std::move(state)) {
@@ -354,12 +543,29 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        return _state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError);
+        if (!_state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError)) {
+            return false;
+        }
+
+        std::string releaseError;
+        if (!_state->release_auto_exposure_workspace_after_use(cudaStreamOpaque, releaseError) &&
+            JTRACE_ENABLED(1)) {
+            std::string msg = "frame_auto_exposure_retire_failed";
+            if (!releaseError.empty()) {
+                msg += " error=";
+                msg += releaseError;
+            }
+            JTRACE("CUDA", msg);
+        }
+        return true;
     }
 
     void Root::PreparedCudaFrame::abort(const char* reason) noexcept {
         if (_state && _state->root && _state->transaction.active && !_state->transaction.committed) {
             _state->root->rollback_submission(_state->transaction, reason);
+        }
+        if (_state) {
+            _state->free_auto_exposure_workspace_now();
         }
     }
 
@@ -684,7 +890,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_gaussian_kernel(
+    bool Root::PreparedCudaFrame::prepare_gaussian_kernel_slot(
         JuicerCuda::Resources::DeviceGaussianKernel& kernel,
         float sigma,
         void* cudaStreamOpaque,
@@ -710,7 +916,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_halation_kernel(
+    bool Root::PreparedCudaFrame::prepare_halation_kernel_slot(
         JuicerCuda::Resources::DeviceGaussianKernel& kernel,
         float sigma,
         void* cudaStreamOpaque,
@@ -734,6 +940,166 @@ namespace JuicerProcess {
             return false;
         }
         return true;
+    }
+
+    bool Root::PreparedCudaFrame::prepare_scanner_lens_blur_kernel(
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return prepare_gaussian_kernel_slot(
+            _state->resources->scannerLensBlurKernel,
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_scanner_unsharp_kernel(
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return prepare_gaussian_kernel_slot(
+            _state->resources->scannerUnsharpKernel,
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_scanner_glare_kernel(
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return prepare_gaussian_kernel_slot(
+            _state->resources->scannerGlareKernel,
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_grain_blur_kernel(
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return prepare_gaussian_kernel_slot(
+            _state->resources->grainBlurKernel,
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_grain_blur_mid_kernel(
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return prepare_gaussian_kernel_slot(
+            _state->resources->grainBlurKernelMid,
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_grain_blur_coarse_kernel(
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return prepare_gaussian_kernel_slot(
+            _state->resources->grainBlurKernelCoarse,
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_grain_dye_kernel(
+        int layer,
+        int channel,
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        if (layer < 0 || layer >= 3 || channel < 0 || channel >= 3) {
+            outError = "invalid grain dye kernel slot";
+            _state->set_failure(
+                "prepare_grain_dye_kernel",
+                "CUDA grain dye-cloud kernel upload failed");
+            return false;
+        }
+        return prepare_gaussian_kernel_slot(
+            _state->resources->grainDyeKernel[layer][channel],
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_halation_kernel(
+        int channel,
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        if (channel < 0 || channel >= 3) {
+            outError = "invalid halation kernel slot";
+            _state->set_failure(
+                "prepare_halation_kernel",
+                "CUDA halation kernel upload failed");
+            return false;
+        }
+        return prepare_halation_kernel_slot(
+            _state->resources->halationKernel[channel],
+            sigma,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::prepare_halation_scatter_kernel(
+        int channel,
+        float sigma,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!_state || !_state->resources) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        if (channel < 0 || channel >= 3) {
+            outError = "invalid halation scatter kernel slot";
+            _state->set_failure(
+                "prepare_halation_scatter_kernel",
+                "CUDA halation scatter kernel upload failed");
+            return false;
+        }
+        return prepare_halation_kernel_slot(
+            _state->resources->halationScatterKernel[channel],
+            sigma,
+            cudaStreamOpaque,
+            outError);
     }
 
     bool Root::PreparedCudaFrame::launch_base_pipeline_graph(
@@ -886,22 +1252,15 @@ namespace JuicerProcess {
             return view;
         }
 
-        const JuicerCuda::Resources& resources = *_state->resources;
-        view.scratch.partialsA = resources.autoExposureScratch.partialsA;
-        view.scratch.partialsB = resources.autoExposureScratch.partialsB;
-        view.scratch.partialCapacity = resources.autoExposureScratch.partialCapacity;
-        view.scratch.maxYBits = resources.autoExposureScratch.maxYBits;
-        view.scratch.histogram = resources.autoExposureScratch.histogram;
-        view.scratch.weightsX = resources.autoExposureScratch.weightsX;
-        view.scratch.weightsY = resources.autoExposureScratch.weightsY;
-        view.deviceState.exposureScale = resources.autoExposureExposureScale;
-        view.deviceState.autoEV = resources.autoExposureAutoEV;
-        view.deviceState.valid = resources.autoExposureValid;
-        view.weightsWidth = resources.autoExposureScratch.weightsWidth;
-        view.weightsHeight = resources.autoExposureScratch.weightsHeight;
-        view.keyHash = resources.autoExposureKeyHash;
-        view.sliderEV = resources.autoExposureSliderEV;
+        const State::AutoExposureFrameWorkspace& workspace = _state->autoExposureWorkspace;
+        view.scratch = workspace.scratch;
+        view.deviceState = workspace.deviceState;
+        view.weightsWidth = workspace.weightsWidth;
+        view.weightsHeight = workspace.weightsHeight;
+        view.keyHash = workspace.keyHash;
+        view.sliderEV = workspace.sliderEV;
         view.active =
+            workspace.active &&
             view.scratch.partialsA &&
             view.scratch.partialsB &&
             view.scratch.partialCapacity > 0 &&
@@ -921,9 +1280,9 @@ namespace JuicerProcess {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             return;
         }
-        JuicerCuda::Resources& resources = *_state->resources;
-        resources.autoExposureScratch.weightsWidth = weightsWidth;
-        resources.autoExposureScratch.weightsHeight = weightsHeight;
+        State::AutoExposureFrameWorkspace& workspace = _state->autoExposureWorkspace;
+        workspace.weightsWidth = weightsWidth;
+        workspace.weightsHeight = weightsHeight;
     }
 
     void Root::PreparedCudaFrame::mark_auto_exposure_metered(
@@ -932,16 +1291,16 @@ namespace JuicerProcess {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             return;
         }
-        JuicerCuda::Resources& resources = *_state->resources;
-        resources.autoExposureKeyHash = keyHash;
-        resources.autoExposureSliderEV = sliderEV;
+        State::AutoExposureFrameWorkspace& workspace = _state->autoExposureWorkspace;
+        workspace.keyHash = keyHash;
+        workspace.sliderEV = sliderEV;
     }
 
     void Root::PreparedCudaFrame::mark_auto_exposure_slider_updated(double sliderEV) noexcept {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             return;
         }
-        _state->resources->autoExposureSliderEV = sliderEV;
+        _state->autoExposureWorkspace.sliderEV = sliderEV;
     }
 
     Root::PreparedCudaFrame::SpatialDirScratchView Root::PreparedCudaFrame::spatial_dir_scratch(
@@ -1318,17 +1677,13 @@ namespace JuicerProcess {
             return frame;
         }
         if (autoExposureBufferRequest.enabled &&
-            !JuicerCuda::ResourceManager::command_ensure_auto_exposure_buffers(
-                frame._state->transaction,
-                *frame._state->resources,
+            !frame._state->allocate_auto_exposure_workspace(
                 autoExposureBufferRequest.meterWidth,
                 autoExposureBufferRequest.meterHeight,
-                autoExposureBufferRequest.reusableKeyHash,
-                cudaStreamOpaque,
                 outError)) {
             frame._state->set_failure(
-                "command_ensure_auto_exposure_buffers",
-                "CUDA auto-exposure buffer allocation failed");
+                "allocate_auto_exposure_workspace",
+                "CUDA auto-exposure workspace allocation failed");
             frame.abort("prepared_frame_auto_exposure_failed");
             return frame;
         }

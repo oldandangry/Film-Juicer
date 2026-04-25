@@ -4094,15 +4094,10 @@ void JuicerProcessor::processImagesCUDA() {
         return true;
     };
 
-    auto ensure_gaussian_kernel_or_throw = [&](auto& kernel,
-                                               float sigma,
-                                               const char* kernelLabel,
-                                               std::string& opticsError) {
-        if (preparedFrame.prepare_gaussian_kernel(
-                kernel,
-                sigma,
-                _pCudaStream,
-                opticsError)) {
+    auto throw_if_kernel_prepare_failed = [&](bool prepared,
+                                              const char* kernelLabel,
+                                              std::string& opticsError) {
+        if (prepared) {
             return;
         }
         std::string prefix = make_cuda_prefixed_failure(nonempty_cstr_or(kernelLabel, "gaussian"),
@@ -4110,26 +4105,19 @@ void JuicerProcessor::processImagesCUDA() {
         trace_and_throw_cuda_policy_fatal(prefix.c_str(), cstr_or_null_if_empty(opticsError));
     };
 
-    auto ensure_halation_kernel_or_throw = [&](auto& kernel,
-                                               float sigma,
-                                               const char* kernelLabel,
-                                               std::string& opticsError) {
-        if (preparedFrame.prepare_halation_kernel(
-                kernel,
-                sigma,
-                _pCudaStream,
-                opticsError)) {
-            return;
-        }
-        std::string prefix = make_cuda_prefixed_failure(nonempty_cstr_or(kernelLabel, "halation"),
-                                                        " kernel upload failed");
-        trace_and_throw_cuda_policy_fatal(prefix.c_str(), cstr_or_null_if_empty(opticsError));
-    };
-
-    auto ensure_grain_dye_kernel_or_throw = [&](auto& kernel,
+    auto ensure_grain_dye_kernel_or_throw = [&](int layer,
+                                                int channel,
                                                 float sigma,
                                                 std::string& opticsError) {
-        ensure_gaussian_kernel_or_throw(kernel, sigma, "grain dye-cloud", opticsError);
+        throw_if_kernel_prepare_failed(
+            preparedFrame.prepare_grain_dye_kernel(
+                layer,
+                channel,
+                sigma,
+                _pCudaStream,
+                opticsError),
+            "grain dye-cloud",
+            opticsError);
     };
 
     auto throw_pipeline_launch_failure = [&](const char* stageTag,
@@ -4190,7 +4178,8 @@ void JuicerProcessor::processImagesCUDA() {
             for (int ch = 0; ch < 3; ++ch) {
                 const float sigma = grainSetup.grainDyeSigmaPx[layer][ch];
                 ensure_grain_dye_kernel_or_throw(
-                    cudaResources->grainDyeKernel[layer][ch],
+                    layer,
+                    ch,
                     sigma,
                     opticsError);
             }
@@ -4223,9 +4212,12 @@ void JuicerProcessor::processImagesCUDA() {
         int i = 0;
         for (; strengthIt != strengthEnd; ++strengthIt, ++sigmaIt, ++scatterStrengthIt, ++scatterSigmaIt, ++i) {
             if (*strengthIt > 0.0f && *sigmaIt > 0.0f) {
-                ensure_halation_kernel_or_throw(
-                    cudaResources->halationKernel[i],
-                    *sigmaIt,
+                throw_if_kernel_prepare_failed(
+                    preparedFrame.prepare_halation_kernel(
+                        i,
+                        *sigmaIt,
+                        _pCudaStream,
+                        opticsError),
                     "halation",
                     opticsError);
                 const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
@@ -4234,9 +4226,12 @@ void JuicerProcessor::processImagesCUDA() {
                 run.halationKernels.halationRadius[i] = opticsKernels.halation[i].radius;
             }
             if (*scatterStrengthIt > 0.0f && *scatterSigmaIt > 0.0f) {
-                ensure_halation_kernel_or_throw(
-                    cudaResources->halationScatterKernel[i],
-                    *scatterSigmaIt,
+                throw_if_kernel_prepare_failed(
+                    preparedFrame.prepare_halation_scatter_kernel(
+                        i,
+                        *scatterSigmaIt,
+                        _pCudaStream,
+                        opticsError),
                     "halation scatter",
                     opticsError);
                 const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
@@ -4265,19 +4260,29 @@ void JuicerProcessor::processImagesCUDA() {
                                             const float* halationScatterStrengthBGR,
                                             const float* halationScatterSigmaPx,
                                             std::string& opticsError) {
-        ensure_gaussian_kernel_or_throw(cudaResources->scannerLensBlurKernel, lensBlurSigmaPx, "lens blur", opticsError);
-        ensure_gaussian_kernel_or_throw(cudaResources->scannerUnsharpKernel, unsharpSigmaPx, "unsharp", opticsError);
-        ensure_gaussian_kernel_or_throw(
-            cudaResources->scannerGlareKernel,
-            sigma_if_enabled(wantGlare, glareBlurSigmaPx),
+        throw_if_kernel_prepare_failed(
+            preparedFrame.prepare_scanner_lens_blur_kernel(lensBlurSigmaPx, _pCudaStream, opticsError),
+            "lens blur",
+            opticsError);
+        throw_if_kernel_prepare_failed(
+            preparedFrame.prepare_scanner_unsharp_kernel(unsharpSigmaPx, _pCudaStream, opticsError),
+            "unsharp",
+            opticsError);
+        throw_if_kernel_prepare_failed(
+            preparedFrame.prepare_scanner_glare_kernel(
+                sigma_if_enabled(wantGlare, glareBlurSigmaPx),
+                _pCudaStream,
+                opticsError),
             "glare",
             opticsError);
 
         reset_grain_kernel_slots(run);
         if (wantGrain) {
-            ensure_gaussian_kernel_or_throw(
-                cudaResources->grainBlurKernel,
-                sigma_if_enabled(wantGrainBlur, grainBlurSigmaPx),
+            throw_if_kernel_prepare_failed(
+                preparedFrame.prepare_grain_blur_kernel(
+                    sigma_if_enabled(wantGrainBlur, grainBlurSigmaPx),
+                    _pCudaStream,
+                    opticsError),
                 "grain blur",
                 opticsError);
             const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
@@ -4287,14 +4292,18 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grainKernels.blurRadius = opticsKernels.grainBlur.radius;
             }
             if (wantGrainMix) {
-                ensure_gaussian_kernel_or_throw(
-                    cudaResources->grainBlurKernelMid,
-                    grainBlurSigmaMidPx,
+                throw_if_kernel_prepare_failed(
+                    preparedFrame.prepare_grain_blur_mid_kernel(
+                        grainBlurSigmaMidPx,
+                        _pCudaStream,
+                        opticsError),
                     "grain mid blur",
                     opticsError);
-                ensure_gaussian_kernel_or_throw(
-                    cudaResources->grainBlurKernelCoarse,
-                    grainSetup.grainBlurSigmaCoarsePx,
+                throw_if_kernel_prepare_failed(
+                    preparedFrame.prepare_grain_blur_coarse_kernel(
+                        grainSetup.grainBlurSigmaCoarsePx,
+                        _pCudaStream,
+                        opticsError),
                     "grain coarse blur",
                     opticsError);
                 const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView mixedOpticsKernels =

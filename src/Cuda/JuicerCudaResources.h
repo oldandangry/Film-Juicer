@@ -449,6 +449,13 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         std::string& outError);
+    bool retire_frame_scratch_allocation(
+        Resources& resources,
+        void* ptr,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError);
 
     // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
     void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;

@@ -3218,6 +3218,42 @@ namespace JuicerCuda {
 #endif
     }
 
+    bool retire_frame_scratch_allocation(
+        Resources& resources,
+        void* ptr,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ptr;
+        (void)bytes;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!ptr) {
+            return true;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        return retire_ptr_locked(
+            resources,
+            ptr,
+            bytes,
+            Resources::RetireKind::DeviceFree,
+            cudaStreamOpaque,
+            label ? label : "frame scratch",
+            outError,
+            true);
+#endif
+    }
+
     bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;

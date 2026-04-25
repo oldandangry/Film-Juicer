@@ -312,13 +312,43 @@ namespace JuicerProcess {
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_gaussian_kernel(
-                JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+            bool prepare_scanner_lens_blur_kernel(
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_scanner_unsharp_kernel(
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_scanner_glare_kernel(
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_grain_blur_kernel(
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_grain_blur_mid_kernel(
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_grain_blur_coarse_kernel(
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_grain_dye_kernel(
+                int layer,
+                int channel,
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_halation_kernel(
-                JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+                int channel,
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_halation_scatter_kernel(
+                int channel,
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
@@ -347,6 +377,16 @@ namespace JuicerProcess {
             bool validate_workspace_lease_marker(
                 const WorkspaceLeaseMarker& workspace,
                 std::string& outError) const;
+            bool prepare_gaussian_kernel_slot(
+                JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_halation_kernel_slot(
+                JuicerCuda::Resources::DeviceGaussianKernel& kernel,
+                float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
 
             std::unique_ptr<State> _state;
         };
