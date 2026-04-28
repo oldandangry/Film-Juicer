@@ -1167,6 +1167,44 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::validate_density_primitives(
+        const WorkingState& workingState,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return JuicerCuda::validate_density_primitives(
+            *_state->resources,
+            workingState,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::validate_print_primitives(
+        const WorkingState& workingState,
+        const Print::Runtime& printRuntime,
+        const Print::Params& printParams,
+        float midgrayFactor,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            outError = "prepared frame is not active";
+            return false;
+        }
+        return JuicerCuda::validate_print_primitives(
+            *_state->resources,
+            workingState,
+            printRuntime,
+            printParams,
+            midgrayFactor,
+            cudaStreamOpaque,
+            outError);
+    }
+
     Root::PreparedCudaFrame::GrainStaticAssets Root::PreparedCudaFrame::grain_static_assets() const noexcept {
         GrainStaticAssets assets{};
         if (!_state || !_state->grainStaticResources || !_state->transaction.active || _state->transaction.committed) {
@@ -1312,6 +1350,26 @@ namespace JuicerProcess {
         return view;
     }
 
+    Root::PreparedCudaFrame::UploadTraceView Root::PreparedCudaFrame::upload_trace_view() const noexcept {
+        UploadTraceView view{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+            return view;
+        }
+
+        std::lock_guard<std::mutex> lock(_state->resources->m);
+        view.uploadedBuildCounter = _state->resources->uploadedBuildCounter;
+        view.printIllumBuildCounter = _state->resources->printIllumBuildCounter;
+        view.printIllumCoreHash = _state->resources->printIllumCoreHash;
+        view.printIllumNeutralFilterHash = _state->resources->printIllumNeutralFilterHash;
+        view.printIllumYShiftSteps = _state->resources->printIllumYShiftSteps;
+        view.printIllumMShiftSteps = _state->resources->printIllumMShiftSteps;
+        view.printIllumCShiftSteps = _state->resources->printIllumCShiftSteps;
+        view.printPreflashValid = _state->resources->printPreflashValid;
+        view.printPreflashKeyHash = _state->resources->printPreflashKeyHash;
+        view.active = true;
+        return view;
+    }
+
     void Root::PreparedCudaFrame::mark_auto_exposure_weights_built(
         int weightsWidth,
         int weightsHeight) noexcept {
@@ -1397,10 +1455,6 @@ namespace JuicerProcess {
         }
         _state->remember_stream(cudaStreamOpaque);
         JuicerCuda::record_use(*_state->resources, cudaStreamOpaque);
-    }
-
-    JuicerCuda::Resources* Root::PreparedCudaFrame::runtime_resources() const noexcept {
-        return _state ? _state->resources : nullptr;
     }
 
     const char* Root::PreparedCudaFrame::failure_stage_tag() const noexcept {

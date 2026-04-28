@@ -224,6 +224,19 @@ namespace JuicerProcess {
                 bool active = false;
             };
 
+            struct UploadTraceView {
+                std::uint64_t uploadedBuildCounter = 0;
+                std::uint64_t printIllumBuildCounter = 0;
+                std::uint64_t printIllumCoreHash = 0;
+                std::uint64_t printIllumNeutralFilterHash = 0;
+                float printIllumYShiftSteps = 0.0f;
+                float printIllumMShiftSteps = 0.0f;
+                float printIllumCShiftSteps = 0.0f;
+                bool printPreflashValid = false;
+                std::uint64_t printPreflashKeyHash = 0;
+                bool active = false;
+            };
+
             struct SpatialDirScratchView {
                 float* corrY = nullptr;
                 float* corrM = nullptr;
@@ -260,6 +273,7 @@ namespace JuicerProcess {
             DurableBundleView durable_bundle() const noexcept;
             OpticsKernelView optics_kernels() const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
+            UploadTraceView upload_trace_view() const noexcept;
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             ScannerOpticsScratchView scanner_optics_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             void mark_auto_exposure_weights_built(int weightsWidth, int weightsHeight) noexcept;
@@ -358,8 +372,18 @@ namespace JuicerProcess {
                 void* cudaStreamOpaque,
                 int& outCudaErrorCode,
                 std::string& outError);
+            bool validate_density_primitives(
+                const WorkingState& workingState,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool validate_print_primitives(
+                const WorkingState& workingState,
+                const Print::Runtime& printRuntime,
+                const Print::Params& printParams,
+                float midgrayFactor,
+                void* cudaStreamOpaque,
+                std::string& outError);
 
-            JuicerCuda::Resources* runtime_resources() const noexcept;
             const char* failure_stage_tag() const noexcept;
             const char* failure_prefix() const noexcept;
             bool failure_marks_context_loss() const noexcept;

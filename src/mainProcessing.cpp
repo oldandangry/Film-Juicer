@@ -2960,24 +2960,20 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.failure_prefix(),
             prepareFrameError);
     }
-    JuicerCuda::Resources* cudaResources = preparedFrame.runtime_resources();
 
-    if (!cudaResources) {
-        JTRACE("CUDA", "FATAL: CUDA resources missing after allocation");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
     if (traceVerbose) {
-        std::lock_guard<std::mutex> resLock(cudaResources->m);
+        const JuicerProcess::Root::PreparedCudaFrame::UploadTraceView uploadTrace =
+            preparedFrame.upload_trace_view();
         std::string msg;
         msg.reserve(192);
         msg = "cuda upload build=";
         msg += std::to_string(_ws->buildCounter);
         msg += " uploaded=";
-        msg += std::to_string(cudaResources->uploadedBuildCounter);
+        msg += std::to_string(uploadTrace.uploadedBuildCounter);
         msg += " printIllumBuild=";
-        msg += std::to_string(cudaResources->printIllumBuildCounter);
+        msg += std::to_string(uploadTrace.printIllumBuildCounter);
         msg += " printPreflashKey=";
-        msg += std::to_string(cudaResources->printPreflashKeyHash);
+        msg += std::to_string(uploadTrace.printPreflashKeyHash);
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
@@ -3000,11 +2996,7 @@ void JuicerProcessor::processImagesCUDA() {
             validationHookActive);
         if (validationHookActive) {
             std::string validateError;
-            if (!cudaResources) {
-                JTRACE("CUDA", "FATAL: CUDA resources missing for validation");
-                throw OFX::Exception::Suite(kOfxStatErrFatal);
-            }
-            if (!JuicerCuda::validate_density_primitives(*cudaResources, *_ws, _pCudaStream, validateError)) {
+            if (!preparedFrame.validate_density_primitives(*_ws, _pCudaStream, validateError)) {
                 std::string msg;
                 msg.reserve(48 + validateError.size());
                 msg = "FATAL: CUDA primitive validation failed: ";
@@ -3014,8 +3006,7 @@ void JuicerProcessor::processImagesCUDA() {
             }
 
             if (printActiveForRender) {
-                if (!JuicerCuda::validate_print_primitives(
-                        *cudaResources,
+                if (!preparedFrame.validate_print_primitives(
                         *_ws,
                         *_prt,
                         _printParams,
@@ -3978,11 +3969,15 @@ void JuicerProcessor::processImagesCUDA() {
             throw_prepared_frame_failure(illumError);
         };
 
-    auto trace_print_payload_verbose = [&](JuicerCuda::Resources* resources) {
-        if (!traceVerbose || !resources) {
+    auto trace_print_payload_verbose = [&]() {
+        if (!traceVerbose) {
             return;
         }
-        std::lock_guard<std::mutex> resLock(resources->m);
+        const JuicerProcess::Root::PreparedCudaFrame::UploadTraceView uploadTrace =
+            preparedFrame.upload_trace_view();
+        if (!uploadTrace.active) {
+            return;
+        }
         const std::uint64_t uploadCoreHash = upload_core_hash_or_core_hash(*_ws);
         std::string msg;
         msg.reserve(384);
@@ -4003,21 +3998,21 @@ void JuicerProcessor::processImagesCUDA() {
         msg += " cFilter=";
         msg += std::to_string(_printParams.cFilter);
         msg += " illumBuild=";
-        msg += std::to_string(resources->printIllumBuildCounter);
+        msg += std::to_string(uploadTrace.printIllumBuildCounter);
         msg += " illumCoreHash=";
-        msg += std::to_string(resources->printIllumCoreHash);
+        msg += std::to_string(uploadTrace.printIllumCoreHash);
         msg += " illumNeutralHash=";
-        msg += std::to_string(resources->printIllumNeutralFilterHash);
+        msg += std::to_string(uploadTrace.printIllumNeutralFilterHash);
         msg += " illumY/M/Csteps=";
-        msg += std::to_string(resources->printIllumYShiftSteps);
+        msg += std::to_string(uploadTrace.printIllumYShiftSteps);
         msg += "/";
-        msg += std::to_string(resources->printIllumMShiftSteps);
+        msg += std::to_string(uploadTrace.printIllumMShiftSteps);
         msg += "/";
-        msg += std::to_string(resources->printIllumCShiftSteps);
+        msg += std::to_string(uploadTrace.printIllumCShiftSteps);
         msg += " preflashValid=";
-        msg += std::to_string(bool_to_i32(resources->printPreflashValid));
+        msg += std::to_string(bool_to_i32(uploadTrace.printPreflashValid));
         msg += " preflashKey=";
-        msg += std::to_string(resources->printPreflashKeyHash);
+        msg += std::to_string(uploadTrace.printPreflashKeyHash);
         JTRACE_VERBOSE("PRINTDBG", msg);
     };
 
@@ -4050,7 +4045,6 @@ void JuicerProcessor::processImagesCUDA() {
         };
 
     auto setup_gate_mask_if_needed = [&](JuicerCuda::PipelineRunParams& run,
-                                         JuicerCuda::Resources* resources,
                                          const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
                                          bool needGateMask,
                                          const char* stageTag) -> bool {
@@ -4059,7 +4053,7 @@ void JuicerProcessor::processImagesCUDA() {
         run.grain.gateMaskHeight = 0;
         const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView opticsScratch =
             scanner_optics_scratch_or_throw(workspace);
-        if (!(needGateMask && resources && opticsScratch.hasGateMask)) {
+        if (!(needGateMask && opticsScratch.hasGateMask)) {
             return true;
         }
 
@@ -4445,7 +4439,6 @@ void JuicerProcessor::processImagesCUDA() {
             opticsError);
         if (!setup_gate_mask_if_needed(
                 run,
-                cudaResources,
                 workspace,
                 opticsIntent.needGateMask,
                 gateStageTag)) {
@@ -4484,11 +4477,11 @@ void JuicerProcessor::processImagesCUDA() {
         return params;
     };
 
-    auto ensure_cuda_resources_or_throw = [&](JuicerCuda::Resources* resources, const char* stageLabel) {
-        if (resources) {
+    auto ensure_prepared_frame_active_or_throw = [&](const char* stageLabel) {
+        if (preparedFrame.active()) {
             return;
         }
-        std::string prefix = "CUDA resources missing for ";
+        std::string prefix = "CUDA prepared frame inactive for ";
         prefix += nonempty_cstr_or(stageLabel, "pipeline");
         trace_cuda_fatal_prefixed_if(true, prefix.c_str());
         throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -4782,7 +4775,7 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto begin_medium_pipeline_or_abort = [&](const char* stageLabel) -> bool {
-        ensure_cuda_resources_or_throw(cudaResources, stageLabel);
+        ensure_prepared_frame_active_or_throw(stageLabel);
         return !abort_cuda_path_if_requested(preparedFrame);
     };
 
@@ -4996,7 +4989,7 @@ void JuicerProcessor::processImagesCUDA() {
 
             // Ensure the print illuminant filtered is available for current print params.
             ensure_print_illuminant_filtered_or_throw(workspace);
-            trace_print_payload_verbose(cudaResources);
+            trace_print_payload_verbose();
 
             if (!prepare_common_cuda_pipeline_stages_for_medium(
                     run,
