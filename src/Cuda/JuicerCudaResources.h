@@ -161,9 +161,13 @@ namespace JuicerCuda {
         std::uint64_t validatedPrintBuildCounter = 0;
         std::uint64_t validatedPrintParamsHash = 0;
 
-        // Opaque CUDA event (cudaEvent_t) recorded on the stream after enqueuing work that
-        // uses this resource set. Used to safely retire/rebuild buffers across streams.
-        void* lastUseEventOpaque = nullptr;
+        struct PendingFrameUseEvent {
+            void* eventOpaque = nullptr;
+        };
+
+        // Submitted prepared-frame use events retained until reuse-gating waits can observe
+        // completion. These events are never recorded again after insertion.
+        std::vector<PendingFrameUseEvent> pendingFrameUseEvents;
 
         enum class RetireKind : int {
             DeviceFree = 0,
@@ -470,8 +474,10 @@ namespace JuicerCuda {
         bool& outDetected,
         std::string& outError);
 
-    // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
-    void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;
+    bool retain_frame_use_event(
+        Resources& resources,
+        void*& eventOpaque,
+        std::string& outError);
 
     // Purges process-shared Gaussian kernels for one device/context key.
     void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept;

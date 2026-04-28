@@ -264,6 +264,7 @@ namespace JuicerProcess {
         ScanErrorFrameStage scanErrorStage{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
         void* lastCudaStreamOpaque = nullptr;
+        bool frameUseEventSubmitted = false;
         const char* failureStageTag = "prepare_frame";
         const char* failurePrefix = "CUDA prepared frame failed";
         bool failureMarksContextLoss = true;
@@ -1569,11 +1570,39 @@ namespace JuicerProcess {
     }
 
     void Root::PreparedCudaFrame::record_use(void* cudaStreamOpaque) noexcept {
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
+        if (!_state ||
+            !_state->resources ||
+            !_state->transaction.active ||
+            _state->transaction.committed ||
+            _state->frameUseEventSubmitted) {
             return;
         }
         _state->remember_stream(cudaStreamOpaque);
-        JuicerCuda::record_use(*_state->resources, cudaStreamOpaque);
+
+        cudaEvent_t ev = nullptr;
+        const cudaError_t createErr = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+        if (createErr != cudaSuccess || !ev) {
+            return;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+            : nullptr;
+        const cudaError_t recordErr = cudaEventRecord(ev, stream);
+        if (recordErr != cudaSuccess) {
+            cudaEventDestroy(ev);
+            return;
+        }
+
+        void* eventOpaque = reinterpret_cast<void*>(ev);
+        std::string retainError;
+        if (!JuicerCuda::retain_frame_use_event(*_state->resources, eventOpaque, retainError)) {
+            if (eventOpaque) {
+                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(eventOpaque));
+            }
+            return;
+        }
+        _state->frameUseEventSubmitted = true;
     }
 
     const char* Root::PreparedCudaFrame::failure_stage_tag() const noexcept {

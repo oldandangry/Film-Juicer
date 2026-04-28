@@ -828,6 +828,80 @@ namespace JuicerCuda {
 #endif
     }
 
+    static void release_frame_use_event_entry(Resources::PendingFrameUseEvent& entry) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (entry.eventOpaque) {
+            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
+            cudaEventDestroy(ev);
+        }
+#endif
+        entry = Resources::PendingFrameUseEvent{};
+    }
+
+    static void reap_frame_use_events_locked(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        std::vector<Resources::PendingFrameUseEvent>& pending = resources.pendingFrameUseEvents;
+        for (std::size_t i = 0; i < pending.size();) {
+            Resources::PendingFrameUseEvent& entry = pending[i];
+            cudaEvent_t ev = entry.eventOpaque
+                ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+                : nullptr;
+            if (!ev) {
+                release_frame_use_event_entry(entry);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            const cudaError_t queryErr = cudaEventQuery(ev);
+            if (queryErr == cudaSuccess) {
+                release_frame_use_event_entry(entry);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            ++i;
+        }
+#else
+        (void)resources;
+#endif
+    }
+
+    static bool wait_for_frame_use_events_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        reap_frame_use_events_locked(resources);
+        if (resources.pendingFrameUseEvents.empty()) {
+            return true;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+            : nullptr;
+        for (const Resources::PendingFrameUseEvent& entry : resources.pendingFrameUseEvents) {
+            if (!entry.eventOpaque) {
+                continue;
+            }
+            const cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
+            const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
+            if (waitErr != cudaSuccess) {
+                outError = std::string("cudaStreamWaitEvent before ")
+                    + (label ? label : "resource")
+                    + " update failed: "
+                    + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                return false;
+            }
+        }
+        return true;
+#endif
+    }
+
     static bool record_retire_fence_locked(Resources& resources, void* retireEventOpaque, void* cudaStreamOpaque, const char* label, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
@@ -843,14 +917,8 @@ namespace JuicerCuda {
             return false;
         }
         const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        if (resources.lastUseEventOpaque) {
-            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-            if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before ") + label + " retire failed: " +
-                    (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                return false;
-            }
+        if (!wait_for_frame_use_events_locked(resources, cudaStreamOpaque, label, outError)) {
+            return false;
         }
         const cudaError_t recErr = cudaEventRecord(retireEv, stream);
         if (recErr != cudaSuccess) {
@@ -1169,37 +1237,6 @@ namespace JuicerCuda {
         return validate_resource_owner_locked(resources, outError, false);
     }
 
-    static bool wait_for_last_use_event_snapshot(
-        void* lastUseEventOpaque,
-        void* cudaStreamOpaque,
-        const char* label,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)lastUseEventOpaque;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (!lastUseEventOpaque) {
-            return true;
-        }
-        const cudaStream_t stream = cudaStreamOpaque
-            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-            : nullptr;
-        const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
-        const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-        if (waitErr != cudaSuccess) {
-            outError = std::string("cudaStreamWaitEvent before ")
-                + (label ? label : "resource")
-                + " update failed: "
-                + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-            return false;
-        }
-        return true;
-#endif
-    }
-
     static bool alloc_and_upload_bytes(
         void*& dst,
         const void* src,
@@ -1312,8 +1349,8 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst && currentN == n) {
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 label,
                 outError);
@@ -1474,8 +1511,8 @@ namespace JuicerCuda {
                 --domainEnd;
             }
 
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 baseLabel,
                 outError);
@@ -1621,8 +1658,8 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst.y && dst.n == n) {
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 label,
                 outError);
@@ -1711,14 +1748,11 @@ namespace JuicerCuda {
         free_mallett_basis(*this);
         free_scan_error_readbacks(*this);
         free_auto_exposure(*this);
-        asyncDeviceAllocPointers.clear();
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (lastUseEventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
-            cudaEventDestroy(ev);
-            lastUseEventOpaque = nullptr;
+        for (PendingFrameUseEvent& entry : pendingFrameUseEvents) {
+            release_frame_use_event_entry(entry);
         }
-#endif
+        pendingFrameUseEvents.clear();
+        asyncDeviceAllocPointers.clear();
     }
 
     Resources* create() noexcept {
@@ -1987,24 +2021,39 @@ namespace JuicerCuda {
 #endif
     }
 
-    void record_use(Resources& resources, void* cudaStreamOpaque) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    bool retain_frame_use_event(
+        Resources& resources,
+        void*& eventOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)eventOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (!eventOpaque) {
+            return true;
+        }
+
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
-        if (!resources.lastUseEventOpaque) {
-            cudaEvent_t ev = nullptr;
-            const cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-            if (err != cudaSuccess || !ev) {
-                return;
-            }
-            resources.lastUseEventOpaque = reinterpret_cast<void*>(ev);
+        reap_frame_use_events_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
-        cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-        (void)cudaEventRecord(ev, stream);
-#else
-        (void)resources;
-        (void)cudaStreamOpaque;
+
+        try {
+            Resources::PendingFrameUseEvent entry{};
+            entry.eventOpaque = eventOpaque;
+            resources.pendingFrameUseEvents.push_back(entry);
+        } catch (...) {
+            outError = "frame use event retention failed";
+            return false;
+        }
+
+        eventOpaque = nullptr;
+        return true;
 #endif
     }
 

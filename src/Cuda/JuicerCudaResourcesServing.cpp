@@ -2438,8 +2438,8 @@
             const size_t bytes = cpu.size() * sizeof(double);
             if (dst->log2XYZ && dst->res == res) {
                 double* const deviceLut = dst->log2XYZ;
-                const bool waitOk = wait_for_last_use_event_snapshot(
-                    resources.lastUseEventOpaque,
+                const bool waitOk = wait_for_frame_use_events_locked(
+                    resources,
                     cudaStreamOpaque,
                     "scan LUT",
                     outError);
@@ -2630,8 +2630,8 @@
         }
         if (overwriting) {
             float* const printIllumFiltered = resources.printIllumFiltered;
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 "print illuminant filtered",
                 outError);
