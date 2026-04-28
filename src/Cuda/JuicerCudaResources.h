@@ -375,11 +375,14 @@ namespace JuicerCuda {
         int hanatosNIntegrated = 0;
         std::uint64_t hanatosIntegratedKeyHash = 0;
 
-        // Device-side flag for scan-stage non-finite detection (set by kernels).
-        int* scanErrorFlag = nullptr;
-        int* scanErrorHost = nullptr;
-        void* scanErrorEventOpaque = nullptr;
-        int scanErrorPending = 0;
+        struct PendingScanErrorReadback {
+            int* host = nullptr;
+            void* eventOpaque = nullptr;
+        };
+
+        // Submitted readbacks retained after a prepared frame releases its exclusive scan-error
+        // stage. These entries are not reusable workspace.
+        std::vector<PendingScanErrorReadback> pendingScanErrorReadbacks;
 
         struct DeviceAutoExposureScratch {
             JuicerCudaAutoExposurePartial* partialsA = nullptr;
@@ -455,6 +458,16 @@ namespace JuicerCuda {
         std::size_t bytes,
         void* cudaStreamOpaque,
         const char* label,
+        std::string& outError);
+    bool retain_scan_error_readback(
+        Resources& resources,
+        int*& host,
+        void*& eventOpaque,
+        std::string& outError);
+    bool poll_scan_error_readbacks(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        bool& outDetected,
         std::string& outError);
 
     // Records a "last use" event on the given stream to allow safe rebuilds without global sync.

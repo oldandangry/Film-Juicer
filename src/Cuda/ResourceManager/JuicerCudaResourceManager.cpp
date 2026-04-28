@@ -274,7 +274,6 @@ bool ensure_uploaded(
     void* cudaStreamOpaque,
     std::string& outError);
 bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
-bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
 bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
 bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
 bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);
@@ -1923,12 +1922,9 @@ void add_resources_active_bytes_locked(
         add_snapshot_bytes(snapshot, bytes);
     }
 
-    if (resources.scanErrorFlag) {
-        add_snapshot_bytes(snapshot, sizeof(int));
-    }
-    if (resources.scanErrorHost) {
-        add_snapshot_bytes(snapshot, sizeof(int));
-    }
+    add_snapshot_bytes(
+        snapshot,
+        static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
 
     if (resources.autoExposureExposureScale) add_snapshot_bytes(snapshot, sizeof(float));
     if (resources.autoExposureAutoEV) add_snapshot_bytes(snapshot, sizeof(double));
@@ -2005,12 +2001,9 @@ void add_scratch_tier_bytes_locked(
     add_optics_scratch_bytes(resources.scannerScratch, scratchSnapshot);
     add_spatial_dir_scratch_bytes(resources.spatialDirScratch, scratchSnapshot);
 
-    if (resources.scanErrorFlag) {
-        add_snapshot_bytes(scratchSnapshot, sizeof(int));
-    }
-    if (resources.scanErrorHost) {
-        add_snapshot_bytes(scratchSnapshot, sizeof(int));
-    }
+    add_snapshot_bytes(
+        scratchSnapshot,
+        static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
 
     if (resources.autoExposureExposureScale) add_snapshot_bytes(scratchSnapshot, sizeof(float));
     if (resources.autoExposureAutoEV) add_snapshot_bytes(scratchSnapshot, sizeof(double));

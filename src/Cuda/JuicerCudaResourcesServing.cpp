@@ -1263,23 +1263,140 @@
         resources.wangColors = 0;
     }
 
-    static void free_scan_error_flag(Resources& resources) noexcept {
+    static void release_scan_error_readback_entry(
+        Resources::PendingScanErrorReadback& entry,
+        bool waitForEvent) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (resources.scanErrorFlag) {
-            cudaFree(resources.scanErrorFlag);
-            resources.scanErrorFlag = nullptr;
+        cudaEvent_t ev = entry.eventOpaque
+            ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+            : nullptr;
+        if (waitForEvent && ev) {
+            (void)cudaEventSynchronize(ev);
         }
-        if (resources.scanErrorHost) {
-            cudaFreeHost(resources.scanErrorHost);
-            resources.scanErrorHost = nullptr;
+        if (entry.host) {
+            cudaFreeHost(entry.host);
         }
-        if (resources.scanErrorEventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.scanErrorEventOpaque);
+        if (ev) {
             cudaEventDestroy(ev);
-            resources.scanErrorEventOpaque = nullptr;
         }
+#else
+        (void)waitForEvent;
 #endif
-        resources.scanErrorPending = 0;
+        entry = Resources::PendingScanErrorReadback{};
+    }
+
+    static void free_scan_error_readbacks(Resources& resources) noexcept {
+        for (Resources::PendingScanErrorReadback& entry : resources.pendingScanErrorReadbacks) {
+            release_scan_error_readback_entry(entry, true);
+        }
+        resources.pendingScanErrorReadbacks.clear();
+    }
+
+
+    bool retain_scan_error_readback(
+        Resources& resources,
+        int*& host,
+        void*& eventOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)host;
+        (void)eventOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (!host || !eventOpaque) {
+            outError = "scan error readback staging missing";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        try {
+            Resources::PendingScanErrorReadback entry{};
+            entry.host = host;
+            entry.eventOpaque = eventOpaque;
+            resources.pendingScanErrorReadbacks.push_back(entry);
+        } catch (...) {
+            outError = "scan error readback retention failed";
+            return false;
+        }
+
+        host = nullptr;
+        eventOpaque = nullptr;
+        return true;
+#endif
+    }
+
+    bool poll_scan_error_readbacks(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        bool& outDetected,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outDetected = false;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outDetected = false;
+        outError.clear();
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        std::vector<Resources::PendingScanErrorReadback>& pending =
+            resources.pendingScanErrorReadbacks;
+        for (std::size_t i = 0; i < pending.size();) {
+            Resources::PendingScanErrorReadback& entry = pending[i];
+            cudaEvent_t ev = entry.eventOpaque
+                ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+                : nullptr;
+            if (!entry.host || !ev) {
+                release_scan_error_readback_entry(entry, false);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+
+            const cudaError_t pollErr = cudaEventQuery(ev);
+            if (pollErr == cudaSuccess) {
+                if (*entry.host != 0) {
+                    outDetected = true;
+                }
+                release_scan_error_readback_entry(entry, false);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                if (outDetected) {
+                    return true;
+                }
+                continue;
+            }
+            if (pollErr == cudaErrorNotReady) {
+                cudaStream_t stream = cudaStreamOpaque
+                    ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                    : nullptr;
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
+                if (waitErr != cudaSuccess) {
+                    outError = std::string("CUDA scan error stream wait failed: ") +
+                        (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                    return false;
+                }
+                ++i;
+                continue;
+            }
+
+            outError = std::string("CUDA scan error event query failed: ") +
+                (cudaGetErrorString(pollErr) ? cudaGetErrorString(pollErr) : "(unknown)");
+            return false;
+        }
+        return true;
+#endif
     }
 
 
@@ -2385,43 +2502,6 @@
             dst->hash = expectedHash;
             return true;
         }
-#endif
-    }
-
-    bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        std::lock_guard<std::mutex> lock(resources.m);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-
-        if (!resources.scanErrorFlag) {
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scanErrorFlag), sizeof(int));
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(scan error flag) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                resources.scanErrorFlag = nullptr;
-                return false;
-            }
-        }
-        if (!resources.scanErrorHost) {
-            cudaError_t err = cudaMallocHost(reinterpret_cast<void**>(&resources.scanErrorHost), sizeof(int));
-            if (err != cudaSuccess) {
-                resources.scanErrorHost = nullptr;
-            }
-        }
-        if (!resources.scanErrorEventOpaque) {
-            cudaEvent_t ev = nullptr;
-            cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-            if (err == cudaSuccess && ev) {
-                resources.scanErrorEventOpaque = reinterpret_cast<void*>(ev);
-            }
-        }
-        return true;
 #endif
     }
 

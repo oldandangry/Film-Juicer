@@ -174,7 +174,7 @@ static bool enqueue_host_to_device_copy(
 
 static void free_stbn(Resources& resources) noexcept;
 static void free_wang(Resources& resources) noexcept;
-static void free_scan_error_flag(Resources& resources) noexcept;
+static void free_scan_error_readbacks(Resources& resources) noexcept;
 static void free_tables(Resources& resources) noexcept;
 static bool retire_tables_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError);
 static void free_scan_medium(Resources::DeviceScanMedium& m) noexcept;
@@ -610,8 +610,10 @@ namespace JuicerCuda {
             add_residency_bytes(bytes, next.helperNonPolicyTotalBytes, next.overflow);
         };
 
-        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorFlag, resources.scanErrorFlag != nullptr, sizeof(int));
-        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorHost, resources.scanErrorHost != nullptr, sizeof(int));
+        assign_non_policy_bytes(
+            ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorHost,
+            !resources.pendingScanErrorReadbacks.empty(),
+            static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
         assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureExposureScale, resources.autoExposureExposureScale != nullptr, sizeof(float));
         assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureAutoEV, resources.autoExposureAutoEV != nullptr, sizeof(double));
         assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureValid, resources.autoExposureValid != nullptr, sizeof(int));
@@ -1707,7 +1709,7 @@ namespace JuicerCuda {
         free_hanatos(*this);
         free_hanatos_integrated(*this);
         free_mallett_basis(*this);
-        free_scan_error_flag(*this);
+        free_scan_error_readbacks(*this);
         free_auto_exposure(*this);
         asyncDeviceAllocPointers.clear();
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)

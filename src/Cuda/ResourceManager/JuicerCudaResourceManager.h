@@ -174,12 +174,6 @@ bool command_ensure_scan_lut(
     void* cudaStreamOpaque,
     std::string& outError);
 
-bool command_ensure_scan_error_flag(
-    SubmissionTransaction& transaction,
-    JuicerCuda::Resources& resources,
-    void* cudaStreamOpaque,
-    std::string& outError);
-
 bool command_checkpoint_scratch_phase(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
