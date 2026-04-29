@@ -467,6 +467,7 @@ namespace JuicerProcess {
 
         ShutdownToken begin_shutdown() noexcept;
         bool retire_known_contexts(std::string& outError) noexcept;
+        void release_cuda_context_resource_owners() noexcept;
         void release_cuda_host_asset_caches() noexcept;
         void release_process_host_services() noexcept;
         void release_working_state_cores() noexcept;

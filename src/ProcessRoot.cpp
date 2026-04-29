@@ -2094,6 +2094,7 @@ namespace JuicerProcess {
             return;
         }
         set_shutdown_retire_blocked(false);
+        release_cuda_context_resource_owners();
         release_process_host_services();
     }
 
@@ -2372,6 +2373,19 @@ namespace JuicerProcess {
         }
 #else
         return true;
+#endif
+    }
+
+    void Root::release_cuda_context_resource_owners() noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        ContextCudaResourceMap frameResources;
+        ContextCudaResourceMap grainStaticResources;
+        try {
+            std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
+            frameResources.swap(_cudaResourcesByContext);
+            grainStaticResources.swap(_cudaGrainStaticByContext);
+        } catch (...) {
+        }
 #endif
     }
 
