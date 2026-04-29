@@ -1486,7 +1486,10 @@ bool registry_retire(
     const DeviceContextKey deviceKey = keyIt->second;
     const std::uint64_t nowMs = monotonic_time_ms();
     entry.lastTouchedMs = nowMs;
-    if (reason == RegistryRetireReason::Idle && entry.activeSubmissionCount != 0) {
+    const bool requiresNoActiveSubmissions =
+        reason == RegistryRetireReason::Idle ||
+        reason == RegistryRetireReason::ContextReset;
+    if (requiresNoActiveSubmissions && entry.activeSubmissionCount != 0) {
         trace_registry_event_current(
             &deviceKey,
             &entry,
