@@ -3223,6 +3223,9 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+        if (resources.retainedScratchLeaseGeneration != 0) {
+            return true;
+        }
 
         switch (candidate) {
         case ResourceManager::ScratchPolicyCandidate::OpticsGateMask:
@@ -3261,11 +3264,90 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+        if (resources.retainedScratchLeaseGeneration != 0) {
+            return true;
+        }
         return retire_orphaned_shared_tmp_plane_locked(
             resources,
             cudaStreamOpaque,
             "scratch normalization orphaned shared tmp",
             outError);
+#endif
+    }
+
+    bool try_acquire_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        void* cudaStreamOpaque,
+        bool& outAcquired,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)leaseGeneration;
+        (void)cudaStreamOpaque;
+        outAcquired = false;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        outAcquired = false;
+        if (leaseGeneration == 0) {
+            outError = "retained frame scratch lease generation is invalid";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        if (resources.retainedScratchLeaseGeneration == leaseGeneration) {
+            outAcquired = true;
+            return true;
+        }
+        if (resources.retainedScratchLeaseGeneration != 0) {
+            return true;
+        }
+        if (!wait_for_frame_use_events_locked(
+                resources,
+                cudaStreamOpaque,
+                "retained frame scratch lease",
+                outError)) {
+            return false;
+        }
+        resources.retainedScratchLeaseGeneration = leaseGeneration;
+        outAcquired = true;
+        return true;
+#endif
+    }
+
+    bool release_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)leaseGeneration;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (leaseGeneration == 0) {
+            outError = "retained frame scratch lease generation is invalid";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (resources.retainedScratchLeaseGeneration == 0) {
+            return true;
+        }
+        if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
+            outError = "retained frame scratch lease generation mismatch";
+            return false;
+        }
+        resources.retainedScratchLeaseGeneration = 0;
+        return true;
 #endif
     }
 

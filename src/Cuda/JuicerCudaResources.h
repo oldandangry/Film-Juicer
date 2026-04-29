@@ -327,6 +327,7 @@ namespace JuicerCuda {
         DeviceOpticsScratch scannerScratch;
         DeviceGaussianKernel spatialDirKernel;
         DeviceSpatialDirScratch spatialDirScratch;
+        std::uint64_t retainedScratchLeaseGeneration = 0;
 
         std::uint8_t* stbnData = nullptr;
         int stbnWidth = 0;
@@ -455,6 +456,16 @@ namespace JuicerCuda {
     bool retire_orphaned_shared_tmp_plane(
         Resources& resources,
         void* cudaStreamOpaque,
+        std::string& outError);
+    bool try_acquire_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        void* cudaStreamOpaque,
+        bool& outAcquired,
+        std::string& outError);
+    bool release_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
         std::string& outError);
     bool retire_frame_scratch_allocation(
         Resources& resources,

@@ -255,6 +255,18 @@ namespace JuicerProcess {
             bool readbackPending = false;
         };
 
+        struct FrameScratchWorkspace {
+            WorkspaceRequest request{};
+            JuicerCuda::Resources::DeviceOpticsScratch optics{};
+            JuicerCuda::Resources::DeviceSpatialDirScratch spatialDir{};
+            float* sharedTmpPlane = nullptr;
+            int sharedTmpWidth = 0;
+            int sharedTmpHeight = 0;
+            std::size_t sharedTmpCapacityElements = 0;
+            bool retainedLeaseActive = false;
+            bool overflowActive = false;
+        };
+
         Root* root = nullptr;
         Root::CudaResourceOwner resourceOwner;
         Root::CudaResourceOwner grainStaticOwner;
@@ -263,6 +275,7 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         ScanErrorFrameStage scanErrorStage{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
+        FrameScratchWorkspace scratchWorkspace{};
         void* lastCudaStreamOpaque = nullptr;
         bool frameUseEventSubmitted = false;
         const char* failureStageTag = "prepare_frame";
@@ -292,8 +305,19 @@ namespace JuicerProcess {
         bool release_auto_exposure_workspace_after_use(
             void* cudaStreamOpaque,
             std::string& outError);
+        bool ensure_scratch_workspace(
+            const WorkspaceRequest& request,
+            void* cudaStreamOpaque,
+            std::string& outError);
+        bool release_scratch_workspace_after_use(
+            void* cudaStreamOpaque,
+            std::string& outError);
+        bool submit_frame_use_event(
+            void* cudaStreamOpaque,
+            std::string& outError);
         void free_scan_error_stage_now() noexcept;
         void free_auto_exposure_workspace_now() noexcept;
+        void free_scratch_workspace_now() noexcept;
     };
 
     bool Root::PreparedCudaFrame::State::allocate_scan_error_stage(std::string& outError) {
@@ -578,6 +602,354 @@ namespace JuicerProcess {
         workspace = AutoExposureFrameWorkspace{};
     }
 
+    bool Root::PreparedCudaFrame::State::submit_frame_use_event(
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!resources || !transaction.active || transaction.committed) {
+            outError = "prepared frame is not active for use-event submission";
+            return false;
+        }
+        if (frameUseEventSubmitted) {
+            return true;
+        }
+        remember_stream(cudaStreamOpaque);
+
+        cudaEvent_t ev = nullptr;
+        const cudaError_t createErr = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+        if (createErr != cudaSuccess || !ev) {
+            outError = std::string("cudaEventCreateWithFlags(frame use) failed: ") +
+                (cudaGetErrorString(createErr) ? cudaGetErrorString(createErr) : "(unknown)");
+            return false;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+            : nullptr;
+        const cudaError_t recordErr = cudaEventRecord(ev, stream);
+        if (recordErr != cudaSuccess) {
+            cudaEventDestroy(ev);
+            outError = std::string("cudaEventRecord(frame use) failed: ") +
+                (cudaGetErrorString(recordErr) ? cudaGetErrorString(recordErr) : "(unknown)");
+            return false;
+        }
+
+        void* eventOpaque = reinterpret_cast<void*>(ev);
+        if (!JuicerCuda::retain_frame_use_event(*resources, eventOpaque, outError)) {
+            if (eventOpaque) {
+                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(eventOpaque));
+            }
+            if (outError.empty()) {
+                outError = "frame use event retention failed";
+            }
+            return false;
+        }
+        frameUseEventSubmitted = true;
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::ensure_scratch_workspace(
+        const WorkspaceRequest& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!request.needOptics && !request.needSpatialDir) {
+            return true;
+        }
+        if (!resources) {
+            outError = "CUDA resources unavailable for frame scratch lease";
+            return false;
+        }
+        if (request.requestedWidth <= 0 || request.requestedHeight <= 0) {
+            outError = "frame scratch dimensions invalid";
+            return false;
+        }
+
+        auto requests_match = [](const WorkspaceRequest& a, const WorkspaceRequest& b) noexcept {
+            return a.needOptics == b.needOptics &&
+                a.needSpatialDir == b.needSpatialDir &&
+                a.requestedWidth == b.requestedWidth &&
+                a.requestedHeight == b.requestedHeight &&
+                a.needBlurred == b.needBlurred &&
+                a.needAux == b.needAux &&
+                a.needGrainTriplet == b.needGrainTriplet &&
+                a.needGrainShared == b.needGrainShared &&
+                a.needGateMask == b.needGateMask;
+        };
+
+        if (scratchWorkspace.retainedLeaseActive || scratchWorkspace.overflowActive) {
+            if (!requests_match(scratchWorkspace.request, request)) {
+                outError = "prepared frame scratch workspace request mismatch";
+                return false;
+            }
+            return true;
+        }
+
+        remember_stream(cudaStreamOpaque);
+        bool retainedAcquired = false;
+        if (!JuicerCuda::try_acquire_retained_frame_scratch_lease(
+                *resources,
+                transaction.leaseGeneration,
+                cudaStreamOpaque,
+                retainedAcquired,
+                outError)) {
+            return false;
+        }
+        if (retainedAcquired) {
+            scratchWorkspace.request = request;
+            scratchWorkspace.retainedLeaseActive = true;
+            return true;
+        }
+
+        const std::size_t width = static_cast<std::size_t>(request.requestedWidth);
+        const std::size_t height = static_cast<std::size_t>(request.requestedHeight);
+        if (width > (std::numeric_limits<std::size_t>::max() / height)) {
+            outError = "frame scratch element count overflow";
+            return false;
+        }
+        const std::size_t requiredElements = width * height;
+        if (requiredElements > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
+            outError = "frame scratch byte count overflow";
+            return false;
+        }
+        const std::size_t planeBytes = requiredElements * sizeof(float);
+
+        FrameScratchWorkspace next{};
+        next.request = request;
+        next.overflowActive = true;
+
+        auto alloc_float = [&](float*& ptr, std::size_t bytes, const char* label) {
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
+            if (err == cudaSuccess && ptr) {
+                return true;
+            }
+            outError = std::string("cudaMalloc(") + (label ? label : "frame scratch") + ") failed: " +
+                (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            ptr = nullptr;
+            return false;
+        };
+        auto fail_after_partial_alloc = [&]() {
+            scratchWorkspace = next;
+            free_scratch_workspace_now();
+            return false;
+        };
+
+        if (!alloc_float(next.sharedTmpPlane, planeBytes, "frame shared tmp plane")) {
+            return fail_after_partial_alloc();
+        }
+        next.sharedTmpWidth = request.requestedWidth;
+        next.sharedTmpHeight = request.requestedHeight;
+        next.sharedTmpCapacityElements = requiredElements;
+
+        if (request.needOptics) {
+            JuicerCuda::Resources::DeviceOpticsScratch& optics = next.optics;
+            if (!alloc_float(optics.rgbR, planeBytes, "frame scannerScratch.rgbR") ||
+                !alloc_float(optics.rgbG, planeBytes, "frame scannerScratch.rgbG") ||
+                !alloc_float(optics.rgbB, planeBytes, "frame scannerScratch.rgbB")) {
+                return fail_after_partial_alloc();
+            }
+            optics.tmp = next.sharedTmpPlane;
+            optics.width = request.requestedWidth;
+            optics.height = request.requestedHeight;
+            optics.capacityElements = requiredElements;
+            if (request.needBlurred &&
+                !alloc_float(optics.blurred, planeBytes, "frame scannerScratch.blurred")) {
+                return fail_after_partial_alloc();
+            }
+            if (request.needAux &&
+                !alloc_float(optics.aux, planeBytes, "frame scannerScratch.aux")) {
+                return fail_after_partial_alloc();
+            }
+            if (request.needGrainTriplet) {
+                if (!alloc_float(optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp") ||
+                    !alloc_float(optics.grainTmpMid, planeBytes, "frame scannerScratch.grainTmpMid") ||
+                    !alloc_float(optics.grainTmpCoarse, planeBytes, "frame scannerScratch.grainTmpCoarse")) {
+                    return fail_after_partial_alloc();
+                }
+            }
+            if (request.needGrainShared &&
+                !alloc_float(optics.grainTmpShared, planeBytes, "frame scannerScratch.grainTmpShared")) {
+                return fail_after_partial_alloc();
+            }
+            if (request.needGateMask) {
+                const int gateWidth = (request.requestedWidth + 1) / 2;
+                const int gateHeight = (request.requestedHeight + 1) / 2;
+                const std::size_t gateElements =
+                    static_cast<std::size_t>(gateWidth) * static_cast<std::size_t>(gateHeight);
+                if (gateElements > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
+                    outError = "frame gate-mask byte count overflow";
+                    return fail_after_partial_alloc();
+                }
+                if (!alloc_float(
+                        optics.gateMask,
+                        gateElements * sizeof(float),
+                        "frame scannerScratch.gateMask")) {
+                    return fail_after_partial_alloc();
+                }
+                optics.gateWidth = gateWidth;
+                optics.gateHeight = gateHeight;
+                optics.gateMaskCapacityElements = gateElements;
+                optics.gateMaskHash = 0;
+            }
+        }
+
+        if (request.needSpatialDir) {
+            JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = next.spatialDir;
+            if (!alloc_float(spatialDir.corrY, planeBytes, "frame spatial DIR corrY") ||
+                !alloc_float(spatialDir.corrM, planeBytes, "frame spatial DIR corrM") ||
+                !alloc_float(spatialDir.corrC, planeBytes, "frame spatial DIR corrC")) {
+                return fail_after_partial_alloc();
+            }
+            spatialDir.tmp = next.sharedTmpPlane;
+            spatialDir.width = request.requestedWidth;
+            spatialDir.height = request.requestedHeight;
+            spatialDir.capacityElements = requiredElements;
+        }
+
+        scratchWorkspace = next;
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::release_scratch_workspace_after_use(
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        FrameScratchWorkspace& workspace = scratchWorkspace;
+        if (!workspace.retainedLeaseActive && !workspace.overflowActive) {
+            return true;
+        }
+        if (!resources) {
+            outError = "CUDA resources unavailable for frame scratch release";
+            return false;
+        }
+
+        remember_stream(cudaStreamOpaque);
+        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
+
+        if (workspace.retainedLeaseActive) {
+            if (!submit_frame_use_event(retireStreamOpaque, outError)) {
+                if (outError.empty()) {
+                    outError = "frame scratch use-event submission failed";
+                }
+                return false;
+            }
+            if (!JuicerCuda::release_retained_frame_scratch_lease(
+                    *resources,
+                    transaction.leaseGeneration,
+                    outError)) {
+                if (outError.empty()) {
+                    outError = "retained frame scratch lease release failed";
+                }
+                return false;
+            }
+            workspace = FrameScratchWorkspace{};
+            return true;
+        }
+
+        bool retiredAll = true;
+        auto retire_ptr = [&](float*& ptr, std::size_t bytes, const char* label) {
+            if (!ptr || !retiredAll) {
+                return;
+            }
+            void* raw = ptr;
+            std::string localError;
+            if (JuicerCuda::retire_frame_scratch_allocation(
+                    *resources,
+                    raw,
+                    bytes,
+                    retireStreamOpaque,
+                    label,
+                    localError)) {
+                ptr = nullptr;
+                return;
+            }
+            retiredAll = false;
+            outError = localError.empty()
+                ? std::string(label ? label : "frame scratch") + " retire failed"
+                : localError;
+        };
+
+        const std::size_t planeBytes = workspace.optics.capacityElements > 0
+            ? workspace.optics.capacityElements * sizeof(float)
+            : workspace.spatialDir.capacityElements * sizeof(float);
+        retire_ptr(workspace.optics.rgbR, planeBytes, "frame scannerScratch.rgbR");
+        retire_ptr(workspace.optics.rgbG, planeBytes, "frame scannerScratch.rgbG");
+        retire_ptr(workspace.optics.rgbB, planeBytes, "frame scannerScratch.rgbB");
+        retire_ptr(workspace.optics.blurred, planeBytes, "frame scannerScratch.blurred");
+        retire_ptr(workspace.optics.aux, planeBytes, "frame scannerScratch.aux");
+        retire_ptr(workspace.optics.grainTmp, planeBytes, "frame scannerScratch.grainTmp");
+        retire_ptr(workspace.optics.grainTmpShared, planeBytes, "frame scannerScratch.grainTmpShared");
+        retire_ptr(workspace.optics.grainTmpMid, planeBytes, "frame scannerScratch.grainTmpMid");
+        retire_ptr(workspace.optics.grainTmpCoarse, planeBytes, "frame scannerScratch.grainTmpCoarse");
+        retire_ptr(
+            workspace.optics.gateMask,
+            workspace.optics.gateMaskCapacityElements * sizeof(float),
+            "frame scannerScratch.gateMask");
+        retire_ptr(workspace.spatialDir.corrY, planeBytes, "frame spatial DIR corrY");
+        retire_ptr(workspace.spatialDir.corrM, planeBytes, "frame spatial DIR corrM");
+        retire_ptr(workspace.spatialDir.corrC, planeBytes, "frame spatial DIR corrC");
+        retire_ptr(
+            workspace.sharedTmpPlane,
+            workspace.sharedTmpCapacityElements * sizeof(float),
+            "frame shared tmp plane");
+
+        if (retiredAll) {
+            workspace = FrameScratchWorkspace{};
+            return true;
+        }
+        if (outError.empty()) {
+            outError = "frame scratch retire failed";
+        }
+        return false;
+    }
+
+    void Root::PreparedCudaFrame::State::free_scratch_workspace_now() noexcept {
+        FrameScratchWorkspace& workspace = scratchWorkspace;
+        if (workspace.optics.rgbR) {
+            cudaFree(workspace.optics.rgbR);
+        }
+        if (workspace.optics.rgbG) {
+            cudaFree(workspace.optics.rgbG);
+        }
+        if (workspace.optics.rgbB) {
+            cudaFree(workspace.optics.rgbB);
+        }
+        if (workspace.optics.blurred) {
+            cudaFree(workspace.optics.blurred);
+        }
+        if (workspace.optics.aux) {
+            cudaFree(workspace.optics.aux);
+        }
+        if (workspace.optics.grainTmp) {
+            cudaFree(workspace.optics.grainTmp);
+        }
+        if (workspace.optics.grainTmpShared) {
+            cudaFree(workspace.optics.grainTmpShared);
+        }
+        if (workspace.optics.grainTmpMid) {
+            cudaFree(workspace.optics.grainTmpMid);
+        }
+        if (workspace.optics.grainTmpCoarse) {
+            cudaFree(workspace.optics.grainTmpCoarse);
+        }
+        if (workspace.optics.gateMask) {
+            cudaFree(workspace.optics.gateMask);
+        }
+        if (workspace.spatialDir.corrY) {
+            cudaFree(workspace.spatialDir.corrY);
+        }
+        if (workspace.spatialDir.corrM) {
+            cudaFree(workspace.spatialDir.corrM);
+        }
+        if (workspace.spatialDir.corrC) {
+            cudaFree(workspace.spatialDir.corrC);
+        }
+        if (workspace.sharedTmpPlane) {
+            cudaFree(workspace.sharedTmpPlane);
+        }
+        workspace = FrameScratchWorkspace{};
+    }
+
     Root::PreparedCudaFrame::PreparedCudaFrame(std::unique_ptr<State> state) noexcept
         : _state(std::move(state)) {
     }
@@ -688,6 +1060,10 @@ namespace JuicerProcess {
             outError = releaseError.empty() ? "frame scan-error stage release failed" : releaseError;
             return false;
         }
+        if (!_state->release_scratch_workspace_after_use(cudaStreamOpaque, releaseError)) {
+            outError = releaseError.empty() ? "frame scratch workspace release failed" : releaseError;
+            return false;
+        }
         if (!_state->release_auto_exposure_workspace_after_use(cudaStreamOpaque, releaseError)) {
             outError = releaseError.empty() ? "frame auto-exposure retire failed" : releaseError;
             if (JTRACE_ENABLED(1)) {
@@ -711,6 +1087,21 @@ namespace JuicerProcess {
                 (void)_state->release_scan_error_stage_after_use(
                     _state->lastCudaStreamOpaque,
                     releaseError);
+                if (!_state->release_scratch_workspace_after_use(
+                        _state->lastCudaStreamOpaque,
+                        releaseError) &&
+                    JTRACE_ENABLED(1)) {
+                    std::string msg = "frame_scratch_workspace_release_failed abort=1";
+                    if (reason && reason[0]) {
+                        msg += " reason=";
+                        msg += reason;
+                    }
+                    if (!releaseError.empty()) {
+                        msg += " error=";
+                        msg += releaseError;
+                    }
+                    JTRACE("CUDA", msg);
+                }
                 if (!_state->release_auto_exposure_workspace_after_use(
                         _state->lastCudaStreamOpaque,
                         releaseError) &&
@@ -799,6 +1190,15 @@ namespace JuicerProcess {
         if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
+        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+            _state->set_failure(
+                "acquire_frame_scratch_workspace",
+                "CUDA frame scratch workspace acquisition failed");
+            return false;
+        }
+        if (_state->scratchWorkspace.overflowActive) {
+            return true;
+        }
 
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
             make_scratch_request_descriptor(workspace);
@@ -826,6 +1226,15 @@ namespace JuicerProcess {
         std::string& outError) {
         if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
+        }
+        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+            _state->set_failure(
+                "acquire_frame_scratch_workspace",
+                "CUDA frame scratch workspace acquisition failed");
+            return false;
+        }
+        if (_state->scratchWorkspace.overflowActive) {
+            return true;
         }
 
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
@@ -1525,8 +1934,14 @@ namespace JuicerProcess {
         if (!workspace_marker_matches_current_frame(workspace) || !workspace._request.needSpatialDir) {
             return view;
         }
+        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+            return view;
+        }
 
-        const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch = _state->resources->spatialDirScratch;
+        const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch =
+            _state->scratchWorkspace.overflowActive
+                ? _state->scratchWorkspace.spatialDir
+                : _state->resources->spatialDirScratch;
         view.corrY = scratch.corrY;
         view.corrM = scratch.corrM;
         view.corrC = scratch.corrC;
@@ -1541,8 +1956,14 @@ namespace JuicerProcess {
         if (!workspace_marker_matches_current_frame(workspace) || !workspace._request.needOptics) {
             return view;
         }
+        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+            return view;
+        }
 
-        const JuicerCuda::Resources::DeviceOpticsScratch& scratch = _state->resources->scannerScratch;
+        const JuicerCuda::Resources::DeviceOpticsScratch& scratch =
+            _state->scratchWorkspace.overflowActive
+                ? _state->scratchWorkspace.optics
+                : _state->resources->scannerScratch;
         view.rgbR = scratch.rgbR;
         view.rgbG = scratch.rgbG;
         view.rgbB = scratch.rgbB;
@@ -1566,6 +1987,13 @@ namespace JuicerProcess {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             return;
         }
+        if (_state->scratchWorkspace.overflowActive) {
+            _state->scratchWorkspace.optics.gateMaskHash = gateMaskHash;
+            return;
+        }
+        if (!_state->scratchWorkspace.retainedLeaseActive) {
+            return;
+        }
         _state->resources->scannerScratch.gateMaskHash = gateMaskHash;
     }
 
@@ -1577,32 +2005,8 @@ namespace JuicerProcess {
             _state->frameUseEventSubmitted) {
             return;
         }
-        _state->remember_stream(cudaStreamOpaque);
-
-        cudaEvent_t ev = nullptr;
-        const cudaError_t createErr = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-        if (createErr != cudaSuccess || !ev) {
-            return;
-        }
-
-        const cudaStream_t stream = cudaStreamOpaque
-            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-            : nullptr;
-        const cudaError_t recordErr = cudaEventRecord(ev, stream);
-        if (recordErr != cudaSuccess) {
-            cudaEventDestroy(ev);
-            return;
-        }
-
-        void* eventOpaque = reinterpret_cast<void*>(ev);
-        std::string retainError;
-        if (!JuicerCuda::retain_frame_use_event(*_state->resources, eventOpaque, retainError)) {
-            if (eventOpaque) {
-                cudaEventDestroy(reinterpret_cast<cudaEvent_t>(eventOpaque));
-            }
-            return;
-        }
-        _state->frameUseEventSubmitted = true;
+        std::string ignoredError;
+        (void)_state->submit_frame_use_event(cudaStreamOpaque, ignoredError);
     }
 
     const char* Root::PreparedCudaFrame::failure_stage_tag() const noexcept {
