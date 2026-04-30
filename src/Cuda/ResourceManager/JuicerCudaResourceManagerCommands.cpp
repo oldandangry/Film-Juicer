@@ -3718,11 +3718,17 @@ bool command_launch_base_pipeline_graph(
     key.nComponents = run.nComponents;
     key.renderMode = renderModeKey;
     const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    constexpr bool kGraphAdmissionCriticalCurrentFrame = false;
     ResourceManagerState& managerState = global_state();
     const std::uint64_t graphLargeThresholdBytes = graph_large_entry_threshold_bytes(cfg);
     const std::uint64_t graphLargeCapBytes = graph_large_entry_quarantine_cap_bytes(cfg);
     const std::uint32_t graphLargeCapEntries = graph_large_entry_quarantine_cap_entries(cfg);
+    auto launch_graph_direct = [&](bool countNonResidentServe) -> bool {
+        return launch_base_pipeline_direct_fallback(
+            managerState,
+            countNonResidentServe,
+            launch_base_pipeline_direct,
+            outCudaErrorCode);
+    };
 
     std::shared_ptr<BaseGraphBucketState> bucketPtr =
         get_or_create_base_graph_bucket(transaction.snapshot.deviceContextKey);
@@ -3731,7 +3737,7 @@ bool command_launch_base_pipeline_graph(
         outError = "base graph bucket unavailable";
         return false;
     }
-    std::lock_guard<std::mutex> bucketLock(bucketPtr->mutex);
+    std::unique_lock<std::mutex> bucketLock(bucketPtr->mutex);
     BaseGraphBucketState& bucket = *bucketPtr;
     const std::uint64_t useTick = prepare_base_graph_bucket_for_submission(
         bucket,
@@ -3754,120 +3760,16 @@ bool command_launch_base_pipeline_graph(
         applyGraphLargeEntryPolicy,
         reusedResidentGraph);
     const std::uint64_t keyDigest = base_graph_key_digest(key);
-    TierCircuitAttempt graphCircuitAttempt{};
-    bool graphCircuitAttemptActive = false;
-    auto launch_graph_direct = [&](bool countNonResidentServe) -> bool {
-        return launch_base_pipeline_direct_fallback(
-            managerState,
-            countNonResidentServe,
-            launch_base_pipeline_direct,
-            outCudaErrorCode);
-    };
-    auto cancel_graph_attempt_and_launch_direct =
-        [&](const char* cancelReason, bool countNonResidentServe) -> bool {
-        return cancel_graph_attempt_and_launch_direct_fallback(
-            transaction,
-            graphCircuitAttempt,
-            graphCircuitAttemptActive,
-            cancelReason,
-            managerState,
-            countNonResidentServe,
-            launch_base_pipeline_direct,
-            outCudaErrorCode);
-    };
-    auto fail_graph_attempt_and_launch_direct =
-        [&](const char* failureReason, bool countNonResidentServe) -> bool {
-        return fail_graph_attempt_and_launch_direct_fallback(
-            transaction,
-            graphCircuitAttempt,
-            graphCircuitAttemptActive,
-            failureReason,
-            managerState,
-            countNonResidentServe,
-            launch_base_pipeline_direct,
-            outCudaErrorCode);
-    };
+    clear_graph_admission_state(bucket, keyDigest);
     if (!found) {
-        const std::uint64_t requestBytes = estimate_base_graph_request_bytes(key);
-        std::uint64_t supersededLatestSnapshotId = 0;
-        if (requestBytes > 0 &&
-            should_cancel_superseded_noncritical_builder(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                kGraphAdmissionCriticalCurrentFrame,
-                requestBytes,
-                supersededLatestSnapshotId)) {
-            return launch_graph_direct(true);
-        }
-        std::uint32_t observedProbationHits = 0;
-        if (!evaluate_graph_large_entry_readmit(
-                transaction,
-                bucket,
-                keyDigest,
-                requestBytes,
-                graphLargeThresholdBytes,
-                kGraphAdmissionCriticalCurrentFrame,
-                cfg,
-                managerState,
-                observedProbationHits)) {
-            return launch_graph_direct(true);
-        }
-
-        if (!evaluate_graph_cache_admission(
-                transaction,
-                bucket,
-                keyDigest,
-                requestBytes,
-                observedProbationHits,
-                kGraphAdmissionCriticalCurrentFrame,
-                cfg,
-                managerState)) {
-            return launch_graph_direct(true);
-        }
-
-        std::string circuitError;
-        if (!tier_circuit_begin_attempt(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                ResourceTier::Graph,
-                tier_circuit_blocks_admission(ResourceTier::Graph),
-                graphCircuitAttempt,
-                circuitError)) {
-            return launch_graph_direct(true);
-        }
-        graphCircuitAttemptActive = true;
-
-        BuilderReservationClaim builderClaim{};
-        ReservationAttemptInfo builderReservation{};
-        if (!acquire_graph_builder_reservation(
-                transaction,
-                managerState,
-                requestBytes,
-                kGraphAdmissionCriticalCurrentFrame,
-                builderClaim,
-                builderReservation)) {
-            return cancel_graph_attempt_and_launch_direct("nonresident_builder_gate", true);
-        }
-        BuilderReservationGuard builderGuard(std::move(builderClaim));
-
-        found = build_admitted_graph_entry(
-            transaction,
-            bucket,
-            key,
-            keyDigest,
-            launchFn,
-            run,
-            stream,
-            graphLargeThresholdBytes,
-            cfg.keepHotMs,
-            managerState,
-            applyGraphLargeEntryPolicy);
-    } else {
-        clear_graph_admission_state(bucket, keyDigest);
+        // Graph capture/instantiation is optional sidecar work; a miss must not delay the current frame.
+        bucketLock.unlock();
+        return launch_graph_direct(true);
     }
 
     if (!found || !found->execOpaque || !found->kernelNodeOpaque) {
-        return fail_graph_attempt_and_launch_direct("durable_build_failed", false);
+        bucketLock.unlock();
+        return launch_graph_direct(false);
     }
 
     if (const char* graphLaunchFailure = launch_selected_graph_entry(
@@ -3878,12 +3780,10 @@ bool command_launch_base_pipeline_graph(
             reusedResidentGraph,
             applyGraphLargeEntryPolicy,
             outCudaErrorCode)) {
-        return fail_graph_attempt_and_launch_direct(graphLaunchFailure, false);
+        (void)graphLaunchFailure;
+        bucketLock.unlock();
+        return launch_graph_direct(false);
     }
-    complete_graph_attempt_success(
-        transaction,
-        graphCircuitAttempt,
-        graphCircuitAttemptActive);
     outCudaErrorCode = static_cast<int>(cudaSuccess);
     return true;
 #endif
