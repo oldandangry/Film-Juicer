@@ -166,7 +166,7 @@ namespace {
         return userEdit && param_name_is(paramName, expected);
     }
 
-    inline const std::string& first_nonempty_or(
+    inline std::string first_nonempty_or(
         const std::string& primary,
         const std::string& secondary,
         const std::string& fallback) {
@@ -3597,11 +3597,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     WorkingStateInfo wsInfo = prepareWorkingState();
     std::shared_ptr<const WorkingState> wsHold = wsInfo.workingState;
-    const WorkingState* ws = wsHold.get();
     const Print::Runtime* prt = wsInfo.printRuntime;
     const bool wsReady = wsInfo.workingStateReady;
     const bool printReady = wsInfo.printRuntimeReady;
     if (traceVerbose) {
+        const WorkingState* ws = wsHold.get();
         ParamSnapshot Pdbg = snapshotParams();
         const ProfileKeyLabels labels = resolve_profile_key_labels(Pdbg);
         const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(prt);
@@ -4360,8 +4360,8 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print
     const std::string& printRef = runtime.referenceIlluminant;
     const std::string& printView = runtime.viewingIlluminant;
 
-    const std::string& refSource = first_nonempty_or(filmRef, printRef, printView);
-    const std::string& enlSource = first_nonempty_or(printRef, filmRef, printView);
+    const std::string refSource = first_nonempty_or(filmRef, printRef, printView);
+    const std::string enlSource = first_nonempty_or(printRef, filmRef, printView);
 
     const ScopedParamEventSuppression suppressEvents(_state.get());
     changed = apply_illuminant_choice_from_source(

@@ -697,7 +697,7 @@ namespace Spectral {
         const SpectralReconstructionPath& path,
         float E[3])
     {
-        if (!path.spdReady) {
+        if (!path.spdReady || !tablesSPD || !S_inv) {
             std::fill_n(E, 3, 0.0f);
             return;
         }
@@ -796,7 +796,9 @@ namespace Spectral {
         spd_probe_begin_capture(rgbIn, rgbDWG, path.spdReady);
 #endif
 
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
         float normScale = cfg.midgrayScale;
+#endif
         if (path.spdReady) {
             compute_layer_exposures_from_reconstruction_path(
                 cfg,
@@ -809,8 +811,7 @@ namespace Spectral {
                 sR,
                 path,
                 E);
-            normScale = cfg.midgrayScale;
-            scale_triplet_nonnegative_inplace(E, normScale);
+            scale_triplet_nonnegative_inplace(E, cfg.midgrayScale);
         }
         else {
             std::fill_n(E, 3, 0.0f);

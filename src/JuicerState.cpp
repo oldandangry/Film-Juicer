@@ -2065,12 +2065,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
         // NOTE: Removed runtime balancing. Profiles are pre-balanced; rebalancing at runtime
         // violates agx-emulsion parity and causes red/magenta color shifts. See claude-review.md.
+#if JUICER_DIAGNOSTICS_COMPILED
         if (hasRefIlluminant) {
             JTRACE("BUILD", "loaded reference illuminant for metadata (no runtime balancing applied)");
         }
         else {
             JTRACE("BUILD", "reference illuminant failed to load; SPD reconstruction will be disabled");
         }
+#endif
     }
 
     {
@@ -2204,7 +2206,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
     copy_float3(dirRT.dMax, densityMaxPostDir.data());
 
-    Spectral::NegativeCouplerParams negParams;
+    Spectral::NegativeCouplerParams negParams{};
     negParams.DmaxY = dirRT.dMax[0];
     negParams.DmaxM = dirRT.dMax[1];
     negParams.DmaxC = dirRT.dMax[2];
@@ -2528,12 +2530,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         printRuntimeOk = true;
     }
     else {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (!printDensityOk) {
             JTRACE("BUILD", "FATAL: missing spectral data (print profile) after glare processing");
         }
         else {
             JTRACE("BUILD", "FATAL: print profile invalid or viewing illuminant missing");
         }
+#endif
         target->tablesPrint = Spectral::SpectralTables{};
     }
 
@@ -2717,20 +2721,18 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     std::array<float, 3> offsetsRGB{ {0.0f, 0.0f, 0.0f} };
-    bool usingLogEMetadata = false;
     if (hasLogEMid) {
         offsetsRGB = logMidRGB;
-        usingLogEMetadata = true;
     }
     else if (hasDensityMid) {
         offsetsRGB = densityOffsets;
     }
 
-    const float offR = offsetsRGB[0];
-    const float offG = offsetsRGB[1];
-    const float offB = offsetsRGB[2];
-
     if (buildTraceEnabled) {
+        const bool usingLogEMetadata = hasLogEMid;
+        const float offR = offsetsRGB[0];
+        const float offG = offsetsRGB[1];
+        const float offB = offsetsRGB[2];
         std::ostringstream oss;
         if (usingLogEMetadata) {
             oss << "negative logE offsets B/G/R=" << offB << "/" << offG << "/" << offR

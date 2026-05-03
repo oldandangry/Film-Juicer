@@ -1096,25 +1096,37 @@ namespace {
             return;
         }
 
+        std::string retireError;
+#if JUICER_DIAGNOSTICS_COMPILED
         const char* stageName = nonempty_cstr_or(stage, "unknown_stage");
         const bool traceInfo = JTRACE_ENABLED(1);
-        std::string retireError;
         const bool retireAccepted = JuicerProcess::root().retire_reset_context(
             key.deviceId,
             key.contextOpaque,
             retireError);
+#else
+        JuicerProcess::root().retire_reset_context(
+            key.deviceId,
+            key.contextOpaque,
+            retireError);
+#endif
 
+#if JUICER_DIAGNOSTICS_COMPILED
         bool latchCleared = false;
+#endif
         {
             std::lock_guard<std::mutex> lock(instanceState->submissionSnapshotLatchMutex);
             if (instanceState->submissionSnapshotLatchValid &&
                 instanceState->submissionSnapshotLatch.deviceContextKey == key) {
                 instanceState->submissionSnapshotLatch = JuicerCuda::ResourceManager::SubmissionSnapshot{};
                 instanceState->submissionSnapshotLatchValid = false;
+#if JUICER_DIAGNOSTICS_COMPILED
                 latchCleared = true;
+#endif
             }
         }
 
+#if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
             const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
             std::string msg;
@@ -1137,6 +1149,7 @@ namespace {
             }
             JTRACE("MSLCY", msg);
         }
+#endif
     }
 #endif
 
@@ -1152,6 +1165,7 @@ namespace {
         return (instanceToken != 0) ? instanceToken : session_seed_or_default(sessionSeed);
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     const char* runtime_lease_outcome_label(bool waitedForLease) {
         return waitedForLease ? "wait_acquired" : "acquired";
     }
@@ -1159,6 +1173,7 @@ namespace {
     const char* submission_snapshot_action_label(bool reusingSnapshotLatch) {
         return reusingSnapshotLatch ? "reuse" : "new";
     }
+#endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && \
     ((defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)) || \
@@ -2354,11 +2369,15 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     ScannerOptics::Runtime* opticsRuntime = runtimeLease.acquire();
     constexpr std::uint32_t kScannerRuntimeLeaseMaxWaitUs = 16000u;
     constexpr std::uint32_t kScannerRuntimeLeasePollSleepUs = 50u;
+#if JUICER_DIAGNOSTICS_COMPILED
     bool waitedForLease = false;
+#endif
     const auto leaseWaitStart = std::chrono::steady_clock::now();
     const auto leaseDeadline = leaseWaitStart + std::chrono::microseconds(kScannerRuntimeLeaseMaxWaitUs);
     while (!opticsRuntime) {
+#if JUICER_DIAGNOSTICS_COMPILED
         waitedForLease = true;
+#endif
         if (should_abort_effect()) {
             JTRACE_VERBOSE("MSSRL", "event=runtime_lease outcome=abort");
             return;
@@ -2369,9 +2388,12 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         std::this_thread::sleep_for(std::chrono::microseconds(kScannerRuntimeLeasePollSleepUs));
         opticsRuntime = runtimeLease.acquire();
     }
+#if JUICER_DIAGNOSTICS_COMPILED
     const std::uint64_t leaseWaitUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - leaseWaitStart).count());
+#endif
     if (!opticsRuntime) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
             std::string msg;
             msg.reserve(128);
@@ -2382,9 +2404,11 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
             msg += std::to_string(static_cast<unsigned long long>(kScannerRuntimeLeaseMaxWaitUs));
             JTRACE("MSSRL", msg);
         }
+#endif
         JTRACE("SCAN", "FATAL: scanner runtime lease unavailable after bounded wait");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
+#if JUICER_DIAGNOSTICS_COMPILED
     if (traceVerbose) {
         std::string msg;
         msg.reserve(96);
@@ -2396,6 +2420,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         msg += runtimeLease.slotName;
         JTRACE_VERBOSE("MSSRL", msg);
     }
+#endif
 
     const std::uint64_t seedBase = seed_base_for_pass(
         _sessionSeed,
@@ -2880,7 +2905,9 @@ void JuicerProcessor::processImagesCUDA() {
                 autoExposureReusableKeyHash);
         snapshot.keySchemaVersion = JuicerCuda::ResourceManager::kSubmissionKeySchemaVersion;
         snapshot.traceSchemaVersion = JuicerCuda::ResourceManager::kTraceSchemaVersion;
+#if JUICER_DIAGNOSTICS_COMPILED
         bool reusingSnapshotLatch = false;
+#endif
         {
             std::lock_guard<std::mutex> latchLock(_instanceState->submissionSnapshotLatchMutex);
             const auto& latched = _instanceState->submissionSnapshotLatch;
@@ -2898,7 +2925,9 @@ void JuicerProcessor::processImagesCUDA() {
                 digestsMatch &&
                 latched.snapshotId != 0) {
                 snapshot = latched;
+#if JUICER_DIAGNOSTICS_COMPILED
                 reusingSnapshotLatch = true;
+#endif
             } else {
                 std::uint64_t nextSnapshotId =
                     _instanceState->submissionSnapshotIdNext.fetch_add(1, std::memory_order_relaxed);
@@ -2910,6 +2939,7 @@ void JuicerProcessor::processImagesCUDA() {
                 _instanceState->submissionSnapshotLatchValid = true;
             }
         }
+#if JUICER_DIAGNOSTICS_COMPILED
         if (traceVerbose) {
             std::string msg;
             msg.reserve(128);
@@ -2923,6 +2953,7 @@ void JuicerProcessor::processImagesCUDA() {
             msg += std::to_string(snapshot.instanceToken.value);
             JTRACE_VERBOSE("MSSNP", msg);
         }
+#endif
     }
 
     std::string prepareFrameError;

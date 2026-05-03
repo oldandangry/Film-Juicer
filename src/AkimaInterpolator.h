@@ -1007,18 +1007,11 @@ namespace Interpolation {
             for (double dx : polyRoots) {
                 const double xRoot = x0 + dx;
                 const bool inInterval = dx >= -tol && dx <= h + tol;
-                bool accept = false;
-                if (inInterval) {
-                    accept = true;
-                }
-                else if (_extrapolate) {
-                    if (seg == 0 && dx < -tol) {
-                        accept = true;
-                    }
-                    else if (seg + 1 == segmentCount && dx > h + tol) {
-                        accept = true;
-                    }
-                }
+                const bool accept =
+                    inInterval ||
+                    (_extrapolate &&
+                        ((seg == 0 && dx < -tol) ||
+                            (seg + 1 == segmentCount && dx > h + tol)));
                 if (accept) {
                     result.push_back(xRoot);
                 }

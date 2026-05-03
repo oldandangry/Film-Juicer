@@ -870,10 +870,7 @@ bool run_canonical_scratch_checkpoint(
         std::lock_guard<std::mutex> lock(state.mutex);
         ScratchNormalizationContextState& contextState =
             state.byContext[transaction.snapshot.deviceContextKey];
-        if (outObservation.sheddingPartialFailure) {
-            contextState.noShedCache = ScratchNormalizationNoShedCache{};
-        }
-        else if (outObservation.overTargetButNotReducible) {
+        if (!outObservation.sheddingPartialFailure && outObservation.overTargetButNotReducible) {
             contextState.noShedCache.valid = true;
             contextState.noShedCache.requestDescriptorGeneration =
                 outObservation.requestDescriptorGeneration;
@@ -2168,7 +2165,6 @@ std::uint32_t graph_large_entry_quarantine_cap_entries(const ResourceManagerConf
 std::uint32_t pressure_poll_interval_ms_for_state(
     const ResourceManagerConfigEffective& cfg,
     PressureState state) noexcept {
-    const std::uint32_t fallback = std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMs);
     const std::uint32_t normal = std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMsNormal);
     const std::uint32_t critical = std::max<std::uint32_t>(
         1u,
@@ -2182,7 +2178,7 @@ std::uint32_t pressure_poll_interval_ms_for_state(
     case PressureState::Emergency:
         return critical;
     default:
-        return fallback;
+        return std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMs);
     }
 }
 

@@ -455,12 +455,11 @@ namespace Profiles {
         }
 
         bool json_wavelengths_match_reference_axis(const Json& wavelengths, std::string_view sourceLabel) {
-            const std::string_view label = sourceLabel.empty()
-                ? std::string_view("profile JSON")
-                : sourceLabel;
-
             if (!wavelengths.is_array()) {
                 if (JTRACE_ENABLED(1)) {
+                    const std::string_view label = sourceLabel.empty()
+                        ? std::string_view("profile JSON")
+                        : sourceLabel;
                     std::ostringstream oss;
                     oss << "JSON wavelengths not an array (" << label << ')';
                     JTRACE("PROFILE", oss.str());
@@ -469,6 +468,9 @@ namespace Profiles {
             }
             if (wavelengths.size() != Spectral::kNumSamples) {
                 if (JTRACE_ENABLED(1)) {
+                    const std::string_view label = sourceLabel.empty()
+                        ? std::string_view("profile JSON")
+                        : sourceLabel;
                     std::ostringstream oss;
                     oss << "JSON wavelengths mismatch (" << label << "): expected "
                         << Spectral::kNumSamples << " samples, got " << wavelengths.size();
@@ -481,6 +483,9 @@ namespace Profiles {
                 std::optional<float> wlOpt = parse_optional_float(wavelengths[i]);
                 if (!wlOpt) {
                     if (JTRACE_ENABLED(1)) {
+                        const std::string_view label = sourceLabel.empty()
+                            ? std::string_view("profile JSON")
+                            : sourceLabel;
                         std::ostringstream oss;
                         oss << "JSON wavelength missing at index " << i
                             << " (" << label << ')';
@@ -491,6 +496,9 @@ namespace Profiles {
                 const float expected = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
                 if (*wlOpt != expected) {
                     if (JTRACE_ENABLED(1)) {
+                        const std::string_view label = sourceLabel.empty()
+                            ? std::string_view("profile JSON")
+                            : sourceLabel;
                         std::ostringstream oss;
                         oss << "JSON wavelength mismatch at index " << i
                             << " (" << label << "): expected "

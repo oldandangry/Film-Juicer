@@ -298,20 +298,18 @@ namespace {
         const OutputEncoding::Params& encoding,
         const GeneratedColorSpaces::ColorSpaceEntry& outSpace)
     {
-        const std::uint64_t encFields[] = {
+        const std::uint64_t encHash = Hash::hash_uint64_values({
             static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
             static_cast<std::uint64_t>(encoding.applyCctfEncoding),
             static_cast<std::uint64_t>(encoding.preserveLinearRange),
             static_cast<std::uint64_t>(encoding.inputIsOutputSpace)
-        };
-        const std::uint64_t encHash = Hash::hash_bytes(encFields, sizeof(encFields));
-        const std::uint64_t fields[] = {
+        });
+        return Hash::hash_uint64_values({
             outSpace.hash,
             medium.illuminant.hash,
             static_cast<std::uint64_t>(medium.medium),
             encHash
-        };
-        return Hash::hash_bytes(fields, sizeof(fields));
+        });
     }
 
     inline void log_scanner_keys(

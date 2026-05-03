@@ -134,20 +134,18 @@ namespace Scanner {
         const std::uint64_t activeHash = Hash::hash_bytes(&glare.active, sizeof(glare.active));
         const std::uint64_t paramsHash = Hash::hash_float_span(
             floats, sizeof(floats) / sizeof(floats[0]));
-        const std::uint64_t fields[] = { activeHash, paramsHash };
-        return Hash::hash_bytes(fields, sizeof(fields));
+        return Hash::hash_uint64_values({ activeHash, paramsHash });
     }
 
     inline std::uint64_t compute_static_key_hash(const ScannerStaticKey& key) {
-        const std::uint64_t fields[] = {
+        return Hash::hash_uint64_values({
             static_cast<std::uint64_t>(key.medium),
             key.tablesHash,
             key.densityRangeHash,
             key.glareHash,
             key.colorRuntimeHash,
             static_cast<std::uint64_t>(key.lutResolution)
-        };
-        return Hash::hash_bytes(fields, sizeof(fields));
+        });
     }
 
     inline void finalize_static_key(ScannerStaticKey& key) {
@@ -161,18 +159,16 @@ namespace Scanner {
     }
 
     inline void finalize_runtime_key(ScannerRuntimeKey& key) {
-        const std::uint64_t fields[] = {
+        key.hash = Hash::hash_uint64_values({
             key.settingsHash,
             static_cast<std::uint64_t>(key.frameBoundsVersion)
-        };
-        key.hash = Hash::hash_bytes(fields, sizeof(fields));
+        });
     }
 
     inline void finalize_scanner_key(ScannerKey& key) {
         finalize_static_key(key.staticKey);
         finalize_runtime_key(key.runtimeKey);
-        const std::uint64_t fields[] = { key.staticKey.hash, key.runtimeKey.hash };
-        key.hash = Hash::hash_bytes(fields, sizeof(fields));
+        key.hash = Hash::hash_uint64_values({ key.staticKey.hash, key.runtimeKey.hash });
     }
 
 } // namespace Scanner

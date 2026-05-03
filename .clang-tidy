@@ -1,0 +1,13 @@
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  readability-misleading-indentation,
+  readability-redundant-*,
+  cppcoreguidelines-pro-type-member-init
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(.*[\\/])?src[\\/].*'
+FormatStyle: none
+SystemHeaders: false

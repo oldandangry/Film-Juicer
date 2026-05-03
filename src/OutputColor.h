@@ -352,14 +352,13 @@ namespace GeneratedColorSpaces {
                 e.cctf.gamma, e.cctf.a, e.cctf.b, e.cctf.c, e.cctf.d, e.cctf.linearCutoff
             };
             const std::uint64_t cctfHash = Hash::hash_float_span(cctfFloats.data(), cctfFloats.size());
-            const std::uint64_t fields[] = {
+            return Hash::hash_uint64_values({
                 baseHash,
                 rgbToXyzHash,
                 xyzToRgbHash,
                 static_cast<std::uint64_t>(e.cctf.kind),
                 cctfHash
-            };
-            return Hash::hash_bytes(fields, sizeof(fields));
+            });
         }
 
         inline void ensure_hashes() {

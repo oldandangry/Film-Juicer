@@ -65,7 +65,6 @@ AllocatorBackendPreference sanitize_allocator_backend_preference(std::uint32_t v
     case 2u:
         return AllocatorBackendPreference::Slab;
     case 3u:
-        return AllocatorBackendPreference::Auto;
     default:
         return AllocatorBackendPreference::Auto;
     }
