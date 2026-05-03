@@ -2463,8 +2463,8 @@ void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
 
 class ScratchPolicyGuard {
 public:
-    explicit ScratchPolicyGuard(ScratchPolicyClaim&& claim) noexcept
-        : _claim(std::move(claim)) {
+    explicit ScratchPolicyGuard(ScratchPolicyClaim claim) noexcept
+        : _claim(claim) {
     }
 
     ~ScratchPolicyGuard() noexcept {
@@ -2530,8 +2530,8 @@ void release_builder_reservation_claim(BuilderReservationClaim& claim) noexcept 
 
 class BuilderReservationGuard {
 public:
-    explicit BuilderReservationGuard(BuilderReservationClaim&& claim) noexcept
-        : _claim(std::move(claim)) {
+    explicit BuilderReservationGuard(BuilderReservationClaim claim) noexcept
+        : _claim(claim) {
     }
 
     ~BuilderReservationGuard() noexcept {
@@ -2592,8 +2592,8 @@ void release_upload_reservation_claim(UploadReservationClaim& claim) noexcept {
 
 class UploadReservationGuard {
 public:
-    explicit UploadReservationGuard(UploadReservationClaim&& claim) noexcept
-        : _claim(std::move(claim)) {
+    explicit UploadReservationGuard(UploadReservationClaim claim) noexcept
+        : _claim(claim) {
     }
 
     ~UploadReservationGuard() noexcept {

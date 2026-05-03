@@ -263,7 +263,7 @@ bool execute_upload_immutable_command(
             outError)) {
         return false;
     }
-    UploadReservationGuard uploadGuard(std::move(uploadClaim));
+    UploadReservationGuard uploadGuard(uploadClaim);
     TierCircuitAttempt circuitAttempt{};
     std::string circuitError;
     if (!tier_circuit_begin_attempt(
@@ -374,7 +374,7 @@ bool execute_upload_lut_command(
             outError)) {
         return try_policy_fallback("upload_reservation_reject");
     }
-    UploadReservationGuard uploadGuard(std::move(uploadClaim));
+    UploadReservationGuard uploadGuard(uploadClaim);
 
     BuilderReservationClaim builderClaim{};
     if (!acquire_builder_reservation_with_wait(
@@ -387,7 +387,7 @@ bool execute_upload_lut_command(
             outError)) {
         return try_policy_fallback("builder_reservation_reject");
     }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
+    BuilderReservationGuard builderGuard(builderClaim);
 
     TierCircuitAttempt circuitAttempt{};
     std::string circuitError;
@@ -464,7 +464,7 @@ bool execute_scratch_growth_command(
             outError)) {
         return false;
     }
-    BuilderReservationGuard builderGuard(std::move(builderClaim));
+    BuilderReservationGuard builderGuard(builderClaim);
 
     ScratchPolicyClaim scratchClaim{};
     if (!acquire_scratch_policy_claim_with_wait(
@@ -479,7 +479,7 @@ bool execute_scratch_growth_command(
             outError)) {
         return false;
     }
-    ScratchPolicyGuard scratchGuard(std::move(scratchClaim));
+    ScratchPolicyGuard scratchGuard(scratchClaim);
 
     ResourceManagerState& managerState = global_state();
     std::uint32_t attempts = 0;

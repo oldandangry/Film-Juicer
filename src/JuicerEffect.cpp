@@ -363,8 +363,8 @@ namespace {
         runtime.hasMidNeutralDensity = runtime.profile.hasMidNeutralDensity;
         runtime.hasMidNeutralLogE = runtime.profile.hasMidNeutralLogE;
         if (moveVectors) {
-            runtime.midNeutralDensity = std::move(runtime.profile.midNeutralDensity);
-            runtime.midNeutralLogE = std::move(runtime.profile.midNeutralLogE);
+            runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
+            runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
         }
         else {
             runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
@@ -1228,8 +1228,8 @@ namespace {
     }
 
     inline void set_grain_chroma_weights(float chroma, float& sharedWeightOut, float& indWeightOut) {
-        sharedWeightOut = static_cast<float>(std::sqrt(std::max(0.0f, 1.0f - chroma)));
-        indWeightOut = static_cast<float>(std::sqrt(std::max(0.0f, chroma)));
+        sharedWeightOut = std::sqrt(std::max(0.0f, 1.0f - chroma));
+        indWeightOut = std::sqrt(std::max(0.0f, chroma));
     }
 
     inline bool read_bool_param_or(OFX::BooleanParam* param, bool fallback) {

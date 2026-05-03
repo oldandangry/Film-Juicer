@@ -331,7 +331,7 @@ namespace Spectral {
         if (x < threshold) {
             return x / 4.5f;
         }
-        return static_cast<float>(std::pow((x + (a - 1.0f)) * invA, invGamma));
+        return std::pow((x + (a - 1.0f)) * invA, invGamma);
     }
 
     inline float decode_BT2020_channel(float v) {
@@ -345,7 +345,7 @@ namespace Spectral {
         if (x <= threshold) {
             return x / 12.92f;
         }
-        return static_cast<float>(std::pow((x + 0.055f) * invScale, 2.4f));
+        return std::pow((x + 0.055f) * invScale, 2.4f);
     }
 
     inline float decode_sRGB_channel(float v) {

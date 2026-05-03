@@ -597,8 +597,7 @@
         const std::size_t trimBatchBytes = static_cast<std::size_t>(
             pinned_upload_staging_config().pinnedUploadStagingTrimBatchBytes);
         const std::uint64_t trimSequence = pool.nextTrimSequence++;
-        PinnedUploadBlock block =
-            std::move(pool.blocks[static_cast<std::size_t>(blockIndex)]);
+        PinnedUploadBlock block = pool.blocks[static_cast<std::size_t>(blockIndex)];
         pool.blocks.erase(pool.blocks.begin() + blockIndex);
         if (!block.ptr) {
             if (pinned_upload_pool_is_empty_locked(pool)) {
@@ -1750,7 +1749,7 @@
                                     &lock,
                                     "grain density layer",
                                     outError)) {
-                                outError = std::string("upload grain density layers failed: ") + outError;
+                                outError.insert(0, "upload grain density layers failed: ");
                                 return false;
                             }
                         }
@@ -1786,7 +1785,8 @@
                                     &lock,
                                     "grain density layer",
                                     layersError)) {
-                                outError = std::string("upload grain density layers failed: ") + layersError;
+                                outError = layersError;
+                                outError.insert(0, "upload grain density layers failed: ");
                                 free_density_layers(resources);
                                 return false;
                             }

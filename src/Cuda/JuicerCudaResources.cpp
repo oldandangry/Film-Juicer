@@ -2372,7 +2372,7 @@ namespace JuicerCuda {
         if (preferAsync) {
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
             const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-            asyncErr = cudaMallocAsync(reinterpret_cast<void**>(&outPtr), bytes, stream);
+            asyncErr = cudaMallocAsync(&outPtr, bytes, stream);
             if (asyncErr == cudaSuccess && outPtr) {
                 track_async_device_ptr_locked(resources, outPtr, true);
                 return true;
@@ -2383,7 +2383,7 @@ namespace JuicerCuda {
 #endif
         }
 
-        const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&outPtr), bytes);
+        const cudaError_t allocErr = cudaMalloc(&outPtr, bytes);
         if (allocErr == cudaSuccess && outPtr) {
             track_async_device_ptr_locked(resources, outPtr, false);
             if (preferAsync && JTRACE_ENABLED(2)) {

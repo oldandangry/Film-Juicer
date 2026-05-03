@@ -324,12 +324,12 @@ namespace JuicerAssets {
                 if (!paperIt->is_object()) {
                     continue;
                 }
-                const std::string paperKey = paperIt.key();
+                const std::string& paperKey = paperIt.key();
                 for (auto illuminantIt = paperIt->cbegin(); illuminantIt != paperIt->cend(); ++illuminantIt) {
                     if (!illuminantIt->is_object()) {
                         continue;
                     }
-                    const std::string illuminantKey = illuminantIt.key();
+                    const std::string& illuminantKey = illuminantIt.key();
                     for (auto negativeIt = illuminantIt->cbegin(); negativeIt != illuminantIt->cend(); ++negativeIt) {
                         std::tuple<float, float, float> ymc{};
                         if (!parse_array_triplet(*negativeIt, ymc)) {
@@ -1049,7 +1049,7 @@ namespace JuicerAssets {
                 if (!it.value().is_object()) {
                     continue;
                 }
-                const std::string paperKey = it.key();
+                const std::string& paperKey = it.key();
                 if (catalog.paperKeySet.insert(paperKey).second) {
                     catalog.paperKeys.emplace_back(paperKey);
                 }
@@ -1058,7 +1058,7 @@ namespace JuicerAssets {
                         continue;
                     }
                     for (auto filmIt = illumIt.value().begin(); filmIt != illumIt.value().end(); ++filmIt) {
-                        const std::string filmKey = filmIt.key();
+                        const std::string& filmKey = filmIt.key();
                         if (catalog.filmKeySet.insert(filmKey).second) {
                             catalog.filmKeys.emplace_back(filmKey);
                         }

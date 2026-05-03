@@ -3451,7 +3451,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.grain.nSubLayers = nSubLayers;
             run.grain.originX = win.x1;
             run.grain.originY = win.y1;
-            run.grain.pixelSizeUm = static_cast<float>(_pixelSizeUm);
+            run.grain.pixelSizeUm = _pixelSizeUm;
             run.grain.blurSigmaPx = sanitize_nonnegative_or(grainUi.blur, 0.0f);
             run.grain.blurDyeCloudsUm = sanitize_nonnegative_or(grainUi.blurDyeCloudsUm, 0.0f);
             run.grain.sizeMixWeight = sanitize_unit_or(grainUi.sizeMixWeight, 0.0f);

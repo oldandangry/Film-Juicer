@@ -4386,7 +4386,7 @@ std::uint64_t normalize_key_float(double value, double scale) noexcept {
     if (!std::isfinite(scaled)) {
         return 1;
     }
-    const long long quantized = static_cast<long long>(std::llround(scaled));
+    const long long quantized = std::llround(scaled);
     const std::uint64_t raw = static_cast<std::uint64_t>(quantized);
     return normalize_key_u64(raw);
 }

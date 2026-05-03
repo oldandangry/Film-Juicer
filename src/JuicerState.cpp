@@ -1958,7 +1958,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
         JuicerProcess::root().acquire_working_state_core(coreShareHash);
-    const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
+    const WorkingStateSharing::AcquireCoreSharedResult& coreShareInitial = coreShare;
     if (coreShare.sharedCore && coreShare.sharedCore->payload) {
         WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
         target->coreShareHash = coreShareHash;
