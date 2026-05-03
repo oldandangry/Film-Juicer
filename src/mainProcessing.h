@@ -49,12 +49,15 @@ namespace SpatialDIR {
         const int radiusRaw = std::max(1, int(std::ceil(3.0f * sigma)));
         const int radius = std::min(radiusRaw, 75); // cap at 75 taps each side
 
-        kernel.resize(size_t(2 * radius + 1));
+        const size_t radiusSize = static_cast<size_t>(radius);
+        kernel.resize(radiusSize * 2u + 1u);
         const float s2 = sigma * sigma * 2.0f;
         float wsum = 0.0f;
-        for (int i = -radius; i <= radius; ++i) {
-            const float w = std::exp(-(i * i) / s2);
-            kernel[size_t(i + radius)] = w;
+        size_t kernelIndex = 0;
+        for (int i = -radius; i <= radius; ++i, ++kernelIndex) {
+            const float iFloat = static_cast<float>(i);
+            const float w = std::exp(-(iFloat * iFloat) / s2);
+            kernel[kernelIndex] = w;
             wsum += w;
         }
         for (float& w : kernel) w /= wsum;

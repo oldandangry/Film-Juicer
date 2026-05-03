@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <sstream>
 
@@ -37,12 +38,15 @@ namespace {
         }
         const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f);
         const int radius = std::min(radiusRaw, 75);
-        kernel.resize(size_t(2 * radius + 1));
+        const size_t radiusSize = static_cast<size_t>(radius);
+        kernel.resize(radiusSize * 2u + 1u);
         const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
         double wsum = 0.0;
-        for (int i = -radius; i <= radius; ++i) {
-            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
-            kernel[size_t(i + radius)] = static_cast<Scalar>(w);
+        size_t kernelIndex = 0;
+        for (int i = -radius; i <= radius; ++i, ++kernelIndex) {
+            const double iDouble = static_cast<double>(i);
+            const double w = std::exp(-(iDouble * iDouble) / s2);
+            kernel[kernelIndex] = static_cast<Scalar>(w);
             wsum += w;
         }
         const Scalar invW = (wsum != 0.0) ? static_cast<Scalar>(1.0 / wsum) : static_cast<Scalar>(0.0);
@@ -52,7 +56,14 @@ namespace {
     template <typename Scalar>
     void blur_separable(const std::vector<Scalar>& src, std::vector<Scalar>& tmp, std::vector<Scalar>& dst,
         int width, int height, const std::vector<Scalar>& k) {
-        const size_t n = size_t(width) * size_t(height);
+        if (width <= 0 || height <= 0) {
+            tmp.clear();
+            dst.clear();
+            return;
+        }
+        const size_t widthSize = static_cast<size_t>(width);
+        const size_t heightSize = static_cast<size_t>(height);
+        const size_t n = widthSize * heightSize;
         if (tmp.size() != n) {
             tmp.resize(n);
         }
@@ -72,13 +83,15 @@ namespace {
             return idx;
             };
         for (int y = 0; y < height; ++y) {
-            const Scalar* srow = &src[size_t(y * width)];
-            Scalar* trow = &tmp[size_t(y * width)];
+            const size_t rowOffset = static_cast<size_t>(y) * widthSize;
+            const Scalar* srow = &src[rowOffset];
+            Scalar* trow = &tmp[rowOffset];
             for (int x = 0; x < width; ++x) {
                 Scalar acc = static_cast<Scalar>(0.0);
-                for (int j = -radius; j <= radius; ++j) {
+                size_t kernelIndex = 0;
+                for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                     const int xx = reflectIndex(x + j, width);
-                    acc += srow[xx] * k[size_t(j + radius)];
+                    acc += srow[xx] * k[kernelIndex];
                 }
                 trow[x] = acc;
             }
@@ -89,11 +102,14 @@ namespace {
         for (int x = 0; x < width; ++x) {
             for (int y = 0; y < height; ++y) {
                 Scalar acc = static_cast<Scalar>(0.0);
-                for (int j = -radius; j <= radius; ++j) {
+                size_t kernelIndex = 0;
+                for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                     const int yy = reflectIndex(y + j, height);
-                    acc += tmp[size_t(yy * width + x)] * k[size_t(j + radius)];
+                    const size_t sampleIndex = static_cast<size_t>(yy) * widthSize + static_cast<size_t>(x);
+                    acc += tmp[sampleIndex] * k[kernelIndex];
                 }
-                dst[size_t(y * width + x)] = acc;
+                const size_t dstIndex = static_cast<size_t>(y) * widthSize + static_cast<size_t>(x);
+                dst[dstIndex] = acc;
             }
         }
     }
@@ -702,8 +718,10 @@ namespace ScannerOptics {
                 }
                 for (int y = 0; y < height; ++y) {
                     for (int x = 0; x < width; ++x) {
-                        const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
-                        const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
+                        const std::int64_t absXSigned = static_cast<std::int64_t>(originX) + static_cast<std::int64_t>(x);
+                        const std::int64_t absYSigned = static_cast<std::int64_t>(originY) + static_cast<std::int64_t>(y);
+                        const std::uint64_t absX = static_cast<std::uint64_t>(absXSigned);
+                        const std::uint64_t absY = static_cast<std::uint64_t>(absYSigned);
                         const size_t idx = size_t(y) * size_t(width) + size_t(x);
                         GlareRngCpu rng(
                             glareSeed,
@@ -991,7 +1009,7 @@ namespace ScannerOptics {
                             ctx.dstView.strideBytes * static_cast<ptrdiff_t>(yOff);
                         float* dstRow = reinterpret_cast<float*>(
                             reinterpret_cast<char*>(ctx.dstView.r) + rowOffsetBytes);
-                        float* dstPix = dstRow + size_t(xOff * ctx.nComponents);
+                        float* dstPix = dstRow + static_cast<size_t>(xOff) * static_cast<size_t>(ctx.nComponents);
                         const size_t idx = rowOffset + size_t(xOff);
                         double rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
                         OutputEncoding::applyEncoding(ctx.color->encoding, rgbOut);

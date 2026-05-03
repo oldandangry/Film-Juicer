@@ -812,12 +812,14 @@ namespace SpatialDIR {
             int height,
             const std::vector<float>& k)
         {
-            const size_t total = size_t(width) * size_t(height);
-            if (total == 0) {
+            if (width <= 0 || height <= 0) {
                 tmp.clear();
                 dst.clear();
                 return;
             }
+            const size_t widthSize = static_cast<size_t>(width);
+            const size_t heightSize = static_cast<size_t>(height);
+            const size_t total = widthSize * heightSize;
 
             resize_noinit(tmp, total);
             const int radius = int(k.size() / 2);
@@ -836,13 +838,15 @@ namespace SpatialDIR {
                 return idx;
             };
             for (int y = 0; y < height; ++y) {
-                const float* srow = &src[size_t(y * width)];
-                float* trow = &tmp[size_t(y * width)];
+                const size_t rowOffset = static_cast<size_t>(y) * widthSize;
+                const float* srow = &src[rowOffset];
+                float* trow = &tmp[rowOffset];
                 for (int x = 0; x < width; ++x) {
                     float acc = 0.0f;
-                    for (int j = -radius; j <= radius; ++j) {
+                    size_t kernelIndex = 0;
+                    for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                         const int xx = reflectIndex(x + j, width);
-                        acc += srow[xx] * k[size_t(j + radius)];
+                        acc += srow[xx] * k[kernelIndex];
                     }
                     trow[x] = acc;
                 }
@@ -851,11 +855,14 @@ namespace SpatialDIR {
             for (int x = 0; x < width; ++x) {
                 for (int y = 0; y < height; ++y) {
                     float acc = 0.0f;
-                    for (int j = -radius; j <= radius; ++j) {
+                    size_t kernelIndex = 0;
+                    for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                         const int yy = reflectIndex(y + j, height);
-                        acc += tmp[size_t(yy * width + x)] * k[size_t(j + radius)];
+                        const size_t sampleIndex = static_cast<size_t>(yy) * widthSize + static_cast<size_t>(x);
+                        acc += tmp[sampleIndex] * k[kernelIndex];
                     }
-                    dst[size_t(y * width + x)] = acc;
+                    const size_t dstIndex = static_cast<size_t>(y) * widthSize + static_cast<size_t>(x);
+                    dst[dstIndex] = acc;
                 }
             }
         }

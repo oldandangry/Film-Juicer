@@ -686,13 +686,16 @@ namespace Print {
             }
 
             const int size = static_cast<int>(input.size());
-            std::vector<double> kernel(static_cast<size_t>(radius * 2 + 1));
+            const size_t radiusSize = static_cast<size_t>(radius);
+            std::vector<double> kernel(radiusSize * 2u + 1u);
             const double sigma = sigmaSamples;
             const double invTwoSigmaSq = 1.0 / (2.0 * sigma * sigma);
             double norm = 0.0;
-            for (int k = -radius; k <= radius; ++k) {
-                const double w = std::exp(-static_cast<double>(k * k) * invTwoSigmaSq);
-                kernel[static_cast<size_t>(k + radius)] = w;
+            size_t kernelIndex = 0;
+            for (int k = -radius; k <= radius; ++k, ++kernelIndex) {
+                const double kDouble = static_cast<double>(k);
+                const double w = std::exp(-(kDouble * kDouble) * invTwoSigmaSq);
+                kernel[kernelIndex] = w;
                 norm += w;
             }
             if (!(norm > 0.0)) {

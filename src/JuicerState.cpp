@@ -856,7 +856,8 @@ namespace {
                 return (dx == 0) ? 1.0f : 0.0f;
             }
             const float s2 = sigmaCapped * sigmaCapped;
-            return std::exp(-0.5f * (dx * dx) / s2);
+            const float dxFloat = static_cast<float>(dx);
+            return std::exp(-0.5f * (dxFloat * dxFloat) / s2);
             };
 
         for (int row = 0; row < 3; ++row) {
@@ -1290,15 +1291,16 @@ namespace {
         out.whiteXY[1] = static_cast<float>(sumY / whiteSum);
 
         constexpr int kReferenceAxisSamples = 81;
+        constexpr size_t kReferenceAxisSampleCount = 81u;
         const size_t sampleCount = out.curve.linear.size();
-        if (K == kReferenceAxisSamples && sampleCount == static_cast<size_t>(kReferenceAxisSamples)) {
-            float hashSamples[kReferenceAxisSamples + 1];
+        if (K == kReferenceAxisSamples && sampleCount == kReferenceAxisSampleCount) {
+            float hashSamples[kReferenceAxisSampleCount + 1u];
             std::memcpy(
                 hashSamples,
                 out.curve.linear.data(),
-                static_cast<size_t>(kReferenceAxisSamples) * sizeof(float));
-            hashSamples[kReferenceAxisSamples] = out.normalization;
-            out.hash = Hash::hash_float_span(hashSamples, static_cast<size_t>(kReferenceAxisSamples + 1));
+                kReferenceAxisSampleCount * sizeof(float));
+            hashSamples[kReferenceAxisSampleCount] = out.normalization;
+            out.hash = Hash::hash_float_span(hashSamples, kReferenceAxisSampleCount + 1u);
         }
         else {
             std::vector<float> hashSamples(sampleCount + 1);

@@ -2,10 +2,12 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <limits>
 
 // Minimal .npy loader for little-endian float64 arrays shaped (N, N, K)
 // Stores as float in row-major C-order: ((i*size + j) * K + k)
@@ -20,6 +22,31 @@ struct NpyFloat2D {
     int cols = 0;
     std::vector<float> data;
 };
+
+inline bool npy_byte_count(std::size_t count, std::size_t elementSize, std::size_t& outBytes) noexcept {
+    if (elementSize != 0 && count > (std::numeric_limits<std::size_t>::max)() / elementSize) {
+        return false;
+    }
+    outBytes = count * elementSize;
+    return true;
+}
+
+inline bool npy_read_exact(std::ifstream& f, void* data, std::size_t byteCount) {
+    if (byteCount > static_cast<std::size_t>((std::numeric_limits<std::streamsize>::max)())) {
+        return false;
+    }
+    f.read(static_cast<char*>(data), static_cast<std::streamsize>(byteCount));
+    return static_cast<bool>(f);
+}
+
+template <typename T>
+inline bool npy_read_vector(std::ifstream& f, std::vector<T>& data) {
+    std::size_t byteCount = 0;
+    if (!npy_byte_count(data.size(), sizeof(T), byteCount)) {
+        return false;
+    }
+    return npy_read_exact(f, data.data(), byteCount);
+}
 
 inline float npy_half_to_float(uint16_t h) {
     uint16_t h_exp = (h & 0x7C00u);
@@ -118,28 +145,25 @@ inline bool load_npy_spectra_lut(const std::string& path, NpySpectraLUT& out) {
     if (N0 <= 0 || N1 <= 0 || N0 != N1 || K <= 0) return false;
 
     // Read payload into temp buffer
-    const size_t count = static_cast<size_t>(N0) * N1 * K;
+    const size_t count = static_cast<size_t>(N0) * static_cast<size_t>(N1) * static_cast<size_t>(K);
     out.size = N0;
     out.numSamples = K;
     out.data.resize(count);
 
     if (isF64) {
         std::vector<double> buf(count);
-        f.read(reinterpret_cast<char*>(buf.data()), count * sizeof(double));
-        if (!f) return false;
+        if (!npy_read_vector(f, buf)) return false;
         for (size_t i = 0; i < count; ++i) out.data[i] = static_cast<float>(buf[i]);
     }
     else if (isF32) {
         std::vector<float> buf(count);
-        f.read(reinterpret_cast<char*>(buf.data()), count * sizeof(float));
-        if (!f) return false;
+        if (!npy_read_vector(f, buf)) return false;
         out.data = buf; // already float
     }
     else if (isF16) {
         struct F16 { uint16_t v; };
         std::vector<F16> buf(count);
-        f.read(reinterpret_cast<char*>(buf.data()), count * sizeof(F16));
-        if (!f) return false;
+        if (!npy_read_vector(f, buf)) return false;
         for (size_t i = 0; i < count; ++i) out.data[i] = npy_half_to_float(buf[i].v);
     }
     return true;
@@ -205,28 +229,25 @@ inline bool load_npy_float2d(const std::string& path, NpyFloat2D& out) {
     }
     if (rows <= 0 || cols <= 0) return false;
 
-    const size_t count = static_cast<size_t>(rows) * cols;
+    const size_t count = static_cast<size_t>(rows) * static_cast<size_t>(cols);
     out.rows = rows;
     out.cols = cols;
     out.data.resize(count);
 
     if (isF64) {
         std::vector<double> buf(count);
-        f.read(reinterpret_cast<char*>(buf.data()), count * sizeof(double));
-        if (!f) return false;
+        if (!npy_read_vector(f, buf)) return false;
         for (size_t i = 0; i < count; ++i) out.data[i] = static_cast<float>(buf[i]);
     }
     else if (isF32) {
         std::vector<float> buf(count);
-        f.read(reinterpret_cast<char*>(buf.data()), count * sizeof(float));
-        if (!f) return false;
+        if (!npy_read_vector(f, buf)) return false;
         out.data = buf;
     }
     else if (isF16) {
         struct F16 { uint16_t v; };
         std::vector<F16> buf(count);
-        f.read(reinterpret_cast<char*>(buf.data()), count * sizeof(F16));
-        if (!f) return false;
+        if (!npy_read_vector(f, buf)) return false;
         for (size_t i = 0; i < count; ++i) out.data[i] = npy_half_to_float(buf[i].v);
     }
     return true;

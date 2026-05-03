@@ -1633,7 +1633,7 @@ namespace JuicerProc {
         if (bytesPerComp <= 0) {
             return;
         }
-        const size_t bytesPerPixel = size_t(nComponents * bytesPerComp);
+        const size_t bytesPerPixel = static_cast<size_t>(nComponents) * static_cast<size_t>(bytesPerComp);
         const int width = xEnd - xStart;
         if (width <= 0) {
             return;
@@ -3668,7 +3668,8 @@ void JuicerProcessor::processImagesCUDA() {
                     double wsum = 0.0;
                     double w[(kMaxRadius * 2) + 1] = {};
                     for (int i = -radius; i <= radius; ++i) {
-                        const double wi = std::exp(-(static_cast<double>(i * i)) / s2);
+                        const double iDouble = static_cast<double>(i);
+                        const double wi = std::exp(-(iDouble * iDouble) / s2);
                         w[i + radius] = wi;
                         wsum += wi;
                     }

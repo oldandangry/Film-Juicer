@@ -2170,12 +2170,15 @@ namespace JuicerCuda {
         if (radius <= 0 || !std::isfinite(sigma) || sigma <= 0.0f) {
             return;
         }
-        outWeights.resize(static_cast<std::size_t>(2 * radius + 1));
+        const std::size_t radiusSize = static_cast<std::size_t>(radius);
+        outWeights.resize(radiusSize * 2u + 1u);
         const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
         double wsum = 0.0;
-        for (int i = -radius; i <= radius; ++i) {
-            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
-            outWeights[static_cast<std::size_t>(i + radius)] = static_cast<float>(w);
+        std::size_t weightIndex = 0;
+        for (int i = -radius; i <= radius; ++i, ++weightIndex) {
+            const double iDouble = static_cast<double>(i);
+            const double w = std::exp(-(iDouble * iDouble) / s2);
+            outWeights[weightIndex] = static_cast<float>(w);
             wsum += w;
         }
         const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;

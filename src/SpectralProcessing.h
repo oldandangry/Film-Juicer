@@ -728,8 +728,9 @@ namespace Spectral {
         }
 
         const int N = gHanSpectra.size;
-        const float fx = std::clamp(qx, 0.0f, 1.0f) * (N - 1);
-        const float fy = std::clamp(qy, 0.0f, 1.0f) * (N - 1);
+        const float gridMax = static_cast<float>(N - 1);
+        const float fx = std::clamp(qx, 0.0f, 1.0f) * gridMax;
+        const float fy = std::clamp(qy, 0.0f, 1.0f) * gridMax;
         const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, N - 1);
         const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, N - 1);
         const int x1 = std::min(x0 + 1, N - 1);
@@ -766,8 +767,9 @@ namespace Spectral {
         }
 
         const int N = gHanSpectra.size;
-        const float fx = std::clamp(qx, 0.0f, 1.0f) * (N - 1);
-        const float fy = std::clamp(qy, 0.0f, 1.0f) * (N - 1);
+        const float gridMax = static_cast<float>(N - 1);
+        const float fx = std::clamp(qx, 0.0f, 1.0f) * gridMax;
+        const float fy = std::clamp(qy, 0.0f, 1.0f) * gridMax;
         const int baseX = std::clamp(static_cast<int>(std::floor(fx)), 0, N - 1);
         const int baseY = std::clamp(static_cast<int>(std::floor(fy)), 0, N - 1);
         const float tx = fx - static_cast<float>(baseX);
@@ -906,7 +908,7 @@ namespace Spectral {
             static_cast<int>(gYBar.linear.size()) == K);
         const bool hasLambda = (static_cast<int>(gShape.wavelengths.size()) == K);
         for (int i = 0; i < K; ++i) {
-            const float lambda = hasLambda ? gShape.wavelengths[i] : (380.0f + 5.0f * i);
+            const float lambda = hasLambda ? gShape.wavelengths[i] : (380.0f + 5.0f * static_cast<float>(i));
             const float ybar = hasYbar ? gYBar.linear[i] : cie_ybar(lambda);
             Y_recon += static_cast<double>(Ee_out[i]) * static_cast<double>(ybar);
         }
