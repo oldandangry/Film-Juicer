@@ -87,16 +87,16 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp">
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.inc">
       <Filter>Cuda</Filter>
     </None>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.cpp">
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.inc">
       <Filter>Cuda</Filter>
     </None>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp">
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.inc">
       <Filter>Cuda</Filter>
     </None>
-    <None Include="src\Cuda\JuicerCudaResourcesServing.cpp">
+    <None Include="src\Cuda\JuicerCudaResourcesServing.inc">
       <Filter>Cuda</Filter>
     </None>
   </ItemGroup>

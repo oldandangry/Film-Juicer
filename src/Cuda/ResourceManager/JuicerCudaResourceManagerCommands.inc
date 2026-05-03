@@ -1,4 +1,4 @@
-// Cuda/ResourceManager/JuicerCudaResourceManagerCommands.cpp
+// Cuda/ResourceManager/JuicerCudaResourceManagerCommands.inc
 //
 // Included by JuicerCudaResourceManager.cpp (single-TU split).
 bool ensure_active_for_command(

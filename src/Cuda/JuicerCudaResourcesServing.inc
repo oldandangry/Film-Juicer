@@ -1,4 +1,4 @@
-// Cuda/JuicerCudaResourcesServing.cpp
+// Cuda/JuicerCudaResourcesServing.inc
 //
 // Included by JuicerCudaResources.cpp (single-TU split).
     enum class HostCacheLoadState : int {

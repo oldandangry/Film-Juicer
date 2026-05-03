@@ -1,4 +1,4 @@
-// Cuda/ResourceManager/JuicerCudaResourceManagerSubmission.cpp
+// Cuda/ResourceManager/JuicerCudaResourceManagerSubmission.inc
 //
 // Included by JuicerCudaResourceManager.cpp (single-TU split).
 struct AllocatorBackendContextEntry {

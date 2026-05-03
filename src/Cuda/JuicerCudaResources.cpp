@@ -2090,7 +2090,7 @@ namespace JuicerCuda {
 
     // Split implementation sections (single-TU include model to preserve exact behavior while
     // reducing monolithic file size and keeping ownership boundaries explicit).
-    #include "Cuda/JuicerCudaResourcesServing.cpp"
+    #include "Cuda/JuicerCudaResourcesServing.inc"
 // Cuda/JuicerCudaResourcesScratch.cpp
 //
 // Included by JuicerCudaResources.cpp (single-TU split).

@@ -1,4 +1,4 @@
-// Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.cpp
+// Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.inc
 //
 // Included by JuicerCudaResourceManager.cpp (single-TU split).
 void maybe_apply_async_mempool_release_policy(

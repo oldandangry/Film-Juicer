@@ -5198,9 +5198,9 @@ void telemetry_trace_auto_exposure_ownership(
 
 // Split implementation sections (single-TU include model to preserve exact behavior while
 // reducing monolithic file size and keeping ownership boundaries explicit).
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.cpp"
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerSubmission.cpp"
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerCommands.cpp"
+#include "Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.inc"
+#include "Cuda/ResourceManager/JuicerCudaResourceManagerSubmission.inc"
+#include "Cuda/ResourceManager/JuicerCudaResourceManagerCommands.inc"
 
 } // namespace ResourceManager
 } // namespace JuicerCuda

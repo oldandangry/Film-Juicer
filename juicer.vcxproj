@@ -281,10 +281,10 @@
     <ClCompile Include="src\ScannerOptics.cpp" />
   </ItemGroup>
   <ItemGroup Condition="'$(JuicerEnableCudaBuild)'=='1'">
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp" />
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.cpp" />
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp" />
-    <None Include="src\Cuda\JuicerCudaResourcesServing.cpp" />
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.inc" />
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.inc" />
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.inc" />
+    <None Include="src\Cuda\JuicerCudaResourcesServing.inc" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\AkimaInterpolator.h" />
