@@ -303,86 +303,6 @@ bool execute_snapshot_wrapped_command(
     return ok;
 }
 
-bool acquire_graph_builder_reservation(
-    const SubmissionTransaction& transaction,
-    ResourceManagerState& managerState,
-    std::uint64_t requestBytes,
-    bool criticalCurrentFrame,
-    BuilderReservationClaim& builderClaim,
-    ReservationAttemptInfo& builderReservation) {
-    telemetry_counter_add(managerState.builderReservationRequests, 1);
-    if (!try_acquire_builder_reservation_claim(
-            transaction,
-            BuilderReservationTier::Graph,
-            requestBytes,
-            criticalCurrentFrame,
-            builderClaim,
-            builderReservation)) {
-        const ReservationDecision& decision = builderReservation.decision;
-        const bool fairnessDeferred =
-            (decision.reason && std::string_view(decision.reason) == "fairness_tokens_exhausted");
-        if (decision.shouldWait) {
-            telemetry_counter_add(managerState.builderReservationDeferred, 1);
-            if (fairnessDeferred) {
-                telemetry_counter_add(managerState.builderFairnessTokenDeferred, 1);
-            }
-            trace_builder_reservation_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                BuilderReservationTier::Graph,
-                requestBytes,
-                builderReservation.bytesInFlight,
-                builderReservation.capBytes,
-                builderReservation.thresholdBytes,
-                decision,
-                criticalCurrentFrame,
-                builderReservation.instanceToken,
-                builderReservation.sharedTokens,
-                builderReservation.criticalTokens,
-                0,
-                "deferred_nonresident");
-        } else {
-            telemetry_counter_add(managerState.builderReservationDenied, 1);
-            trace_builder_reservation_decision(
-                transaction,
-                "command_launch_base_pipeline_graph",
-                BuilderReservationTier::Graph,
-                requestBytes,
-                builderReservation.bytesInFlight,
-                builderReservation.capBytes,
-                builderReservation.thresholdBytes,
-                decision,
-                criticalCurrentFrame,
-                builderReservation.instanceToken,
-                builderReservation.sharedTokens,
-                builderReservation.criticalTokens,
-                0,
-                "denied_nonresident");
-        }
-        return false;
-    }
-
-    telemetry_counter_add(managerState.builderReservationGranted, 1);
-    if (JTRACE_ENABLED(3)) {
-        trace_builder_reservation_decision(
-            transaction,
-            "command_launch_base_pipeline_graph",
-            BuilderReservationTier::Graph,
-            requestBytes,
-            builderReservation.bytesInFlight,
-            builderReservation.capBytes,
-            builderReservation.thresholdBytes,
-            builderReservation.decision,
-            criticalCurrentFrame,
-            builderReservation.instanceToken,
-            builderReservation.sharedTokens,
-            builderReservation.criticalTokens,
-            0,
-            "admitted");
-    }
-    return true;
-}
-
 template <typename Action, typename PolicyFailureFallback>
 bool execute_upload_lut_command(
     SubmissionTransaction& transaction,
@@ -2230,22 +2150,6 @@ bool fail_graph_attempt_and_launch_direct_fallback(
         countNonResidentServe,
         std::forward<DirectLaunch>(directLaunch),
         outCudaErrorCode);
-}
-
-void complete_graph_attempt_success(
-    const SubmissionTransaction& transaction,
-    TierCircuitAttempt& graphCircuitAttempt,
-    bool& graphCircuitAttemptActive) {
-    if (!graphCircuitAttemptActive) {
-        return;
-    }
-    tier_circuit_record_outcome(
-        transaction,
-        "command_launch_base_pipeline_graph",
-        graphCircuitAttempt,
-        true,
-        "durable_build_success");
-    graphCircuitAttemptActive = false;
 }
 
 std::uint64_t prepare_base_graph_bucket_for_submission(

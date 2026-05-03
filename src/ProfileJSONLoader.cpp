@@ -504,48 +504,6 @@ namespace Profiles {
             return true;
         }
 
-        bool append_pair_if_present(std::vector<std::pair<float, float>>& target, float x, const Json* node) {
-            float value = 0.0f;
-            bool ok = false;
-            if (node && !node->is_null()) {
-                if (auto opt = parse_optional_float(*node)) {
-                    value = *opt;
-                    ok = true;
-                }
-            }
-            target.emplace_back(x, value);
-            return ok;
-        }
-
-        bool append_pair_if_present(std::vector<std::pair<float, float>>& target, float x, const Json& node) {
-            return append_pair_if_present(target, x, &node);
-        }
-
-        bool append_spectral_pair_with_nan_if_missing(
-            std::vector<std::pair<float, float>>& target,
-            float x,
-            const Json* node)
-        {
-            if (node && !node->is_null()) {
-                if (auto opt = parse_optional_float(*node)) {
-                    target.emplace_back(x, *opt);
-                    return true;
-                }
-            }
-            target.emplace_back(x, std::numeric_limits<float>::quiet_NaN());
-            return false;
-        }
-
-        size_t count_finite_samples(const std::vector<std::pair<float, float>>& samples) {
-            size_t count = 0;
-            for (const auto& sample : samples) {
-                if (std::isfinite(sample.first) && std::isfinite(sample.second)) {
-                    ++count;
-                }
-            }
-            return count;
-        }
-
         void parse_dir_couplers(const Json& node, DirCouplersProfile& outProfile) {
             outProfile = DirCouplersProfile{};
             if (!node.is_object()) {

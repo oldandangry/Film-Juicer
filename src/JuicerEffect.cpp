@@ -245,6 +245,7 @@ namespace {
         msg += std::to_string(c);
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     inline std::string join_keys_csv_or_none(const std::vector<std::string>& keys) {
         std::string combined;
         size_t reserveHint = 0;
@@ -296,6 +297,7 @@ namespace {
         msg += cstr_or_default_if_null(negativeKey, "<unset>");
         return msg;
     }
+#endif
 
     struct ProfileKeyLabels {
         const char* paperKey = nullptr;

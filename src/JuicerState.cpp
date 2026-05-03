@@ -839,6 +839,7 @@ namespace {
         }
     }
 
+#ifndef JUICER_ENABLE_COUPLERS
     inline void build_dir_matrix_fallback(float matrix[3][3], const float amountValues[3], float layerSigma) {
         const float sigma = sanitize_nonnegative_or(layerSigma, 0.0f);
         float amount[3] = { amountValues[0], amountValues[1], amountValues[2] };
@@ -878,6 +879,7 @@ namespace {
 
         sanitize_dir_matrix(matrix);
     }
+#endif
 
     void recompute_working_state_dir_overlay(const RebuildStateSnapshot& snapshot, const ParamSnapshot& P, WorkingState& target) {
         (void)snapshot;

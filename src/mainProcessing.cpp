@@ -188,7 +188,9 @@ namespace JuicerProcScanner {
 } // namespace JuicerProcScanner
 
 namespace {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     constexpr std::uint64_t kSeedPassGrain = 1;
+#endif
     constexpr std::uint64_t kSeedPassGlare = 2;
     inline float sanitize_nonnegative_or(float value, float fallback);
     inline float sanitize_unit_or(float value, float fallback);
@@ -480,14 +482,6 @@ namespace {
         return value ? 1ull : 0ull;
     }
 
-    inline std::uint64_t clamped_lut_resolution_hash_value(std::uint32_t lutResolution) {
-        return static_cast<std::uint64_t>(std::clamp(lutResolution, 17u, 128u));
-    }
-
-    inline std::uint64_t hash_or_zero_if(bool enabled, std::uint64_t hashValue) {
-        return enabled ? hashValue : 0;
-    }
-
     inline void apply_glare_override_fields(
         Profiles::ProfileGlare& dstGlare,
         const Profiles::ProfileGlare& srcGlare) {
@@ -705,26 +699,6 @@ namespace {
             8 + std::strlen(safePrefix) + (hasDetail ? (2 + std::strlen(detail)) : 0));
         traceMsg = "FATAL: ";
         traceMsg += safePrefix;
-        if (hasDetail) {
-            traceMsg += ": ";
-            traceMsg += detail;
-        }
-        JTRACE("CUDA", traceMsg);
-    }
-
-    inline void trace_cuda_prefixed_if(
-        bool traceEnabled,
-        const char* prefix,
-        const char* detail = nullptr) {
-        if (!traceEnabled) {
-            return;
-        }
-        const char* safePrefix = nonempty_cstr_or(prefix, "CUDA operation failed");
-        const bool hasDetail = detail && detail[0] != '\0';
-        std::string traceMsg;
-        traceMsg.reserve(
-            std::strlen(safePrefix) + (hasDetail ? (2 + std::strlen(detail)) : 0));
-        traceMsg = safePrefix;
         if (hasDetail) {
             traceMsg += ": ";
             traceMsg += detail;
@@ -1186,7 +1160,9 @@ namespace {
         return reusingSnapshotLatch ? "reuse" : "new";
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && \
+    ((defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)) || \
+     (defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)))
     struct DiagnosticsHookPolicy {
         bool diagnosticsMode = false;
         bool validatePrimitives = false;
@@ -1212,6 +1188,7 @@ namespace {
         return policy;
     }
 
+#if defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)
     void trace_validation_hook_state_once(
         bool compiled,
         bool modeEnabled,
@@ -1255,7 +1232,9 @@ namespace {
             JTRACE("MSDBG", msg);
         });
     }
+#endif
 
+#if defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)
     void trace_self_check_hook_state_once(
         bool compiled,
         bool modeEnabled,
@@ -1293,6 +1272,7 @@ namespace {
             JTRACE("MSDBG", msg);
         });
     }
+#endif
 #endif
 
     std::uint64_t make_seed_base(std::uintptr_t clipToken,
@@ -3318,8 +3298,6 @@ void JuicerProcessor::processImagesCUDA() {
         float grainBlurSigmaCoarsePx = 0.0f;
         float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
 
-        run.grain = JuicerCuda::GrainPayload{};
-        run.grainKernels = JuicerCuda::GrainKernelPayload{};
         {
             const JuicerProcess::Root::PreparedCudaFrame::GrainStaticAssets grainStaticAssets =
                 preparedFrame.grain_static_assets();

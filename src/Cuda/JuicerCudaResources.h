@@ -1,10 +1,8 @@
 // Cuda/JuicerCudaResources.h
 //
-// Per-instance CUDA resource cache keyed by WorkingState.{uploadCoreHash,dirHash}.
-//
-// This module intentionally owns only GPU-side mirrors of CPU WorkingState data (curves/tables/etc).
-// The render path remains responsible for gating unsupported features (e.g. auto-exposure) until
-// they are ported to CUDA.
+// Per-context CUDA resource storage and helper payloads served through ProcessRoot and
+// ResourceManager preparation commands. Durable residency is owned by Root/context slots;
+// frame-local mutable work is accessed through PreparedCudaFrame leases.
 //
 #pragma once
 

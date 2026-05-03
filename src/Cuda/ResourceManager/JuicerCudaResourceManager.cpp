@@ -1150,9 +1150,6 @@ constexpr std::uint64_t kGraphBuilderReservationCapDefaultBytes = 128ull * 1024u
 constexpr std::uint64_t kBuilderReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
 constexpr std::uint64_t kUploadReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
 constexpr std::uint64_t kUploadReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
-constexpr std::uint64_t kStbnUploadDefaultBytes = 512ull * 512ull * 256ull;
-constexpr std::uint64_t kWangTilesUploadDefaultBytes = 256ull * 256ull * 16ull;
-constexpr std::uint64_t kWangLutUploadDefaultBytes = 8ull * 8ull * 8ull * 8ull;
 constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024ull;
 constexpr std::uint64_t kBasisPointsDenominator = 10000ull;
 constexpr int kBuilderReservationWaitStepMs = 1;
@@ -1598,17 +1595,6 @@ std::uint64_t bytes_for_count_u64(std::uint64_t count, std::size_t elementBytes,
         return std::numeric_limits<std::uint64_t>::max();
     }
     return bytes;
-}
-
-std::uint64_t bytes_for_plane_extent_u64(int width, int height, bool& overflow) noexcept {
-    const std::uint64_t w = non_negative_u64(width);
-    const std::uint64_t h = non_negative_u64(height);
-    std::uint64_t count = 0;
-    if (!mul_u64_checked(w, h, count)) {
-        overflow = true;
-        return std::numeric_limits<std::uint64_t>::max();
-    }
-    return bytes_for_count_u64(count, sizeof(float), overflow);
 }
 
 void add_curve_bytes(const JuicerCuda::DeviceCurve& curve, ManagerMemorySnapshot& snapshot) noexcept {

@@ -1157,14 +1157,14 @@ namespace JuicerAssets {
 
     Library::Library(std::string dataDir)
         : _dataDir(std::move(dataDir)),
-          _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
           _neutralFilterDatabasePaths(std::make_unique<NeutralFilterDatabasePathSet[]>(kNeutralFilterDatabaseCount)),
-          _printPaperFolderProfilePayloadCache(std::make_unique<PrintPaperFolderProfilePayloadCacheState>()),
           _staticNoiseAssets(std::make_unique<StaticNoiseAssetSet>()),
-          _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _dichroicFilterSets(std::make_unique<DichroicFilterAssetSet[]>(kDichroicFilterSetCount)),
-          _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
+          _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
+          _printPaperFolderProfilePayloadCache(std::make_unique<PrintPaperFolderProfilePayloadCacheState>()),
+          _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
+          _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
           _profileCache(std::make_unique<ProfileCacheState>()) {
     }

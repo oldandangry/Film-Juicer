@@ -124,7 +124,7 @@ namespace Print {
         const int K = Spectral::gShape.K;
         if (K <= 0) return false;
 
-        auto spectral_curve_ok = [K](const Spectral::Curve& c) -> bool {
+        auto spectral_curve_ok = [](const Spectral::Curve& c) -> bool {
             return !c.linear.empty() && static_cast<int>(c.linear.size()) == K;
             };
         auto logE_curve_ok = [](const Spectral::Curve& c) -> bool {

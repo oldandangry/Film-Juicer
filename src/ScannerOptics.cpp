@@ -28,17 +28,6 @@ namespace {
         out[2] = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
     }
 
-    inline void mat3_mul(const float a[9], const float b[9], float out[9]) {
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                out[r * 3 + c] =
-                    a[r * 3 + 0] * b[0 * 3 + c] +
-                    a[r * 3 + 1] * b[1 * 3 + c] +
-                    a[r * 3 + 2] * b[2 * 3 + c];
-            }
-        }
-    }
-
     template <typename Scalar>
     inline void build_gaussian_kernel(float sigma, std::vector<Scalar>& kernel) {
         kernel.clear();
@@ -622,7 +611,6 @@ namespace ScannerOptics {
             return;
         }
         const size_t total = size_t(width) * size_t(height);
-        const size_t channelSize = total;
         if (density.width != width || density.height != height || density.stride != width ||
             density.c.size() < total || density.m.size() < total || density.y.size() < total) {
             JTRACE("SCAN", "FATAL: density slab does not match render bounds");
