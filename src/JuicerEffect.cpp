@@ -111,6 +111,7 @@ namespace {
         return value ? value : fallback;
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     inline std::size_t cstr_len_or_zero(const char* value) {
         return value ? std::strlen(value) : 0u;
     }
@@ -118,6 +119,7 @@ namespace {
     inline const char* cstr_or_default_if_empty(const std::string& value, const char* fallback) {
         return value.empty() ? fallback : value.c_str();
     }
+#endif
 
     inline bool requires_nonfloat_copy(OFX::BitDepthEnum depth, int nComponents) {
         return depth != OFX::eBitDepthFloat || nComponents == 0;
@@ -143,6 +145,7 @@ namespace {
         bool traceInfo,
         const std::string& paramName,
         const char* prefix) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (!traceInfo) {
             return;
         }
@@ -152,6 +155,11 @@ namespace {
         msg += paramName;
         msg.push_back('\'');
         JTRACE("BUILD", msg);
+#else
+        (void)traceInfo;
+        (void)paramName;
+        (void)prefix;
+#endif
     }
 
     inline bool param_name_is(const char* changedName, const char* expected) {
@@ -3070,6 +3078,7 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         }
         catch (...) {
             // Ignore failures; fall back to full bounds.
+            meterBounds = fullBounds;
         }
     }
     result.meterBounds = meterBounds;
@@ -3392,6 +3401,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     }
     catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
+        JTRACE("PARAM", "parameter cache bootstrap incomplete; defaults will be used for missing handles");
     }
 
     if (_pGrainPreset) {
@@ -4254,7 +4264,9 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     if (!_state) {
         return;
     }
+#if JUICER_DIAGNOSTICS_COMPILED
     const bool traceInfo = JTRACE_ENABLED(1);
+#endif
 
     const JuicerAssets::PrintRuntimeAssetSet printAssets =
         JuicerProcess::root().assets().print_runtime_assets_for_choices(
@@ -4270,11 +4282,13 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     const std::vector<std::string> illumKeys = enlarger_illuminant_keys_for_choice(P.enlIll);
 
     if (!(paperKey && negativeKey && !illumKeys.empty())) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
             JTRACE(
                 "PRINT",
                 "Neutral filter lookup prerequisites missing: " + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
         }
+#endif
         throw std::runtime_error("Neutral filter metadata incomplete for current selection");
     }
 
@@ -4307,6 +4321,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
             loaded = true;
+#if JUICER_DIAGNOSTICS_COMPILED
             if (traceInfo) {
                 std::string msg;
                 msg.reserve(192);
@@ -4318,16 +4333,19 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
                 msg += cstr_or_default_if_empty(selectedDbVersionHash, "none");
                 JTRACE("PRINT", msg);
             }
+#endif
             break;
         }
     }
 
     if (!loaded) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
             JTRACE(
                 "PRINT",
                 "Neutral filters missing for " + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)) + "; aborting print path");
         }
+#endif
         throw std::runtime_error("Neutral filter database entry not found");
     }
 

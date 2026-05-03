@@ -1682,6 +1682,7 @@ namespace JuicerAssets {
                 _profileCache->profiles.clear();
             }
         } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 

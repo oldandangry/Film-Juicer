@@ -2741,6 +2741,7 @@ void JuicerProcessor::processImagesCUDA() {
             run_pending_context_loss_recovery();
         }
         catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     };
 

@@ -104,6 +104,7 @@ inline std::uint64_t elapsed_ms(const std::chrono::steady_clock::time_point& sta
         std::chrono::duration_cast<std::chrono::milliseconds>(delta).count());
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 const char* registry_trace_or_unknown(const char* value) noexcept {
     if (value && value[0] != '\0') {
         return value;
@@ -117,6 +118,7 @@ const char* registry_trace_or_unspecified(const char* value) noexcept {
     }
     return "unspecified";
 }
+#endif
 
 const char* registry_trace_or(const char* value, const char* fallback) noexcept {
     if (value) {
@@ -132,12 +134,14 @@ const char* registry_bool_reason(bool value, const char* whenTrue, const char* w
     return whenFalse;
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 std::uint32_t registry_bool_u32(bool value) noexcept {
     if (value) {
         return 1u;
     }
     return 0u;
 }
+#endif
 
 const char* registry_mutation_begin_reason(bool orderOk, bool reentrant) noexcept {
     if (!orderOk) {
@@ -149,6 +153,7 @@ const char* registry_mutation_begin_reason(bool orderOk, bool reentrant) noexcep
     return "ok";
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 const char* registry_entry_lifecycle_name(const RegistryEntry* entry) noexcept {
     if (entry) {
         return to_cstr(entry->lifecycleState);
@@ -185,6 +190,7 @@ std::string registry_trace_handle_prefix(RegistryHandle handle, const DeviceCont
     return std::string("handle=") + std::to_string(handle.value)
         + registry_trace_device_context_fields(&key);
 }
+#endif
 
 const char* registry_retire_reason_name(RegistryRetireReason reason) noexcept {
     switch (reason) {
@@ -426,6 +432,7 @@ inline void assign_entry_generations(RegistryEntry& entry) noexcept {
     entry.contextEpoch = next_nonzero_counter(rmState.contextEpoch);
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 std::uint64_t registry_entry_handle_value_or_zero(const RegistryEntry* entry) noexcept {
     if (entry) {
         return entry->handle.value;
@@ -439,6 +446,7 @@ std::uint64_t registry_entry_active_submissions_or_zero(const RegistryEntry* ent
     }
     return 0;
 }
+#endif
 
 void trace_registry_event(const DeviceContextKey* key,
                           const RegistryEntry* entry,
@@ -449,6 +457,7 @@ void trace_registry_event(const DeviceContextKey* key,
                           std::uint64_t liveManagers,
                           std::uint64_t maxLiveManagers,
                           std::uint64_t reapEvents) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -468,6 +477,7 @@ void trace_registry_event(const DeviceContextKey* key,
         " max_live_managers=" + std::to_string(maxLiveManagers) +
         " reap_events=" + std::to_string(reapEvents);
     JTRACE_LEVEL(2, "MSREG", msg);
+#endif
 }
 
 void trace_registry_event_current(
@@ -541,6 +551,7 @@ void trace_lifecycle_transition(const DeviceContextKey& key,
                                 ContextLifecycleState to,
                                 bool accepted,
                                 const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -550,6 +561,7 @@ void trace_lifecycle_transition(const DeviceContextKey& key,
         + " accepted=" + std::to_string(registry_bool_u32(accepted))
         + " reason=" + registry_trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
+#endif
 }
 
 void trace_lifecycle_bump(const DeviceContextKey& key,
@@ -560,6 +572,7 @@ void trace_lifecycle_bump(const DeviceContextKey& key,
                           std::uint64_t newContextEpoch,
                           bool accepted,
                           const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -572,6 +585,7 @@ void trace_lifecycle_bump(const DeviceContextKey& key,
         + " new_context_epoch=" + std::to_string(newContextEpoch)
         + " reason=" + registry_trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
+#endif
 }
 
 constexpr std::uint64_t kLifecycleTimeoutMinMs = 2000ull;
@@ -627,6 +641,7 @@ void trace_lifecycle_timeout(
     std::uint64_t timeoutMs,
     bool escalated,
     const char* reason) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -638,6 +653,7 @@ void trace_lifecycle_timeout(
         + " escalated=" + std::to_string(registry_bool_u32(escalated))
         + " reason=" + registry_trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
+#endif
 }
 
 bool transition_entry_locked(const DeviceContextKey& key,

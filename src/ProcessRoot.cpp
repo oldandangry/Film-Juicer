@@ -155,7 +155,20 @@ namespace JuicerProcess {
                 Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
                 Spectral::ensure_precomputed_up_to_date();
                 Spectral::disable_hanatos_if_reference_mismatch();
+            } catch (const std::exception& ex) {
+                Spectral::set_hanatos_available(false);
+                Spectral::set_mallett_available(false);
+#if JUICER_DIAGNOSTICS_COMPILED
+                if (JTRACE_ENABLED(1)) {
+                    std::string msg = "FATAL: spectral bootstrap failed: ";
+                    msg += ex.what();
+                    JTRACE("INIT", msg);
+                }
+#endif
             } catch (...) {
+                Spectral::set_hanatos_available(false);
+                Spectral::set_mallett_available(false);
+                JTRACE("INIT", "FATAL: spectral bootstrap failed with unknown error");
             }
 
             try {
@@ -1118,6 +1131,7 @@ namespace JuicerProcess {
                     JTRACE("CUDA", msg);
                 }
             } catch (...) {
+                JuicerLogging::discard_current_exception();
             }
         }
         if (_state && _state->root && _state->transaction.active && !_state->transaction.committed) {
@@ -2385,6 +2399,7 @@ namespace JuicerProcess {
             frameResources.swap(_cudaResourcesByContext);
             grainStaticResources.swap(_cudaGrainStaticByContext);
         } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
 #endif
     }
@@ -2423,6 +2438,7 @@ namespace JuicerProcess {
             }
             _framePreparationCv.notify_all();
         } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 
@@ -2436,6 +2452,7 @@ namespace JuicerProcess {
                 _framePreparationCv.notify_all();
             }
         } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 
@@ -2446,6 +2463,7 @@ namespace JuicerProcess {
                 _acceptFramePreparation = true;
             }
         } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 
@@ -2456,6 +2474,7 @@ namespace JuicerProcess {
                 return _activeFramePreparations == 0;
             });
         } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 
@@ -2467,6 +2486,7 @@ namespace JuicerProcess {
                 _acceptFramePreparation = false;
             }
         } catch (...) {
+            JuicerLogging::discard_current_exception();
         }
     }
 

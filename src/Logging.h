@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdint>
+#include <exception>
 #include <fstream>
 #include <chrono>
 #include <mutex>
@@ -43,6 +44,10 @@ namespace JuicerLogging {
         if (parsed < static_cast<long>(std::numeric_limits<int>::min())) return fallback;
         if (parsed > static_cast<long>(std::numeric_limits<int>::max())) return fallback;
         return static_cast<int>(parsed);
+    }
+
+    inline void discard_current_exception() noexcept {
+        (void)std::current_exception();
     }
 
     inline std::atomic<int>& diagnostics_level_storage() {
@@ -97,6 +102,8 @@ namespace JuicerLogging {
                     }
                 }
                 catch (...) {
+                    discard_current_exception();
+                    configured_path_storage().reset();
                 }
             }
         });

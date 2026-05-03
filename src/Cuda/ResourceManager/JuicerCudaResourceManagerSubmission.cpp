@@ -214,11 +214,13 @@ AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
 void trace_allocator_backend_mode_once(
     const SubmissionTransaction& transaction,
     const AllocatorBackendContextEntry& entry) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
     const std::string msg = trace_event_identity_prefix("backend_mode", transaction) + trace_device_context_fields(transaction) + " requested=" + to_cstr(entry.requested) + " candidate=" + to_cstr(entry.candidate) + " active=" + to_cstr(entry.active) + " async_pool_supported=" + std::to_string(submission_bool_u32(entry.asyncPoolSupported)) + " fallback_capability=" + std::to_string(submission_bool_u32(entry.fallbackCapability)) + " candidate_reason=" + trace_or_unknown(entry.candidateReason) + " candidate_reason_class=" + trace_reason_class_or_invalid(entry.candidateReason) + " active_reason=" + trace_or_unknown(entry.activeReason) + " active_reason_class=" + trace_reason_class_or_invalid(entry.activeReason) + " policy_decision=" + trace_or_unknown(entry.policyDecision) + " policy_rationale=" + trace_or_unknown(entry.policyRationale) + " deprecation_action=" + trace_or_unknown(entry.deprecationAction) + " removal_criteria=" + trace_or_unknown(entry.removalCriteria);
     JTRACE("MSALC", msg);
+#endif
 }
 
 void ensure_allocator_backend_mode_initialized(
@@ -362,6 +364,7 @@ void trace_async_mempool_release_policy(
     bool changed,
     const char* reason,
     const char* detail) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -374,6 +377,7 @@ void trace_async_mempool_release_policy(
         + " reason=" + trace_or_unspecified(reason)
         + " detail=" + trace_or(detail, "none");
     JTRACE("MSALC", msg);
+#endif
 }
 
 void maybe_apply_async_mempool_release_policy(
@@ -566,6 +570,7 @@ void trace_lifecycle_stage_decision(
     const char* stage,
     bool accepted,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -583,6 +588,7 @@ void trace_lifecycle_stage_decision(
         + " accepted=" + std::to_string(submission_bool_u32(accepted))
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSLCY", msg);
+#endif
 }
 
 bool validate_lifecycle_for_stage(const SubmissionTransaction& transaction,

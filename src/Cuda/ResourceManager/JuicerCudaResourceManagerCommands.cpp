@@ -2820,9 +2820,11 @@ bool command_retire_all_contexts_idle(std::string& outError) {
 }
 
 namespace {
+#if JUICER_DIAGNOSTICS_COMPILED
 const char* scan_lut_medium_name(bool negativeMedium) noexcept {
     return bool_reason(negativeMedium, "negative", "print");
 }
+#endif
 
 bool compute_expected_scan_lut_hash(
     const WorkingState& ws,
@@ -2955,6 +2957,7 @@ void trace_private_lut_fallback(
     bool negativeMedium,
     const PrivateLutFallbackDecision& decision,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2970,6 +2973,7 @@ void trace_private_lut_fallback(
         " reason=" + trace_or(reason, decision.reason) +
         trace_reason_class_field_if_known("reason_class", trace_or(reason, decision.reason));
     JTRACE("MSLUT", msg);
+#endif
 }
 
 bool command_ensure_scan_lut_internal(

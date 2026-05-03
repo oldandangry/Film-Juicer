@@ -1,6 +1,7 @@
 #include "JuicerState.h"
 
 #include "Couplers.h"
+#include "Logging.h"
 #include "ProcessRoot.h"
 
 namespace RebuildWorkingState {
@@ -330,6 +331,7 @@ namespace WorkingStateSharing {
                 std::lock_guard<std::mutex> lock(mutex_);
                 entries_.clear();
             } catch (...) {
+                JuicerLogging::discard_current_exception();
             }
         }
 
