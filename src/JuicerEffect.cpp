@@ -3459,29 +3459,39 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 }
 
 JuicerEffect::~JuicerEffect() {
-    std::uint64_t releasedMaskBytes = 0;
-    if (_state) {
-        std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
-        releasedMaskBytes = _state->autoExposureMaskCachedBytes;
-        _state->autoExposureMaskWeights.reset();
-        _state->autoExposureMaskCachedBytes = 0;
-        _state->autoExposureMaskValid = false;
-        _state->autoExposureMaskSum = 0.0;
+    try {
+        std::uint64_t releasedMaskBytes = 0;
+        if (_state) {
+            std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
+            releasedMaskBytes = _state->autoExposureMaskCachedBytes;
+            _state->autoExposureMaskWeights.reset();
+            _state->autoExposureMaskCachedBytes = 0;
+            _state->autoExposureMaskValid = false;
+            _state->autoExposureMaskSum = 0.0;
+        }
+        if (releasedMaskBytes > 0) {
+            update_auto_exposure_mask_resident_bytes(releasedMaskBytes, 0);
+            trace_auto_exposure_mask_cache_event(
+                _state.get(),
+                "cache_release",
+                0,
+                0,
+                0,
+                0,
+                releasedMaskBytes,
+                "instance_destroy");
+        }
     }
-    if (releasedMaskBytes > 0) {
-        update_auto_exposure_mask_resident_bytes(releasedMaskBytes, 0);
-        trace_auto_exposure_mask_cache_event(
-            _state.get(),
-            "cache_release",
-            0,
-            0,
-            0,
-            0,
-            releasedMaskBytes,
-            "instance_destroy");
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 
-    _state.reset();
+    try {
+        _state.reset();
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 void JuicerEffect::render(const OFX::RenderArguments& args) {

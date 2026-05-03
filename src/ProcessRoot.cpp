@@ -2012,15 +2012,20 @@ namespace JuicerProcess {
     }
 
     void Root::PreparedCudaFrame::record_use(void* cudaStreamOpaque) noexcept {
-        if (!_state ||
-            !_state->resources ||
-            !_state->transaction.active ||
-            _state->transaction.committed ||
-            _state->frameUseEventSubmitted) {
-            return;
+        try {
+            if (!_state ||
+                !_state->resources ||
+                !_state->transaction.active ||
+                _state->transaction.committed ||
+                _state->frameUseEventSubmitted) {
+                return;
+            }
+            std::string ignoredError;
+            (void)_state->submit_frame_use_event(cudaStreamOpaque, ignoredError);
         }
-        std::string ignoredError;
-        (void)_state->submit_frame_use_event(cudaStreamOpaque, ignoredError);
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 
     const char* Root::PreparedCudaFrame::failure_stage_tag() const noexcept {
@@ -2089,27 +2094,32 @@ namespace JuicerProcess {
     }
 
     void Root::shutdown() noexcept {
-        ShutdownToken shutdown = begin_shutdown();
-        (void)shutdown;
-        wait_for_frame_preparation();
-        std::string retireError;
-        if (!retire_known_contexts(retireError)) {
-            set_shutdown_retire_blocked(true);
-            if (JTRACE_ENABLED(1)) {
-                std::string msg;
-                msg.reserve(160);
-                msg = "process_shutdown_retire_failed release_host_services=0";
-                if (!retireError.empty()) {
-                    msg += " error=";
-                    msg += retireError;
+        try {
+            ShutdownToken shutdown = begin_shutdown();
+            (void)shutdown;
+            wait_for_frame_preparation();
+            std::string retireError;
+            if (!retire_known_contexts(retireError)) {
+                set_shutdown_retire_blocked(true);
+                if (JTRACE_ENABLED(1)) {
+                    std::string msg;
+                    msg.reserve(160);
+                    msg = "process_shutdown_retire_failed release_host_services=0";
+                    if (!retireError.empty()) {
+                        msg += " error=";
+                        msg += retireError;
+                    }
+                    JTRACE("MSLCY", msg);
                 }
-                JTRACE("MSLCY", msg);
+                return;
             }
-            return;
+            set_shutdown_retire_blocked(false);
+            release_cuda_context_resource_owners();
+            release_process_host_services();
         }
-        set_shutdown_retire_blocked(false);
-        release_cuda_context_resource_owners();
-        release_process_host_services();
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 
     JuicerAssets::Library& Root::assets() noexcept {
@@ -2382,7 +2392,13 @@ namespace JuicerProcess {
         try {
             return JuicerCuda::ResourceManager::command_retire_all_contexts_idle(outError);
         } catch (...) {
-            outError = "registry-wide context retire threw";
+            JuicerLogging::discard_current_exception();
+            try {
+                outError = "registry-wide context retire threw";
+            }
+            catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
             return false;
         }
 #else
@@ -2392,9 +2408,9 @@ namespace JuicerProcess {
 
     void Root::release_cuda_context_resource_owners() noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        ContextCudaResourceMap frameResources;
-        ContextCudaResourceMap grainStaticResources;
         try {
+            ContextCudaResourceMap frameResources;
+            ContextCudaResourceMap grainStaticResources;
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
             frameResources.swap(_cudaResourcesByContext);
             grainStaticResources.swap(_cudaGrainStaticByContext);

@@ -82,8 +82,8 @@ MetadataMutationLaneDirectory& mutation_lane_directory() {
 }
 
 std::mutex& mutation_sequence_mutex() {
-    static std::mutex m;
-    return m;
+    static std::mutex mutex;
+    return mutex;
 }
 
 std::uint64_t& mutation_last_issued_sequence() {
@@ -225,6 +225,26 @@ std::shared_ptr<MetadataMutationLane> resolve_mutation_lane(const DeviceContextK
     std::shared_ptr<MetadataMutationLane> lane = std::make_shared<MetadataMutationLane>();
     directory.byManagerKey.emplace(*managerKey, lane);
     return lane;
+}
+
+std::shared_ptr<MetadataMutationLane> find_mutation_lane_noexcept(const DeviceContextKey* managerKey) noexcept {
+    try {
+        MetadataMutationLaneDirectory& directory = mutation_lane_directory();
+        if (!managerKey || managerKey->deviceId < 0) {
+            return directory.fallbackLane;
+        }
+
+        std::lock_guard<std::mutex> lock(directory.mutex);
+        auto it = directory.byManagerKey.find(*managerKey);
+        if (it == directory.byManagerKey.end()) {
+            return nullptr;
+        }
+        return it->second;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        return nullptr;
+    }
 }
 
 void reset_scope(MetadataMutationScope& scope) noexcept {
@@ -805,61 +825,66 @@ std::uint64_t registry_overflow_count_or_zero(
 }
 
 void maybe_reap_idle_locked(RegistryState& state, const DeviceContextKey* protectKey) noexcept {
-    const ResourceManagerConfigEffective& cfg = registry_policy_config();
-    if (cfg.maxLiveManagersPerProcess == 0 || cfg.managerIdleReapMs == 0) {
-        return;
-    }
-    if (state.byDeviceContext.empty()) {
-        publish_registry_live_count(0);
-        return;
-    }
-
-    const std::uint64_t nowMs = monotonic_time_ms();
-    const std::uint64_t elapsedMs = saturating_elapsed_ms(nowMs, state.lastIdleReapScanMs);
-    const bool cadenceDue = (state.lastIdleReapScanMs == 0) ||
-        (elapsedMs >= static_cast<std::uint64_t>(cfg.managerIdleReapMs));
-    const std::uint64_t liveManagersBefore = static_cast<std::uint64_t>(state.byDeviceContext.size());
-    publish_registry_live_count(state.byDeviceContext.size());
-    const std::uint64_t maxLive = static_cast<std::uint64_t>(cfg.maxLiveManagersPerProcess);
-    const std::uint64_t overflow = registry_overflow_count_or_zero(liveManagersBefore, maxLive);
-    if (!cadenceDue && overflow == 0) {
-        return;
-    }
-    state.lastIdleReapScanMs = nowMs;
-
-    std::vector<ReapCandidate> candidates;
-    collect_reap_candidates_locked(
-        state,
-        protectKey,
-        nowMs,
-        static_cast<std::uint64_t>(cfg.managerIdleReapMs),
-        candidates);
-
-    if (candidates.empty()) {
-        if (overflow > 0) {
-            trace_reap_skip_event("overflow_no_eligible_idle_manager");
+    try {
+        const ResourceManagerConfigEffective& cfg = registry_policy_config();
+        if (cfg.maxLiveManagersPerProcess == 0 || cfg.managerIdleReapMs == 0) {
+            return;
         }
-        return;
-    }
+        if (state.byDeviceContext.empty()) {
+            publish_registry_live_count(0);
+            return;
+        }
 
-    sort_reap_candidates(candidates);
-    const std::size_t reapCount = compute_reap_count(candidates.size(), overflow);
+        const std::uint64_t nowMs = monotonic_time_ms();
+        const std::uint64_t elapsedMs = saturating_elapsed_ms(nowMs, state.lastIdleReapScanMs);
+        const bool cadenceDue = (state.lastIdleReapScanMs == 0) ||
+            (elapsedMs >= static_cast<std::uint64_t>(cfg.managerIdleReapMs));
+        const std::uint64_t liveManagersBefore = static_cast<std::uint64_t>(state.byDeviceContext.size());
+        publish_registry_live_count(state.byDeviceContext.size());
+        const std::uint64_t maxLive = static_cast<std::uint64_t>(cfg.maxLiveManagersPerProcess);
+        const std::uint64_t overflow = registry_overflow_count_or_zero(liveManagersBefore, maxLive);
+        if (!cadenceDue && overflow == 0) {
+            return;
+        }
+        state.lastIdleReapScanMs = nowMs;
 
-    for (std::size_t i = 0; i < reapCount; ++i) {
-        const ReapCandidate& candidate = candidates[i];
-        const char* reason = registry_bool_reason(overflow > 0, "max_live_oldest_idle", "idle_timeout");
-        (void)erase_registry_entry_locked(
+        std::vector<ReapCandidate> candidates;
+        collect_reap_candidates_locked(
             state,
-            candidate.key,
-            candidate.entry,
-            "reap",
-            reason,
-            true,
-            candidate.idleMs);
-    }
+            protectKey,
+            nowMs,
+            static_cast<std::uint64_t>(cfg.managerIdleReapMs),
+            candidates);
 
-    if (overflow > static_cast<std::uint64_t>(reapCount)) {
-        trace_reap_skip_event("overflow_remaining_after_safe_reap");
+        if (candidates.empty()) {
+            if (overflow > 0) {
+                trace_reap_skip_event("overflow_no_eligible_idle_manager");
+            }
+            return;
+        }
+
+        sort_reap_candidates(candidates);
+        const std::size_t reapCount = compute_reap_count(candidates.size(), overflow);
+
+        for (std::size_t i = 0; i < reapCount; ++i) {
+            const ReapCandidate& candidate = candidates[i];
+            const char* reason = registry_bool_reason(overflow > 0, "max_live_oldest_idle", "idle_timeout");
+            (void)erase_registry_entry_locked(
+                state,
+                candidate.key,
+                candidate.entry,
+                "reap",
+                reason,
+                true,
+                candidate.idleMs);
+        }
+
+        if (overflow > static_cast<std::uint64_t>(reapCount)) {
+            trace_reap_skip_event("overflow_remaining_after_safe_reap");
+        }
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 }
 
@@ -902,79 +927,91 @@ bool metadata_mutation_begin(
     // - Resolve lane (directory mutex), then acquire/release lane mutex for ticketing.
     // - Sequence mutex is acquired only after lane mutex is released.
     // - Do not hold registry_state().mutex while touching lane/directory/sequence mutexes.
-    if (outScope.active) {
-        trace_mutation_reject(
-            "begin",
-            stage,
-            outScope.sequence,
-            outScope.sequence,
-            outScope.queueTicket,
-            0,
-            0,
-            false,
-            "scope_already_active");
-        return false;
-    }
+    try {
+        if (outScope.active) {
+            trace_mutation_reject(
+                "begin",
+                stage,
+                outScope.sequence,
+                outScope.sequence,
+                outScope.queueTicket,
+                0,
+                0,
+                false,
+                "scope_already_active");
+            return false;
+        }
 
-    std::shared_ptr<MetadataMutationLane> lane = resolve_mutation_lane(managerKey);
-    if (!lane) {
-        trace_mutation_reject(
-            "begin",
-            stage,
-            0,
-            0,
-            0,
-            0,
-            0,
-            false,
-            "missing_lane");
-        return false;
-    }
+        std::shared_ptr<MetadataMutationLane> lane = resolve_mutation_lane(managerKey);
+        if (!lane) {
+            trace_mutation_reject(
+                "begin",
+                stage,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+                "missing_lane");
+            return false;
+        }
 
-    LaneAcquireResult acquire{};
-    if (!acquire_lane_ticket(*lane, std::this_thread::get_id(), stage, acquire)) {
-        return false;
-    }
+        LaneAcquireResult acquire{};
+        if (!acquire_lane_ticket(*lane, std::this_thread::get_id(), stage, acquire)) {
+            return false;
+        }
+        outScope.queueTicket = acquire.ticket;
+        outScope.hasManagerKey = (managerKey && managerKey->deviceId >= 0);
+        outScope.managerKey = registry_manager_key_or_default(outScope.hasManagerKey, managerKey);
+        outScope.active = true;
 
-    telemetry_record_metadata_mutation_begin();
-    std::uint64_t sequence = 0;
-    std::uint64_t expectedSequence = 0;
-    bool orderOk = true;
-    {
-        std::lock_guard<std::mutex> lock(mutation_sequence_mutex());
-        ResourceManagerState& state = global_state();
-        sequence = state.nextMetadataMutationSequence.fetch_add(1, std::memory_order_relaxed);
-        if (sequence == 0) {
+        telemetry_record_metadata_mutation_begin();
+        std::uint64_t sequence = 0;
+        std::uint64_t expectedSequence = 0;
+        bool orderOk = true;
+        {
+            std::lock_guard<std::mutex> lock(mutation_sequence_mutex());
+            ResourceManagerState& state = global_state();
             sequence = state.nextMetadataMutationSequence.fetch_add(1, std::memory_order_relaxed);
+            if (sequence == 0) {
+                sequence = state.nextMetadataMutationSequence.fetch_add(1, std::memory_order_relaxed);
+            }
+            expectedSequence = mutation_last_issued_sequence() + 1;
+            if (expectedSequence == 0) {
+                expectedSequence = 1;
+            }
+            orderOk = (sequence == expectedSequence);
+            if (!orderOk) {
+                telemetry_record_metadata_mutation_order_violation();
+            }
+            mutation_last_issued_sequence() = sequence;
         }
-        expectedSequence = mutation_last_issued_sequence() + 1;
-        if (expectedSequence == 0) {
-            expectedSequence = 1;
-        }
-        orderOk = (sequence == expectedSequence);
-        if (!orderOk) {
-            telemetry_record_metadata_mutation_order_violation();
-        }
-        mutation_last_issued_sequence() = sequence;
+
+        outScope.sequence = sequence;
+        gMutationThreadDepth += 1;
+        gMutationThreadTicket = acquire.ticket;
+        gMutationThreadBeginCount += 1;
+
+        telemetry_trace_metadata_mutation(
+            "begin",
+            stage,
+            sequence,
+            true,
+            expectedSequence,
+            registry_mutation_begin_reason(orderOk, acquire.reentrant));
+        return true;
     }
-
-    outScope.sequence = sequence;
-    outScope.queueTicket = acquire.ticket;
-    outScope.hasManagerKey = (managerKey && managerKey->deviceId >= 0);
-    outScope.managerKey = registry_manager_key_or_default(outScope.hasManagerKey, managerKey);
-    outScope.active = true;
-    gMutationThreadDepth += 1;
-    gMutationThreadTicket = acquire.ticket;
-    gMutationThreadBeginCount += 1;
-
-    telemetry_trace_metadata_mutation(
-        "begin",
-        stage,
-        sequence,
-        true,
-        expectedSequence,
-        registry_mutation_begin_reason(orderOk, acquire.reentrant));
-    return true;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        if (outScope.active) {
+            metadata_mutation_end(outScope, stage);
+        }
+        else {
+            reset_scope(outScope);
+        }
+        return false;
+    }
 }
 
 void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noexcept {
@@ -993,7 +1030,7 @@ void metadata_mutation_end(MetadataMutationScope& scope, const char* stage) noex
     }
 
     std::shared_ptr<MetadataMutationLane> lane =
-        resolve_mutation_lane(registry_manager_key_ptr_or_null(scope.hasManagerKey, &scope.managerKey));
+        find_mutation_lane_noexcept(registry_manager_key_ptr_or_null(scope.hasManagerKey, &scope.managerKey));
     if (!lane) {
         trace_mutation_reject(
             "end",
@@ -1162,112 +1199,133 @@ const char* to_cstr(LifecycleStageDecision decision) noexcept {
 }
 
 RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
-    MetadataMutationGuard mutationGuard("registry_get_or_create", &key);
-    if (!mutationGuard.ok()) {
+    try {
+        MetadataMutationGuard mutationGuard("registry_get_or_create", &key);
+        if (!mutationGuard.ok()) {
+            return RegistryHandle{};
+        }
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        maybe_reap_idle_locked(state, &key);
+
+        const std::uint64_t nowMs = monotonic_time_ms();
+        auto it = state.byDeviceContext.find(key);
+        if (it != state.byDeviceContext.end()) {
+            if (it->second.lifecycleState == ContextLifecycleState::Retired) {
+                RegistryEntry retiredEntry = it->second;
+                (void)erase_registry_entry_locked(
+                    state,
+                    key,
+                    retiredEntry,
+                    "recreate",
+                    "retired_recreate",
+                    false,
+                    0);
+            }
+            else {
+                it->second.lastTouchedMs = nowMs;
+                publish_registry_live_count(state.byDeviceContext.size());
+                return it->second.handle;
+            }
+        }
+
+        RegistryEntry entry{};
+        entry.handle.value = next_nonzero_counter(state.nextHandle);
+        entry.lifecycleState = ContextLifecycleState::Unbound;
+        entry.createOrder = next_nonzero_counter(state.nextCreateOrder);
+        entry.lastTouchedMs = nowMs;
+        entry.lifecycleSinceMs = nowMs;
+        entry.activeSubmissionCount = 0;
+        assign_entry_generations(entry);
+
+        auto inserted = state.byDeviceContext.emplace(key, entry);
+        RegistryEntry& insertedEntry = inserted.first->second;
+        state.keyByHandle[insertedEntry.handle.value] = key;
+        const bool createBound = transition_entry_locked(
+            key,
+            insertedEntry,
+            ContextLifecycleState::Unbound,
+            ContextLifecycleState::Binding,
+            "create_bind");
+        if (!createBound) {
+            (void)transition_entry_to_retired_locked(
+                key,
+                insertedEntry,
+                "create_bind_retire");
+        }
+        else if (!transition_entry_locked(
+                key,
+                insertedEntry,
+                ContextLifecycleState::Binding,
+                ContextLifecycleState::Active,
+                "create_activate")) {
+            (void)transition_entry_to_retired_locked(
+                key,
+                insertedEntry,
+                "create_activate_retire");
+        }
+
+        publish_registry_live_count(state.byDeviceContext.size());
+        trace_registry_event_current(
+            &key,
+            &insertedEntry,
+            "create",
+            true,
+            "create_or_reuse",
+            0);
+
+        maybe_reap_idle_locked(state, &key);
+        return insertedEntry.handle;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return RegistryHandle{};
     }
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    maybe_reap_idle_locked(state, &key);
-
-    const std::uint64_t nowMs = monotonic_time_ms();
-    auto it = state.byDeviceContext.find(key);
-    if (it != state.byDeviceContext.end()) {
-        if (it->second.lifecycleState == ContextLifecycleState::Retired) {
-            RegistryEntry retiredEntry = it->second;
-            (void)erase_registry_entry_locked(
-                state,
-                key,
-                retiredEntry,
-                "recreate",
-                "retired_recreate",
-                false,
-                0);
-        }
-        else {
-            it->second.lastTouchedMs = nowMs;
-            publish_registry_live_count(state.byDeviceContext.size());
-            return it->second.handle;
-        }
-    }
-
-    RegistryEntry entry{};
-    entry.handle.value = next_nonzero_counter(state.nextHandle);
-    entry.lifecycleState = ContextLifecycleState::Unbound;
-    entry.createOrder = next_nonzero_counter(state.nextCreateOrder);
-    entry.lastTouchedMs = nowMs;
-    entry.lifecycleSinceMs = nowMs;
-    entry.activeSubmissionCount = 0;
-    assign_entry_generations(entry);
-
-    auto inserted = state.byDeviceContext.emplace(key, entry);
-    RegistryEntry& insertedEntry = inserted.first->second;
-    state.keyByHandle[insertedEntry.handle.value] = key;
-    const bool createBound = transition_entry_locked(
-        key,
-        insertedEntry,
-        ContextLifecycleState::Unbound,
-        ContextLifecycleState::Binding,
-        "create_bind");
-    if (!createBound) {
-        (void)transition_entry_to_retired_locked(
-            key,
-            insertedEntry,
-            "create_bind_retire");
-    }
-    else if (!transition_entry_locked(
-            key,
-            insertedEntry,
-            ContextLifecycleState::Binding,
-            ContextLifecycleState::Active,
-            "create_activate")) {
-        (void)transition_entry_to_retired_locked(
-            key,
-            insertedEntry,
-            "create_activate_retire");
-    }
-
-    publish_registry_live_count(state.byDeviceContext.size());
-    trace_registry_event_current(
-        &key,
-        &insertedEntry,
-        "create",
-        true,
-        "create_or_reuse",
-        0);
-
-    maybe_reap_idle_locked(state, &key);
-    return insertedEntry.handle;
 }
 
 bool registry_get_snapshot_generations(
     const DeviceContextKey& key,
     std::uint64_t& outRegistryGeneration,
     std::uint64_t& outContextEpoch) noexcept {
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end() ||
-        it->second.lifecycleState == ContextLifecycleState::Retired) {
+    try {
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end() ||
+            it->second.lifecycleState == ContextLifecycleState::Retired) {
+            outRegistryGeneration = 0;
+            outContextEpoch = 0;
+            return false;
+        }
+        outRegistryGeneration = it->second.registryGeneration;
+        outContextEpoch = it->second.contextEpoch;
+        return true;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         outRegistryGeneration = 0;
         outContextEpoch = 0;
         return false;
     }
-    outRegistryGeneration = it->second.registryGeneration;
-    outContextEpoch = it->second.contextEpoch;
-    return true;
 }
 
 bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept {
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end()) {
+    try {
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end()) {
+            outState = ContextLifecycleState::Unbound;
+            return false;
+        }
+        outState = it->second.lifecycleState;
+        return true;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         outState = ContextLifecycleState::Unbound;
         return false;
     }
-    outState = it->second.lifecycleState;
-    return true;
 }
 
 void registry_snapshot_context_keys(std::vector<DeviceContextKey>& outKeys) {
@@ -1285,124 +1343,145 @@ bool registry_validate_lifecycle_stage(
     bool allowNonActiveRelease,
     LifecycleStageValidation& outValidation) noexcept {
     outValidation = LifecycleStageValidation{};
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end()) {
-        outValidation.decision = LifecycleStageDecision::MissingRegistryEntry;
-        outValidation.observedState = ContextLifecycleState::Unbound;
-        outValidation.observedStateAgeMs = 0;
-        outValidation.escalated = false;
-        return false;
-    }
-
-    RegistryEntry& entry = it->second;
-    const std::uint64_t nowMs = monotonic_time_ms();
-    if (entry.lifecycleSinceMs == 0) {
-        entry.lifecycleSinceMs = nowMs;
-    }
-
-    const ContextLifecycleState observedState = entry.lifecycleState;
-    const std::uint64_t stateAgeMs = saturating_elapsed_ms(nowMs, entry.lifecycleSinceMs);
-    outValidation.observedState = observedState;
-    outValidation.observedStateAgeMs = stateAgeMs;
-
-    const ResourceManagerConfigEffective& cfg = registry_policy_config();
-    const std::uint64_t timeoutMs = lifecycle_timeout_ms_for_state(observedState, cfg);
-    if (timeoutMs > 0 && stateAgeMs >= timeoutMs) {
-        ResourceManagerState& rmState = global_state();
-        telemetry_counter_add(rmState.lifecycleTimeoutEvents, 1);
-        const RegistryHandle observedHandle = entry.handle;
-        const char* timeoutReason = registry_lifecycle_timeout_reason(observedState);
-
-        bool escalated = false;
-        if (entry.activeSubmissionCount == 0) {
-            bump_registry_epoch_locked(key, entry, true, "watchdog_timeout_bump");
-            if (transition_entry_locked(
-                    key,
-                    entry,
-                    observedState,
-                    ContextLifecycleState::Retired,
-                    "watchdog_timeout_retire")) {
-                entry.lastTouchedMs = nowMs;
-                RegistryEntry retiredEntry = entry;
-                (void)erase_registry_entry_locked(
-                    state,
-                    key,
-                    retiredEntry,
-                    "lifecycle_timeout",
-                    "watchdog_timeout_retire",
-                    false,
-                    0);
-                escalated = true;
-            }
+    try {
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end()) {
+            outValidation.decision = LifecycleStageDecision::MissingRegistryEntry;
+            outValidation.observedState = ContextLifecycleState::Unbound;
+            outValidation.observedStateAgeMs = 0;
+            outValidation.escalated = false;
+            return false;
         }
 
-        trace_lifecycle_timeout(
-            key,
-            observedHandle,
-            observedState,
-            stateAgeMs,
-            timeoutMs,
-            escalated,
-            timeoutReason);
-        outValidation.decision = LifecycleStageDecision::TimedOut;
-        outValidation.escalated = escalated;
-        return false;
-    }
+        RegistryEntry& entry = it->second;
+        const std::uint64_t nowMs = monotonic_time_ms();
+        if (entry.lifecycleSinceMs == 0) {
+            entry.lifecycleSinceMs = nowMs;
+        }
 
-    if (!lifecycle_state_allowed_for_stage(observedState, allowNonActiveRelease)) {
-        outValidation.decision = LifecycleStageDecision::StateNotAllowed;
+        const ContextLifecycleState observedState = entry.lifecycleState;
+        const std::uint64_t stateAgeMs = saturating_elapsed_ms(nowMs, entry.lifecycleSinceMs);
+        outValidation.observedState = observedState;
+        outValidation.observedStateAgeMs = stateAgeMs;
+
+        const ResourceManagerConfigEffective& cfg = registry_policy_config();
+        const std::uint64_t timeoutMs = lifecycle_timeout_ms_for_state(observedState, cfg);
+        if (timeoutMs > 0 && stateAgeMs >= timeoutMs) {
+            ResourceManagerState& rmState = global_state();
+            telemetry_counter_add(rmState.lifecycleTimeoutEvents, 1);
+            const RegistryHandle observedHandle = entry.handle;
+            const char* timeoutReason = registry_lifecycle_timeout_reason(observedState);
+
+            bool escalated = false;
+            if (entry.activeSubmissionCount == 0) {
+                bump_registry_epoch_locked(key, entry, true, "watchdog_timeout_bump");
+                if (transition_entry_locked(
+                        key,
+                        entry,
+                        observedState,
+                        ContextLifecycleState::Retired,
+                        "watchdog_timeout_retire")) {
+                    entry.lastTouchedMs = nowMs;
+                    RegistryEntry retiredEntry = entry;
+                    (void)erase_registry_entry_locked(
+                        state,
+                        key,
+                        retiredEntry,
+                        "lifecycle_timeout",
+                        "watchdog_timeout_retire",
+                        false,
+                        0);
+                    escalated = true;
+                }
+            }
+
+            trace_lifecycle_timeout(
+                key,
+                observedHandle,
+                observedState,
+                stateAgeMs,
+                timeoutMs,
+                escalated,
+                timeoutReason);
+            outValidation.decision = LifecycleStageDecision::TimedOut;
+            outValidation.escalated = escalated;
+            return false;
+        }
+
+        if (!lifecycle_state_allowed_for_stage(observedState, allowNonActiveRelease)) {
+            outValidation.decision = LifecycleStageDecision::StateNotAllowed;
+            outValidation.escalated = false;
+            return false;
+        }
+
+        outValidation.decision = LifecycleStageDecision::Allowed;
         outValidation.escalated = false;
+        return true;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        outValidation = LifecycleStageValidation{};
+        outValidation.decision = LifecycleStageDecision::MissingRegistryEntry;
+        outValidation.observedState = ContextLifecycleState::Unbound;
         return false;
     }
-
-    outValidation.decision = LifecycleStageDecision::Allowed;
-    outValidation.escalated = false;
-    return true;
 }
 
 bool registry_note_submission_begin(const DeviceContextKey& key) noexcept {
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end()) {
-        trace_registry_missing_entry(key, "submission_begin");
+    try {
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end()) {
+            trace_registry_missing_entry(key, "submission_begin");
+            return false;
+        }
+
+        RegistryEntry& entry = it->second;
+        if (entry.activeSubmissionCount < std::numeric_limits<std::uint64_t>::max()) {
+            ++entry.activeSubmissionCount;
+        }
+        entry.lastTouchedMs = monotonic_time_ms();
+        return true;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return false;
     }
-
-    RegistryEntry& entry = it->second;
-    if (entry.activeSubmissionCount < std::numeric_limits<std::uint64_t>::max()) {
-        ++entry.activeSubmissionCount;
-    }
-    entry.lastTouchedMs = monotonic_time_ms();
-    return true;
 }
 
 bool registry_note_submission_end(const DeviceContextKey& key) noexcept {
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end()) {
-        trace_registry_missing_entry(key, "submission_end");
-        return false;
-    }
+    try {
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end()) {
+            trace_registry_missing_entry(key, "submission_end");
+            return false;
+        }
 
-    RegistryEntry& entry = it->second;
-    if (entry.activeSubmissionCount == 0) {
-        trace_registry_event_current(
-            &key,
-            &entry,
-            "submission_end",
-            false,
-            "active_submission_underflow",
-            0);
+        RegistryEntry& entry = it->second;
+        if (entry.activeSubmissionCount == 0) {
+            trace_registry_event_current(
+                &key,
+                &entry,
+                "submission_end",
+                false,
+                "active_submission_underflow",
+                0);
+            return false;
+        }
+        --entry.activeSubmissionCount;
+        entry.lastTouchedMs = monotonic_time_ms();
+        maybe_reap_idle_locked(state, &key);
+        return true;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return false;
     }
-    --entry.activeSubmissionCount;
-    entry.lastTouchedMs = monotonic_time_ms();
-    maybe_reap_idle_locked(state, &key);
-    return true;
 }
 
 bool registry_transition_lifecycle_state(
@@ -1410,146 +1489,171 @@ bool registry_transition_lifecycle_state(
     ContextLifecycleState expectedState,
     ContextLifecycleState desiredState,
     const char* reason) noexcept {
-    MetadataMutationGuard mutationGuard("registry_transition_lifecycle_state", &key);
-    if (!mutationGuard.ok()) {
+    try {
+        MetadataMutationGuard mutationGuard("registry_transition_lifecycle_state", &key);
+        if (!mutationGuard.ok()) {
+            return false;
+        }
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end()) {
+            telemetry_counter_add(global_state().lifecycleTransitionCalls, 1);
+            telemetry_counter_add(global_state().lifecycleTransitionRejects, 1);
+            const RegistryHandle missingHandle{};
+            trace_lifecycle_transition(key, missingHandle, ContextLifecycleState::Unbound, desiredState, false, reason);
+            return false;
+        }
+        const bool ok = transition_entry_locked(key, it->second, expectedState, desiredState, reason);
+        if (ok) {
+            it->second.lastTouchedMs = monotonic_time_ms();
+            maybe_reap_idle_locked(state, &key);
+        }
+        return ok;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return false;
     }
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end()) {
-        telemetry_counter_add(global_state().lifecycleTransitionCalls, 1);
-        telemetry_counter_add(global_state().lifecycleTransitionRejects, 1);
-        const RegistryHandle missingHandle{};
-        trace_lifecycle_transition(key, missingHandle, ContextLifecycleState::Unbound, desiredState, false, reason);
-        return false;
-    }
-    const bool ok = transition_entry_locked(key, it->second, expectedState, desiredState, reason);
-    if (ok) {
-        it->second.lastTouchedMs = monotonic_time_ms();
-        maybe_reap_idle_locked(state, &key);
-    }
-    return ok;
 }
 
 bool registry_freeze_drain_bump_resume(
     const DeviceContextKey& key,
     const char* reason) noexcept {
-    MetadataMutationGuard mutationGuard("registry_freeze_drain_bump_resume", &key);
-    if (!mutationGuard.ok()) {
+    try {
+        MetadataMutationGuard mutationGuard("registry_freeze_drain_bump_resume", &key);
+        if (!mutationGuard.ok()) {
+            return false;
+        }
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end()) {
+            ResourceManagerState& rmState = global_state();
+            telemetry_counter_add(rmState.lifecycleBarrierCalls, 1);
+            telemetry_counter_add(rmState.lifecycleBarrierRejects, 1);
+            const RegistryHandle missingHandle{};
+            trace_lifecycle_transition(
+                key,
+                missingHandle,
+                ContextLifecycleState::Unbound,
+                ContextLifecycleState::Freezing,
+                false,
+                registry_trace_or(reason, "barrier_missing_entry"));
+            return false;
+        }
+        const bool ok = run_freeze_drain_bump_resume_locked(key, it->second, reason);
+        if (ok) {
+            it->second.lastTouchedMs = monotonic_time_ms();
+        }
+        return ok;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return false;
     }
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end()) {
-        ResourceManagerState& rmState = global_state();
-        telemetry_counter_add(rmState.lifecycleBarrierCalls, 1);
-        telemetry_counter_add(rmState.lifecycleBarrierRejects, 1);
-        const RegistryHandle missingHandle{};
-        trace_lifecycle_transition(
-            key,
-            missingHandle,
-            ContextLifecycleState::Unbound,
-            ContextLifecycleState::Freezing,
-            false,
-            registry_trace_or(reason, "barrier_missing_entry"));
-        return false;
-    }
-    const bool ok = run_freeze_drain_bump_resume_locked(key, it->second, reason);
-    if (ok) {
-        it->second.lastTouchedMs = monotonic_time_ms();
-    }
-    return ok;
 }
 
 bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexcept {
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byDeviceContext.find(key);
-    if (it == state.byDeviceContext.end()) {
+    try {
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byDeviceContext.find(key);
+        if (it == state.byDeviceContext.end()) {
+            outHandle = RegistryHandle{};
+            return false;
+        }
+        outHandle = it->second.handle;
+        return true;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         outHandle = RegistryHandle{};
         return false;
     }
-    outHandle = it->second.handle;
-    return true;
 }
 
 bool registry_retire(
     RegistryHandle handle,
     RegistryRetireReason reason,
     const DeviceContextKey* managerKey) noexcept {
-    MetadataMutationGuard mutationGuard("registry_retire", managerKey);
-    if (!mutationGuard.ok()) {
-        return false;
-    }
-    if (handle.value == 0) {
-        return true;
-    }
-    RegistryState& state = registry_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto keyIt = state.keyByHandle.find(handle.value);
-    if (keyIt == state.keyByHandle.end()) {
-        return true;
-    }
-    auto entryIt = state.byDeviceContext.find(keyIt->second);
-    if (entryIt == state.byDeviceContext.end()) {
-        state.keyByHandle.erase(keyIt);
-        publish_registry_live_count(state.byDeviceContext.size());
-        return true;
-    }
-    RegistryEntry& entry = entryIt->second;
-    const DeviceContextKey deviceKey = keyIt->second;
-    const std::uint64_t nowMs = monotonic_time_ms();
-    entry.lastTouchedMs = nowMs;
-    const bool requiresNoActiveSubmissions =
-        reason == RegistryRetireReason::Idle ||
-        reason == RegistryRetireReason::ContextReset;
-    if (requiresNoActiveSubmissions && entry.activeSubmissionCount != 0) {
-        trace_registry_event_current(
-            &deviceKey,
-            &entry,
-            "retire",
-            false,
-            "active_submissions",
-            0);
-        return false;
-    }
-    if (reason == RegistryRetireReason::ContextReset) {
-        const bool barrierOk = run_freeze_drain_bump_resume_locked(
-            deviceKey,
-            entry,
-            "context_reset_barrier");
-        if (!barrierOk) {
-            trace_lifecycle_transition(
-                deviceKey,
-                entry.handle,
-                entry.lifecycleState,
-                entry.lifecycleState,
-                false,
-                "context_reset_barrier_reject");
+    try {
+        MetadataMutationGuard mutationGuard("registry_retire", managerKey);
+        if (!mutationGuard.ok()) {
+            return false;
         }
+        if (handle.value == 0) {
+            return true;
+        }
+        RegistryState& state = registry_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto keyIt = state.keyByHandle.find(handle.value);
+        if (keyIt == state.keyByHandle.end()) {
+            return true;
+        }
+        auto entryIt = state.byDeviceContext.find(keyIt->second);
+        if (entryIt == state.byDeviceContext.end()) {
+            state.keyByHandle.erase(keyIt);
+            publish_registry_live_count(state.byDeviceContext.size());
+            return true;
+        }
+        RegistryEntry& entry = entryIt->second;
+        const DeviceContextKey deviceKey = keyIt->second;
+        const std::uint64_t nowMs = monotonic_time_ms();
+        entry.lastTouchedMs = nowMs;
+        const bool requiresNoActiveSubmissions =
+            reason == RegistryRetireReason::Idle ||
+            reason == RegistryRetireReason::ContextReset;
+        if (requiresNoActiveSubmissions && entry.activeSubmissionCount != 0) {
+            trace_registry_event_current(
+                &deviceKey,
+                &entry,
+                "retire",
+                false,
+                "active_submissions",
+                0);
+            return false;
+        }
+        if (reason == RegistryRetireReason::ContextReset) {
+            const bool barrierOk = run_freeze_drain_bump_resume_locked(
+                deviceKey,
+                entry,
+                "context_reset_barrier");
+            if (!barrierOk) {
+                trace_lifecycle_transition(
+                    deviceKey,
+                    entry.handle,
+                    entry.lifecycleState,
+                    entry.lifecycleState,
+                    false,
+                    "context_reset_barrier_reject");
+            }
+        }
+        ContextLifecycleState desired = desired_retire_state(reason);
+        if (desired != ContextLifecycleState::Retired) {
+            telemetry_counter_add(global_state().lifecycleTransitionCalls, 1);
+            telemetry_counter_add(global_state().lifecycleTransitionRejects, 1);
+            trace_lifecycle_transition(deviceKey, entry.handle, entry.lifecycleState, desired, false, "retire_unsupported");
+            return false;
+        }
+        if (!transition_entry_to_retired_locked(deviceKey, entry, "retire")) {
+            return false;
+        }
+        RegistryEntry removed = entry;
+        (void)erase_registry_entry_locked(
+            state,
+            deviceKey,
+            removed,
+            "retire",
+            registry_retire_reason_name(reason),
+            false,
+            0);
+        return true;
     }
-    ContextLifecycleState desired = desired_retire_state(reason);
-    if (desired != ContextLifecycleState::Retired) {
-        telemetry_counter_add(global_state().lifecycleTransitionCalls, 1);
-        telemetry_counter_add(global_state().lifecycleTransitionRejects, 1);
-        trace_lifecycle_transition(deviceKey, entry.handle, entry.lifecycleState, desired, false, "retire_unsupported");
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return false;
     }
-    if (!transition_entry_to_retired_locked(deviceKey, entry, "retire")) {
-        return false;
-    }
-    RegistryEntry removed = entry;
-    (void)erase_registry_entry_locked(
-        state,
-        deviceKey,
-        removed,
-        "retire",
-        registry_retire_reason_name(reason),
-        false,
-        0);
-    return true;
 }
 
 } // namespace ResourceManager

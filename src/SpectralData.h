@@ -227,25 +227,30 @@ namespace Spectral {
             const char* event,
             SpectralMutationStage stage,
             const char* owner,
-            const char* action = nullptr) {
+            const char* action = nullptr) noexcept {
 
-            if (!JTRACE_ENABLED(2)) {
-                return;
-            }
+            try {
+                if (!JTRACE_ENABLED(2)) {
+                    return;
+                }
 
-            std::string msg = std::string("event=") + (event ? event : "unknown")
-                + " stage=" + to_cstr(stage)
-                + " depth=" + std::to_string(gSpectralMutationTlsState.depth);
-            if (owner && owner[0] != '\0') {
-                msg += " owner=";
-                msg += owner;
-            }
-            if (action && action[0] != '\0') {
-                msg += " action=";
-                msg += action;
-            }
+                std::string msg = std::string("event=") + (event ? event : "unknown")
+                    + " stage=" + to_cstr(stage)
+                    + " depth=" + std::to_string(gSpectralMutationTlsState.depth);
+                if (owner && owner[0] != '\0') {
+                    msg += " owner=";
+                    msg += owner;
+                }
+                if (action && action[0] != '\0') {
+                    msg += " action=";
+                    msg += action;
+                }
 
-            JTRACE_LEVEL(2, "MSPEC", msg);
+                JTRACE_LEVEL(2, "MSPEC", msg);
+            }
+            catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
         }
     } // namespace detail
 

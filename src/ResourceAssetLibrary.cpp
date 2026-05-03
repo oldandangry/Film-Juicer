@@ -85,6 +85,12 @@ namespace JuicerAssets {
                                                                         {"2393", "kodak_2393", "kodak_2393_uc"}}};
 
         struct FilterCatalog {
+            FilterCatalog() = default;
+            FilterCatalog(const FilterCatalog&) = delete;
+            FilterCatalog& operator=(const FilterCatalog&) = delete;
+            FilterCatalog(FilterCatalog&&) = delete;
+            FilterCatalog& operator=(FilterCatalog&&) = delete;
+
             std::vector<std::string> paperKeys;
             std::vector<std::string> filmKeys;
             std::unordered_set<std::string> paperKeySet;
@@ -104,6 +110,12 @@ namespace JuicerAssets {
         };
 
         struct ParsedNeutralFilterDb {
+            ParsedNeutralFilterDb() = default;
+            ParsedNeutralFilterDb(const ParsedNeutralFilterDb&) = delete;
+            ParsedNeutralFilterDb& operator=(const ParsedNeutralFilterDb&) = delete;
+            ParsedNeutralFilterDb(ParsedNeutralFilterDb&&) = delete;
+            ParsedNeutralFilterDb& operator=(ParsedNeutralFilterDb&&) = delete;
+
             std::unordered_map<std::string, std::tuple<float, float, float>> lookup;
             NeutralFilterFileStamp stamp;
             std::string versionHash;
@@ -449,14 +461,14 @@ namespace JuicerAssets {
                 return;
             }
 
-            ParsedNeutralFilterDb parsedDb;
+            std::shared_ptr<ParsedNeutralFilterDb> parsedDb = std::make_shared<ParsedNeutralFilterDb>();
             std::string parseReason;
-            if (!parse_neutral_filter_db_from_disk(jsonPath, parsedDb, parseReason)) {
+            if (!parse_neutral_filter_db_from_disk(jsonPath, *parsedDb, parseReason)) {
                 trace_neutral_filter_event("reload_failed", dbSnapshot->versionHash, threadClass, parseReason.c_str(), &jsonPath);
                 return;
             }
 
-            dbSnapshot = std::make_shared<ParsedNeutralFilterDb>(std::move(parsedDb));
+            dbSnapshot = std::move(parsedDb);
             cacheEntry.db = dbSnapshot;
             trace_neutral_filter_event("reload_commit", dbSnapshot->versionHash, threadClass, nullptr, &jsonPath);
         }
@@ -485,15 +497,15 @@ namespace JuicerAssets {
                     return read;
                 }
 
-                ParsedNeutralFilterDb parsedDb;
+                std::shared_ptr<ParsedNeutralFilterDb> parsedDb = std::make_shared<ParsedNeutralFilterDb>();
                 std::string parseReason;
-                if (!parse_neutral_filter_db_from_disk(jsonPath, parsedDb, parseReason)) {
+                if (!parse_neutral_filter_db_from_disk(jsonPath, *parsedDb, parseReason)) {
                     trace_neutral_filter_event("reload_failed", "none", threadClass, parseReason.c_str(), &jsonPath);
                     read.stop = true;
                     return read;
                 }
 
-                read.db = std::make_shared<ParsedNeutralFilterDb>(std::move(parsedDb));
+                read.db = std::move(parsedDb);
                 cacheIt = cacheEntries.emplace(cacheKey, NeutralFilterCacheEntry{}).first;
                 cacheEntry = &cacheIt->second;
                 cacheEntry->db = read.db;
@@ -1023,21 +1035,28 @@ namespace JuicerAssets {
             return true;
         }
 
-        FilterCatalog load_filter_catalog(const fs::path& filterPath) {
-            FilterCatalog catalog;
+        void clear_filter_catalog(FilterCatalog& catalog) {
+            catalog.paperKeys.clear();
+            catalog.filmKeys.clear();
+            catalog.paperKeySet.clear();
+            catalog.filmKeySet.clear();
+        }
+
+        bool load_filter_catalog(const fs::path& filterPath, FilterCatalog& catalog) {
+            clear_filter_catalog(catalog);
             std::error_code ec;
             if (!fs::exists(filterPath, ec) || fs::is_directory(filterPath, ec)) {
-                return catalog;
+                return false;
             }
 
             std::ifstream file(filterPath, std::ios::binary);
             if (!file.is_open()) {
-                return catalog;
+                return false;
             }
 
             nlohmann::json root = nlohmann::json::parse(file, nullptr, false);
             if (root.is_discarded() || !root.is_object()) {
-                return catalog;
+                return false;
             }
             const size_t paperCount = root.size();
             catalog.paperKeys.reserve(paperCount);
@@ -1065,7 +1084,7 @@ namespace JuicerAssets {
                     }
                 }
             }
-            return catalog;
+            return true;
         }
 
         struct PrintFolderInfo {
@@ -1234,7 +1253,8 @@ namespace JuicerAssets {
         _filmStocks.reserve(infoByKey.size());
         _printPapers.reserve(infoByKey.size());
 
-        FilterCatalog filters = load_filter_catalog(profilesDir / "enlarger_neutral_ymc_filters.json");
+        FilterCatalog filters;
+        (void)load_filter_catalog(profilesDir / "enlarger_neutral_ymc_filters.json", filters);
         if (traceCatalog) {
             missingFilmKeys.reserve(filters.filmKeys.size());
             missingPaperKeys.reserve(filters.paperKeys.size());

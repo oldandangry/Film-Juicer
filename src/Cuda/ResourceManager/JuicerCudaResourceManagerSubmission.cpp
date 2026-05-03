@@ -26,7 +26,7 @@ struct AllocatorBackendState {
     std::unordered_map<DeviceContextKey, AllocatorBackendContextEntry, DeviceContextKeyHash> byContext;
 };
 
-AllocatorBackendState& allocator_backend_state() noexcept {
+AllocatorBackendState& allocator_backend_state() {
     static AllocatorBackendState state{};
     return state;
 }
@@ -34,19 +34,25 @@ AllocatorBackendState& allocator_backend_state() noexcept {
 AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
     AllocatorBackendState& state,
     const DeviceContextKey& key,
-    const ResourceManagerConfigEffective& cfg) noexcept;
+    const ResourceManagerConfigEffective& cfg);
 
 bool allocator_backend_try_get_active_mode(
     const DeviceContextKey& key,
     AllocatorBackendMode& outMode) noexcept {
-    AllocatorBackendState& state = allocator_backend_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    const auto it = state.byContext.find(key);
-    if (it == state.byContext.end() || !it->second.valid) {
+    try {
+        AllocatorBackendState& state = allocator_backend_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        const auto it = state.byContext.find(key);
+        if (it == state.byContext.end() || !it->second.valid) {
+            return false;
+        }
+        outMode = it->second.active;
+        return true;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return false;
     }
-    outMode = it->second.active;
-    return true;
 }
 
 std::uint32_t submission_bool_u32(bool value) noexcept {
@@ -203,7 +209,7 @@ AllocatorBackendContextEntry compute_allocator_backend_context_entry(
 AllocatorBackendContextEntry& allocator_backend_get_or_init_locked(
     AllocatorBackendState& state,
     const DeviceContextKey& key,
-    const ResourceManagerConfigEffective& cfg) noexcept {
+    const ResourceManagerConfigEffective& cfg) {
     AllocatorBackendContextEntry& entry = state.byContext[key];
     if (!entry.valid) {
         entry = compute_allocator_backend_context_entry(key, cfg);
@@ -298,62 +304,74 @@ bool set_async_mempool_release_threshold(
     const DeviceContextKey& key,
     std::uint64_t thresholdBytes,
     std::string& outError) noexcept {
-    outError.clear();
+    try {
+        outError.clear();
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
-    auto cuda_error_or_unknown = [](cudaError_t err) noexcept {
-        return trace_or(cudaGetErrorString(err), "(unknown)");
-    };
-    if (key.deviceId < 0) {
-        outError = "invalid device id";
-        return false;
-    }
-
-    int previousDevice = -1;
-    const cudaError_t queryErr = cudaGetDevice(&previousDevice);
-    const bool havePrevious = (queryErr == cudaSuccess && previousDevice >= 0);
-    bool switchedDevice = false;
-
-    if (!havePrevious || previousDevice != key.deviceId) {
-        const cudaError_t setErr = cudaSetDevice(key.deviceId);
-        if (setErr != cudaSuccess) {
-            outError = std::string("cudaSetDevice failed: ") + cuda_error_or_unknown(setErr);
+        auto cuda_error_or_unknown = [](cudaError_t err) noexcept {
+            return trace_or(cudaGetErrorString(err), "(unknown)");
+        };
+        if (key.deviceId < 0) {
+            outError = "invalid device id";
             return false;
         }
-        switchedDevice = havePrevious && previousDevice != key.deviceId;
-    }
 
-    cudaMemPool_t pool = nullptr;
-    const cudaError_t poolErr = cudaDeviceGetDefaultMemPool(&pool, key.deviceId);
-    if (poolErr != cudaSuccess || pool == nullptr) {
+        int previousDevice = -1;
+        const cudaError_t queryErr = cudaGetDevice(&previousDevice);
+        const bool havePrevious = (queryErr == cudaSuccess && previousDevice >= 0);
+        bool switchedDevice = false;
+
+        if (!havePrevious || previousDevice != key.deviceId) {
+            const cudaError_t setErr = cudaSetDevice(key.deviceId);
+            if (setErr != cudaSuccess) {
+                outError = std::string("cudaSetDevice failed: ") + cuda_error_or_unknown(setErr);
+                return false;
+            }
+            switchedDevice = havePrevious && previousDevice != key.deviceId;
+        }
+
+        cudaMemPool_t pool = nullptr;
+        const cudaError_t poolErr = cudaDeviceGetDefaultMemPool(&pool, key.deviceId);
+        if (poolErr != cudaSuccess || pool == nullptr) {
+            if (switchedDevice) {
+                (void)cudaSetDevice(previousDevice);
+            }
+            outError = std::string("cudaDeviceGetDefaultMemPool failed: ") + cuda_error_or_unknown(poolErr);
+            return false;
+        }
+
+        std::size_t thresholdValue = submission_saturating_u64_to_size_t(thresholdBytes);
+        const cudaError_t setAttrErr = cudaMemPoolSetAttribute(
+            pool,
+            cudaMemPoolAttrReleaseThreshold,
+            &thresholdValue);
+
         if (switchedDevice) {
             (void)cudaSetDevice(previousDevice);
         }
-        outError = std::string("cudaDeviceGetDefaultMemPool failed: ") + cuda_error_or_unknown(poolErr);
-        return false;
-    }
 
-    std::size_t thresholdValue = submission_saturating_u64_to_size_t(thresholdBytes);
-    const cudaError_t setAttrErr = cudaMemPoolSetAttribute(
-        pool,
-        cudaMemPoolAttrReleaseThreshold,
-        &thresholdValue);
-
-    if (switchedDevice) {
-        (void)cudaSetDevice(previousDevice);
-    }
-
-    if (setAttrErr != cudaSuccess) {
-        outError = std::string("cudaMemPoolSetAttribute(release_threshold) failed: ")
-            + cuda_error_or_unknown(setAttrErr);
-        return false;
-    }
-    return true;
+        if (setAttrErr != cudaSuccess) {
+            outError = std::string("cudaMemPoolSetAttribute(release_threshold) failed: ")
+                + cuda_error_or_unknown(setAttrErr);
+            return false;
+        }
+        return true;
 #else
-    (void)key;
-    (void)thresholdBytes;
-    outError = "async mempool release threshold unsupported";
-    return false;
+        (void)key;
+        (void)thresholdBytes;
+        outError = "async mempool release threshold unsupported";
+        return false;
 #endif
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        try {
+            outError = "async mempool release threshold failed";
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+        return false;
+    }
 }
 
 void trace_async_mempool_release_policy(
@@ -436,9 +454,14 @@ void maybe_apply_async_mempool_release_policy(
 
 
 void allocator_backend_retire_context(const DeviceContextKey& key) noexcept {
-    AllocatorBackendState& state = allocator_backend_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.byContext.erase(key);
+    try {
+        AllocatorBackendState& state = allocator_backend_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.byContext.erase(key);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 bool key_digests_equal(const KeyDigests& lhs, const KeyDigests& rhs) noexcept {
@@ -498,14 +521,19 @@ void finalize_submission_transaction(
 }
 
 void publish_committed_shadow_history(const SubmissionSnapshot& snapshot) noexcept {
-    const ShadowHistoryKey key{ snapshot.instanceToken.value, snapshot.deviceContextKey };
-    ShadowHistoryState& state = shadow_history_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    ShadowHistoryEntry& entry = state.bySubmissionKey[key];
-    entry.valid = true;
-    entry.digests = snapshot.keyDigests;
-    entry.keySchemaVersion = snapshot.keySchemaVersion;
-    entry.snapshotId = snapshot.snapshotId;
+    try {
+        const ShadowHistoryKey key{ snapshot.instanceToken.value, snapshot.deviceContextKey };
+        ShadowHistoryState& state = shadow_history_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        ShadowHistoryEntry& entry = state.bySubmissionKey[key];
+        entry.valid = true;
+        entry.digests = snapshot.keyDigests;
+        entry.keySchemaVersion = snapshot.keySchemaVersion;
+        entry.snapshotId = snapshot.snapshotId;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 bool ensure_submission_active(
@@ -543,23 +571,35 @@ bool trace_uniform_acquire_error(
 }
 
 bool validate_resource_kind_onboarding_contract(std::string& outError) noexcept {
-    if (!resource_kind_contract_is_valid()) {
-        outError = "resource kind onboarding contract invalid";
-        return false;
-    }
-    for (ResourceKind kind : kResourceKindOrder) {
-        const ResourceKindContractEntry& entry = resource_kind_contract_entry(kind);
-        if (entry.kind != kind ||
-            entry.keyField == nullptr ||
-            entry.invalidationLane == nullptr ||
-            entry.resourceNode == nullptr ||
-            entry.acquireStatusField == nullptr ||
-            entry.telemetryTag == nullptr) {
-            outError = "resource kind onboarding entry missing required fields";
+    try {
+        if (!resource_kind_contract_is_valid()) {
+            outError = "resource kind onboarding contract invalid";
             return false;
         }
+        for (ResourceKind kind : kResourceKindOrder) {
+            const ResourceKindContractEntry& entry = resource_kind_contract_entry(kind);
+            if (entry.kind != kind ||
+                entry.keyField == nullptr ||
+                entry.invalidationLane == nullptr ||
+                entry.resourceNode == nullptr ||
+                entry.acquireStatusField == nullptr ||
+                entry.telemetryTag == nullptr) {
+                outError = "resource kind onboarding entry missing required fields";
+                return false;
+            }
+        }
+        return true;
     }
-    return true;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        try {
+            outError = "resource kind onboarding contract validation failed";
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+        return false;
+    }
 }
 
 void trace_lifecycle_stage_decision(
@@ -1359,24 +1399,29 @@ bool commit_submission(
 void rollback_submission(
     SubmissionTransaction& transaction,
     const char* reason) noexcept {
-    (void)reason;
-    MetadataMutationGuard mutationGuard("rollback_submission", &transaction.snapshot.deviceContextKey);
-    if (!mutationGuard.ok()) {
-        return;
+    try {
+        (void)reason;
+        MetadataMutationGuard mutationGuard("rollback_submission", &transaction.snapshot.deviceContextKey);
+        if (!mutationGuard.ok()) {
+            return;
+        }
+        (void)validate_lifecycle_for_stage(transaction, "release", true, nullptr);
+        (void)validate_stale_tuple_for_stage(
+            transaction,
+            "release",
+            LeaseObservationMode::Always,
+            nullptr,
+            nullptr,
+            false,
+            nullptr);
+        if (!transaction.active) {
+            return;
+        }
+        (void)finalize_submission_end_or_trace(transaction, "registry_submission_end_rejected_rollback");
+        finalize_submission_transaction(transaction, false);
+        telemetry_record_rollback_submission();
     }
-    (void)validate_lifecycle_for_stage(transaction, "release", true, nullptr);
-    (void)validate_stale_tuple_for_stage(
-        transaction,
-        "release",
-        LeaseObservationMode::Always,
-        nullptr,
-        nullptr,
-        false,
-        nullptr);
-    if (!transaction.active) {
-        return;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
-    (void)finalize_submission_end_or_trace(transaction, "registry_submission_end_rejected_rollback");
-    finalize_submission_transaction(transaction, false);
-    telemetry_record_rollback_submission();
 }

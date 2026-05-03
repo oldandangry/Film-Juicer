@@ -269,7 +269,7 @@ namespace WorkingStateSharing {
 
     class WorkingStateCoreSharedCache final {
     public:
-        static WorkingStateCoreSharedCache& instance() noexcept {
+        static WorkingStateCoreSharedCache& instance() {
             static WorkingStateCoreSharedCache cache;
             return cache;
         }
@@ -392,7 +392,12 @@ namespace JuicerProcess {
     }
 
     void Root::release_working_state_cores() noexcept {
-        WorkingStateSharing::WorkingStateCoreSharedCache::instance().release_entries();
+        try {
+            WorkingStateSharing::WorkingStateCoreSharedCache::instance().release_entries();
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 
 } // namespace JuicerProcess

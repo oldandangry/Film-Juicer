@@ -338,7 +338,8 @@
     }
 
     void purge_host_asset_caches_if_registry_idle(const char* stage) noexcept {
-        ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
+        try {
+            ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
         if (managerState.registryLiveManagers.load(std::memory_order_relaxed) != 0) {
             return;
         }
@@ -381,7 +382,11 @@
             ResourceManager::telemetry_counter_add(managerState.hostAssetCacheTrimBytes, static_cast<std::uint64_t>(trimmedBytesTotal));
         }
 
-        publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
+            publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 
     #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -2690,89 +2695,96 @@
     }
 
     void purge_pinned_upload_staging_for_context(int deviceId, void* contextOpaque) noexcept {
+        try {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (deviceId < 0 || contextOpaque == nullptr) {
-            return;
-        }
-
-        const PinnedUploadContextKey key{ deviceId, contextOpaque };
-        std::vector<PinnedUploadBlock> blocksToFree;
-        const bool registryIdle =
-            ResourceManager::global_state().registryLiveManagers.load(std::memory_order_relaxed) == 0;
-        {
-            PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
-            std::lock_guard<std::mutex> lock(policyState.mutex);
-            const auto it = policyState.pools.find(key);
-            if (it == policyState.pools.end()) {
+            if (deviceId < 0 || contextOpaque == nullptr) {
                 return;
             }
-            const std::uint64_t nowMs = host_asset_now_ms();
-            PinnedUploadPool retained{};
-            retained.nextBlockId = it->second.nextBlockId;
-            retained.nextTrimSequence = it->second.nextTrimSequence;
-            for (PinnedUploadBlock& block : it->second.blocks) {
-                refresh_pinned_block_completion_locked(block, nowMs);
-                if (block.reserved || !block.ptr) {
-                    retained.blocks.push_back(block);
-                    retained.totalBytes += block.capacity;
-                    continue;
-                }
-                if (block.inFlight && !registryIdle) {
-                    retained.blocks.push_back(block);
-                    retained.totalBytes += block.capacity;
-                    continue;
-                }
-                blocksToFree.push_back(block);
-            }
 
-            const std::size_t oldBytes = it->second.totalBytes;
-            const std::size_t retainedBytes = retained.totalBytes;
-            if (oldBytes >= retainedBytes) {
-                const std::size_t reclaimed = oldBytes - retainedBytes;
-                if (policyState.totalBytesAllContexts >= reclaimed) {
-                    policyState.totalBytesAllContexts -= reclaimed;
+            const PinnedUploadContextKey key{ deviceId, contextOpaque };
+            std::vector<PinnedUploadBlock> blocksToFree;
+            const bool registryIdle =
+                ResourceManager::global_state().registryLiveManagers.load(std::memory_order_relaxed) == 0;
+            {
+                PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
+                std::lock_guard<std::mutex> lock(policyState.mutex);
+                const auto it = policyState.pools.find(key);
+                if (it == policyState.pools.end()) {
+                    return;
+                }
+                const std::uint64_t nowMs = host_asset_now_ms();
+                PinnedUploadPool retained{};
+                retained.nextBlockId = it->second.nextBlockId;
+                retained.nextTrimSequence = it->second.nextTrimSequence;
+                retained.blocks.reserve(it->second.blocks.size());
+                blocksToFree.reserve(it->second.blocks.size());
+                for (PinnedUploadBlock& block : it->second.blocks) {
+                    refresh_pinned_block_completion_locked(block, nowMs);
+                    if (block.reserved || !block.ptr) {
+                        retained.blocks.push_back(block);
+                        retained.totalBytes += block.capacity;
+                        continue;
+                    }
+                    if (block.inFlight && !registryIdle) {
+                        retained.blocks.push_back(block);
+                        retained.totalBytes += block.capacity;
+                        continue;
+                    }
+                    blocksToFree.push_back(block);
+                }
+
+                const std::size_t oldBytes = it->second.totalBytes;
+                const std::size_t retainedBytes = retained.totalBytes;
+                if (oldBytes >= retainedBytes) {
+                    const std::size_t reclaimed = oldBytes - retainedBytes;
+                    if (policyState.totalBytesAllContexts >= reclaimed) {
+                        policyState.totalBytesAllContexts -= reclaimed;
+                    }
+                    else {
+                        policyState.totalBytesAllContexts = 0;
+                    }
+                }
+
+                if (retained.blocks.empty()) {
+                    policyState.pools.erase(it);
                 }
                 else {
-                    policyState.totalBytesAllContexts = 0;
+                    it->second = std::move(retained);
+                }
+                publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
+            }
+
+            if (blocksToFree.empty()) {
+                return;
+            }
+
+            int previousDevice = -1;
+            const cudaError_t prevErr = cudaGetDevice(&previousDevice);
+            const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
+            const bool needRestore = havePreviousDevice && previousDevice != deviceId;
+            (void)cudaSetDevice(deviceId);
+            for (const PinnedUploadBlock& block : blocksToFree) {
+                if (block.inFlight && block.doneEventOpaque) {
+                    cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                    (void)cudaEventSynchronize(doneEvent);
+                }
+                if (block.doneEventOpaque) {
+                    cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                    (void)cudaEventDestroy(doneEvent);
+                }
+                if (block.ptr) {
+                    (void)cudaFreeHost(block.ptr);
                 }
             }
-
-            if (retained.blocks.empty()) {
-                policyState.pools.erase(it);
+            if (needRestore) {
+                (void)cudaSetDevice(previousDevice);
             }
-            else {
-                it->second = std::move(retained);
-            }
-            publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
-        }
-
-        if (blocksToFree.empty()) {
-            return;
-        }
-
-        int previousDevice = -1;
-        const cudaError_t prevErr = cudaGetDevice(&previousDevice);
-        const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
-        const bool needRestore = havePreviousDevice && previousDevice != deviceId;
-        (void)cudaSetDevice(deviceId);
-        for (const PinnedUploadBlock& block : blocksToFree) {
-            if (block.inFlight && block.doneEventOpaque) {
-                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
-                (void)cudaEventSynchronize(doneEvent);
-            }
-            if (block.doneEventOpaque) {
-                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
-                (void)cudaEventDestroy(doneEvent);
-            }
-            if (block.ptr) {
-                (void)cudaFreeHost(block.ptr);
-            }
-        }
-        if (needRestore) {
-            (void)cudaSetDevice(previousDevice);
-        }
 #else
-        (void)deviceId;
-        (void)contextOpaque;
+            (void)deviceId;
+            (void)contextOpaque;
 #endif
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }

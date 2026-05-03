@@ -183,6 +183,7 @@ static void free_scan_lut(Resources::DeviceSpectralLut& lut) noexcept;
 static void free_gaussian_kernel(Resources::DeviceGaussianKernel& k) noexcept;
 static bool is_async_device_ptr_tracked_locked(const Resources& resources, const void* ptr) noexcept;
 static void untrack_async_device_ptr_locked(Resources& resources, void* ptr) noexcept;
+static cudaError_t device_free_async_compat(void* ptr, void* cudaStreamOpaque) noexcept;
 static void free_auto_exposure(Resources& resources) noexcept;
 static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
 static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
@@ -409,32 +410,37 @@ namespace JuicerCuda {
         bool managerRetireAttempted,
         bool managerRetireAccepted,
         std::size_t deferredQueueDepth,
-        const std::string& detail) {
-        if (!JTRACE_ENABLED(2)) {
-            return;
+        const std::string& detail) noexcept {
+        try {
+            if (!JTRACE_ENABLED(2)) {
+                return;
+            }
+            const std::uintptr_t ownerContextBits =
+                reinterpret_cast<std::uintptr_t>(ownerContextOpaque);
+            const std::uintptr_t currentContextBits =
+                reinterpret_cast<std::uintptr_t>(currentContextOpaque);
+            std::ostringstream oss;
+            oss << "stage=" << (stage ? stage : "unknown")
+                << " outcome=" << (outcome ? outcome : "unknown")
+                << " owner_device=" << ownerDeviceId
+                << " current_device=" << currentDeviceId
+                << " owner_context=" << ownerContextBits
+                << " current_context=" << currentContextBits
+                << " device_match=" << (deviceMatch ? 1 : 0)
+                << " context_match=" << (contextMatch ? 1 : 0)
+                << " switch_attempted=" << (switchAttempted ? 1 : 0)
+                << " switch_succeeded=" << (switchSucceeded ? 1 : 0)
+                << " retire_attempted=" << (managerRetireAttempted ? 1 : 0)
+                << " retire_accepted=" << (managerRetireAccepted ? 1 : 0)
+                << " deferred_queue_depth=" << static_cast<unsigned long long>(deferredQueueDepth);
+            if (!detail.empty()) {
+                oss << " detail=" << detail;
+            }
+            JTRACE("MSTDN", oss.str());
         }
-        const std::uintptr_t ownerContextBits =
-            reinterpret_cast<std::uintptr_t>(ownerContextOpaque);
-        const std::uintptr_t currentContextBits =
-            reinterpret_cast<std::uintptr_t>(currentContextOpaque);
-        std::ostringstream oss;
-        oss << "stage=" << (stage ? stage : "unknown")
-            << " outcome=" << (outcome ? outcome : "unknown")
-            << " owner_device=" << ownerDeviceId
-            << " current_device=" << currentDeviceId
-            << " owner_context=" << ownerContextBits
-            << " current_context=" << currentContextBits
-            << " device_match=" << (deviceMatch ? 1 : 0)
-            << " context_match=" << (contextMatch ? 1 : 0)
-            << " switch_attempted=" << (switchAttempted ? 1 : 0)
-            << " switch_succeeded=" << (switchSucceeded ? 1 : 0)
-            << " retire_attempted=" << (managerRetireAttempted ? 1 : 0)
-            << " retire_accepted=" << (managerRetireAccepted ? 1 : 0)
-            << " deferred_queue_depth=" << static_cast<unsigned long long>(deferredQueueDepth);
-        if (!detail.empty()) {
-            oss << " detail=" << detail;
+        catch (...) {
+            JuicerLogging::discard_current_exception();
         }
-        JTRACE("MSTDN", oss.str());
     }
 
     static void reap_deferred_destroy_queue(const char* stage) {
@@ -729,8 +735,15 @@ namespace JuicerCuda {
                     cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
                 }
 
-                // Return the fence to the pool.
-                resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+                // Return the fence to the pool; destroy it if the pool cannot grow.
+                try {
+                    resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+                }
+                catch (...) {
+                    JuicerLogging::discard_current_exception();
+                    cudaEventDestroy(ev);
+                    e.doneEventOpaque = nullptr;
+                }
                 if (resources.retireBytes >= e.bytes) {
                     resources.retireBytes -= e.bytes;
                 }
@@ -784,7 +797,8 @@ namespace JuicerCuda {
                 cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
             }
             if (ev) {
-                resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+                cudaEventDestroy(ev);
+                e.doneEventOpaque = nullptr;
             }
         }
         resources.retireQueue.clear();
@@ -1704,55 +1718,60 @@ namespace JuicerCuda {
 #endif
     }
 
-    Resources::~Resources() {
-        drain_retire_queue_blocking(*this);
-        free_curve(densB);
-        free_curve(densG);
-        free_curve(densR);
-        free_density_layers(*this);
-        free_curve(dirDensB);
-        free_curve(dirDensG);
-        free_curve(dirDensR);
-        free_curve(sensB);
-        free_curve(sensG);
-        free_curve(sensR);
-        free_tables(*this);
-        free_scan_medium(scanNegative);
-        free_scan_medium(scanPrint);
-        free_scan_lut(scanNegativeLut);
-        free_scan_lut(scanPrintLut);
-        free_gaussian_kernel(scannerLensBlurKernel);
-        free_gaussian_kernel(scannerUnsharpKernel);
-        free_gaussian_kernel(scannerGlareKernel);
-        free_gaussian_kernel(grainBlurKernel);
-        free_gaussian_kernel(grainBlurKernelMid);
-        free_gaussian_kernel(grainBlurKernelCoarse);
-        for (int layer = 0; layer < 3; ++layer) {
-            for (int ch = 0; ch < 3; ++ch) {
-                free_gaussian_kernel(grainDyeKernel[layer][ch]);
+    Resources::~Resources() noexcept {
+        try {
+            drain_retire_queue_blocking(*this);
+            free_curve(densB);
+            free_curve(densG);
+            free_curve(densR);
+            free_density_layers(*this);
+            free_curve(dirDensB);
+            free_curve(dirDensG);
+            free_curve(dirDensR);
+            free_curve(sensB);
+            free_curve(sensG);
+            free_curve(sensR);
+            free_tables(*this);
+            free_scan_medium(scanNegative);
+            free_scan_medium(scanPrint);
+            free_scan_lut(scanNegativeLut);
+            free_scan_lut(scanPrintLut);
+            free_gaussian_kernel(scannerLensBlurKernel);
+            free_gaussian_kernel(scannerUnsharpKernel);
+            free_gaussian_kernel(scannerGlareKernel);
+            free_gaussian_kernel(grainBlurKernel);
+            free_gaussian_kernel(grainBlurKernelMid);
+            free_gaussian_kernel(grainBlurKernelCoarse);
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    free_gaussian_kernel(grainDyeKernel[layer][ch]);
+                }
             }
+            for (int i = 0; i < 3; ++i) {
+                free_gaussian_kernel(halationKernel[i]);
+                free_gaussian_kernel(halationScatterKernel[i]);
+            }
+            free_optics_scratch(*this, scannerScratch, nullptr);
+            free_gaussian_kernel(spatialDirKernel);
+            free_spatial_dir_scratch(*this, spatialDirScratch, nullptr);
+            free_shared_tmp_plane(*this);
+            free_stbn(*this);
+            free_wang(*this);
+            free_print_payloads(*this);
+            free_hanatos(*this);
+            free_hanatos_integrated(*this);
+            free_mallett_basis(*this);
+            free_scan_error_readbacks(*this);
+            free_auto_exposure(*this);
+            for (PendingFrameUseEvent& entry : pendingFrameUseEvents) {
+                release_frame_use_event_entry(entry);
+            }
+            pendingFrameUseEvents.clear();
+            asyncDeviceAllocPointers.clear();
         }
-        for (int i = 0; i < 3; ++i) {
-            free_gaussian_kernel(halationKernel[i]);
-            free_gaussian_kernel(halationScatterKernel[i]);
+        catch (...) {
+            JuicerLogging::discard_current_exception();
         }
-        free_optics_scratch(*this, scannerScratch, nullptr);
-        free_gaussian_kernel(spatialDirKernel);
-        free_spatial_dir_scratch(*this, spatialDirScratch, nullptr);
-        free_shared_tmp_plane(*this);
-        free_stbn(*this);
-        free_wang(*this);
-        free_print_payloads(*this);
-        free_hanatos(*this);
-        free_hanatos_integrated(*this);
-        free_mallett_basis(*this);
-        free_scan_error_readbacks(*this);
-        free_auto_exposure(*this);
-        for (PendingFrameUseEvent& entry : pendingFrameUseEvents) {
-            release_frame_use_event_entry(entry);
-        }
-        pendingFrameUseEvents.clear();
-        asyncDeviceAllocPointers.clear();
     }
 
     Resources* create() noexcept {
@@ -1781,13 +1800,19 @@ namespace JuicerCuda {
 
     void destroy(Resources* resources) noexcept {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        delete resources;
-#else
-        if (!resources) {
-            return;
+        try {
+            delete resources;
         }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+#else
+        try {
+            if (!resources) {
+                return;
+            }
 
-        reap_deferred_destroy_queue("destroy_pre");
+            reap_deferred_destroy_queue("destroy_pre");
 
         const int ownerDeviceId = resources->deviceId;
         void* ownerContextOpaque = resources->ownerContextOpaque;
@@ -1942,21 +1967,25 @@ namespace JuicerCuda {
             }
             detail += managerRetireError;
         }
-        trace_teardown_event(
-            "destroy",
-            "deferred_enqueue",
-            ownerDeviceId,
-            ownerContextOpaque,
-            currentDeviceId,
-            currentContextOpaque,
-            deviceMatch,
-            contextMatch,
-            switchAttempted,
-            switchSucceeded,
-            managerRetireAttempted,
-            managerRetireAccepted,
-            deferredQueueDepth,
-            detail);
+            trace_teardown_event(
+                "destroy",
+                "deferred_enqueue",
+                ownerDeviceId,
+                ownerContextOpaque,
+                currentDeviceId,
+                currentContextOpaque,
+                deviceMatch,
+                contextMatch,
+                switchAttempted,
+                switchSucceeded,
+                managerRetireAttempted,
+                managerRetireAccepted,
+                deferredQueueDepth,
+                detail);
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
 #endif
     }
 
@@ -2288,15 +2317,31 @@ namespace JuicerCuda {
                 resources.asyncDeviceAllocPointers.end();
     }
 
-    static void track_async_device_ptr_locked(Resources& resources, void* ptr, bool asyncAllocated) noexcept {
+    static bool track_async_device_ptr_locked(Resources& resources, void* ptr, bool asyncAllocated) noexcept {
         if (!ptr) {
-            return;
+            return true;
         }
-        if (asyncAllocated) {
-            resources.asyncDeviceAllocPointers.insert(ptr);
+        try {
+            if (asyncAllocated) {
+                resources.asyncDeviceAllocPointers.insert(ptr);
+            }
+            else {
+                resources.asyncDeviceAllocPointers.erase(ptr);
+            }
+            return true;
         }
-        else {
-            resources.asyncDeviceAllocPointers.erase(ptr);
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+            if (asyncAllocated) {
+                const cudaError_t freeErr = device_free_async_compat(ptr, nullptr);
+                if (freeErr == cudaSuccess) {
+                    (void)cudaStreamSynchronize(nullptr);
+                }
+                else {
+                    (void)cudaFree(ptr);
+                }
+            }
+            return false;
         }
     }
 
@@ -2374,7 +2419,11 @@ namespace JuicerCuda {
             const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
             asyncErr = cudaMallocAsync(&outPtr, bytes, stream);
             if (asyncErr == cudaSuccess && outPtr) {
-                track_async_device_ptr_locked(resources, outPtr, true);
+                if (!track_async_device_ptr_locked(resources, outPtr, true)) {
+                    outPtr = nullptr;
+                    outError = "async scratch allocation tracking failed";
+                    return false;
+                }
                 return true;
             }
             outPtr = nullptr;
@@ -2385,7 +2434,12 @@ namespace JuicerCuda {
 
         const cudaError_t allocErr = cudaMalloc(&outPtr, bytes);
         if (allocErr == cudaSuccess && outPtr) {
-            track_async_device_ptr_locked(resources, outPtr, false);
+            if (!track_async_device_ptr_locked(resources, outPtr, false)) {
+                cudaFree(outPtr);
+                outPtr = nullptr;
+                outError = "scratch allocation tracking failed";
+                return false;
+            }
             if (preferAsync && JTRACE_ENABLED(2)) {
                 std::ostringstream oss;
                 oss << "event=alloc_fallback"
@@ -4172,51 +4226,57 @@ namespace JuicerCuda {
     }
 
     void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept {
+        try {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (deviceId < 0 || contextOpaque == nullptr) {
-            return;
-        }
+            if (deviceId < 0 || contextOpaque == nullptr) {
+                return;
+            }
 
-        std::vector<float*> toFree;
-        {
-            SharedGaussianCacheState& cache = shared_gaussian_cache_state();
-            std::lock_guard<std::mutex> lock(cache.mutex);
-            for (auto it = cache.byKey.begin(); it != cache.byKey.end();) {
-                if (it->first.deviceId == deviceId &&
-                    it->first.contextOpaque == contextOpaque) {
-                    if (it->second.weights) {
-                        toFree.push_back(it->second.weights);
+            std::vector<float*> toFree;
+            {
+                SharedGaussianCacheState& cache = shared_gaussian_cache_state();
+                std::lock_guard<std::mutex> lock(cache.mutex);
+                toFree.reserve(cache.byKey.size());
+                for (auto it = cache.byKey.begin(); it != cache.byKey.end();) {
+                    if (it->first.deviceId == deviceId &&
+                        it->first.contextOpaque == contextOpaque) {
+                        if (it->second.weights) {
+                            toFree.push_back(it->second.weights);
+                        }
+                        it = cache.byKey.erase(it);
+                        continue;
                     }
-                    it = cache.byKey.erase(it);
-                    continue;
+                    ++it;
                 }
-                ++it;
             }
-        }
 
-        if (toFree.empty()) {
-            return;
-        }
-
-        int previousDevice = -1;
-        const cudaError_t prevErr = cudaGetDevice(&previousDevice);
-        const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
-        const bool needRestore = havePreviousDevice && previousDevice != deviceId;
-        (void)cudaSetDevice(deviceId);
-
-        for (float* ptr : toFree) {
-            if (ptr) {
-                (void)cudaFree(ptr);
+            if (toFree.empty()) {
+                return;
             }
-        }
 
-        if (needRestore) {
-            (void)cudaSetDevice(previousDevice);
-        }
+            int previousDevice = -1;
+            const cudaError_t prevErr = cudaGetDevice(&previousDevice);
+            const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
+            const bool needRestore = havePreviousDevice && previousDevice != deviceId;
+            (void)cudaSetDevice(deviceId);
+
+            for (float* ptr : toFree) {
+                if (ptr) {
+                    (void)cudaFree(ptr);
+                }
+            }
+
+            if (needRestore) {
+                (void)cudaSetDevice(previousDevice);
+            }
 #else
-        (void)deviceId;
-        (void)contextOpaque;
+            (void)deviceId;
+            (void)contextOpaque;
 #endif
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 // Cuda/JuicerCudaResourcesValidation.cpp
 //

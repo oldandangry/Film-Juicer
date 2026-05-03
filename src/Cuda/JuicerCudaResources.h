@@ -413,7 +413,7 @@ namespace JuicerCuda {
         Resources(const Resources&) = delete;
         Resources& operator=(const Resources&) = delete;
 
-        ~Resources();
+        ~Resources() noexcept;
     };
 
     Resources* create() noexcept;

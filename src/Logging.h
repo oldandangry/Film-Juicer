@@ -309,9 +309,14 @@ namespace JuicerLogging {
                 write(tag, "BEGIN " + name);
             }
         }
-        ~Scope() {
-            if (active) {
-                write(tag, "END   " + name);
+        ~Scope() noexcept {
+            try {
+                if (active) {
+                    write(tag, "END   " + name);
+                }
+            }
+            catch (...) {
+                discard_current_exception();
             }
         }
     };

@@ -334,7 +334,7 @@ struct ShadowHistoryState {
     std::unordered_map<ShadowHistoryKey, ShadowHistoryEntry, ShadowHistoryKeyHasher> bySubmissionKey;
 };
 
-ShadowHistoryState& shadow_history_state() noexcept {
+ShadowHistoryState& shadow_history_state() {
     static ShadowHistoryState state{};
     return state;
 }
@@ -352,7 +352,7 @@ struct AutoExposureOwnershipState {
     std::unordered_map<ShadowHistoryKey, AutoExposureOwnershipEntry, ShadowHistoryKeyHasher> bySubmissionKey;
 };
 
-AutoExposureOwnershipState& auto_exposure_ownership_state() noexcept {
+AutoExposureOwnershipState& auto_exposure_ownership_state() {
     static AutoExposureOwnershipState state{};
     return state;
 }
@@ -388,7 +388,7 @@ struct FrameSnapshotState {
     std::unordered_map<FrameSnapshotKey, FrameSnapshotEntry, FrameSnapshotKeyHasher> bySubmissionKey;
 };
 
-FrameSnapshotState& frame_snapshot_state() noexcept {
+FrameSnapshotState& frame_snapshot_state() {
     static FrameSnapshotState state{};
     return state;
 }
@@ -2252,8 +2252,8 @@ std::atomic<std::uint64_t>& builder_global_gauge_for_tier(
 }
 } // namespace
 
-AdmissionChurnPolicyState& admission_churn_policy_state() noexcept;
-OptionalHeuristicTraceState& optional_heuristic_trace_state() noexcept;
+AdmissionChurnPolicyState& admission_churn_policy_state();
+OptionalHeuristicTraceState& optional_heuristic_trace_state();
 
 void trace_scratch_policy_decision(
     const SubmissionTransaction& transaction,
@@ -4638,17 +4638,22 @@ void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus statu
 }
 
 void state_note_latest_snapshot(const SubmissionSnapshot& snapshot) noexcept {
-    const std::uint64_t instanceToken = snapshot.instanceToken.value;
-    if (instanceToken == 0 || snapshot.snapshotId == 0) {
-        return;
-    }
+    try {
+        const std::uint64_t instanceToken = snapshot.instanceToken.value;
+        if (instanceToken == 0 || snapshot.snapshotId == 0) {
+            return;
+        }
 
-    const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
-    LatestSnapshotState& state = latest_snapshot_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    std::uint64_t& latest = state.bySubmissionKey[key];
-    if (snapshot.snapshotId > latest) {
-        latest = snapshot.snapshotId;
+        const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
+        LatestSnapshotState& state = latest_snapshot_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        std::uint64_t& latest = state.bySubmissionKey[key];
+        if (snapshot.snapshotId > latest) {
+            latest = snapshot.snapshotId;
+        }
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 }
 
@@ -4658,35 +4663,49 @@ bool state_snapshot_is_superseded(
     if (outLatestSnapshotId) {
         *outLatestSnapshotId = 0;
     }
+    try {
 
-    const std::uint64_t instanceToken = snapshot.instanceToken.value;
-    if (instanceToken == 0 || snapshot.snapshotId == 0) {
+        const std::uint64_t instanceToken = snapshot.instanceToken.value;
+        if (instanceToken == 0 || snapshot.snapshotId == 0) {
+            return false;
+        }
+
+        const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
+        LatestSnapshotState& state = latest_snapshot_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.bySubmissionKey.find(key);
+        if (it == state.bySubmissionKey.end()) {
+            return false;
+        }
+        if (outLatestSnapshotId) {
+            *outLatestSnapshotId = it->second;
+        }
+        return it->second > snapshot.snapshotId;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        if (outLatestSnapshotId) {
+            *outLatestSnapshotId = 0;
+        }
         return false;
     }
-
-    const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
-    LatestSnapshotState& state = latest_snapshot_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.bySubmissionKey.find(key);
-    if (it == state.bySubmissionKey.end()) {
-        return false;
-    }
-    if (outLatestSnapshotId) {
-        *outLatestSnapshotId = it->second;
-    }
-    return it->second > snapshot.snapshotId;
 }
 
 void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexcept {
-    LatestSnapshotState& state = latest_snapshot_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    for (auto it = state.bySubmissionKey.begin(); it != state.bySubmissionKey.end();) {
-        if (it->first.deviceContextKey == key) {
-            it = state.bySubmissionKey.erase(it);
+    try {
+        LatestSnapshotState& state = latest_snapshot_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (auto it = state.bySubmissionKey.begin(); it != state.bySubmissionKey.end();) {
+            if (it->first.deviceContextKey == key) {
+                it = state.bySubmissionKey.erase(it);
+            }
+            else {
+                ++it;
+            }
         }
-        else {
-            ++it;
-        }
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 }
 

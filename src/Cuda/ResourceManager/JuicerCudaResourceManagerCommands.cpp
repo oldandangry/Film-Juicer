@@ -1626,7 +1626,7 @@ struct BaseGraphCacheState {
     std::unordered_map<DeviceContextKey, std::shared_ptr<BaseGraphBucketState>, DeviceContextKeyHash> byContext;
 };
 
-BaseGraphCacheState& base_graph_cache_state() noexcept {
+BaseGraphCacheState& base_graph_cache_state() {
     static BaseGraphCacheState state{};
     return state;
 }
@@ -1744,6 +1744,17 @@ BaseGraphEntry* build_base_graph_entry(
     std::uint64_t& outKeepHotBypassEvents,
     std::uint64_t& outKeepHotForcedEvictEvents) noexcept;
 
+BaseGraphEntry* build_base_graph_entry_impl(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    BasePipelineLaunchFn launchFn,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t largeEntryThresholdBytes,
+    std::uint32_t keepHotMs,
+    std::uint64_t& outKeepHotBypassEvents,
+    std::uint64_t& outKeepHotForcedEvictEvents);
+
 bool graph_entry_in_keep_hot_window(
     const BaseGraphEntry& entry,
     std::uint32_t keepHotMs,
@@ -1760,17 +1771,22 @@ void note_large_entry_evicted_for_readmit_locked(
     const BaseGraphEntry& entry,
     std::uint64_t thresholdBytes,
     std::uint64_t nowMs) noexcept {
-    if (thresholdBytes == 0 || !base_graph_entry_live(entry)) {
-        return;
+    try {
+        if (thresholdBytes == 0 || !base_graph_entry_live(entry)) {
+            return;
+        }
+        const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
+        if (entryBytes < thresholdBytes) {
+            return;
+        }
+        const std::uint64_t digest = base_graph_key_digest(entry.key);
+        GraphLargeEntryReadmitState& state = bucket.largeEntryReadmitByDigest[digest];
+        state.lastEvictedMs = nowMs;
+        state.ghostHits = 0;
     }
-    const std::uint64_t entryBytes = estimate_base_graph_request_bytes(entry.key);
-    if (entryBytes < thresholdBytes) {
-        return;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
-    const std::uint64_t digest = base_graph_key_digest(entry.key);
-    GraphLargeEntryReadmitState& state = bucket.largeEntryReadmitByDigest[digest];
-    state.lastEvictedMs = nowMs;
-    state.ghostHits = 0;
 }
 
 void destroy_base_graph_entry(BaseGraphEntry& entry) noexcept {
@@ -1797,15 +1813,21 @@ void destroy_base_graph_entry(BaseGraphEntry& entry) noexcept {
 
 std::shared_ptr<BaseGraphBucketState> get_or_create_base_graph_bucket(
     const DeviceContextKey& key) noexcept {
-    BaseGraphCacheState& state = base_graph_cache_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.byContext.find(key);
-    if (it != state.byContext.end() && it->second) {
-        return it->second;
+    try {
+        BaseGraphCacheState& state = base_graph_cache_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.byContext.find(key);
+        if (it != state.byContext.end() && it->second) {
+            return it->second;
+        }
+        auto bucket = std::make_shared<BaseGraphBucketState>();
+        state.byContext[key] = bucket;
+        return bucket;
     }
-    auto bucket = std::make_shared<BaseGraphBucketState>();
-    state.byContext[key] = bucket;
-    return bucket;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        return nullptr;
+    }
 }
 
 void clear_base_graph_bucket(BaseGraphBucketState& bucket) noexcept {
@@ -2470,61 +2492,78 @@ void replay_graph_large_entry_policy(
 }
 
 std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey& key) noexcept {
-    BaseGraphCacheState& state = base_graph_cache_state();
-    std::shared_ptr<BaseGraphBucketState> bucket;
-    {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        auto it = state.byContext.find(key);
-        if (it == state.byContext.end()) {
+    try {
+        BaseGraphCacheState& state = base_graph_cache_state();
+        std::shared_ptr<BaseGraphBucketState> bucket;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            auto it = state.byContext.find(key);
+            if (it == state.byContext.end()) {
+                return 0;
+            }
+            bucket = it->second;
+        }
+        if (!bucket) {
             return 0;
         }
-        bucket = it->second;
+        std::lock_guard<std::mutex> lock(bucket->mutex);
+        return estimate_base_graph_bucket_active_bytes_locked(*bucket);
     }
-    if (!bucket) {
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return 0;
     }
-    std::lock_guard<std::mutex> lock(bucket->mutex);
-    return estimate_base_graph_bucket_active_bytes_locked(*bucket);
 }
 
 std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey& key) noexcept {
-    BaseGraphCacheState& state = base_graph_cache_state();
-    std::shared_ptr<BaseGraphBucketState> bucket;
-    {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        auto it = state.byContext.find(key);
-        if (it == state.byContext.end()) {
+    try {
+        BaseGraphCacheState& state = base_graph_cache_state();
+        std::shared_ptr<BaseGraphBucketState> bucket;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            auto it = state.byContext.find(key);
+            if (it == state.byContext.end()) {
+                return 0;
+            }
+            bucket = it->second;
+        }
+        if (!bucket) {
             return 0;
         }
-        bucket = it->second;
+        std::lock_guard<std::mutex> lock(bucket->mutex);
+        const std::uint64_t evictedEntries = static_cast<std::uint64_t>(bucket->entries.size());
+        if (evictedEntries == 0) {
+            return 0;
+        }
+        clear_base_graph_bucket(*bucket);
+        return evictedEntries;
     }
-    if (!bucket) {
+    catch (...) {
+        JuicerLogging::discard_current_exception();
         return 0;
     }
-    std::lock_guard<std::mutex> lock(bucket->mutex);
-    const std::uint64_t evictedEntries = static_cast<std::uint64_t>(bucket->entries.size());
-    if (evictedEntries == 0) {
-        return 0;
-    }
-    clear_base_graph_bucket(*bucket);
-    return evictedEntries;
 }
 
 void retire_base_graph_cache_for_context(const DeviceContextKey& key) noexcept {
-    BaseGraphCacheState& state = base_graph_cache_state();
-    std::shared_ptr<BaseGraphBucketState> bucket;
-    {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        auto it = state.byContext.find(key);
-        if (it == state.byContext.end()) {
-            return;
+    try {
+        BaseGraphCacheState& state = base_graph_cache_state();
+        std::shared_ptr<BaseGraphBucketState> bucket;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            auto it = state.byContext.find(key);
+            if (it == state.byContext.end()) {
+                return;
+            }
+            bucket = it->second;
+            state.byContext.erase(it);
         }
-        bucket = it->second;
-        state.byContext.erase(it);
+        if (bucket) {
+            std::lock_guard<std::mutex> lock(bucket->mutex);
+            clear_base_graph_bucket(*bucket);
+        }
     }
-    if (bucket) {
-        std::lock_guard<std::mutex> lock(bucket->mutex);
-        clear_base_graph_bucket(*bucket);
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 }
 
@@ -2539,7 +2578,7 @@ BaseGraphEntry* find_base_graph_entry(
     return nullptr;
 }
 
-BaseGraphEntry* build_base_graph_entry(
+BaseGraphEntry* build_base_graph_entry_impl(
     BaseGraphBucketState& bucket,
     const BaseGraphKey& key,
     BasePipelineLaunchFn launchFn,
@@ -2548,7 +2587,7 @@ BaseGraphEntry* build_base_graph_entry(
     std::uint64_t largeEntryThresholdBytes,
     std::uint32_t keepHotMs,
     std::uint64_t& outKeepHotBypassEvents,
-    std::uint64_t& outKeepHotForcedEvictEvents) noexcept {
+    std::uint64_t& outKeepHotForcedEvictEvents) {
     outKeepHotBypassEvents = 0;
     outKeepHotForcedEvictEvents = 0;
     if (!launchFn) {
@@ -2644,16 +2683,23 @@ BaseGraphEntry* build_base_graph_entry(
     std::size_t nodeCount = 0;
     cudaError_t nodeErr = cudaGraphGetNodes(graph, nullptr, &nodeCount);
     if (nodeErr == cudaSuccess && nodeCount > 0) {
-        std::vector<cudaGraphNode_t> nodes(nodeCount);
-        nodeErr = cudaGraphGetNodes(graph, nodes.data(), &nodeCount);
-        if (nodeErr == cudaSuccess) {
-            for (cudaGraphNode_t node : nodes) {
-                cudaGraphNodeType nodeType = cudaGraphNodeTypeEmpty;
-                if (cudaGraphNodeGetType(node, &nodeType) == cudaSuccess && nodeType == cudaGraphNodeTypeKernel) {
-                    kernelNode = node;
-                    break;
+        try {
+            std::vector<cudaGraphNode_t> nodes(nodeCount);
+            nodeErr = cudaGraphGetNodes(graph, nodes.data(), &nodeCount);
+            if (nodeErr == cudaSuccess) {
+                for (cudaGraphNode_t node : nodes) {
+                    cudaGraphNodeType nodeType = cudaGraphNodeTypeEmpty;
+                    if (cudaGraphNodeGetType(node, &nodeType) == cudaSuccess && nodeType == cudaGraphNodeTypeKernel) {
+                        kernelNode = node;
+                        break;
+                    }
                 }
             }
+        }
+        catch (...) {
+            cudaGraphExecDestroy(exec);
+            cudaGraphDestroy(graph);
+            throw;
         }
     }
 
@@ -2685,8 +2731,45 @@ BaseGraphEntry* build_base_graph_entry(
     entry.sharedMemBytes = baseParams.sharedMemBytes;
     entry.lastUseTick = bucket.useTick;
     entry.lastUseMs = monotonic_time_ms();
-    bucket.entries.push_back(entry);
+    try {
+        bucket.entries.push_back(entry);
+    }
+    catch (...) {
+        cudaGraphExecDestroy(exec);
+        cudaGraphDestroy(graph);
+        throw;
+    }
     return &bucket.entries.back();
+}
+
+BaseGraphEntry* build_base_graph_entry(
+    BaseGraphBucketState& bucket,
+    const BaseGraphKey& key,
+    BasePipelineLaunchFn launchFn,
+    JuicerCuda::PipelineRunParams& run,
+    cudaStream_t stream,
+    std::uint64_t largeEntryThresholdBytes,
+    std::uint32_t keepHotMs,
+    std::uint64_t& outKeepHotBypassEvents,
+    std::uint64_t& outKeepHotForcedEvictEvents) noexcept {
+    try {
+        return build_base_graph_entry_impl(
+            bucket,
+            key,
+            launchFn,
+            run,
+            stream,
+            largeEntryThresholdBytes,
+            keepHotMs,
+            outKeepHotBypassEvents,
+            outKeepHotForcedEvictEvents);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        outKeepHotBypassEvents = 0;
+        outKeepHotForcedEvictEvents = 0;
+        return nullptr;
+    }
 }
 #else
 std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextKey&) noexcept {
