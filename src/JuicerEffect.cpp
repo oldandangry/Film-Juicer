@@ -334,8 +334,7 @@ namespace {
 
     inline void load_print_profile_into_runtime(
         const JuicerAssets::PrintPaperAsset& printPaper,
-        Print::Runtime& runtime,
-        bool moveMidNeutralVectors);
+        Print::Runtime& runtime);
 
     inline PrintProfileLoadInputs build_print_profile_load_inputs(const ParamSnapshot& snapshot) {
         PrintProfileLoadInputs inputs{};
@@ -349,35 +348,26 @@ namespace {
 
     inline PrintProfileLoadInputs load_print_profile_for_snapshot(
         const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        bool moveMidNeutralVectors) {
+        Print::Runtime& runtime) {
         PrintProfileLoadInputs inputs = build_print_profile_load_inputs(snapshot);
         load_print_profile_into_runtime(
             inputs.printAssets.printPaper,
-            runtime,
-            moveMidNeutralVectors);
+            runtime);
         return inputs;
     }
 
-    inline void sync_print_runtime_mid_neutral_from_profile(Print::Runtime& runtime, bool moveVectors) {
+    inline void sync_print_runtime_mid_neutral_from_profile(Print::Runtime& runtime) {
         runtime.hasMidNeutralDensity = runtime.profile.hasMidNeutralDensity;
         runtime.hasMidNeutralLogE = runtime.profile.hasMidNeutralLogE;
-        if (moveVectors) {
-            runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
-            runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
-        }
-        else {
-            runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
-            runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
-        }
+        runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
+        runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
     }
 
     inline void load_print_profile_into_runtime(
         const JuicerAssets::PrintPaperAsset& printPaper,
-        Print::Runtime& runtime,
-        bool moveMidNeutralVectors) {
+        Print::Runtime& runtime) {
         Print::load_profile_from_asset(printPaper, runtime.profile, &runtime);
-        sync_print_runtime_mid_neutral_from_profile(runtime, moveMidNeutralVectors);
+        sync_print_runtime_mid_neutral_from_profile(runtime);
     }
 
     inline Print::Runtime snapshot_print_runtime_locked(InstanceState& state) {
@@ -851,7 +841,7 @@ namespace {
             return false;
         }
         const PrintProfileLoadInputs printLoad =
-            load_print_profile_for_snapshot(snapshot, runtime, /*moveMidNeutralVectors*/true);
+            load_print_profile_for_snapshot(snapshot, runtime);
         trace_print_reload_verbose_if(traceVerbose, printLoad, runtime);
 
         // Reload dichroic filters (vendor selection controls which curves are used).
@@ -4232,7 +4222,7 @@ void JuicerEffect::bootstrap_after_attach() {
     ParamSnapshot P = snapshotParams();
 
     // Load selected print paper profile
-    (void)load_print_profile_for_snapshot(P, nextPrintRuntime, /*moveMidNeutralVectors*/false);
+    (void)load_print_profile_for_snapshot(P, nextPrintRuntime);
 
     // Load film stock before applying metadata-driven illuminant defaults
     load_film_stock_into_base_locked(P.filmStockIndex, *_state);

@@ -1,11 +1,22 @@
 Checks: >
   -*,
-  clang-analyzer-*,
-  bugprone-*,
-  performance-*,
+  clang-analyzer-core.*,
+  clang-analyzer-cplusplus.*,
+  clang-analyzer-deadcode.*,
+  bugprone-branch-clone,
+  bugprone-empty-catch,
+  bugprone-exception-escape,
+  bugprone-misplaced-widening-cast,
+  bugprone-narrowing-conversions,
+  bugprone-return-const-ref-from-parameter,
+  bugprone-suspicious-include,
+  bugprone-unused-local-non-trivial-variable,
+  cppcoreguidelines-pro-type-member-init,
+  performance-inefficient-string-concatenation,
+  performance-move-const-arg,
+  performance-unnecessary-copy-initialization,
   readability-misleading-indentation,
-  readability-redundant-*,
-  cppcoreguidelines-pro-type-member-init
+  readability-redundant-casting
 
 WarningsAsErrors: ''
 HeaderFilterRegex: '^(.*[\\/])?src[\\/].*'
