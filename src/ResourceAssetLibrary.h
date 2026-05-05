@@ -52,7 +52,7 @@ namespace JuicerAssets {
 
     struct NeutralFilterLookupResult {
         bool found = false;
-        std::tuple<float, float, float> ymc{};
+        std::tuple<float, float, float> ymc;
         std::string selectedDbVersionHash;
     };
 

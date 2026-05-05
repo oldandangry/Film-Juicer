@@ -123,7 +123,7 @@ namespace JuicerAssets {
 
         struct NeutralFilterCacheEntry {
             std::shared_ptr<const ParsedNeutralFilterDb> db;
-            Clock::time_point lastDiagnosticsReloadCheck{};
+            Clock::time_point lastDiagnosticsReloadCheck;
             bool hasDiagnosticsReloadCheck = false;
         };
 

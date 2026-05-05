@@ -3,22 +3,30 @@ Checks: >
   clang-analyzer-core.*,
   clang-analyzer-cplusplus.*,
   clang-analyzer-deadcode.*,
+  bugprone-easily-swappable-parameters,
   bugprone-branch-clone,
   bugprone-empty-catch,
   bugprone-exception-escape,
   bugprone-misplaced-widening-cast,
   bugprone-narrowing-conversions,
   bugprone-return-const-ref-from-parameter,
+  bugprone-reserved-identifier,
   bugprone-suspicious-include,
   bugprone-unused-local-non-trivial-variable,
+  clang-analyzer-optin.performance.Padding,
   cppcoreguidelines-pro-type-member-init,
+  performance-enum-size,
   performance-inefficient-string-concatenation,
   performance-move-const-arg,
   performance-unnecessary-copy-initialization,
   readability-misleading-indentation,
-  readability-redundant-casting
+  readability-redundant-casting,
+  readability-redundant-declaration,
+  readability-redundant-inline-specifier,
+  readability-redundant-member-init
 
 WarningsAsErrors: ''
 HeaderFilterRegex: '^(.*[\\/])?src[\\/].*'
+ExcludeHeaderFilterRegex: '^(.*[\\/])?(third_party|external|OFXS|OpenFX|vcpkg|packages|Program Files|Windows Kits|NVIDIA GPU Computing Toolkit)[\\/].*'
 FormatStyle: none
 SystemHeaders: false

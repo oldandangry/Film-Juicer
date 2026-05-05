@@ -51,16 +51,16 @@ namespace Spectral {
 
     inline constexpr std::size_t kInputColorSpaceCount = static_cast<std::size_t>(InputColorSpace::Count);
 
-    inline constexpr const char* inputColorSpaceLabel(InputColorSpace cs) {
+    constexpr const char* inputColorSpaceLabel(InputColorSpace cs) {
         const std::size_t idx = static_cast<std::size_t>(cs);
         return idx < kInputColorSpaceCount ? kInputColorSpaceLabels[idx] : "DaVinci Wide Gamut";
     }
 
-    inline constexpr int inputColorSpaceToIndex(InputColorSpace cs) {
+    constexpr int inputColorSpaceToIndex(InputColorSpace cs) {
         return static_cast<int>(cs);
     }
 
-    inline constexpr InputColorSpace inputColorSpaceFromIndex(int index) {
+    constexpr InputColorSpace inputColorSpaceFromIndex(int index) {
         if (index < 0) {
             return InputColorSpace::DaVinciWideGamut;
         }
@@ -83,10 +83,10 @@ namespace Spectral {
 
     struct Mat3 {
         float m[9];
-        inline void mul(const float v[3], float out[3]) const {
+        void mul(const float v[3], float out[3]) const {
             mul_3x3_vec3(m, v, out);
         }
-        inline Mat3 inverse(float fallback = 1.0f) const {
+        Mat3 inverse(float fallback = 1.0f) const {
             const float det =
                 m[0] * (m[4] * m[8] - m[5] * m[7]) -
                 m[1] * (m[3] * m[8] - m[5] * m[6]) +

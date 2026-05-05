@@ -48,16 +48,16 @@ namespace OutputEncoding {
 
     inline constexpr std::size_t kColorSpaceCount = static_cast<std::size_t>(ColorSpace::Count);
 
-    inline constexpr const char* labelFor(ColorSpace cs) {
+    constexpr const char* labelFor(ColorSpace cs) {
         const std::size_t idx = static_cast<std::size_t>(cs);
         return idx < kColorSpaceCount ? kColorSpaceLabels[idx] : "sRGB";
     }
 
-    inline constexpr int toIndex(ColorSpace cs) {
+    constexpr int toIndex(ColorSpace cs) {
         return static_cast<int>(cs);
     }
 
-    inline constexpr ColorSpace colorSpaceFromIndex(int index) {
+    constexpr ColorSpace colorSpaceFromIndex(int index) {
         if (index < 0) return ColorSpace::sRGB;
         const int maxIndex = static_cast<int>(ColorSpace::Count) - 1;
         if (index > maxIndex) return ColorSpace::sRGB;

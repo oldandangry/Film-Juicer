@@ -1759,7 +1759,6 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
     , _dirRT{}
     , _prt(nullptr)
     , _ws(nullptr)
-    , _wsHold{}
     , _wsReady(false)
     , _printReady(false)
     , _exposureScale(1.0f)

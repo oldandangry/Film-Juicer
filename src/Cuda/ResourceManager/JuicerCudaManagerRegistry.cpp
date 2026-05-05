@@ -58,7 +58,7 @@ struct MetadataMutationLane {
     std::uint64_t nextTicket = 1;
     std::uint64_t servingTicket = 1;
     std::uint64_t activeTicket = 0;
-    std::thread::id ownerThread{};
+    std::thread::id ownerThread;
     std::uint32_t ownerDepth = 0;
 };
 
