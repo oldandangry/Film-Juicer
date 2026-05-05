@@ -1,13 +1,5 @@
 #pragma once
 
-#if defined(_MSC_VER)
-// MSVC STL warns (and this project treats warnings as errors) about shared_ptr atomic free-functions
-// being deprecated in C++20. We intentionally use them for C++17 compatibility.
-#ifndef _SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING
-#define _SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING
-#endif
-#endif
-
 #include <atomic>
 #include <array>
 #include <cstddef>
