@@ -4562,14 +4562,12 @@ StaleInput state_build_stale_input(
     StaleInput staleInput{};
     staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
     staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
-    std::uint64_t observedRegistryGeneration = 0;
-    std::uint64_t observedContextEpoch = 0;
+    RegistrySnapshotGenerations observedGenerations{};
     if (registry_get_snapshot_generations(
             transaction.snapshot.deviceContextKey,
-            observedRegistryGeneration,
-            observedContextEpoch)) {
-        staleInput.observedRegistryGeneration = observedRegistryGeneration;
-        staleInput.observedContextEpoch = observedContextEpoch;
+            observedGenerations)) {
+        staleInput.observedRegistryGeneration = observedGenerations.registryGeneration;
+        staleInput.observedContextEpoch = observedGenerations.contextEpoch;
     }
     staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
     const bool observeLease = (leaseObservationMode == LeaseObservationMode::Always) || transaction.active;

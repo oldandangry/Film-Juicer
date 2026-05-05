@@ -1020,16 +1020,18 @@ namespace JuicerProcess {
 
     JuicerCuda::ResourceManager::ScratchRequestDescriptor Root::PreparedCudaFrame::make_scratch_request_descriptor(
         const WorkspaceLeaseMarker& workspace) noexcept {
+        JuicerCuda::ResourceManager::ScratchRequestBuildRequest request{};
+        request.families.needOptics = workspace._request.needOptics;
+        request.families.needSpatialDir = workspace._request.needSpatialDir;
+        request.extent.requestedWidth = workspace._request.requestedWidth;
+        request.extent.requestedHeight = workspace._request.requestedHeight;
+        request.attachments.needBlurred = workspace._request.needBlurred;
+        request.attachments.needAux = workspace._request.needAux;
+        request.attachments.needGrainTriplet = workspace._request.needGrainTriplet;
+        request.attachments.needGrainShared = workspace._request.needGrainShared;
+        request.attachments.needGateMask = workspace._request.needGateMask;
         return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
-            workspace._request.needOptics,
-            workspace._request.needSpatialDir,
-            workspace._request.requestedWidth,
-            workspace._request.requestedHeight,
-            workspace._request.needBlurred,
-            workspace._request.needAux,
-            workspace._request.needGrainTriplet,
-            workspace._request.needGrainShared,
-            workspace._request.needGateMask);
+            request);
     }
 
     bool Root::PreparedCudaFrame::workspace_marker_matches_current_frame(

@@ -77,6 +77,11 @@ struct RegistryHandle {
     std::uint64_t value = 0;
 };
 
+struct RegistrySnapshotGenerations {
+    std::uint64_t registryGeneration = 0;
+    std::uint64_t contextEpoch = 0;
+};
+
 struct LifecycleStageValidation {
     LifecycleStageDecision decision = LifecycleStageDecision::MissingRegistryEntry;
     ContextLifecycleState observedState = ContextLifecycleState::Unbound;
@@ -92,8 +97,7 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept;
 bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexcept;
 bool registry_get_snapshot_generations(
     const DeviceContextKey& key,
-    std::uint64_t& outRegistryGeneration,
-    std::uint64_t& outContextEpoch) noexcept;
+    RegistrySnapshotGenerations& outGenerations) noexcept;
 bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept;
 bool registry_validate_lifecycle_stage(
     const DeviceContextKey& key,
@@ -229,12 +233,20 @@ bool command_ensure_halation_kernel(
     void* cudaStreamOpaque,
     std::string& outError);
 
+struct AutoExposureMeterExtent {
+    int width = 0;
+    int height = 0;
+};
+
+struct AutoExposureBufferRequest {
+    AutoExposureMeterExtent meter{};
+    std::uint64_t keyHash = 0;
+};
+
 bool command_ensure_auto_exposure_buffers(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
-    int meterWidth,
-    int meterHeight,
-    std::uint64_t autoExposureKeyHash,
+    const AutoExposureBufferRequest& request,
     void* cudaStreamOpaque,
     std::string& outError);
 

@@ -125,11 +125,14 @@ struct AutoExposureOwnershipObservation {
     bool metadataHit = false;
 };
 
+struct AutoExposureOwnershipMetadata {
+    std::uint64_t normalizedKeyHash = 0;
+    AutoExposureMeterExtent meter{};
+};
+
 AutoExposureOwnershipObservation observe_auto_exposure_ownership(
     const SubmissionTransaction& transaction,
-    std::uint64_t normalizedKeyHash,
-    int meterWidth,
-    int meterHeight) {
+    const AutoExposureOwnershipMetadata& metadata) {
     AutoExposureOwnershipObservation observation{};
     observation.ownershipKey = ShadowHistoryKey{
         transaction.snapshot.instanceToken.value,
@@ -146,34 +149,30 @@ AutoExposureOwnershipObservation observe_auto_exposure_ownership(
     const AutoExposureOwnershipEntry& previous = it->second;
     observation.metadataHit =
         previous.keySchemaVersion == transaction.snapshot.keySchemaVersion &&
-        previous.keyHash == normalizedKeyHash &&
-        previous.meterWidth == meterWidth &&
-        previous.meterHeight == meterHeight;
+        previous.keyHash == metadata.normalizedKeyHash &&
+        previous.meterWidth == metadata.meter.width &&
+        previous.meterHeight == metadata.meter.height;
     return observation;
 }
 
 void publish_auto_exposure_ownership(
     const SubmissionTransaction& transaction,
     const ShadowHistoryKey& ownershipKey,
-    std::uint64_t normalizedKeyHash,
-    int meterWidth,
-    int meterHeight) {
+    const AutoExposureOwnershipMetadata& metadata) {
     AutoExposureOwnershipState& ownershipState = auto_exposure_ownership_state();
     std::lock_guard<std::mutex> lock(ownershipState.mutex);
     AutoExposureOwnershipEntry& entry = ownershipState.bySubmissionKey[ownershipKey];
     entry.valid = true;
-    entry.keyHash = normalizedKeyHash;
-    entry.meterWidth = meterWidth;
-    entry.meterHeight = meterHeight;
+    entry.keyHash = metadata.normalizedKeyHash;
+    entry.meterWidth = metadata.meter.width;
+    entry.meterHeight = metadata.meter.height;
     entry.keySchemaVersion = transaction.snapshot.keySchemaVersion;
 }
 
 void trace_auto_exposure_ownership_event(
     const SubmissionTransaction& transaction,
     const AutoExposureOwnershipObservation& observation,
-    std::uint64_t normalizedKeyHash,
-    int meterWidth,
-    int meterHeight,
+    const AutoExposureOwnershipMetadata& metadata,
     const char* action,
     const char* reason) {
     telemetry_trace_auto_exposure_ownership(
@@ -183,9 +182,9 @@ void trace_auto_exposure_ownership_event(
         "ManagerOnly",
         action,
         observation.metadataHit,
-        normalizedKeyHash,
-        meterWidth,
-        meterHeight,
+        metadata.normalizedKeyHash,
+        metadata.meter.width,
+        metadata.meter.height,
         observation.hadPrevious,
         reason);
 }
@@ -1543,18 +1542,17 @@ bool command_print_illuminant_filtered_is_cached(
 
 bool command_auto_exposure_buffers_ready(
     JuicerCuda::Resources& resources,
-    int meterWidth,
-    int meterHeight,
+    const AutoExposureMeterExtent& meter,
     std::string& outError) {
-    if (meterWidth <= 0 || meterHeight <= 0) {
+    if (meter.width <= 0 || meter.height <= 0) {
         outError = "auto-exposure meter dimensions invalid";
         return false;
     }
 
     const int blockX = 16;
     const int blockY = 16;
-    const int gridX = (meterWidth + blockX - 1) / blockX;
-    const int gridY = (meterHeight + blockY - 1) / blockY;
+    const int gridX = (meter.width + blockX - 1) / blockX;
+    const int gridY = (meter.height + blockY - 1) / blockY;
     const int neededPartials = gridX * gridY;
     if (neededPartials <= 0) {
         outError = "auto-exposure partial count invalid";
@@ -1575,8 +1573,8 @@ bool command_auto_exposure_buffers_ready(
         resources.autoExposureScratch.weightsY &&
         resources.autoExposureScratch.partialsA &&
         resources.autoExposureScratch.partialsB &&
-        resources.autoExposureScratch.weightsXCapacity >= meterWidth &&
-        resources.autoExposureScratch.weightsYCapacity >= meterHeight &&
+        resources.autoExposureScratch.weightsXCapacity >= meter.width &&
+        resources.autoExposureScratch.weightsYCapacity >= meter.height &&
         resources.autoExposureScratch.partialCapacity >= neededPartials;
 }
 
@@ -3581,9 +3579,7 @@ bool command_ensure_halation_kernel(
 bool command_ensure_auto_exposure_buffers(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
-    int meterWidth,
-    int meterHeight,
-    std::uint64_t autoExposureKeyHash,
+    const AutoExposureBufferRequest& request,
     void* cudaStreamOpaque,
     std::string& outError) {
     if (!ensure_active_for_command(transaction, outError, "command_ensure_auto_exposure_buffers")) {
@@ -3592,34 +3588,30 @@ bool command_ensure_auto_exposure_buffers(
     const bool captureMemorySnapshots =
         should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
     maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    const std::uint64_t normalizedKeyHash = normalize_key_u64(autoExposureKeyHash);
+    AutoExposureOwnershipMetadata ownershipMetadata{};
+    ownershipMetadata.normalizedKeyHash = normalize_key_u64(request.keyHash);
+    ownershipMetadata.meter = request.meter;
     const AutoExposureOwnershipObservation ownershipObservation =
-        observe_auto_exposure_ownership(transaction, normalizedKeyHash, meterWidth, meterHeight);
+        observe_auto_exposure_ownership(transaction, ownershipMetadata);
     AutoExposureOwnershipObservation failedOwnershipObservation = ownershipObservation;
     failedOwnershipObservation.metadataHit = false;
 
     trace_auto_exposure_ownership_event(
         transaction,
         ownershipObservation,
-        normalizedKeyHash,
-        meterWidth,
-        meterHeight,
+        ownershipMetadata,
         "acquire",
         bool_reason(ownershipObservation.metadataHit, "metadata_hit", "metadata_miss"));
 
-    if (command_auto_exposure_buffers_ready(resources, meterWidth, meterHeight, outError)) {
+    if (command_auto_exposure_buffers_ready(resources, request.meter, outError)) {
         publish_auto_exposure_ownership(
             transaction,
             ownershipObservation.ownershipKey,
-            normalizedKeyHash,
-            meterWidth,
-            meterHeight);
+            ownershipMetadata);
         trace_auto_exposure_ownership_event(
             transaction,
             ownershipObservation,
-            normalizedKeyHash,
-            meterWidth,
-            meterHeight,
+            ownershipMetadata,
             "publish",
             bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
         return true;
@@ -3629,23 +3621,24 @@ bool command_ensure_auto_exposure_buffers(
         trace_auto_exposure_ownership_event(
             transaction,
             failedOwnershipObservation,
-            normalizedKeyHash,
-            meterWidth,
-            meterHeight,
+            ownershipMetadata,
             "ensure_fail",
             commands_error_or_cstr(outError, "ensure_failed"));
         return false;
     }
     outError.clear();
 
-    if (!JuicerCuda::ensure_auto_exposure_buffers(resources, meterWidth, meterHeight, cudaStreamOpaque, outError)) {
+    if (!JuicerCuda::ensure_auto_exposure_buffers(
+            resources,
+            request.meter.width,
+            request.meter.height,
+            cudaStreamOpaque,
+            outError)) {
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
         trace_auto_exposure_ownership_event(
             transaction,
             failedOwnershipObservation,
-            normalizedKeyHash,
-            meterWidth,
-            meterHeight,
+            ownershipMetadata,
             "ensure_fail",
             commands_error_or_cstr(outError, "ensure_failed"));
         return false;
@@ -3655,15 +3648,11 @@ bool command_ensure_auto_exposure_buffers(
     publish_auto_exposure_ownership(
         transaction,
         ownershipObservation.ownershipKey,
-        normalizedKeyHash,
-        meterWidth,
-        meterHeight);
+        ownershipMetadata);
     trace_auto_exposure_ownership_event(
         transaction,
         ownershipObservation,
-        normalizedKeyHash,
-        meterWidth,
-        meterHeight,
+        ownershipMetadata,
         "publish",
         bool_reason(ownershipObservation.metadataHit, "reuse", "refresh"));
     return true;

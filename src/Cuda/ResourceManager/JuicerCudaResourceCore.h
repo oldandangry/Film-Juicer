@@ -492,6 +492,30 @@ inline const char* to_cstr(ScratchHelperNonPolicyAllocation allocation) noexcept
 constexpr std::uint64_t kScratchNormalizationHysteresisBytes =
     128ull * 1024ull * 1024ull;
 
+struct ScratchRequestFamilies {
+    bool needOptics = false;
+    bool needSpatialDir = false;
+};
+
+struct ScratchRequestExtent {
+    int requestedWidth = 0;
+    int requestedHeight = 0;
+};
+
+struct ScratchRequestAttachments {
+    bool needBlurred = false;
+    bool needAux = false;
+    bool needGrainTriplet = false;
+    bool needGrainShared = false;
+    bool needGateMask = false;
+};
+
+struct ScratchRequestBuildRequest {
+    ScratchRequestFamilies families{};
+    ScratchRequestExtent extent{};
+    ScratchRequestAttachments attachments{};
+};
+
 struct ScratchRequestDescriptor {
     bool needOptics = false;
     bool needSpatialDir = false;
@@ -548,25 +572,17 @@ inline std::uint64_t hash_scratch_request_descriptor(const ScratchRequestDescrip
 }
 
 inline ScratchRequestDescriptor make_scratch_request_descriptor(
-    bool needOptics,
-    bool needSpatialDir,
-    int requestedWidth,
-    int requestedHeight,
-    bool needBlurred,
-    bool needAux,
-    bool needGrainTriplet,
-    bool needGrainShared,
-    bool needGateMask) noexcept {
+    const ScratchRequestBuildRequest& request) noexcept {
     ScratchRequestDescriptor descriptor{};
-    descriptor.needOptics = needOptics;
-    descriptor.needSpatialDir = needSpatialDir;
-    descriptor.requestedWidth = requestedWidth;
-    descriptor.requestedHeight = requestedHeight;
-    descriptor.needBlurred = needOptics && needBlurred;
-    descriptor.needAux = needOptics && needAux;
-    descriptor.needGrainTriplet = needOptics && needGrainTriplet;
-    descriptor.needGrainShared = needOptics && needGrainShared;
-    descriptor.needGateMask = needOptics && needGateMask;
+    descriptor.needOptics = request.families.needOptics;
+    descriptor.needSpatialDir = request.families.needSpatialDir;
+    descriptor.requestedWidth = request.extent.requestedWidth;
+    descriptor.requestedHeight = request.extent.requestedHeight;
+    descriptor.needBlurred = request.families.needOptics && request.attachments.needBlurred;
+    descriptor.needAux = request.families.needOptics && request.attachments.needAux;
+    descriptor.needGrainTriplet = request.families.needOptics && request.attachments.needGrainTriplet;
+    descriptor.needGrainShared = request.families.needOptics && request.attachments.needGrainShared;
+    descriptor.needGateMask = request.families.needOptics && request.attachments.needGateMask;
     descriptor.generation = hash_scratch_request_descriptor(descriptor);
     return descriptor;
 }

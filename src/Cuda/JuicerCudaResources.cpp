@@ -553,15 +553,19 @@ namespace JuicerCuda {
         return count64 * elementBytes64;
     }
 
+    struct ResidencyByteTarget {
+        std::uint64_t& total;
+        bool& overflow;
+    };
+
     static void add_residency_bytes(
         std::uint64_t bytes,
-        std::uint64_t& total,
-        bool& overflow) noexcept {
+        ResidencyByteTarget target) noexcept {
         std::uint64_t next = 0;
-        if (!add_u64_saturating(total, bytes, next)) {
-            overflow = true;
+        if (!add_u64_saturating(target.total, bytes, next)) {
+            target.overflow = true;
         }
-        total = next;
+        target.total = next;
     }
 
     static void refresh_scratch_residency_state_locked(Resources& resources) noexcept {
@@ -586,7 +590,9 @@ namespace JuicerCuda {
                 return;
             }
             const std::size_t index = ResourceManager::scratch_policy_candidate_index(candidate);
-            add_residency_bytes(bytes, next.candidateLiveBytes[index], next.overflow);
+            add_residency_bytes(
+                bytes,
+                ResidencyByteTarget{next.candidateLiveBytes[index], next.overflow});
         };
 
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbR != nullptr, opticsPlaneBytes);
@@ -613,7 +619,9 @@ namespace JuicerCuda {
             }
             const std::size_t index = ResourceManager::scratch_helper_non_policy_index(allocation);
             next.helperNonPolicyBytes[index] = bytes;
-            add_residency_bytes(bytes, next.helperNonPolicyTotalBytes, next.overflow);
+            add_residency_bytes(
+                bytes,
+                ResidencyByteTarget{next.helperNonPolicyTotalBytes, next.overflow});
         };
 
         assign_non_policy_bytes(
@@ -652,11 +660,17 @@ namespace JuicerCuda {
                 next.overflow));
 
         for (std::uint64_t bytes : next.candidateLiveBytes) {
-            add_residency_bytes(bytes, next.policyLiveRetainedBytes, next.overflow);
+            add_residency_bytes(
+                bytes,
+                ResidencyByteTarget{next.policyLiveRetainedBytes, next.overflow});
         }
-        add_residency_bytes(next.helperSharedBytes, next.policyLiveRetainedBytes, next.overflow);
+        add_residency_bytes(
+            next.helperSharedBytes,
+            ResidencyByteTarget{next.policyLiveRetainedBytes, next.overflow});
         next.totalLiveRetainedBytes = next.policyLiveRetainedBytes;
-        add_residency_bytes(next.helperNonPolicyTotalBytes, next.totalLiveRetainedBytes, next.overflow);
+        add_residency_bytes(
+            next.helperNonPolicyTotalBytes,
+            ResidencyByteTarget{next.totalLiveRetainedBytes, next.overflow});
 
         const bool changed =
             next.candidateLiveBytes != resources.scratchResidency.candidateLiveBytes ||
@@ -916,28 +930,39 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool record_retire_fence_locked(Resources& resources, void* retireEventOpaque, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    struct RetireFenceRecord {
+        void* retireEventOpaque = nullptr;
+        void* cudaStreamOpaque = nullptr;
+        const char* label = nullptr;
+    };
+
+    static bool record_retire_fence_locked(
+        Resources& resources,
+        const RetireFenceRecord& record,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
-        (void)retireEventOpaque;
-        (void)cudaStreamOpaque;
-        (void)label;
+        (void)record;
         outError = "CUDA is not enabled";
         return false;
 #else
-        cudaEvent_t retireEv = reinterpret_cast<cudaEvent_t>(retireEventOpaque);
+        cudaEvent_t retireEv = reinterpret_cast<cudaEvent_t>(record.retireEventOpaque);
         if (!retireEv) {
             outError = "retire fence event missing";
             return false;
         }
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        if (!wait_for_frame_use_events_locked(resources, cudaStreamOpaque, label, outError)) {
+        const cudaStream_t stream = record.cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(record.cudaStreamOpaque)
+            : nullptr;
+        if (!wait_for_frame_use_events_locked(resources, record.cudaStreamOpaque, record.label, outError)) {
             return false;
         }
         const cudaError_t recErr = cudaEventRecord(retireEv, stream);
         if (recErr != cudaSuccess) {
-            outError = std::string("cudaEventRecord for ") + label + " retire failed: " +
-                (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
+            outError = std::string("cudaEventRecord for ")
+                + (record.label ? record.label : "resource")
+                + " retire failed: "
+                + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
             return false;
         }
         return true;
@@ -978,7 +1003,11 @@ namespace JuicerCuda {
             return false;
         }
 
-        if (!record_retire_fence_locked(resources, retireEventOpaque, cudaStreamOpaque, label, outError)) {
+        RetireFenceRecord fenceRecord{};
+        fenceRecord.retireEventOpaque = retireEventOpaque;
+        fenceRecord.cudaStreamOpaque = cudaStreamOpaque;
+        fenceRecord.label = label;
+        if (!record_retire_fence_locked(resources, fenceRecord, outError)) {
             // If we can't record the retire fence, fail closed instead of falling back to a blocking sync.
             cudaEventDestroy(reinterpret_cast<cudaEvent_t>(retireEventOpaque));
             if (outError.empty()) {

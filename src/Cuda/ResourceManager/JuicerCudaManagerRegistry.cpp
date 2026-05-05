@@ -1285,26 +1285,23 @@ RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept {
 
 bool registry_get_snapshot_generations(
     const DeviceContextKey& key,
-    std::uint64_t& outRegistryGeneration,
-    std::uint64_t& outContextEpoch) noexcept {
+    RegistrySnapshotGenerations& outGenerations) noexcept {
     try {
         RegistryState& state = registry_state();
         std::lock_guard<std::mutex> lock(state.mutex);
         auto it = state.byDeviceContext.find(key);
         if (it == state.byDeviceContext.end() ||
             it->second.lifecycleState == ContextLifecycleState::Retired) {
-            outRegistryGeneration = 0;
-            outContextEpoch = 0;
+            outGenerations = RegistrySnapshotGenerations{};
             return false;
         }
-        outRegistryGeneration = it->second.registryGeneration;
-        outContextEpoch = it->second.contextEpoch;
+        outGenerations.registryGeneration = it->second.registryGeneration;
+        outGenerations.contextEpoch = it->second.contextEpoch;
         return true;
     }
     catch (...) {
         JuicerLogging::discard_current_exception();
-        outRegistryGeneration = 0;
-        outContextEpoch = 0;
+        outGenerations = RegistrySnapshotGenerations{};
         return false;
     }
 }

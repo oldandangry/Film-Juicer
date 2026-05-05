@@ -1061,17 +1061,15 @@ bool begin_submission(
         return false;
     }
 
-    std::uint64_t registryGeneration = 0;
-    std::uint64_t contextEpoch = 0;
+    RegistrySnapshotGenerations snapshotGenerations{};
     if (!registry_get_snapshot_generations(
             outTransaction.snapshot.deviceContextKey,
-            registryGeneration,
-            contextEpoch)) {
+            snapshotGenerations)) {
         outError = "registry epoch snapshot unavailable";
         return false;
     }
-    outTransaction.snapshot.registryGeneration = registryGeneration;
-    outTransaction.snapshot.contextEpoch = contextEpoch;
+    outTransaction.snapshot.registryGeneration = snapshotGenerations.registryGeneration;
+    outTransaction.snapshot.contextEpoch = snapshotGenerations.contextEpoch;
 
     std::uint64_t leaseGeneration = state.nextLeaseGeneration.fetch_add(1, std::memory_order_relaxed);
     if (leaseGeneration == 0) {
