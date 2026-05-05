@@ -13,14 +13,12 @@ namespace Spectral {
     inline bool is_finite(double v);
     struct SpectralTables;
     struct Curve;
-    inline void rgbDWG_to_layerExposures(const float rgbDWG[3], float E[3], float exposureScale);
     inline void rgbDWG_to_layerExposures_from_tables_with_curves(
         const float rgbDWG[3], float E[3], float exposureScale,
         const SpectralTables* tables, const float* S_inv,
         const Curve& sB, const Curve& sG, const Curve& sR,
         SpectralUpsamplingMode spectralUpsamplingMode,
         const float refIllumWhiteXYZ[3]);
-    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]);
 
 #if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
     bool spd_probe_begin_capture(const float rgbIn[3], const float rgbDWG[3], bool spdEnabled);
@@ -213,6 +211,15 @@ namespace Spectral {
        -0.46491710f,  1.25142378f,  0.17488461f,
         0.07578536f,  0.08076209f,  0.76034476f
     } };
+
+    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]) {
+        gDWG_XYZ_to_RGB.mul(XYZ, RGB);
+        clamp_triplet_nonnegative_inplace(RGB);
+    }
+
+    inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]) {
+        gDWG_RGB_to_XYZ.mul(RGB, XYZ);
+    }
 
     // ============================================================================
     // Color Space Helpers
@@ -842,15 +849,6 @@ namespace Spectral {
         float adaptedXYZ[3];
         chromatic_adapt_XYZ_CAT02(XYZ, srcWhite, gDWG_WhitePoint_XYZ, adaptedXYZ);
         gDWG_XYZ_to_RGB.mul(adaptedXYZ, RGB);
-    }
-
-    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]) {
-        gDWG_XYZ_to_RGB.mul(XYZ, RGB);
-        clamp_triplet_nonnegative_inplace(RGB);
-    }
-
-    inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]) {
-        gDWG_RGB_to_XYZ.mul(RGB, XYZ);
     }
 
     inline float neutral_blend_weight_from_DWG_rgb(const float rgbDWG[3]) {

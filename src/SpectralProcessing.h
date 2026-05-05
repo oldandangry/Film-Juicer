@@ -18,6 +18,7 @@
 #include <sstream>
 #endif
 #include "SpectralData.h"
+#include "ColorTransforms.h"
 #include "NpyLoader.h"
 #include "AkimaInterpolator.h"
 
@@ -506,17 +507,6 @@ namespace Spectral {
     // -------------------------------------------------------------------------
     // 2. SPD RECONSTRUCTION (~400 lines)
     // -------------------------------------------------------------------------
-
-    // Forward declarations for chromatic adaptation
-    inline void chromatic_adapt_XYZ_CAT02(
-        const float XYZ[3],
-        const float srcWhiteXYZ[3],
-        const float dstWhiteXYZ[3],
-        float outXYZ[3]);
-
-    // Forward declarations for color space transforms
-    inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]);
-    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]);
 
     // --- S-matrix inversion for CMF-based SPD reconstruction ---
 
@@ -1302,7 +1292,6 @@ namespace Spectral {
     }
 
     // Forward declarations for exposure functions
-    inline void rgbDWG_to_layerExposures(const float rgbDWG[3], float E[3], float exposureScale);
     inline void layerExposures_from_sceneSPD(
         const std::vector<float>& Ee,
         float E[3],
