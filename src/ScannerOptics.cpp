@@ -202,6 +202,13 @@ namespace {
         static constexpr std::uint32_t kM0 = 0xD2511F53u;
         static constexpr std::uint32_t kM1 = 0xCD9E8D57u;
 
+        struct Seed {
+            std::uint64_t sequence = 0;
+            std::uint32_t counter0 = 0;
+            std::uint32_t counter1 = 0;
+            std::uint32_t globalSeed = 0;
+        };
+
         std::uint32_t seedHi;
         std::uint32_t seedLo;
         std::uint32_t ctr0;
@@ -209,12 +216,12 @@ namespace {
         std::uint32_t ctr2;
         std::uint32_t ctr3;
 
-        PhiloxRngCpu(std::uint64_t seed, std::uint32_t counter0, std::uint32_t globalSeed, std::uint32_t counter1)
-            : seedHi(static_cast<std::uint32_t>(seed >> 32)),
-              seedLo(static_cast<std::uint32_t>(seed & 0xFFFFFFFFu)),
-              ctr0(counter0),
-              ctr1(counter1),
-              ctr2(globalSeed),
+        explicit PhiloxRngCpu(const Seed& seed)
+            : seedHi(static_cast<std::uint32_t>(seed.sequence >> 32)),
+              seedLo(static_cast<std::uint32_t>(seed.sequence & 0xFFFFFFFFu)),
+              ctr0(seed.counter0),
+              ctr1(seed.counter1),
+              ctr2(seed.globalSeed),
               ctr3(0u)
         {}
 
@@ -268,8 +275,19 @@ namespace {
     struct GlareRngCpu {
         PhiloxRngCpu rng;
 
-        GlareRngCpu(std::uint64_t seed, std::uint32_t ctr0, std::uint32_t ctr1, std::uint32_t globalSeed)
-            : rng(seed, ctr0, globalSeed, ctr1) {}
+        struct Seed {
+            std::uint64_t sequence = 0;
+            std::uint32_t xCounter = 0;
+            std::uint32_t yCounter = 0;
+            std::uint32_t mediumSeed = 0;
+        };
+
+        explicit GlareRngCpu(const Seed& seed)
+            : rng(PhiloxRngCpu::Seed{
+                seed.sequence,
+                seed.xCounter,
+                seed.yCounter,
+                seed.mediumSeed}) {}
 
         float normal() {
             float u1 = rng.uniform();
@@ -723,11 +741,11 @@ namespace ScannerOptics {
                         const std::uint64_t absX = static_cast<std::uint64_t>(absXSigned);
                         const std::uint64_t absY = static_cast<std::uint64_t>(absYSigned);
                         const size_t idx = size_t(y) * size_t(width) + size_t(x);
-                        GlareRngCpu rng(
+                        GlareRngCpu rng(GlareRngCpu::Seed{
                             glareSeed,
                             static_cast<std::uint32_t>(absX),
                             static_cast<std::uint32_t>(absY),
-                            static_cast<std::uint32_t>(medium.medium));
+                            static_cast<std::uint32_t>(medium.medium)});
                         const float n = rng.normal();
                         const float mean = static_cast<float>(medium.glare.percent);
                         const float stddev = static_cast<float>(medium.glare.roughness * medium.glare.percent);

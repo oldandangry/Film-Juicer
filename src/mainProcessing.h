@@ -138,7 +138,23 @@ public:
         bool sequentialRenderStatus = false;
     };
 
-    void setSrcDst(OFX::Image* src, OFX::Image* dst);
+    struct SourceDestinationImages {
+        OFX::Image* src = nullptr;
+        OFX::Image* dst = nullptr;
+    };
+
+    struct CameraAutoExposureSettings {
+        bool enabled = false;
+        int meteringMethod = 0;
+        double sliderEV = 0.0;
+    };
+
+    struct SessionTokens {
+        std::uint64_t sessionSeed = 1;
+        std::uint64_t instanceToken = 1;
+    };
+
+    void setSrcDst(const SourceDestinationImages& images);
     void setFrameRequest(const FrameRequest& request);
     void setRenderWindowRect(const OfxRectI& rect);
     void setComponents(int n);
@@ -152,11 +168,11 @@ public:
     void setWorkingState(const WorkingState* ws, bool wsReady);
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
     void setExposure(float exposureScale);
-    void setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV);
+    void setCameraAutoExposure(const CameraAutoExposureSettings& settings);
     void setAutoExposureMeterBounds(const OfxRectI& bounds, bool valid);
     void setOutputEncoding(const OutputEncoding::Params& p);
     void setInstanceState(InstanceState* s);
-    void setSessionTokens(std::uint64_t sessionSeed, std::uint64_t instanceToken);
+    void setSessionTokens(const SessionTokens& tokens);
     void setClipToken(std::uintptr_t token);
     void setGateWeaveAmount(double amount);
     void setFrameTime(double time);

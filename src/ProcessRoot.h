@@ -276,8 +276,18 @@ namespace JuicerProcess {
             UploadTraceView upload_trace_view() const noexcept;
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             ScannerOpticsScratchView scanner_optics_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
-            void mark_auto_exposure_weights_built(int weightsWidth, int weightsHeight) noexcept;
-            void mark_auto_exposure_metered(std::uint64_t keyHash, double sliderEV) noexcept;
+            struct AutoExposureWeightsExtent {
+                int width = 0;
+                int height = 0;
+            };
+
+            struct AutoExposureMeteredResult {
+                std::uint64_t keyHash = 0;
+                double sliderEV = 0.0;
+            };
+
+            void mark_auto_exposure_weights_built(const AutoExposureWeightsExtent& weights) noexcept;
+            void mark_auto_exposure_metered(const AutoExposureMeteredResult& result) noexcept;
             void mark_auto_exposure_slider_updated(double sliderEV) noexcept;
             void mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept;
             void record_use(void* cudaStreamOpaque) noexcept;

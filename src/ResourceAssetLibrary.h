@@ -107,6 +107,18 @@ namespace JuicerAssets {
         NeutralFilterDatabaseAsset neutralFilters;
     };
 
+    struct NeutralFilterLookupKey {
+        std::string paperKey;
+        std::string illuminantKey;
+        std::string negativeKey;
+    };
+
+    struct PrintRuntimeChoices {
+        int filmIndex = 0;
+        int printPaperIndex = 0;
+        int dichroicSetChoice = 0;
+    };
+
     class Library {
     public:
         struct StaticNoiseAssetSet;
@@ -125,14 +137,12 @@ namespace JuicerAssets {
         const NeutralFilterDatabaseAsset& neutral_filter_database_for_dichroic_set(int dichroicSetChoice);
         NeutralFilterLookupResult lookup_neutral_filters(
             const NeutralFilterDatabaseAsset& database,
-            const std::string& paperKey,
-            const std::string& illuminantKey,
-            const std::string& negativeKey,
+            const NeutralFilterLookupKey& lookupKey,
             NeutralFilterLookupThread threadClass);
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterCurveSet& illuminant_filter_curves();
-        PrintRuntimeAssetSet print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice);
+        PrintRuntimeAssetSet print_runtime_assets_for_choices(const PrintRuntimeChoices& choices);
         bool load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile);
         bool load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile);
         void release_cached_payloads() noexcept;
@@ -152,12 +162,13 @@ namespace JuicerAssets {
         void load_dichroic_filter_sets();
         void load_illuminant_filter_assets();
         std::string print_paper_folder_name_for_asset(const PrintPaperAsset& asset);
-        NeutralFilterLookupResult lookup_neutral_filter_path(
-            const std::string& jsonPath,
-            const std::string& paperKey,
-            const std::string& illuminantKey,
-            const std::string& negativeKey,
-            NeutralFilterLookupThread threadClass);
+        struct NeutralFilterPathLookup {
+            const std::string& jsonPath;
+            const NeutralFilterLookupKey& lookupKey;
+            NeutralFilterLookupThread threadClass;
+        };
+
+        NeutralFilterLookupResult lookup_neutral_filter_path(const NeutralFilterPathLookup& lookup);
         bool load_agx_profile_path(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile);
 
         struct NeutralFilterCacheState;

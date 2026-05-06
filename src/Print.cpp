@@ -130,21 +130,25 @@ namespace Print {
                 channel_has_finite_samples(ctx.profile.baseMid);
         }
 
+        struct JsonDyeSensitivityOverrideTargets {
+            FloatPairs& c_eps;
+            FloatPairs& m_eps;
+            FloatPairs& y_eps;
+            FloatPairs& r_sens;
+            FloatPairs& g_sens;
+            FloatPairs& b_sens;
+            bool& usedJsonEps;
+            bool& usedJsonSens;
+        };
+
         void apply_json_dye_and_sensitivity_overrides(
             const JsonProfileContext& ctx,
             Profile& out,
             Runtime* runtime,
-            FloatPairs& c_eps,
-            FloatPairs& m_eps,
-            FloatPairs& y_eps,
-            FloatPairs& r_sens,
-            FloatPairs& g_sens,
-            FloatPairs& b_sens,
-            bool& usedJsonEps,
-            bool& usedJsonSens)
+            const JsonDyeSensitivityOverrideTargets& targets)
         {
-            usedJsonEps = false;
-            usedJsonSens = false;
+            targets.usedJsonEps = false;
+            targets.usedJsonSens = false;
             if (!ctx.hasProfile) {
                 return;
             }
@@ -154,10 +158,10 @@ namespace Print {
             const bool jsonDyeM = channel_has_finite_samples(profileJson.dyeM);
             const bool jsonDyeY = channel_has_finite_samples(profileJson.dyeY);
             if (jsonDyeC && jsonDyeM && jsonDyeY) {
-                c_eps = profileJson.dyeC;
-                m_eps = profileJson.dyeM;
-                y_eps = profileJson.dyeY;
-                usedJsonEps = true;
+                targets.c_eps = profileJson.dyeC;
+                targets.m_eps = profileJson.dyeM;
+                targets.y_eps = profileJson.dyeY;
+                targets.usedJsonEps = true;
             }
             else if (!profileJson.dyeC.empty() || !profileJson.dyeM.empty() || !profileJson.dyeY.empty()) {
                 std::ostringstream warn;
@@ -171,10 +175,10 @@ namespace Print {
             const bool jsonSensR = channel_has_finite_samples(profileJson.logSensR);
             const bool jsonSensG = channel_has_finite_samples(profileJson.logSensG);
             const bool jsonSensB = channel_has_finite_samples(profileJson.logSensB);
-            if (jsonSensR) r_sens = profileJson.logSensR;
-            if (jsonSensG) g_sens = profileJson.logSensG;
-            if (jsonSensB) b_sens = profileJson.logSensB;
-            usedJsonSens = jsonSensR && jsonSensG && jsonSensB;
+            if (jsonSensR) targets.r_sens = profileJson.logSensR;
+            if (jsonSensG) targets.g_sens = profileJson.logSensG;
+            if (jsonSensB) targets.b_sens = profileJson.logSensB;
+            targets.usedJsonSens = jsonSensR && jsonSensG && jsonSensB;
             if ((jsonSensR || jsonSensG || jsonSensB) && !(jsonSensR && jsonSensG && jsonSensB)) {
                 std::ostringstream warn;
                 warn << "PROFILE_LOAD partial JSON sensitivity override (finite R/G/B="
@@ -1156,7 +1160,19 @@ namespace Print {
 
         bool usedJsonEps = false;
         bool usedJsonSens = false;
-        apply_json_dye_and_sensitivity_overrides(jsonCtx, out, runtime, c_eps, m_eps, y_eps, r_sens, g_sens, b_sens, usedJsonEps, usedJsonSens);
+        apply_json_dye_and_sensitivity_overrides(
+            jsonCtx,
+            out,
+            runtime,
+            JsonDyeSensitivityOverrideTargets{
+                c_eps,
+                m_eps,
+                y_eps,
+                r_sens,
+                g_sens,
+                b_sens,
+                usedJsonEps,
+                usedJsonSens});
 
         if (jsonCtx.hasProfile && usedJsonEps) {
             trace_print_json_profile("PROFILE_LOAD dye densities from JSON ", "");

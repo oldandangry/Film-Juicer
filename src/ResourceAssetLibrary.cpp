@@ -558,13 +558,18 @@ namespace JuicerAssets {
             return path.string();
         }
 
-        std::string profile_json_path_for_key(const std::string& dataDir, const std::string& jsonKey) {
-            if (jsonKey.empty()) {
+        struct ProfileJsonPathRequest {
+            const std::string& dataDir;
+            const std::string& jsonKey;
+        };
+
+        std::string profile_json_path_for_key(const ProfileJsonPathRequest& request) {
+            if (request.jsonKey.empty()) {
                 return {};
             }
-            std::string fileName = jsonKey;
+            std::string fileName = request.jsonKey;
             fileName += ".json";
-            return data_path_string(dataDir, {"profiles", fileName.c_str()});
+            return data_path_string(request.dataDir, {"profiles", fileName.c_str()});
         }
 
         std::string profile_asset_path(const std::string& dataDir, const char* fileName) {
@@ -612,13 +617,15 @@ namespace JuicerAssets {
             return result;
         }
 
-        FilmStockAsset make_film_stock(
-            const std::string& dataDir,
-            std::string optionLabel,
-            std::string jsonKey) {
+        struct FilmStockAssetRequest {
+            std::string optionLabel;
+            std::string jsonKey;
+        };
+
+        FilmStockAsset make_film_stock(FilmStockAssetRequest request) {
             FilmStockAsset asset;
-            asset.optionLabel = std::move(optionLabel);
-            asset.jsonKey = std::move(jsonKey);
+            asset.optionLabel = std::move(request.optionLabel);
+            asset.jsonKey = std::move(request.jsonKey);
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -706,12 +713,19 @@ namespace JuicerAssets {
             return payload;
         }
 
-        std::size_t wang_lut_index(int l, int r, int t, int b, int colors) {
+        struct WangTileEdges {
+            int left = 0;
+            int right = 0;
+            int top = 0;
+            int bottom = 0;
+        };
+
+        std::size_t wang_lut_index(const WangTileEdges& edges, int colors) {
             const std::size_t c = static_cast<std::size_t>(colors);
-            return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
-                     static_cast<std::size_t>(t)) *
+            return (((static_cast<std::size_t>(edges.left) * c + static_cast<std::size_t>(edges.right)) * c +
+                     static_cast<std::size_t>(edges.top)) *
                         c +
-                    static_cast<std::size_t>(b));
+                    static_cast<std::size_t>(edges.bottom));
         }
 
         WangNoisePayload load_wang_noise_payload(const Library::StaticNoiseAssetSet& assets) {
@@ -788,7 +802,7 @@ namespace JuicerAssets {
                     l >= colors || r >= colors || t >= colors || b >= colors) {
                     continue;
                 }
-                const std::size_t lutIndex = wang_lut_index(l, r, t, b, colors);
+                const std::size_t lutIndex = wang_lut_index(WangTileEdges{l, r, t, b}, colors);
                 if (lutIndex < lut.size() && idx >= 0 && idx < count) {
                     lut[lutIndex] = static_cast<std::uint8_t>(idx);
                 }
@@ -987,11 +1001,11 @@ namespace JuicerAssets {
                    curve_is_on_reference_axis(curves.tungstenKg3Lens);
         }
 
-        void append_default_film_stocks(const std::string& dataDir, std::vector<FilmStockAsset>& out) {
+        void append_default_film_stocks(std::vector<FilmStockAsset>& out) {
             out.clear();
             out.reserve(kDefaultFilmStocks.size());
             for (const FilmStockSeed& seed : kDefaultFilmStocks) {
-                out.emplace_back(make_film_stock(dataDir, seed.optionLabel, seed.jsonKey));
+                out.emplace_back(make_film_stock(FilmStockAssetRequest{seed.optionLabel, seed.jsonKey}));
             }
         }
 
@@ -1276,7 +1290,7 @@ namespace JuicerAssets {
                 return;
             }
             std::string label = it->second.name.empty() ? it->second.stock : it->second.name;
-            _filmStocks.emplace_back(make_film_stock(dataDir, std::move(label), it->second.stock));
+            _filmStocks.emplace_back(make_film_stock(FilmStockAssetRequest{std::move(label), it->second.stock}));
         };
 
         for (const std::string& key : filters.filmKeys) {
@@ -1289,7 +1303,7 @@ namespace JuicerAssets {
                     continue;
                 }
                 std::string label = pair.second.name.empty() ? pair.second.stock : pair.second.name;
-                _filmStocks.emplace_back(make_film_stock(dataDir, std::move(label), pair.second.stock));
+                _filmStocks.emplace_back(make_film_stock(FilmStockAssetRequest{std::move(label), pair.second.stock}));
             }
             std::sort(_filmStocks.begin(), _filmStocks.end(), [](const FilmStockAsset& a, const FilmStockAsset& b) {
                 return a.optionLabel < b.optionLabel;
@@ -1314,7 +1328,7 @@ namespace JuicerAssets {
                     JTRACE("CATALOG", "catalog default: no film profiles discovered; using defaults");
                 }
             }
-            append_default_film_stocks(dataDir, _filmStocks);
+            append_default_film_stocks(_filmStocks);
         }
 
         std::vector<PrintFolderInfo> folders;
@@ -1438,22 +1452,19 @@ namespace JuicerAssets {
     }
 
     NeutralFilterLookupResult Library::lookup_neutral_filter_path(
-        const std::string& jsonPath,
-        const std::string& paperKey,
-        const std::string& illuminantKey,
-        const std::string& negativeKey,
-        NeutralFilterLookupThread threadClass) {
+        const NeutralFilterPathLookup& lookup) {
         NeutralFilterLookupResult result;
+        const NeutralFilterLookupKey& key = lookup.lookupKey;
 
-        if (paperKey.empty() || illuminantKey.empty() || negativeKey.empty()) {
-            trace_neutral_filter_event("miss", "none", threadClass, "missing_lookup_key", &jsonPath);
+        if (key.paperKey.empty() || key.illuminantKey.empty() || key.negativeKey.empty()) {
+            trace_neutral_filter_event("miss", "none", lookup.threadClass, "missing_lookup_key", &lookup.jsonPath);
             return result;
         }
 
-        const std::string lookupKey = make_lookup_key(paperKey, illuminantKey, negativeKey);
-        const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
+        const std::string lookupKey = make_lookup_key(key.paperKey, key.illuminantKey, key.negativeKey);
+        const std::string cacheKey = normalize_path_for_cache_key(lookup.jsonPath);
         if (cacheKey.empty()) {
-            trace_neutral_filter_event("miss", "none", threadClass, "empty_path", &jsonPath);
+            trace_neutral_filter_event("miss", "none", lookup.threadClass, "empty_path", &lookup.jsonPath);
             return result;
         }
 
@@ -1464,26 +1475,24 @@ namespace JuicerAssets {
             _neutralFilterCache->mutex,
             _neutralFilterCache->entries,
             cacheKey,
-            jsonPath,
-            threadClass,
+            lookup.jsonPath,
+            lookup.threadClass,
             diagnosticsReload,
             now);
 
         if (!dbRead.db) {
             if (!dbRead.stop) {
-                trace_neutral_filter_event("miss", "none", threadClass, "cache_unavailable", &jsonPath);
+                trace_neutral_filter_event("miss", "none", lookup.threadClass, "cache_unavailable", &lookup.jsonPath);
             }
             return result;
         }
 
-        return lookup_filter_ymc(*dbRead.db, lookupKey, threadClass);
+        return lookup_filter_ymc(*dbRead.db, lookupKey, lookup.threadClass);
     }
 
     NeutralFilterLookupResult Library::lookup_neutral_filters(
         const NeutralFilterDatabaseAsset& database,
-        const std::string& paperKey,
-        const std::string& illuminantKey,
-        const std::string& negativeKey,
+        const NeutralFilterLookupKey& lookupKey,
         NeutralFilterLookupThread threadClass) {
         ensure_neutral_filter_databases();
         const std::size_t databaseIndex = static_cast<std::size_t>(database.databaseId);
@@ -1497,20 +1506,12 @@ namespace JuicerAssets {
         }
 
         NeutralFilterLookupResult result = lookup_neutral_filter_path(
-            paths.selectedPath,
-            paperKey,
-            illuminantKey,
-            negativeKey,
-            threadClass);
+            NeutralFilterPathLookup{paths.selectedPath, lookupKey, threadClass});
         if (result.found || paths.selectedPath == paths.defaultPath) {
             return result;
         }
         return lookup_neutral_filter_path(
-            paths.defaultPath,
-            paperKey,
-            illuminantKey,
-            negativeKey,
-            threadClass);
+            NeutralFilterPathLookup{paths.defaultPath, lookupKey, threadClass});
     }
 
     void Library::load_static_noise_assets() {
@@ -1622,16 +1623,16 @@ namespace JuicerAssets {
         return entry.curves;
     }
 
-    PrintRuntimeAssetSet Library::print_runtime_assets_for_choices(int filmIndex, int printPaperIndex, int dichroicSetChoice) {
+    PrintRuntimeAssetSet Library::print_runtime_assets_for_choices(const PrintRuntimeChoices& choices) {
         PrintRuntimeAssetSet assets;
-        assets.filmStock = film_stock_for_index(filmIndex);
-        assets.printPaper = print_paper_for_index(printPaperIndex);
-        assets.neutralFilters = neutral_filter_database_for_dichroic_set(dichroicSetChoice);
+        assets.filmStock = film_stock_for_index(choices.filmIndex);
+        assets.printPaper = print_paper_for_index(choices.printPaperIndex);
+        assets.neutralFilters = neutral_filter_database_for_dichroic_set(choices.dichroicSetChoice);
         return assets;
     }
 
     bool Library::load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        const std::string jsonPath = profile_json_path_for_key(_dataDir, asset.jsonKey);
+        const std::string jsonPath = profile_json_path_for_key(ProfileJsonPathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
             outProfile = Profiles::AgxFilmProfile{};
             return false;
@@ -1640,7 +1641,7 @@ namespace JuicerAssets {
     }
 
     bool Library::load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        const std::string jsonPath = profile_json_path_for_key(_dataDir, asset.jsonKey);
+        const std::string jsonPath = profile_json_path_for_key(ProfileJsonPathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
             outProfile = Profiles::AgxFilmProfile{};
             return false;

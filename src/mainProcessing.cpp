@@ -343,15 +343,38 @@ namespace {
         return reinterpret_cast<T*>(image->getPixelAddress(x, y));
     }
 
-    inline void copy_row_bytes_with_fallback(
-        OFX::Image* src,
-        OFX::Image* dst,
-        int xStart,
-        int xEnd,
-        int y,
-        size_t bytesPerPixel,
-        const std::uint8_t* srcRow,
-        std::uint8_t* dstRow) {
+    struct CopyRowSpan {
+        int xStart = 0;
+        int xEnd = 0;
+        int y = 0;
+    };
+
+    struct CopyRowBytesRequest {
+        OFX::Image* src = nullptr;
+        OFX::Image* dst = nullptr;
+        CopyRowSpan span{};
+        size_t bytesPerPixel = 0;
+        const std::uint8_t* srcRow = nullptr;
+        std::uint8_t* dstRow = nullptr;
+    };
+
+    struct CopyRowFloatScalarRequest {
+        OFX::Image* src = nullptr;
+        OFX::Image* dst = nullptr;
+        CopyRowSpan span{};
+        const float* srcRow = nullptr;
+        float* dstRow = nullptr;
+    };
+
+    inline void copy_row_bytes_with_fallback(const CopyRowBytesRequest& request) {
+        OFX::Image* const src = request.src;
+        OFX::Image* const dst = request.dst;
+        const int xStart = request.span.xStart;
+        const int xEnd = request.span.xEnd;
+        const int y = request.span.y;
+        const size_t bytesPerPixel = request.bytesPerPixel;
+        const std::uint8_t* const srcRow = request.srcRow;
+        std::uint8_t* const dstRow = request.dstRow;
         const int width = xEnd - xStart;
         if (width <= 0) {
             return;
@@ -396,14 +419,14 @@ namespace {
         }
     }
 
-    inline void copy_row_float_scalar_with_fallback(
-        OFX::Image* src,
-        OFX::Image* dst,
-        int xStart,
-        int xEnd,
-        int y,
-        const float* srcRow,
-        float* dstRow) {
+    inline void copy_row_float_scalar_with_fallback(const CopyRowFloatScalarRequest& request) {
+        OFX::Image* const src = request.src;
+        OFX::Image* const dst = request.dst;
+        const int xStart = request.span.xStart;
+        const int xEnd = request.span.xEnd;
+        const int y = request.span.y;
+        const float* const srcRow = request.srcRow;
+        float* const dstRow = request.dstRow;
         const int width = xEnd - xStart;
         if (width <= 0) {
             return;
@@ -1449,22 +1472,26 @@ namespace JuicerProcScanner {
 
 namespace {
 
+    struct AutoExposureReusableKeyInputs {
+        const OfxRectI& meterBounds;
+        const OfxRectI& srcBounds;
+        std::ptrdiff_t srcRowBytes;
+        int nComponents;
+        const Spectral::FilmRawConfig& filmRaw;
+        int meteringMethod;
+    };
+
     std::uint64_t make_auto_exposure_reusable_key_hash(
-        const OfxRectI& meterBounds,
-        const OfxRectI& srcBounds,
-        std::ptrdiff_t srcRowBytes,
-        int nComponents,
-        const Spectral::FilmRawConfig& filmRaw,
-        int meteringMethod) {
+        const AutoExposureReusableKeyInputs& inputs) {
         std::uint64_t h = Hash::kFnvOffset;
-        Hash::hash_bytes_update(h, &meterBounds, sizeof(meterBounds));
-        Hash::hash_bytes_update(h, &srcBounds, sizeof(srcBounds));
-        Hash::hash_bytes_update(h, &srcRowBytes, sizeof(srcRowBytes));
-        Hash::hash_bytes_update(h, &nComponents, sizeof(nComponents));
-        Hash::hash_bytes_update(h, &filmRaw.inputColorSpace, sizeof(filmRaw.inputColorSpace));
-        Hash::hash_bytes_update(h, &filmRaw.applyCctfDecoding, sizeof(filmRaw.applyCctfDecoding));
-        Hash::hash_bytes_update(h, &filmRaw.inputRGBToXYZ, sizeof(filmRaw.inputRGBToXYZ));
-        Hash::hash_bytes_update(h, &meteringMethod, sizeof(meteringMethod));
+        Hash::hash_bytes_update(h, &inputs.meterBounds, sizeof(inputs.meterBounds));
+        Hash::hash_bytes_update(h, &inputs.srcBounds, sizeof(inputs.srcBounds));
+        Hash::hash_bytes_update(h, &inputs.srcRowBytes, sizeof(inputs.srcRowBytes));
+        Hash::hash_bytes_update(h, &inputs.nComponents, sizeof(inputs.nComponents));
+        Hash::hash_bytes_update(h, &inputs.filmRaw.inputColorSpace, sizeof(inputs.filmRaw.inputColorSpace));
+        Hash::hash_bytes_update(h, &inputs.filmRaw.applyCctfDecoding, sizeof(inputs.filmRaw.applyCctfDecoding));
+        Hash::hash_bytes_update(h, &inputs.filmRaw.inputRGBToXYZ, sizeof(inputs.filmRaw.inputRGBToXYZ));
+        Hash::hash_bytes_update(h, &inputs.meteringMethod, sizeof(inputs.meteringMethod));
         if (h == 0) {
             h = 1;
         }
@@ -1646,15 +1673,14 @@ namespace JuicerProc {
                 src, srcBounds, xStart, xEnd, y);
             std::uint8_t* dRow = write_u8_row_if_fully_covered(
                 dst, dstBounds, xStart, xEnd, y);
-            copy_row_bytes_with_fallback(
-                src,
-                dst,
-                xStart,
-                xEnd,
-                y,
-                bytesPerPixel,
-                sRow,
-                dRow);
+            CopyRowBytesRequest copyRequest{};
+            copyRequest.src = src;
+            copyRequest.dst = dst;
+            copyRequest.span = CopyRowSpan{xStart, xEnd, y};
+            copyRequest.bytesPerPixel = bytesPerPixel;
+            copyRequest.srcRow = sRow;
+            copyRequest.dstRow = dRow;
+            copy_row_bytes_with_fallback(copyRequest);
         }
     }
 
@@ -1697,28 +1723,31 @@ inline std::uint64_t upload_core_hash_or_core_hash(const WorkingState& ws) {
     return (ws.uploadCoreHash != 0) ? ws.uploadCoreHash : ws.coreHash;
 }
 
-static std::uint64_t make_gate_mask_hash(
-    std::uint64_t sessionSeed,
-    int originX,
-    int originY,
-    int width,
-    int height,
-    float pixelSizeUm,
-    float gateDustAmount,
-    float gateScratchAmount) {
-    const std::uint64_t originXBits = static_cast<std::uint64_t>(originX);
-    const std::uint64_t originYBits = static_cast<std::uint64_t>(originY);
-    const std::uint64_t widthBits = static_cast<std::uint64_t>(width);
-    const std::uint64_t heightBits = static_cast<std::uint64_t>(height);
+struct GateMaskHashInputs {
+    std::uint64_t sessionSeed = 1;
+    int originX = 0;
+    int originY = 0;
+    int width = 0;
+    int height = 0;
+    float pixelSizeUm = 0.0f;
+    float gateDustAmount = 0.0f;
+    float gateScratchAmount = 0.0f;
+};
+
+static std::uint64_t make_gate_mask_hash(const GateMaskHashInputs& inputs) {
+    const std::uint64_t originXBits = static_cast<std::uint64_t>(inputs.originX);
+    const std::uint64_t originYBits = static_cast<std::uint64_t>(inputs.originY);
+    const std::uint64_t widthBits = static_cast<std::uint64_t>(inputs.width);
+    const std::uint64_t heightBits = static_cast<std::uint64_t>(inputs.height);
     std::uint64_t h = Hash::kFnvOffset;
-    Hash::hash_bytes_update(h, &sessionSeed, sizeof(sessionSeed));
+    Hash::hash_bytes_update(h, &inputs.sessionSeed, sizeof(inputs.sessionSeed));
     Hash::hash_bytes_update(h, &originXBits, sizeof(originXBits));
     Hash::hash_bytes_update(h, &originYBits, sizeof(originYBits));
     Hash::hash_bytes_update(h, &widthBits, sizeof(widthBits));
     Hash::hash_bytes_update(h, &heightBits, sizeof(heightBits));
-    Hash::hash_bytes_update(h, &pixelSizeUm, sizeof(pixelSizeUm));
-    Hash::hash_bytes_update(h, &gateDustAmount, sizeof(gateDustAmount));
-    Hash::hash_bytes_update(h, &gateScratchAmount, sizeof(gateScratchAmount));
+    Hash::hash_bytes_update(h, &inputs.pixelSizeUm, sizeof(inputs.pixelSizeUm));
+    Hash::hash_bytes_update(h, &inputs.gateDustAmount, sizeof(inputs.gateDustAmount));
+    Hash::hash_bytes_update(h, &inputs.gateScratchAmount, sizeof(inputs.gateScratchAmount));
     if (h == 0) {
         h = 1;
     }
@@ -1770,9 +1799,9 @@ JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
 {
 }
 
-void JuicerProcessor::setSrcDst(OFX::Image* src, OFX::Image* dst) {
-    _srcImg = src;
-    setDstImg(dst);
+void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
+    _srcImg = images.src;
+    setDstImg(images.dst);
 }
 
 void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
@@ -1798,15 +1827,16 @@ void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
         request.printRuntime ? request.printRuntime : ((_ws && _ws->printRT) ? _ws->printRT.get() : nullptr),
         request.printRuntimeReady);
     setExposure(request.exposureScale);
-    setCameraAutoExposure(
-        request.cameraAutoEnabled,
-        request.cameraMeteringMethod,
-        request.cameraSliderEV);
+    CameraAutoExposureSettings autoExposureSettings{};
+    autoExposureSettings.enabled = request.cameraAutoEnabled;
+    autoExposureSettings.meteringMethod = request.cameraMeteringMethod;
+    autoExposureSettings.sliderEV = request.cameraSliderEV;
+    setCameraAutoExposure(autoExposureSettings);
     setAutoExposureMeterBounds(
         request.autoExposureMeterBounds,
         request.autoExposureMeterBoundsValid);
     _outputEncoding = request.outputEncoding;
-    setSessionTokens(request.sessionSeed, request.instanceToken);
+    setSessionTokens(SessionTokens{request.sessionSeed, request.instanceToken});
     setClipToken(request.clipToken);
     setGateWeaveAmount(request.gateWeaveAmount);
     setFrameTime(request.frameTime);
@@ -1858,10 +1888,10 @@ void JuicerProcessor::setExposure(float exposureScale) {
     _exposureScale = positive_finite_or(exposureScale, 1.0f);
 }
 
-void JuicerProcessor::setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV) {
-    _cameraAutoEnabled = enabled;
-    _cameraMeteringMethod = meteringMethod;
-    _cameraSliderEV = sliderEV;
+void JuicerProcessor::setCameraAutoExposure(const CameraAutoExposureSettings& settings) {
+    _cameraAutoEnabled = settings.enabled;
+    _cameraMeteringMethod = settings.meteringMethod;
+    _cameraSliderEV = settings.sliderEV;
 }
 
 void JuicerProcessor::setAutoExposureMeterBounds(const OfxRectI& bounds, bool valid) {
@@ -1877,9 +1907,9 @@ void JuicerProcessor::setInstanceState(InstanceState* s) {
     _instanceState = s;
 }
 
-void JuicerProcessor::setSessionTokens(std::uint64_t sessionSeed, std::uint64_t instanceToken) {
-    _sessionSeed = session_seed_or_default(sessionSeed);
-    _instanceToken = instance_token_or_session_seed(instanceToken, _sessionSeed);
+void JuicerProcessor::setSessionTokens(const SessionTokens& tokens) {
+    _sessionSeed = session_seed_or_default(tokens.sessionSeed);
+    _instanceToken = instance_token_or_session_seed(tokens.instanceToken, _sessionSeed);
 }
 
 void JuicerProcessor::setClipToken(std::uintptr_t token) {
@@ -2498,14 +2528,13 @@ void JuicerProcessor::processImpl() {
                 _dstImg, dstBounds, xStart, xEnd, y);
             const float* srcRow = read_float_row_if_fully_covered(
                 _srcImg, srcBounds, xStart, xEnd, y);
-            copy_row_float_scalar_with_fallback(
-                _srcImg,
-                _dstImg,
-                xStart,
-                xEnd,
-                y,
-                srcRow,
-                dstRow);
+            CopyRowFloatScalarRequest copyRequest{};
+            copyRequest.src = _srcImg;
+            copyRequest.dst = _dstImg;
+            copyRequest.span = CopyRowSpan{xStart, xEnd, y};
+            copyRequest.srcRow = srcRow;
+            copyRequest.dstRow = dstRow;
+            copy_row_float_scalar_with_fallback(copyRequest);
         }
         return;
     }
@@ -2843,12 +2872,13 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
     const std::uint64_t autoExposureReusableKeyHash = make_auto_exposure_reusable_key_hash(
-        srcBounds,
-        srcBounds,
-        srcRowBytes,
-        _nComponents,
-        _ws->filmRaw,
-        _cameraMeteringMethod);
+        AutoExposureReusableKeyInputs{
+            srcBounds,
+            srcBounds,
+            srcRowBytes,
+            _nComponents,
+            _ws->filmRaw,
+            _cameraMeteringMethod});
     OfxRectI meterBounds = srcBounds;
     if (_cameraAutoEnabled && _autoExposureMeterBoundsValid) {
         meterBounds = _autoExposureMeterBounds;
@@ -3179,8 +3209,9 @@ void JuicerProcessor::processImagesCUDA() {
                             errMsg);
                     }
                     preparedFrame.mark_auto_exposure_weights_built(
-                        autoExposureMeterWidth,
-                        autoExposureMeterHeight);
+                        JuicerProcess::Root::PreparedCudaFrame::AutoExposureWeightsExtent{
+                            autoExposureMeterWidth,
+                            autoExposureMeterHeight});
                 }
             }
 
@@ -3210,7 +3241,10 @@ void JuicerProcessor::processImagesCUDA() {
                     "CUDA auto-exposure metering failed",
                     errMsg);
             }
-            preparedFrame.mark_auto_exposure_metered(meterStateKey, _cameraSliderEV);
+            preparedFrame.mark_auto_exposure_metered(
+                JuicerProcess::Root::PreparedCudaFrame::AutoExposureMeteredResult{
+                    meterStateKey,
+                    _cameraSliderEV});
         } else if (needSliderUpdate) {
             const int rc = juicer_cuda_auto_exposure_update_scale_to_device(
                 _cameraSliderEV,
@@ -4067,15 +4101,16 @@ void JuicerProcessor::processImagesCUDA() {
             return true;
         }
 
-        const std::uint64_t gateHash = make_gate_mask_hash(
-            run.grain.stbnSessionSeed,
-            run.grain.originX,
-            run.grain.originY,
-            width,
-            height,
-            run.grain.pixelSizeUm,
-            run.grain.gateDustAmount,
-            run.grain.gateScratchAmount);
+        GateMaskHashInputs gateMaskInputs{};
+        gateMaskInputs.sessionSeed = run.grain.stbnSessionSeed;
+        gateMaskInputs.originX = run.grain.originX;
+        gateMaskInputs.originY = run.grain.originY;
+        gateMaskInputs.width = width;
+        gateMaskInputs.height = height;
+        gateMaskInputs.pixelSizeUm = run.grain.pixelSizeUm;
+        gateMaskInputs.gateDustAmount = run.grain.gateDustAmount;
+        gateMaskInputs.gateScratchAmount = run.grain.gateScratchAmount;
+        const std::uint64_t gateHash = make_gate_mask_hash(gateMaskInputs);
         if (gateHash != opticsScratch.gateMaskHash) {
             if (abort_cuda_path_if_requested(preparedFrame)) {
                 return false;

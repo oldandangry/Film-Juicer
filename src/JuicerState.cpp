@@ -782,9 +782,10 @@ namespace {
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         const JuicerAssets::PrintRuntimeAssetSet assets =
             JuicerProcess::root().assets().print_runtime_assets_for_choices(
-                p.filmStockIndex,
-                p.printPaperIndex,
-                p.enlDichroicSet);
+                JuicerAssets::PrintRuntimeChoices{
+                    p.filmStockIndex,
+                    p.printPaperIndex,
+                    p.enlDichroicSet});
 
         // Shared host derivation follows logical asset identity, not UI catalog positions.
         mix_hash_string(h, assets.filmStock.jsonKey, mix);

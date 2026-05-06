@@ -56,8 +56,13 @@ namespace {
         JTRACE("PRINT", msg);
     }
 
-    [[noreturn]] inline void trace_and_throw_render_fatal(const char* tag, const char* message) {
-        JTRACE(tag, cstr_or_default_if_null(message, "fatal render error"));
+    struct RenderFatalTrace {
+        const char* tag = nullptr;
+        const char* message = nullptr;
+    };
+
+    [[noreturn]] inline void trace_and_throw_render_fatal(const RenderFatalTrace& fatal) {
+        JTRACE(fatal.tag, cstr_or_default_if_null(fatal.message, "fatal render error"));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
@@ -314,17 +319,24 @@ namespace {
         const char* filmLabel = "<null>";
     };
 
-    inline ProfileKeyLabels resolve_profile_key_labels(int printPaperIndex, int filmStockIndex) {
+    struct ProfileSelectionIndexes {
+        int printPaperIndex = 0;
+        int filmStockIndex = 0;
+    };
+
+    inline ProfileKeyLabels resolve_profile_key_labels(const ProfileSelectionIndexes& indexes) {
         ProfileKeyLabels labels{};
-        labels.paperKey = print_paper_json_key_for_index(printPaperIndex);
-        labels.filmKey = negative_json_key_for_stock_index(filmStockIndex);
+        labels.paperKey = print_paper_json_key_for_index(indexes.printPaperIndex);
+        labels.filmKey = negative_json_key_for_stock_index(indexes.filmStockIndex);
         labels.paperLabel = cstr_or_default_if_null(labels.paperKey, "<null>");
         labels.filmLabel = cstr_or_default_if_null(labels.filmKey, "<null>");
         return labels;
     }
 
     inline ProfileKeyLabels resolve_profile_key_labels(const ParamSnapshot& snapshot) {
-        return resolve_profile_key_labels(snapshot.printPaperIndex, snapshot.filmStockIndex);
+        return resolve_profile_key_labels(ProfileSelectionIndexes{
+            snapshot.printPaperIndex,
+            snapshot.filmStockIndex});
     }
 
     struct PrintProfileLoadInputs {
@@ -340,9 +352,10 @@ namespace {
         PrintProfileLoadInputs inputs{};
         inputs.labels = resolve_profile_key_labels(snapshot);
         inputs.printAssets = JuicerProcess::root().assets().print_runtime_assets_for_choices(
-            snapshot.filmStockIndex,
-            snapshot.printPaperIndex,
-            snapshot.enlDichroicSet);
+            JuicerAssets::PrintRuntimeChoices{
+                snapshot.filmStockIndex,
+                snapshot.printPaperIndex,
+                snapshot.enlDichroicSet});
         return inputs;
     }
 
@@ -403,17 +416,21 @@ namespace {
         return snapshot;
     }
 
+    struct PendingStateHashes {
+        std::uint64_t fullHash = 0;
+        std::uint64_t coreHash = 0;
+        std::uint64_t dirHash = 0;
+    };
+
     inline void store_pending_state_snapshot(
         InstanceState& state,
         const ParamSnapshot& params,
-        std::uint64_t fullHash,
-        std::uint64_t coreHash,
-        std::uint64_t dirHash) {
+        const PendingStateHashes& hashes) {
         std::lock_guard<std::mutex> lock(state.pending.m);
         state.pending.params = params;
-        state.pending.fullHash = fullHash;
-        state.pending.coreHash = coreHash;
-        state.pending.dirHash = dirHash;
+        state.pending.fullHash = hashes.fullHash;
+        state.pending.coreHash = hashes.coreHash;
+        state.pending.dirHash = hashes.dirHash;
     }
 
     inline bool pending_rebuild_required(const PendingStateSnapshot& pending, std::uint64_t builtFullHash) {
@@ -855,9 +872,10 @@ namespace {
         store_pending_state_snapshot(
             state,
             snapshot,
-            hash_params(snapshot),
-            hash_params_core(snapshot),
-            hash_params_dir(snapshot));
+            PendingStateHashes{
+                hash_params(snapshot),
+                hash_params_core(snapshot),
+                hash_params_dir(snapshot)});
     }
 
     inline void trace_neutral_filters_applied_if(
@@ -3642,11 +3660,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
     if (!wsReady) {
-        trace_and_throw_render_fatal("BUILD", "FATAL: working state not ready; aborting render");
+        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: working state not ready; aborting render"});
     }
 
     if (!printParams.bypass && !printReady) {
-        trace_and_throw_render_fatal("PRINT", "FATAL: print runtime not ready while print path requested");
+        trace_and_throw_render_fatal(RenderFatalTrace{"PRINT", "FATAL: print runtime not ready while print path requested"});
     }
 
     // --- Print exposure compensation via spectral mid-gray probe (agx parity) ---
@@ -3659,7 +3677,10 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     // Tile-based multithreaded processing via OFX::ImageProcessor
     JuicerProcessor proc(*this);
-    proc.setSrcDst(srcImg.get(), dstImg.get());
+    JuicerProcessor::SourceDestinationImages images{};
+    images.src = srcImg.get();
+    images.dst = dstImg.get();
+    proc.setSrcDst(images);
     proc.setInstanceState(_state.get());
     const SessionTokenSnapshot sessionTokens = snapshot_session_tokens(_state.get());
     const std::uint32_t frameVersion = frame_bounds_version_or_zero(_state.get());
@@ -4270,9 +4291,10 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
 
     const JuicerAssets::PrintRuntimeAssetSet printAssets =
         JuicerProcess::root().assets().print_runtime_assets_for_choices(
-            P.filmStockIndex,
-            P.printPaperIndex,
-            P.enlDichroicSet);
+            JuicerAssets::PrintRuntimeChoices{
+                P.filmStockIndex,
+                P.printPaperIndex,
+                P.enlDichroicSet});
     const char* paperKey = printAssets.printPaper.jsonKey.empty()
                                ? nullptr
                                : printAssets.printPaper.jsonKey.c_str();
@@ -4310,9 +4332,10 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
         const JuicerAssets::NeutralFilterLookupResult lookup =
             JuicerProcess::root().assets().lookup_neutral_filters(
                 neutralDb,
-                paperKey,
-                illumKey,
-                negativeKey,
+                JuicerAssets::NeutralFilterLookupKey{
+                    printAssets.printPaper.jsonKey,
+                    illumKey,
+                    printAssets.filmStock.jsonKey},
                 JuicerAssets::NeutralFilterLookupThread::Control);
         if (lookup.found) {
             ymc = lookup.ymc;

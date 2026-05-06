@@ -1916,25 +1916,23 @@ namespace JuicerProcess {
     }
 
     void Root::PreparedCudaFrame::mark_auto_exposure_weights_built(
-        int weightsWidth,
-        int weightsHeight) noexcept {
+        const AutoExposureWeightsExtent& weights) noexcept {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             return;
         }
         State::AutoExposureFrameWorkspace& workspace = _state->autoExposureWorkspace;
-        workspace.weightsWidth = weightsWidth;
-        workspace.weightsHeight = weightsHeight;
+        workspace.weightsWidth = weights.width;
+        workspace.weightsHeight = weights.height;
     }
 
     void Root::PreparedCudaFrame::mark_auto_exposure_metered(
-        std::uint64_t keyHash,
-        double sliderEV) noexcept {
+        const AutoExposureMeteredResult& result) noexcept {
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
             return;
         }
         State::AutoExposureFrameWorkspace& workspace = _state->autoExposureWorkspace;
-        workspace.keyHash = keyHash;
-        workspace.sliderEV = sliderEV;
+        workspace.keyHash = result.keyHash;
+        workspace.sliderEV = result.sliderEV;
     }
 
     void Root::PreparedCudaFrame::mark_auto_exposure_slider_updated(double sliderEV) noexcept {
