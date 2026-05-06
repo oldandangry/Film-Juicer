@@ -77,6 +77,11 @@ struct RegistryHandle {
     std::uint64_t value = 0;
 };
 
+struct RegistrySnapshotGenerations {
+    std::uint64_t registryGeneration = 0;
+    std::uint64_t contextEpoch = 0;
+};
+
 struct LifecycleStageValidation {
     LifecycleStageDecision decision = LifecycleStageDecision::MissingRegistryEntry;
     ContextLifecycleState observedState = ContextLifecycleState::Unbound;
@@ -90,6 +95,9 @@ const char* to_cstr(LifecycleStageDecision decision) noexcept;
 // Registry lookups and lifecycle transitions for device-context managers.
 RegistryHandle registry_get_or_create(const DeviceContextKey& key) noexcept;
 bool registry_get(const DeviceContextKey& key, RegistryHandle& outHandle) noexcept;
+bool registry_get_snapshot_generations(
+    const DeviceContextKey& key,
+    RegistrySnapshotGenerations& outGenerations) noexcept;
 bool registry_get_lifecycle_state(const DeviceContextKey& key, ContextLifecycleState& outState) noexcept;
 bool registry_validate_lifecycle_stage(
     const DeviceContextKey& key,
@@ -105,7 +113,7 @@ bool registry_transition_lifecycle_state(
 bool registry_freeze_drain_bump_resume(
     const DeviceContextKey& key,
     const char* reason) noexcept;
-void registry_retire(
+bool registry_retire(
     RegistryHandle handle,
     RegistryRetireReason reason,
     const DeviceContextKey* managerKey = nullptr) noexcept;
@@ -143,6 +151,8 @@ bool command_retire_context_idle(
     const DeviceContextKey& key,
     std::string& outError);
 
+bool command_retire_all_contexts_idle(std::string& outError);
+
 bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -165,12 +175,6 @@ bool command_ensure_scan_lut(
     const WorkingState& ws,
     bool negativeMedium,
     const ScratchRequestDescriptor& scratchRequest,
-    void* cudaStreamOpaque,
-    std::string& outError);
-
-bool command_ensure_scan_error_flag(
-    SubmissionTransaction& transaction,
-    JuicerCuda::Resources& resources,
     void* cudaStreamOpaque,
     std::string& outError);
 
@@ -229,12 +233,20 @@ bool command_ensure_halation_kernel(
     void* cudaStreamOpaque,
     std::string& outError);
 
+struct AutoExposureMeterExtent {
+    int width = 0;
+    int height = 0;
+};
+
+struct AutoExposureBufferRequest {
+    AutoExposureMeterExtent meter{};
+    std::uint64_t keyHash = 0;
+};
+
 bool command_ensure_auto_exposure_buffers(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
-    int meterWidth,
-    int meterHeight,
-    std::uint64_t autoExposureKeyHash,
+    const AutoExposureBufferRequest& request,
     void* cudaStreamOpaque,
     std::string& outError);
 

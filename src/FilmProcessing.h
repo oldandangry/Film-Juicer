@@ -41,9 +41,11 @@ namespace Spectral {
             // H-D curve steepness (larger = quicker rise toward Dmax)
             6.0f, 6.0f, 6.0f,
             // Masking (small off-diagonals; close to your current values)
-             0.98f, -0.06f, -0.02f,
-            -0.03f,  0.98f, -0.05f,
-            -0.02f, -0.04f,  0.98f,
+            {
+                 0.98f, -0.06f, -0.02f,
+                -0.03f,  0.98f, -0.05f,
+                -0.02f, -0.04f,  0.98f
+            },
             // Spectral masking defaults
             { 1.0f, 1.0f, 1.0f },
             { 0.0f, 0.0f, 0.0f }

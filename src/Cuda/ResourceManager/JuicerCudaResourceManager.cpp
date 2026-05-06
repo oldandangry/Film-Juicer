@@ -274,7 +274,6 @@ bool ensure_uploaded(
     void* cudaStreamOpaque,
     std::string& outError);
 bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
-bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError);
 bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
 bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
 bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);
@@ -335,7 +334,7 @@ struct ShadowHistoryState {
     std::unordered_map<ShadowHistoryKey, ShadowHistoryEntry, ShadowHistoryKeyHasher> bySubmissionKey;
 };
 
-ShadowHistoryState& shadow_history_state() noexcept {
+ShadowHistoryState& shadow_history_state() {
     static ShadowHistoryState state{};
     return state;
 }
@@ -353,7 +352,7 @@ struct AutoExposureOwnershipState {
     std::unordered_map<ShadowHistoryKey, AutoExposureOwnershipEntry, ShadowHistoryKeyHasher> bySubmissionKey;
 };
 
-AutoExposureOwnershipState& auto_exposure_ownership_state() noexcept {
+AutoExposureOwnershipState& auto_exposure_ownership_state() {
     static AutoExposureOwnershipState state{};
     return state;
 }
@@ -389,7 +388,7 @@ struct FrameSnapshotState {
     std::unordered_map<FrameSnapshotKey, FrameSnapshotEntry, FrameSnapshotKeyHasher> bySubmissionKey;
 };
 
-FrameSnapshotState& frame_snapshot_state() noexcept {
+FrameSnapshotState& frame_snapshot_state() {
     static FrameSnapshotState state{};
     return state;
 }
@@ -443,6 +442,7 @@ const char* to_cstr(PressureLane lane) noexcept {
     }
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 const char* to_cstr(ScratchCheckpointInvocation invocation) noexcept {
     switch (invocation) {
     case ScratchCheckpointInvocation::OuterPhaseCheckpoint:
@@ -453,6 +453,7 @@ const char* to_cstr(ScratchCheckpointInvocation invocation) noexcept {
         return "unknown";
     }
 }
+#endif
 
 const char* to_cstr(BuilderReservationTier tier) noexcept {
     switch (tier) {
@@ -482,6 +483,7 @@ const char* to_cstr(ResourceTier tier) noexcept {
     }
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 const char* to_cstr(TierCircuitState state) noexcept {
     switch (state) {
     case TierCircuitState::Closed:
@@ -522,6 +524,11 @@ const char* to_cstr(AllocatorBackendMode value) noexcept {
         return "unknown";
     }
 }
+#endif
+
+const char* trace_or(const char* value, const char* fallback) noexcept {
+    return value ? value : fallback;
+}
 
 const char* trace_or_unknown(const char* value) noexcept {
     return value ? value : "unknown";
@@ -531,14 +538,11 @@ const char* trace_or_unspecified(const char* value) noexcept {
     return value ? value : "unspecified";
 }
 
-const char* trace_or(const char* value, const char* fallback) noexcept {
-    return value ? value : fallback;
-}
-
 const char* trace_or_non_empty(const char* value, const char* fallback) noexcept {
     return (value && value[0] != '\0') ? value : fallback;
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 const char* failure_reason_class(const char* token) noexcept {
     const std::string_view value = trace_or_non_empty(token, "");
     if (value.empty()) {
@@ -688,6 +692,7 @@ std::string trace_device_context_fields(const SubmissionTransaction& transaction
     return std::string(" device_id=") + std::to_string(contextKey.deviceId)
         + " context=" + std::to_string(contextBits);
 }
+#endif
 
 template <typename Action>
 bool with_explicit_cuda_device(int targetDevice, Action&& action) noexcept {
@@ -1151,9 +1156,6 @@ constexpr std::uint64_t kGraphBuilderReservationCapDefaultBytes = 128ull * 1024u
 constexpr std::uint64_t kBuilderReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
 constexpr std::uint64_t kUploadReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
 constexpr std::uint64_t kUploadReservationThresholdDefaultBytes = 16ull * 1024ull * 1024ull;
-constexpr std::uint64_t kStbnUploadDefaultBytes = 512ull * 512ull * 256ull;
-constexpr std::uint64_t kWangTilesUploadDefaultBytes = 256ull * 256ull * 16ull;
-constexpr std::uint64_t kWangLutUploadDefaultBytes = 8ull * 8ull * 8ull * 8ull;
 constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024ull;
 constexpr std::uint64_t kBasisPointsDenominator = 10000ull;
 constexpr int kBuilderReservationWaitStepMs = 1;
@@ -1366,6 +1368,7 @@ FiveXEnvOverrides load_5x_env_overrides() noexcept {
 }
 
 void trace_5x_env_overrides(const FiveXEnvOverrides& overrides, const ResourceManagerConfigEffective& cfg) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!overrides.anyOverride || !JTRACE_ENABLED(2)) {
         return;
     }
@@ -1393,6 +1396,7 @@ void trace_5x_env_overrides(const FiveXEnvOverrides& overrides, const ResourceMa
         + " max_burst_debt_pct=" + std::to_string(static_cast<unsigned long long>(cfg.maxBurstDebtPct))
         + " cancel_superseded_builders=" + std::to_string(cfg.cancelSupersededBuilders ? 1 : 0);
     JTRACE("MSCFG", msg);
+#endif
 }
 
 const ResourceManagerConfigEffective& manager_effective_config() noexcept {
@@ -1599,17 +1603,6 @@ std::uint64_t bytes_for_count_u64(std::uint64_t count, std::size_t elementBytes,
         return std::numeric_limits<std::uint64_t>::max();
     }
     return bytes;
-}
-
-std::uint64_t bytes_for_plane_extent_u64(int width, int height, bool& overflow) noexcept {
-    const std::uint64_t w = non_negative_u64(width);
-    const std::uint64_t h = non_negative_u64(height);
-    std::uint64_t count = 0;
-    if (!mul_u64_checked(w, h, count)) {
-        overflow = true;
-        return std::numeric_limits<std::uint64_t>::max();
-    }
-    return bytes_for_count_u64(count, sizeof(float), overflow);
 }
 
 void add_curve_bytes(const JuicerCuda::DeviceCurve& curve, ManagerMemorySnapshot& snapshot) noexcept {
@@ -1923,12 +1916,9 @@ void add_resources_active_bytes_locked(
         add_snapshot_bytes(snapshot, bytes);
     }
 
-    if (resources.scanErrorFlag) {
-        add_snapshot_bytes(snapshot, sizeof(int));
-    }
-    if (resources.scanErrorHost) {
-        add_snapshot_bytes(snapshot, sizeof(int));
-    }
+    add_snapshot_bytes(
+        snapshot,
+        static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
 
     if (resources.autoExposureExposureScale) add_snapshot_bytes(snapshot, sizeof(float));
     if (resources.autoExposureAutoEV) add_snapshot_bytes(snapshot, sizeof(double));
@@ -2005,12 +1995,9 @@ void add_scratch_tier_bytes_locked(
     add_optics_scratch_bytes(resources.scannerScratch, scratchSnapshot);
     add_spatial_dir_scratch_bytes(resources.spatialDirScratch, scratchSnapshot);
 
-    if (resources.scanErrorFlag) {
-        add_snapshot_bytes(scratchSnapshot, sizeof(int));
-    }
-    if (resources.scanErrorHost) {
-        add_snapshot_bytes(scratchSnapshot, sizeof(int));
-    }
+    add_snapshot_bytes(
+        scratchSnapshot,
+        static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
 
     if (resources.autoExposureExposureScale) add_snapshot_bytes(scratchSnapshot, sizeof(float));
     if (resources.autoExposureAutoEV) add_snapshot_bytes(scratchSnapshot, sizeof(double));
@@ -2176,6 +2163,7 @@ inline bool should_collect_manager_memory_snapshots(const ResolvedPressurePolicy
     return pressure_policy_enabled(policy) || JTRACE_ENABLED(3);
 }
 
+#if JUICER_DIAGNOSTICS_COMPILED
 std::uint32_t trace_policy_match_u32(
     const SubmissionTransaction& transaction,
     std::uint64_t softTargetBytes,
@@ -2215,6 +2203,7 @@ std::string trace_headroom_identity_fields(
         + " sample_matches_submission_device=" + std::to_string(sampleMatchesSubmissionDevice ? 1u : 0u)
         + " sample_success=" + std::to_string(headroom.sampleSuccess ? 1u : 0u);
 }
+#endif
 
 
 std::uint64_t& builder_context_bytes_for_tier(
@@ -2263,8 +2252,8 @@ std::atomic<std::uint64_t>& builder_global_gauge_for_tier(
 }
 } // namespace
 
-AdmissionChurnPolicyState& admission_churn_policy_state() noexcept;
-OptionalHeuristicTraceState& optional_heuristic_trace_state() noexcept;
+AdmissionChurnPolicyState& admission_churn_policy_state();
+OptionalHeuristicTraceState& optional_heuristic_trace_state();
 
 void trace_scratch_policy_decision(
     const SubmissionTransaction& transaction,
@@ -2273,6 +2262,7 @@ void trace_scratch_policy_decision(
     std::size_t requestBytes,
     const ScratchPolicySnapshot& snapshot,
     int waitMs) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2309,6 +2299,7 @@ void trace_scratch_policy_decision(
         + " quarantine_max_bytes=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxBytes))
         + " quarantine_max_entries=" + std::to_string(static_cast<unsigned long long>(kLargeFrameQuarantineMaxEntries));
     JTRACE("MSACQ", msg);
+#endif
 }
 
 void trace_transient_reservation_decision(
@@ -2322,6 +2313,7 @@ void trace_transient_reservation_decision(
     bool criticalCurrentFrame,
     int waitMs,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2343,6 +2335,7 @@ void trace_transient_reservation_decision(
         + " reason=" + trace_or_unspecified(reason)
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSTRS", msg);
+#endif
 }
 
 void trace_upload_reservation_decision(
@@ -2359,6 +2352,7 @@ void trace_upload_reservation_decision(
     std::uint32_t criticalTokens,
     int waitMs,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2383,6 +2377,7 @@ void trace_upload_reservation_decision(
         + " reason=" + trace_or_unspecified(reason)
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSUPL", msg);
+#endif
 }
 
 void trace_builder_reservation_decision(
@@ -2400,6 +2395,7 @@ void trace_builder_reservation_decision(
     std::uint32_t criticalTokens,
     int waitMs,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2424,6 +2420,7 @@ void trace_builder_reservation_decision(
         + " reason=" + trace_or_unspecified(reason)
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSBPR", msg);
+#endif
 }
 
 void trace_tier_circuit_event(
@@ -2441,6 +2438,7 @@ void trace_tier_circuit_event(
     std::uint32_t openMs,
     std::uint64_t openRemainingMs,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2460,6 +2458,7 @@ void trace_tier_circuit_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSCB", msg);
+#endif
 }
 
 void trace_tier_budget_event(
@@ -2474,6 +2473,7 @@ void trace_tier_budget_event(
     std::uint64_t scratchNormalizedActions,
     std::uint64_t graphEvictedEntries,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2529,6 +2529,7 @@ void trace_tier_budget_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSTGT", msg);
+#endif
 }
 
 void trace_scratch_request_descriptor(
@@ -2536,6 +2537,7 @@ void trace_scratch_request_descriptor(
     const char* commandName,
     const ScratchRequestDescriptor& descriptor,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2554,6 +2556,7 @@ void trace_scratch_request_descriptor(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSSRQ", msg);
+#endif
 }
 
 void trace_scratch_checkpoint_event(
@@ -2562,6 +2565,7 @@ void trace_scratch_checkpoint_event(
     ScratchCheckpointInvocation invocation,
     const ScratchCheckpointObservation& observation,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2683,6 +2687,7 @@ void trace_scratch_checkpoint_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSSCP", msg);
+#endif
 }
 
 void trace_pressure_gate_reader(
@@ -2694,6 +2699,7 @@ void trace_pressure_gate_reader(
     const ScratchRequestDescriptor* scratchRequest,
     const char* path,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2711,6 +2717,7 @@ void trace_pressure_gate_reader(
         + " path=" + trace_or_unspecified(path)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSPGR", msg);
+#endif
 }
 
 void trace_scratch_shedding_event(
@@ -2725,6 +2732,7 @@ void trace_scratch_shedding_event(
     bool orphanedSharedTmpRetired,
     bool partialFailure,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2745,6 +2753,7 @@ void trace_scratch_shedding_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSSSH", msg);
+#endif
 }
 
 void trace_effective_reserve_event(
@@ -2757,6 +2766,7 @@ void trace_effective_reserve_event(
     std::uint64_t transientNonManagerBytes,
     bool updated,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2783,6 +2793,7 @@ void trace_effective_reserve_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSRSV", msg);
+#endif
 }
 
 void trace_opportunistic_freeze_event(
@@ -2795,6 +2806,7 @@ void trace_opportunistic_freeze_event(
     bool allowed,
     bool criticalCurrentFrame,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2811,6 +2823,7 @@ void trace_opportunistic_freeze_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSFRZ", msg);
+#endif
 }
 
 void trace_active_burst_event(
@@ -2819,6 +2832,7 @@ void trace_active_burst_event(
     const ActiveBurstDecision& burst,
     bool criticalCurrentFrame,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2837,6 +2851,7 @@ void trace_active_burst_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSBURST", msg);
+#endif
 }
 
 void trace_budget_reclaim_retry(
@@ -2846,6 +2861,7 @@ void trace_budget_reclaim_retry(
     std::size_t reclaimedBytes,
     bool success,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2857,6 +2873,7 @@ void trace_budget_reclaim_retry(
         + " success=" + std::to_string(success ? 1 : 0)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSEVICT", msg);
+#endif
 }
 
 void trace_pressure_checkpoint(
@@ -2865,6 +2882,7 @@ void trace_pressure_checkpoint(
     const PressureCheckpoint& checkpoint,
     std::size_t pendingGrowthBytes,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2911,6 +2929,7 @@ void trace_pressure_checkpoint(
             static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes))
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSPRS", msg);
+#endif
 }
 
 void trace_headroom_sample(
@@ -2920,6 +2939,7 @@ void trace_headroom_sample(
     std::size_t requestBytes,
     bool sourceSwitch,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2943,6 +2963,7 @@ void trace_headroom_sample(
         + " source_switch=" + std::to_string(sourceSwitch ? 1 : 0)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSHDR", msg);
+#endif
 }
 
 void trace_transient_non_manager_sample(
@@ -2951,6 +2972,7 @@ void trace_transient_non_manager_sample(
     const PressureCheckpoint& checkpoint,
     std::size_t pendingGrowthBytes,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2966,6 +2988,7 @@ void trace_transient_non_manager_sample(
         + " pressure_total_bytes=" + std::to_string(static_cast<unsigned long long>(pressure_total_bytes(checkpoint.input)))
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSTRN", msg);
+#endif
 }
 
 void trace_emergency_shed_action(
@@ -2979,6 +3002,7 @@ void trace_emergency_shed_action(
     std::uint64_t uploadBytesInFlight,
     std::uint64_t uploadCapBytes,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -2994,6 +3018,7 @@ void trace_emergency_shed_action(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSEMS", msg);
+#endif
 }
 
 void trace_lane_wait_event(
@@ -3004,6 +3029,7 @@ void trace_lane_wait_event(
     int waitMs,
     const char* outcome,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3016,6 +3042,7 @@ void trace_lane_wait_event(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSFAIR", msg);
+#endif
 }
 
 void trace_copy_compute_guard(
@@ -3027,6 +3054,7 @@ void trace_copy_compute_guard(
     bool criticalCurrentFrame,
     bool allowed,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3040,6 +3068,7 @@ void trace_copy_compute_guard(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSCOPY", msg);
+#endif
 }
 
 AdmissionChurnSnapshot sample_admission_churn_state(
@@ -3125,6 +3154,7 @@ void trace_keep_hot_surface(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3136,6 +3166,7 @@ void trace_keep_hot_surface(
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSHOT", msg);
     telemetry_counter_add(global_state().keepHotSurfaceTraceEvents, 1);
+#endif
 }
 
 void trace_keep_hot_decision(
@@ -3145,6 +3176,7 @@ void trace_keep_hot_decision(
     std::uint64_t bypassEvents,
     std::uint64_t forcedEvictEvents,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3157,12 +3189,14 @@ void trace_keep_hot_decision(
         + " reason=" + trace_or_unspecified(reason)
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSHOT", msg);
+#endif
 }
 
 void trace_burst_debt_surface(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3176,6 +3210,7 @@ void trace_burst_debt_surface(
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSBDE", msg);
     telemetry_counter_add(global_state().burstDebtSurfaceTraceEvents, 1);
+#endif
 }
 
 void trace_burst_debt_decision(
@@ -3187,6 +3222,7 @@ void trace_burst_debt_decision(
     std::size_t requestBytes,
     const ResourceManagerConfigEffective& cfg,
     const BurstDebtRuntimeDecision& decision) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3213,12 +3249,14 @@ void trace_burst_debt_decision(
         + " reason=" + trace_or_unspecified(decision.reason)
         + " reason_class=" + trace_reason_class_or_invalid(decision.reason);
     JTRACE("MSBDE", msg);
+#endif
 }
 
 void trace_superseded_builder_cancel_surface(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3229,6 +3267,7 @@ void trace_superseded_builder_cancel_surface(
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSCNL", msg);
     telemetry_counter_add(global_state().supersededBuilderCancelSurfaceTraceEvents, 1);
+#endif
 }
 
 void trace_superseded_builder_cancel_decision(
@@ -3239,6 +3278,7 @@ void trace_superseded_builder_cancel_decision(
     std::uint64_t latestSnapshotId,
     const SupersededBuilderCancelInput& input,
     const SupersededBuilderCancelDecision& decision) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3257,12 +3297,14 @@ void trace_superseded_builder_cancel_decision(
         + " reason=" + trace_or_unspecified(decision.reason)
         + " reason_class=" + trace_reason_class_or_invalid(decision.reason);
     JTRACE("MSCNL", msg);
+#endif
 }
 
 void trace_optional_heuristic_surfaces_once(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     bool traceKeepHot = false;
     bool traceBurstDebt = false;
     bool traceCancel = false;
@@ -3293,6 +3335,7 @@ void trace_optional_heuristic_surfaces_once(
     if (traceCancel) {
         trace_superseded_builder_cancel_surface(transaction, cfg, reason);
     }
+#endif
 }
 
 std::uint32_t effective_probation_hits_required(
@@ -3322,6 +3365,7 @@ void trace_large_entry_readmit_decision(
     std::uint64_t requestBytes,
     std::uint64_t thresholdBytes,
     const LargeEntryReadmitDecision& decision) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3345,6 +3389,7 @@ void trace_large_entry_readmit_decision(
         + " reason=" + trace_or_unspecified(decision.reason)
         + " reason_class=" + trace_reason_class_or_invalid(decision.reason);
     JTRACE("MSTHR", msg);
+#endif
 }
 
 void trace_cache_admission_decision(
@@ -3357,6 +3402,7 @@ void trace_cache_admission_decision(
     std::uint32_t observedProbationHits,
     std::uint64_t entryDigest,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3389,6 +3435,7 @@ void trace_cache_admission_decision(
         + " reason=" + trace_or_unspecified(reason)
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSADM", msg);
+#endif
 }
 
 void trace_probation_decision(
@@ -3399,6 +3446,7 @@ void trace_probation_decision(
     std::uint32_t requiredProbationHits,
     bool admitted,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3412,6 +3460,7 @@ void trace_probation_decision(
         + " reason=" + trace_or_unspecified(reason)
         + " reason_class=" + trace_reason_class_or_invalid(reason);
     JTRACE("MSPRB", msg);
+#endif
 }
 
 void trace_graph_large_entry_quarantine(
@@ -3426,6 +3475,7 @@ void trace_graph_large_entry_quarantine(
     std::uint64_t capTrimEvictedEntries,
     bool capHit,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3443,6 +3493,7 @@ void trace_graph_large_entry_quarantine(
         + trace_device_context_fields(transaction)
         + " reason=" + trace_or_unspecified(reason);
     JTRACE("MSADM", msg);
+#endif
 }
 
 void trace_reap_pass(
@@ -3451,6 +3502,7 @@ void trace_reap_pass(
     std::size_t reclaimedBytes,
     bool success,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3462,6 +3514,7 @@ void trace_reap_pass(
         + " reason=" + trace_or_unspecified(reason)
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSREAP", msg);
+#endif
 }
 
 void trace_fragmentation_recovery(
@@ -3474,6 +3527,7 @@ void trace_fragmentation_recovery(
     bool success,
     const char* stage,
     const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(2)) {
         return;
     }
@@ -3489,6 +3543,7 @@ void trace_fragmentation_recovery(
         + " reason=" + trace_or_unspecified(reason)
         + trace_reason_class_field_if_known("reason_class", reason);
     JTRACE("MSFRAG", msg);
+#endif
 }
 
 namespace {
@@ -3791,13 +3846,10 @@ ReservationDecision classify_reservation(const ReservationInput& input) noexcept
         return out;
     }
 
-    std::uint64_t nextBytes = input.bytesInFlight;
-    if (input.requestBytes > (std::numeric_limits<std::uint64_t>::max() - input.bytesInFlight)) {
-        nextBytes = std::numeric_limits<std::uint64_t>::max();
-    }
-    else {
-        nextBytes = input.bytesInFlight + input.requestBytes;
-    }
+    const std::uint64_t nextBytes =
+        (input.requestBytes > (std::numeric_limits<std::uint64_t>::max() - input.bytesInFlight))
+        ? std::numeric_limits<std::uint64_t>::max()
+        : input.bytesInFlight + input.requestBytes;
     if (nextBytes <= input.capBytes) {
         return out;
     }
@@ -4334,7 +4386,7 @@ std::uint64_t normalize_key_float(double value, double scale) noexcept {
     if (!std::isfinite(scaled)) {
         return 1;
     }
-    const long long quantized = static_cast<long long>(std::llround(scaled));
+    const long long quantized = std::llround(scaled);
     const std::uint64_t raw = static_cast<std::uint64_t>(quantized);
     return normalize_key_u64(raw);
 }
@@ -4508,11 +4560,15 @@ StaleInput state_build_stale_input(
     const SubmissionTransaction& transaction,
     LeaseObservationMode leaseObservationMode) noexcept {
     StaleInput staleInput{};
-    ResourceManagerState& state = global_state();
     staleInput.expectedRegistryGeneration = transaction.snapshot.registryGeneration;
-    staleInput.observedRegistryGeneration = state.registryGeneration.load(std::memory_order_relaxed);
     staleInput.expectedContextEpoch = transaction.snapshot.contextEpoch;
-    staleInput.observedContextEpoch = state.contextEpoch.load(std::memory_order_relaxed);
+    RegistrySnapshotGenerations observedGenerations{};
+    if (registry_get_snapshot_generations(
+            transaction.snapshot.deviceContextKey,
+            observedGenerations)) {
+        staleInput.observedRegistryGeneration = observedGenerations.registryGeneration;
+        staleInput.observedContextEpoch = observedGenerations.contextEpoch;
+    }
     staleInput.expectedLeaseGeneration = transaction.leaseGeneration;
     const bool observeLease = (leaseObservationMode == LeaseObservationMode::Always) || transaction.active;
     staleInput.observedLeaseGeneration =
@@ -4580,17 +4636,22 @@ void state_record_acquire_status_for_kind(ResourceKind kind, AcquireStatus statu
 }
 
 void state_note_latest_snapshot(const SubmissionSnapshot& snapshot) noexcept {
-    const std::uint64_t instanceToken = snapshot.instanceToken.value;
-    if (instanceToken == 0 || snapshot.snapshotId == 0) {
-        return;
-    }
+    try {
+        const std::uint64_t instanceToken = snapshot.instanceToken.value;
+        if (instanceToken == 0 || snapshot.snapshotId == 0) {
+            return;
+        }
 
-    const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
-    LatestSnapshotState& state = latest_snapshot_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    std::uint64_t& latest = state.bySubmissionKey[key];
-    if (snapshot.snapshotId > latest) {
-        latest = snapshot.snapshotId;
+        const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
+        LatestSnapshotState& state = latest_snapshot_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        std::uint64_t& latest = state.bySubmissionKey[key];
+        if (snapshot.snapshotId > latest) {
+            latest = snapshot.snapshotId;
+        }
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 }
 
@@ -4600,35 +4661,49 @@ bool state_snapshot_is_superseded(
     if (outLatestSnapshotId) {
         *outLatestSnapshotId = 0;
     }
+    try {
 
-    const std::uint64_t instanceToken = snapshot.instanceToken.value;
-    if (instanceToken == 0 || snapshot.snapshotId == 0) {
+        const std::uint64_t instanceToken = snapshot.instanceToken.value;
+        if (instanceToken == 0 || snapshot.snapshotId == 0) {
+            return false;
+        }
+
+        const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
+        LatestSnapshotState& state = latest_snapshot_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.bySubmissionKey.find(key);
+        if (it == state.bySubmissionKey.end()) {
+            return false;
+        }
+        if (outLatestSnapshotId) {
+            *outLatestSnapshotId = it->second;
+        }
+        return it->second > snapshot.snapshotId;
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        if (outLatestSnapshotId) {
+            *outLatestSnapshotId = 0;
+        }
         return false;
     }
-
-    const LatestSnapshotKey key{ instanceToken, snapshot.deviceContextKey };
-    LatestSnapshotState& state = latest_snapshot_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.bySubmissionKey.find(key);
-    if (it == state.bySubmissionKey.end()) {
-        return false;
-    }
-    if (outLatestSnapshotId) {
-        *outLatestSnapshotId = it->second;
-    }
-    return it->second > snapshot.snapshotId;
 }
 
 void state_clear_latest_snapshot_for_context(const DeviceContextKey& key) noexcept {
-    LatestSnapshotState& state = latest_snapshot_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    for (auto it = state.bySubmissionKey.begin(); it != state.bySubmissionKey.end();) {
-        if (it->first.deviceContextKey == key) {
-            it = state.bySubmissionKey.erase(it);
+    try {
+        LatestSnapshotState& state = latest_snapshot_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (auto it = state.bySubmissionKey.begin(); it != state.bySubmissionKey.end();) {
+            if (it->first.deviceContextKey == key) {
+                it = state.bySubmissionKey.erase(it);
+            }
+            else {
+                ++it;
+            }
         }
-        else {
-            ++it;
-        }
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 }
 
@@ -4750,7 +4825,9 @@ std::uint64_t telemetry_next_acquire_attempt_id() noexcept {
 }
 
 constexpr const char* kTraceTokenUnknown = "unknown";
+#if JUICER_DIAGNOSTICS_COMPILED
 constexpr const char* kTraceTokenUnspecified = "unspecified";
+#endif
 
 const char* trace_token_or(const char* value, const char* fallback) noexcept {
     if (value) {
@@ -4819,6 +4896,7 @@ void telemetry_trace_schema_announcement(
     std::uint64_t transactionId,
     std::uint64_t snapshotId,
     std::uint32_t traceSchemaVersion) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4826,12 +4904,14 @@ void telemetry_trace_schema_announcement(
         telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " expected_schema=" + std::to_string(kTraceSchemaVersion);
     JTRACE("MSTRC", msg);
+#endif
 }
 
 void telemetry_trace_schema_mismatch(
     std::uint64_t transactionId,
     std::uint64_t snapshotId,
     std::uint32_t observedTraceSchemaVersion) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4841,6 +4921,7 @@ void telemetry_trace_schema_mismatch(
         " expected_schema=" + std::to_string(kTraceSchemaVersion) +
         " reason=trace_schema_mismatch";
     JTRACE("MSTRC", msg);
+#endif
 }
 
 void telemetry_trace_key_normalization(
@@ -4849,6 +4930,7 @@ void telemetry_trace_key_normalization(
     std::uint32_t traceSchemaVersion,
     const KeyDigests& before,
     const KeyDigests& after) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4864,6 +4946,7 @@ void telemetry_trace_key_normalization(
         " auto_exposure_after=" + std::to_string(after.autoExposureHash) +
         " reason=canonical_normalization";
     JTRACE("MSNORM", msg);
+#endif
 }
 
 void telemetry_trace_invalidation(
@@ -4874,6 +4957,7 @@ void telemetry_trace_invalidation(
     const char* reason,
     std::uint64_t previousHash,
     std::uint64_t currentHash) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4884,6 +4968,7 @@ void telemetry_trace_invalidation(
         " current_hash=" + std::to_string(currentHash) +
         " reason=" + trace_token_or(reason, kTraceTokenUnknown);
     JTRACE("MSINV", msg);
+#endif
 }
 
 void telemetry_trace_dag_edge(
@@ -4894,6 +4979,7 @@ void telemetry_trace_dag_edge(
     const char* toNode,
     bool allowed,
     const char* reason) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4904,6 +4990,7 @@ void telemetry_trace_dag_edge(
         " allowed=" + std::to_string(foundation_bool_u32(allowed)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSDAG", msg);
+#endif
 }
 
 void telemetry_trace_module_boundary_violation(
@@ -4911,6 +4998,7 @@ void telemetry_trace_module_boundary_violation(
     std::uint64_t snapshotId,
     std::uint32_t traceSchemaVersion,
     const char* reason) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4918,6 +5006,7 @@ void telemetry_trace_module_boundary_violation(
         telemetry_trace_txn_snapshot_schema_prefix(transactionId, snapshotId, traceSchemaVersion) +
         " reason=" + trace_token_or(reason, kTraceTokenUnknown);
     JTRACE("MSCMD", msg);
+#endif
 }
 
 void telemetry_trace_query_mutation_violation(
@@ -4930,6 +5019,7 @@ void telemetry_trace_query_mutation_violation(
     std::uint64_t beforeThreadMutationBeginCount,
     std::uint64_t afterThreadMutationBeginCount,
     const char* reason) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4945,6 +5035,7 @@ void telemetry_trace_query_mutation_violation(
         " before_thread_mutation_begin_count=" + std::to_string(beforeThreadMutationBeginCount) +
         " after_thread_mutation_begin_count=" + std::to_string(afterThreadMutationBeginCount);
     JTRACE("MSCMD", msg);
+#endif
 }
 
 void telemetry_trace_frame_snapshot_mismatch(
@@ -4954,6 +5045,7 @@ void telemetry_trace_frame_snapshot_mismatch(
     std::uint64_t frameToken,
     std::uint64_t expectedSnapshotId,
     std::uint64_t observedSnapshotId) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4964,6 +5056,7 @@ void telemetry_trace_frame_snapshot_mismatch(
         " observed_snapshot_id=" + std::to_string(observedSnapshotId) +
         " reason=mixed_snapshot_id_for_frame";
     JTRACE("MSSNP", msg);
+#endif
 }
 
 void telemetry_trace_stale_decision(
@@ -4973,6 +5066,7 @@ void telemetry_trace_stale_decision(
     const char* stage,
     const StaleInput& input,
     const StaleDecision& decision) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -4990,6 +5084,7 @@ void telemetry_trace_stale_decision(
         " hard_miss=" + std::to_string(foundation_bool_u32(decision.hardMiss)) +
         " reason=" + to_cstr(decision.reason);
     JTRACE("MSSTL", msg);
+#endif
 }
 
 void telemetry_trace_metadata_mutation(
@@ -4999,6 +5094,7 @@ void telemetry_trace_metadata_mutation(
     bool accepted,
     std::uint64_t expectedSequence,
     const char* reason) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -5009,6 +5105,7 @@ void telemetry_trace_metadata_mutation(
         " accepted=" + std::to_string(foundation_bool_u32(accepted)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSMUT", msg);
+#endif
 }
 
 void telemetry_trace_metadata_queue(
@@ -5019,6 +5116,7 @@ void telemetry_trace_metadata_queue(
     std::uint64_t waitedMs,
     bool accepted,
     const char* reason) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -5030,6 +5128,7 @@ void telemetry_trace_metadata_queue(
         " accepted=" + std::to_string(foundation_bool_u32(accepted)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSMQ", msg);
+#endif
 }
 
 void telemetry_trace_acquire(
@@ -5040,6 +5139,7 @@ void telemetry_trace_acquire(
     AcquireStatus finalStatus,
     const ResourcePlan& plan,
     bool hadPreviousSnapshot) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -5060,6 +5160,7 @@ void telemetry_trace_acquire(
             std::to_string(foundation_bool_u32(entry.invalidated));
     }
     JTRACE("MSACQ", msg);
+#endif
 }
 
 void telemetry_trace_auto_exposure_ownership(
@@ -5074,6 +5175,7 @@ void telemetry_trace_auto_exposure_ownership(
     int meterHeight,
     bool hadPrevious,
     const char* reason) noexcept {
+#if JUICER_DIAGNOSTICS_COMPILED
     if (!JTRACE_ENABLED(1)) {
         return;
     }
@@ -5088,14 +5190,15 @@ void telemetry_trace_auto_exposure_ownership(
         " had_previous=" + std::to_string(foundation_bool_u32(hadPrevious)) +
         " reason=" + trace_token_or(reason, kTraceTokenUnspecified);
     JTRACE("MSAEX", msg);
+#endif
 }
 
 
 // Split implementation sections (single-TU include model to preserve exact behavior while
 // reducing monolithic file size and keeping ownership boundaries explicit).
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.cpp"
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerSubmission.cpp"
-#include "Cuda/ResourceManager/JuicerCudaResourceManagerCommands.cpp"
+#include "Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.inc"
+#include "Cuda/ResourceManager/JuicerCudaResourceManagerSubmission.inc"
+#include "Cuda/ResourceManager/JuicerCudaResourceManagerCommands.inc"
 
 } // namespace ResourceManager
 } // namespace JuicerCuda

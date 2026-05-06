@@ -99,7 +99,8 @@ namespace Couplers {
         auto gauss = [&](int dx)->float {
             if (sigma <= 0.0f) return (dx == 0) ? 1.0f : 0.0f;
             const float s2 = sigma * sigma;
-            return std::exp(-0.5f * (dx * dx) / s2);
+            const float dxFloat = static_cast<float>(dx);
+            return std::exp(-0.5f * (dxFloat * dxFloat) / s2);
             };
         for (int r = 0; r < 3; ++r) {
             float row[3]; float wsum = 0.0f;

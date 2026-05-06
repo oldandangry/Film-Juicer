@@ -13,14 +13,13 @@
 #include "SpectralProcessing.h"
 #include "Print.h"
 #include "JuicerState.h"
+#include "ProcessRoot.h"
 
 #include "GaussianSciPy.h"
 
 #include "Logging.h"
 #include "Hash.h"
 #include "nlohmann/json.hpp"
-
-extern const std::string gDataDir;
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
@@ -175,7 +174,7 @@ static bool enqueue_host_to_device_copy(
 
 static void free_stbn(Resources& resources) noexcept;
 static void free_wang(Resources& resources) noexcept;
-static void free_scan_error_flag(Resources& resources) noexcept;
+static void free_scan_error_readbacks(Resources& resources) noexcept;
 static void free_tables(Resources& resources) noexcept;
 static bool retire_tables_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError);
 static void free_scan_medium(Resources::DeviceScanMedium& m) noexcept;
@@ -184,6 +183,7 @@ static void free_scan_lut(Resources::DeviceSpectralLut& lut) noexcept;
 static void free_gaussian_kernel(Resources::DeviceGaussianKernel& k) noexcept;
 static bool is_async_device_ptr_tracked_locked(const Resources& resources, const void* ptr) noexcept;
 static void untrack_async_device_ptr_locked(Resources& resources, void* ptr) noexcept;
+static cudaError_t device_free_async_compat(void* ptr, void* cudaStreamOpaque) noexcept;
 static void free_auto_exposure(Resources& resources) noexcept;
 static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
 static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
@@ -410,32 +410,37 @@ namespace JuicerCuda {
         bool managerRetireAttempted,
         bool managerRetireAccepted,
         std::size_t deferredQueueDepth,
-        const std::string& detail) {
-        if (!JTRACE_ENABLED(2)) {
-            return;
+        const std::string& detail) noexcept {
+        try {
+            if (!JTRACE_ENABLED(2)) {
+                return;
+            }
+            const std::uintptr_t ownerContextBits =
+                reinterpret_cast<std::uintptr_t>(ownerContextOpaque);
+            const std::uintptr_t currentContextBits =
+                reinterpret_cast<std::uintptr_t>(currentContextOpaque);
+            std::ostringstream oss;
+            oss << "stage=" << (stage ? stage : "unknown")
+                << " outcome=" << (outcome ? outcome : "unknown")
+                << " owner_device=" << ownerDeviceId
+                << " current_device=" << currentDeviceId
+                << " owner_context=" << ownerContextBits
+                << " current_context=" << currentContextBits
+                << " device_match=" << (deviceMatch ? 1 : 0)
+                << " context_match=" << (contextMatch ? 1 : 0)
+                << " switch_attempted=" << (switchAttempted ? 1 : 0)
+                << " switch_succeeded=" << (switchSucceeded ? 1 : 0)
+                << " retire_attempted=" << (managerRetireAttempted ? 1 : 0)
+                << " retire_accepted=" << (managerRetireAccepted ? 1 : 0)
+                << " deferred_queue_depth=" << static_cast<unsigned long long>(deferredQueueDepth);
+            if (!detail.empty()) {
+                oss << " detail=" << detail;
+            }
+            JTRACE("MSTDN", oss.str());
         }
-        const std::uintptr_t ownerContextBits =
-            reinterpret_cast<std::uintptr_t>(ownerContextOpaque);
-        const std::uintptr_t currentContextBits =
-            reinterpret_cast<std::uintptr_t>(currentContextOpaque);
-        std::ostringstream oss;
-        oss << "stage=" << (stage ? stage : "unknown")
-            << " outcome=" << (outcome ? outcome : "unknown")
-            << " owner_device=" << ownerDeviceId
-            << " current_device=" << currentDeviceId
-            << " owner_context=" << ownerContextBits
-            << " current_context=" << currentContextBits
-            << " device_match=" << (deviceMatch ? 1 : 0)
-            << " context_match=" << (contextMatch ? 1 : 0)
-            << " switch_attempted=" << (switchAttempted ? 1 : 0)
-            << " switch_succeeded=" << (switchSucceeded ? 1 : 0)
-            << " retire_attempted=" << (managerRetireAttempted ? 1 : 0)
-            << " retire_accepted=" << (managerRetireAccepted ? 1 : 0)
-            << " deferred_queue_depth=" << static_cast<unsigned long long>(deferredQueueDepth);
-        if (!detail.empty()) {
-            oss << " detail=" << detail;
+        catch (...) {
+            JuicerLogging::discard_current_exception();
         }
-        JTRACE("MSTDN", oss.str());
     }
 
     static void reap_deferred_destroy_queue(const char* stage) {
@@ -548,15 +553,19 @@ namespace JuicerCuda {
         return count64 * elementBytes64;
     }
 
+    struct ResidencyByteTarget {
+        std::uint64_t& total;
+        bool& overflow;
+    };
+
     static void add_residency_bytes(
         std::uint64_t bytes,
-        std::uint64_t& total,
-        bool& overflow) noexcept {
+        ResidencyByteTarget target) noexcept {
         std::uint64_t next = 0;
-        if (!add_u64_saturating(total, bytes, next)) {
-            overflow = true;
+        if (!add_u64_saturating(target.total, bytes, next)) {
+            target.overflow = true;
         }
-        total = next;
+        target.total = next;
     }
 
     static void refresh_scratch_residency_state_locked(Resources& resources) noexcept {
@@ -581,7 +590,9 @@ namespace JuicerCuda {
                 return;
             }
             const std::size_t index = ResourceManager::scratch_policy_candidate_index(candidate);
-            add_residency_bytes(bytes, next.candidateLiveBytes[index], next.overflow);
+            add_residency_bytes(
+                bytes,
+                ResidencyByteTarget{next.candidateLiveBytes[index], next.overflow});
         };
 
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsBase, resources.scannerScratch.rgbR != nullptr, opticsPlaneBytes);
@@ -608,11 +619,15 @@ namespace JuicerCuda {
             }
             const std::size_t index = ResourceManager::scratch_helper_non_policy_index(allocation);
             next.helperNonPolicyBytes[index] = bytes;
-            add_residency_bytes(bytes, next.helperNonPolicyTotalBytes, next.overflow);
+            add_residency_bytes(
+                bytes,
+                ResidencyByteTarget{next.helperNonPolicyTotalBytes, next.overflow});
         };
 
-        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorFlag, resources.scanErrorFlag != nullptr, sizeof(int));
-        assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorHost, resources.scanErrorHost != nullptr, sizeof(int));
+        assign_non_policy_bytes(
+            ResourceManager::ScratchHelperNonPolicyAllocation::ScanErrorHost,
+            !resources.pendingScanErrorReadbacks.empty(),
+            static_cast<std::uint64_t>(resources.pendingScanErrorReadbacks.size()) * sizeof(int));
         assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureExposureScale, resources.autoExposureExposureScale != nullptr, sizeof(float));
         assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureAutoEV, resources.autoExposureAutoEV != nullptr, sizeof(double));
         assign_non_policy_bytes(ResourceManager::ScratchHelperNonPolicyAllocation::AutoExposureValid, resources.autoExposureValid != nullptr, sizeof(int));
@@ -645,11 +660,17 @@ namespace JuicerCuda {
                 next.overflow));
 
         for (std::uint64_t bytes : next.candidateLiveBytes) {
-            add_residency_bytes(bytes, next.policyLiveRetainedBytes, next.overflow);
+            add_residency_bytes(
+                bytes,
+                ResidencyByteTarget{next.policyLiveRetainedBytes, next.overflow});
         }
-        add_residency_bytes(next.helperSharedBytes, next.policyLiveRetainedBytes, next.overflow);
+        add_residency_bytes(
+            next.helperSharedBytes,
+            ResidencyByteTarget{next.policyLiveRetainedBytes, next.overflow});
         next.totalLiveRetainedBytes = next.policyLiveRetainedBytes;
-        add_residency_bytes(next.helperNonPolicyTotalBytes, next.totalLiveRetainedBytes, next.overflow);
+        add_residency_bytes(
+            next.helperNonPolicyTotalBytes,
+            ResidencyByteTarget{next.totalLiveRetainedBytes, next.overflow});
 
         const bool changed =
             next.candidateLiveBytes != resources.scratchResidency.candidateLiveBytes ||
@@ -728,8 +749,15 @@ namespace JuicerCuda {
                     cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
                 }
 
-                // Return the fence to the pool.
-                resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+                // Return the fence to the pool; destroy it if the pool cannot grow.
+                try {
+                    resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+                }
+                catch (...) {
+                    JuicerLogging::discard_current_exception();
+                    cudaEventDestroy(ev);
+                    e.doneEventOpaque = nullptr;
+                }
                 if (resources.retireBytes >= e.bytes) {
                     resources.retireBytes -= e.bytes;
                 }
@@ -783,7 +811,8 @@ namespace JuicerCuda {
                 cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
             }
             if (ev) {
-                resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
+                cudaEventDestroy(ev);
+                e.doneEventOpaque = nullptr;
             }
         }
         resources.retireQueue.clear();
@@ -827,34 +856,113 @@ namespace JuicerCuda {
 #endif
     }
 
-    static bool record_retire_fence_locked(Resources& resources, void* retireEventOpaque, void* cudaStreamOpaque, const char* label, std::string& outError) {
+    static void release_frame_use_event_entry(Resources::PendingFrameUseEvent& entry) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (entry.eventOpaque) {
+            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
+            cudaEventDestroy(ev);
+        }
+#endif
+        entry = Resources::PendingFrameUseEvent{};
+    }
+
+    static void reap_frame_use_events_locked(Resources& resources) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        std::vector<Resources::PendingFrameUseEvent>& pending = resources.pendingFrameUseEvents;
+        for (std::size_t i = 0; i < pending.size();) {
+            Resources::PendingFrameUseEvent& entry = pending[i];
+            cudaEvent_t ev = entry.eventOpaque
+                ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+                : nullptr;
+            if (!ev) {
+                release_frame_use_event_entry(entry);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            const cudaError_t queryErr = cudaEventQuery(ev);
+            if (queryErr == cudaSuccess) {
+                release_frame_use_event_entry(entry);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+            ++i;
+        }
+#else
+        (void)resources;
+#endif
+    }
+
+    static bool wait_for_frame_use_events_locked(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
-        (void)retireEventOpaque;
         (void)cudaStreamOpaque;
         (void)label;
         outError = "CUDA is not enabled";
         return false;
 #else
-        cudaEvent_t retireEv = reinterpret_cast<cudaEvent_t>(retireEventOpaque);
+        reap_frame_use_events_locked(resources);
+        if (resources.pendingFrameUseEvents.empty()) {
+            return true;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+            : nullptr;
+        for (const Resources::PendingFrameUseEvent& entry : resources.pendingFrameUseEvents) {
+            if (!entry.eventOpaque) {
+                continue;
+            }
+            const cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
+            const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
+            if (waitErr != cudaSuccess) {
+                outError = std::string("cudaStreamWaitEvent before ")
+                    + (label ? label : "resource")
+                    + " update failed: "
+                    + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                return false;
+            }
+        }
+        return true;
+#endif
+    }
+
+    struct RetireFenceRecord {
+        void* retireEventOpaque = nullptr;
+        void* cudaStreamOpaque = nullptr;
+        const char* label = nullptr;
+    };
+
+    static bool record_retire_fence_locked(
+        Resources& resources,
+        const RetireFenceRecord& record,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)record;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        cudaEvent_t retireEv = reinterpret_cast<cudaEvent_t>(record.retireEventOpaque);
         if (!retireEv) {
             outError = "retire fence event missing";
             return false;
         }
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-        if (resources.lastUseEventOpaque) {
-            const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-            const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-            if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before ") + label + " retire failed: " +
-                    (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-                return false;
-            }
+        const cudaStream_t stream = record.cudaStreamOpaque
+            ? reinterpret_cast<cudaStream_t>(record.cudaStreamOpaque)
+            : nullptr;
+        if (!wait_for_frame_use_events_locked(resources, record.cudaStreamOpaque, record.label, outError)) {
+            return false;
         }
         const cudaError_t recErr = cudaEventRecord(retireEv, stream);
         if (recErr != cudaSuccess) {
-            outError = std::string("cudaEventRecord for ") + label + " retire failed: " +
-                (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
+            outError = std::string("cudaEventRecord for ")
+                + (record.label ? record.label : "resource")
+                + " retire failed: "
+                + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
             return false;
         }
         return true;
@@ -895,7 +1003,11 @@ namespace JuicerCuda {
             return false;
         }
 
-        if (!record_retire_fence_locked(resources, retireEventOpaque, cudaStreamOpaque, label, outError)) {
+        RetireFenceRecord fenceRecord{};
+        fenceRecord.retireEventOpaque = retireEventOpaque;
+        fenceRecord.cudaStreamOpaque = cudaStreamOpaque;
+        fenceRecord.label = label;
+        if (!record_retire_fence_locked(resources, fenceRecord, outError)) {
             // If we can't record the retire fence, fail closed instead of falling back to a blocking sync.
             cudaEventDestroy(reinterpret_cast<cudaEvent_t>(retireEventOpaque));
             if (outError.empty()) {
@@ -1029,7 +1141,7 @@ namespace JuicerCuda {
         }
 #endif
         resources.hanatosNIntegrated = 0;
-        resources.hanatosIntegratedBuildCounter = 0;
+        resources.hanatosIntegratedKeyHash = 0;
     }
 
     static void free_mallett_basis(Resources& resources) noexcept {
@@ -1072,7 +1184,7 @@ namespace JuicerCuda {
 
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
-        resources.printPreflashBuildCounter = 0;
+        resources.printPreflashKeyHash = 0;
         resources.printPreflashShapeK = 0;
     }
 
@@ -1114,7 +1226,7 @@ namespace JuicerCuda {
 
         resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
         resources.printPreflashValid = false;
-        resources.printPreflashBuildCounter = 0;
+        resources.printPreflashKeyHash = 0;
         resources.printPreflashShapeK = 0;
         return true;
 #endif
@@ -1166,37 +1278,6 @@ namespace JuicerCuda {
         resourcesLock->lock();
         reap_retire_queue_locked(resources);
         return validate_resource_owner_locked(resources, outError, false);
-    }
-
-    static bool wait_for_last_use_event_snapshot(
-        void* lastUseEventOpaque,
-        void* cudaStreamOpaque,
-        const char* label,
-        std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)lastUseEventOpaque;
-        (void)cudaStreamOpaque;
-        (void)label;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        if (!lastUseEventOpaque) {
-            return true;
-        }
-        const cudaStream_t stream = cudaStreamOpaque
-            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-            : nullptr;
-        const cudaEvent_t lastUseEv = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
-        const cudaError_t waitErr = cudaStreamWaitEvent(stream, lastUseEv, 0);
-        if (waitErr != cudaSuccess) {
-            outError = std::string("cudaStreamWaitEvent before ")
-                + (label ? label : "resource")
-                + " update failed: "
-                + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
-            return false;
-        }
-        return true;
-#endif
     }
 
     static bool alloc_and_upload_bytes(
@@ -1311,8 +1392,8 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst && currentN == n) {
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 label,
                 outError);
@@ -1473,8 +1554,8 @@ namespace JuicerCuda {
                 --domainEnd;
             }
 
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 baseLabel,
                 outError);
@@ -1620,8 +1701,8 @@ namespace JuicerCuda {
 
         const size_t bytes = static_cast<size_t>(n) * sizeof(float);
         if (dst.y && dst.n == n) {
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 label,
                 outError);
@@ -1666,58 +1747,60 @@ namespace JuicerCuda {
 #endif
     }
 
-    Resources::~Resources() {
-        drain_retire_queue_blocking(*this);
-        free_curve(densB);
-        free_curve(densG);
-        free_curve(densR);
-        free_density_layers(*this);
-        free_curve(dirDensB);
-        free_curve(dirDensG);
-        free_curve(dirDensR);
-        free_curve(sensB);
-        free_curve(sensG);
-        free_curve(sensR);
-        free_tables(*this);
-        free_scan_medium(scanNegative);
-        free_scan_medium(scanPrint);
-        free_scan_lut(scanNegativeLut);
-        free_scan_lut(scanPrintLut);
-        free_gaussian_kernel(scannerLensBlurKernel);
-        free_gaussian_kernel(scannerUnsharpKernel);
-        free_gaussian_kernel(scannerGlareKernel);
-        free_gaussian_kernel(grainBlurKernel);
-        free_gaussian_kernel(grainBlurKernelMid);
-        free_gaussian_kernel(grainBlurKernelCoarse);
-        for (int layer = 0; layer < 3; ++layer) {
-            for (int ch = 0; ch < 3; ++ch) {
-                free_gaussian_kernel(grainDyeKernel[layer][ch]);
+    Resources::~Resources() noexcept {
+        try {
+            drain_retire_queue_blocking(*this);
+            free_curve(densB);
+            free_curve(densG);
+            free_curve(densR);
+            free_density_layers(*this);
+            free_curve(dirDensB);
+            free_curve(dirDensG);
+            free_curve(dirDensR);
+            free_curve(sensB);
+            free_curve(sensG);
+            free_curve(sensR);
+            free_tables(*this);
+            free_scan_medium(scanNegative);
+            free_scan_medium(scanPrint);
+            free_scan_lut(scanNegativeLut);
+            free_scan_lut(scanPrintLut);
+            free_gaussian_kernel(scannerLensBlurKernel);
+            free_gaussian_kernel(scannerUnsharpKernel);
+            free_gaussian_kernel(scannerGlareKernel);
+            free_gaussian_kernel(grainBlurKernel);
+            free_gaussian_kernel(grainBlurKernelMid);
+            free_gaussian_kernel(grainBlurKernelCoarse);
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    free_gaussian_kernel(grainDyeKernel[layer][ch]);
+                }
             }
+            for (int i = 0; i < 3; ++i) {
+                free_gaussian_kernel(halationKernel[i]);
+                free_gaussian_kernel(halationScatterKernel[i]);
+            }
+            free_optics_scratch(*this, scannerScratch, nullptr);
+            free_gaussian_kernel(spatialDirKernel);
+            free_spatial_dir_scratch(*this, spatialDirScratch, nullptr);
+            free_shared_tmp_plane(*this);
+            free_stbn(*this);
+            free_wang(*this);
+            free_print_payloads(*this);
+            free_hanatos(*this);
+            free_hanatos_integrated(*this);
+            free_mallett_basis(*this);
+            free_scan_error_readbacks(*this);
+            free_auto_exposure(*this);
+            for (PendingFrameUseEvent& entry : pendingFrameUseEvents) {
+                release_frame_use_event_entry(entry);
+            }
+            pendingFrameUseEvents.clear();
+            asyncDeviceAllocPointers.clear();
         }
-        for (int i = 0; i < 3; ++i) {
-            free_gaussian_kernel(halationKernel[i]);
-            free_gaussian_kernel(halationScatterKernel[i]);
+        catch (...) {
+            JuicerLogging::discard_current_exception();
         }
-        free_optics_scratch(*this, scannerScratch, nullptr);
-        free_gaussian_kernel(spatialDirKernel);
-        free_spatial_dir_scratch(*this, spatialDirScratch, nullptr);
-        free_shared_tmp_plane(*this);
-        free_stbn(*this);
-        free_wang(*this);
-        free_print_payloads(*this);
-        free_hanatos(*this);
-        free_hanatos_integrated(*this);
-        free_mallett_basis(*this);
-        free_scan_error_flag(*this);
-        free_auto_exposure(*this);
-        asyncDeviceAllocPointers.clear();
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (lastUseEventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(lastUseEventOpaque);
-            cudaEventDestroy(ev);
-            lastUseEventOpaque = nullptr;
-        }
-#endif
     }
 
     Resources* create() noexcept {
@@ -1746,13 +1829,19 @@ namespace JuicerCuda {
 
     void destroy(Resources* resources) noexcept {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        delete resources;
-#else
-        if (!resources) {
-            return;
+        try {
+            delete resources;
         }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+#else
+        try {
+            if (!resources) {
+                return;
+            }
 
-        reap_deferred_destroy_queue("destroy_pre");
+            reap_deferred_destroy_queue("destroy_pre");
 
         const int ownerDeviceId = resources->deviceId;
         void* ownerContextOpaque = resources->ownerContextOpaque;
@@ -1875,11 +1964,8 @@ namespace JuicerCuda {
         std::string managerRetireError;
         if (ownerDeviceId >= 0 && ownerContextOpaque) {
             managerRetireAttempted = true;
-            ResourceManager::DeviceContextKey ownerKey{};
-            ownerKey.deviceId = ownerDeviceId;
-            ownerKey.contextOpaque = ownerContextOpaque;
             managerRetireAccepted =
-                ResourceManager::command_retire_context_idle(ownerKey, managerRetireError);
+                JuicerProcess::root().retire_idle_context(ownerDeviceId, ownerContextOpaque, managerRetireError);
         }
 
         std::size_t deferredQueueDepth = 0;
@@ -1910,21 +1996,25 @@ namespace JuicerCuda {
             }
             detail += managerRetireError;
         }
-        trace_teardown_event(
-            "destroy",
-            "deferred_enqueue",
-            ownerDeviceId,
-            ownerContextOpaque,
-            currentDeviceId,
-            currentContextOpaque,
-            deviceMatch,
-            contextMatch,
-            switchAttempted,
-            switchSucceeded,
-            managerRetireAttempted,
-            managerRetireAccepted,
-            deferredQueueDepth,
-            detail);
+            trace_teardown_event(
+                "destroy",
+                "deferred_enqueue",
+                ownerDeviceId,
+                ownerContextOpaque,
+                currentDeviceId,
+                currentContextOpaque,
+                deviceMatch,
+                contextMatch,
+                switchAttempted,
+                switchSucceeded,
+                managerRetireAttempted,
+                managerRetireAccepted,
+                deferredQueueDepth,
+                detail);
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
 #endif
     }
 
@@ -1989,24 +2079,39 @@ namespace JuicerCuda {
 #endif
     }
 
-    void record_use(Resources& resources, void* cudaStreamOpaque) noexcept {
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    bool retain_frame_use_event(
+        Resources& resources,
+        void*& eventOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)eventOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (!eventOpaque) {
+            return true;
+        }
+
         std::lock_guard<std::mutex> lock(resources.m);
         reap_retire_queue_locked(resources);
-        if (!resources.lastUseEventOpaque) {
-            cudaEvent_t ev = nullptr;
-            const cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-            if (err != cudaSuccess || !ev) {
-                return;
-            }
-            resources.lastUseEventOpaque = reinterpret_cast<void*>(ev);
+        reap_frame_use_events_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
         }
-        cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.lastUseEventOpaque);
-        (void)cudaEventRecord(ev, stream);
-#else
-        (void)resources;
-        (void)cudaStreamOpaque;
+
+        try {
+            Resources::PendingFrameUseEvent entry{};
+            entry.eventOpaque = eventOpaque;
+            resources.pendingFrameUseEvents.push_back(entry);
+        } catch (...) {
+            outError = "frame use event retention failed";
+            return false;
+        }
+
+        eventOpaque = nullptr;
+        return true;
 #endif
     }
 
@@ -2014,7 +2119,7 @@ namespace JuicerCuda {
 
     // Split implementation sections (single-TU include model to preserve exact behavior while
     // reducing monolithic file size and keeping ownership boundaries explicit).
-    #include "Cuda/JuicerCudaResourcesServing.cpp"
+    #include "Cuda/JuicerCudaResourcesServing.inc"
 // Cuda/JuicerCudaResourcesScratch.cpp
 //
 // Included by JuicerCudaResources.cpp (single-TU split).
@@ -2123,12 +2228,15 @@ namespace JuicerCuda {
         if (radius <= 0 || !std::isfinite(sigma) || sigma <= 0.0f) {
             return;
         }
-        outWeights.resize(static_cast<std::size_t>(2 * radius + 1));
+        const std::size_t radiusSize = static_cast<std::size_t>(radius);
+        outWeights.resize(radiusSize * 2u + 1u);
         const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
         double wsum = 0.0;
-        for (int i = -radius; i <= radius; ++i) {
-            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
-            outWeights[static_cast<std::size_t>(i + radius)] = static_cast<float>(w);
+        std::size_t weightIndex = 0;
+        for (int i = -radius; i <= radius; ++i, ++weightIndex) {
+            const double iDouble = static_cast<double>(i);
+            const double w = std::exp(-(iDouble * iDouble) / s2);
+            outWeights[weightIndex] = static_cast<float>(w);
             wsum += w;
         }
         const double invW = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
@@ -2238,15 +2346,31 @@ namespace JuicerCuda {
                 resources.asyncDeviceAllocPointers.end();
     }
 
-    static void track_async_device_ptr_locked(Resources& resources, void* ptr, bool asyncAllocated) noexcept {
+    static bool track_async_device_ptr_locked(Resources& resources, void* ptr, bool asyncAllocated) noexcept {
         if (!ptr) {
-            return;
+            return true;
         }
-        if (asyncAllocated) {
-            resources.asyncDeviceAllocPointers.insert(ptr);
+        try {
+            if (asyncAllocated) {
+                resources.asyncDeviceAllocPointers.insert(ptr);
+            }
+            else {
+                resources.asyncDeviceAllocPointers.erase(ptr);
+            }
+            return true;
         }
-        else {
-            resources.asyncDeviceAllocPointers.erase(ptr);
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+            if (asyncAllocated) {
+                const cudaError_t freeErr = device_free_async_compat(ptr, nullptr);
+                if (freeErr == cudaSuccess) {
+                    (void)cudaStreamSynchronize(nullptr);
+                }
+                else {
+                    (void)cudaFree(ptr);
+                }
+            }
+            return false;
         }
     }
 
@@ -2322,9 +2446,13 @@ namespace JuicerCuda {
         if (preferAsync) {
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
             const cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
-            asyncErr = cudaMallocAsync(reinterpret_cast<void**>(&outPtr), bytes, stream);
+            asyncErr = cudaMallocAsync(&outPtr, bytes, stream);
             if (asyncErr == cudaSuccess && outPtr) {
-                track_async_device_ptr_locked(resources, outPtr, true);
+                if (!track_async_device_ptr_locked(resources, outPtr, true)) {
+                    outPtr = nullptr;
+                    outError = "async scratch allocation tracking failed";
+                    return false;
+                }
                 return true;
             }
             outPtr = nullptr;
@@ -2333,9 +2461,14 @@ namespace JuicerCuda {
 #endif
         }
 
-        const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&outPtr), bytes);
+        const cudaError_t allocErr = cudaMalloc(&outPtr, bytes);
         if (allocErr == cudaSuccess && outPtr) {
-            track_async_device_ptr_locked(resources, outPtr, false);
+            if (!track_async_device_ptr_locked(resources, outPtr, false)) {
+                cudaFree(outPtr);
+                outPtr = nullptr;
+                outError = "scratch allocation tracking failed";
+                return false;
+            }
             if (preferAsync && JTRACE_ENABLED(2)) {
                 std::ostringstream oss;
                 oss << "event=alloc_fallback"
@@ -3176,6 +3309,9 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+        if (resources.retainedScratchLeaseGeneration != 0) {
+            return true;
+        }
 
         switch (candidate) {
         case ResourceManager::ScratchPolicyCandidate::OpticsGateMask:
@@ -3214,11 +3350,126 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+        if (resources.retainedScratchLeaseGeneration != 0) {
+            return true;
+        }
         return retire_orphaned_shared_tmp_plane_locked(
             resources,
             cudaStreamOpaque,
             "scratch normalization orphaned shared tmp",
             outError);
+#endif
+    }
+
+    bool try_acquire_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        void* cudaStreamOpaque,
+        bool& outAcquired,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)leaseGeneration;
+        (void)cudaStreamOpaque;
+        outAcquired = false;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        outAcquired = false;
+        if (leaseGeneration == 0) {
+            outError = "retained frame scratch lease generation is invalid";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        if (resources.retainedScratchLeaseGeneration == leaseGeneration) {
+            outAcquired = true;
+            return true;
+        }
+        if (resources.retainedScratchLeaseGeneration != 0) {
+            return true;
+        }
+        if (!wait_for_frame_use_events_locked(
+                resources,
+                cudaStreamOpaque,
+                "retained frame scratch lease",
+                outError)) {
+            return false;
+        }
+        resources.retainedScratchLeaseGeneration = leaseGeneration;
+        outAcquired = true;
+        return true;
+#endif
+    }
+
+    bool release_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)leaseGeneration;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (leaseGeneration == 0) {
+            outError = "retained frame scratch lease generation is invalid";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (resources.retainedScratchLeaseGeneration == 0) {
+            return true;
+        }
+        if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
+            outError = "retained frame scratch lease generation mismatch";
+            return false;
+        }
+        resources.retainedScratchLeaseGeneration = 0;
+        return true;
+#endif
+    }
+
+    bool retire_frame_scratch_allocation(
+        Resources& resources,
+        void* ptr,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ptr;
+        (void)bytes;
+        (void)cudaStreamOpaque;
+        (void)label;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (!ptr) {
+            return true;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        return retire_ptr_locked(
+            resources,
+            ptr,
+            bytes,
+            Resources::RetireKind::DeviceFree,
+            cudaStreamOpaque,
+            label ? label : "frame scratch",
+            outError,
+            true);
 #endif
     }
 
@@ -4004,51 +4255,57 @@ namespace JuicerCuda {
     }
 
     void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept {
+        try {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (deviceId < 0 || contextOpaque == nullptr) {
-            return;
-        }
+            if (deviceId < 0 || contextOpaque == nullptr) {
+                return;
+            }
 
-        std::vector<float*> toFree;
-        {
-            SharedGaussianCacheState& cache = shared_gaussian_cache_state();
-            std::lock_guard<std::mutex> lock(cache.mutex);
-            for (auto it = cache.byKey.begin(); it != cache.byKey.end();) {
-                if (it->first.deviceId == deviceId &&
-                    it->first.contextOpaque == contextOpaque) {
-                    if (it->second.weights) {
-                        toFree.push_back(it->second.weights);
+            std::vector<float*> toFree;
+            {
+                SharedGaussianCacheState& cache = shared_gaussian_cache_state();
+                std::lock_guard<std::mutex> lock(cache.mutex);
+                toFree.reserve(cache.byKey.size());
+                for (auto it = cache.byKey.begin(); it != cache.byKey.end();) {
+                    if (it->first.deviceId == deviceId &&
+                        it->first.contextOpaque == contextOpaque) {
+                        if (it->second.weights) {
+                            toFree.push_back(it->second.weights);
+                        }
+                        it = cache.byKey.erase(it);
+                        continue;
                     }
-                    it = cache.byKey.erase(it);
-                    continue;
+                    ++it;
                 }
-                ++it;
             }
-        }
 
-        if (toFree.empty()) {
-            return;
-        }
-
-        int previousDevice = -1;
-        const cudaError_t prevErr = cudaGetDevice(&previousDevice);
-        const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
-        const bool needRestore = havePreviousDevice && previousDevice != deviceId;
-        (void)cudaSetDevice(deviceId);
-
-        for (float* ptr : toFree) {
-            if (ptr) {
-                (void)cudaFree(ptr);
+            if (toFree.empty()) {
+                return;
             }
-        }
 
-        if (needRestore) {
-            (void)cudaSetDevice(previousDevice);
-        }
+            int previousDevice = -1;
+            const cudaError_t prevErr = cudaGetDevice(&previousDevice);
+            const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
+            const bool needRestore = havePreviousDevice && previousDevice != deviceId;
+            (void)cudaSetDevice(deviceId);
+
+            for (float* ptr : toFree) {
+                if (ptr) {
+                    (void)cudaFree(ptr);
+                }
+            }
+
+            if (needRestore) {
+                (void)cudaSetDevice(previousDevice);
+            }
 #else
-        (void)deviceId;
-        (void)contextOpaque;
+            (void)deviceId;
+            (void)contextOpaque;
 #endif
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 // Cuda/JuicerCudaResourcesValidation.cpp
 //

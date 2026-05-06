@@ -316,19 +316,12 @@ namespace Profiles {
             std::int64_t writeTimeTicks = 0;
         };
 
-        struct CachedAgxFilmProfileEntry {
-            std::string cacheKey;
-            FileStamp stamp;
-            AgxFilmProfile profile;
-        };
-
         struct CachedProfileInfoEntry {
             std::string cacheKey;
             FileStamp stamp;
             ProfileInfoSummary info;
         };
 
-        constexpr std::size_t kAgxFilmProfileCacheCapacity = 2;
         constexpr std::size_t kProfileInfoCacheCapacity = 8;
 
         FileStamp read_profile_file_stamp(const std::string& jsonPath) {
@@ -361,73 +354,6 @@ namespace Profiles {
             std::filesystem::path path(jsonPath);
             path.make_preferred();
             return to_lower_ascii(path.lexically_normal().string());
-        }
-
-        std::mutex& agx_film_profile_cache_mutex() {
-            static std::mutex cacheMutex;
-            return cacheMutex;
-        }
-
-        std::vector<CachedAgxFilmProfileEntry>& agx_film_profile_cache() {
-            static std::vector<CachedAgxFilmProfileEntry> cache;
-            return cache;
-        }
-
-        bool try_load_cached_agx_film_profile(
-            const std::string& cacheKey,
-            const FileStamp& stamp,
-            AgxFilmProfile& outProfile)
-        {
-            if (cacheKey.empty() || !stamp.valid) {
-                return false;
-            }
-
-            std::lock_guard<std::mutex> lock(agx_film_profile_cache_mutex());
-            auto& cache = agx_film_profile_cache();
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                CachedAgxFilmProfileEntry& entry = cache[i];
-                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
-                    continue;
-                }
-
-                if (i != 0) {
-                    std::swap(cache[0], cache[i]);
-                }
-                outProfile = cache[0].profile;
-                return true;
-            }
-
-            return false;
-        }
-
-        void store_cached_agx_film_profile(
-            std::string cacheKey,
-            const FileStamp& stamp,
-            const AgxFilmProfile& profile)
-        {
-            if (cacheKey.empty() || !stamp.valid) {
-                return;
-            }
-
-            std::lock_guard<std::mutex> lock(agx_film_profile_cache_mutex());
-            auto& cache = agx_film_profile_cache();
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                if (cache[i].cacheKey == cacheKey) {
-                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
-                    break;
-                }
-            }
-
-            cache.insert(
-                cache.begin(),
-                CachedAgxFilmProfileEntry{
-                    std::move(cacheKey),
-                    stamp,
-                    profile
-                });
-            if (cache.size() > kAgxFilmProfileCacheCapacity) {
-                cache.resize(kAgxFilmProfileCacheCapacity);
-            }
         }
 
         std::mutex& profile_info_cache_mutex() {
@@ -529,12 +455,11 @@ namespace Profiles {
         }
 
         bool json_wavelengths_match_reference_axis(const Json& wavelengths, std::string_view sourceLabel) {
-            const std::string_view label = sourceLabel.empty()
-                ? std::string_view("profile JSON")
-                : sourceLabel;
-
             if (!wavelengths.is_array()) {
                 if (JTRACE_ENABLED(1)) {
+                    const std::string_view label = sourceLabel.empty()
+                        ? std::string_view("profile JSON")
+                        : sourceLabel;
                     std::ostringstream oss;
                     oss << "JSON wavelengths not an array (" << label << ')';
                     JTRACE("PROFILE", oss.str());
@@ -543,6 +468,9 @@ namespace Profiles {
             }
             if (wavelengths.size() != Spectral::kNumSamples) {
                 if (JTRACE_ENABLED(1)) {
+                    const std::string_view label = sourceLabel.empty()
+                        ? std::string_view("profile JSON")
+                        : sourceLabel;
                     std::ostringstream oss;
                     oss << "JSON wavelengths mismatch (" << label << "): expected "
                         << Spectral::kNumSamples << " samples, got " << wavelengths.size();
@@ -555,6 +483,9 @@ namespace Profiles {
                 std::optional<float> wlOpt = parse_optional_float(wavelengths[i]);
                 if (!wlOpt) {
                     if (JTRACE_ENABLED(1)) {
+                        const std::string_view label = sourceLabel.empty()
+                            ? std::string_view("profile JSON")
+                            : sourceLabel;
                         std::ostringstream oss;
                         oss << "JSON wavelength missing at index " << i
                             << " (" << label << ')';
@@ -565,6 +496,9 @@ namespace Profiles {
                 const float expected = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
                 if (*wlOpt != expected) {
                     if (JTRACE_ENABLED(1)) {
+                        const std::string_view label = sourceLabel.empty()
+                            ? std::string_view("profile JSON")
+                            : sourceLabel;
                         std::ostringstream oss;
                         oss << "JSON wavelength mismatch at index " << i
                             << " (" << label << "): expected "
@@ -576,48 +510,6 @@ namespace Profiles {
             }
 
             return true;
-        }
-
-        bool append_pair_if_present(std::vector<std::pair<float, float>>& target, float x, const Json* node) {
-            float value = 0.0f;
-            bool ok = false;
-            if (node && !node->is_null()) {
-                if (auto opt = parse_optional_float(*node)) {
-                    value = *opt;
-                    ok = true;
-                }
-            }
-            target.emplace_back(x, value);
-            return ok;
-        }
-
-        bool append_pair_if_present(std::vector<std::pair<float, float>>& target, float x, const Json& node) {
-            return append_pair_if_present(target, x, &node);
-        }
-
-        bool append_spectral_pair_with_nan_if_missing(
-            std::vector<std::pair<float, float>>& target,
-            float x,
-            const Json* node)
-        {
-            if (node && !node->is_null()) {
-                if (auto opt = parse_optional_float(*node)) {
-                    target.emplace_back(x, *opt);
-                    return true;
-                }
-            }
-            target.emplace_back(x, std::numeric_limits<float>::quiet_NaN());
-            return false;
-        }
-
-        size_t count_finite_samples(const std::vector<std::pair<float, float>>& samples) {
-            size_t count = 0;
-            for (const auto& sample : samples) {
-                if (std::isfinite(sample.first) && std::isfinite(sample.second)) {
-                    ++count;
-                }
-            }
-            return count;
         }
 
         void parse_dir_couplers(const Json& node, DirCouplersProfile& outProfile) {
@@ -774,7 +666,7 @@ namespace Profiles {
 
     } // namespace
 
-    static bool load_agx_film_profile_json_uncached(const std::string& jsonPath, AgxFilmProfile& outProfile) {
+    static bool parse_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
         outProfile = AgxFilmProfile{};
 
         Json root;
@@ -1336,22 +1228,7 @@ namespace Profiles {
     }
 
     bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
-        outProfile = AgxFilmProfile{};
-
-        const FileStamp stamp = read_profile_file_stamp(jsonPath);
-        const std::string cacheKey = normalize_profile_cache_key(jsonPath);
-        if (try_load_cached_agx_film_profile(cacheKey, stamp, outProfile)) {
-            return true;
-        }
-
-        AgxFilmProfile parsedProfile;
-        if (!load_agx_film_profile_json_uncached(jsonPath, parsedProfile)) {
-            return false;
-        }
-
-        store_cached_agx_film_profile(cacheKey, stamp, parsedProfile);
-        outProfile = std::move(parsedProfile);
-        return true;
+        return parse_agx_film_profile_json(jsonPath, outProfile);
     }
 
     bool load_profile_info(const std::string& jsonPath, ProfileInfoSummary& outInfo) {

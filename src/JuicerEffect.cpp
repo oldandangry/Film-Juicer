@@ -22,93 +22,47 @@
 #include "OutputColor.h"
 #include "Print.h"
 #include "ParamNames.h"
+#include "ProcessRoot.h"
 #include "Scanner.h"
 #include "SpectralData.h"
 #include "Logging.h"
 #include "Hash.h"
 #include "mainProcessing.h"
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-#include "Cuda/ResourceManager/JuicerCudaResourceManager.h"
-#endif
-
-enum class NeutralFilterThreadClass : unsigned char {
-    Control = 0,
-    RenderWorker = 1
-};
-
-bool load_enlarger_neutral_filters(
-    const std::string& jsonPath,
-    const std::string& paperKey,
-    const std::string& illuminantKey,
-    const std::string& negativeKey,
-    std::tuple<float, float, float>& outYMC,
-    NeutralFilterThreadClass threadClass = NeutralFilterThreadClass::Control,
-    std::string* outSelectedDbVersionHash = nullptr
-);
-
 namespace {
-    static std::once_flag gSpectralGlobalsOnce;
-
     enum class MeteringMethod : int {
         CenterWeighted = 0,
         Median = 1
     };
-
-    const char* dichroic_dir_name_for_choice(int choice) {
-        switch (choice) {
-        case 1: return "thorlabs";
-        case 2: return "edmund_optics";
-        case 0:
-        default: return "durst_digital_light";
-        }
-    }
-
-    const char* enlarger_neutral_filters_json_for_choice(int choice) {
-        switch (choice) {
-        case 1: return "enlarger_neutral_ymc_filters_thorlabs.json";
-        case 2: return "enlarger_neutral_ymc_filters_edmund.json";
-        case 0:
-        default: return "enlarger_neutral_ymc_filters.json";
-        }
-    }
-
-    std::string profile_json_path_for_key_or_empty(const char* jsonKey) {
-        if (!jsonKey) {
-            return {};
-        }
-        std::string profileName(jsonKey);
-        profileName += ".json";
-        return data_dir_string("profiles", profileName);
-    }
 
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
     static int illuminant_choice_index_from_string(const std::string& value);
 
     void trace_dichroic_load_failure(
         const char* operation,
-        const std::string& dichroicDir,
         const char* detail,
         const char* fallbackState) {
-
         if (!JTRACE_ENABLED(1)) {
             return;
         }
         const char* errorDetail = cstr_or_default_if_null(detail, "unknown error");
         std::string msg;
-        msg.reserve(160 + dichroicDir.size());
+        msg.reserve(160);
         msg = cstr_or_default_if_null(operation, "dichroic load failed");
-        msg += " at '";
-        msg += dichroicDir;
-        msg += "' (";
+        msg += " (";
         msg += errorDetail;
         msg += "); ";
         msg += cstr_or_default_if_null(fallbackState, "using identity filters");
         JTRACE("PRINT", msg);
     }
 
-    [[noreturn]] inline void trace_and_throw_render_fatal(const char* tag, const char* message) {
-        JTRACE(tag, cstr_or_default_if_null(message, "fatal render error"));
+    struct RenderFatalTrace {
+        const char* tag = nullptr;
+        const char* message = nullptr;
+    };
+
+    [[noreturn]] inline void trace_and_throw_render_fatal(const RenderFatalTrace& fatal) {
+        JTRACE(fatal.tag, cstr_or_default_if_null(fatal.message, "fatal render error"));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
@@ -117,17 +71,15 @@ namespace {
         Print::Runtime& runtime,
         const char* operation,
         const char* fallbackState) {
-        const std::string dichroicDir = ensure_trailing_separator(
-            data_dir_string("filters", "dichroics", dichroic_dir_name_for_choice(dichroicSetChoice)));
         try {
-            Print::load_dichroic_filters_from_csvs(dichroicDir, runtime);
+            const JuicerAssets::DichroicFilterCurveSet& curves =
+                JuicerProcess::root().assets().dichroic_filter_curves_for_choice(dichroicSetChoice);
+            Print::load_dichroic_filters_from_assets(curves, runtime);
             return true;
-        }
-        catch (const std::exception& ex) {
-            trace_dichroic_load_failure(operation, dichroicDir, ex.what(), fallbackState);
-        }
-        catch (...) {
-            trace_dichroic_load_failure(operation, dichroicDir, nullptr, fallbackState);
+        } catch (const std::exception& ex) {
+            trace_dichroic_load_failure(operation, ex.what(), fallbackState);
+        } catch (...) {
+            trace_dichroic_load_failure(operation, nullptr, fallbackState);
         }
         return false;
     }
@@ -164,6 +116,7 @@ namespace {
         return value ? value : fallback;
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     inline std::size_t cstr_len_or_zero(const char* value) {
         return value ? std::strlen(value) : 0u;
     }
@@ -171,6 +124,7 @@ namespace {
     inline const char* cstr_or_default_if_empty(const std::string& value, const char* fallback) {
         return value.empty() ? fallback : value.c_str();
     }
+#endif
 
     inline bool requires_nonfloat_copy(OFX::BitDepthEnum depth, int nComponents) {
         return depth != OFX::eBitDepthFloat || nComponents == 0;
@@ -196,6 +150,7 @@ namespace {
         bool traceInfo,
         const std::string& paramName,
         const char* prefix) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (!traceInfo) {
             return;
         }
@@ -205,6 +160,11 @@ namespace {
         msg += paramName;
         msg.push_back('\'');
         JTRACE("BUILD", msg);
+#else
+        (void)traceInfo;
+        (void)paramName;
+        (void)prefix;
+#endif
     }
 
     inline bool param_name_is(const char* changedName, const char* expected) {
@@ -219,7 +179,7 @@ namespace {
         return userEdit && param_name_is(paramName, expected);
     }
 
-    inline const std::string& first_nonempty_or(
+    inline std::string first_nonempty_or(
         const std::string& primary,
         const std::string& secondary,
         const std::string& fallback) {
@@ -234,6 +194,24 @@ namespace {
 
     inline std::uint64_t instance_token_or_zero(const InstanceState* state) {
         return state ? state->instanceToken : 0ull;
+    }
+
+    struct SessionTokenSnapshot {
+        std::uint64_t sessionSeed = 1;
+        std::uint64_t instanceToken = 1;
+    };
+
+    inline SessionTokenSnapshot snapshot_session_tokens(const InstanceState* state) {
+        SessionTokenSnapshot snapshot{};
+        if (state && state->sessionSeed != 0) {
+            snapshot.sessionSeed = state->sessionSeed;
+        }
+        if (state && state->instanceToken != 0) {
+            snapshot.instanceToken = state->instanceToken;
+        } else {
+            snapshot.instanceToken = snapshot.sessionSeed;
+        }
+        return snapshot;
     }
 
     inline std::uint64_t working_state_build_counter_or_zero(const WorkingState* ws) {
@@ -280,6 +258,7 @@ namespace {
         msg += std::to_string(c);
     }
 
+#if JUICER_DIAGNOSTICS_COMPILED
     inline std::string join_keys_csv_or_none(const std::vector<std::string>& keys) {
         std::string combined;
         size_t reserveHint = 0;
@@ -331,6 +310,7 @@ namespace {
         msg += cstr_or_default_if_null(negativeKey, "<unset>");
         return msg;
     }
+#endif
 
     struct ProfileKeyLabels {
         const char* paperKey = nullptr;
@@ -339,72 +319,68 @@ namespace {
         const char* filmLabel = "<null>";
     };
 
-    inline ProfileKeyLabels resolve_profile_key_labels(int printPaperIndex, int filmStockIndex) {
+    struct ProfileSelectionIndexes {
+        int printPaperIndex = 0;
+        int filmStockIndex = 0;
+    };
+
+    inline ProfileKeyLabels resolve_profile_key_labels(const ProfileSelectionIndexes& indexes) {
         ProfileKeyLabels labels{};
-        labels.paperKey = print_paper_json_key_for_index(printPaperIndex);
-        labels.filmKey = negative_json_key_for_stock_index(filmStockIndex);
+        labels.paperKey = print_paper_json_key_for_index(indexes.printPaperIndex);
+        labels.filmKey = negative_json_key_for_stock_index(indexes.filmStockIndex);
         labels.paperLabel = cstr_or_default_if_null(labels.paperKey, "<null>");
         labels.filmLabel = cstr_or_default_if_null(labels.filmKey, "<null>");
         return labels;
     }
 
     inline ProfileKeyLabels resolve_profile_key_labels(const ParamSnapshot& snapshot) {
-        return resolve_profile_key_labels(snapshot.printPaperIndex, snapshot.filmStockIndex);
+        return resolve_profile_key_labels(ProfileSelectionIndexes{
+            snapshot.printPaperIndex,
+            snapshot.filmStockIndex});
     }
 
     struct PrintProfileLoadInputs {
         ProfileKeyLabels labels{};
-        std::string printDir;
-        std::string printProfileJson;
+        JuicerAssets::PrintRuntimeAssetSet printAssets{};
     };
 
     inline void load_print_profile_into_runtime(
-        const std::string& printDir,
-        const std::string& printProfileJson,
-        Print::Runtime& runtime,
-        bool moveMidNeutralVectors);
+        const JuicerAssets::PrintPaperAsset& printPaper,
+        Print::Runtime& runtime);
 
     inline PrintProfileLoadInputs build_print_profile_load_inputs(const ParamSnapshot& snapshot) {
         PrintProfileLoadInputs inputs{};
         inputs.labels = resolve_profile_key_labels(snapshot);
-        inputs.printDir = print_dir_for_index(snapshot.printPaperIndex);
-        inputs.printProfileJson = profile_json_path_for_key_or_empty(inputs.labels.paperKey);
+        inputs.printAssets = JuicerProcess::root().assets().print_runtime_assets_for_choices(
+            JuicerAssets::PrintRuntimeChoices{
+                snapshot.filmStockIndex,
+                snapshot.printPaperIndex,
+                snapshot.enlDichroicSet});
         return inputs;
     }
 
     inline PrintProfileLoadInputs load_print_profile_for_snapshot(
         const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        bool moveMidNeutralVectors) {
+        Print::Runtime& runtime) {
         PrintProfileLoadInputs inputs = build_print_profile_load_inputs(snapshot);
         load_print_profile_into_runtime(
-            inputs.printDir,
-            inputs.printProfileJson,
-            runtime,
-            moveMidNeutralVectors);
+            inputs.printAssets.printPaper,
+            runtime);
         return inputs;
     }
 
-    inline void sync_print_runtime_mid_neutral_from_profile(Print::Runtime& runtime, bool moveVectors) {
+    inline void sync_print_runtime_mid_neutral_from_profile(Print::Runtime& runtime) {
         runtime.hasMidNeutralDensity = runtime.profile.hasMidNeutralDensity;
         runtime.hasMidNeutralLogE = runtime.profile.hasMidNeutralLogE;
-        if (moveVectors) {
-            runtime.midNeutralDensity = std::move(runtime.profile.midNeutralDensity);
-            runtime.midNeutralLogE = std::move(runtime.profile.midNeutralLogE);
-        }
-        else {
-            runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
-            runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
-        }
+        runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
+        runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
     }
 
     inline void load_print_profile_into_runtime(
-        const std::string& printDir,
-        const std::string& printProfileJson,
-        Print::Runtime& runtime,
-        bool moveMidNeutralVectors) {
-        Print::load_profile_from_dir(printDir, runtime.profile, printProfileJson, &runtime);
-        sync_print_runtime_mid_neutral_from_profile(runtime, moveMidNeutralVectors);
+        const JuicerAssets::PrintPaperAsset& printPaper,
+        Print::Runtime& runtime) {
+        Print::load_profile_from_asset(printPaper, runtime.profile, &runtime);
+        sync_print_runtime_mid_neutral_from_profile(runtime);
     }
 
     inline Print::Runtime snapshot_print_runtime_locked(InstanceState& state) {
@@ -440,17 +416,21 @@ namespace {
         return snapshot;
     }
 
+    struct PendingStateHashes {
+        std::uint64_t fullHash = 0;
+        std::uint64_t coreHash = 0;
+        std::uint64_t dirHash = 0;
+    };
+
     inline void store_pending_state_snapshot(
         InstanceState& state,
         const ParamSnapshot& params,
-        std::uint64_t fullHash,
-        std::uint64_t coreHash,
-        std::uint64_t dirHash) {
+        const PendingStateHashes& hashes) {
         std::lock_guard<std::mutex> lock(state.pending.m);
         state.pending.params = params;
-        state.pending.fullHash = fullHash;
-        state.pending.coreHash = coreHash;
-        state.pending.dirHash = dirHash;
+        state.pending.fullHash = hashes.fullHash;
+        state.pending.coreHash = hashes.coreHash;
+        state.pending.dirHash = hashes.dirHash;
     }
 
     inline bool pending_rebuild_required(const PendingStateSnapshot& pending, std::uint64_t builtFullHash) {
@@ -701,9 +681,8 @@ namespace {
 
     inline void update_print_illuminant_runtime(
         const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        const std::string& dataDir) {
-        Print::build_illuminant_from_choice(snapshot.enlIll, runtime, dataDir, /*forEnlarger*/true);
+        Print::Runtime& runtime) {
+        Print::build_illuminant_from_choice(snapshot.enlIll, runtime, /*forEnlarger*/true);
     }
 
     template <typename MediumRuntimeT>
@@ -856,14 +835,13 @@ namespace {
             return;
         }
         const ProfileKeyLabels& labels = printLoad.labels;
+        const std::uint64_t paperVersion = printLoad.printAssets.printPaper.version;
         std::string msg;
         msg.reserve(256);
         msg = "print reload key=";
         msg += labels.paperLabel;
-        msg += " dir=";
-        msg += printLoad.printDir;
-        msg += " json=";
-        msg += printLoad.printProfileJson;
+        msg += " assetVersion=";
+        msg += std::to_string(paperVersion);
         msg += " ref=";
         msg += runtime.referenceIlluminant;
         msg += " view=";
@@ -880,7 +858,7 @@ namespace {
             return false;
         }
         const PrintProfileLoadInputs printLoad =
-            load_print_profile_for_snapshot(snapshot, runtime, /*moveMidNeutralVectors*/true);
+            load_print_profile_for_snapshot(snapshot, runtime);
         trace_print_reload_verbose_if(traceVerbose, printLoad, runtime);
 
         // Reload dichroic filters (vendor selection controls which curves are used).
@@ -894,9 +872,10 @@ namespace {
         store_pending_state_snapshot(
             state,
             snapshot,
-            hash_params(snapshot),
-            hash_params_core(snapshot),
-            hash_params_dir(snapshot));
+            PendingStateHashes{
+                hash_params(snapshot),
+                hash_params_core(snapshot),
+                hash_params_dir(snapshot)});
     }
 
     inline void trace_neutral_filters_applied_if(
@@ -1257,8 +1236,8 @@ namespace {
     }
 
     inline void set_grain_chroma_weights(float chroma, float& sharedWeightOut, float& indWeightOut) {
-        sharedWeightOut = static_cast<float>(std::sqrt(std::max(0.0f, 1.0f - chroma)));
-        indWeightOut = static_cast<float>(std::sqrt(std::max(0.0f, chroma)));
+        sharedWeightOut = std::sqrt(std::max(0.0f, 1.0f - chroma));
+        indWeightOut = std::sqrt(std::max(0.0f, chroma));
     }
 
     inline bool read_bool_param_or(OFX::BooleanParam* param, bool fallback) {
@@ -2407,59 +2386,6 @@ namespace {
         return static_cast<double>((low + high) * 0.5f);
     }
 
-    void init_spectral_globals_once() {
-        Spectral::SpectralMutationScope mutationScope(
-            Spectral::SpectralMutationStage::Bootstrap,
-            "init_spectral_globals_once");
-        (void)mutationScope;
-
-        try {
-            Spectral::lock_shape_to_reference_axis();
-            const auto cmf = Spectral::load_csv_triplets(data_dir_string("cie1931_2deg.csv"));
-            if (!Spectral::cmf_triplets_match_reference_axis(cmf)) {
-                JTRACE("INIT", "FATAL: CMF wavelengths do not match 380-780@5nm grid");
-                throw std::runtime_error("CMF grid mismatch");
-            }
-            Spectral::set_cie_1931_2deg_cmf(cmf.xbar, cmf.ybar, cmf.zbar);
-            Spectral::ensure_precomputed_up_to_date();
-            Spectral::disable_hanatos_if_reference_mismatch();
-        }
-        catch (...) {
-            // Leave globals as-is; instance guards will pass-through if shape is invalid.
-        }
-
-        // Hanatos LUT: load once and set availability flag atomically.
-        try {
-            const std::string lutPath = data_dir_string("luts", "spectral_upsampling", "irradiance_xy_tc.npy");
-            Spectral::load_hanatos_spectra_lut(lutPath);
-        }
-        catch (...) {
-            Spectral::set_hanatos_available(false);
-        }
-
-        // Mallett 2019 basis: load once for sRGB basis reconstruction.
-        try {
-            const std::string basisPath = data_dir_string("luts", "spectral_upsampling", "mallett2019_basis.npy");
-            Spectral::load_mallett2019_basis_npy(basisPath);
-        }
-        catch (...) {
-            Spectral::set_mallett_available(false);
-        }
-
-        // KG3 filter fallback: set once if not present; safe idempotently.
-        std::vector<std::pair<float, float>> kg3_pairs_raw;
-        try { kg3_pairs_raw = Spectral::load_csv_pairs(data_dir_string("filters", "heat_absorbing", "schott", "KG3.csv")); }
-        catch (...) { kg3_pairs_raw.clear(); }
-        if (kg3_pairs_raw.empty()) {
-            kg3_pairs_raw = {
-                { Spectral::gShape.lambdaMin, 1.0f },
-                { Spectral::gShape.lambdaMax, 1.0f }
-            };
-        }
-        Spectral::set_filter_KG3_from_pairs(kg3_pairs_raw);
-    }
-
-
     static std::vector<std::string> enlarger_illuminant_keys_for_choice(int choice) {
         switch (choice) {
         case 0: return { "D65", "d65" };
@@ -3160,14 +3086,11 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
         }
         catch (...) {
             // Ignore failures; fall back to full bounds.
+            meterBounds = fullBounds;
         }
     }
-
-    if (state) {
-        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-        state->autoExposureCanonicalBounds = meterBounds;
-        state->autoExposureCanonicalValid = true;
-    }
+    result.meterBounds = meterBounds;
+    result.meterBoundsValid = true;
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     // CUDA path: metering + exposure scale are computed and applied entirely on the GPU to avoid
@@ -3317,7 +3240,7 @@ Couplers::Runtime JuicerEffect::prepareCouplers(
         sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
     }
     else {
-        // Fallback to legacy geometry if pixelSizeUm was not available
+        // Fallback to cached geometry if pixelSizeUm was not available
         const double filmLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
 
         const double widthPx = static_cast<double>(fullWidth);
@@ -3376,7 +3299,7 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
 JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     : OFX::ImageEffect(handle)
 {
-    // Cache clips (wrappers) for Step 2; safe even if render still uses legacy path.
+    // Cache clips (wrappers) for Step 2; safe even if render still uses the existing path.
     try {
         _src = fetchClip(kOfxImageEffectSimpleSourceClipName); // "Source"
         _dst = fetchClip(kOfxImageEffectOutputClipName);       // "Output"
@@ -3486,6 +3409,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     }
     catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
+        JTRACE("PARAM", "parameter cache bootstrap incomplete; defaults will be used for missing handles");
     }
 
     if (_pGrainPreset) {
@@ -3543,70 +3467,47 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 }
 
 JuicerEffect::~JuicerEffect() {
-    std::uint64_t releasedMaskBytes = 0;
-    if (_state) {
-        std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
-        releasedMaskBytes = _state->autoExposureMaskCachedBytes;
-        _state->autoExposureMaskWeights.reset();
-        _state->autoExposureMaskCachedBytes = 0;
-        _state->autoExposureMaskValid = false;
-        _state->autoExposureMaskSum = 0.0;
+    try {
+        std::uint64_t releasedMaskBytes = 0;
+        if (_state) {
+            std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
+            releasedMaskBytes = _state->autoExposureMaskCachedBytes;
+            _state->autoExposureMaskWeights.reset();
+            _state->autoExposureMaskCachedBytes = 0;
+            _state->autoExposureMaskValid = false;
+            _state->autoExposureMaskSum = 0.0;
+        }
+        if (releasedMaskBytes > 0) {
+            update_auto_exposure_mask_resident_bytes(releasedMaskBytes, 0);
+            trace_auto_exposure_mask_cache_event(
+                _state.get(),
+                "cache_release",
+                0,
+                0,
+                0,
+                0,
+                releasedMaskBytes,
+                "instance_destroy");
+        }
     }
-    if (releasedMaskBytes > 0) {
-        update_auto_exposure_mask_resident_bytes(releasedMaskBytes, 0);
-        trace_auto_exposure_mask_cache_event(
-            _state.get(),
-            "cache_release",
-            0,
-            0,
-            0,
-            0,
-            releasedMaskBytes,
-            "instance_destroy");
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    if (_state) {
-        const bool traceInfo = JTRACE_ENABLED(1);
-        std::vector<JuicerCuda::ResourceManager::DeviceContextKey> keys;
-        {
-            std::lock_guard<std::mutex> lock(_state->cudaMutex);
-            keys.reserve(_state->cudaByDevice.size());
-            for (const auto& entry : _state->cudaByDevice) {
-                keys.emplace_back(entry.first);
-            }
-        }
-        const JuicerCuda::ResourceManager::DeviceContextKey* keyData = keys.data();
-        const size_t keyCount = keys.size();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            const auto& key = *keyData;
-            std::string retireError;
-            const bool retireOk = JuicerCuda::ResourceManager::command_retire_context_idle(key, retireError);
-            if (!retireOk || !retireError.empty()) {
-                if (traceInfo) {
-                    const std::uintptr_t contextBits = reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-                    std::string msg;
-                    msg.reserve(192);
-                    msg = "teardown_retire_idle_failed device_id=";
-                    msg += std::to_string(key.deviceId);
-                    msg += " context=";
-                    msg += std::to_string(contextBits);
-                    msg += " accepted=";
-                    msg += std::to_string(bool_to_i32(retireOk));
-                    if (!retireError.empty()) {
-                        msg += " error=";
-                        msg += retireError;
-                    }
-                    JTRACE("MSLCY", msg);
-                }
-            }
-        }
+    try {
+        _state.reset();
     }
-#endif
-    _state.reset();
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 void JuicerEffect::render(const OFX::RenderArguments& args) {
+    auto framePreparation = JuicerProcess::root().begin_frame_preparation();
+    if (!framePreparation.active()) {
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
     // Fetch images via wrappers
     std::unique_ptr<OFX::Image> srcImg(_src ? _src->fetchImage(args.time) : nullptr);
     std::unique_ptr<OFX::Image> dstImg(_dst ? _dst->fetchImage(args.time) : nullptr);
@@ -3724,11 +3625,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     WorkingStateInfo wsInfo = prepareWorkingState();
     std::shared_ptr<const WorkingState> wsHold = wsInfo.workingState;
-    const WorkingState* ws = wsHold.get();
     const Print::Runtime* prt = wsInfo.printRuntime;
     const bool wsReady = wsInfo.workingStateReady;
     const bool printReady = wsInfo.printRuntimeReady;
     if (traceVerbose) {
+        const WorkingState* ws = wsHold.get();
         ParamSnapshot Pdbg = snapshotParams();
         const ProfileKeyLabels labels = resolve_profile_key_labels(Pdbg);
         const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(prt);
@@ -3759,11 +3660,11 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
     if (!wsReady) {
-        trace_and_throw_render_fatal("BUILD", "FATAL: working state not ready; aborting render");
+        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: working state not ready; aborting render"});
     }
 
     if (!printParams.bypass && !printReady) {
-        trace_and_throw_render_fatal("PRINT", "FATAL: print runtime not ready while print path requested");
+        trace_and_throw_render_fatal(RenderFatalTrace{"PRINT", "FATAL: print runtime not ready while print path requested"});
     }
 
     // --- Print exposure compensation via spectral mid-gray probe (agx parity) ---
@@ -3776,34 +3677,54 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     // Tile-based multithreaded processing via OFX::ImageProcessor
     JuicerProcessor proc(*this);
-    proc.setSrcDst(srcImg.get(), dstImg.get());
-    proc.setComponents(nComponents);
-    proc.setScannerOptions(scannerOptions);
-    proc.setScannerSettings(scannerSettings);
-    proc.setPrintParams(printParams);
-    proc.setHalationOverride(halationUi);
-    proc.setGrainOverride(grainUi);
-    proc.setGateWeaveAmount(gateWeaveAmount);
-    proc.setPrintGlareOverride(glareUi);
-    proc.setDirRuntime(dirRT);
-    proc.setWorkingState(ws, wsReady);
-    proc.setPrintRuntime(prt, printReady);
+    JuicerProcessor::SourceDestinationImages images{};
+    images.src = srcImg.get();
+    images.dst = dstImg.get();
+    proc.setSrcDst(images);
     proc.setInstanceState(_state.get());
+    const SessionTokenSnapshot sessionTokens = snapshot_session_tokens(_state.get());
     const std::uint32_t frameVersion = frame_bounds_version_or_zero(_state.get());
-    proc.setFrameBoundsVersion(frameVersion);
-    proc.setPixelSizeUm(pixelSizeUm);
     // Per agx-emulsion parity: autoExposure.exposureScale already encodes 2^(autoEV + sliderEV).
     float filmExposureScale = static_cast<float>(sanitize_positive_finite_or(autoExposure.exposureScale, 1.0));
-    proc.setExposure(filmExposureScale);
-    proc.setCameraAutoExposure(exposureParams.cameraAutoEnabled, exposureParams.meteringMethod, exposureParams.sliderEV);
-    proc.setOutputEncoding(outputEncodingParams);
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
-    proc.setClipToken(renderClipToken);
-    proc.setFrameRate(getFrameRate());
-    proc.setFrameTime(args.time);
-    proc.setRenderWindowRect(roi);
+
+    JuicerProcessor::FrameRequest frameRequest{};
+    frameRequest.workingState = wsHold;
+    frameRequest.printRuntime = prt;
+    frameRequest.workingStateReady = wsReady;
+    frameRequest.printRuntimeReady = printReady;
+    frameRequest.components = nComponents;
+    frameRequest.renderWindow = roi;
+    frameRequest.scannerOptions = scannerOptions;
+    frameRequest.scannerSettings = scannerSettings;
+    frameRequest.printParams = printParams;
+    frameRequest.halationOverride = halationUi;
+    frameRequest.hasHalationOverride = true;
+    frameRequest.grainOverride = grainUi;
+    frameRequest.hasGrainOverride = true;
+    frameRequest.printGlareOverride = glareUi;
+    frameRequest.hasPrintGlareOverride = true;
+    frameRequest.dirRuntime = dirRT;
+    frameRequest.exposureScale = filmExposureScale;
+    frameRequest.cameraAutoEnabled = exposureParams.cameraAutoEnabled;
+    frameRequest.cameraMeteringMethod = exposureParams.meteringMethod;
+    frameRequest.cameraSliderEV = exposureParams.sliderEV;
+    frameRequest.autoExposureMeterBounds = autoExposure.meterBounds;
+    frameRequest.autoExposureMeterBoundsValid = autoExposure.meterBoundsValid;
+    frameRequest.outputEncoding = outputEncodingParams;
+    frameRequest.sessionSeed = sessionTokens.sessionSeed;
+    frameRequest.instanceToken = sessionTokens.instanceToken;
+    frameRequest.clipToken = renderClipToken;
+    frameRequest.gateWeaveAmount = gateWeaveAmount;
+    frameRequest.frameTime = args.time;
+    frameRequest.frameRate = getFrameRate();
+    frameRequest.frameBoundsVersion = frameVersion;
+    frameRequest.pixelSizeUm = pixelSizeUm;
+    frameRequest.interactiveRenderStatus = args.interactiveRenderStatus;
+    frameRequest.renderQualityDraft = args.renderQualityDraft;
+    frameRequest.sequentialRenderStatus = args.sequentialRenderStatus;
+    proc.setFrameRequest(frameRequest);
     proc.setGPURenderArgs(args);
-    proc.setRenderHints(args.interactiveRenderStatus, args.renderQualityDraft, args.sequentialRenderStatus);
 
     // Dispatch to support library's threaded/tiled CPU path
     proc.process();
@@ -4312,7 +4233,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
 
 void JuicerEffect::bootstrap_after_attach() {
     // Initialize Spectral globals exactly once per process.
-    std::call_once(gSpectralGlobalsOnce, init_spectral_globals_once);
+    JuicerProcess::root().ensure_bootstrap();
     JTRACE("BUILD", "spectral globals ensured once; proceeding to profile and film stock load");
     // Suppress re-entrant param events during bootstrap
     _state->inBootstrap = true;
@@ -4322,7 +4243,7 @@ void JuicerEffect::bootstrap_after_attach() {
     ParamSnapshot P = snapshotParams();
 
     // Load selected print paper profile
-    (void)load_print_profile_for_snapshot(P, nextPrintRuntime, /*moveMidNeutralVectors*/false);
+    (void)load_print_profile_for_snapshot(P, nextPrintRuntime);
 
     // Load film stock before applying metadata-driven illuminant defaults
     load_film_stock_into_base_locked(P.filmStockIndex, *_state);
@@ -4332,7 +4253,7 @@ void JuicerEffect::bootstrap_after_attach() {
 
     // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
     applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-    update_print_illuminant_runtime(P, nextPrintRuntime, _state->dataDir);
+    update_print_illuminant_runtime(P, nextPrintRuntime);
 
     // Load dichroic filters (set selection controls which vendor curves are used).
     // Identity fallback is already handled in loader via 1.0 curves.
@@ -4364,20 +4285,32 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     if (!_state) {
         return;
     }
+#if JUICER_DIAGNOSTICS_COMPILED
     const bool traceInfo = JTRACE_ENABLED(1);
+#endif
 
-    const ProfileKeyLabels labels = resolve_profile_key_labels(P);
-    const char* paperKey = labels.paperKey;
-    const char* negativeKey = labels.filmKey;
+    const JuicerAssets::PrintRuntimeAssetSet printAssets =
+        JuicerProcess::root().assets().print_runtime_assets_for_choices(
+            JuicerAssets::PrintRuntimeChoices{
+                P.filmStockIndex,
+                P.printPaperIndex,
+                P.enlDichroicSet});
+    const char* paperKey = printAssets.printPaper.jsonKey.empty()
+                               ? nullptr
+                               : printAssets.printPaper.jsonKey.c_str();
+    const char* negativeKey = printAssets.filmStock.jsonKey.empty()
+                                  ? nullptr
+                                  : printAssets.filmStock.jsonKey.c_str();
     const std::vector<std::string> illumKeys = enlarger_illuminant_keys_for_choice(P.enlIll);
 
     if (!(paperKey && negativeKey && !illumKeys.empty())) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
             JTRACE(
                 "PRINT",
-                "Neutral filter lookup prerequisites missing: "
-                + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
+                "Neutral filter lookup prerequisites missing: " + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
         }
+#endif
         throw std::runtime_error("Neutral filter metadata incomplete for current selection");
     }
 
@@ -4386,8 +4319,7 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
     float neutralC = Print::kDefaultNeutralC;
     bool loaded = false;
 
-    const std::string jsonPathPrimary = data_dir_string("profiles", enlarger_neutral_filters_json_for_choice(P.enlDichroicSet));
-    const std::string jsonPathFallback = data_dir_string("profiles", "enlarger_neutral_ymc_filters.json");
+    const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb = printAssets.neutralFilters;
     std::tuple<float, float, float> ymc{};
     std::string selectedDbVersionHash;
     const std::string* illumKeyData = illumKeys.data();
@@ -4397,13 +4329,22 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
         if (illumKey.empty()) {
             continue;
         }
-        if (load_enlarger_neutral_filters(jsonPathPrimary, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash) ||
-            (jsonPathPrimary != jsonPathFallback &&
-                load_enlarger_neutral_filters(jsonPathFallback, paperKey, illumKey, negativeKey, ymc, NeutralFilterThreadClass::Control, &selectedDbVersionHash))) {
+        const JuicerAssets::NeutralFilterLookupResult lookup =
+            JuicerProcess::root().assets().lookup_neutral_filters(
+                neutralDb,
+                JuicerAssets::NeutralFilterLookupKey{
+                    printAssets.printPaper.jsonKey,
+                    illumKey,
+                    printAssets.filmStock.jsonKey},
+                JuicerAssets::NeutralFilterLookupThread::Control);
+        if (lookup.found) {
+            ymc = lookup.ymc;
+            selectedDbVersionHash = lookup.selectedDbVersionHash;
             neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
             neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
             neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
             loaded = true;
+#if JUICER_DIAGNOSTICS_COMPILED
             if (traceInfo) {
                 std::string msg;
                 msg.reserve(192);
@@ -4415,18 +4356,19 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
                 msg += cstr_or_default_if_empty(selectedDbVersionHash, "none");
                 JTRACE("PRINT", msg);
             }
+#endif
             break;
         }
     }
 
     if (!loaded) {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
             JTRACE(
                 "PRINT",
-                "Neutral filters missing for "
-                + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys))
-                + "; aborting print path");
+                "Neutral filters missing for " + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)) + "; aborting print path");
         }
+#endif
         throw std::runtime_error("Neutral filter database entry not found");
     }
 
@@ -4459,8 +4401,8 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print
     const std::string& printRef = runtime.referenceIlluminant;
     const std::string& printView = runtime.viewingIlluminant;
 
-    const std::string& refSource = first_nonempty_or(filmRef, printRef, printView);
-    const std::string& enlSource = first_nonempty_or(printRef, filmRef, printView);
+    const std::string refSource = first_nonempty_or(filmRef, printRef, printView);
+    const std::string enlSource = first_nonempty_or(printRef, filmRef, printView);
 
     const ScopedParamEventSuppression suppressEvents(_state.get());
     changed = apply_illuminant_choice_from_source(
@@ -4797,7 +4739,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
 
     apply_when_reload_requires_illuminant_refresh(reloadStatus, [&]() {
         applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-        update_print_illuminant_runtime(P, nextPrintRuntime, _state->dataDir);
+        update_print_illuminant_runtime(P, nextPrintRuntime);
         printRuntimeDirty = true;
     });
 

@@ -1,10 +1,8 @@
 // Cuda/JuicerCudaResources.h
 //
-// Per-instance CUDA resource cache keyed by WorkingState.{uploadCoreHash,dirHash}.
-//
-// This module intentionally owns only GPU-side mirrors of CPU WorkingState data (curves/tables/etc).
-// The render path remains responsible for gating unsupported features (e.g. auto-exposure) until
-// they are ported to CUDA.
+// Per-context CUDA resource storage and helper payloads served through ProcessRoot and
+// ResourceManager preparation commands. Durable residency is owned by Root/context slots;
+// frame-local mutable work is accessed through PreparedCudaFrame leases.
 //
 #pragma once
 
@@ -161,9 +159,13 @@ namespace JuicerCuda {
         std::uint64_t validatedPrintBuildCounter = 0;
         std::uint64_t validatedPrintParamsHash = 0;
 
-        // Opaque CUDA event (cudaEvent_t) recorded on the stream after enqueuing work that
-        // uses this resource set. Used to safely retire/rebuild buffers across streams.
-        void* lastUseEventOpaque = nullptr;
+        struct PendingFrameUseEvent {
+            void* eventOpaque = nullptr;
+        };
+
+        // Submitted prepared-frame use events retained until reuse-gating waits can observe
+        // completion. These events are never recorded again after insertion.
+        std::vector<PendingFrameUseEvent> pendingFrameUseEvents;
 
         enum class RetireKind : int {
             DeviceFree = 0,
@@ -323,6 +325,7 @@ namespace JuicerCuda {
         DeviceOpticsScratch scannerScratch;
         DeviceGaussianKernel spatialDirKernel;
         DeviceSpatialDirScratch spatialDirScratch;
+        std::uint64_t retainedScratchLeaseGeneration = 0;
 
         std::uint8_t* stbnData = nullptr;
         int stbnWidth = 0;
@@ -350,7 +353,7 @@ namespace JuicerCuda {
 
         float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
         bool printPreflashValid = false;
-        std::uint64_t printPreflashBuildCounter = 0;
+        std::uint64_t printPreflashKeyHash = 0;
         int printPreflashShapeK = 0;
 
         // Cached enlarger illuminant filtered by dichroic Y/M/C for the current print params.
@@ -369,17 +372,20 @@ namespace JuicerCuda {
         float* hanatosLut = nullptr;
         int hanatosN = 0;
 
-        // Hanatos LUT preintegrated with per-instance sensitivities.
+        // Hanatos LUT preintegrated with recipe sensitivities.
         // Layout: ((x*N + y) * 4 + c), c=0..2 (RGB), c=3 unused/padding.
         float* hanatosLutIntegrated = nullptr;
         int hanatosNIntegrated = 0;
-        std::uint64_t hanatosIntegratedBuildCounter = 0;
+        std::uint64_t hanatosIntegratedKeyHash = 0;
 
-        // Device-side flag for scan-stage non-finite detection (set by kernels).
-        int* scanErrorFlag = nullptr;
-        int* scanErrorHost = nullptr;
-        void* scanErrorEventOpaque = nullptr;
-        int scanErrorPending = 0;
+        struct PendingScanErrorReadback {
+            int* host = nullptr;
+            void* eventOpaque = nullptr;
+        };
+
+        // Submitted readbacks retained after a prepared frame releases its exclusive scan-error
+        // stage. These entries are not reusable workspace.
+        std::vector<PendingScanErrorReadback> pendingScanErrorReadbacks;
 
         struct DeviceAutoExposureScratch {
             JuicerCudaAutoExposurePartial* partialsA = nullptr;
@@ -407,11 +413,14 @@ namespace JuicerCuda {
         Resources(const Resources&) = delete;
         Resources& operator=(const Resources&) = delete;
 
-        ~Resources();
+        ~Resources() noexcept;
     };
 
     Resources* create() noexcept;
     void destroy(Resources* resources) noexcept;
+
+    // Narrow context-static serving helper used by the process-owned Root grain slots.
+    bool ensure_grain_static_assets_uploaded(Resources& resources, void* cudaStreamOpaque, std::string& outError);
 
     // Runtime serving acquisition/rebuild calls are intentionally manager-only via
     // ResourceManager::command_* wrappers.
@@ -446,9 +455,38 @@ namespace JuicerCuda {
         Resources& resources,
         void* cudaStreamOpaque,
         std::string& outError);
+    bool try_acquire_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        void* cudaStreamOpaque,
+        bool& outAcquired,
+        std::string& outError);
+    bool release_retained_frame_scratch_lease(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        std::string& outError);
+    bool retire_frame_scratch_allocation(
+        Resources& resources,
+        void* ptr,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError);
+    bool retain_scan_error_readback(
+        Resources& resources,
+        int*& host,
+        void*& eventOpaque,
+        std::string& outError);
+    bool poll_scan_error_readbacks(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        bool& outDetected,
+        std::string& outError);
 
-    // Records a "last use" event on the given stream to allow safe rebuilds without global sync.
-    void record_use(Resources& resources, void* cudaStreamOpaque) noexcept;
+    bool retain_frame_use_event(
+        Resources& resources,
+        void*& eventOpaque,
+        std::string& outError);
 
     // Purges process-shared Gaussian kernels for one device/context key.
     void purge_shared_gaussian_kernels_for_context(int deviceId, void* contextOpaque) noexcept;

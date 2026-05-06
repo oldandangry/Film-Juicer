@@ -56,7 +56,7 @@ namespace Spectral {
         std::vector<float> lambda_nm;
         std::vector<float> linear;
 
-        inline void build_from_log10_pairs(const std::vector<std::pair<float, float>>& samples) {
+        void build_from_log10_pairs(const std::vector<std::pair<float, float>>& samples) {
             lambda_nm.clear();
             linear.clear();
             lambda_nm.reserve(samples.size());
@@ -76,7 +76,7 @@ namespace Spectral {
             }
         }
 
-        inline void build_from_linear_pairs(const std::vector<std::pair<float, float>>& samples) {
+        void build_from_linear_pairs(const std::vector<std::pair<float, float>>& samples) {
             lambda_nm.clear();
             linear.clear();
             if (samples.empty()) return;
@@ -92,7 +92,7 @@ namespace Spectral {
             }
         }
 
-        inline float sample(float lambda) const {
+        float sample(float lambda) const {
             const size_t n = lambda_nm.size();
             if (n == 0) return 0.0f;
             if (lambda <= lambda_nm.front()) return linear.front();
@@ -227,25 +227,30 @@ namespace Spectral {
             const char* event,
             SpectralMutationStage stage,
             const char* owner,
-            const char* action = nullptr) {
+            const char* action = nullptr) noexcept {
 
-            if (!JTRACE_ENABLED(2)) {
-                return;
-            }
+            try {
+                if (!JTRACE_ENABLED(2)) {
+                    return;
+                }
 
-            std::string msg = std::string("event=") + (event ? event : "unknown")
-                + " stage=" + to_cstr(stage)
-                + " depth=" + std::to_string(gSpectralMutationTlsState.depth);
-            if (owner && owner[0] != '\0') {
-                msg += " owner=";
-                msg += owner;
-            }
-            if (action && action[0] != '\0') {
-                msg += " action=";
-                msg += action;
-            }
+                std::string msg = std::string("event=") + (event ? event : "unknown")
+                    + " stage=" + to_cstr(stage)
+                    + " depth=" + std::to_string(gSpectralMutationTlsState.depth);
+                if (owner && owner[0] != '\0') {
+                    msg += " owner=";
+                    msg += owner;
+                }
+                if (action && action[0] != '\0') {
+                    msg += " action=";
+                    msg += action;
+                }
 
-            JTRACE_LEVEL(2, "MSPEC", msg);
+                JTRACE_LEVEL(2, "MSPEC", msg);
+            }
+            catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
         }
     } // namespace detail
 

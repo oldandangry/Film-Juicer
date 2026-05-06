@@ -48,16 +48,16 @@ namespace OutputEncoding {
 
     inline constexpr std::size_t kColorSpaceCount = static_cast<std::size_t>(ColorSpace::Count);
 
-    inline constexpr const char* labelFor(ColorSpace cs) {
+    constexpr const char* labelFor(ColorSpace cs) {
         const std::size_t idx = static_cast<std::size_t>(cs);
         return idx < kColorSpaceCount ? kColorSpaceLabels[idx] : "sRGB";
     }
 
-    inline constexpr int toIndex(ColorSpace cs) {
+    constexpr int toIndex(ColorSpace cs) {
         return static_cast<int>(cs);
     }
 
-    inline constexpr ColorSpace colorSpaceFromIndex(int index) {
+    constexpr ColorSpace colorSpaceFromIndex(int index) {
         if (index < 0) return ColorSpace::sRGB;
         const int maxIndex = static_cast<int>(ColorSpace::Count) - 1;
         if (index > maxIndex) return ColorSpace::sRGB;
@@ -352,14 +352,13 @@ namespace GeneratedColorSpaces {
                 e.cctf.gamma, e.cctf.a, e.cctf.b, e.cctf.c, e.cctf.d, e.cctf.linearCutoff
             };
             const std::uint64_t cctfHash = Hash::hash_float_span(cctfFloats.data(), cctfFloats.size());
-            const std::uint64_t fields[] = {
+            return Hash::hash_uint64_values({
                 baseHash,
                 rgbToXyzHash,
                 xyzToRgbHash,
                 static_cast<std::uint64_t>(e.cctf.kind),
                 cctfHash
-            };
-            return Hash::hash_bytes(fields, sizeof(fields));
+            });
         }
 
         inline void ensure_hashes() {
@@ -426,7 +425,7 @@ namespace OutputEncoding {
         }
 
         inline float encode_gamma_signed(float v, float exponent) {
-            const float mag = static_cast<float>(std::pow(std::abs(v), exponent));
+            const float mag = std::pow(std::abs(v), exponent);
             return std::copysign(mag, v);
         }
 
@@ -434,21 +433,21 @@ namespace OutputEncoding {
             if (v <= 0.0031308f) {
                 return 12.92f * v;
             }
-            return 1.055f * static_cast<float>(std::pow(v, 1.0f / 2.4f)) - 0.055f;
+            return 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
         }
 
         inline float encode_BT2020(float v, float a, float b) {
             if (v < b) {
                 return v * 4.5f;
             }
-            return a * static_cast<float>(std::pow(v, 0.45f)) - (a - 1.0f);
+            return a * std::pow(v, 0.45f) - (a - 1.0f);
         }
 
         inline float encode_ProPhoto(float v, float threshold, float exponent) {
             if (v < threshold) {
                 return v * 16.0f;
             }
-            return static_cast<float>(std::pow(v, exponent));
+            return std::pow(v, exponent);
         }
 
         inline float encode_DaVinciIntermediate(float v, const GeneratedColorSpaces::CctfParams& cctf) {
@@ -456,7 +455,7 @@ namespace OutputEncoding {
             if (linear <= cctf.linearCutoff) {
                 return linear * cctf.d;
             }
-            return (static_cast<float>(std::log2(linear + cctf.a)) + cctf.b) * cctf.c;
+            return (std::log2(linear + cctf.a) + cctf.b) * cctf.c;
         }
 
         inline float encode_channel(const GeneratedColorSpaces::CctfParams& cctf, float v) {

@@ -55,6 +55,12 @@
     <ClCompile Include="src\PipelineStages.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\ProcessRoot.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ResourceAssetLibrary.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="..\OFXS\Support\Library\ofxsCore.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -81,16 +87,16 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.cpp">
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerAdmission.inc">
       <Filter>Cuda</Filter>
     </None>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.cpp">
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerCommands.inc">
       <Filter>Cuda</Filter>
     </None>
-    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.cpp">
+    <None Include="src\Cuda\ResourceManager\JuicerCudaResourceManagerSubmission.inc">
       <Filter>Cuda</Filter>
     </None>
-    <None Include="src\Cuda\JuicerCudaResourcesServing.cpp">
+    <None Include="src\Cuda\JuicerCudaResourcesServing.inc">
       <Filter>Cuda</Filter>
     </None>
   </ItemGroup>
@@ -159,6 +165,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ProfileJSONLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProcessRoot.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ResourceAssetLibrary.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Scanner.h">

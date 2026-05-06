@@ -1,4 +1,4 @@
-// Cuda/JuicerCudaResourcesServing.cpp
+// Cuda/JuicerCudaResourcesServing.inc
 //
 // Included by JuicerCudaResources.cpp (single-TU split).
     enum class HostCacheLoadState : int {
@@ -338,7 +338,8 @@
     }
 
     void purge_host_asset_caches_if_registry_idle(const char* stage) noexcept {
-        ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
+        try {
+            ResourceManager::ResourceManagerState& managerState = ResourceManager::global_state();
         if (managerState.registryLiveManagers.load(std::memory_order_relaxed) != 0) {
             return;
         }
@@ -381,7 +382,11 @@
             ResourceManager::telemetry_counter_add(managerState.hostAssetCacheTrimBytes, static_cast<std::uint64_t>(trimmedBytesTotal));
         }
 
-        publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
+            publish_host_asset_cache_bytes(stbn_cache_bytes_locked(stbn) + wang_cache_bytes_locked(wang));
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }
 
     #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -597,8 +602,7 @@
         const std::size_t trimBatchBytes = static_cast<std::size_t>(
             pinned_upload_staging_config().pinnedUploadStagingTrimBatchBytes);
         const std::uint64_t trimSequence = pool.nextTrimSequence++;
-        PinnedUploadBlock block =
-            std::move(pool.blocks[static_cast<std::size_t>(blockIndex)]);
+        PinnedUploadBlock block = pool.blocks[static_cast<std::size_t>(blockIndex)];
         pool.blocks.erase(pool.blocks.begin() + blockIndex);
         if (!block.ptr) {
             if (pinned_upload_pool_is_empty_locked(pool)) {
@@ -1067,50 +1071,25 @@
         cache.lastTouchedMs = host_asset_now_ms();
     }
 
-    static bool load_stbn_cpu_uncached(const StbnCpuCache& cache, std::vector<std::uint8_t>& outData, std::string& outError) {
-        if (gDataDir.empty()) {
-            outError = "STBN load failed: data directory missing";
+    struct StbnCpuLoadedData {
+        std::vector<std::uint8_t> data;
+        int width = 0;
+        int height = 0;
+        int frames = 0;
+    };
+
+    static bool load_stbn_cpu_from_assets(StbnCpuLoadedData& outData, std::string& outError) {
+        const auto payloads = JuicerProcess::root().assets().static_noise_payloads();
+        if (!payloads || !payloads->stbn.valid) {
+            outError = payloads ? payloads->stbn.error : "STBN load failed: asset payload unavailable";
             return false;
         }
 
-        std::filesystem::path path = std::filesystem::path(gDataDir) / "Noise" / "stbn_scalar_512x512x256_u8.bin";
-        path.make_preferred();
-
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file) {
-            outError = std::string("STBN load failed: cannot open ") + path.string();
-            return false;
-        }
-
-        const std::streamsize size = file.tellg();
-        if (size <= 0) {
-            outError = std::string("STBN load failed: empty file ") + path.string();
-            return false;
-        }
-
-        const std::size_t expected = static_cast<std::size_t>(cache.width) *
-            static_cast<std::size_t>(cache.height) *
-            static_cast<std::size_t>(cache.frames);
-        if (static_cast<std::size_t>(size) != expected) {
-            outError = std::string("STBN load failed: unexpected size for ") + path.string();
-            return false;
-        }
-
-        outData.resize(expected);
-        file.seekg(0, std::ios::beg);
-        if (!file.read(reinterpret_cast<char*>(outData.data()), size)) {
-            outError = std::string("STBN load failed: read error for ") + path.string();
-            outData.clear();
-            return false;
-        }
+        outData.data = payloads->stbn.data;
+        outData.width = payloads->stbn.width;
+        outData.height = payloads->stbn.height;
+        outData.frames = payloads->stbn.frames;
         return true;
-    }
-
-    static std::size_t wang_lut_index(int l, int r, int t, int b, int colors) {
-        const std::size_t c = static_cast<std::size_t>(colors);
-        return (((static_cast<std::size_t>(l) * c + static_cast<std::size_t>(r)) * c +
-                  static_cast<std::size_t>(t)) * c +
-                static_cast<std::size_t>(b));
     }
 
     struct WangCpuLoadedData {
@@ -1122,111 +1101,19 @@
         int colors = 0;
     };
 
-    static bool load_wang_cpu_uncached(WangCpuLoadedData& outData, std::string& outError) {
-        if (gDataDir.empty()) {
-            outError = "Wang tiles load failed: data directory missing";
+    static bool load_wang_cpu_from_assets(WangCpuLoadedData& outData, std::string& outError) {
+        const auto payloads = JuicerProcess::root().assets().static_noise_payloads();
+        if (!payloads || !payloads->wang.valid) {
+            outError = payloads ? payloads->wang.error : "Wang tiles load failed: asset payload unavailable";
             return false;
         }
 
-        std::filesystem::path base = std::filesystem::path(gDataDir) / "Noise" / "Wang";
-        base.make_preferred();
-        std::filesystem::path binPath = base / "wang_tiles_256x256x16_u8.bin";
-        std::filesystem::path jsonPath = base / "tiles.json";
-
-        if (!std::filesystem::exists(binPath) || !std::filesystem::exists(jsonPath)) {
-            outError = std::string("Wang tiles load failed: missing assets under ") + base.string();
-            return false;
-        }
-
-        std::ifstream jf(jsonPath);
-        if (!jf) {
-            outError = std::string("Wang tiles load failed: cannot open ") + jsonPath.string();
-            return false;
-        }
-
-        nlohmann::json root;
-        try {
-            jf >> root;
-        } catch (const std::exception& e) {
-            outError = std::string("Wang tiles load failed: invalid JSON ") + e.what();
-            return false;
-        }
-
-        if (!root.contains("resolution") || !root.contains("tiles") || !root.contains("colors") || !root.contains("mapping")) {
-            outError = "Wang tiles load failed: tiles.json missing required fields";
-            return false;
-        }
-
-        const int width = root.value("resolution", 0);
-        const int height = width;
-        const int count = root.value("tiles", 0);
-        const int colors = root.value("colors", 0);
-        if (width <= 0 || height <= 0 || count <= 0 || colors <= 0) {
-            outError = "Wang tiles load failed: invalid metadata in tiles.json";
-            return false;
-        }
-
-        const std::size_t lutSize = static_cast<std::size_t>(colors) *
-            static_cast<std::size_t>(colors) *
-            static_cast<std::size_t>(colors) *
-            static_cast<std::size_t>(colors);
-        outData.lut.assign(lutSize, 0);
-
-        const auto& mapping = root["mapping"];
-        if (!mapping.is_array()) {
-            outError = "Wang tiles load failed: mapping is not an array";
-            return false;
-        }
-
-        for (const auto& entry : mapping) {
-            if (!entry.contains("index") || !entry.contains("labels")) {
-                continue;
-            }
-            const int idx = entry.value("index", 0);
-            const auto& labels = entry["labels"];
-            const int l = labels.value("L", 0);
-            const int r = labels.value("R", 0);
-            const int t = labels.value("T", 0);
-            const int b = labels.value("B", 0);
-            if (l < 0 || r < 0 || t < 0 || b < 0 ||
-                l >= colors || r >= colors || t >= colors || b >= colors) {
-                continue;
-            }
-            const std::size_t lutIndex = wang_lut_index(l, r, t, b, colors);
-            if (lutIndex < outData.lut.size() && idx >= 0 && idx < count) {
-                outData.lut[lutIndex] = static_cast<std::uint8_t>(idx);
-            }
-        }
-
-        std::ifstream bin(binPath, std::ios::binary | std::ios::ate);
-        if (!bin) {
-            outError = std::string("Wang tiles load failed: cannot open ") + binPath.string();
-            return false;
-        }
-        const std::streamsize size = bin.tellg();
-        if (size <= 0) {
-            outError = std::string("Wang tiles load failed: empty file ") + binPath.string();
-            return false;
-        }
-        const std::size_t expected = static_cast<std::size_t>(width) *
-            static_cast<std::size_t>(height) *
-            static_cast<std::size_t>(count);
-        if (static_cast<std::size_t>(size) != expected) {
-            outError = std::string("Wang tiles load failed: unexpected size for ") + binPath.string();
-            return false;
-        }
-        outData.tiles.resize(expected);
-        bin.seekg(0, std::ios::beg);
-        if (!bin.read(reinterpret_cast<char*>(outData.tiles.data()), size)) {
-            outError = std::string("Wang tiles load failed: read error for ") + binPath.string();
-            outData.tiles.clear();
-            return false;
-        }
-
-        outData.width = width;
-        outData.height = height;
-        outData.count = count;
-        outData.colors = colors;
+        outData.tiles = payloads->wang.tiles;
+        outData.lut = payloads->wang.lut;
+        outData.width = payloads->wang.width;
+        outData.height = payloads->wang.height;
+        outData.count = payloads->wang.count;
+        outData.colors = payloads->wang.colors;
         return true;
     }
 
@@ -1258,21 +1145,23 @@
             }
         }
 
-        std::vector<std::uint8_t> loadedData;
+        StbnCpuLoadedData loadedData;
         std::string loadError;
-        const bool ok = load_stbn_cpu_uncached(cache, loadedData, loadError);
+        const bool ok = load_stbn_cpu_from_assets(loadedData, loadError);
         {
             std::lock_guard<std::mutex> lock(cache.mutex);
             cache.loaded = true;
             cache.valid = ok;
             if (ok) {
-                cache.data = std::move(loadedData);
+                cache.data = std::move(loadedData.data);
+                cache.width = loadedData.width;
+                cache.height = loadedData.height;
+                cache.frames = loadedData.frames;
                 cache.failureReason.clear();
                 cache.state = HostCacheLoadState::Ready;
                 cache.lastTouchedMs = host_asset_now_ms();
                 trace_host_asset_event("stbn", "load", cache.data.size());
-            }
-            else {
+            } else {
                 release_vector_storage(cache.data);
                 cache.failureReason = loadError.empty() ? "STBN load failed: unknown error" : loadError;
                 cache.state = HostCacheLoadState::Failed;
@@ -1315,7 +1204,7 @@
 
         WangCpuLoadedData loadedData;
         std::string loadError;
-        const bool ok = load_wang_cpu_uncached(loadedData, loadError);
+        const bool ok = load_wang_cpu_from_assets(loadedData, loadError);
         {
             std::lock_guard<std::mutex> lock(cache.mutex);
             cache.loaded = true;
@@ -1331,8 +1220,7 @@
                 cache.state = HostCacheLoadState::Ready;
                 cache.lastTouchedMs = host_asset_now_ms();
                 trace_host_asset_event("wang", "load", cache.tiles.size() + cache.lut.size());
-            }
-            else {
+            } else {
                 release_vector_storage(cache.tiles);
                 release_vector_storage(cache.lut);
                 cache.width = 0;
@@ -1379,38 +1267,149 @@
         resources.wangColors = 0;
     }
 
-    static void free_scan_error_flag(Resources& resources) noexcept {
+    static void release_scan_error_readback_entry(
+        Resources::PendingScanErrorReadback& entry,
+        bool waitForEvent) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (resources.scanErrorFlag) {
-            cudaFree(resources.scanErrorFlag);
-            resources.scanErrorFlag = nullptr;
+        cudaEvent_t ev = entry.eventOpaque
+            ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+            : nullptr;
+        if (waitForEvent && ev) {
+            (void)cudaEventSynchronize(ev);
         }
-        if (resources.scanErrorHost) {
-            cudaFreeHost(resources.scanErrorHost);
-            resources.scanErrorHost = nullptr;
+        if (entry.host) {
+            cudaFreeHost(entry.host);
         }
-        if (resources.scanErrorEventOpaque) {
-            cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(resources.scanErrorEventOpaque);
+        if (ev) {
             cudaEventDestroy(ev);
-            resources.scanErrorEventOpaque = nullptr;
         }
+#else
+        (void)waitForEvent;
 #endif
-        resources.scanErrorPending = 0;
+        entry = Resources::PendingScanErrorReadback{};
+    }
+
+    static void free_scan_error_readbacks(Resources& resources) noexcept {
+        for (Resources::PendingScanErrorReadback& entry : resources.pendingScanErrorReadbacks) {
+            release_scan_error_readback_entry(entry, true);
+        }
+        resources.pendingScanErrorReadbacks.clear();
     }
 
 
-    bool ensure_uploaded(
+    bool retain_scan_error_readback(
         Resources& resources,
-        const WorkingState& ws,
-        bool includeCurrentMediumUploads,
-        bool negativeMedium,
+        int*& host,
+        void*& eventOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)host;
+        (void)eventOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (!host || !eventOpaque) {
+            outError = "scan error readback staging missing";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        try {
+            Resources::PendingScanErrorReadback entry{};
+            entry.host = host;
+            entry.eventOpaque = eventOpaque;
+            resources.pendingScanErrorReadbacks.push_back(entry);
+        } catch (...) {
+            outError = "scan error readback retention failed";
+            return false;
+        }
+
+        host = nullptr;
+        eventOpaque = nullptr;
+        return true;
+#endif
+    }
+
+    bool poll_scan_error_readbacks(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        bool& outDetected,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)cudaStreamOpaque;
+        outDetected = false;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outDetected = false;
+        outError.clear();
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        std::vector<Resources::PendingScanErrorReadback>& pending =
+            resources.pendingScanErrorReadbacks;
+        for (std::size_t i = 0; i < pending.size();) {
+            Resources::PendingScanErrorReadback& entry = pending[i];
+            cudaEvent_t ev = entry.eventOpaque
+                ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+                : nullptr;
+            if (!entry.host || !ev) {
+                release_scan_error_readback_entry(entry, false);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                continue;
+            }
+
+            const cudaError_t pollErr = cudaEventQuery(ev);
+            if (pollErr == cudaSuccess) {
+                if (*entry.host != 0) {
+                    outDetected = true;
+                }
+                release_scan_error_readback_entry(entry, false);
+                pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
+                if (outDetected) {
+                    return true;
+                }
+                continue;
+            }
+            if (pollErr == cudaErrorNotReady) {
+                cudaStream_t stream = cudaStreamOpaque
+                    ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                    : nullptr;
+                const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
+                if (waitErr != cudaSuccess) {
+                    outError = std::string("CUDA scan error stream wait failed: ") +
+                        (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                    return false;
+                }
+                ++i;
+                continue;
+            }
+
+            outError = std::string("CUDA scan error event query failed: ") +
+                (cudaGetErrorString(pollErr) ? cudaGetErrorString(pollErr) : "(unknown)");
+            return false;
+        }
+        return true;
+#endif
+    }
+
+
+    bool ensure_grain_static_assets_uploaded(
+        Resources& resources,
         void* cudaStreamOpaque,
         std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
-        (void)ws;
-        (void)includeCurrentMediumUploads;
-        (void)negativeMedium;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
         return false;
@@ -1421,11 +1420,15 @@
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+
         const bool needStbnUpload = !resources.stbnData;
         const bool needWangUpload = !resources.wangTilesData || !resources.wangLutData;
+        if (!needStbnUpload && !needWangUpload) {
+            return true;
+        }
         lock.unlock();
 
-        enforce_host_asset_cache_policy("ensure_uploaded_pre");
+        enforce_host_asset_cache_policy("ensure_grain_static_pre");
 
         StbnCpuCache* stbnCache = nullptr;
         StbnCpuView stbnView{};
@@ -1484,10 +1487,8 @@
                     resources.stbnHeight = stbnView.height;
                     resources.stbnFrames = stbnView.frames;
                 }
-                else {
-                    if (stbnData) {
-                        cudaFree(stbnData);
-                    }
+                else if (stbnData) {
+                    cudaFree(stbnData);
                 }
             }
         }
@@ -1552,7 +1553,7 @@
         if (wangCache) {
             release_wang_cpu_view(*wangCache);
         }
-        enforce_host_asset_cache_policy("ensure_uploaded_post");
+        enforce_host_asset_cache_policy("ensure_grain_static_post");
         if (!stbnError.empty() && !gStbnWarned.exchange(true)) {
             JTRACE("CUDA", stbnError);
         }
@@ -1560,13 +1561,37 @@
             JTRACE("CUDA", wangError);
         }
         lock.lock();
+        reap_retire_queue_locked(resources);
+        return validate_resource_owner_locked(resources, outError, true);
+#endif
+    }
+
+    bool ensure_uploaded(
+        Resources& resources,
+        const WorkingState& ws,
+        bool includeCurrentMediumUploads,
+        bool negativeMedium,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)ws;
+        (void)includeCurrentMediumUploads;
+        (void)negativeMedium;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
+        std::unique_lock<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
         auto reacquire_resources_phase = [&](bool requireOwner) -> bool {
             reap_retire_queue_locked(resources);
             return validate_resource_owner_locked(resources, outError, requireOwner);
         };
-        if (!reacquire_resources_phase(true)) {
-            return false;
-        }
 
         if (ws.buildCounter == 0) {
             outError = "WorkingState buildCounter is 0";
@@ -1585,7 +1610,53 @@
         const bool coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
         const bool dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
 
-        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads) {
+        Spectral::SpectralContext& earlyCtx = Spectral::context();
+        const bool earlyHanatosAvailable = earlyCtx.hanatosAvailable.load(std::memory_order_acquire);
+        const int earlyHanatosN = earlyCtx.hanSpectra.size;
+        const int earlyHanatosK = earlyCtx.hanSpectra.numSamples;
+        const bool earlyWantHanatos =
+            earlyHanatosAvailable &&
+            earlyHanatosN > 0 &&
+            earlyHanatosK == Spectral::kNumSamples &&
+            !earlyCtx.hanSpectra.data.empty();
+        const bool earlyWantHanatosIntegrated =
+            earlyWantHanatos &&
+            static_cast<int>(ws.sensB.linear.size()) == earlyHanatosK &&
+            static_cast<int>(ws.sensG.linear.size()) == earlyHanatosK &&
+            static_cast<int>(ws.sensR.linear.size()) == earlyHanatosK;
+        const bool earlyNeedHanatosUpload =
+            earlyWantHanatos &&
+            (!resources.hanatosLut || resources.hanatosN != earlyHanatosN);
+        const bool earlyNeedHanatosRetire =
+            !earlyWantHanatos && resources.hanatosLut;
+        const bool earlyNeedHanatosIntegratedUpload =
+            earlyWantHanatosIntegrated &&
+            ((!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != earlyHanatosN) ||
+             resources.hanatosIntegratedKeyHash != wsCoreHash);
+        const bool earlyNeedHanatosIntegratedRetire =
+            !earlyWantHanatosIntegrated && resources.hanatosLutIntegrated;
+        const bool earlyMallettAvailable = earlyCtx.mallettAvailable.load(std::memory_order_acquire);
+        const int earlyMallettK = earlyCtx.mallettBasis.rows;
+        const int earlyMallettCols = earlyCtx.mallettBasis.cols;
+        const bool earlyWantMallett =
+            earlyMallettAvailable &&
+            earlyMallettK == Spectral::kNumSamples &&
+            earlyMallettCols == 3 &&
+            !earlyCtx.mallettBasis.data.empty();
+        const bool earlyNeedMallettUpload =
+            earlyWantMallett &&
+            (!resources.mallettBasis || resources.mallettBasisK != earlyMallettK);
+        const bool earlyNeedMallettRetire =
+            !earlyWantMallett && resources.mallettBasis;
+        const bool auxiliaryPackageNeedsUpdate =
+            earlyNeedHanatosUpload ||
+            earlyNeedHanatosRetire ||
+            earlyNeedHanatosIntegratedUpload ||
+            earlyNeedHanatosIntegratedRetire ||
+            earlyNeedMallettUpload ||
+            earlyNeedMallettRetire;
+
+        if (coreUpToDate && dirUpToDate && !includeCurrentMediumUploads && !auxiliaryPackageNeedsUpdate) {
             resources.uploadedBuildCounter = ws.buildCounter;
             return true;
         }
@@ -1599,7 +1670,7 @@
 
             resources.uploadedDirHash = wsDirHash;
             resources.uploadedBuildCounter = ws.buildCounter;
-            if (!includeCurrentMediumUploads) {
+            if (!includeCurrentMediumUploads && !auxiliaryPackageNeedsUpdate) {
                 return true;
             }
             lock.unlock();
@@ -1683,7 +1754,7 @@
                                     &lock,
                                     "grain density layer",
                                     outError)) {
-                                outError = std::string("upload grain density layers failed: ") + outError;
+                                outError.insert(0, "upload grain density layers failed: ");
                                 return false;
                             }
                         }
@@ -1719,7 +1790,8 @@
                                     &lock,
                                     "grain density layer",
                                     layersError)) {
-                                outError = std::string("upload grain density layers failed: ") + layersError;
+                                outError = layersError;
+                                outError.insert(0, "upload grain density layers failed: ");
                                 free_density_layers(resources);
                                 return false;
                             }
@@ -2017,10 +2089,10 @@
                 resources.printGammaM = gamma_safe(p.gammaFactor[1]);
                 resources.printGammaY = gamma_safe(p.gammaFactor[2]);
 
-                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached per WorkingState build.
+                // Preflash raw is computed for (y=m=c=0, Dneg=0) and cached by recipe key.
                 const bool needPreflashBuild =
                     !resources.printPreflashValid ||
-                    resources.printPreflashBuildCounter != ws.buildCounter ||
+                    resources.printPreflashKeyHash != wsCoreHash ||
                     resources.printPreflashShapeK != Spectral::gShape.K;
                 if (needPreflashBuild) {
                     float preflashRaw[3] = { 0.0f, 0.0f, 0.0f };
@@ -2034,13 +2106,13 @@
 
                     const bool stillNeedPreflashBuild =
                         !resources.printPreflashValid ||
-                        resources.printPreflashBuildCounter != ws.buildCounter ||
+                        resources.printPreflashKeyHash != wsCoreHash ||
                         resources.printPreflashShapeK != Spectral::gShape.K;
                     if (stillNeedPreflashBuild) {
                         if (!ok) {
                             resources.printPreflashRaw[0] = resources.printPreflashRaw[1] = resources.printPreflashRaw[2] = 0.0f;
                             resources.printPreflashValid = false;
-                            resources.printPreflashBuildCounter = ws.buildCounter;
+                            resources.printPreflashKeyHash = wsCoreHash;
                             resources.printPreflashShapeK = 0;
                         }
                         else {
@@ -2048,7 +2120,7 @@
                             resources.printPreflashRaw[1] = preflashRaw[1];
                             resources.printPreflashRaw[2] = preflashRaw[2];
                             resources.printPreflashValid = true;
-                            resources.printPreflashBuildCounter = ws.buildCounter;
+                            resources.printPreflashKeyHash = wsCoreHash;
                             resources.printPreflashShapeK = shapeK;
                         }
                     }
@@ -2088,7 +2160,7 @@
                     }
                     resources.hanatosLutIntegrated = nullptr;
                     resources.hanatosNIntegrated = 0;
-                    resources.hanatosIntegratedBuildCounter = 0;
+                    resources.hanatosIntegratedKeyHash = 0;
                 }
             } else {
                 if (!resources.hanatosLut || resources.hanatosN != N) {
@@ -2131,7 +2203,7 @@
                 }
             }
 
-            // Build + upload the Hanatos LUT preintegrated with per-instance sensitivities.
+            // Build + upload the Hanatos LUT preintegrated with recipe sensitivities.
             const bool sensOk =
                 static_cast<int>(ws.sensB.linear.size()) == K &&
                 static_cast<int>(ws.sensG.linear.size()) == K &&
@@ -2146,12 +2218,12 @@
                     }
                     resources.hanatosLutIntegrated = nullptr;
                     resources.hanatosNIntegrated = 0;
-                    resources.hanatosIntegratedBuildCounter = 0;
+                    resources.hanatosIntegratedKeyHash = 0;
                 }
             }
             else {
                 const bool needAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
-                const bool needUpload = needAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
+                const bool needUpload = needAlloc || resources.hanatosIntegratedKeyHash != wsCoreHash;
                 if (needUpload) {
                     // Build CPU LUT outside the resources lock.
                     lock.unlock();
@@ -2161,7 +2233,7 @@
                     reap_retire_queue_locked(resources);
 
                     const bool stillNeedAlloc = (!resources.hanatosLutIntegrated || resources.hanatosNIntegrated != N);
-                    const bool stillNeedUpload = stillNeedAlloc || resources.hanatosIntegratedBuildCounter != ws.buildCounter;
+                    const bool stillNeedUpload = stillNeedAlloc || resources.hanatosIntegratedKeyHash != wsCoreHash;
                     if (stillNeedUpload) {
                         const std::size_t valueCount = cpu.size();
                         if (valueCount > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -2215,7 +2287,7 @@
                             }
                         }
                         resources.hanatosNIntegrated = N;
-                        resources.hanatosIntegratedBuildCounter = ws.buildCounter;
+                        resources.hanatosIntegratedKeyHash = wsCoreHash;
                     }
                 }
             }
@@ -2371,8 +2443,8 @@
             const size_t bytes = cpu.size() * sizeof(double);
             if (dst->log2XYZ && dst->res == res) {
                 double* const deviceLut = dst->log2XYZ;
-                const bool waitOk = wait_for_last_use_event_snapshot(
-                    resources.lastUseEventOpaque,
+                const bool waitOk = wait_for_frame_use_events_locked(
+                    resources,
                     cudaStreamOpaque,
                     "scan LUT",
                     outError);
@@ -2435,43 +2507,6 @@
             dst->hash = expectedHash;
             return true;
         }
-#endif
-    }
-
-    bool ensure_scan_error_flag(Resources& resources, void* cudaStreamOpaque, std::string& outError) {
-#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-        (void)resources;
-        (void)cudaStreamOpaque;
-        outError = "CUDA is not enabled";
-        return false;
-#else
-        std::lock_guard<std::mutex> lock(resources.m);
-        if (!validate_resource_owner_locked(resources, outError, true)) {
-            return false;
-        }
-
-        if (!resources.scanErrorFlag) {
-            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&resources.scanErrorFlag), sizeof(int));
-            if (err != cudaSuccess) {
-                outError = std::string("cudaMalloc(scan error flag) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-                resources.scanErrorFlag = nullptr;
-                return false;
-            }
-        }
-        if (!resources.scanErrorHost) {
-            cudaError_t err = cudaMallocHost(reinterpret_cast<void**>(&resources.scanErrorHost), sizeof(int));
-            if (err != cudaSuccess) {
-                resources.scanErrorHost = nullptr;
-            }
-        }
-        if (!resources.scanErrorEventOpaque) {
-            cudaEvent_t ev = nullptr;
-            cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-            if (err == cudaSuccess && ev) {
-                resources.scanErrorEventOpaque = reinterpret_cast<void*>(ev);
-            }
-        }
-        return true;
 #endif
     }
 
@@ -2600,8 +2635,8 @@
         }
         if (overwriting) {
             float* const printIllumFiltered = resources.printIllumFiltered;
-            const bool waitOk = wait_for_last_use_event_snapshot(
-                resources.lastUseEventOpaque,
+            const bool waitOk = wait_for_frame_use_events_locked(
+                resources,
                 cudaStreamOpaque,
                 "print illuminant filtered",
                 outError);
@@ -2660,89 +2695,96 @@
     }
 
     void purge_pinned_upload_staging_for_context(int deviceId, void* contextOpaque) noexcept {
+        try {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (deviceId < 0 || contextOpaque == nullptr) {
-            return;
-        }
-
-        const PinnedUploadContextKey key{ deviceId, contextOpaque };
-        std::vector<PinnedUploadBlock> blocksToFree;
-        const bool registryIdle =
-            ResourceManager::global_state().registryLiveManagers.load(std::memory_order_relaxed) == 0;
-        {
-            PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
-            std::lock_guard<std::mutex> lock(policyState.mutex);
-            const auto it = policyState.pools.find(key);
-            if (it == policyState.pools.end()) {
+            if (deviceId < 0 || contextOpaque == nullptr) {
                 return;
             }
-            const std::uint64_t nowMs = host_asset_now_ms();
-            PinnedUploadPool retained{};
-            retained.nextBlockId = it->second.nextBlockId;
-            retained.nextTrimSequence = it->second.nextTrimSequence;
-            for (PinnedUploadBlock& block : it->second.blocks) {
-                refresh_pinned_block_completion_locked(block, nowMs);
-                if (block.reserved || !block.ptr) {
-                    retained.blocks.push_back(block);
-                    retained.totalBytes += block.capacity;
-                    continue;
-                }
-                if (block.inFlight && !registryIdle) {
-                    retained.blocks.push_back(block);
-                    retained.totalBytes += block.capacity;
-                    continue;
-                }
-                blocksToFree.push_back(block);
-            }
 
-            const std::size_t oldBytes = it->second.totalBytes;
-            const std::size_t retainedBytes = retained.totalBytes;
-            if (oldBytes >= retainedBytes) {
-                const std::size_t reclaimed = oldBytes - retainedBytes;
-                if (policyState.totalBytesAllContexts >= reclaimed) {
-                    policyState.totalBytesAllContexts -= reclaimed;
+            const PinnedUploadContextKey key{ deviceId, contextOpaque };
+            std::vector<PinnedUploadBlock> blocksToFree;
+            const bool registryIdle =
+                ResourceManager::global_state().registryLiveManagers.load(std::memory_order_relaxed) == 0;
+            {
+                PinnedUploadStagingPolicyState& policyState = pinned_upload_staging_policy_state();
+                std::lock_guard<std::mutex> lock(policyState.mutex);
+                const auto it = policyState.pools.find(key);
+                if (it == policyState.pools.end()) {
+                    return;
+                }
+                const std::uint64_t nowMs = host_asset_now_ms();
+                PinnedUploadPool retained{};
+                retained.nextBlockId = it->second.nextBlockId;
+                retained.nextTrimSequence = it->second.nextTrimSequence;
+                retained.blocks.reserve(it->second.blocks.size());
+                blocksToFree.reserve(it->second.blocks.size());
+                for (PinnedUploadBlock& block : it->second.blocks) {
+                    refresh_pinned_block_completion_locked(block, nowMs);
+                    if (block.reserved || !block.ptr) {
+                        retained.blocks.push_back(block);
+                        retained.totalBytes += block.capacity;
+                        continue;
+                    }
+                    if (block.inFlight && !registryIdle) {
+                        retained.blocks.push_back(block);
+                        retained.totalBytes += block.capacity;
+                        continue;
+                    }
+                    blocksToFree.push_back(block);
+                }
+
+                const std::size_t oldBytes = it->second.totalBytes;
+                const std::size_t retainedBytes = retained.totalBytes;
+                if (oldBytes >= retainedBytes) {
+                    const std::size_t reclaimed = oldBytes - retainedBytes;
+                    if (policyState.totalBytesAllContexts >= reclaimed) {
+                        policyState.totalBytesAllContexts -= reclaimed;
+                    }
+                    else {
+                        policyState.totalBytesAllContexts = 0;
+                    }
+                }
+
+                if (retained.blocks.empty()) {
+                    policyState.pools.erase(it);
                 }
                 else {
-                    policyState.totalBytesAllContexts = 0;
+                    it->second = std::move(retained);
+                }
+                publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
+            }
+
+            if (blocksToFree.empty()) {
+                return;
+            }
+
+            int previousDevice = -1;
+            const cudaError_t prevErr = cudaGetDevice(&previousDevice);
+            const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
+            const bool needRestore = havePreviousDevice && previousDevice != deviceId;
+            (void)cudaSetDevice(deviceId);
+            for (const PinnedUploadBlock& block : blocksToFree) {
+                if (block.inFlight && block.doneEventOpaque) {
+                    cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                    (void)cudaEventSynchronize(doneEvent);
+                }
+                if (block.doneEventOpaque) {
+                    cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
+                    (void)cudaEventDestroy(doneEvent);
+                }
+                if (block.ptr) {
+                    (void)cudaFreeHost(block.ptr);
                 }
             }
-
-            if (retained.blocks.empty()) {
-                policyState.pools.erase(it);
+            if (needRestore) {
+                (void)cudaSetDevice(previousDevice);
             }
-            else {
-                it->second = std::move(retained);
-            }
-            publish_pinned_upload_staging_bytes(policyState.totalBytesAllContexts);
-        }
-
-        if (blocksToFree.empty()) {
-            return;
-        }
-
-        int previousDevice = -1;
-        const cudaError_t prevErr = cudaGetDevice(&previousDevice);
-        const bool havePreviousDevice = (prevErr == cudaSuccess && previousDevice >= 0);
-        const bool needRestore = havePreviousDevice && previousDevice != deviceId;
-        (void)cudaSetDevice(deviceId);
-        for (const PinnedUploadBlock& block : blocksToFree) {
-            if (block.inFlight && block.doneEventOpaque) {
-                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
-                (void)cudaEventSynchronize(doneEvent);
-            }
-            if (block.doneEventOpaque) {
-                cudaEvent_t doneEvent = reinterpret_cast<cudaEvent_t>(block.doneEventOpaque);
-                (void)cudaEventDestroy(doneEvent);
-            }
-            if (block.ptr) {
-                (void)cudaFreeHost(block.ptr);
-            }
-        }
-        if (needRestore) {
-            (void)cudaSetDevice(previousDevice);
-        }
 #else
-        (void)deviceId;
-        (void)contextOpaque;
+            (void)deviceId;
+            (void)contextOpaque;
 #endif
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
     }

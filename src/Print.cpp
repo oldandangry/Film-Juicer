@@ -3,18 +3,14 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <cstring>
-#include <filesystem>
-#include <iomanip>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <utility>
 #include "GaussianSciPy.h"
-
-extern const std::string gDataDir;
 
 namespace Print {
     namespace {
@@ -27,21 +23,6 @@ namespace Print {
         template <typename PairT>
         inline bool pair_has_finite_components(const PairT& p) {
             return is_finite(p.first) && is_finite(p.second);
-        }
-
-        inline bool any_true_triplet(const std::array<bool, 3>& values) {
-            const bool* valueIt = values.data();
-            const bool* const valueEnd = valueIt + 3;
-            for (; valueIt < valueEnd; ++valueIt) {
-                if (*valueIt) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        inline bool has_effective_shift(double shift, double epsilon) {
-            return is_finite(shift) && std::fabs(shift) >= epsilon;
         }
 
         inline bool is_nonzero_finite(double value) {
@@ -58,258 +39,6 @@ namespace Print {
             }
             sum += value;
             ++count;
-        }
-
-        Spectral::Curve build_blackbody_curve(double temperature)
-        {
-            Spectral::Curve c;
-            if (!(temperature > 0.0)) {
-                c.lambda_nm.clear();
-                c.linear.clear();
-                return c;
-            }
-            const int K = Spectral::gShape.K;
-            Spectral::assign_reference_axis(c.lambda_nm);
-            c.linear.resize(static_cast<size_t>(K));
-            const float* wavelengths = Spectral::gShape.wavelengths.data();
-            float* outLinear = c.linear.data();
-            const float tempF = static_cast<float>(temperature);
-            for (int i = 0; i < K; ++i) {
-                outLinear[i] = Spectral::planck_blackbody(wavelengths[i], tempF);
-            }
-            Spectral::mean_power_normalize(c.linear);
-            return c;
-        }
-
-        Spectral::Curve build_reference_illuminant_curve(const std::string& label)
-        {
-            const std::string normalized = IlluminantKeys::normalize(label);
-
-            const bool hasDataDir = !gDataDir.empty();
-            const std::filesystem::path base = hasDataDir
-                ? std::filesystem::path(gDataDir)
-                : std::filesystem::path();
-
-            auto illuminantPath = [&](const char* file) -> std::string {
-                if (!hasDataDir) {
-                    return {};
-                }
-                // Note: agx-emulsion uses colour-science library for illuminants, not CSVs
-                // We keep CSV loading for backward compatibility; verify data matches colour-science
-                std::filesystem::path p = base / "illuminants" / file;
-                p.make_preferred();
-                return p.string();
-                };
-            auto filterPath = [&](const char* file) -> std::string {
-                if (!hasDataDir) {
-                    return {};
-                }
-                std::filesystem::path p = base / "filters" / "heat_absorbing" / "schott" / file;
-                p.make_preferred();
-                return p.string();
-                };
-            auto lensPath = [&](const char* file) -> std::string {
-                if (!hasDataDir) {
-                    return {};
-                }
-                // Using Canon 24mm f/2.8 IS lens transmission data from agx-emulsion
-                std::filesystem::path p = base / "filters" / "lens_transmission" / "canon" / file;
-                p.make_preferred();
-                return p.string();
-                };
-
-            auto fallback = []() -> Spectral::Curve {
-                return Spectral::build_curve_equal_energy_pinned();
-                };
-
-            if (normalized.empty() || normalized == "D65") {
-                const std::string path = illuminantPath("D65.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_D65_pinned(path);
-            }
-            if (normalized == "D55") {
-                const std::string path = illuminantPath("D55.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_D55_pinned(path);
-            }
-            if (normalized == "D50") {
-                const std::string path = illuminantPath("D50.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_D50_pinned(path);
-            }
-            if (normalized == "T" || normalized == "INCANDESCENT") {
-                const std::string path = illuminantPath("T.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_T_pinned(path);
-            }
-            if (normalized == "K75P") {
-                const std::string path = illuminantPath("K75P.csv");
-                if (path.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_K75P_pinned(path);
-            }
-            if (normalized == "TH-KG3-L" || normalized == "TH-KG3") {
-                const std::string kg3 = filterPath("KG3.csv");
-                const std::string lens = lensPath("canon_24_f28_is.csv");
-                if (kg3.empty() || lens.empty()) {
-                    return fallback();
-                }
-                return Spectral::build_curve_TH_KG3_L_pinned(kg3, lens);
-            }
-            if (normalized == "EQUAL-ENERGY") {
-                return Spectral::build_curve_equal_energy_pinned();
-            }
-            if (normalized.rfind("BB", 0) == 0 && normalized.size() > 2) {
-                std::string tempStr;
-                tempStr.reserve(normalized.size() - 2);
-                const size_t normalizedCount = normalized.size();
-                const char* normalizedData = normalized.data();
-                for (size_t i = 2; i < normalizedCount; ++i) {
-                    const char ch = normalizedData[i];
-                    if (ch != '-') {
-                        tempStr.push_back(ch);
-                    }
-                }
-                try {
-                    double temp = std::stod(tempStr);
-                    if (temp > 0.0) {
-                        return build_blackbody_curve(temp);
-                    }
-                }
-                catch (...) {
-                    // fall through to fallback
-                }
-            }
-            return fallback();
-        }
-
-        // DEPRECATED: This function was previously used to balance print paper sensitivities,
-        // but that approach violates agx-emulsion parity. Per the Python reference, only FILM
-        // sensitivities are balanced (using balance_negative_under_reference_non_global in
-        // SpectralMath.h). Print paper sensitivities should be used as-is from the profile.
-        // This function is kept for reference but is no longer called.
-        // See claude-review.md for detailed analysis of why print balancing causes color shifts.
-        bool balance_log_sensitivities(const Spectral::Curve& illuminant,
-            FloatPairs& r_sens,
-            FloatPairs& g_sens,
-            FloatPairs& b_sens,
-            std::array<float, 3>& outCorrection,
-            std::array<float, 3>* outLogExposureOffsets = nullptr)
-        {
-            outCorrection = { 1.0f, 1.0f, 1.0f };
-            if (outLogExposureOffsets) {
-                *outLogExposureOffsets = { 0.0f, 0.0f, 0.0f };
-            }
-            if (illuminant.linear.empty()) {
-                return false;
-            }
-
-            auto integrate_channel = [&](const FloatPairs& channel) -> double {
-                auto resampled = Spectral::resample_pairs_linear_to_reference_axis(channel);
-                if (resampled.empty()) {
-                    return std::numeric_limits<double>::quiet_NaN();
-                }
-                const size_t count = std::min(resampled.size(), illuminant.linear.size());
-                const std::pair<float, float>* resampledData = resampled.data();
-                const float* illuminantData = illuminant.linear.data();
-                double sum = 0.0;
-                bool any = false;
-                for (size_t i = 0; i < count; ++i, ++resampledData, ++illuminantData) {
-                    const float logSens = resampledData->second;
-                    const float illumVal = *illuminantData;
-                    if (!is_finite(illumVal)) {
-                        continue;
-                    }
-                    double linearSens = 0.0;
-                    if (is_finite(logSens)) {
-                        linearSens = std::pow(10.0, static_cast<double>(logSens));
-                        if (!is_finite(linearSens) || linearSens < 0.0) {
-                            linearSens = 0.0;
-                        }
-                    }
-                    sum += static_cast<double>(illumVal) * linearSens;
-                    any = true;
-                }
-                if (!any) {
-                    return std::numeric_limits<double>::quiet_NaN();
-                }
-                return sum;
-                };
-
-            std::array<double, 3> exposures{
-                integrate_channel(r_sens),
-                integrate_channel(g_sens),
-                integrate_channel(b_sens)
-            };
-            const double* exposureData = exposures.data();
-            const size_t exposureCount = exposures.size();
-
-            const double* exposureIt = exposureData;
-            for (size_t i = 0; i < exposureCount; ++i, ++exposureIt) {
-                const double v = *exposureIt;
-                if (!(v > 0.0) || !is_finite(v)) {
-                    return false;
-                }
-            }
-
-            std::array<float, 3> corrections{};
-            const size_t correctionCount = corrections.size();
-            const double midExposure = exposureData[1];
-            float* correctionData = corrections.data();
-            for (size_t i = 0; i < correctionCount; ++i, ++correctionData) {
-                const double channelExposure = exposureData[i];
-                *correctionData = static_cast<float>(midExposure / channelExposure);
-            }
-
-            std::array<float, 3> logCorr{};
-            const float* correctionRead = corrections.data();
-            float* logCorrData = logCorr.data();
-            for (size_t i = 0; i < correctionCount; ++i, ++correctionRead, ++logCorrData) {
-                const float corr = *correctionRead;
-                if (!(corr > 0.0f) || !is_finite(corr)) {
-                    return false;
-                }
-                *logCorrData = static_cast<float>(std::log10(corr));
-            }
-
-            auto apply = [](FloatPairs& samples, float logOffset) {
-                if (logOffset == 0.0f) {
-                    return;
-                }
-                std::pair<float, float>* sampleData = samples.data();
-                const size_t sampleCount = samples.size();
-                for (size_t i = 0; i < sampleCount; ++i, ++sampleData) {
-                    float& y = sampleData->second;
-                    if (is_finite(y)) {
-                        y += logOffset;
-                    }
-                }
-                };
-
-            apply(r_sens, logCorr[0]);
-            apply(g_sens, logCorr[1]);
-            apply(b_sens, logCorr[2]);
-
-            outCorrection = corrections;
-            if (outLogExposureOffsets) {
-                *outLogExposureOffsets = logCorr;
-            }
-            return true;
-        }
-
-        FloatPairs load_csv_pairs_silent(const std::string& path)
-        {
-            try { return Spectral::load_csv_pairs(path); }
-            catch (...) { return {}; }
         }
 
         void reset_profile_state(Profile& out, Runtime* runtime)
@@ -348,12 +77,9 @@ namespace Print {
             Profiles::AgxFilmProfile profile;
         };
 
-        JsonProfileContext load_json_profile(const std::string& jsonProfilePath)
-        {
+        JsonProfileContext load_json_profile(const JuicerAssets::PrintPaperAsset& asset) {
             JsonProfileContext ctx;
-            if (!jsonProfilePath.empty()) {
-                ctx.hasProfile = Profiles::load_agx_film_profile_json(jsonProfilePath, ctx.profile);
-            }
+            ctx.hasProfile = JuicerProcess::root().assets().load_agx_print_profile(asset, ctx.profile);
             return ctx;
         }
 
@@ -404,21 +130,25 @@ namespace Print {
                 channel_has_finite_samples(ctx.profile.baseMid);
         }
 
+        struct JsonDyeSensitivityOverrideTargets {
+            FloatPairs& c_eps;
+            FloatPairs& m_eps;
+            FloatPairs& y_eps;
+            FloatPairs& r_sens;
+            FloatPairs& g_sens;
+            FloatPairs& b_sens;
+            bool& usedJsonEps;
+            bool& usedJsonSens;
+        };
+
         void apply_json_dye_and_sensitivity_overrides(
             const JsonProfileContext& ctx,
             Profile& out,
             Runtime* runtime,
-            FloatPairs& c_eps,
-            FloatPairs& m_eps,
-            FloatPairs& y_eps,
-            FloatPairs& r_sens,
-            FloatPairs& g_sens,
-            FloatPairs& b_sens,
-            bool& usedJsonEps,
-            bool& usedJsonSens)
+            const JsonDyeSensitivityOverrideTargets& targets)
         {
-            usedJsonEps = false;
-            usedJsonSens = false;
+            targets.usedJsonEps = false;
+            targets.usedJsonSens = false;
             if (!ctx.hasProfile) {
                 return;
             }
@@ -428,10 +158,10 @@ namespace Print {
             const bool jsonDyeM = channel_has_finite_samples(profileJson.dyeM);
             const bool jsonDyeY = channel_has_finite_samples(profileJson.dyeY);
             if (jsonDyeC && jsonDyeM && jsonDyeY) {
-                c_eps = profileJson.dyeC;
-                m_eps = profileJson.dyeM;
-                y_eps = profileJson.dyeY;
-                usedJsonEps = true;
+                targets.c_eps = profileJson.dyeC;
+                targets.m_eps = profileJson.dyeM;
+                targets.y_eps = profileJson.dyeY;
+                targets.usedJsonEps = true;
             }
             else if (!profileJson.dyeC.empty() || !profileJson.dyeM.empty() || !profileJson.dyeY.empty()) {
                 std::ostringstream warn;
@@ -445,10 +175,10 @@ namespace Print {
             const bool jsonSensR = channel_has_finite_samples(profileJson.logSensR);
             const bool jsonSensG = channel_has_finite_samples(profileJson.logSensG);
             const bool jsonSensB = channel_has_finite_samples(profileJson.logSensB);
-            if (jsonSensR) r_sens = profileJson.logSensR;
-            if (jsonSensG) g_sens = profileJson.logSensG;
-            if (jsonSensB) b_sens = profileJson.logSensB;
-            usedJsonSens = jsonSensR && jsonSensG && jsonSensB;
+            if (jsonSensR) targets.r_sens = profileJson.logSensR;
+            if (jsonSensG) targets.g_sens = profileJson.logSensG;
+            if (jsonSensB) targets.b_sens = profileJson.logSensB;
+            targets.usedJsonSens = jsonSensR && jsonSensG && jsonSensB;
             if ((jsonSensR || jsonSensG || jsonSensB) && !(jsonSensR && jsonSensG && jsonSensB)) {
                 std::ostringstream warn;
                 warn << "PROFILE_LOAD partial JSON sensitivity override (finite R/G/B="
@@ -492,11 +222,11 @@ namespace Print {
 
                     if (is_finite(out.midNeutralDensity[0])) {
                         float* outMidNeutralData = out.midNeutralDensity.data();
-                        const float fallback = *outMidNeutralData;
+                        const float firstFiniteDensity = *outMidNeutralData;
                         ++outMidNeutralData;
                         for (int i = 1; i < 3; ++i, ++outMidNeutralData) {
                             if (!is_finite(*outMidNeutralData)) {
-                                *outMidNeutralData = fallback;
+                                *outMidNeutralData = firstFiniteDensity;
                             }
                         }
                     }
@@ -652,10 +382,7 @@ namespace Print {
             return cast_pairs<FloatPairs>(in);
         }
 
-        DensityCurves load_density_curves(const JsonProfileContext& ctx,
-            const std::string& dir,
-            const std::string& jsonProfilePath)
-        {
+        DensityCurves load_density_curves(const JsonProfileContext& ctx, const std::string& profileKey) {
             DensityCurves curves;
             const bool traceInfo = JTRACE_ENABLED(1);
             if (ctx.hasProfile) {
@@ -664,15 +391,15 @@ namespace Print {
                 const auto& jsonG = profileJson.densityCurveG;
                 const auto& jsonB = profileJson.densityCurveB;
                 if (!jsonR.empty() && !jsonG.empty() && !jsonB.empty()) {
-                    curves.cyan = promote_pairs(jsonR);  // R -> C
+                    curves.cyan = promote_pairs(jsonR);    // R -> C
                     curves.magenta = promote_pairs(jsonG); // G -> M
-                    curves.yellow = promote_pairs(jsonB); // B -> Y
+                    curves.yellow = promote_pairs(jsonB);  // B -> Y
                     curves.usedJson = true;
                     if (traceInfo) {
                         std::string msg;
-                        msg.reserve(128 + jsonProfilePath.size());
-                        msg = "PROFILE_LOAD density curves from JSON '";
-                        msg += jsonProfilePath;
+                        msg.reserve(128 + profileKey.size());
+                        msg = "PROFILE_LOAD density curves from JSON profile key '";
+                        msg += profileKey;
                         msg += "' samples C/M/Y=";
                         msg += std::to_string(jsonR.size());
                         msg += "/";
@@ -680,26 +407,18 @@ namespace Print {
                         msg += "/";
                         msg += std::to_string(jsonB.size());
                         JTRACE("PRINT",
-                            msg);
+                               msg);
                     }
-                }
-                else if (traceInfo) {
+                } else if (traceInfo) {
                     JTRACE("PRINT",
-                        "PROFILE_LOAD missing JSON density curves in '" + jsonProfilePath + "'");
+                           "PROFILE_LOAD missing JSON density curves for profile key '" + profileKey + "'");
                 }
-            }
-            else if (traceInfo) {
+            } else if (traceInfo) {
                 JTRACE("PRINT",
-                    "PROFILE_LOAD no JSON profile for density curves in '" + dir + "'");
+                       "PROFILE_LOAD no JSON profile for density curves for profile key '" + profileKey + "'");
             }
 
             return curves;
-        }
-
-        void sort_curve(DoublePairs& curve)
-        {
-            std::sort(curve.begin(), curve.end(),
-                [](const auto& a, const auto& b) { return a.first < b.first; });
         }
 
         double sample_curve_at(const DoublePairs& curve, double x)
@@ -812,232 +531,6 @@ namespace Print {
 
             outLogE = xAtMax;
             return false;
-        }
-
-        void apply_channel_shift(DoublePairs& curve, double shift)
-        {
-            if (!has_effective_shift(shift, 1e-12)) {
-                return;
-            }
-            std::pair<double, double>* samples = curve.data();
-            const size_t count = curve.size();
-            for (size_t i = 0; i < count; ++i, ++samples) {
-                double& x = samples->first;
-                if (is_finite(x)) {
-                    x -= shift;
-                }
-            }
-        }
-
-        // DEPRECATED: This function was used to align print density curves for parity with
-        // agx-emulsion. However, per the Python reference, only FILM density curves undergo
-        // parity alignment. Print paper curves should be used as-is from the profile.
-        // This function is no longer called. See claude-review.md for details.
-        std::array<double, 3> align_density_curves_for_parity(DoublePairs& c_dc,
-            DoublePairs& m_dc,
-            DoublePairs& y_dc)
-        {
-            sort_curve(c_dc);
-            sort_curve(m_dc);
-            sort_curve(y_dc);
-
-            double leShiftC = 0.0;
-            double leShiftM = 0.0;
-            double leShiftY = 0.0;
-
-            if (!m_dc.empty()) {
-                const double greenDensityAtZero = sample_curve_at(m_dc, 0.0);
-
-                if (is_finite(greenDensityAtZero)) {
-                    double tmpShift = 0.0;
-                    if (find_logE_for_density(c_dc, greenDensityAtZero, tmpShift)) {
-                        leShiftC = tmpShift;
-                    }
-                    if (find_logE_for_density(m_dc, greenDensityAtZero, tmpShift)) {
-                        leShiftM = tmpShift;
-                    }
-                    if (find_logE_for_density(y_dc, greenDensityAtZero, tmpShift)) {
-                        leShiftY = tmpShift;
-                    }
-                }
-            }
-
-            apply_channel_shift(c_dc, leShiftC);
-            apply_channel_shift(m_dc, leShiftM);
-            apply_channel_shift(y_dc, leShiftY);
-
-            const double shiftTolerance = 1e-4;
-            if (std::fabs(leShiftM) > shiftTolerance) {
-                JTRACE("PRINT", "WARN: Magenta density curve shift deviates from zero; check profile balance.");
-            }
-
-            return { leShiftC, leShiftM, leShiftY };
-
-        }
-
-        // DEPRECATED: This function was used to shift print density curves based on sensitivity
-        // balancing offsets. However, print sensitivities should not be balanced per agx-emulsion
-        // parity, so these offsets should never be computed or applied. This function is kept for
-        // reference but is no longer called. See claude-review.md for details.
-        void apply_density_log_exposure_offsets(DoublePairs& c_dc,
-            DoublePairs& m_dc,
-            DoublePairs& y_dc,
-            const std::array<float, 3>& logExposureOffsets)
-        {
-            auto apply = [](DoublePairs& channel, double offset) {
-                if (channel.empty()) {
-                    return;
-                }
-                DoublePairs source = channel;
-                sort_curve(source);
-                DoublePairs adjusted = channel;
-                std::pair<double, double>* adjustedData = adjusted.data();
-                const size_t adjustedCount = adjusted.size();
-                for (size_t i = 0; i < adjustedCount; ++i, ++adjustedData) {
-                    auto& sample = *adjustedData;
-                    if (!is_finite(sample.first)) {
-                        continue;
-                    }
-                    const double query = sample.first + offset;
-                    sample.second = sample_curve_at(source, query);
-                }
-                channel = std::move(adjusted);
-                };
-
-            const double shiftC = static_cast<double>(logExposureOffsets[0]);
-            const double shiftM = static_cast<double>(logExposureOffsets[1]);
-            const double shiftY = static_cast<double>(logExposureOffsets[2]);
-            if (has_effective_shift(shiftC, 1e-7)) {
-                apply(c_dc, shiftC);
-            }
-            if (has_effective_shift(shiftM, 1e-7)) {
-                apply(m_dc, shiftM);
-            }
-            if (has_effective_shift(shiftY, 1e-7)) {
-                apply(y_dc, shiftY);
-            }
-        }
-
-        inline void load_finite_reference_triplet(
-            const std::vector<float>& source,
-            std::array<double, 3>& values,
-            std::array<bool, 3>& validFlags)
-        {
-            const size_t count = std::min<size_t>(3, source.size());
-            const float* sourceData = source.data();
-            for (size_t i = 0; i < count; ++i, ++sourceData) {
-                const float value = *sourceData;
-                if (!is_finite(value)) {
-                    continue;
-                }
-                values[i] = static_cast<double>(value);
-                validFlags[i] = true;
-            }
-        }
-
-        inline void build_delta_triplet(
-            const std::array<double, 3>& measured,
-            const std::array<bool, 3>& measuredValid,
-            const std::array<double, 3>& reference,
-            const std::array<bool, 3>& referenceValid,
-            std::array<double, 3>& delta,
-            std::array<bool, 3>& deltaValid)
-        {
-            const bool* measuredValidIt = measuredValid.data();
-            const bool* referenceValidIt = referenceValid.data();
-            const double* measuredIt = measured.data();
-            const double* referenceIt = reference.data();
-            double* deltaIt = delta.data();
-            bool* deltaValidIt = deltaValid.data();
-            for (int i = 0; i < 3; ++i,
-                 ++measuredValidIt, ++referenceValidIt, ++measuredIt, ++referenceIt,
-                 ++deltaIt, ++deltaValidIt) {
-                if (*measuredValidIt && *referenceValidIt) {
-                    *deltaIt = *measuredIt - *referenceIt;
-                    *deltaValidIt = true;
-                }
-            }
-        }
-
-        inline void append_triplet_segment(
-            std::ostringstream& oss,
-            const char* label,
-            const std::array<double, 3>& values,
-            const std::array<bool, 3>& validFlags)
-        {
-            oss << label << '[';
-            const double* valueData = values.data();
-            const bool* validData = validFlags.data();
-            for (size_t i = 0; i < 3; ++i, ++valueData, ++validData) {
-                if (i > 0) {
-                    oss << ", ";
-                }
-                if (*validData) {
-                    oss << *valueData;
-                }
-                else {
-                    oss << "nan";
-                }
-            }
-            oss << ']';
-        }
-
-        // DEPRECATED: This diagnostic function was used to emit a neutral exposure probe after
-        // print sensitivity balancing. Since print sensitivities are no longer balanced per
-        // agx-emulsion parity, this probe is no longer needed. Kept for reference only.
-        void emit_neutral_exposure_probe(const DensityCurves& curves,
-            const std::array<float, 3>& neutralDensity,
-            const std::vector<float>& referenceLogExposure)
-        {
-            std::array<double, 3> measured{ {0.0, 0.0, 0.0} };
-            std::array<bool, 3> measuredValid{ {false, false, false} };
-            const DoublePairs* channels[3] = { &curves.cyan, &curves.magenta, &curves.yellow };
-            const DoublePairs* const* channelData = channels;
-            const DoublePairs* const* const channelEnd = channelData + 3;
-            size_t channelIndex = 0;
-            for (; channelData < channelEnd; ++channelData, ++channelIndex) {
-                const DoublePairs& channel = **channelData;
-                if (channel.empty()) {
-                    continue;
-                }
-                const float density = neutralDensity[channelIndex];
-                if (!is_finite(density)) {
-                    continue;
-                }
-                double logE = 0.0;
-                if (find_logE_for_density(channel, static_cast<double>(density), logE)) {
-                    measured[channelIndex] = logE;
-                    measuredValid[channelIndex] = true;
-                }
-            }
-
-            if (!any_true_triplet(measuredValid)) {
-                return;
-            }
-
-            std::array<double, 3> reference{ {0.0, 0.0, 0.0} };
-            std::array<bool, 3> referenceValid{ {false, false, false} };
-            load_finite_reference_triplet(referenceLogExposure, reference, referenceValid);
-
-            if (!any_true_triplet(referenceValid)) {
-                return;
-            }
-
-            std::array<double, 3> delta{ {0.0, 0.0, 0.0} };
-            std::array<bool, 3> deltaValid{ {false, false, false} };
-            build_delta_triplet(measured, measuredValid, reference, referenceValid, delta, deltaValid);
-
-            std::ostringstream oss;
-            oss.setf(std::ios::fixed, std::ios::floatfield);
-            oss << std::setprecision(6);
-            oss << "Neutral logE alignment";
-            append_triplet_segment(oss, " measured=", measured, measuredValid);
-            append_triplet_segment(oss, " ref=", reference, referenceValid);
-            append_triplet_segment(oss, " delta=", delta, deltaValid);
-            oss << " (agx reference)";
-
-            JTRACE("REGRESSION", oss.str());
-
         }
 
         bool build_density_curves(Profile& out,
@@ -1197,13 +690,16 @@ namespace Print {
             }
 
             const int size = static_cast<int>(input.size());
-            std::vector<double> kernel(static_cast<size_t>(radius * 2 + 1));
+            const size_t radiusSize = static_cast<size_t>(radius);
+            std::vector<double> kernel(radiusSize * 2u + 1u);
             const double sigma = sigmaSamples;
             const double invTwoSigmaSq = 1.0 / (2.0 * sigma * sigma);
             double norm = 0.0;
-            for (int k = -radius; k <= radius; ++k) {
-                const double w = std::exp(-static_cast<double>(k * k) * invTwoSigmaSq);
-                kernel[static_cast<size_t>(k + radius)] = w;
+            size_t kernelIndex = 0;
+            for (int k = -radius; k <= radius; ++k, ++kernelIndex) {
+                const double kDouble = static_cast<double>(k);
+                const double w = std::exp(-(kDouble * kDouble) * invTwoSigmaSq);
+                kernel[kernelIndex] = w;
                 norm += w;
             }
             if (!(norm > 0.0)) {
@@ -1466,27 +962,16 @@ namespace Print {
             FloatPairs midPairs;
         };
 
-        BaselineCurves load_baseline_csvs(
-            const std::string& dir,
-            bool loadMinCsv,
-            bool loadMidCsv)
-        {
+        BaselineCurves load_baseline_pairs(
+            const JuicerAssets::PrintPaperFolderProfilePayload& payload,
+            bool loadMinPairs,
+            bool loadMidPairs) {
             BaselineCurves curves;
-            if (loadMinCsv) {
-                try {
-                    curves.minPairs = Spectral::load_csv_pairs(dir + "dye_density_min.csv");
-                }
-                catch (...) {
-                    curves.minPairs.clear();
-                }
+            if (loadMinPairs) {
+                curves.minPairs = payload.baseMin;
             }
-            if (loadMidCsv) {
-                try {
-                    curves.midPairs = Spectral::load_csv_pairs(dir + "dye_density_mid.csv");
-                }
-                catch (...) {
-                    curves.midPairs.clear();
-                }
+            if (loadMidPairs) {
+                curves.midPairs = payload.baseMid;
             }
             return curves;
         }
@@ -1604,24 +1089,24 @@ namespace Print {
         }
     }
 
-    void load_profile_from_dir(const std::string& dir,
+    void load_profile_from_asset(
+        const JuicerAssets::PrintPaperAsset& asset,
         Profile& out,
-        const std::string& jsonProfilePath,
-        Runtime* runtime)
-    {
+        Runtime* runtime) {
         using Spectral::build_curve_on_reference_axis_from_log10_pairs;
 
         reset_profile_state(out, runtime);
+        const std::string profileKey = asset.jsonKey.empty() ? std::string("<null>") : asset.jsonKey;
         const bool traceInfo = JTRACE_ENABLED(1);
         auto trace_print_json_profile = [&](const char* prefix, const char* suffix) {
             if (!traceInfo) {
                 return;
             }
             std::string msg;
-            msg.reserve((prefix ? std::strlen(prefix) : 0u) + jsonProfilePath.size() + (suffix ? std::strlen(suffix) : 0u) + 2);
+            msg.reserve((prefix ? std::strlen(prefix) : 0u) + profileKey.size() + (suffix ? std::strlen(suffix) : 0u) + 2);
             msg = prefix ? prefix : "";
             msg.push_back('\'');
-            msg += jsonProfilePath;
+            msg += profileKey;
             msg.push_back('\'');
             if (suffix) {
                 msg += suffix;
@@ -1629,7 +1114,7 @@ namespace Print {
             JTRACE("PRINT", msg);
         };
 
-        JsonProfileContext jsonCtx = load_json_profile(jsonProfilePath);
+        JsonProfileContext jsonCtx = load_json_profile(asset);
         if (!jsonCtx.hasProfile) {
             trace_print_json_profile("FATAL: missing JSON profile ", " for print paper (glare metadata required)");
             return;
@@ -1644,30 +1129,50 @@ namespace Print {
             runtime->glare = out.glare;
         }
 
+        const bool needCsvDyes = !json_profile_has_complete_print_dyes(jsonCtx);
+        const bool needCsvSens = !json_profile_has_complete_print_sensitivities(jsonCtx);
+        const bool needCsvBaselineMin =
+            !json_profile_has_complete_print_baseline_min(jsonCtx);
+        const bool needCsvBaselineMid =
+            !json_profile_has_complete_print_baseline_mid(jsonCtx);
+        std::shared_ptr<const JuicerAssets::PrintPaperFolderProfilePayload> folderPayload;
+        if (needCsvDyes || needCsvSens || needCsvBaselineMin || needCsvBaselineMid) {
+            folderPayload = JuicerProcess::root().assets().print_paper_folder_profile_payload(asset);
+        }
+
         FloatPairs c_eps;
         FloatPairs m_eps;
         FloatPairs y_eps;
-        const bool needCsvDyes = !json_profile_has_complete_print_dyes(jsonCtx);
-        if (needCsvDyes) {
-            c_eps = load_csv_pairs_silent(dir + "dye_density_c.csv");
-            m_eps = load_csv_pairs_silent(dir + "dye_density_m.csv");
-            y_eps = load_csv_pairs_silent(dir + "dye_density_y.csv");
+        if (needCsvDyes && folderPayload) {
+            c_eps = folderPayload->dyeC;
+            m_eps = folderPayload->dyeM;
+            y_eps = folderPayload->dyeY;
         }
 
         FloatPairs r_sens;
         FloatPairs g_sens;
         FloatPairs b_sens;
-        const bool needCsvSens = !json_profile_has_complete_print_sensitivities(jsonCtx);
-        if (needCsvSens) {
-            r_sens = load_csv_pairs_silent(dir + "log_sensitivity_r.csv");
-            g_sens = load_csv_pairs_silent(dir + "log_sensitivity_g.csv");
-            b_sens = load_csv_pairs_silent(dir + "log_sensitivity_b.csv");
+        if (needCsvSens && folderPayload) {
+            r_sens = folderPayload->logSensR;
+            g_sens = folderPayload->logSensG;
+            b_sens = folderPayload->logSensB;
         }
 
         bool usedJsonEps = false;
         bool usedJsonSens = false;
-        apply_json_dye_and_sensitivity_overrides(jsonCtx, out, runtime,
-            c_eps, m_eps, y_eps, r_sens, g_sens, b_sens, usedJsonEps, usedJsonSens);
+        apply_json_dye_and_sensitivity_overrides(
+            jsonCtx,
+            out,
+            runtime,
+            JsonDyeSensitivityOverrideTargets{
+                c_eps,
+                m_eps,
+                y_eps,
+                r_sens,
+                g_sens,
+                b_sens,
+                usedJsonEps,
+                usedJsonSens});
 
         if (jsonCtx.hasProfile && usedJsonEps) {
             trace_print_json_profile("PROFILE_LOAD dye densities from JSON ", "");
@@ -1679,7 +1184,7 @@ namespace Print {
             return;
         }
 
-        DensityCurves densityCurves = load_density_curves(jsonCtx, dir, jsonProfilePath);
+        DensityCurves densityCurves = load_density_curves(jsonCtx, profileKey);
         if (!densityCurves.usedJson) {
             densityCurves.cyan.clear();
             densityCurves.magenta.clear();
@@ -1743,14 +1248,10 @@ namespace Print {
         // (Neutral exposure probing applies only to film development, not print paper.)
         const bool densityCurvesOk = rebuild_density_curves(out, densityCurves);
 
-        const bool needCsvBaselineMin =
-            !json_profile_has_complete_print_baseline_min(jsonCtx);
-        const bool needCsvBaselineMid =
-            !json_profile_has_complete_print_baseline_mid(jsonCtx);
-        BaselineCurves baselineCurves = load_baseline_csvs(
-            dir,
-            needCsvBaselineMin,
-            needCsvBaselineMid);
+        BaselineCurves baselineCurves =
+            folderPayload
+                ? load_baseline_pairs(*folderPayload, needCsvBaselineMin, needCsvBaselineMid)
+                : BaselineCurves{};
         merge_baseline_with_json(jsonCtx, baselineCurves);
         apply_baseline_to_profile(baselineCurves, out);
         recompute_mid_neutral(out, runtime);
@@ -1762,12 +1263,7 @@ namespace Print {
         if (!densityCurvesOk) {
             std::ostringstream fatal;
             fatal << "FATAL: missing spectral data (print profile)";
-            if (!dir.empty()) {
-                fatal << " dir='" << dir << "'";
-            }
-            if (!jsonProfilePath.empty()) {
-                fatal << " json='" << jsonProfilePath << "'";
-            }
+            fatal << " profileKey='" << profileKey << "'";
             JTRACE("PRINT", fatal.str());
             return;
         }

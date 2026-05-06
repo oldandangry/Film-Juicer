@@ -1,13 +1,5 @@
 #pragma once
 
-#if defined(_MSC_VER)
-// MSVC STL warns (and this project treats warnings as errors) about shared_ptr atomic free-functions
-// being deprecated in C++20. We intentionally use them for C++17 compatibility.
-#ifndef _SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING
-#define _SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING
-#endif
-#endif
-
 #include <atomic>
 #include <array>
 #include <cstddef>
@@ -23,6 +15,7 @@
 #include <vector>
 #include <unordered_map>
 
+#include "ProcessRoot.h"
 #include "Print.h"
 #include "ProfileJSONLoader.h"
 #include "ColorTransforms.h"
@@ -31,8 +24,6 @@
 #include "Scanner.h"
 #include "SpectralData.h"
 #include "ofxImageEffect.h"
-
-extern const std::string gDataDir;
 
 namespace OFX {
     class Image;
@@ -142,28 +133,19 @@ namespace JuicerAtomic {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 
-namespace JuicerCuda {
-    struct Resources;
-    void destroy(Resources* resources) noexcept;
-}
-
-struct JuicerCudaResourcesDeleter {
-    void operator()(JuicerCuda::Resources* resources) const noexcept;
-};
 #endif
 
 inline std::filesystem::path data_dir_path() {
-    std::filesystem::path path(gDataDir);
+    std::filesystem::path path(JuicerProcess::root().data_dir());
     path.make_preferred();
     return path;
 }
 
 template <typename... Parts>
 inline std::filesystem::path data_dir_path(Parts&&... parts) {
-    std::filesystem::path path(gDataDir);
+    std::filesystem::path path(JuicerProcess::root().data_dir());
     (void)std::initializer_list<int>{
-        ((path /= std::filesystem::path(std::forward<Parts>(parts))), 0)...
-    };
+        ((path /= std::filesystem::path(std::forward<Parts>(parts))), 0)...};
     path.make_preferred();
     return path;
 }
@@ -457,8 +439,6 @@ struct InstanceState {
     int autoExposureCacheInputColorSpaceIndex =
         Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     bool autoExposureCacheApplyCctfDecoding = false;
-    bool autoExposureCanonicalValid = false;
-    OfxRectI autoExposureCanonicalBounds{ 0, 0, 0, 0 };
     bool autoExposureMaskValid = false;
     int autoExposureMaskWidth = 0;
     int autoExposureMaskHeight = 0;
@@ -472,33 +452,12 @@ struct InstanceState {
     bool autoExposureMaskPolicyBypass = false;
     std::uint64_t autoExposureMaskLastRequestedBytes = 0;
 
-    // Print mid-gray (kMidSpectral) cache: avoids recomputing the mid-gray probe for every render call.
-    // Keyed by WorkingState.buildCounter and the small set of print parameters that affect the probe.
-    std::mutex printMidgrayMutex;
-    bool printMidgrayValid = false;
-    std::uint64_t printMidgrayBuildCounter = 0;
-    float printMidgrayYShiftSteps = 0.0f;
-    float printMidgrayMShiftSteps = 0.0f;
-    float printMidgrayCShiftSteps = 0.0f;
-    float printMidgrayExposureCompScale = 1.0f;
-    std::uint64_t printMidgrayNeutralFilterHash = Print::kDefaultNeutralFilterHash;
-    float printMidgrayFactor = 1.0f;
-
     ScannerOptics::Runtime scannerRuntimeA;
     ScannerOptics::Runtime scannerRuntimeB;
     std::atomic<bool> scannerRuntimeAInUse{ false };
     std::atomic<bool> scannerRuntimeBInUse{ false };
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    // CUDA: per-instance GPU cache keyed by WorkingState.buildCounter.
-    // This is kept on InstanceState so the CPU and CUDA render paths share the same invalidation
-    // boundary (the atomic WorkingState swap).
-    std::mutex cudaMutex;
-    std::unordered_map<
-        JuicerCuda::ResourceManager::DeviceContextKey,
-        std::unique_ptr<JuicerCuda::Resources, JuicerCudaResourcesDeleter>,
-        JuicerCuda::ResourceManager::DeviceContextKeyHash> cudaByDevice;
-
     // Snapshot latch: all submissions for the same frame token reuse one immutable snapshot payload.
     std::mutex submissionSnapshotLatchMutex;
     bool submissionSnapshotLatchValid = false;
@@ -506,7 +465,6 @@ struct InstanceState {
 #endif
 };
 
-std::string print_dir_for_index(int index);
 const char* print_paper_json_key_for_index(int index);
 const char* negative_json_key_for_stock_index(int filmIndex);
 int film_stock_option_count();

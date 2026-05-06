@@ -18,6 +18,7 @@
 #include <sstream>
 #endif
 #include "SpectralData.h"
+#include "ColorTransforms.h"
 #include "NpyLoader.h"
 #include "AkimaInterpolator.h"
 
@@ -507,17 +508,6 @@ namespace Spectral {
     // 2. SPD RECONSTRUCTION (~400 lines)
     // -------------------------------------------------------------------------
 
-    // Forward declarations for chromatic adaptation
-    inline void chromatic_adapt_XYZ_CAT02(
-        const float XYZ[3],
-        const float srcWhiteXYZ[3],
-        const float dstWhiteXYZ[3],
-        float outXYZ[3]);
-
-    // Forward declarations for color space transforms
-    inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]);
-    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]);
-
     // --- S-matrix inversion for CMF-based SPD reconstruction ---
 
     // Global variables for SPD reconstruction
@@ -728,8 +718,9 @@ namespace Spectral {
         }
 
         const int N = gHanSpectra.size;
-        const float fx = std::clamp(qx, 0.0f, 1.0f) * (N - 1);
-        const float fy = std::clamp(qy, 0.0f, 1.0f) * (N - 1);
+        const float gridMax = static_cast<float>(N - 1);
+        const float fx = std::clamp(qx, 0.0f, 1.0f) * gridMax;
+        const float fy = std::clamp(qy, 0.0f, 1.0f) * gridMax;
         const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, N - 1);
         const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, N - 1);
         const int x1 = std::min(x0 + 1, N - 1);
@@ -766,8 +757,9 @@ namespace Spectral {
         }
 
         const int N = gHanSpectra.size;
-        const float fx = std::clamp(qx, 0.0f, 1.0f) * (N - 1);
-        const float fy = std::clamp(qy, 0.0f, 1.0f) * (N - 1);
+        const float gridMax = static_cast<float>(N - 1);
+        const float fx = std::clamp(qx, 0.0f, 1.0f) * gridMax;
+        const float fy = std::clamp(qy, 0.0f, 1.0f) * gridMax;
         const int baseX = std::clamp(static_cast<int>(std::floor(fx)), 0, N - 1);
         const int baseY = std::clamp(static_cast<int>(std::floor(fy)), 0, N - 1);
         const float tx = fx - static_cast<float>(baseX);
@@ -906,7 +898,7 @@ namespace Spectral {
             static_cast<int>(gYBar.linear.size()) == K);
         const bool hasLambda = (static_cast<int>(gShape.wavelengths.size()) == K);
         for (int i = 0; i < K; ++i) {
-            const float lambda = hasLambda ? gShape.wavelengths[i] : (380.0f + 5.0f * i);
+            const float lambda = hasLambda ? gShape.wavelengths[i] : (380.0f + 5.0f * static_cast<float>(i));
             const float ybar = hasYbar ? gYBar.linear[i] : cie_ybar(lambda);
             Y_recon += static_cast<double>(Ee_out[i]) * static_cast<double>(ybar);
         }
@@ -1300,7 +1292,6 @@ namespace Spectral {
     }
 
     // Forward declarations for exposure functions
-    inline void rgbDWG_to_layerExposures(const float rgbDWG[3], float E[3], float exposureScale);
     inline void layerExposures_from_sceneSPD(
         const std::vector<float>& Ee,
         float E[3],

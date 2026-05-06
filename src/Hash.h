@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <type_traits>
 #include <cmath>
@@ -43,6 +44,14 @@ namespace Hash {
         }
         uint64_t h = kFnvOffset;
         hash_bytes_update(h, data, numBytes);
+        return h;
+    }
+
+    inline uint64_t hash_uint64_values(std::initializer_list<std::uint64_t> values) {
+        uint64_t h = kFnvOffset;
+        for (std::uint64_t value : values) {
+            hash_bytes_update(h, &value, sizeof(value));
+        }
         return h;
     }
 

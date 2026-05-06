@@ -1,6 +1,8 @@
 #include "JuicerState.h"
 
 #include "Couplers.h"
+#include "Logging.h"
+#include "ProcessRoot.h"
 
 namespace RebuildWorkingState {
 
@@ -64,35 +66,22 @@ namespace RebuildWorkingState {
 
 } // namespace RebuildWorkingState
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-void JuicerCudaResourcesDeleter::operator()(JuicerCuda::Resources* resources) const noexcept {
-    JuicerCuda::destroy(resources);
-}
-#endif
-
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <filesystem>
-#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <mutex>
 #include <sstream>
-#include <system_error>
 #include <limits>
 #include <memory>
 #include <optional>
-#include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <cstdlib>
 #include <cstdint>
 #include <iterator>
-
-#include "nlohmann/json.hpp"
 
 #include "Illuminants.h"
 
@@ -256,33 +245,38 @@ namespace WorkingStateSharing {
     }
 
     struct WorkingStateCoreShared {
-        std::uint64_t keyHash = 0;
-        std::uint64_t identity = 0;
-        std::shared_ptr<const WorkingStateCorePayload> payload;
+        WorkingStateCoreShared(
+            std::uint64_t keyHash_,
+            std::uint64_t identity_,
+            std::shared_ptr<const WorkingStateCorePayload> payload_)
+            : keyHash(keyHash_), identity(identity_), payload(std::move(payload_)) {
+        }
+
+        const std::uint64_t keyHash = 0;
+        const std::uint64_t identity = 0;
+        const std::shared_ptr<const WorkingStateCorePayload> payload;
     };
 
     struct AcquireCoreSharedResult {
-        std::shared_ptr<WorkingStateCoreShared> sharedCore;
+        std::shared_ptr<const WorkingStateCoreShared> sharedCore;
         std::uint64_t keyHash = 0;
         std::uint64_t identity = 0;
         std::uint32_t cacheEntries = 0;
         bool hit = false;
         bool inserted = false;
         bool payloadPresent = false;
-        bool payloadBackfilled = false;
     };
 
     class WorkingStateCoreSharedCache final {
     public:
-        static WorkingStateCoreSharedCache& instance() noexcept {
+        static WorkingStateCoreSharedCache& instance() {
             static WorkingStateCoreSharedCache cache;
             return cache;
         }
 
         AcquireCoreSharedResult acquire_or_create(
             std::uint64_t keyHash,
-            std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr)
-        {
+            std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr) {
             AcquireCoreSharedResult out{};
             out.keyHash = keyHash;
             if (keyHash == 0) {
@@ -295,12 +289,8 @@ namespace WorkingStateSharing {
 
             auto it = entries_.find(keyHash);
             if (it != entries_.end()) {
-                std::shared_ptr<WorkingStateCoreShared> shared = it->second.shared.lock();
+                std::shared_ptr<const WorkingStateCoreShared> shared = it->second.shared.lock();
                 if (shared) {
-                    if (!shared->payload && insertPayload) {
-                        shared->payload = std::move(insertPayload);
-                        out.payloadBackfilled = true;
-                    }
                     it->second.lastTouchSequence = touchSequence_;
                     out.sharedCore = std::move(shared);
                     out.identity = out.sharedCore->identity;
@@ -312,10 +302,15 @@ namespace WorkingStateSharing {
                 entries_.erase(it);
             }
 
-            auto created = std::make_shared<WorkingStateCoreShared>();
-            created->keyHash = keyHash;
-            created->identity = ++identitySequence_;
-            created->payload = std::move(insertPayload);
+            if (!insertPayload) {
+                out.cacheEntries = static_cast<std::uint32_t>(entries_.size());
+                return out;
+            }
+
+            auto created = std::make_shared<const WorkingStateCoreShared>(
+                keyHash,
+                ++identitySequence_,
+                std::move(insertPayload));
 
             CacheEntry entry{};
             entry.shared = created;
@@ -331,20 +326,30 @@ namespace WorkingStateSharing {
             return out;
         }
 
+        void release_entries() noexcept {
+            try {
+                std::lock_guard<std::mutex> lock(mutex_);
+                entries_.clear();
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+        }
+
     private:
         struct CacheEntry {
-            std::weak_ptr<WorkingStateCoreShared> shared;
+            std::weak_ptr<const WorkingStateCoreShared> shared;
             std::uint64_t lastTouchSequence = 0;
         };
 
         static constexpr std::size_t kMaxEntries = 256;
 
+        // Shared cores are immutable once visible from the cache; live WorkingState
+        // references keep payloads alive even after their lookup entries expire.
         void prune_expired_locked() {
             for (auto it = entries_.begin(); it != entries_.end();) {
                 if (it->second.shared.expired()) {
                     it = entries_.erase(it);
-                }
-                else {
+                } else {
                     ++it;
                 }
             }
@@ -374,14 +379,28 @@ namespace WorkingStateSharing {
         std::uint64_t identitySequence_ = 0;
     };
 
-    inline AcquireCoreSharedResult acquire_or_create_shared_core(
+} // namespace WorkingStateSharing
+
+namespace JuicerProcess {
+
+    WorkingStateSharing::AcquireCoreSharedResult Root::acquire_working_state_core(
         std::uint64_t keyHash,
-        std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr)
-    {
-        return WorkingStateCoreSharedCache::instance().acquire_or_create(keyHash, std::move(insertPayload));
+        std::shared_ptr<const WorkingStateSharing::WorkingStateCorePayload> insertPayload) {
+        return WorkingStateSharing::WorkingStateCoreSharedCache::instance().acquire_or_create(
+            keyHash,
+            std::move(insertPayload));
     }
 
-} // namespace WorkingStateSharing
+    void Root::release_working_state_cores() noexcept {
+        try {
+            WorkingStateSharing::WorkingStateCoreSharedCache::instance().release_entries();
+        }
+        catch (...) {
+            JuicerLogging::discard_current_exception();
+        }
+    }
+
+} // namespace JuicerProcess
 
 namespace RebuildWorkingState {
     namespace curve_inversion {
@@ -492,54 +511,6 @@ namespace RebuildWorkingState {
 } // namespace RebuildWorkingState
 
 namespace {
-    namespace fs = std::filesystem;
-
-    struct FilmStockDefinition {
-        std::string optionLabel;
-        std::string jsonKey;
-    };
-
-    struct PrintPaperDefinition {
-        std::string optionLabel;
-        std::string folderName;
-        std::string jsonKey;
-    };
-
-    using FilmStockFallback = std::array<FilmStockDefinition, 5>;
-    using PrintPaperFallback = std::array<PrintPaperDefinition, 2>;
-
-    static const FilmStockFallback kFallbackFilmStocks{ {
-        { "Vision3 250D", "kodak_vision3_250d_uc" },
-        { "Vision3 50D",  "kodak_vision3_50d_uc" },
-        { "Vision3 200T", "kodak_vision3_200t_uc" },
-        { "Vision3 500T", "kodak_vision3_500t_uc" },
-        { "Portra 400",   "kodak_portra_400_auc" }
-    } };
-
-    static const PrintPaperFallback kFallbackPrintPapers{ {
-        { "2383", "kodak_2383", "kodak_2383_uc" },
-        { "2393", "kodak_2393", "kodak_2393_uc" }
-    } };
-
-    std::vector<FilmStockDefinition>& film_stock_definitions() {
-        static std::vector<FilmStockDefinition> defs;
-        return defs;
-    }
-
-    std::vector<PrintPaperDefinition>& print_paper_definitions() {
-        static std::vector<PrintPaperDefinition> defs;
-        return defs;
-    }
-
-    std::once_flag gProfileCatalogOnce;
-
-    struct FilterCatalog {
-        std::vector<std::string> paperKeys;
-        std::vector<std::string> filmKeys;
-        std::unordered_set<std::string> paperKeySet;
-        std::unordered_set<std::string> filmKeySet;
-    };
-
     void trace_working_state_core_share(
         const WorkingStateSharing::AcquireCoreSharedResult& result,
         std::uint64_t buildCounter,
@@ -567,8 +538,6 @@ namespace {
         msg += std::to_string(result.inserted ? 1 : 0);
         msg += " payload_present=";
         msg += std::to_string(result.payloadPresent ? 1 : 0);
-        msg += " payload_backfilled=";
-        msg += std::to_string(result.payloadBackfilled ? 1 : 0);
         msg += " cache_entries=";
         msg += std::to_string(static_cast<unsigned long long>(result.cacheEntries));
         JTRACE("MSWSC", msg);
@@ -758,6 +727,14 @@ namespace {
     }
 
     template <typename MixFn>
+    inline void mix_hash_string(uint64_t& h, const std::string& value, const MixFn& mix) {
+        h = mix(h, static_cast<uint64_t>(value.size()));
+        if (!value.empty()) {
+            h = mix(h, Hash::hash_bytes(value.data(), value.size()));
+        }
+    }
+
+    template <typename MixFn>
     inline void mix_hash_field_scaled(uint64_t& h, double value, double scale, const MixFn& mix) {
         h = mix(h, static_cast<uint64_t>(value * scale));
     }
@@ -803,8 +780,20 @@ namespace {
 
     template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        mix_hash_field(h, p.filmStockIndex, mix);
-        mix_hash_field(h, p.printPaperIndex, mix);
+        const JuicerAssets::PrintRuntimeAssetSet assets =
+            JuicerProcess::root().assets().print_runtime_assets_for_choices(
+                JuicerAssets::PrintRuntimeChoices{
+                    p.filmStockIndex,
+                    p.printPaperIndex,
+                    p.enlDichroicSet});
+
+        // Shared host derivation follows logical asset identity, not UI catalog positions.
+        mix_hash_string(h, assets.filmStock.jsonKey, mix);
+        mix_hash_field(h, assets.filmStock.version, mix);
+        mix_hash_string(h, assets.printPaper.jsonKey, mix);
+        mix_hash_field(h, assets.printPaper.version, mix);
+        mix_hash_field(h, assets.neutralFilters.databaseId, mix);
+        mix_hash_field(h, assets.neutralFilters.version, mix);
         mix_hash_field(h, p.spectralUpsamplingMode, mix);
         mix_hash_field(h, p.refIll, mix);
         mix_hash_field(h, p.enlIll, mix);
@@ -858,6 +847,7 @@ namespace {
         }
     }
 
+#ifndef JUICER_ENABLE_COUPLERS
     inline void build_dir_matrix_fallback(float matrix[3][3], const float amountValues[3], float layerSigma) {
         const float sigma = sanitize_nonnegative_or(layerSigma, 0.0f);
         float amount[3] = { amountValues[0], amountValues[1], amountValues[2] };
@@ -872,7 +862,8 @@ namespace {
                 return (dx == 0) ? 1.0f : 0.0f;
             }
             const float s2 = sigmaCapped * sigmaCapped;
-            return std::exp(-0.5f * (dx * dx) / s2);
+            const float dxFloat = static_cast<float>(dx);
+            return std::exp(-0.5f * (dxFloat * dxFloat) / s2);
             };
 
         for (int row = 0; row < 3; ++row) {
@@ -897,6 +888,7 @@ namespace {
 
         sanitize_dir_matrix(matrix);
     }
+#endif
 
     void recompute_working_state_dir_overlay(const RebuildStateSnapshot& snapshot, const ParamSnapshot& P, WorkingState& target) {
         (void)snapshot;
@@ -1075,373 +1067,12 @@ namespace {
         return true;
     }
 
-    std::string sanitize_identifier(const std::string& value) {
-        std::string out;
-        out.reserve(value.size());
-        const char* inData = value.data();
-        const char* const inEnd = inData + value.size();
-        for (; inData < inEnd; ++inData) {
-            unsigned char uc = static_cast<unsigned char>(*inData);
-            if (std::isalnum(uc)) {
-                out.push_back(static_cast<char>(std::tolower(uc)));
-            }
-        }
-        return out;
+    const JuicerAssets::FilmStockAsset& film_stock_for_index(int filmIndex) {
+        return JuicerProcess::root().assets().film_stock_for_index(filmIndex);
     }
 
-    bool equals_ignore_case(const std::string& a, const std::string& b) {
-        if (a.size() != b.size()) {
-            return false;
-        }
-        const char* aData = a.data();
-        const char* bData = b.data();
-        const char* const aEnd = aData + a.size();
-        for (; aData < aEnd; ++aData, ++bData) {
-            if (std::tolower(static_cast<unsigned char>(*aData)) !=
-                std::tolower(static_cast<unsigned char>(*bData))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    FilterCatalog load_filter_catalog(const fs::path& filterPath) {
-        FilterCatalog catalog;
-        std::error_code ec;
-        if (!fs::exists(filterPath, ec) || fs::is_directory(filterPath, ec)) {
-            return catalog;
-        }
-
-        std::ifstream file(filterPath, std::ios::binary);
-        if (!file.is_open()) {
-            return catalog;
-        }
-
-        nlohmann::json root = nlohmann::json::parse(file, nullptr, false);
-        if (root.is_discarded() || !root.is_object()) {
-            return catalog;
-        }
-        const size_t paperCount = root.size();
-        catalog.paperKeys.reserve(paperCount);
-        catalog.paperKeySet.reserve(paperCount);
-        catalog.filmKeys.reserve(paperCount * 4);
-        catalog.filmKeySet.reserve(paperCount * 4);
-
-        for (auto it = root.begin(); it != root.end(); ++it) {
-            if (!it.value().is_object()) {
-                continue;
-            }
-            const std::string paperKey = it.key();
-            if (catalog.paperKeySet.insert(paperKey).second) {
-                catalog.paperKeys.emplace_back(paperKey);
-            }
-            for (auto illumIt = it.value().begin(); illumIt != it.value().end(); ++illumIt) {
-                if (!illumIt.value().is_object()) {
-                    continue;
-                }
-                for (auto filmIt = illumIt.value().begin(); filmIt != illumIt.value().end(); ++filmIt) {
-                    const std::string filmKey = filmIt.key();
-                    if (catalog.filmKeySet.insert(filmKey).second) {
-                        catalog.filmKeys.emplace_back(filmKey);
-                    }
-                }
-            }
-        }
-        return catalog;
-    }
-
-    void populate_profile_catalogs() {
-        auto& filmDefs = film_stock_definitions();
-        auto& paperDefs = print_paper_definitions();
-        const bool traceCatalog = JTRACE_ENABLED(1);
-        filmDefs.clear();
-        paperDefs.clear();
-
-        fs::path base = fs::path(gDataDir);
-        fs::path profilesDir = base / "profiles";
-        fs::path paperDir = base / "paper";
-
-        std::unordered_map<std::string, Profiles::ProfileInfoSummary> infoByKey;
-        std::vector<std::string> missingFilmKeys;
-        std::vector<std::string> missingPaperKeys;
-        std::error_code ec;
-        if (!gDataDir.empty() && fs::exists(profilesDir, ec) && fs::is_directory(profilesDir, ec)) {
-            for (fs::directory_iterator it(profilesDir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-                if (!it->is_regular_file(ec)) {
-                    continue;
-                }
-                if (it->path().extension() != ".json") {
-                    continue;
-                }
-                Profiles::ProfileInfoSummary info;
-                const std::string jsonPath = it->path().string();
-                if (Profiles::load_profile_info(jsonPath, info)) {
-                    infoByKey[info.stock] = std::move(info);
-                }
-            }
-        }
-        filmDefs.reserve(infoByKey.size());
-        paperDefs.reserve(infoByKey.size());
-
-        FilterCatalog filters = load_filter_catalog(profilesDir / "enlarger_neutral_ymc_filters.json");
-        if (traceCatalog) {
-            missingFilmKeys.reserve(filters.filmKeys.size());
-            missingPaperKeys.reserve(filters.paperKeys.size());
-        }
-
-        auto pushFilm = [&](const std::string& key) {
-            auto it = infoByKey.find(key);
-            if (it == infoByKey.end()) {
-                if (traceCatalog) {
-                    missingFilmKeys.push_back(key + " (profile missing)");
-                }
-                return;
-            }
-            if (!equals_ignore_case(it->second.type, "negative")) {
-                if (traceCatalog) {
-                    std::string reason = key + " (type='" + it->second.type + "')";
-                    missingFilmKeys.push_back(std::move(reason));
-                }
-                return;
-            }
-            std::string label = it->second.name.empty() ? it->second.stock : it->second.name;
-            filmDefs.emplace_back(FilmStockDefinition{ std::move(label), it->second.stock });
-            };
-
-        for (const std::string& key : filters.filmKeys) {
-            pushFilm(key);
-        }
-
-        if (filmDefs.empty()) {
-            for (const auto& pair : infoByKey) {
-                if (!equals_ignore_case(pair.second.type, "negative")) {
-                    continue;
-                }
-                std::string label = pair.second.name.empty() ? pair.second.stock : pair.second.name;
-                filmDefs.emplace_back(FilmStockDefinition{ std::move(label), pair.second.stock });
-            }
-            std::sort(filmDefs.begin(), filmDefs.end(),
-                [](const FilmStockDefinition& a, const FilmStockDefinition& b) {
-                    return a.optionLabel < b.optionLabel;
-                });
-        }
-
-        if (filmDefs.empty()) {
-            if (traceCatalog) {
-                if (!missingFilmKeys.empty()) {
-                    std::ostringstream oss;
-                    oss << "catalog fallback: film profiles unavailable for keys: ";
-                    const size_t missingCount = missingFilmKeys.size();
-                    const std::string* missingData = missingFilmKeys.data();
-                    for (size_t i = 0; i < missingCount; ++i, ++missingData) {
-                        if (i > 0) {
-                            oss << ", ";
-                        }
-                        oss << *missingData;
-                    }
-                    JTRACE("CATALOG", oss.str());
-                }
-                else {
-                    JTRACE("CATALOG", "catalog fallback: no film profiles discovered; using defaults");
-                }
-            }
-            filmDefs.assign(kFallbackFilmStocks.begin(), kFallbackFilmStocks.end());
-        }
-
-        struct PrintFolderInfo {
-            std::string name;
-            std::string sanitized;
-            bool used = false;
-        };
-
-        std::vector<PrintFolderInfo> folders;
-        if (!gDataDir.empty() && fs::exists(paperDir, ec) && fs::is_directory(paperDir, ec)) {
-            for (fs::directory_iterator it(paperDir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-                if (it->is_directory(ec)) {
-                    std::string folder = it->path().filename().string();
-                    if (!folder.empty()) {
-                        folders.emplace_back(PrintFolderInfo{ folder, sanitize_identifier(folder), false });
-                    }
-                }
-            }
-        }
-
-        auto claimFolder = [&](const Profiles::ProfileInfoSummary& info, const std::string& key) -> std::string {
-            std::string keySan = sanitize_identifier(key);
-            std::string nameSan = sanitize_identifier(info.name);
-            size_t bestScore = 0;
-            int bestIndex = -1;
-            PrintFolderInfo* folderData = folders.data();
-            const size_t folderCount = folders.size();
-            PrintFolderInfo* folderIt = folderData;
-            for (size_t i = 0; i < folderCount; ++i, ++folderIt) {
-                if (folderIt->used) {
-                    continue;
-                }
-                const std::string& folderSan = folderIt->sanitized;
-                if (folderSan.empty()) {
-                    continue;
-                }
-                size_t score = 0;
-                bool match = false;
-                if (!keySan.empty() && keySan.find(folderSan) != std::string::npos) {
-                    match = true;
-                    score = folderSan.size() * 4;
-                }
-                if (!match && !nameSan.empty() && nameSan.find(folderSan) != std::string::npos) {
-                    match = true;
-                    score = folderSan.size() * 3;
-                }
-                if (!match && !keySan.empty() && folderSan.find(keySan) != std::string::npos) {
-                    match = true;
-                    score = keySan.size() * 2;
-                }
-                if (!match && !nameSan.empty() && folderSan.find(nameSan) != std::string::npos) {
-                    match = true;
-                    score = nameSan.size();
-                }
-                if (match && score > bestScore) {
-                    bestScore = score;
-                    bestIndex = static_cast<int>(i);
-                }
-            }
-            if (bestIndex >= 0) {
-                folderData[bestIndex].used = true;
-                return folderData[bestIndex].name;
-            }
-            return {};
-            };
-
-        auto pushPaper = [&](const std::string& key) {
-            auto it = infoByKey.find(key);
-            if (it == infoByKey.end()) {
-                if (traceCatalog) {
-                    missingPaperKeys.push_back(key + " (profile missing)");
-                }
-                return;
-            }
-            const auto& info = it->second;
-            if (!equals_ignore_case(info.type, "paper")) {
-                if (traceCatalog) {
-                    std::string reason = key + " (type='" + info.type + "')";
-                    missingPaperKeys.push_back(std::move(reason));
-                }
-                return;
-            }
-            std::string folder = claimFolder(info, key);
-            std::string label = info.name.empty() ? key : info.name;
-            paperDefs.emplace_back(PrintPaperDefinition{ std::move(label), std::move(folder), key });
-            };
-
-        for (const std::string& key : filters.paperKeys) {
-            pushPaper(key);
-        }
-
-        if (paperDefs.empty()) {
-            for (auto& folderInfo : folders) {
-                if (folderInfo.used || folderInfo.sanitized.empty()) {
-                    continue;
-                }
-                std::string bestKey;
-                Profiles::ProfileInfoSummary bestInfo;
-                size_t bestScore = 0;
-                for (const auto& pair : infoByKey) {
-                    if (!equals_ignore_case(pair.second.type, "paper")) {
-                        continue;
-                    }
-                    std::string keySan = sanitize_identifier(pair.first);
-                    std::string nameSan = sanitize_identifier(pair.second.name);
-                    size_t score = 0;
-                    bool match = false;
-                    if (!keySan.empty() && keySan.find(folderInfo.sanitized) != std::string::npos) {
-                        match = true;
-                        score = folderInfo.sanitized.size() * 4;
-                    }
-                    if (!match && !nameSan.empty() && nameSan.find(folderInfo.sanitized) != std::string::npos) {
-                        match = true;
-                        score = folderInfo.sanitized.size() * 3;
-                    }
-                    if (!match && !keySan.empty() && folderInfo.sanitized.find(keySan) != std::string::npos) {
-                        match = true;
-                        score = keySan.size() * 2;
-                    }
-                    if (!match && !nameSan.empty() && folderInfo.sanitized.find(nameSan) != std::string::npos) {
-                        match = true;
-                        score = nameSan.size();
-                    }
-                    if (match && score > bestScore) {
-                        bestScore = score;
-                        bestKey = pair.first;
-                        bestInfo = pair.second;
-                    }
-                }
-                if (!bestKey.empty()) {
-                    folderInfo.used = true;
-                    std::string label = folderInfo.name;
-                    paperDefs.emplace_back(PrintPaperDefinition{ std::move(label), folderInfo.name, bestKey });
-                }
-            }
-        }
-
-        if (paperDefs.empty()) {
-            if (traceCatalog) {
-                if (!missingPaperKeys.empty()) {
-                    std::ostringstream oss;
-                    oss << "catalog fallback: print profiles unavailable for keys: ";
-                    const size_t missingCount = missingPaperKeys.size();
-                    const std::string* missingData = missingPaperKeys.data();
-                    for (size_t i = 0; i < missingCount; ++i, ++missingData) {
-                        if (i > 0) {
-                            oss << ", ";
-                        }
-                        oss << *missingData;
-                    }
-                    JTRACE("CATALOG", oss.str());
-                }
-                else {
-                    JTRACE("CATALOG", "catalog fallback: no print profiles discovered; using defaults");
-                }
-            }
-            paperDefs.assign(kFallbackPrintPapers.begin(), kFallbackPrintPapers.end());
-        }
-    }
-
-    void ensure_profile_catalogs() {
-        std::call_once(gProfileCatalogOnce, populate_profile_catalogs);
-        auto& films = film_stock_definitions();
-        auto& papers = print_paper_definitions();
-        if (films.empty()) {
-            films.assign(kFallbackFilmStocks.begin(), kFallbackFilmStocks.end());
-        }
-        if (papers.empty()) {
-            papers.assign(kFallbackPrintPapers.begin(), kFallbackPrintPapers.end());
-        }
-    }
-
-    static const FilmStockDefinition& film_stock_for_index(int filmIndex) {
-        ensure_profile_catalogs();
-        auto& films = film_stock_definitions();
-        if (films.empty()) {
-            static const FilmStockDefinition dummy{ "", "" };
-            return dummy;
-        }
-        if (filmIndex < 0 || filmIndex >= static_cast<int>(films.size())) {
-            filmIndex = 0;
-        }
-        return films[filmIndex];
-    }
-
-    static const PrintPaperDefinition& print_paper_for_index(int index) {
-        ensure_profile_catalogs();
-        auto& papers = print_paper_definitions();
-        if (papers.empty()) {
-            static const PrintPaperDefinition dummy{ "", "", "" };
-            return dummy;
-        }
-        if (index < 0 || index >= static_cast<int>(papers.size())) {
-            index = 0;
-        }
-        return papers[index];
+    const JuicerAssets::PrintPaperAsset& print_paper_for_index(int index) {
+        return JuicerProcess::root().assets().print_paper_for_index(index);
     }
 
     inline bool approx_equal(double a, double b, double eps = 1e-6) {
@@ -1479,84 +1110,65 @@ namespace {
         return curve;
     }
 
-    static std::string make_data_subpath(
-        const std::string& baseDir,
-        std::initializer_list<std::string_view> segments)
-    {
-        fs::path path(baseDir);
-        for (std::string_view seg : segments) {
-            if (!seg.empty()) {
-                path /= seg;
-            }
-        }
-        path = path.lexically_normal();
-        path.make_preferred();
-        return path.string();
-    }
-
-    static Spectral::Curve build_illuminant_from_string(
-        const std::string& dataDir,
-        const std::string& source)
-    {
+    static Spectral::Curve build_illuminant_from_string(const std::string& source) {
         const std::string normalized = IlluminantKeys::normalize(source);
+        const JuicerAssets::IlluminantFilterCurveSet& curveAssets =
+            JuicerProcess::root().assets().illuminant_filter_curves();
 
         auto build_or_log = [&](auto builder, const char* label) -> Spectral::Curve {
             try {
                 return builder();
-            }
-            catch (const std::exception& e) {
+            } catch (const std::exception& e) {
                 std::ostringstream oss;
                 oss << "failed to load illuminant '" << source << "' (" << label
                     << "): " << e.what();
                 JTRACE("ILLUM", oss.str());
-            }
-            catch (...) {
+            } catch (...) {
                 std::ostringstream oss;
                 oss << "failed to load illuminant '" << source << "' (" << label
                     << "): unknown error";
                 JTRACE("ILLUM", oss.str());
             }
             return Spectral::Curve{};
-            };
+        };
 
-        if (IlluminantKeys::matches_any(normalized, { "D65" })) {
+        if (IlluminantKeys::matches_any(normalized, {"D65"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D65_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D65.csv" }));
-                }, "D65");
+                return curveAssets.d65;
+            },
+                                "D65");
         }
-        if (IlluminantKeys::matches_any(normalized, { "D55" })) {
+        if (IlluminantKeys::matches_any(normalized, {"D55"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D55_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D55.csv" }));
-                }, "D55");
+                return curveAssets.d55;
+            },
+                                "D55");
         }
-        if (IlluminantKeys::matches_any(normalized, { "D50" })) {
+        if (IlluminantKeys::matches_any(normalized, {"D50"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_D50_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "D50.csv" }));
-                }, "D50");
+                return curveAssets.d50;
+            },
+                                "D50");
         }
-        if (IlluminantKeys::matches_any(normalized, { "TH-KG3-L", "THKG3L", "TH-KG3L" })) {
+        if (IlluminantKeys::matches_any(normalized, {"TH-KG3-L", "THKG3L", "TH-KG3L"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_TH_KG3_L_pinned(
-                    make_data_subpath(dataDir, { "filters", "heat_absorbing", "schott", "KG3.csv" }),
-                    make_data_subpath(dataDir, { "filters", "lens_transmission", "canon", "canon_24_f28_is.csv" }));
-                }, "TH-KG3-L");
+                return curveAssets.tungstenKg3Lens;
+            },
+                                "TH-KG3-L");
         }
-        if (IlluminantKeys::matches_any(normalized, { "T", "INCANDESCENT" })) {
+        if (IlluminantKeys::matches_any(normalized, {"T", "INCANDESCENT"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_T_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "T.csv" }));
-                }, "T");
+                return curveAssets.tungsten;
+            },
+                                "T");
         }
-        if (IlluminantKeys::matches_any(normalized, { "K75P", "KINOTON75P" })) {
+        if (IlluminantKeys::matches_any(normalized, {"K75P", "KINOTON75P"})) {
             return build_or_log([&]() {
-                return Spectral::build_curve_K75P_pinned(
-                    make_data_subpath(dataDir, { "illuminants", "K75P.csv" }));
-                }, "K75P");
+                return curveAssets.kinoton75P;
+            },
+                                "K75P");
         }
-        if (IlluminantKeys::matches_any(normalized, { "EQUAL", "EQUALENERGY", "EQUAL-ENERGY" })) {
+        if (IlluminantKeys::matches_any(normalized, {"EQUAL", "EQUALENERGY", "EQUAL-ENERGY"})) {
             return Spectral::build_curve_equal_energy_pinned();
         }
 
@@ -1603,11 +1215,9 @@ namespace {
     }
 
     static bool build_scanner_illuminant(
-        const std::string& dataDir,
         const std::string& source,
         const char* label,
-        Scanner::ScannerIlluminant& out)
-    {
+        Scanner::ScannerIlluminant& out) {
         out = Scanner::ScannerIlluminant{};
         if (source.empty()) {
             std::ostringstream oss;
@@ -1616,7 +1226,7 @@ namespace {
             return false;
         }
 
-        Spectral::Curve curve = build_illuminant_from_string(dataDir, source);
+        Spectral::Curve curve = build_illuminant_from_string(source);
         if (!curve_matches_reference_axis(curve)) {
             std::ostringstream oss;
             oss << "FATAL: viewing illuminant '" << source
@@ -1687,15 +1297,16 @@ namespace {
         out.whiteXY[1] = static_cast<float>(sumY / whiteSum);
 
         constexpr int kReferenceAxisSamples = 81;
+        constexpr size_t kReferenceAxisSampleCount = 81u;
         const size_t sampleCount = out.curve.linear.size();
-        if (K == kReferenceAxisSamples && sampleCount == static_cast<size_t>(kReferenceAxisSamples)) {
-            float hashSamples[kReferenceAxisSamples + 1];
+        if (K == kReferenceAxisSamples && sampleCount == kReferenceAxisSampleCount) {
+            float hashSamples[kReferenceAxisSampleCount + 1u];
             std::memcpy(
                 hashSamples,
                 out.curve.linear.data(),
-                static_cast<size_t>(kReferenceAxisSamples) * sizeof(float));
-            hashSamples[kReferenceAxisSamples] = out.normalization;
-            out.hash = Hash::hash_float_span(hashSamples, static_cast<size_t>(kReferenceAxisSamples + 1));
+                kReferenceAxisSampleCount * sizeof(float));
+            hashSamples[kReferenceAxisSampleCount] = out.normalization;
+            out.hash = Hash::hash_float_span(hashSamples, kReferenceAxisSampleCount + 1u);
         }
         else {
             std::vector<float> hashSamples(sampleCount + 1);
@@ -1867,59 +1478,36 @@ uint64_t hash_params_dir(const ParamSnapshot& p) {
     return h;
 }
 
-std::string print_dir_for_index(int index) {
-    const PrintPaperDefinition& paper = print_paper_for_index(index);
-    if (paper.folderName.empty() || gDataDir.empty()) {
-        return {};
-    }
-
-    std::filesystem::path base = std::filesystem::path(gDataDir);
-    std::filesystem::path dir = base / "paper" / paper.folderName;
-    dir.make_preferred();
-    std::string result = dir.string();
-#ifdef _WIN32
-    const char separator = '\\';
-#else
-    const char separator = '/';
-#endif
-    if (!result.empty() && result.back() != separator) {
-        result.push_back(separator);
-    }
-    return result;
-}
-
 const char* print_paper_json_key_for_index(int index) {
-    const PrintPaperDefinition& paper = print_paper_for_index(index);
+    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
     return paper.jsonKey.empty() ? nullptr : paper.jsonKey.c_str();
 }
 
 const char* negative_json_key_for_stock_index(int filmIndex) {
-    const FilmStockDefinition& stock = film_stock_for_index(filmIndex);
+    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(filmIndex);
     return stock.jsonKey.empty() ? nullptr : stock.jsonKey.c_str();
 }
 
 int film_stock_option_count() {
-    ensure_profile_catalogs();
-    return static_cast<int>(film_stock_definitions().size());
+    return JuicerProcess::root().assets().film_stock_count();
 }
 
 const char* film_stock_option_label(int index) {
-    const FilmStockDefinition& stock = film_stock_for_index(index);
+    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(index);
     return stock.optionLabel.empty() ? "" : stock.optionLabel.c_str();
 }
 
 int print_paper_option_count() {
-    ensure_profile_catalogs();
-    return static_cast<int>(print_paper_definitions().size());
+    return JuicerProcess::root().assets().print_paper_count();
 }
 
 const char* print_paper_option_label(int index) {
-    const PrintPaperDefinition& paper = print_paper_for_index(index);
+    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
     return paper.optionLabel.empty() ? "" : paper.optionLabel.c_str();
 }
 
 bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
-    const FilmStockDefinition& stock = film_stock_for_index(filmIndex);
+    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(filmIndex);
     const bool stockTraceEnabled = JTRACE_ENABLED(1);
     JTRACE_SCOPE("STOCK", "load_film_stock_into_base");
     auto trace_stock_key = [&](const char* prefix) {
@@ -1974,9 +1562,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         JTRACE("STOCK", "film stock missing JSON key; cannot load profile");
         return false;
     }
-    const std::string jsonPath = data_dir_string("profiles", stock.jsonKey + ".json");
     Profiles::AgxFilmProfile profile;
-    if (!Profiles::load_agx_film_profile_json(jsonPath, profile)) {
+    if (!JuicerProcess::root().assets().load_agx_film_profile(stock, profile)) {
         trace_stock_key("failed to load agx profile json: ");
         return false;
     }
@@ -2331,8 +1918,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
     const BaseState& base = snapshot.base;
     Print::Runtime printRT = snapshot.printRT;
-    const std::string& dataDir = snapshot.dataDir;
-
     if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "enter with baseLoaded=" << (snapshot.baseLoaded ? 1 : 0);
@@ -2378,8 +1963,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
-        WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
-    const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
+        JuicerProcess::root().acquire_working_state_core(coreShareHash);
+    const WorkingStateSharing::AcquireCoreSharedResult& coreShareInitial = coreShare;
     if (coreShare.sharedCore && coreShare.sharedCore->payload) {
         WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
         target->coreShareHash = coreShareHash;
@@ -2414,9 +1999,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("MSWSC", "event=core_share_fastpath_fallback reason=scanner_runtime_rebuild_failed");
     }
 
-    Print::build_illuminant_from_choice(P.enlIll, printRT, dataDir, /*forEnlarger*/true);
+    Print::build_illuminant_from_choice(P.enlIll, printRT, /*forEnlarger*/ true);
     Scanner::ScannerIlluminant printScannerIlluminant;
-    if (!build_scanner_illuminant(dataDir, printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
+    if (!build_scanner_illuminant(printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
         return;
     }
     printRT.illumView = printScannerIlluminant.curve;
@@ -2428,7 +2013,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     Scanner::ScannerIlluminant negativeScannerIlluminant;
-    if (!build_scanner_illuminant(dataDir, base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
+    if (!build_scanner_illuminant(base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
         return;
     }
     Scanner::ScannerDensityRange negativeDensityRange;
@@ -2453,8 +2038,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     const bool hasBaseline = base.hasBaseline;
     const float dyeDensityMinScale =
         (is_finite(base.dyeDensityMinFactor) && base.dyeDensityMinFactor >= 0.0f)
-        ? base.dyeDensityMinFactor
-        : 1.0f;
+            ? base.dyeDensityMinFactor
+            : 1.0f;
     if (hasBaseline && !approx_equal(dyeDensityMinScale, 1.0f)) {
         scale_finite_curve_samples(baseMin, dyeDensityMinScale, true);
     }
@@ -2474,16 +2059,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
         Spectral::Curve profileRefIll;
         if (!snapshot.illuminantOverride.reference && !snapshot.filmReferenceIlluminant.empty()) {
-            profileRefIll = build_illuminant_from_string(dataDir, snapshot.filmReferenceIlluminant);
+            profileRefIll = build_illuminant_from_string(snapshot.filmReferenceIlluminant);
         }
 
         if (!profileRefIll.linear.empty() &&
-            static_cast<int>(profileRefIll.linear.size()) == Spectral::gShape.K)
-        {
+            static_cast<int>(profileRefIll.linear.size()) == Spectral::gShape.K) {
             tmpRT.illumView = profileRefIll;
-        }
-        else {
-            Print::build_illuminant_from_choice(P.refIll, tmpRT, dataDir, /*forEnlarger*/false);
+        } else {
+            Print::build_illuminant_from_choice(P.refIll, tmpRT, /*forEnlarger*/ false);
         }
 
         illumRef = tmpRT.illumView;
@@ -2492,12 +2075,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
         // NOTE: Removed runtime balancing. Profiles are pre-balanced; rebalancing at runtime
         // violates agx-emulsion parity and causes red/magenta color shifts. See claude-review.md.
+#if JUICER_DIAGNOSTICS_COMPILED
         if (hasRefIlluminant) {
             JTRACE("BUILD", "loaded reference illuminant for metadata (no runtime balancing applied)");
         }
         else {
             JTRACE("BUILD", "reference illuminant failed to load; SPD reconstruction will be disabled");
         }
+#endif
     }
 
     {
@@ -2631,7 +2216,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
     copy_float3(dirRT.dMax, densityMaxPostDir.data());
 
-    Spectral::NegativeCouplerParams negParams;
+    Spectral::NegativeCouplerParams negParams{};
     negParams.DmaxY = dirRT.dMax[0];
     negParams.DmaxM = dirRT.dMax[1];
     negParams.DmaxC = dirRT.dMax[2];
@@ -2955,12 +2540,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         printRuntimeOk = true;
     }
     else {
+#if JUICER_DIAGNOSTICS_COMPILED
         if (!printDensityOk) {
             JTRACE("BUILD", "FATAL: missing spectral data (print profile) after glare processing");
         }
         else {
             JTRACE("BUILD", "FATAL: print profile invalid or viewing illuminant missing");
         }
+#endif
         target->tablesPrint = Spectral::SpectralTables{};
     }
 
@@ -3144,20 +2731,18 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     std::array<float, 3> offsetsRGB{ {0.0f, 0.0f, 0.0f} };
-    bool usingLogEMetadata = false;
     if (hasLogEMid) {
         offsetsRGB = logMidRGB;
-        usingLogEMetadata = true;
     }
     else if (hasDensityMid) {
         offsetsRGB = densityOffsets;
     }
 
-    const float offR = offsetsRGB[0];
-    const float offG = offsetsRGB[1];
-    const float offB = offsetsRGB[2];
-
     if (buildTraceEnabled) {
+        const bool usingLogEMetadata = hasLogEMid;
+        const float offR = offsetsRGB[0];
+        const float offG = offsetsRGB[1];
+        const float offB = offsetsRGB[2];
         std::ostringstream oss;
         if (usingLogEMetadata) {
             oss << "negative logE offsets B/G/R=" << offB << "/" << offG << "/" << offR
@@ -3304,7 +2889,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         auto corePayload = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
         WorkingStateSharing::capture_working_state_core_payload(*target, *corePayload);
         const WorkingStateSharing::AcquireCoreSharedResult coreShareSeed =
-            WorkingStateSharing::acquire_or_create_shared_core(target->coreShareHash, std::move(corePayload));
+            JuicerProcess::root().acquire_working_state_core(target->coreShareHash, std::move(corePayload));
         target->sharedCore = coreShareSeed.sharedCore;
         trace_working_state_core_share(coreShareInitial, target->buildCounter, "full_rebuild_shell_acquire");
         trace_working_state_core_share(coreShareSeed, target->buildCounter, "full_rebuild");
@@ -3349,7 +2934,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     }
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =
-        WorkingStateSharing::acquire_or_create_shared_core(coreShareHash);
+        JuicerProcess::root().acquire_working_state_core(coreShareHash);
     const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
     std::shared_ptr<const WorkingState> src;
     if (!(coreShare.sharedCore && coreShare.sharedCore->payload)) {
@@ -3361,12 +2946,11 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
         }
         auto payloadSeed = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
         WorkingStateSharing::capture_working_state_core_payload(*src, *payloadSeed);
-        coreShare = WorkingStateSharing::acquire_or_create_shared_core(coreShareHash, std::move(payloadSeed));
+        coreShare = JuicerProcess::root().acquire_working_state_core(coreShareHash, std::move(payloadSeed));
     }
     if (coreShare.sharedCore && coreShare.sharedCore->payload) {
         WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
-    }
-    else {
+    } else {
         WorkingStateSharing::WorkingStateCorePayload fallbackPayload{};
         WorkingStateSharing::capture_working_state_core_payload(*src, fallbackPayload);
         WorkingStateSharing::apply_working_state_core_payload(fallbackPayload, *target);

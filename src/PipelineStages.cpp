@@ -812,12 +812,14 @@ namespace SpatialDIR {
             int height,
             const std::vector<float>& k)
         {
-            const size_t total = size_t(width) * size_t(height);
-            if (total == 0) {
+            if (width <= 0 || height <= 0) {
                 tmp.clear();
                 dst.clear();
                 return;
             }
+            const size_t widthSize = static_cast<size_t>(width);
+            const size_t heightSize = static_cast<size_t>(height);
+            const size_t total = widthSize * heightSize;
 
             resize_noinit(tmp, total);
             const int radius = int(k.size() / 2);
@@ -836,13 +838,15 @@ namespace SpatialDIR {
                 return idx;
             };
             for (int y = 0; y < height; ++y) {
-                const float* srow = &src[size_t(y * width)];
-                float* trow = &tmp[size_t(y * width)];
+                const size_t rowOffset = static_cast<size_t>(y) * widthSize;
+                const float* srow = &src[rowOffset];
+                float* trow = &tmp[rowOffset];
                 for (int x = 0; x < width; ++x) {
                     float acc = 0.0f;
-                    for (int j = -radius; j <= radius; ++j) {
+                    size_t kernelIndex = 0;
+                    for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                         const int xx = reflectIndex(x + j, width);
-                        acc += srow[xx] * k[size_t(j + radius)];
+                        acc += srow[xx] * k[kernelIndex];
                     }
                     trow[x] = acc;
                 }
@@ -851,11 +855,14 @@ namespace SpatialDIR {
             for (int x = 0; x < width; ++x) {
                 for (int y = 0; y < height; ++y) {
                     float acc = 0.0f;
-                    for (int j = -radius; j <= radius; ++j) {
+                    size_t kernelIndex = 0;
+                    for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                         const int yy = reflectIndex(y + j, height);
-                        acc += tmp[size_t(yy * width + x)] * k[size_t(j + radius)];
+                        const size_t sampleIndex = static_cast<size_t>(yy) * widthSize + static_cast<size_t>(x);
+                        acc += tmp[sampleIndex] * k[kernelIndex];
                     }
-                    dst[size_t(y * width + x)] = acc;
+                    const size_t dstIndex = static_cast<size_t>(y) * widthSize + static_cast<size_t>(x);
+                    dst[dstIndex] = acc;
                 }
             }
         }
@@ -893,7 +900,9 @@ namespace SpatialDIR {
             return;
         }
 
+#if JUICER_DIAGNOSTICS_COMPILED
         const bool verboseDiagnostics = JTRACE_ENABLED(3);
+#endif
         auto should_abort = [&]() -> bool {
             return callbacks.abortCheck(callbacks.user);
         };
@@ -908,15 +917,19 @@ namespace SpatialDIR {
             std::fill(work.corrMBlur.begin(), work.corrMBlur.end(), 0.0f);
             std::fill(work.corrCBlur.begin(), work.corrCBlur.end(), 0.0f);
         };
+#if JUICER_DIAGNOSTICS_COMPILED
         auto trace_abort_fast = [&](const char* stage) {
             if (!verboseDiagnostics) {
                 return;
             }
             JTRACE_VERBOSE("MSCPU", std::string("path=spatial_dir event=abort_fast stage=") + stage);
         };
+#else
+        auto trace_abort_fast = [](const char*) {};
+#endif
 
-        // Per agx-emulsion parity: use same sensitivities everywhere (no separate "before balance" state).
-        // Profiles contain pre-balanced sensitivities; spatial DIR and mid-gray must match pixel render.
+#if JUICER_DIAGNOSTICS_COMPILED
+        // Per agx-emulsion parity: diagnostics use the same pre-balanced sensitivities as rendering.
         const Spectral::Curve& sensB_forExposure = ws.sensB;
         const Spectral::Curve& sensG_forExposure = ws.sensG;
         const Spectral::Curve& sensR_forExposure = ws.sensR;
@@ -936,10 +949,13 @@ namespace SpatialDIR {
                 << " R[650nm]=" << (sensR_forExposure.linear.size() > idx_650 ? sensR_forExposure.linear[idx_650] : -999.0f);
             JTRACE_VERBOSE("SPECTRAL", oss.str());
         }
+#endif
 
         // Pass A: sample exposures, convert to logE, compute DIR corrections per pixel.
+#if JUICER_DIAGNOSTICS_COMPILED
         const int center_xx = width / 2;
         const int center_yy = height / 2;
+#endif
 
         Pipeline::PipelineRunnerConfig runnerCfg{};
         runnerCfg.enablePrint = false;
@@ -965,11 +981,13 @@ namespace SpatialDIR {
                 }
 
                 // SPD DEBUG: Log input RGB for center pixel
+#if JUICER_DIAGNOSTICS_COMPILED
                 if (verboseDiagnostics && xx == center_xx && yy == center_yy) {
                     std::ostringstream oss;
                     oss << "INPUT_RGB tile_pixel(" << xx << "," << yy << "): R=" << rgbIn[0] << " G=" << rgbIn[1] << " B=" << rgbIn[2];
                     JTRACE_VERBOSE("SPECTRAL", oss.str());
                 }
+#endif
 
                 Pipeline::DensityPixelInputs pxIn{};
                 pxIn.rgb.v[0] = rgbIn[0];
@@ -991,6 +1009,7 @@ namespace SpatialDIR {
                 work.filmRaw_R[idx] = pxOut.filmRaw.v[2];
 
                 // SPD DEBUG: Log film raw exposure (pre-log) for center pixel
+#if JUICER_DIAGNOSTICS_COMPILED
                 if (verboseDiagnostics && xx == center_xx && yy == center_yy) {
                     std::ostringstream oss;
                     oss << "FILM_RAW tile_pixel(" << xx << "," << yy << "): B=" << pxOut.filmRaw.v[0]
@@ -1015,6 +1034,7 @@ namespace SpatialDIR {
                         JTRACE_VERBOSE("SPECTRAL", oss3.str());
                     }
                 }
+#endif
 
                 const float leB = pxOut.filmLogRaw.v[0];
                 const float leG = pxOut.filmLogRaw.v[1];

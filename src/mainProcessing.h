@@ -13,6 +13,7 @@
 #include <vector>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 
 struct InstanceState;
 struct WorkingState;
@@ -48,12 +49,15 @@ namespace SpatialDIR {
         const int radiusRaw = std::max(1, int(std::ceil(3.0f * sigma)));
         const int radius = std::min(radiusRaw, 75); // cap at 75 taps each side
 
-        kernel.resize(size_t(2 * radius + 1));
+        const size_t radiusSize = static_cast<size_t>(radius);
+        kernel.resize(radiusSize * 2u + 1u);
         const float s2 = sigma * sigma * 2.0f;
         float wsum = 0.0f;
-        for (int i = -radius; i <= radius; ++i) {
-            const float w = std::exp(-(i * i) / s2);
-            kernel[size_t(i + radius)] = w;
+        size_t kernelIndex = 0;
+        for (int i = -radius; i <= radius; ++i, ++kernelIndex) {
+            const float iFloat = static_cast<float>(i);
+            const float w = std::exp(-(iFloat * iFloat) / s2);
+            kernel[kernelIndex] = w;
             wsum += w;
         }
         for (float& w : kernel) w /= wsum;
@@ -96,7 +100,62 @@ class JuicerProcessor : public OFX::ImageProcessor {
 public:
     explicit JuicerProcessor(OFX::ImageEffect& effect);
 
-    void setSrcDst(OFX::Image* src, OFX::Image* dst);
+    struct FrameRequest {
+        std::shared_ptr<const WorkingState> workingState;
+        const Print::Runtime* printRuntime = nullptr;
+        bool workingStateReady = false;
+        bool printRuntimeReady = false;
+
+        int components = 0;
+        OfxRectI renderWindow{0, 0, 0, 0};
+        Scanner::Options scannerOptions;
+        Scanner::Settings scannerSettings;
+        Print::Params printParams;
+        Profiles::HalationMetadata halationOverride{};
+        bool hasHalationOverride = false;
+        Profiles::GrainMetadata grainOverride{};
+        bool hasGrainOverride = false;
+        Profiles::ProfileGlare printGlareOverride{};
+        bool hasPrintGlareOverride = false;
+        Couplers::Runtime dirRuntime;
+        float exposureScale = 1.0f;
+        bool cameraAutoEnabled = false;
+        int cameraMeteringMethod = 0;
+        double cameraSliderEV = 0.0;
+        OfxRectI autoExposureMeterBounds{0, 0, 0, 0};
+        bool autoExposureMeterBoundsValid = false;
+        OutputEncoding::Params outputEncoding;
+        std::uint64_t sessionSeed = 1;
+        std::uint64_t instanceToken = 1;
+        std::uintptr_t clipToken = 0;
+        double gateWeaveAmount = 1.0;
+        double frameTime = 0.0;
+        double frameRate = 0.0;
+        std::uint32_t frameBoundsVersion = 0;
+        float pixelSizeUm = 0.0f;
+        bool interactiveRenderStatus = false;
+        bool renderQualityDraft = false;
+        bool sequentialRenderStatus = false;
+    };
+
+    struct SourceDestinationImages {
+        OFX::Image* src = nullptr;
+        OFX::Image* dst = nullptr;
+    };
+
+    struct CameraAutoExposureSettings {
+        bool enabled = false;
+        int meteringMethod = 0;
+        double sliderEV = 0.0;
+    };
+
+    struct SessionTokens {
+        std::uint64_t sessionSeed = 1;
+        std::uint64_t instanceToken = 1;
+    };
+
+    void setSrcDst(const SourceDestinationImages& images);
+    void setFrameRequest(const FrameRequest& request);
     void setRenderWindowRect(const OfxRectI& rect);
     void setComponents(int n);
     void setScannerOptions(const Scanner::Options& o);
@@ -109,9 +168,11 @@ public:
     void setWorkingState(const WorkingState* ws, bool wsReady);
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
     void setExposure(float exposureScale);
-    void setCameraAutoExposure(bool enabled, int meteringMethod, double sliderEV);
+    void setCameraAutoExposure(const CameraAutoExposureSettings& settings);
+    void setAutoExposureMeterBounds(const OfxRectI& bounds, bool valid);
     void setOutputEncoding(const OutputEncoding::Params& p);
     void setInstanceState(InstanceState* s);
+    void setSessionTokens(const SessionTokens& tokens);
     void setClipToken(std::uintptr_t token);
     void setGateWeaveAmount(double amount);
     void setFrameTime(double time);
@@ -159,6 +220,7 @@ private:
 
     const Print::Runtime* _prt;
     const WorkingState* _ws;
+    std::shared_ptr<const WorkingState> _wsHold;
     InstanceState* _instanceState = nullptr;
     bool _wsReady;
     bool _printReady;
@@ -167,7 +229,11 @@ private:
     bool _cameraAutoEnabled = false;
     int _cameraMeteringMethod = 0;
     double _cameraSliderEV = 0.0;
+    OfxRectI _autoExposureMeterBounds{0, 0, 0, 0};
+    bool _autoExposureMeterBoundsValid = false;
     OutputEncoding::Params _outputEncoding;
+    std::uint64_t _sessionSeed = 1;
+    std::uint64_t _instanceToken = 1;
     std::uintptr_t _clipToken = 0;
     std::uint64_t _frameTimeHash = 0;
     std::int64_t _frameIndex = 0;

@@ -1,4 +1,4 @@
-// Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.cpp
+// Cuda/ResourceManager/JuicerCudaResourceManagerAdmission.inc
 //
 // Included by JuicerCudaResourceManager.cpp (single-TU split).
 void maybe_apply_async_mempool_release_policy(
@@ -15,22 +15,22 @@ void snapshot_bucket_state_locked(
     const ScratchBucketKey& bucketKey,
     ScratchPolicySnapshot& outSnapshot) noexcept;
 
-ScratchPolicyState& scratch_policy_state() noexcept {
+ScratchPolicyState& scratch_policy_state() {
     static ScratchPolicyState state{};
     return state;
 }
 
-ScratchNormalizationState& scratch_normalization_state() noexcept {
+ScratchNormalizationState& scratch_normalization_state() {
     static ScratchNormalizationState state{};
     return state;
 }
 
-UploadReservationState& upload_reservation_state() noexcept {
+UploadReservationState& upload_reservation_state() {
     static UploadReservationState state{};
     return state;
 }
 
-BuilderReservationState& builder_reservation_state() noexcept {
+BuilderReservationState& builder_reservation_state() {
     static BuilderReservationState state{};
     return state;
 }
@@ -42,76 +42,91 @@ void bump_reservation_state_version(std::uint64_t& version) noexcept {
 void wait_for_scratch_policy_state_change_or_timeout(
     std::uint64_t observedVersion,
     int waitMs) noexcept {
-    if (waitMs <= 0) {
-        return;
+    try {
+        if (waitMs <= 0) {
+            return;
+        }
+        ScratchPolicyState& state = scratch_policy_state();
+        std::unique_lock<std::mutex> lock(state.mutex);
+        if (state.stateVersion != observedVersion) {
+            return;
+        }
+        state.cv.wait_for(
+            lock,
+            std::chrono::milliseconds(waitMs),
+            [&state, observedVersion]() {
+                return state.stateVersion != observedVersion;
+            });
     }
-    ScratchPolicyState& state = scratch_policy_state();
-    std::unique_lock<std::mutex> lock(state.mutex);
-    if (state.stateVersion != observedVersion) {
-        return;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
-    state.cv.wait_for(
-        lock,
-        std::chrono::milliseconds(waitMs),
-        [&state, observedVersion]() {
-            return state.stateVersion != observedVersion;
-        });
 }
 
 void wait_for_builder_reservation_state_change_or_timeout(
     std::uint64_t observedVersion,
     int waitMs) noexcept {
-    if (waitMs <= 0) {
-        return;
+    try {
+        if (waitMs <= 0) {
+            return;
+        }
+        BuilderReservationState& state = builder_reservation_state();
+        std::unique_lock<std::mutex> lock(state.mutex);
+        if (state.stateVersion != observedVersion) {
+            return;
+        }
+        state.cv.wait_for(
+            lock,
+            std::chrono::milliseconds(waitMs),
+            [&state, observedVersion]() {
+                return state.stateVersion != observedVersion;
+            });
     }
-    BuilderReservationState& state = builder_reservation_state();
-    std::unique_lock<std::mutex> lock(state.mutex);
-    if (state.stateVersion != observedVersion) {
-        return;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
-    state.cv.wait_for(
-        lock,
-        std::chrono::milliseconds(waitMs),
-        [&state, observedVersion]() {
-            return state.stateVersion != observedVersion;
-        });
 }
 
 void wait_for_upload_reservation_state_change_or_timeout(
     std::uint64_t observedVersion,
     int waitMs) noexcept {
-    if (waitMs <= 0) {
-        return;
+    try {
+        if (waitMs <= 0) {
+            return;
+        }
+        UploadReservationState& state = upload_reservation_state();
+        std::unique_lock<std::mutex> lock(state.mutex);
+        if (state.stateVersion != observedVersion) {
+            return;
+        }
+        state.cv.wait_for(
+            lock,
+            std::chrono::milliseconds(waitMs),
+            [&state, observedVersion]() {
+                return state.stateVersion != observedVersion;
+            });
     }
-    UploadReservationState& state = upload_reservation_state();
-    std::unique_lock<std::mutex> lock(state.mutex);
-    if (state.stateVersion != observedVersion) {
-        return;
+    catch (...) {
+        JuicerLogging::discard_current_exception();
     }
-    state.cv.wait_for(
-        lock,
-        std::chrono::milliseconds(waitMs),
-        [&state, observedVersion]() {
-            return state.stateVersion != observedVersion;
-        });
 }
 
-PressurePolicyState& pressure_policy_state() noexcept {
+PressurePolicyState& pressure_policy_state() {
     static PressurePolicyState state{};
     return state;
 }
 
-TierCircuitPolicyState& tier_circuit_policy_state() noexcept {
+TierCircuitPolicyState& tier_circuit_policy_state() {
     static TierCircuitPolicyState state{};
     return state;
 }
 
-AdmissionChurnPolicyState& admission_churn_policy_state() noexcept {
+AdmissionChurnPolicyState& admission_churn_policy_state() {
     static AdmissionChurnPolicyState state{};
     return state;
 }
 
-OptionalHeuristicTraceState& optional_heuristic_trace_state() noexcept {
+OptionalHeuristicTraceState& optional_heuristic_trace_state() {
     static OptionalHeuristicTraceState state{};
     return state;
 }
@@ -870,10 +885,7 @@ bool run_canonical_scratch_checkpoint(
         std::lock_guard<std::mutex> lock(state.mutex);
         ScratchNormalizationContextState& contextState =
             state.byContext[transaction.snapshot.deviceContextKey];
-        if (outObservation.sheddingPartialFailure) {
-            contextState.noShedCache = ScratchNormalizationNoShedCache{};
-        }
-        else if (outObservation.overTargetButNotReducible) {
+        if (!outObservation.sheddingPartialFailure && outObservation.overTargetButNotReducible) {
             contextState.noShedCache.valid = true;
             contextState.noShedCache.requestDescriptorGeneration =
                 outObservation.requestDescriptorGeneration;
@@ -1060,7 +1072,7 @@ void refill_builder_fairness_tokens(
 }
 
 
-bool try_acquire_scratch_policy_claim(
+bool try_acquire_scratch_policy_claim_impl(
     const SubmissionTransaction& transaction,
     const char* commandName,
     const DeviceContextKey& contextKey,
@@ -1069,7 +1081,7 @@ bool try_acquire_scratch_policy_claim(
     bool criticalCurrentFrame,
     ScratchPolicyClaim& outClaim,
     ScratchPolicySnapshot& outSnapshot,
-    ReservationAttemptInfo& outReservation) noexcept {
+    ReservationAttemptInfo& outReservation) {
     outReservation = ReservationAttemptInfo{};
     ScratchPolicyState& state = scratch_policy_state();
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -1192,6 +1204,37 @@ bool try_acquire_scratch_policy_claim(
 
     snapshot_bucket_state_locked(contextState, bucketEntry, bucketKey, outSnapshot);
     return true;
+}
+
+bool try_acquire_scratch_policy_claim(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const DeviceContextKey& contextKey,
+    const ScratchBucketKey& bucketKey,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    ScratchPolicyClaim& outClaim,
+    ScratchPolicySnapshot& outSnapshot,
+    ReservationAttemptInfo& outReservation) noexcept {
+    try {
+        return try_acquire_scratch_policy_claim_impl(
+            transaction,
+            commandName,
+            contextKey,
+            bucketKey,
+            requestBytes,
+            criticalCurrentFrame,
+            outClaim,
+            outSnapshot,
+            outReservation);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        outClaim = ScratchPolicyClaim{};
+        outSnapshot = ScratchPolicySnapshot{};
+        outReservation = ReservationAttemptInfo{};
+        return false;
+    }
 }
 
 bool acquire_scratch_policy_claim_with_wait(
@@ -1340,13 +1383,13 @@ bool acquire_scratch_policy_claim_with_wait(
     }
 }
 
-bool try_acquire_builder_reservation_claim(
+bool try_acquire_builder_reservation_claim_impl(
     const SubmissionTransaction& transaction,
     BuilderReservationTier tier,
     std::uint64_t requestBytes,
     bool criticalCurrentFrame,
     BuilderReservationClaim& outClaim,
-    ReservationAttemptInfo& outReservation) noexcept {
+    ReservationAttemptInfo& outReservation) {
     outClaim = BuilderReservationClaim{};
     outReservation = ReservationAttemptInfo{};
 
@@ -1434,6 +1477,30 @@ bool try_acquire_builder_reservation_claim(
     outClaim.bytes = requestBytes;
     outClaim.acquired = true;
     return true;
+}
+
+bool try_acquire_builder_reservation_claim(
+    const SubmissionTransaction& transaction,
+    BuilderReservationTier tier,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    BuilderReservationClaim& outClaim,
+    ReservationAttemptInfo& outReservation) noexcept {
+    try {
+        return try_acquire_builder_reservation_claim_impl(
+            transaction,
+            tier,
+            requestBytes,
+            criticalCurrentFrame,
+            outClaim,
+            outReservation);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        outClaim = BuilderReservationClaim{};
+        outReservation = ReservationAttemptInfo{};
+        return false;
+    }
 }
 
 bool acquire_builder_reservation_with_wait(
@@ -1671,12 +1738,12 @@ bool acquire_builder_reservation_with_wait(
     }
 }
 
-bool try_acquire_upload_reservation_claim(
+bool try_acquire_upload_reservation_claim_impl(
     const SubmissionTransaction& transaction,
     std::uint64_t requestBytes,
     bool criticalCurrentFrame,
     UploadReservationClaim& outClaim,
-    ReservationAttemptInfo& outReservation) noexcept {
+    ReservationAttemptInfo& outReservation) {
     outClaim = UploadReservationClaim{};
     outReservation = ReservationAttemptInfo{};
 
@@ -1762,6 +1829,28 @@ bool try_acquire_upload_reservation_claim(
     outClaim.bytes = requestBytes;
     outClaim.acquired = true;
     return true;
+}
+
+bool try_acquire_upload_reservation_claim(
+    const SubmissionTransaction& transaction,
+    std::uint64_t requestBytes,
+    bool criticalCurrentFrame,
+    UploadReservationClaim& outClaim,
+    ReservationAttemptInfo& outReservation) noexcept {
+    try {
+        return try_acquire_upload_reservation_claim_impl(
+            transaction,
+            requestBytes,
+            criticalCurrentFrame,
+            outClaim,
+            outReservation);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        outClaim = UploadReservationClaim{};
+        outReservation = ReservationAttemptInfo{};
+        return false;
+    }
 }
 
 bool acquire_upload_reservation_with_wait(
@@ -2168,7 +2257,6 @@ std::uint32_t graph_large_entry_quarantine_cap_entries(const ResourceManagerConf
 std::uint32_t pressure_poll_interval_ms_for_state(
     const ResourceManagerConfigEffective& cfg,
     PressureState state) noexcept {
-    const std::uint32_t fallback = std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMs);
     const std::uint32_t normal = std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMsNormal);
     const std::uint32_t critical = std::max<std::uint32_t>(
         1u,
@@ -2182,7 +2270,7 @@ std::uint32_t pressure_poll_interval_ms_for_state(
     case PressureState::Emergency:
         return critical;
     default:
-        return fallback;
+        return std::max<std::uint32_t>(1u, cfg.pressurePollIntervalMs);
     }
 }
 
@@ -2396,7 +2484,7 @@ void snapshot_bucket_state_locked(
     outSnapshot.bucketKey = bucketKey;
 }
 
-void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
+void release_scratch_policy_claim_impl(ScratchPolicyClaim& claim) {
     if (!claim.acquired) {
         return;
     }
@@ -2465,10 +2553,20 @@ void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
     }
 }
 
+void release_scratch_policy_claim(ScratchPolicyClaim& claim) noexcept {
+    try {
+        release_scratch_policy_claim_impl(claim);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        claim = ScratchPolicyClaim{};
+    }
+}
+
 class ScratchPolicyGuard {
 public:
-    explicit ScratchPolicyGuard(ScratchPolicyClaim&& claim) noexcept
-        : _claim(std::move(claim)) {
+    explicit ScratchPolicyGuard(ScratchPolicyClaim claim) noexcept
+        : _claim(claim) {
     }
 
     ~ScratchPolicyGuard() noexcept {
@@ -2482,7 +2580,7 @@ private:
     ScratchPolicyClaim _claim{};
 };
 
-void release_builder_reservation_claim(BuilderReservationClaim& claim) noexcept {
+void release_builder_reservation_claim_impl(BuilderReservationClaim& claim) {
     if (!claim.acquired) {
         return;
     }
@@ -2532,10 +2630,20 @@ void release_builder_reservation_claim(BuilderReservationClaim& claim) noexcept 
     state.cv.notify_all();
 }
 
+void release_builder_reservation_claim(BuilderReservationClaim& claim) noexcept {
+    try {
+        release_builder_reservation_claim_impl(claim);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        claim = BuilderReservationClaim{};
+    }
+}
+
 class BuilderReservationGuard {
 public:
-    explicit BuilderReservationGuard(BuilderReservationClaim&& claim) noexcept
-        : _claim(std::move(claim)) {
+    explicit BuilderReservationGuard(BuilderReservationClaim claim) noexcept
+        : _claim(claim) {
     }
 
     ~BuilderReservationGuard() noexcept {
@@ -2549,7 +2657,7 @@ private:
     BuilderReservationClaim _claim{};
 };
 
-void release_upload_reservation_claim(UploadReservationClaim& claim) noexcept {
+void release_upload_reservation_claim_impl(UploadReservationClaim& claim) {
     if (!claim.acquired) {
         return;
     }
@@ -2594,10 +2702,20 @@ void release_upload_reservation_claim(UploadReservationClaim& claim) noexcept {
     state.cv.notify_all();
 }
 
+void release_upload_reservation_claim(UploadReservationClaim& claim) noexcept {
+    try {
+        release_upload_reservation_claim_impl(claim);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        claim = UploadReservationClaim{};
+    }
+}
+
 class UploadReservationGuard {
 public:
-    explicit UploadReservationGuard(UploadReservationClaim&& claim) noexcept
-        : _claim(std::move(claim)) {
+    explicit UploadReservationGuard(UploadReservationClaim claim) noexcept
+        : _claim(claim) {
     }
 
     ~UploadReservationGuard() noexcept {
@@ -2951,7 +3069,7 @@ bool run_reap_pass_for_pressure(
     return true;
 }
 
-void run_tier_target_pretrim(
+void run_tier_target_pretrim_impl(
     const SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const char* commandName,
@@ -2961,7 +3079,7 @@ void run_tier_target_pretrim(
     const ScratchRequestDescriptor* scratchRequest,
     bool& outDidWork,
     std::uint64_t& outScratchNormalizedActions,
-    std::uint64_t& outGraphEvictedEntries) noexcept {
+    std::uint64_t& outGraphEvictedEntries) {
     outDidWork = false;
     outScratchNormalizedActions = 0;
     outGraphEvictedEntries = 0;
@@ -3024,13 +3142,45 @@ void run_tier_target_pretrim(
     }
 }
 
-void evaluate_active_burst_window(
+void run_tier_target_pretrim(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    PressureLane lane,
+    PressureState pressureState,
+    const TierBudgetSnapshot& tierBudget,
+    const ScratchRequestDescriptor* scratchRequest,
+    bool& outDidWork,
+    std::uint64_t& outScratchNormalizedActions,
+    std::uint64_t& outGraphEvictedEntries) noexcept {
+    try {
+        run_tier_target_pretrim_impl(
+            transaction,
+            resources,
+            commandName,
+            lane,
+            pressureState,
+            tierBudget,
+            scratchRequest,
+            outDidWork,
+            outScratchNormalizedActions,
+            outGraphEvictedEntries);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        outDidWork = false;
+        outScratchNormalizedActions = 0;
+        outGraphEvictedEntries = 0;
+    }
+}
+
+void evaluate_active_burst_window_impl(
     const SubmissionTransaction& transaction,
     const ResourceManagerConfigEffective& cfg,
     const PressureCheckpoint& checkpoint,
     std::size_t requestBytes,
     bool criticalCurrentFrame,
-    ActiveBurstDecision& outDecision) noexcept {
+    ActiveBurstDecision& outDecision) {
     outDecision = ActiveBurstDecision{};
 
     const std::uint64_t softTargetBytes = checkpoint.input.softTargetBytes;
@@ -3106,6 +3256,28 @@ void evaluate_active_burst_window(
     if (!outDecision.allowed && !contextState.burstCapHitLatched) {
         contextState.burstCapHitLatched = true;
         outDecision.capHit = true;
+    }
+}
+
+void evaluate_active_burst_window(
+    const SubmissionTransaction& transaction,
+    const ResourceManagerConfigEffective& cfg,
+    const PressureCheckpoint& checkpoint,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    ActiveBurstDecision& outDecision) noexcept {
+    try {
+        evaluate_active_burst_window_impl(
+            transaction,
+            cfg,
+            checkpoint,
+            requestBytes,
+            criticalCurrentFrame,
+            outDecision);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+        outDecision = ActiveBurstDecision{};
     }
 }
 
@@ -3838,31 +4010,56 @@ void tier_circuit_record_outcome(
 }
 
 void tier_circuit_retire_context(const DeviceContextKey& key) noexcept {
-    TierCircuitPolicyState& state = tier_circuit_policy_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.byContext.erase(key);
+    try {
+        TierCircuitPolicyState& state = tier_circuit_policy_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.byContext.erase(key);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 void pressure_policy_retire_context(const DeviceContextKey& key) noexcept {
-    PressurePolicyState& state = pressure_policy_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.byContext.erase(key);
+    try {
+        PressurePolicyState& state = pressure_policy_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.byContext.erase(key);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 void scratch_normalization_retire_context(const DeviceContextKey& key) noexcept {
-    ScratchNormalizationState& state = scratch_normalization_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.byContext.erase(key);
+    try {
+        ScratchNormalizationState& state = scratch_normalization_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.byContext.erase(key);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 void admission_churn_retire_context(const DeviceContextKey& key) noexcept {
-    AdmissionChurnPolicyState& state = admission_churn_policy_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.byContext.erase(key);
+    try {
+        AdmissionChurnPolicyState& state = admission_churn_policy_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.byContext.erase(key);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }
 
 void optional_heuristic_trace_retire_context(const DeviceContextKey& key) noexcept {
-    OptionalHeuristicTraceState& state = optional_heuristic_trace_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    state.byContext.erase(key);
+    try {
+        OptionalHeuristicTraceState& state = optional_heuristic_trace_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.byContext.erase(key);
+    }
+    catch (...) {
+        JuicerLogging::discard_current_exception();
+    }
 }

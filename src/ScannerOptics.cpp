@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <sstream>
 
@@ -28,17 +29,6 @@ namespace {
         out[2] = m[6] * v[0] + m[7] * v[1] + m[8] * v[2];
     }
 
-    inline void mat3_mul(const float a[9], const float b[9], float out[9]) {
-        for (int r = 0; r < 3; ++r) {
-            for (int c = 0; c < 3; ++c) {
-                out[r * 3 + c] =
-                    a[r * 3 + 0] * b[0 * 3 + c] +
-                    a[r * 3 + 1] * b[1 * 3 + c] +
-                    a[r * 3 + 2] * b[2 * 3 + c];
-            }
-        }
-    }
-
     template <typename Scalar>
     inline void build_gaussian_kernel(float sigma, std::vector<Scalar>& kernel) {
         kernel.clear();
@@ -48,12 +38,15 @@ namespace {
         }
         const int radiusRaw = JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f);
         const int radius = std::min(radiusRaw, 75);
-        kernel.resize(size_t(2 * radius + 1));
+        const size_t radiusSize = static_cast<size_t>(radius);
+        kernel.resize(radiusSize * 2u + 1u);
         const double s2 = static_cast<double>(sigma) * static_cast<double>(sigma) * 2.0;
         double wsum = 0.0;
-        for (int i = -radius; i <= radius; ++i) {
-            const double w = std::exp(-(static_cast<double>(i * i)) / s2);
-            kernel[size_t(i + radius)] = static_cast<Scalar>(w);
+        size_t kernelIndex = 0;
+        for (int i = -radius; i <= radius; ++i, ++kernelIndex) {
+            const double iDouble = static_cast<double>(i);
+            const double w = std::exp(-(iDouble * iDouble) / s2);
+            kernel[kernelIndex] = static_cast<Scalar>(w);
             wsum += w;
         }
         const Scalar invW = (wsum != 0.0) ? static_cast<Scalar>(1.0 / wsum) : static_cast<Scalar>(0.0);
@@ -63,7 +56,14 @@ namespace {
     template <typename Scalar>
     void blur_separable(const std::vector<Scalar>& src, std::vector<Scalar>& tmp, std::vector<Scalar>& dst,
         int width, int height, const std::vector<Scalar>& k) {
-        const size_t n = size_t(width) * size_t(height);
+        if (width <= 0 || height <= 0) {
+            tmp.clear();
+            dst.clear();
+            return;
+        }
+        const size_t widthSize = static_cast<size_t>(width);
+        const size_t heightSize = static_cast<size_t>(height);
+        const size_t n = widthSize * heightSize;
         if (tmp.size() != n) {
             tmp.resize(n);
         }
@@ -83,13 +83,15 @@ namespace {
             return idx;
             };
         for (int y = 0; y < height; ++y) {
-            const Scalar* srow = &src[size_t(y * width)];
-            Scalar* trow = &tmp[size_t(y * width)];
+            const size_t rowOffset = static_cast<size_t>(y) * widthSize;
+            const Scalar* srow = &src[rowOffset];
+            Scalar* trow = &tmp[rowOffset];
             for (int x = 0; x < width; ++x) {
                 Scalar acc = static_cast<Scalar>(0.0);
-                for (int j = -radius; j <= radius; ++j) {
+                size_t kernelIndex = 0;
+                for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                     const int xx = reflectIndex(x + j, width);
-                    acc += srow[xx] * k[size_t(j + radius)];
+                    acc += srow[xx] * k[kernelIndex];
                 }
                 trow[x] = acc;
             }
@@ -100,11 +102,14 @@ namespace {
         for (int x = 0; x < width; ++x) {
             for (int y = 0; y < height; ++y) {
                 Scalar acc = static_cast<Scalar>(0.0);
-                for (int j = -radius; j <= radius; ++j) {
+                size_t kernelIndex = 0;
+                for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
                     const int yy = reflectIndex(y + j, height);
-                    acc += tmp[size_t(yy * width + x)] * k[size_t(j + radius)];
+                    const size_t sampleIndex = static_cast<size_t>(yy) * widthSize + static_cast<size_t>(x);
+                    acc += tmp[sampleIndex] * k[kernelIndex];
                 }
-                dst[size_t(y * width + x)] = acc;
+                const size_t dstIndex = static_cast<size_t>(y) * widthSize + static_cast<size_t>(x);
+                dst[dstIndex] = acc;
             }
         }
     }
@@ -197,6 +202,13 @@ namespace {
         static constexpr std::uint32_t kM0 = 0xD2511F53u;
         static constexpr std::uint32_t kM1 = 0xCD9E8D57u;
 
+        struct Seed {
+            std::uint64_t sequence = 0;
+            std::uint32_t counter0 = 0;
+            std::uint32_t counter1 = 0;
+            std::uint32_t globalSeed = 0;
+        };
+
         std::uint32_t seedHi;
         std::uint32_t seedLo;
         std::uint32_t ctr0;
@@ -204,12 +216,12 @@ namespace {
         std::uint32_t ctr2;
         std::uint32_t ctr3;
 
-        PhiloxRngCpu(std::uint64_t seed, std::uint32_t counter0, std::uint32_t globalSeed, std::uint32_t counter1)
-            : seedHi(static_cast<std::uint32_t>(seed >> 32)),
-              seedLo(static_cast<std::uint32_t>(seed & 0xFFFFFFFFu)),
-              ctr0(counter0),
-              ctr1(counter1),
-              ctr2(globalSeed),
+        explicit PhiloxRngCpu(const Seed& seed)
+            : seedHi(static_cast<std::uint32_t>(seed.sequence >> 32)),
+              seedLo(static_cast<std::uint32_t>(seed.sequence & 0xFFFFFFFFu)),
+              ctr0(seed.counter0),
+              ctr1(seed.counter1),
+              ctr2(seed.globalSeed),
               ctr3(0u)
         {}
 
@@ -263,8 +275,19 @@ namespace {
     struct GlareRngCpu {
         PhiloxRngCpu rng;
 
-        GlareRngCpu(std::uint64_t seed, std::uint32_t ctr0, std::uint32_t ctr1, std::uint32_t globalSeed)
-            : rng(seed, ctr0, globalSeed, ctr1) {}
+        struct Seed {
+            std::uint64_t sequence = 0;
+            std::uint32_t xCounter = 0;
+            std::uint32_t yCounter = 0;
+            std::uint32_t mediumSeed = 0;
+        };
+
+        explicit GlareRngCpu(const Seed& seed)
+            : rng(PhiloxRngCpu::Seed{
+                seed.sequence,
+                seed.xCounter,
+                seed.yCounter,
+                seed.mediumSeed}) {}
 
         float normal() {
             float u1 = rng.uniform();
@@ -309,20 +332,18 @@ namespace {
         const OutputEncoding::Params& encoding,
         const GeneratedColorSpaces::ColorSpaceEntry& outSpace)
     {
-        const std::uint64_t encFields[] = {
+        const std::uint64_t encHash = Hash::hash_uint64_values({
             static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
             static_cast<std::uint64_t>(encoding.applyCctfEncoding),
             static_cast<std::uint64_t>(encoding.preserveLinearRange),
             static_cast<std::uint64_t>(encoding.inputIsOutputSpace)
-        };
-        const std::uint64_t encHash = Hash::hash_bytes(encFields, sizeof(encFields));
-        const std::uint64_t fields[] = {
+        });
+        return Hash::hash_uint64_values({
             outSpace.hash,
             medium.illuminant.hash,
             static_cast<std::uint64_t>(medium.medium),
             encHash
-        };
-        return Hash::hash_bytes(fields, sizeof(fields));
+        });
     }
 
     inline void log_scanner_keys(
@@ -622,7 +643,6 @@ namespace ScannerOptics {
             return;
         }
         const size_t total = size_t(width) * size_t(height);
-        const size_t channelSize = total;
         if (density.width != width || density.height != height || density.stride != width ||
             density.c.size() < total || density.m.size() < total || density.y.size() < total) {
             JTRACE("SCAN", "FATAL: density slab does not match render bounds");
@@ -716,14 +736,16 @@ namespace ScannerOptics {
                 }
                 for (int y = 0; y < height; ++y) {
                     for (int x = 0; x < width; ++x) {
-                        const std::uint64_t absX = static_cast<std::uint64_t>(originX + x);
-                        const std::uint64_t absY = static_cast<std::uint64_t>(originY + y);
+                        const std::int64_t absXSigned = static_cast<std::int64_t>(originX) + static_cast<std::int64_t>(x);
+                        const std::int64_t absYSigned = static_cast<std::int64_t>(originY) + static_cast<std::int64_t>(y);
+                        const std::uint64_t absX = static_cast<std::uint64_t>(absXSigned);
+                        const std::uint64_t absY = static_cast<std::uint64_t>(absYSigned);
                         const size_t idx = size_t(y) * size_t(width) + size_t(x);
-                        GlareRngCpu rng(
+                        GlareRngCpu rng(GlareRngCpu::Seed{
                             glareSeed,
                             static_cast<std::uint32_t>(absX),
                             static_cast<std::uint32_t>(absY),
-                            static_cast<std::uint32_t>(medium.medium));
+                            static_cast<std::uint32_t>(medium.medium)});
                         const float n = rng.normal();
                         const float mean = static_cast<float>(medium.glare.percent);
                         const float stddev = static_cast<float>(medium.glare.roughness * medium.glare.percent);
@@ -1005,7 +1027,7 @@ namespace ScannerOptics {
                             ctx.dstView.strideBytes * static_cast<ptrdiff_t>(yOff);
                         float* dstRow = reinterpret_cast<float*>(
                             reinterpret_cast<char*>(ctx.dstView.r) + rowOffsetBytes);
-                        float* dstPix = dstRow + size_t(xOff * ctx.nComponents);
+                        float* dstPix = dstRow + static_cast<size_t>(xOff) * static_cast<size_t>(ctx.nComponents);
                         const size_t idx = rowOffset + size_t(xOff);
                         double rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
                         OutputEncoding::applyEncoding(ctx.color->encoding, rgbOut);

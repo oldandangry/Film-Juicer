@@ -13,14 +13,12 @@ namespace Spectral {
     inline bool is_finite(double v);
     struct SpectralTables;
     struct Curve;
-    inline void rgbDWG_to_layerExposures(const float rgbDWG[3], float E[3], float exposureScale);
     inline void rgbDWG_to_layerExposures_from_tables_with_curves(
         const float rgbDWG[3], float E[3], float exposureScale,
         const SpectralTables* tables, const float* S_inv,
         const Curve& sB, const Curve& sG, const Curve& sR,
         SpectralUpsamplingMode spectralUpsamplingMode,
         const float refIllumWhiteXYZ[3]);
-    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]);
 
 #if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
     bool spd_probe_begin_capture(const float rgbIn[3], const float rgbDWG[3], bool spdEnabled);
@@ -51,16 +49,16 @@ namespace Spectral {
 
     inline constexpr std::size_t kInputColorSpaceCount = static_cast<std::size_t>(InputColorSpace::Count);
 
-    inline constexpr const char* inputColorSpaceLabel(InputColorSpace cs) {
+    constexpr const char* inputColorSpaceLabel(InputColorSpace cs) {
         const std::size_t idx = static_cast<std::size_t>(cs);
         return idx < kInputColorSpaceCount ? kInputColorSpaceLabels[idx] : "DaVinci Wide Gamut";
     }
 
-    inline constexpr int inputColorSpaceToIndex(InputColorSpace cs) {
+    constexpr int inputColorSpaceToIndex(InputColorSpace cs) {
         return static_cast<int>(cs);
     }
 
-    inline constexpr InputColorSpace inputColorSpaceFromIndex(int index) {
+    constexpr InputColorSpace inputColorSpaceFromIndex(int index) {
         if (index < 0) {
             return InputColorSpace::DaVinciWideGamut;
         }
@@ -83,10 +81,10 @@ namespace Spectral {
 
     struct Mat3 {
         float m[9];
-        inline void mul(const float v[3], float out[3]) const {
+        void mul(const float v[3], float out[3]) const {
             mul_3x3_vec3(m, v, out);
         }
-        inline Mat3 inverse(float fallback = 1.0f) const {
+        Mat3 inverse(float fallback = 1.0f) const {
             const float det =
                 m[0] * (m[4] * m[8] - m[5] * m[7]) -
                 m[1] * (m[3] * m[8] - m[5] * m[6]) +
@@ -214,6 +212,15 @@ namespace Spectral {
         0.07578536f,  0.08076209f,  0.76034476f
     } };
 
+    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]) {
+        gDWG_XYZ_to_RGB.mul(XYZ, RGB);
+        clamp_triplet_nonnegative_inplace(RGB);
+    }
+
+    inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]) {
+        gDWG_RGB_to_XYZ.mul(RGB, XYZ);
+    }
+
     // ============================================================================
     // Color Space Helpers
     // ============================================================================
@@ -331,7 +338,7 @@ namespace Spectral {
         if (x < threshold) {
             return x / 4.5f;
         }
-        return static_cast<float>(std::pow((x + (a - 1.0f)) * invA, invGamma));
+        return std::pow((x + (a - 1.0f)) * invA, invGamma);
     }
 
     inline float decode_BT2020_channel(float v) {
@@ -345,7 +352,7 @@ namespace Spectral {
         if (x <= threshold) {
             return x / 12.92f;
         }
-        return static_cast<float>(std::pow((x + 0.055f) * invScale, 2.4f));
+        return std::pow((x + 0.055f) * invScale, 2.4f);
     }
 
     inline float decode_sRGB_channel(float v) {
@@ -697,7 +704,7 @@ namespace Spectral {
         const SpectralReconstructionPath& path,
         float E[3])
     {
-        if (!path.spdReady) {
+        if (!path.spdReady || !tablesSPD || !S_inv) {
             std::fill_n(E, 3, 0.0f);
             return;
         }
@@ -796,7 +803,9 @@ namespace Spectral {
         spd_probe_begin_capture(rgbIn, rgbDWG, path.spdReady);
 #endif
 
+#if defined(JUICER_SPD_DEBUG) && (JUICER_SPD_DEBUG != 0)
         float normScale = cfg.midgrayScale;
+#endif
         if (path.spdReady) {
             compute_layer_exposures_from_reconstruction_path(
                 cfg,
@@ -809,8 +818,7 @@ namespace Spectral {
                 sR,
                 path,
                 E);
-            normScale = cfg.midgrayScale;
-            scale_triplet_nonnegative_inplace(E, normScale);
+            scale_triplet_nonnegative_inplace(E, cfg.midgrayScale);
         }
         else {
             std::fill_n(E, 3, 0.0f);
@@ -841,15 +849,6 @@ namespace Spectral {
         float adaptedXYZ[3];
         chromatic_adapt_XYZ_CAT02(XYZ, srcWhite, gDWG_WhitePoint_XYZ, adaptedXYZ);
         gDWG_XYZ_to_RGB.mul(adaptedXYZ, RGB);
-    }
-
-    inline void XYZ_to_DWG_linear(const float XYZ[3], float RGB[3]) {
-        gDWG_XYZ_to_RGB.mul(XYZ, RGB);
-        clamp_triplet_nonnegative_inplace(RGB);
-    }
-
-    inline void DWG_linear_to_XYZ(const float RGB[3], float XYZ[3]) {
-        gDWG_RGB_to_XYZ.mul(RGB, XYZ);
     }
 
     inline float neutral_blend_weight_from_DWG_rgb(const float rgbDWG[3]) {
