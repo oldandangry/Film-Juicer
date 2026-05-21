@@ -70,9 +70,9 @@
     <JuicerIsReleaseBuild Condition="'$(JuicerIsReleaseBuild)'==''">0</JuicerIsReleaseBuild>
   </PropertyGroup>
   <PropertyGroup Label="JuicerCudaConfig">
-    <CudaToolkitDir Condition="'$(CudaToolkitDir)'=='' and '$(CUDA_PATH_V13_1)'!=''">$(CUDA_PATH_V13_1)\</CudaToolkitDir>
+    <CudaToolkitDir Condition="'$(CudaToolkitDir)'=='' and '$(CUDA_PATH_V13_2)'!=''">$(CUDA_PATH_V13_2)\</CudaToolkitDir>
     <CudaToolkitDir Condition="'$(CudaToolkitDir)'=='' and '$(CUDA_PATH)'!=''">$(CUDA_PATH)\</CudaToolkitDir>
-    <JuicerCudaBuildCustomizationsAvailable Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.1.props')">1</JuicerCudaBuildCustomizationsAvailable>
+    <JuicerCudaBuildCustomizationsAvailable Condition="Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props')">1</JuicerCudaBuildCustomizationsAvailable>
     <JuicerCudaToolkitAvailable Condition="Exists('$(CudaToolkitDir)bin\nvcc.exe')">1</JuicerCudaToolkitAvailable>
     <JuicerEnableCudaBuild Condition="'$(JuicerEnableCudaBuild)'=='' and '$(Platform)'=='x64' and ('$(JuicerCudaBuildCustomizationsAvailable)'=='1' or '$(JuicerCudaToolkitAvailable)'=='1')">1</JuicerEnableCudaBuild>
     <JuicerEnableCudaBuild Condition="'$(JuicerEnableCudaBuild)'==''">0</JuicerEnableCudaBuild>
@@ -85,7 +85,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
-    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.1.props" Condition="'$(JuicerUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.1.props')" />
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props" Condition="'$(JuicerUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.props')" />
   </ImportGroup>
   <PropertyGroup Label="JuicerCudaToolchain">
     <JuicerCudaIncludeDir Condition="'$(JuicerEnableCudaBuild)'=='1' and '$(CudaToolkitDir)'!=''">$(CudaToolkitDir)include;</JuicerCudaIncludeDir>
@@ -161,7 +161,7 @@
       <EnableUAC>false</EnableUAC>
     </Link>
     <CudaCompile>
-      <AdditionalOptions>--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>--std=c++20 %(AdditionalOptions)</AdditionalOptions>
       <Include>$(ProjectDir)src;$(ProjectDir)third_party;%(Include)</Include>
     </CudaCompile>
   </ItemDefinitionGroup>
@@ -190,7 +190,7 @@
       <OutputFile>$(OutDir)juicer.ofx</OutputFile>
     </Link>
     <CudaCompile>
-      <AdditionalOptions>--std=c++17 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>--std=c++20 %(AdditionalOptions)</AdditionalOptions>
       <Include>$(ProjectDir)src;$(ProjectDir)third_party;%(Include)</Include>
     </CudaCompile>
   </ItemDefinitionGroup>
@@ -211,7 +211,7 @@
     </ClCompile>
     <CudaCompile Condition="'$(JuicerEnableCudaBuild)'=='1'">
       <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
-      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">-allow-unsupported-compiler --std=c++17 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">--std=c++20 %(AdditionalOptions)</AdditionalOptions>
       <Include Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)src;$(ProjectDir)third_party;%(Include)</Include>
     </CudaCompile>
     <Link>
@@ -242,7 +242,7 @@
     <CudaCompile Condition="'$(JuicerEnableCudaBuild)'=='1'">
       <CodeGeneration>compute_75,sm_75;compute_75,compute_75</CodeGeneration>
       <Include Condition="'$(JuicerIsReleaseBuild)'=='1' and '$(Platform)'=='x64'">$(ProjectDir)src;$(ProjectDir)third_party;%(Include)</Include>
-      <AdditionalOptions Condition="'$(JuicerIsReleaseBuild)'=='1' and '$(Platform)'=='x64'">-allow-unsupported-compiler --std=c++17 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions Condition="'$(JuicerIsReleaseBuild)'=='1' and '$(Platform)'=='x64'">--std=c++20 %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -330,11 +330,11 @@
   <Target Name="JuicerManualNvccCompile"
           Condition="'$(JuicerUseManualNvcc)'=='1'"
           BeforeTargets="ComputeLinkInputsFromProject">
-    <Error Condition="'$(CudaToolkitDir)'=='' or !Exists('$(CudaToolkitDir)bin\nvcc.exe')" Text="Juicer manual CUDA build requires nvcc.exe. Set CudaToolkitDir, CUDA_PATH_V13_1, or CUDA_PATH." />
+    <Error Condition="'$(CudaToolkitDir)'=='' or !Exists('$(CudaToolkitDir)bin\nvcc.exe')" Text="Juicer manual CUDA build requires nvcc.exe. Set CudaToolkitDir, CUDA_PATH_V13_2, or CUDA_PATH." />
     <Error Condition="'$(JuicerNvccHostCompilerBin)'=='' or !Exists('$(JuicerNvccHostCompilerBin)\cl.exe')" Text="Juicer manual CUDA build requires MSVC cl.exe. Set JuicerNvccHostCompilerBin to the Hostx64\x64 compiler directory." />
     <MakeDir Directories="$(IntDir)manual_cuda" />
     <Message Importance="High" Text="Compiling CUDA with nvcc: %(JuicerManualCudaCompile.Identity)" />
-    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(JuicerNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(JuicerManualCudaCompile.FullPath)&quot; --std=c++17 -allow-unsupported-compiler --cudart hybrid $(JuicerNvccReleaseDeviceOptions) $(JuicerNvccFastMathOptions) -ccbin &quot;$(JuicerNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)src&quot; -I&quot;$(ProjectDir)third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_ENABLE_COUPLERS=1 -DJUICER_ENABLE_CUDA=1 -DJUICER_CUDA_SELF_CHECK=$(JuicerCudaSelfCheck) -DJUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives) -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -DJUICER_SPD_DEBUG=$(JuicerSpdDebug) -DJUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples) -DJUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled) -DJUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(JuicerNvccHostCompilerOptions)&quot; -o &quot;%(JuicerManualCudaCompile.ObjectFile)&quot;" />
+    <Exec Command="set &quot;CL=&quot; &amp;&amp; set &quot;INCLUDE=$(JuicerNvccHostIncludePath)&quot; &amp;&amp; &quot;$(CudaToolkitDir)bin\nvcc.exe&quot; -c &quot;%(JuicerManualCudaCompile.FullPath)&quot; --std=c++20 --cudart hybrid $(JuicerNvccReleaseDeviceOptions) $(JuicerNvccFastMathOptions) -ccbin &quot;$(JuicerNvccHostCompilerBin)&quot; -I&quot;$(ProjectDir)src&quot; -I&quot;$(ProjectDir)third_party&quot; -I&quot;$(CudaToolkitDir)include&quot; -DWIN32 -DNOMINMAX -D_CRT_SECURE_NO_WARNINGS -DJUICER_ENABLE_COUPLERS=1 -DJUICER_ENABLE_CUDA=1 -DJUICER_CUDA_SELF_CHECK=$(JuicerCudaSelfCheck) -DJUICER_CUDA_VALIDATE_PRIMITIVES=$(JuicerCudaValidatePrimitives) -DJUICER_DIAGNOSTICS_COMPILED=$(JuicerDiagnosticsCompiled) -DJUICER_SPD_DEBUG=$(JuicerSpdDebug) -DJUICER_SPD_DEBUG_MAX_SAMPLES=$(JuicerSpdDebugMaxSamples) -DJUICER_RM_TELEMETRY_COUNTERS_COMPILED=$(JuicerRmTelemetryCountersCompiled) -DJUICER_LAUNCH_GRAPH_COUNTERS_COMPILED=$(JuicerLaunchGraphCountersCompiled) -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_75,code=compute_75 -Xcompiler &quot;$(JuicerNvccHostCompilerOptions)&quot; -o &quot;%(JuicerManualCudaCompile.ObjectFile)&quot;" />
   </Target>
   <Target Name="JuicerManualCudaLinkInputs"
           Condition="'$(JuicerUseManualNvcc)'=='1'"
@@ -352,6 +352,6 @@
     <Delete Files="@(JuicerManualCudaCompile->'%(ObjectFile)')" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
-    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.1.targets" Condition="'$(JuicerUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.1.targets')" />
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.targets" Condition="'$(JuicerUseCudaMsbuildTargets)'=='1' and Exists('$(VCTargetsPath)\BuildCustomizations\CUDA 13.2.targets')" />
   </ImportGroup>
 </Project>
