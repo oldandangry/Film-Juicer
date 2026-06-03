@@ -37,6 +37,9 @@
     <ClCompile Include="src\Print.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\ProfileCatalog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\NeutralFilters.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -162,6 +165,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Print.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProfileCatalog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\ProfileJSONLoader.h">

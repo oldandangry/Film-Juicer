@@ -13,17 +13,17 @@ namespace Profiles {
     struct HalationMetadata;
     struct GrainMetadata;
     struct ProfileGlare;
-}
+} // namespace Profiles
 
 namespace Scanner {
     struct Options;
     struct Settings;
-}
+} // namespace Scanner
 
 namespace Print {
     struct Params;
     struct Runtime;
-}
+} // namespace Print
 
 namespace OutputEncoding {
     struct Params;
@@ -41,6 +41,7 @@ namespace OFX {
     class DoubleParam;
     class Double3DParam;
     class ChoiceParam;
+    class StrChoiceParam;
     class Double2DParam;
     class IntParam;
     class BooleanParam;
@@ -50,19 +51,13 @@ namespace OFX {
 
 // Placeholder parameter names (Step 1)
 // Per agx-emulsion parity: this is "camera.exposure_compensation_ev" (not just "exposure")
-#define kParamExposure "Exposure"   // UI: "Exposure Compensation Ev"
+#define kParamExposure "Exposure" // UI: "Exposure Compensation Ev"
 #define kParamCameraAutoExposure "CameraAutoExposure"
-#define kParamContrast "Contrast"   // unitless
+#define kParamContrast "Contrast" // unitless
 #define kParamSpectralMode "SpectralUpsampling"
 #define kParamReferenceIlluminant "ReferenceIlluminant"
 #define kParamEnlargerIlluminant "EnlargerIlluminant"
 #define kParamEnlargerDichroicSet "EnlargerDichroicSet"
-
-// Film stock parameter
-#define kParamFilmStock "FilmStock"
-
-// Print paper parameter
-#define kParamPrintPaper "PrintPaper"
 
 // Output encoding parameters
 #define kParamOutputColorSpace "OutputColorSpace"
@@ -112,6 +107,9 @@ private:
     void resetGrainAdvancedControls();
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
+    [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3:
+    // retained declaration is unreachable from product render after the Phase 1A cutoff.
     AutoExposureResult computeAutoExposure(
         const OFX::RenderArguments& args,
         OFX::Image* srcImg,
@@ -146,9 +144,9 @@ private:
     OFX::BooleanParam* _pCameraAutoExposure = nullptr;
     OFX::DoubleParam* _pCameraFilmFormat = nullptr;
     OFX::ChoiceParam* _pCameraMeteringMethod = nullptr;
-    OFX::ChoiceParam* _pFilmStock = nullptr;
+    OFX::StrChoiceParam* _pFilmProfileKey = nullptr;
     OFX::ChoiceParam* _pSpectralMode = nullptr;
-    OFX::ChoiceParam* _pPrintPaper = nullptr;
+    OFX::StrChoiceParam* _pPrintProfileKey = nullptr;
     OFX::ChoiceParam* _pRefIll = nullptr;
     OFX::ChoiceParam* _pEnlIll = nullptr;
     OFX::ChoiceParam* _pEnlDichroicSet = nullptr;
@@ -252,5 +250,4 @@ private:
     double _grainParticleScaleLayersMasterLast = 0.0;
     double _grainDensityMinMasterLast = 0.0;
     double _grainUniformityMasterLast = 0.0;
-
 };

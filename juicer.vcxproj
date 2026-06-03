@@ -275,6 +275,7 @@
     <ClCompile Include="src\mainProcessing.cpp" />
     <ClCompile Include="src\NeutralFilters.cpp" />
     <ClCompile Include="src\Print.cpp" />
+    <ClCompile Include="src\ProfileCatalog.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ProcessRoot.cpp" />
     <ClCompile Include="src\ResourceAssetLibrary.cpp" />
@@ -308,6 +309,7 @@
     <ClInclude Include="src\ParamNames.h" />
     <ClInclude Include="src\PipelineTypes.h" />
     <ClInclude Include="src\Print.h" />
+    <ClInclude Include="src\ProfileCatalog.h" />
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\ProcessRoot.h" />
     <ClInclude Include="src\ResourceAssetLibrary.h" />

@@ -112,7 +112,7 @@ extern "C" cudaError_t juicer_cuda_print_pipeline_optics(
 
 // Resolve OFX support library C++ wrappers — suppress MSVC C5040 for dynamic exception specs
 #pragma warning(push)
-#pragma warning(disable: 5040)
+#pragma warning(disable : 5040)
 #include "ofxsProcessing.h"
 #include "ofxsImageEffect.h"
 #pragma warning(pop)
@@ -199,19 +199,27 @@ namespace {
 
     inline int pixel_component_count(OFX::PixelComponentEnum comps) {
         switch (comps) {
-        case OFX::ePixelComponentRGBA: return 4;
-        case OFX::ePixelComponentRGB: return 3;
-        case OFX::ePixelComponentAlpha: return 1;
-        default: return 0;
+            case OFX::ePixelComponentRGBA:
+                return 4;
+            case OFX::ePixelComponentRGB:
+                return 3;
+            case OFX::ePixelComponentAlpha:
+                return 1;
+            default:
+                return 0;
         }
     }
 
     inline int bytes_per_component(OFX::BitDepthEnum depth) {
         switch (depth) {
-        case OFX::eBitDepthUByte: return 1;
-        case OFX::eBitDepthUShort: return 2;
-        case OFX::eBitDepthFloat: return 4;
-        default: return 0;
+            case OFX::eBitDepthUByte:
+                return 1;
+            case OFX::eBitDepthUShort:
+                return 2;
+            case OFX::eBitDepthFloat:
+                return 4;
+            default:
+                return 0;
         }
     }
 
@@ -221,7 +229,7 @@ namespace {
 
     inline bool row_has_full_coverage(const OfxRectI& bounds, int xStart, int xEnd, int y) {
         return span_x_within_bounds(xStart, xEnd, bounds) &&
-            y >= bounds.y1 && y < bounds.y2;
+               y >= bounds.y1 && y < bounds.y2;
     }
 
     inline int offset_from_start(int start, int offset) {
@@ -234,8 +242,8 @@ namespace {
 
     inline Scanner::ScannerMedium scanner_medium_from_print_active(bool printActive) {
         return printActive
-            ? Scanner::ScannerMedium::Print
-            : Scanner::ScannerMedium::Negative;
+                   ? Scanner::ScannerMedium::Print
+                   : Scanner::ScannerMedium::Negative;
     }
 
     inline bool print_pipeline_active(
@@ -531,14 +539,13 @@ namespace {
         const float fields[3] = {
             options.lensBlurSigmaPx,
             options.unsharpSigmaPx,
-            options.unsharpAmount
-        };
+            options.unsharpAmount};
         const std::uint64_t optHash = Hash::hash_float_span(fields, 3);
         if (lutHash == 0 || optHash == 0) {
             JTRACE("HASH", "FATAL: invalid scanner settings for hashing");
             return 0;
         }
-        const std::uint64_t combined[2] = { lutHash, optHash };
+        const std::uint64_t combined[2] = {lutHash, optHash};
         return Hash::hash_bytes(combined, sizeof(combined));
     }
 
@@ -811,7 +818,7 @@ namespace {
         float* densityM,
         float* densityY,
         size_t idx) {
-        static constexpr float kZeroDensity[3] = { 0.0f, 0.0f, 0.0f };
+        static constexpr float kZeroDensity[3] = {0.0f, 0.0f, 0.0f};
         store_density_triplet(densityC, densityM, densityY, idx, kZeroDensity);
     }
 
@@ -911,7 +918,7 @@ namespace {
         float filmScratchAmount,
         float gateScratchAmount) {
         return (filmDustAmount > 0.0f) || (gateDustAmount > 0.0f) ||
-            (filmScratchAmount > 0.0f) || (gateScratchAmount > 0.0f);
+               (filmScratchAmount > 0.0f) || (gateScratchAmount > 0.0f);
     }
 
     inline bool needs_gate_mask_for_defects(float gateDustAmount, float gateScratchAmount) {
@@ -924,7 +931,7 @@ namespace {
 
     inline bool needs_independent_grain_path(int debugView, float chromaMix) {
         return (debugView == 0 || debugView == 1) &&
-            (is_finite(chromaMix) && chromaMix < 0.999f);
+               (is_finite(chromaMix) && chromaMix < 0.999f);
     }
 
     inline bool is_positive_finite(float value) {
@@ -1079,13 +1086,13 @@ namespace {
         }
         const std::string lower = ascii_lower_copy(text);
         return lower.find("context is destroyed") != std::string::npos ||
-            lower.find("context destroyed") != std::string::npos ||
-            lower.find("cudaerrorcontextisdestroyed") != std::string::npos ||
-            lower.find("device lost") != std::string::npos ||
-            lower.find("driver shutting down") != std::string::npos ||
-            lower.find("context reset") != std::string::npos ||
-            lower.find("device unavailable") != std::string::npos ||
-            lower.find("cudaerrordeviceuninitialized") != std::string::npos;
+               lower.find("context destroyed") != std::string::npos ||
+               lower.find("cudaerrorcontextisdestroyed") != std::string::npos ||
+               lower.find("device lost") != std::string::npos ||
+               lower.find("driver shutting down") != std::string::npos ||
+               lower.find("context reset") != std::string::npos ||
+               lower.find("device unavailable") != std::string::npos ||
+               lower.find("cudaerrordeviceuninitialized") != std::string::npos;
     }
 
     bool is_cuda_context_loss_signal(cudaError_t error, const std::string& detail) {
@@ -1198,7 +1205,7 @@ namespace {
     }
 #endif
 
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) && \
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__) &&                                    \
     ((defined(JUICER_CUDA_VALIDATE_PRIMITIVES) && (JUICER_CUDA_VALIDATE_PRIMITIVES != 0)) || \
      (defined(JUICER_CUDA_SELF_CHECK) && (JUICER_CUDA_SELF_CHECK != 0)))
     struct DiagnosticsHookPolicy {
@@ -1241,14 +1248,11 @@ namespace {
             const char* reason = "active";
             if (!compiled) {
                 reason = "compile_disabled";
-            }
-            else if (!modeEnabled) {
+            } else if (!modeEnabled) {
                 reason = "diagnostics_mode_disabled";
-            }
-            else if (!toggleEnabled) {
+            } else if (!toggleEnabled) {
                 reason = "validation_toggle_disabled";
-            }
-            else if (!verboseEnabled) {
+            } else if (!verboseEnabled) {
                 reason = "diagnostics_level_below_verbose";
             }
             std::string msg;
@@ -1286,11 +1290,9 @@ namespace {
             const char* reason = "active";
             if (!compiled) {
                 reason = "compile_disabled";
-            }
-            else if (!modeEnabled) {
+            } else if (!modeEnabled) {
                 reason = "diagnostics_mode_disabled";
-            }
-            else if (!toggleEnabled) {
+            } else if (!toggleEnabled) {
                 reason = "self_check_toggle_disabled";
             }
             std::string msg;
@@ -1321,8 +1323,7 @@ namespace {
             static_cast<std::uint64_t>(clipToken),
             static_cast<std::uint64_t>(frameIndex),
             sessionSeed,
-            passId
-        };
+            passId};
         std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
         if (h == 0) {
             h = 1;
@@ -1380,8 +1381,7 @@ namespace JuicerProcScanner {
             bool_to_u64(ws->negativeScannerValid),
             negStaticHash,
             bool_to_u64(printValid),
-            printStaticHash
-        };
+            printStaticHash};
         return Hash::hash_bytes(fields, sizeof(fields));
     }
 
@@ -1502,11 +1502,10 @@ namespace {
         const WorkingState& ws,
         const Print::Runtime& prt,
         const Print::Params& printParams,
-        const Couplers::Runtime& dirRT)
-    {
+        const Couplers::Runtime& dirRT) {
         const float exposureCompScale = printParams.exposureCompensationEnabled
-            ? printParams.exposureCompensationScale
-            : 1.0f;
+                                            ? printParams.exposureCompensationScale
+                                            : 1.0f;
 
         float kMid = Pipeline::PipelineRunner::compute_midgray_factor(
             ws,
@@ -1536,7 +1535,7 @@ namespace {
         if (dim <= 0) {
             return 0;
         }
-        const std::uint64_t fields[2] = { sessionSeed, salt };
+        const std::uint64_t fields[2] = {sessionSeed, salt};
         const std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
         return static_cast<int>(h % static_cast<std::uint64_t>(dim));
     }
@@ -1554,8 +1553,7 @@ namespace {
             sessionSeed,
             passId,
             static_cast<std::uint64_t>(axis),
-            static_cast<std::uint64_t>(component)
-        };
+            static_cast<std::uint64_t>(component)};
         std::uint64_t h = Hash::hash_bytes(fields, sizeof(fields));
         if (h == 0) {
             h = 1;
@@ -1588,8 +1586,7 @@ namespace {
         double translateRmsUm,
         double rotateRmsDeg,
         double pixelSizeUm,
-        double amount)
-    {
+        double amount) {
         GateWeaveSignal out{};
         if (!(amount > 0.0) || !is_positive_finite(pixelSizeUm)) {
             return out;
@@ -1601,8 +1598,8 @@ namespace {
             return out;
         }
 
-        constexpr double driftFreqs[] = { 0.15, 0.35, 0.80 };
-        constexpr double jitterFreqs[] = { 6.0, 12.0 };
+        constexpr double driftFreqs[] = {0.15, 0.35, 0.80};
+        constexpr double jitterFreqs[] = {6.0, 12.0};
         constexpr int driftCount = static_cast<int>(sizeof(driftFreqs) / sizeof(driftFreqs[0]));
         constexpr int jitterCount = static_cast<int>(sizeof(jitterFreqs) / sizeof(jitterFreqs[0]));
         const double driftNorm = 1.0 / std::sqrt(0.5 * static_cast<double>(driftCount));
@@ -1619,8 +1616,7 @@ namespace {
             const double deltaPx = deltaUm / pixelSizeUm;
             if (axis == 0) {
                 out.dxPx = static_cast<float>(deltaPx);
-            }
-            else {
+            } else {
                 out.dyPx = static_cast<float>(deltaPx);
             }
         }
@@ -1634,10 +1630,12 @@ namespace {
         }
         return out;
     }
-}
+} // namespace
 
 namespace JuicerProc {
 
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3/Phase4:
+    // retained CPU copy/read helpers are unreachable from product render after JuicerEffect::render cutoff.
     // Copied from main.cpp helper, unchanged behavior.
     void copyNonFloatRect(OFX::Image* src, OFX::Image* dst) {
         if (!src || !dst) {
@@ -1684,7 +1682,7 @@ namespace JuicerProc {
         }
     }
 
-}
+} // namespace JuicerProc
 
 // --- Spatial DIR: defensive curve utilities (monotonic + robust interpolation) ---
 
@@ -1756,14 +1754,18 @@ static std::uint64_t make_gate_mask_hash(const GateMaskHashInputs& inputs) {
 
 bool curve_ok(const Spectral::Curve& c) {
     const size_t N = c.lambda_nm.size();
-    if (N < 2 || c.linear.size() != N) return false;
+    if (N < 2 || c.linear.size() != N)
+        return false;
     const float* lambdaData = c.lambda_nm.data();
     float prev = lambdaData[0];
-    if (!is_finite(prev)) return false;
+    if (!is_finite(prev))
+        return false;
     for (size_t i = 1; i < N; ++i) {
         const float xi = lambdaData[i];
-        if (!is_finite(xi)) return false;
-        if (xi < prev) return false; // allow duplicates (xi == prev), but never decreasing
+        if (!is_finite(xi))
+            return false;
+        if (xi < prev)
+            return false; // allow duplicates (xi == prev), but never decreasing
         prev = xi;
     }
     return true;
@@ -1773,30 +1775,7 @@ bool curve_ok(const Spectral::Curve& c) {
 // JuicerProcessor method definitions matching JuicerProcessing.h
 
 JuicerProcessor::JuicerProcessor(OFX::ImageEffect& effect)
-    : OFX::ImageProcessor(effect)
-    , _srcImg(nullptr)
-    , _nComponents(0)
-    , _scannerOptions{}
-    , _scannerSettings{}
-    , _printParams{}
-    , _halationOverride{}
-    , _hasHalationOverride(false)
-    , _grainOverride{}
-    , _hasGrainOverride(false)
-    , _printGlareOverride{}
-    , _hasPrintGlareOverride(false)
-    , _dirRT{}
-    , _prt(nullptr)
-    , _ws(nullptr)
-    , _wsReady(false)
-    , _printReady(false)
-    , _exposureScale(1.0f)
-    , _outputEncoding{}
-    , _scratch{}
-    , _density{}
-    , _frameBoundsVersion(0)
-    , _pixelSizeUm(0.0f)
-{
+    : OFX::ImageProcessor(effect), _srcImg(nullptr), _nComponents(0), _scannerOptions{}, _scannerSettings{}, _printParams{}, _halationOverride{}, _hasHalationOverride(false), _grainOverride{}, _hasGrainOverride(false), _printGlareOverride{}, _hasPrintGlareOverride(false), _dirRT{}, _prt(nullptr), _ws(nullptr), _wsReady(false), _printReady(false), _exposureScale(1.0f), _outputEncoding{}, _scratch{}, _density{}, _frameBoundsVersion(0), _pixelSizeUm(0.0f) {
 }
 
 void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
@@ -1849,11 +1828,21 @@ void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
         request.sequentialRenderStatus);
 }
 
-void JuicerProcessor::setRenderWindowRect(const OfxRectI& rect) { setRenderWindow(rect); }
-void JuicerProcessor::setComponents(int n) { _nComponents = n; }
-void JuicerProcessor::setScannerOptions(const Scanner::Options& o) { _scannerOptions = o; }
-void JuicerProcessor::setScannerSettings(const Scanner::Settings& s) { _scannerSettings = s; }
-void JuicerProcessor::setPrintParams(const Print::Params& p) { _printParams = p; }
+void JuicerProcessor::setRenderWindowRect(const OfxRectI& rect) {
+    setRenderWindow(rect);
+}
+void JuicerProcessor::setComponents(int n) {
+    _nComponents = n;
+}
+void JuicerProcessor::setScannerOptions(const Scanner::Options& o) {
+    _scannerOptions = o;
+}
+void JuicerProcessor::setScannerSettings(const Scanner::Settings& s) {
+    _scannerSettings = s;
+}
+void JuicerProcessor::setPrintParams(const Print::Params& p) {
+    _printParams = p;
+}
 void JuicerProcessor::setHalationOverride(const Profiles::HalationMetadata& halation) {
     _halationOverride = halation;
     _hasHalationOverride = true;
@@ -1867,7 +1856,9 @@ void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare)
     clear_glare_compensation_fields(_printGlareOverride);
     _hasPrintGlareOverride = true;
 }
-void JuicerProcessor::setDirRuntime(const Couplers::Runtime& rt) { _dirRT = rt; }
+void JuicerProcessor::setDirRuntime(const Couplers::Runtime& rt) {
+    _dirRT = rt;
+}
 void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
     if (_wsHold.get() != ws) {
         _wsHold.reset();
@@ -1883,7 +1874,10 @@ void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
         }
     }
 }
-void JuicerProcessor::setPrintRuntime(const Print::Runtime* prt, bool printReady) { _prt = prt; _printReady = printReady; }
+void JuicerProcessor::setPrintRuntime(const Print::Runtime* prt, bool printReady) {
+    _prt = prt;
+    _printReady = printReady;
+}
 void JuicerProcessor::setExposure(float exposureScale) {
     _exposureScale = positive_finite_or(exposureScale, 1.0f);
 }
@@ -1954,7 +1948,7 @@ JuicerProcessor::RenderContext JuicerProcessor::prepareRenderContext() const {
     ctx.height = _renderWindow.y2 - _renderWindow.y1;
     ctx.exposureScaleSafe = positive_finite_or(_exposureScale, 1.0f);
     ctx.useSpatialDIR = (spatial_dir_enabled(_dirRT) &&
-        _nComponents >= 3 && _wsReady && _ws);
+                         _nComponents >= 3 && _wsReady && _ws);
     ctx.printActive = print_pipeline_active(
         _wsReady,
         _ws,
@@ -1984,8 +1978,7 @@ bool JuicerProcessor::ensureDensityCapacity(int width, int height) {
         _density.c.resize(planeSize);
         _density.m.resize(planeSize);
         _density.y.resize(planeSize);
-    }
-    catch (...) {
+    } catch (...) {
         JTRACE("SCAN", "FATAL: failed to allocate density slab");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
@@ -2054,11 +2047,11 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             }
             const int x = offset_from_start(self->window.x1, xx);
             return read_rgb_pixel_if_present(self->srcImg, x, y, rgb);
-            };
+        };
         callbacks.abortCheck = [](void* u) -> bool {
             auto* self = static_cast<SpatialDIRUser*>(u);
             return self->effect->abort();
-            };
+        };
 
         SpatialDIR::buildSpatialDIRCorrections(
             ctx.width,
@@ -2071,8 +2064,8 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             _scratch.gaussianKernel);
     }
 
-    std::atomic<bool> abortFlag{ false };
-    std::atomic<bool> failure{ false };
+    std::atomic<bool> abortFlag{false};
+    std::atomic<bool> failure{false};
     const int width = ctx.width;
     const int height = ctx.height;
     const int originX = ctx.window.x1;
@@ -2111,19 +2104,7 @@ void JuicerProcessor::writeMediumDensities(const RenderContext& ctx, unsigned in
             int height_,
             int originX_,
             int originY_)
-            : self(self_)
-            , ctx(ctx_)
-            , runner(runner_)
-            , abortFlag(abortFlag_)
-            , failure(failure_)
-            , width(width_)
-            , height(height_)
-            , originX(originX_)
-            , originXEnd(originX_ + width_)
-            , originY(originY_)
-            , srcBounds(self_._srcImg->getBounds())
-            , srcStride(static_cast<size_t>(self_._nComponents))
-        {
+            : self(self_), ctx(ctx_), runner(runner_), abortFlag(abortFlag_), failure(failure_), width(width_), height(height_), originX(originX_), originXEnd(originX_ + width_), originY(originY_), srcBounds(self_._srcImg->getBounds()), srcStride(static_cast<size_t>(self_._nComponents)) {
         }
 
         void multiThreadFunction(unsigned int threadId, unsigned int nThreads) override {
@@ -2316,7 +2297,9 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     }
     const bool traceInfo = JTRACE_ENABLED(1);
     const bool traceVerbose = JTRACE_ENABLED(3);
-    const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
+    const auto should_abort_effect = [this]() -> bool {
+        return _effect.abort();
+    };
 
     // The scanner now consumes only the staged CMY density slab; legacy RGB entry points are removed.
     const JuicerProcScanner::ScannerMediumRuntimeBinding scannerBinding = JuicerProcScanner::bind_scanner_medium_runtime(
@@ -2324,7 +2307,7 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
         ctx.printActive,
         _hasPrintGlareOverride,
         &_printGlareOverride,
-        /*forcePrintGlareHash*/true);
+        /*forcePrintGlareHash*/ true);
     const Scanner::ScannerMediumRuntime* mediumRuntime = scannerBinding.runtime();
     const bool scannerRuntimeValid = scannerBinding.valid;
     const char* cpuMediumLabel = scannerBinding.label;
@@ -2419,7 +2402,8 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
     }
 #if JUICER_DIAGNOSTICS_COMPILED
     const std::uint64_t leaseWaitUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - leaseWaitStart).count());
+                                                                     std::chrono::steady_clock::now() - leaseWaitStart)
+                                                                     .count());
 #endif
     if (!opticsRuntime) {
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -2490,8 +2474,17 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
 
 
 void JuicerProcessor::processImpl() {
-    if (!_srcImg || !_dstImg) return;
-    const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3/Phase4:
+    // old CPU renderer is retained only as unreachable bridge debt; JuicerEffect::render()
+    // blocks product output first with SpektrafilmPixelPipelineNotImplementedForPhase1A.
+    JTRACE("SPEKTRAFILM", "FATAL: SpektrafilmPixelPipelineNotImplementedForPhase1A at JuicerProcessor::processImpl");
+    throw OFX::Exception::Suite(kOfxStatErrFatal);
+
+    if (!_srcImg || !_dstImg)
+        return;
+    const auto should_abort_effect = [this]() -> bool {
+        return _effect.abort();
+    };
 
     if (is_gpu_render_requested(_isEnabledOpenCLRender, _isEnabledCudaRender, _isEnabledMetalRender)) {
         // CPU-only staging layer: GPU/device paths are intentionally disabled until parity lands.
@@ -2558,6 +2551,11 @@ void JuicerProcessor::processImpl() {
 }
 
 void JuicerProcessor::process() {
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3/Phase4:
+    // defensive lower-level cutoff; product renders should already fail in JuicerEffect::render().
+    JTRACE("SPEKTRAFILM", "FATAL: SpektrafilmPixelPipelineNotImplementedForPhase1A at JuicerProcessor::process");
+    OFX::throwSuiteStatusException(kOfxStatErrFatal);
+
 #if defined(JUICER_CUDA_ONLY) && (JUICER_CUDA_ONLY != 0)
     // CUDA-only mode: refuse CPU/OpenCL/Metal entry points.
     if (!_isEnabledCudaRender) {
@@ -2577,6 +2575,11 @@ void JuicerProcessor::multiThreadProcessImages(OfxRectI) {
 }
 
 void JuicerProcessor::processImagesCUDA() {
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3/Phase4:
+    // defensive lower-level CUDA cutoff; product renders should already fail in JuicerEffect::render().
+    JTRACE("SPEKTRAFILM", "FATAL: SpektrafilmPixelPipelineNotImplementedForPhase1A at JuicerProcessor::processImagesCUDA");
+    OFX::throwSuiteStatusException(kOfxStatErrFatal);
+
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
     JTRACE("CUDA", "FATAL: CUDA render requested but the CUDA backend is unavailable in this build");
     OFX::throwSuiteStatusException(kOfxStatErrFatal);
@@ -2619,7 +2622,9 @@ void JuicerProcessor::processImagesCUDA() {
     }
     const bool traceInfo = JTRACE_ENABLED(1);
     const bool traceVerbose = JTRACE_ENABLED(3);
-    const auto should_abort_effect = [this]() -> bool { return _effect.abort(); };
+    const auto should_abort_effect = [this]() -> bool {
+        return _effect.abort();
+    };
 
     const int bytesPerPixel = _nComponents * static_cast<int>(sizeof(float));
     const std::ptrdiff_t srcRowBytes = _srcImg->getRowBytes();
@@ -2724,8 +2729,8 @@ void JuicerProcessor::processImagesCUDA() {
         _prt,
         _printParams.bypass);
     const float printMidgrayFactor = printActiveForRender
-        ? compute_print_midgray_factor(*_ws, *_prt, _printParams, _dirRT)
-        : 1.0f;
+                                         ? compute_print_midgray_factor(*_ws, *_prt, _printParams, _dirRT)
+                                         : 1.0f;
 
     JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
     deviceContextKey.deviceId = deviceId;
@@ -2767,8 +2772,7 @@ void JuicerProcessor::processImagesCUDA() {
     auto run_pending_context_loss_recovery_noexcept = [&]() noexcept {
         try {
             run_pending_context_loss_recovery();
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     };
@@ -2780,7 +2784,7 @@ void JuicerProcessor::processImagesCUDA() {
                 (*onExit)();
             }
         }
-    } contextLossRecoveryScope{ &run_pending_context_loss_recovery_noexcept };
+    } contextLossRecoveryScope{&run_pending_context_loss_recovery_noexcept};
 
     auto record_cuda_use = [&](JuicerProcess::Root::PreparedCudaFrame& frame) {
         frame.record_use(_pCudaStream);
@@ -3098,8 +3102,7 @@ void JuicerProcessor::processImagesCUDA() {
                         msg += detail_or_unknown(sSelfCheckErr);
                         JTRACE("CUDA", msg);
                     }
-                }
-                else {
+                } else {
                     JTRACE("CUDA", "CUDA self-check passed");
                 }
             });
@@ -3271,14 +3274,14 @@ void JuicerProcessor::processImagesCUDA() {
         float grainBlurSigmaPx = 0.0f;
         float grainBlurSigmaMidPx = 0.0f;
         float grainBlurSigmaCoarsePx = 0.0f;
-        float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+        float grainDyeSigmaPx[3][3] = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
     };
 
     struct HalationSetupResult {
-        float strengthBGR[3] = { 0.0f, 0.0f, 0.0f };
-        float scatterStrengthBGR[3] = { 0.0f, 0.0f, 0.0f };
-        float sigmaPx[3] = { 0.0f, 0.0f, 0.0f };
-        float scatterSigmaPx[3] = { 0.0f, 0.0f, 0.0f };
+        float strengthBGR[3] = {0.0f, 0.0f, 0.0f};
+        float scatterStrengthBGR[3] = {0.0f, 0.0f, 0.0f};
+        float sigmaPx[3] = {0.0f, 0.0f, 0.0f};
+        float scatterSigmaPx[3] = {0.0f, 0.0f, 0.0f};
         bool wantHalation = false;
     };
 
@@ -3288,23 +3291,19 @@ void JuicerProcessor::processImagesCUDA() {
         const float strengthBGR[3] = {
             halationUi.strength[2],
             halationUi.strength[1],
-            halationUi.strength[0]
-        };
+            halationUi.strength[0]};
         const float scatterStrengthBGR[3] = {
             halationUi.scatteringStrength[2],
             halationUi.scatteringStrength[1],
-            halationUi.scatteringStrength[0]
-        };
+            halationUi.scatteringStrength[0]};
         const float sizeBGR[3] = {
             halationUi.sizeUm[2],
             halationUi.sizeUm[1],
-            halationUi.sizeUm[0]
-        };
+            halationUi.sizeUm[0]};
         const float scatterSizeBGR[3] = {
             halationUi.scatteringSizeUm[2],
             halationUi.scatteringSizeUm[1],
-            halationUi.scatteringSizeUm[0]
-        };
+            halationUi.scatteringSizeUm[0]};
 
         copy_float3(result.strengthBGR, strengthBGR);
         copy_float3(result.scatterStrengthBGR, scatterStrengthBGR);
@@ -3322,8 +3321,8 @@ void JuicerProcessor::processImagesCUDA() {
         }
 
         result.wantHalation = halationUi.active &&
-            (any_positive_triplet(result.strengthBGR) || any_positive_triplet(result.scatterStrengthBGR)) &&
-            hasPixelSize;
+                              (any_positive_triplet(result.strengthBGR) || any_positive_triplet(result.scatterStrengthBGR)) &&
+                              hasPixelSize;
         return result;
     };
 
@@ -3361,7 +3360,7 @@ void JuicerProcessor::processImagesCUDA() {
         float grainBlurSigmaPx = 0.0f;
         float grainBlurSigmaMidPx = 0.0f;
         float grainBlurSigmaCoarsePx = 0.0f;
-        float grainDyeSigmaPx[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
+        float grainDyeSigmaPx[3][3] = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
 
         {
             const JuicerProcess::Root::PreparedCudaFrame::GrainStaticAssets grainStaticAssets =
@@ -3382,8 +3381,8 @@ void JuicerProcessor::processImagesCUDA() {
                 static_cast<double>(_pixelSizeUm),
                 weaveAmount);
             const double debugScalePx = hasPixelSize
-                ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
-                : 1.0;
+                                            ? (4.0 * 6.0 * weaveAmount / static_cast<double>(_pixelSizeUm))
+                                            : 1.0;
             const int breathingPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * 2.5)));
             const double clumpPeriodSec = sanitize_finite_clamped_or(
                 static_cast<double>(grainUi.clumpMorphPeriodSec),
@@ -3393,14 +3392,14 @@ void JuicerProcessor::processImagesCUDA() {
             const int clumpMorphPeriodFrames = std::max(1, static_cast<int>(std::llround(fps * clumpPeriodSec)));
             const double longEdgePx = static_cast<double>(std::max(width, height));
             const double filmFormatMm = (hasPixelSize && longEdgePx > 0.0)
-                ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
-                : 0.0;
+                                            ? (static_cast<double>(_pixelSizeUm) * longEdgePx / 1000.0)
+                                            : 0.0;
             const double pitchMm = is_positive_finite(filmFormatMm)
-                ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
-                : 0.0;
+                                       ? (filmFormatMm * static_cast<double>(height) / longEdgePx)
+                                       : 0.0;
             const int pitchPx = (hasPixelSize && is_positive_finite(pitchMm))
-                ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
-                : height;
+                                    ? static_cast<int>(std::llround(pitchMm * 1000.0 / static_cast<double>(_pixelSizeUm)))
+                                    : height;
             const double filmScale = positive_finite_or(filmFormatMm, 10.0) / 10.0;
             run.grain.seedBase = seed_base_for_pass(
                 _sessionSeed,
@@ -3513,8 +3512,8 @@ void JuicerProcessor::processImagesCUDA() {
             int blurRatioCount = 0;
             if (paramsOk) {
                 constexpr float kDefaultParticleAreaUm2 = 0.335f;
-                constexpr float kDefaultParticleScale[3] = { 1.10f, 1.27f, 2.08f };
-                const float densityMaxCurves[3] = { maxC, maxM, maxY };
+                constexpr float kDefaultParticleScale[3] = {1.10f, 1.27f, 2.08f};
+                const float densityMaxCurves[3] = {maxC, maxM, maxY};
                 const float* densityMaxCurveIt = densityMaxCurves;
                 const float* densityMinIt = densityMin;
                 const float* grainScaleIt = grainUi.agxParticleScale.data();
@@ -3523,8 +3522,13 @@ void JuicerProcessor::processImagesCUDA() {
                 float* nParticlesOutIt = run.grain.nParticles;
                 float* odParticleOutIt = run.grain.odParticle;
                 for (int i = 0; i < 3; ++i,
-                     ++densityMaxCurveIt, ++densityMinIt, ++grainScaleIt, ++defaultScaleIt,
-                     ++densityMaxOutIt, ++nParticlesOutIt, ++odParticleOutIt) {
+                         ++densityMaxCurveIt,
+                         ++densityMinIt,
+                         ++grainScaleIt,
+                         ++defaultScaleIt,
+                         ++densityMaxOutIt,
+                         ++nParticlesOutIt,
+                         ++odParticleOutIt) {
                     const float densityMax = *densityMaxCurveIt + *densityMinIt;
                     const float particleArea = grainUi.agxParticleAreaUm2 * (*grainScaleIt);
                     if (!is_positive_finite(particleArea)) {
@@ -3570,9 +3574,9 @@ void JuicerProcessor::processImagesCUDA() {
                 const JuicerProcess::Root::PreparedCudaFrame::DurableBundleView durableBundle =
                     preparedFrame.durable_bundle();
                 if (grainUi.sublayersActive && _ws->hasDensityCurvesLayers && durableBundle.film.hasDensityCurvesLayers) {
-                    float densityMaxLayers[3][3] = { {0.0f, 0.0f, 0.0f},
-                                                     {0.0f, 0.0f, 0.0f},
-                                                     {0.0f, 0.0f, 0.0f} };
+                    float densityMaxLayers[3][3] = {{0.0f, 0.0f, 0.0f},
+                                                    {0.0f, 0.0f, 0.0f},
+                                                    {0.0f, 0.0f, 0.0f}};
                     bool layersOk = true;
                     for (int layer = 0; layer < 3; ++layer) {
                         for (int ch = 0; ch < 3; ++ch) {
@@ -3650,8 +3654,7 @@ void JuicerProcessor::processImagesCUDA() {
                 wF *= invSum;
                 wM *= invSum;
                 wC *= invSum;
-            }
-            else {
+            } else {
                 wF = 1.0f;
                 wM = 0.0f;
                 wC = 0.0f;
@@ -3685,8 +3688,7 @@ void JuicerProcessor::processImagesCUDA() {
                 run.grain.sizeMixWeightMid = 0.0f;
                 grainBlurSigmaMidPx = 0.0f;
                 grainBlurSigmaCoarsePx = 0.0f;
-            }
-            else {
+            } else {
                 auto kernel_energy_2d = [](float sigma) -> float {
                     if (!is_positive_finite(sigma)) {
                         return 1.0f;
@@ -3985,8 +3987,8 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto validate_cuda_scanner_preflight_or_throw = [&](bool scannerRuntimeValid,
-                                                         const char* mediumLabel,
-                                                         const Scanner::ScannerMediumRuntime* mediumRuntime)
+                                                        const char* mediumLabel,
+                                                        const Scanner::ScannerMediumRuntime* mediumRuntime)
         -> JuicerProcScanner::ScannerPreflightResult {
         return JuicerProcScanner::validate_scanner_preflight_or_throw(
             scannerRuntimeValid,
@@ -4077,16 +4079,16 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto scanner_optics_scratch_or_throw =
         [&](const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace)
-            -> JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView {
-            const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView scratch =
-                preparedFrame.scanner_optics_scratch(workspace);
-            if (!scratch.active) {
-                trace_and_throw_cuda_policy_fatal(
-                    "CUDA scanner optics scratch missing",
-                    "scanner optics scratch missing after allocation");
-            }
-            return scratch;
-        };
+        -> JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView {
+        const JuicerProcess::Root::PreparedCudaFrame::ScannerOpticsScratchView scratch =
+            preparedFrame.scanner_optics_scratch(workspace);
+        if (!scratch.active) {
+            trace_and_throw_cuda_policy_fatal(
+                "CUDA scanner optics scratch missing",
+                "scanner optics scratch missing after allocation");
+        }
+        return scratch;
+    };
 
     auto setup_gate_mask_if_needed = [&](JuicerCuda::PipelineRunParams& run,
                                          const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
@@ -4366,7 +4368,7 @@ void JuicerProcessor::processImagesCUDA() {
                 halationSigmaPx,
                 halationScatterStrengthBGR,
                 halationScatterSigmaPx,
-                    opticsError);
+                opticsError);
         }
     };
 
@@ -4418,8 +4420,7 @@ void JuicerProcessor::processImagesCUDA() {
             seedBase,
             static_cast<std::uint64_t>(_frameBoundsVersion),
             medium.staticKey.glareHash,
-            static_cast<std::uint64_t>(mediumType)
-        };
+            static_cast<std::uint64_t>(mediumType)};
         result.seed = Hash::hash_bytes(glareFields, sizeof(glareFields));
         return result;
     };
@@ -4595,15 +4596,15 @@ void JuicerProcessor::processImagesCUDA() {
         const JuicerProcess::Root::PreparedCudaFrame::DurableBundleView durableBundle =
             preparedFrame.durable_bundle();
         const auto& film = durableBundle.film;
-        run.filmDevelop.densB = { film.densB->x, film.densB->y, film.densB->n, film.densB->domainBegin, film.densB->domainEnd };
-        run.filmDevelop.densG = { film.densG->x, film.densG->y, film.densG->n, film.densG->domainBegin, film.densG->domainEnd };
-        run.filmDevelop.densR = { film.densR->x, film.densR->y, film.densR->n, film.densR->domainBegin, film.densR->domainEnd };
-        run.filmDevelop.dirDensB = { film.dirDensB->x, film.dirDensB->y, film.dirDensB->n, film.dirDensB->domainBegin, film.dirDensB->domainEnd };
-        run.filmDevelop.dirDensG = { film.dirDensG->x, film.dirDensG->y, film.dirDensG->n, film.dirDensG->domainBegin, film.dirDensG->domainEnd };
-        run.filmDevelop.dirDensR = { film.dirDensR->x, film.dirDensR->y, film.dirDensR->n, film.dirDensR->domainBegin, film.dirDensR->domainEnd };
-        run.filmExpose.sensB = { film.sensB->x, film.sensB->y, film.sensB->n, film.sensB->domainBegin, film.sensB->domainEnd };
-        run.filmExpose.sensG = { film.sensG->x, film.sensG->y, film.sensG->n, film.sensG->domainBegin, film.sensG->domainEnd };
-        run.filmExpose.sensR = { film.sensR->x, film.sensR->y, film.sensR->n, film.sensR->domainBegin, film.sensR->domainEnd };
+        run.filmDevelop.densB = {film.densB->x, film.densB->y, film.densB->n, film.densB->domainBegin, film.densB->domainEnd};
+        run.filmDevelop.densG = {film.densG->x, film.densG->y, film.densG->n, film.densG->domainBegin, film.densG->domainEnd};
+        run.filmDevelop.densR = {film.densR->x, film.densR->y, film.densR->n, film.densR->domainBegin, film.densR->domainEnd};
+        run.filmDevelop.dirDensB = {film.dirDensB->x, film.dirDensB->y, film.dirDensB->n, film.dirDensB->domainBegin, film.dirDensB->domainEnd};
+        run.filmDevelop.dirDensG = {film.dirDensG->x, film.dirDensG->y, film.dirDensG->n, film.dirDensG->domainBegin, film.dirDensG->domainEnd};
+        run.filmDevelop.dirDensR = {film.dirDensR->x, film.dirDensR->y, film.dirDensR->n, film.dirDensR->domainBegin, film.dirDensR->domainEnd};
+        run.filmExpose.sensB = {film.sensB->x, film.sensB->y, film.sensB->n, film.sensB->domainBegin, film.sensB->domainEnd};
+        run.filmExpose.sensG = {film.sensG->x, film.sensG->y, film.sensG->n, film.sensG->domainBegin, film.sensG->domainEnd};
+        run.filmExpose.sensR = {film.sensR->x, film.sensR->y, film.sensR->n, film.sensR->domainBegin, film.sensR->domainEnd};
 
         run.filmExpose.tablesAx = film.tablesAx;
         run.filmExpose.tablesAy = film.tablesAy;
@@ -4688,14 +4689,14 @@ void JuicerProcessor::processImagesCUDA() {
     };
 
     auto initialize_medium_pipeline_run = [&](JuicerCuda::PipelineRunParams& run,
-                                                const JuicerProcScanner::ScannerPreflightResult& scannerPreflight) {
+                                              const JuicerProcScanner::ScannerPreflightResult& scannerPreflight) {
         initialize_pipeline_run(run);
         populate_common_pipeline_payload(run, scannerPreflight);
     };
 
     auto prepare_common_cuda_pipeline_stages_for_medium = [&](JuicerCuda::PipelineRunParams& run,
-                                              const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
-                                              bool negativeMedium) -> bool {
+                                                              const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace,
+                                                              bool negativeMedium) -> bool {
         return prepare_common_cuda_pipeline_stages(
             run,
             workspace,
@@ -4791,12 +4792,12 @@ void JuicerProcessor::processImagesCUDA() {
 
         run.printExpose.printIllumFiltered = print.printIllumFiltered;
         run.printExpose.printIllumK = print.printIllumK;
-        run.printExpose.printSensC = { print.printSensC->x, print.printSensC->y, print.printSensC->n, print.printSensC->domainBegin, print.printSensC->domainEnd };
-        run.printExpose.printSensM = { print.printSensM->x, print.printSensM->y, print.printSensM->n, print.printSensM->domainBegin, print.printSensM->domainEnd };
-        run.printExpose.printSensY = { print.printSensY->x, print.printSensY->y, print.printSensY->n, print.printSensY->domainBegin, print.printSensY->domainEnd };
-        run.printDevelop.printDcC = { print.printDcC->x, print.printDcC->y, print.printDcC->n, print.printDcC->domainBegin, print.printDcC->domainEnd };
-        run.printDevelop.printDcM = { print.printDcM->x, print.printDcM->y, print.printDcM->n, print.printDcM->domainBegin, print.printDcM->domainEnd };
-        run.printDevelop.printDcY = { print.printDcY->x, print.printDcY->y, print.printDcY->n, print.printDcY->domainBegin, print.printDcY->domainEnd };
+        run.printExpose.printSensC = {print.printSensC->x, print.printSensC->y, print.printSensC->n, print.printSensC->domainBegin, print.printSensC->domainEnd};
+        run.printExpose.printSensM = {print.printSensM->x, print.printSensM->y, print.printSensM->n, print.printSensM->domainBegin, print.printSensM->domainEnd};
+        run.printExpose.printSensY = {print.printSensY->x, print.printSensY->y, print.printSensY->n, print.printSensY->domainBegin, print.printSensY->domainEnd};
+        run.printDevelop.printDcC = {print.printDcC->x, print.printDcC->y, print.printDcC->n, print.printDcC->domainBegin, print.printDcC->domainEnd};
+        run.printDevelop.printDcM = {print.printDcM->x, print.printDcM->y, print.printDcM->n, print.printDcM->domainBegin, print.printDcM->domainEnd};
+        run.printDevelop.printDcY = {print.printDcY->x, print.printDcY->y, print.printDcY->n, print.printDcY->domainBegin, print.printDcY->domainEnd};
         run.printDevelop.printGammaC = print.printGammaC;
         run.printDevelop.printGammaM = print.printGammaM;
         run.printDevelop.printGammaY = print.printGammaY;
@@ -4808,8 +4809,8 @@ void JuicerProcessor::processImagesCUDA() {
 
     auto print_pipeline_payloads_ready = [&](const JuicerCuda::PipelineRunParams& run) -> bool {
         return run.printExpose.printIllumFiltered && run.printExpose.printIllumK > 0 &&
-            run.printExpose.printSensC.y && run.printExpose.printSensM.y && run.printExpose.printSensY.y &&
-            run.printDevelop.printDcC.y && run.printDevelop.printDcM.y && run.printDevelop.printDcY.y;
+               run.printExpose.printSensC.y && run.printExpose.printSensM.y && run.printExpose.printSensY.y &&
+               run.printDevelop.printDcC.y && run.printDevelop.printDcM.y && run.printDevelop.printDcY.y;
     };
 
     auto throw_if_print_payloads_missing = [&](const JuicerCuda::PipelineRunParams& run) {
@@ -4857,10 +4858,10 @@ void JuicerProcessor::processImagesCUDA() {
     auto validate_negative_scanner_preflight_or_throw = [&]() -> JuicerProcScanner::ScannerPreflightResult {
         const JuicerProcScanner::ScannerMediumRuntimeBinding scannerMedium = JuicerProcScanner::bind_scanner_medium_runtime(
             *_ws,
-            /*printActive*/false,
-            /*hasPrintGlareOverride*/false,
+            /*printActive*/ false,
+            /*hasPrintGlareOverride*/ false,
             nullptr,
-            /*forcePrintGlareHash*/false);
+            /*forcePrintGlareHash*/ false);
         return validate_cuda_scanner_preflight_or_throw(
             scannerMedium.valid,
             scannerMedium.label,
@@ -4997,10 +4998,10 @@ void JuicerProcessor::processImagesCUDA() {
 
         const JuicerProcScanner::ScannerMediumRuntimeBinding printScannerBinding = JuicerProcScanner::bind_scanner_medium_runtime(
             *_ws,
-            /*printActive*/true,
+            /*printActive*/ true,
             _hasPrintGlareOverride,
             &_printGlareOverride,
-            /*forcePrintGlareHash*/false);
+            /*forcePrintGlareHash*/ false);
         JuicerProcScanner::ScannerPreflightResult scannerPreflight = validate_cuda_scanner_preflight_or_throw(
             printScannerBinding.valid,
             printScannerBinding.label,

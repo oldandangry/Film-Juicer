@@ -17,6 +17,7 @@
 
 #include "ProcessRoot.h"
 #include "Print.h"
+#include "ProfileCatalog.h"
 #include "ProfileJSONLoader.h"
 #include "ColorTransforms.h"
 #include "FilmProcessing.h"
@@ -70,7 +71,9 @@ namespace ScannerOptics {
 
     struct RenderAbortHandle {
         std::function<bool()> shouldAbort;
-        bool abortRequested() const { return shouldAbort && shouldAbort(); }
+        bool abortRequested() const {
+            return shouldAbort && shouldAbort();
+        }
     };
 
     struct RenderContext {
@@ -171,7 +174,7 @@ struct BaseState {
     std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{}; // [layer][channel] values on LOG_EXPOSURE axis
     bool hasDensityCurvesLayers = false;
     float dyeDensityMinFactor = 1.0f;
-    std::array<float, 3> gammaFactor{ {1.0f, 1.0f, 1.0f} };
+    std::array<float, 3> gammaFactor{{1.0f, 1.0f, 1.0f}};
     bool hasBaseline = false;
     std::string referenceIlluminant;
     std::string viewingIlluminant;
@@ -179,8 +182,8 @@ struct BaseState {
     std::vector<float> logExposureMidNeutral;
     Profiles::DirCouplersProfile dirCouplers;
     Profiles::MaskingCouplersProfile maskingCouplers;
-    std::array<float, 3> cameraFilterUV{ {1.0f, 410.0f, 8.0f} };
-    std::array<float, 3> cameraFilterIR{ {1.0f, 675.0f, 15.0f} };
+    std::array<float, 3> cameraFilterUV{{1.0f, 410.0f, 8.0f}};
+    std::array<float, 3> cameraFilterIR{{1.0f, 675.0f, 15.0f}};
     bool cameraFilterDefined = false;
     Profiles::GrainMetadata grain;
     Profiles::HalationMetadata halation;
@@ -229,7 +232,7 @@ struct WorkingState {
     Spectral::Curve dirDensR;
 
     bool dirPrecorrected = false;
-    float dMax[3] = { 1.0f, 1.0f, 1.0f };
+    float dMax[3] = {1.0f, 1.0f, 1.0f};
 
     Spectral::SpectralTables tablesView;
     Spectral::SpectralTables tablesPrint;
@@ -251,7 +254,7 @@ struct WorkingState {
     bool printScannerValid = false;
     bool printGlareCompensated = false;
 
-    float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
+    float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     bool spdReady = false;
     Spectral::FilmRawConfig filmRaw;
     std::shared_ptr<const Print::Runtime> printRT;
@@ -276,17 +279,16 @@ inline void sample_negative_densities(
     const Couplers::Runtime& dirRT,
     const float logE[3],
     float D_out[3],
-    DirSampleMode mode = DirSampleMode::ApplyRuntime)
-{
+    DirSampleMode mode = DirSampleMode::ApplyRuntime) {
     auto sample_layers = [&](const Spectral::Curve& cB,
-        const Spectral::Curve& cG,
-        const Spectral::Curve& cR,
-        const float le[3],
-        float layerD_out[3]) {
-            layerD_out[0] = Spectral::sample_density_at_logE(cB, le[0], ws.gammaFactorB);
-            layerD_out[1] = Spectral::sample_density_at_logE(cG, le[1], ws.gammaFactorG);
-            layerD_out[2] = Spectral::sample_density_at_logE(cR, le[2], ws.gammaFactorR);
-        };
+                             const Spectral::Curve& cG,
+                             const Spectral::Curve& cR,
+                             const float le[3],
+                             float layerD_out[3]) {
+        layerD_out[0] = Spectral::sample_density_at_logE(cB, le[0], ws.gammaFactorB);
+        layerD_out[1] = Spectral::sample_density_at_logE(cG, le[1], ws.gammaFactorG);
+        layerD_out[2] = Spectral::sample_density_at_logE(cR, le[2], ws.gammaFactorR);
+    };
 
     auto write_cmy = [](const float layerD[3], float D_out_local[3]) {
         D_out_local[0] = layerD[2];
@@ -302,7 +304,7 @@ inline void sample_negative_densities(
     if (mode == DirSampleMode::ApplyRuntime && dirRT.active) {
         float layerPre[3];
         sample_layers(ws.densB, ws.densG, ws.densR, logE, layerPre);
-        Couplers::ApplyInputLogE io{ {logE[0], logE[1], logE[2]}, {layerPre[0], layerPre[1], layerPre[2]} };
+        Couplers::ApplyInputLogE io{{logE[0], logE[1], logE[2]}, {layerPre[0], layerPre[1], layerPre[2]}};
         Couplers::apply_runtime_logE_with_curves(io, dirRT, ws.densB, ws.densG, ws.densR);
         float layerPost[3];
         sample_layers(precorrectedB, precorrectedG, precorrectedR, io.logE, layerPost);
@@ -320,8 +322,8 @@ inline void sample_negative_densities(
 }
 
 struct ParamSnapshot {
-    int filmStockIndex = 0;
-    int printPaperIndex = 0;
+    std::string filmProfileKey = Spektrafilm::kDefaultFilmProfileKey;
+    std::string printProfileKey = Spektrafilm::kDefaultPrintProfileKey;
     int spectralUpsamplingMode = 0;
     int refIll = 0;
     int enlIll = 3;
@@ -337,7 +339,7 @@ struct ParamSnapshot {
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
     double scannerLensBlurSigmaPx = 0.55;
-    std::array<double, 2> scannerUnsharpMask{ {0.7, 1.0} };
+    std::array<double, 2> scannerUnsharpMask{{0.7, 1.0}};
     int scannerUseLut = 1;
     int scannerLutResolution = 17;
     double spatialSigmaMicrometers = 10.0;
@@ -345,8 +347,8 @@ struct ParamSnapshot {
     int outputCctfEncoding = 1;
     int outputLinearPassThrough = 0;
     bool cameraFilterOverride = false;
-    std::array<double, 3> cameraFilterUV{ {1.0, 410.0, 8.0} };
-    std::array<double, 3> cameraFilterIR{ {1.0, 675.0, 15.0} };
+    std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
+    std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
 };
 
 constexpr int kFactoryCouplersActive = 1;
@@ -387,12 +389,12 @@ struct InstanceState {
     // Published render snapshot. Readers use std::atomic_load; writers use std::atomic_store.
     std::shared_ptr<const WorkingState> activeWorkingState;
     uint64_t activeBuildCounter = 0;
-    std::atomic<std::uint64_t> buildCounterNext{ 0 };
-    std::atomic<std::uint32_t> frameBoundsVersion{ 0 };
-    OfxRectI cachedFrameBounds{ 0, 0, 0, 0 };
+    std::atomic<std::uint64_t> buildCounterNext{0};
+    std::atomic<std::uint32_t> frameBoundsVersion{0};
+    OfxRectI cachedFrameBounds{0, 0, 0, 0};
 
     ParamSnapshot lastParams;
-    std::atomic<std::uint64_t> lastHash{ 0 };
+    std::atomic<std::uint64_t> lastHash{0};
 
     // Latest parameter snapshot observed from UI callbacks; consumed/coalesced on render thread.
     PendingParamsState pending;
@@ -406,7 +408,7 @@ struct InstanceState {
     bool baseLoaded = false;
     std::uint64_t sessionSeed = 0;
     std::uint64_t instanceToken = 0;
-    std::atomic<std::uint64_t> submissionSnapshotIdNext{ 1 };
+    std::atomic<std::uint64_t> submissionSnapshotIdNext{1};
 
     IlluminantOverrideFlags illuminantOverride;
 
@@ -414,12 +416,12 @@ struct InstanceState {
     double couplerProfileSpatialSigmaMicrometers = 0.0;
 
     // Cache for DIR spatial sigma conversion (canonical project dimensions)
-    std::atomic<bool> spatialSigmaCacheValid{ false };
-    std::atomic<double> spatialSigmaCanonicalWidth{ 0.0 };
-    std::atomic<double> spatialSigmaCanonicalHeight{ 0.0 };
-    std::atomic<double> spatialSigmaCameraFilmMm{ 0.0 };
-    std::atomic<float> spatialSigmaMicrometers{ 0.0f };
-    std::atomic<float> spatialSigmaPixelsCanonical{ 0.0f };
+    std::atomic<bool> spatialSigmaCacheValid{false};
+    std::atomic<double> spatialSigmaCanonicalWidth{0.0};
+    std::atomic<double> spatialSigmaCanonicalHeight{0.0};
+    std::atomic<double> spatialSigmaCameraFilmMm{0.0};
+    std::atomic<float> spatialSigmaMicrometers{0.0f};
+    std::atomic<float> spatialSigmaPixelsCanonical{0.0f};
 
     std::string filmReferenceIlluminant;
 
@@ -431,7 +433,7 @@ struct InstanceState {
     bool autoExposureCacheAutoEnabled = false; // Tracks camera auto-exposure toggle state
     int autoExposureCacheMeteringMethod = 0;
     uint64_t autoExposureCacheBuildCounter = 0;
-    OfxRectI autoExposureCacheBounds{ 0, 0, 0, 0 };
+    OfxRectI autoExposureCacheBounds{0, 0, 0, 0};
     double autoExposureCacheEV = 0.0;
     double autoExposureCacheRenderScaleX = 0.0;
     double autoExposureCacheRenderScaleY = 0.0;
@@ -454,8 +456,8 @@ struct InstanceState {
 
     ScannerOptics::Runtime scannerRuntimeA;
     ScannerOptics::Runtime scannerRuntimeB;
-    std::atomic<bool> scannerRuntimeAInUse{ false };
-    std::atomic<bool> scannerRuntimeBInUse{ false };
+    std::atomic<bool> scannerRuntimeAInUse{false};
+    std::atomic<bool> scannerRuntimeBInUse{false};
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     // Snapshot latch: all submissions for the same frame token reuse one immutable snapshot payload.
@@ -465,12 +467,14 @@ struct InstanceState {
 #endif
 };
 
-const char* print_paper_json_key_for_index(int index);
-const char* negative_json_key_for_stock_index(int filmIndex);
-int film_stock_option_count();
-const char* film_stock_option_label(int index);
-int print_paper_option_count();
-const char* print_paper_option_label(int index);
-bool load_film_stock_into_base(int filmIndex, InstanceState& S);
+bool spektrafilm_profile_catalog_ready();
+const char* spektrafilm_profile_catalog_failure();
+int film_profile_option_count();
+const char* film_profile_option_key(int index);
+const char* film_profile_option_label(int index);
+int print_profile_option_count();
+const char* print_profile_option_key(int index);
+const char* print_profile_option_label(int index);
+bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceState& S);
 void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);
 void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);

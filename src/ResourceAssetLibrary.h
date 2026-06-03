@@ -8,6 +8,7 @@
 #include <tuple>
 #include <vector>
 
+#include "ProfileCatalog.h"
 #include "SpectralData.h"
 
 namespace Profiles {
@@ -16,6 +17,9 @@ namespace Profiles {
 
 namespace JuicerAssets {
 
+    // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase3/Phase4:
+    // key-addressed only, non-rendering while SpektrafilmPixelPipelineNotImplementedForPhase1A
+    // blocks product output; retained until selected-profile payloads replace old asset carriers.
     struct FilmStockAsset {
         std::string optionLabel;
         std::string jsonKey;
@@ -113,9 +117,9 @@ namespace JuicerAssets {
         std::string negativeKey;
     };
 
-    struct PrintRuntimeChoices {
-        int filmIndex = 0;
-        int printPaperIndex = 0;
+    struct PrintRuntimeProfileKeyChoices {
+        std::string filmProfileKey;
+        std::string printProfileKey;
         int dichroicSetChoice = 0;
     };
 
@@ -130,8 +134,9 @@ namespace JuicerAssets {
         explicit Library(std::string dataDir);
         ~Library();
 
-        const FilmStockAsset& film_stock_for_index(int index);
-        const PrintPaperAsset& print_paper_for_index(int index);
+        const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
+        const JuicerAssets::FilmStockAsset& film_profile_for_key(const std::string& key);
+        const JuicerAssets::PrintPaperAsset& print_profile_for_key(const std::string& key);
         std::shared_ptr<const PrintPaperFolderProfilePayload> print_paper_folder_profile_payload(
             const PrintPaperAsset& asset);
         const NeutralFilterDatabaseAsset& neutral_filter_database_for_dichroic_set(int dichroicSetChoice);
@@ -142,7 +147,7 @@ namespace JuicerAssets {
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterCurveSet& illuminant_filter_curves();
-        PrintRuntimeAssetSet print_runtime_assets_for_choices(const PrintRuntimeChoices& choices);
+        PrintRuntimeAssetSet print_runtime_assets_for_profile_keys(const PrintRuntimeProfileKeyChoices& choices);
         bool load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile);
         bool load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile);
         void release_cached_payloads() noexcept;
@@ -188,6 +193,7 @@ namespace JuicerAssets {
         std::vector<FilmStockAsset> _filmStocks;
         std::vector<PrintPaperAsset> _printPapers;
         std::vector<std::string> _printPaperFolderNames;
+        Spektrafilm::ProfileCatalog _spektrafilmProfileCatalog;
         std::array<NeutralFilterDatabaseAsset, 3> _neutralFilterDatabases{};
         std::unique_ptr<NeutralFilterDatabasePathSet[]> _neutralFilterDatabasePaths;
         std::unique_ptr<StaticNoiseAssetSet> _staticNoiseAssets;

@@ -3,6 +3,8 @@
 namespace JuicerParams {
     inline constexpr const char kCameraFilmFormatMm[] = "CameraFilmFormatMm";
     inline constexpr const char kCameraMeteringMethod[] = "CameraMeteringMethod";
+    inline constexpr const char kFilmProfileKey[] = "FilmProfileKey";
+    inline constexpr const char kPrintProfileKey[] = "PrintProfileKey";
     inline constexpr const char kInputColorSpace[] = "InputColorSpace";
     inline constexpr const char kInputCctfDecoding[] = "InputCctfDecoding";
     inline constexpr const char kDirCouplersInitVersion[] = "DIRCouplersInitVersion";
@@ -62,4 +64,4 @@ namespace JuicerParams {
     inline constexpr const char kScannerUnsharpMask[] = "ScannerUnsharpMask";
     inline constexpr const char kScannerUseLut[] = "ScannerUseLUT";
     inline constexpr const char kScannerLutResolution[] = "ScannerLutResolution";
-}
+} // namespace JuicerParams

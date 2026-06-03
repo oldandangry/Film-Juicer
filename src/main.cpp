@@ -11,7 +11,7 @@
 
 // Resolve OFX support library C++ wrappers (OpenFX 1.4 compliant)
 #pragma warning(push)
-#pragma warning(disable: 5040)
+#pragma warning(disable : 5040)
 #include "ofxsCore.h"
 #include "ofxsImageEffect.h"
 #include "ofxsParam.h"
@@ -36,6 +36,7 @@
 #include "Couplers.h"
 #include "JuicerEffect.h"
 #include "JuicerState.h"
+#include "Logging.h"
 #include "OutputColor.h"
 #include "SpectralProcessing.h"
 #include "ColorTransforms.h"
@@ -57,8 +58,8 @@ class JuicerPluginFactory : public OFX::PluginFactoryHelper<JuicerPluginFactory>
 public:
     JuicerPluginFactory()
         : OFX::PluginFactoryHelper<JuicerPluginFactory>(kPluginIdentifier,
-            kPluginVersionMajor,
-            kPluginVersionMinor) {
+                                                        kPluginVersionMajor,
+                                                        kPluginVersionMinor) {
     }
 
     void describe(OFX::ImageEffectDescriptor& desc) override;
@@ -72,8 +73,7 @@ void JuicerPluginFactory::unload() {
     JuicerProcess::root().shutdown();
 }
 
-void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc)
-{
+void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc) {
     // Label/group
     desc.setLabels("Juicer", "Juicer", "Juicer");
     desc.setPluginGrouping("Negative-juice");
@@ -97,9 +97,9 @@ void JuicerPluginFactory::describe(OFX::ImageEffectDescriptor& desc)
 #endif
 }
 
-void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context)
-{
-    if (context != OFX::eContextFilter) return;
+void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OFX::ContextEnum context) {
+    if (context != OFX::eContextFilter)
+        return;
 
     // Clips
     {
@@ -122,8 +122,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(kParamExposure);
         p->setLabel("Exposure Compensation Ev");
         p->setHint("Camera exposure compensation in EV stops. Per agx-emulsion parity: "
-            "this is camera.exposure_compensation_ev, applied as 2^EV multiplication "
-            "to film exposure. Positive values brighten the image.");
+                   "this is camera.exposure_compensation_ev, applied as 2^EV multiplication "
+                   "to film exposure. Positive values brighten the image.");
         p->setDefault(0.0);
         p->setRange(-8.0, 8.0);
         p->setDisplayRange(-4.0, 4.0);
@@ -153,13 +153,20 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setEvaluateOnChange(true);
     }
 
-    // Film stock (choice)
+    if (!spektrafilm_profile_catalog_ready()) {
+        JTRACE("CATALOG", std::string("FATAL: spektrafilm profile catalog descriptor failure: ") + spektrafilm_profile_catalog_failure());
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
+    // Current spektrafilm profile identity.
     {
-        OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamFilmStock);
+        OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kFilmProfileKey);
         p->setLabel("Film stock");
-        const int stockCount = film_stock_option_count();
-        for (int i = 0; i < stockCount; ++i) p->appendOption(film_stock_option_label(i));
-        p->setDefault(0);
+        const int stockCount = film_profile_option_count();
+        for (int i = 0; i < stockCount; ++i) {
+            p->appendOption(film_profile_option_key(i), film_profile_option_label(i));
+        }
+        p->setDefault(Spektrafilm::kDefaultFilmProfileKey); // kodak_portra_400
         p->setEvaluateOnChange(true);
     }
     // Spectral upsampling
@@ -169,11 +176,10 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->appendOption("Hanatos");
         p->appendOption("Mallett");
         p->setHint("Choose the spectral reconstruction method used for film exposure. "
-            "Hanatos uses the Hanatos 2025 LUT when available; "
-            "Mallett uses the Mallett 2019 sRGB basis reconstruction.");
+                   "Hanatos uses the Hanatos 2025 LUT when available; "
+                   "Mallett uses the Mallett 2019 sRGB basis reconstruction.");
         p->setDefault(0);
         p->setEvaluateOnChange(true);
-
     }
     // Input colour space and encoding
     {
@@ -196,13 +202,15 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
     // Couplers (DIR) parameters — wrapper descriptors matching Couplers::define_params
     {
         OFX::GroupParamDescriptor* grpCouplers = desc.defineGroupParam(Couplers::kParamCouplersGroup);
-        if (grpCouplers) grpCouplers->setLabel("DIR couplers");
+        if (grpCouplers)
+            grpCouplers->setLabel("DIR couplers");
 
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(Couplers::kParamCouplersActive);
             p->setLabel("Active");
             p->setDefault(true);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -211,7 +219,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 2.0);
             p->setDisplayRange(0.0, 2.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -220,7 +229,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -229,7 +239,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -238,7 +249,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -247,7 +259,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(2.0);
             p->setRange(0.0, 4.0);
             p->setDisplayRange(0.0, 4.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -256,7 +269,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -266,7 +280,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 50.0);
             p->setDisplayRange(0.0, 50.0);
             p->setHint("Micrometers of DIR spatial diffusion; scaled by the Camera film format parameter.");
-            if (grpCouplers) p->setParent(*grpCouplers);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
         {
@@ -291,9 +306,11 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
 
     // Scanner optics and math
     OFX::GroupParamDescriptor* grpScannerOptics = desc.defineGroupParam("ScannerOptics");
-    if (grpScannerOptics) grpScannerOptics->setLabel("Scanner Optics");
+    if (grpScannerOptics)
+        grpScannerOptics->setLabel("Scanner Optics");
     OFX::GroupParamDescriptor* grpScannerMath = desc.defineGroupParam("ScannerMath");
-    if (grpScannerMath) grpScannerMath->setLabel("Scanner Math");
+    if (grpScannerMath)
+        grpScannerMath->setLabel("Scanner Math");
     {
         OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         p->setLabel("Scanner lens blur (px)");
@@ -301,7 +318,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDefault(0.55);
         p->setRange(0.0, 10.0);
         p->setDisplayRange(0.0, 3.0);
-        if (grpScannerOptics) p->setParent(*grpScannerOptics);
+        if (grpScannerOptics)
+            p->setParent(*grpScannerOptics);
         p->setEvaluateOnChange(true);
     }
     {
@@ -312,14 +330,16 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setRange(0.0, 0.0, 5.0, 3.0);
         p->setDisplayRange(0.0, 0.0, 5.0, 3.0);
         p->setDimensionLabels("Sigma (px)", "Amount");
-        if (grpScannerOptics) p->setParent(*grpScannerOptics);
+        if (grpScannerOptics)
+            p->setParent(*grpScannerOptics);
         p->setEvaluateOnChange(true);
     }
     {
         OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kScannerUseLut);
         p->setLabel("Scanner use LUT");
         p->setDefault(true);
-        if (grpScannerMath) p->setParent(*grpScannerMath);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
         p->setHint("Enable precomputed scanner spectral LUTs.");
         p->setEvaluateOnChange(true);
     }
@@ -329,7 +349,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDefault(17);
         p->setRange(17, 128);
         p->setDisplayRange(17, 128);
-        if (grpScannerMath) p->setParent(*grpScannerMath);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
         p->setHint("Cube resolution for scanner spectral LUTs.");
         p->setEvaluateOnChange(true);
     }
@@ -342,19 +363,23 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             grpPrint->setLabel("Print");
         }
         {
-            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamPrintPaper);
+            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kPrintProfileKey);
             p->setLabel("Print paper");
-            const int paperCount = print_paper_option_count();
-            for (int i = 0; i < paperCount; ++i) p->appendOption(print_paper_option_label(i));
-            p->setDefault(0);
-            if (grpPrint) p->setParent(*grpPrint);
+            const int paperCount = print_profile_option_count();
+            for (int i = 0; i < paperCount; ++i) {
+                p->appendOption(print_profile_option_key(i), print_profile_option_label(i));
+            }
+            p->setDefault(Spektrafilm::kDefaultPrintProfileKey); // kodak_portra_endura
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintBypass");
             p->setLabel("Bypass print");
             p->setDefault(false);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
@@ -362,20 +387,23 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Print exposure");
             p->setDefault(1.0);
             p->setDisplayRange(0.1, 10.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("PrintPreflash");
             p->setLabel("Print preflash");
             p->setDefault(0.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintExposureCompensation");
             p->setLabel("Print exposure compensation");
             p->setDefault(true);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
@@ -386,7 +414,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption("Thorlabs");
             p->appendOption("Edmund Optics");
             p->setDefault(0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);
         }
         {
@@ -395,7 +424,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
             p->setIncrement(1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerM");
@@ -403,7 +433,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
             p->setIncrement(1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerC");
@@ -411,7 +442,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
             p->setIncrement(1.0);
-            if (grpPrint) p->setParent(*grpPrint);
+            if (grpPrint)
+                p->setParent(*grpPrint);
         }
     }
 
@@ -427,7 +459,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Add halation");
             p->setDefault(false);
             p->setHint("Add halation to the negative (scattering in raw exposure).");
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
@@ -437,7 +470,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault((1.0 + 2.0 + 4.0) / 3.0);
             p->setRange(0.0, 100.0);
             p->setDisplayRange(0.0, 25.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
@@ -447,7 +481,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault((30.0 + 20.0 + 15.0) / 3.0);
             p->setRange(0.0, 1000.0);
             p->setDisplayRange(0.0, 500.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
@@ -457,7 +492,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault((3.0 + 0.30 + 0.10) / 3.0);
             p->setRange(0.0, 100.0);
             p->setDisplayRange(0.0, 25.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
@@ -467,20 +503,23 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(200.0);
             p->setRange(0.0, 1000.0);
             p->setDisplayRange(0.0, 1000.0);
-            if (grpHalation) p->setParent(*grpHalation);
+            if (grpHalation)
+                p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         OFX::GroupParamDescriptor* grpHalationAdvanced = desc.defineGroupParam("HalationAdvancedGroup");
         if (grpHalationAdvanced) {
             grpHalationAdvanced->setLabel("Advanced");
             grpHalationAdvanced->setOpen(false);
-            if (grpHalation) grpHalationAdvanced->setParent(*grpHalation);
+            if (grpHalation)
+                grpHalationAdvanced->setParent(*grpHalation);
         }
         {
             OFX::PushButtonParamDescriptor* p = desc.definePushButtonParam(JuicerParams::kHalationRevertToStock);
             p->setLabel("Revert to stock defaults");
             p->setHint("Reset halation parameters to the current film stock defaults.");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
         }
         {
             OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationScatteringStrength);
@@ -490,7 +529,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -501,7 +541,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 300.0, 300.0, 300.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -512,7 +553,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -523,7 +565,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 400.0, 400.0, 400.0);
             p->setDimensionLabels("R", "G", "B");
-            if (grpHalationAdvanced) p->setParent(*grpHalationAdvanced);
+            if (grpHalationAdvanced)
+                p->setParent(*grpHalationAdvanced);
             p->setEvaluateOnChange(true);
         }
     }
@@ -540,7 +583,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Add grain");
             p->setDefault(false);
             p->setHint("Add grain to the negative.");
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -548,7 +592,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Use sublayers");
             p->setDefault(true);
             p->setHint("Enable sublayer grain simulation.");
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -559,7 +604,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption("Coarse");
             p->setDefault(1);
             p->setHint("Starting point for grain size/strength presets.");
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -570,7 +616,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(-3.0, 3.0);
             p->setDisplayRange(-3.0, 3.0);
             p->setIncrement(0.1);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -580,7 +627,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.50);
             p->setRange(0.20, 2.00);
             p->setDisplayRange(0.20, 2.00);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -590,7 +638,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.5);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -600,7 +649,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.3);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         {
@@ -610,20 +660,23 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.55);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrain) p->setParent(*grpGrain);
+            if (grpGrain)
+                p->setParent(*grpGrain);
             p->setEvaluateOnChange(true);
         }
         OFX::GroupParamDescriptor* grpGrainAdvanced = desc.defineGroupParam("GrainAdvancedGroup");
         if (grpGrainAdvanced) {
             grpGrainAdvanced->setLabel("Advanced");
             grpGrainAdvanced->setOpen(false);
-            if (grpGrain) grpGrainAdvanced->setParent(*grpGrain);
+            if (grpGrain)
+                grpGrainAdvanced->setParent(*grpGrain);
         }
         {
             OFX::PushButtonParamDescriptor* p = desc.definePushButtonParam(JuicerParams::kGrainResetAdvanced);
             p->setLabel("Reset Advanced");
             p->setHint("Reset advanced grain controls to the base values.");
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGrainParticleAreaUm2);
@@ -633,7 +686,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 1.0);
             p->setIncrement(0.1);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -643,7 +697,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.48);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -653,7 +708,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.922);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 4.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -663,7 +719,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.08);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 0.2);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -673,7 +730,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.97);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.9, 1.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -683,7 +741,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -693,7 +752,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.226);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -703,7 +763,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -713,7 +774,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(19.0);
             p->setRange(1.0, 50.0);
             p->setDisplayRange(1.0, 50.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -724,7 +786,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 0.0, 100.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 100.0, 200.0);
             p->setDimensionLabels("Cell (um)", "Sigma (1e-3)");
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -732,7 +795,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Breathing debug");
             p->setHint("Debug view for the breathing field.");
             p->setDefault(false);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -747,7 +811,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->appendOption("Mean density");
             p->setDefault(0);
             p->setHint("Debug view selector for grain delta fields (pre-scanner).");
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -759,7 +824,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.0, 0.0, 3.0, 3.0, 3.0);
             p->setDimensionLabels("R", "G", "B");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -771,7 +837,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.0, 0.0, 4.0, 4.0, 4.0);
             p->setDimensionLabels("R", "G", "B");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -783,7 +850,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.0, 0.0, 0.2, 0.2, 0.2);
             p->setDimensionLabels("C", "M", "Y");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -795,7 +863,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.9, 0.9, 0.9, 1.0, 1.0, 1.0);
             p->setDimensionLabels("C", "M", "Y");
             p->setIsSecret(true);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -805,7 +874,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.30);
             p->setRange(0.0, 0.30);
             p->setDisplayRange(0.0, 0.30);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
         {
@@ -815,7 +885,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(8.0);
             p->setRange(5.0, 60.0);
             p->setDisplayRange(5.0, 60.0);
-            if (grpGrainAdvanced) p->setParent(*grpGrainAdvanced);
+            if (grpGrainAdvanced)
+                p->setParent(*grpGrainAdvanced);
             p->setEvaluateOnChange(true);
         }
     }
@@ -835,7 +906,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(1.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -845,7 +917,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -855,7 +928,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -865,7 +939,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
         {
@@ -875,7 +950,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDefault(0.0);
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 10.0);
-            if (grpEffects) p->setParent(*grpEffects);
+            if (grpEffects)
+                p->setParent(*grpEffects);
             p->setEvaluateOnChange(true);
         }
     }
@@ -893,7 +969,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setLabel("Add glare");
             p->setDefault(true);
             p->setHint("Add glare to the print (scanner-stage stray light).");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
@@ -904,7 +981,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.5);
             p->setIncrement(0.05);
             p->setHint("Percentage of glare light (typ. 0.10-0.25). Value is in percent, not fraction.");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
@@ -914,7 +992,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             p->setHint("Glare roughness (0-1). Stddev = roughness * percent.");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
@@ -924,7 +1003,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 10.0);
             p->setDisplayRange(0.0, 3.0);
             p->setHint("Gaussian blur sigma in pixels applied to the glare field.");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
@@ -935,7 +1015,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 0.2);
             p->setIncrement(0.05);
             p->setHint("Remove viewing glare compensation from print curves. 0.2 = 20% underexposed shadows. Intended as alternative to stochastic glare (set GlarePercent=0).");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
@@ -945,7 +1026,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 3.0);
             p->setDisplayRange(0.8, 2.0);
             p->setHint("Density at which the compensation-removal transition is centered (typ. 1.0-1.5).");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
@@ -955,7 +1037,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setRange(0.0, 2.0);
             p->setDisplayRange(0.0, 0.8);
             p->setHint("Transition density range for compensation removal (typ. 0.1-0.5).");
-            if (grpGlare) p->setParent(*grpGlare);
+            if (grpGlare)
+                p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
     }
@@ -975,7 +1058,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setDisplayRange(0.0, 1.0);
             p->setIncrement(0.2);
             p->setHint("Minimum density factor of the print paper (0-1), make the white less white.");
-            if (grpSpecial) p->setParent(*grpSpecial);
+            if (grpSpecial)
+                p->setParent(*grpSpecial);
             p->setEvaluateOnChange(true);
         }
     }
@@ -1011,7 +1095,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
     // Output encoding group
     {
         OFX::GroupParamDescriptor* grpOutput = desc.defineGroupParam("OutputEncodingGroup");
-        if (grpOutput) grpOutput->setLabel("Output encoding");
+        if (grpOutput)
+            grpOutput->setLabel("Output encoding");
 
         {
             OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamOutputColorSpace);
@@ -1020,28 +1105,30 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 p->appendOption(OutputEncoding::kColorSpaceLabels[i]);
             }
             p->setDefault(OutputEncoding::toIndex(OutputEncoding::ColorSpace::sRGB));
-            if (grpOutput) p->setParent(*grpOutput);
+            if (grpOutput)
+                p->setParent(*grpOutput);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamOutputCctfEncoding);
             p->setLabel("Apply output CCTF");
             p->setDefault(true);
-            if (grpOutput) p->setParent(*grpOutput);
+            if (grpOutput)
+                p->setParent(*grpOutput);
             p->setEvaluateOnChange(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(kParamOutputLinearPassThrough);
             p->setLabel("Output linear pass-through");
             p->setDefault(false);
-            if (grpOutput) p->setParent(*grpOutput);
+            if (grpOutput)
+                p->setParent(*grpOutput);
             p->setEvaluateOnChange(true);
         }
     }
 }
 
-OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum /*context*/)
-{
+OFX::ImageEffect* JuicerPluginFactory::createInstance(OfxImageEffectHandle handle, OFX::ContextEnum /*context*/) {
     // Create our effect instance (constructor attaches InstanceState + runs bootstrap).
     return new JuicerEffect(handle);
 }

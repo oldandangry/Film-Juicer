@@ -9,15 +9,19 @@ namespace RebuildWorkingState {
     struct NegativeReuseContext {
         std::uint64_t activeBuildCounter = 0;
         std::uint64_t lastHash = 0;
-        int lastFilmStock = 0;
+        std::string lastFilmProfileKey;
         int lastEnlargerIll = 0;
     };
 
     inline bool dir_runtime_equivalent(const Couplers::Runtime& a, const Couplers::Runtime& b) {
-        if (a.active != b.active) return false;
-        if (a.highShift != b.highShift) return false;
-        if (a.spatialSigmaMicrometers != b.spatialSigmaMicrometers) return false;
-        if (a.spatialSigmaPixels != b.spatialSigmaPixels) return false;
+        if (a.active != b.active)
+            return false;
+        if (a.highShift != b.highShift)
+            return false;
+        if (a.spatialSigmaMicrometers != b.spatialSigmaMicrometers)
+            return false;
+        if (a.spatialSigmaPixels != b.spatialSigmaPixels)
+            return false;
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
                 if (a.M[r][c] != b.M[r][c]) {
@@ -29,20 +33,18 @@ namespace RebuildWorkingState {
     }
 
     inline bool negative_inputs_match(const NegativeReuseContext& ctx,
-        int filmStockIndex,
-        int enlargerIll)
-    {
+                                      const std::string& filmProfileKey,
+                                      int enlargerIll) {
         return (ctx.lastHash != 0) &&
-            (ctx.lastFilmStock == filmStockIndex) &&
-            (ctx.lastEnlargerIll == enlargerIll);
+               (ctx.lastFilmProfileKey == filmProfileKey) &&
+               (ctx.lastEnlargerIll == enlargerIll);
     }
 
     inline bool can_reuse_negative_params(const NegativeReuseContext& ctx,
-        const WorkingState* prev,
-        const WorkingState& candidate,
-        int filmStockIndex,
-        int enlargerIll)
-    {
+                                          const WorkingState* prev,
+                                          const WorkingState& candidate,
+                                          const std::string& filmProfileKey,
+                                          int enlargerIll) {
         if (!prev) {
             return false;
         }
@@ -52,7 +54,7 @@ namespace RebuildWorkingState {
         if (prev->buildCounter != ctx.activeBuildCounter) {
             return false;
         }
-        if (!negative_inputs_match(ctx, filmStockIndex, enlargerIll)) {
+        if (!negative_inputs_match(ctx, filmProfileKey, enlargerIll)) {
             return false;
         }
         if (!dir_runtime_equivalent(prev->dirRT, candidate.dirRT)) {
@@ -130,7 +132,7 @@ namespace WorkingStateSharing {
         bool printScannerValid = false;
         bool printGlareCompensated = false;
 
-        float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
+        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         bool spdReady = false;
         Spectral::FilmRawConfig filmRaw;
         std::shared_ptr<const Print::Runtime> printRT;
@@ -394,8 +396,7 @@ namespace JuicerProcess {
     void Root::release_working_state_cores() noexcept {
         try {
             WorkingStateSharing::WorkingStateCoreSharedCache::instance().release_entries();
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
@@ -431,7 +432,7 @@ namespace RebuildWorkingState {
 
             std::sort(samples.begin(), samples.end(), [](const auto& a, const auto& b) {
                 return a.first < b.first;
-                });
+            });
 
             if (samples.size() == 1) {
                 return samples.front().first;
@@ -439,7 +440,7 @@ namespace RebuildWorkingState {
 
             auto between = [](float value, float a, float b) {
                 return (value >= a && value <= b) || (value <= a && value >= b);
-                };
+            };
 
             const float firstDensity = samples.front().second;
             const float lastDensity = samples.back().second;
@@ -452,8 +453,7 @@ namespace RebuildWorkingState {
                 if (targetDensity >= lastDensity) {
                     return samples.back().first;
                 }
-            }
-            else {
+            } else {
                 if (targetDensity >= firstDensity) {
                     return samples.front().first;
                 }
@@ -492,9 +492,8 @@ namespace RebuildWorkingState {
         const Spectral::Curve& densR,
         const Spectral::Curve& densG,
         const Spectral::Curve& densB,
-        const std::array<float, 3>& densityMidRGB)
-    {
-        std::array<float, 3> result{ {0.0f, 0.0f, 0.0f} };
+        const std::array<float, 3>& densityMidRGB) {
+        std::array<float, 3> result{{0.0f, 0.0f, 0.0f}};
 
         if (auto logER = curve_inversion::invert_density_curve(densR, densityMidRGB[0])) {
             result[0] = *logER;
@@ -514,8 +513,7 @@ namespace {
     void trace_working_state_core_share(
         const WorkingStateSharing::AcquireCoreSharedResult& result,
         std::uint64_t buildCounter,
-        const char* path)
-    {
+        const char* path) {
         const bool traceLevel2 = JTRACE_ENABLED(2);
         if (!traceLevel2 || result.keyHash == 0) {
             return;
@@ -708,8 +706,8 @@ namespace {
 
     inline void copy_3x3_and_append_rhs(const double matrix3x3[3][3], const double rhs[3], double augmented[3][4]) {
         const double* rhsIt = rhs;
-        double(*dstRow)[4] = augmented;
-        const double(*srcRow)[3] = matrix3x3;
+        double (*dstRow)[4] = augmented;
+        const double (*srcRow)[3] = matrix3x3;
         for (int r = 0; r < 3; ++r, ++rhsIt, ++dstRow, ++srcRow) {
             std::memcpy(*dstRow, *srcRow, 3u * sizeof(double));
             (*dstRow)[3] = *rhsIt;
@@ -781,16 +779,16 @@ namespace {
     template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         const JuicerAssets::PrintRuntimeAssetSet assets =
-            JuicerProcess::root().assets().print_runtime_assets_for_choices(
-                JuicerAssets::PrintRuntimeChoices{
-                    p.filmStockIndex,
-                    p.printPaperIndex,
+            JuicerProcess::root().assets().print_runtime_assets_for_profile_keys(
+                JuicerAssets::PrintRuntimeProfileKeyChoices{
+                    p.filmProfileKey,
+                    p.printProfileKey,
                     p.enlDichroicSet});
 
         // Shared host derivation follows logical asset identity, not UI catalog positions.
-        mix_hash_string(h, assets.filmStock.jsonKey, mix);
+        mix_hash_string(h, p.filmProfileKey, mix);
         mix_hash_field(h, assets.filmStock.version, mix);
-        mix_hash_string(h, assets.printPaper.jsonKey, mix);
+        mix_hash_string(h, p.printProfileKey, mix);
         mix_hash_field(h, assets.printPaper.version, mix);
         mix_hash_field(h, assets.neutralFilters.databaseId, mix);
         mix_hash_field(h, assets.neutralFilters.version, mix);
@@ -827,9 +825,12 @@ namespace {
         const float* const valueEnd = valueIt + 9;
         for (; valueIt < valueEnd; ++valueIt) {
             float value = *valueIt;
-            if (!is_finite(value)) value = 0.0f;
-            if (value < -10.0f) value = -10.0f;
-            if (value > 10.0f) value = 10.0f;
+            if (!is_finite(value))
+                value = 0.0f;
+            if (value < -10.0f)
+                value = -10.0f;
+            if (value > 10.0f)
+                value = 10.0f;
             *valueIt = value;
         }
     }
@@ -840,8 +841,10 @@ namespace {
         const float* const valueEnd = valueIt + 3;
         for (; valueIt < valueEnd; ++valueIt, ++mirrorIt) {
             float value = *valueIt;
-            if (!is_finite(value) || value <= 1e-4f) value = 1.0f;
-            if (value > 1000.0f) value = 1000.0f;
+            if (!is_finite(value) || value <= 1e-4f)
+                value = 1.0f;
+            if (value > 1000.0f)
+                value = 1000.0f;
             *valueIt = value;
             *mirrorIt = value;
         }
@@ -850,7 +853,7 @@ namespace {
 #ifndef JUICER_ENABLE_COUPLERS
     inline void build_dir_matrix_fallback(float matrix[3][3], const float amountValues[3], float layerSigma) {
         const float sigma = sanitize_nonnegative_or(layerSigma, 0.0f);
-        float amount[3] = { amountValues[0], amountValues[1], amountValues[2] };
+        float amount[3] = {amountValues[0], amountValues[1], amountValues[2]};
         const float sigmaCapped = std::min(sigma, 3.0f);
         float* amountIt = amount;
         for (int i = 0; i < 3; ++i, ++amountIt) {
@@ -864,7 +867,7 @@ namespace {
             const float s2 = sigmaCapped * sigmaCapped;
             const float dxFloat = static_cast<float>(dx);
             return std::exp(-0.5f * (dxFloat * dxFloat) / s2);
-            };
+        };
 
         for (int row = 0; row < 3; ++row) {
             float kernelRow[3];
@@ -905,8 +908,7 @@ namespace {
         const std::array<float, 3> densityMaxPostDir{
             curve_max_clamped_or_default(target.densB),
             curve_max_clamped_or_default(target.densG),
-            curve_max_clamped_or_default(target.densR)
-        };
+            curve_max_clamped_or_default(target.densR)};
 
         bool precorrectApplied = false;
         Couplers::Runtime dirRT{};
@@ -916,8 +918,7 @@ namespace {
             const float amount[3] = {
                 amountScale * clamp_coupler_ratio(effectiveRatioB),
                 amountScale * clamp_coupler_ratio(effectiveRatioG),
-                amountScale * clamp_coupler_ratio(effectiveRatioR)
-            };
+                amountScale * clamp_coupler_ratio(effectiveRatioR)};
 #ifdef JUICER_ENABLE_COUPLERS
             Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #else
@@ -933,13 +934,10 @@ namespace {
                     curve_has_nonfinite_samples(target.densG) ||
                     curve_has_nonfinite_samples(target.densR)) {
                     precorrectApplied = false;
-                }
-                else {
+                } else {
                     Spectral::Curve densB_corr, densG_corr, densR_corr;
                     Couplers::precorrect_density_curves_before_DIR_into(
-                        dirRT.M, dirRT.highShift,
-                        target.densB, target.densG, target.densR,
-                        densB_corr, densG_corr, densR_corr);
+                        dirRT.M, dirRT.highShift, target.densB, target.densG, target.densR, densB_corr, densG_corr, densR_corr);
                     target.dirDensB = std::move(densB_corr);
                     target.dirDensG = std::move(densG_corr);
                     target.dirDensR = std::move(densR_corr);
@@ -1029,8 +1027,7 @@ namespace {
                 JTRACE("HASH", "FATAL: scanner color runtime hash invalid for print medium");
                 return false;
             }
-        }
-        else {
+        } else {
             target.printColorRuntime = Scanner::ColorRuntime{};
         }
 
@@ -1061,18 +1058,10 @@ namespace {
         target.printMediumRuntime.staticKey = target.printStaticKey;
 
         const float glareCompensationFactor = target.printRT
-            ? target.printRT->profile.glare.compensationRemovalFactor
-            : target.printGlare.compensationRemovalFactor;
+                                                  ? target.printRT->profile.glare.compensationRemovalFactor
+                                                  : target.printGlare.compensationRemovalFactor;
         target.printGlareCompensated = (printRuntimeOk && glareCompensationFactor > 0.0f);
         return true;
-    }
-
-    const JuicerAssets::FilmStockAsset& film_stock_for_index(int filmIndex) {
-        return JuicerProcess::root().assets().film_stock_for_index(filmIndex);
-    }
-
-    const JuicerAssets::PrintPaperAsset& print_paper_for_index(int index) {
-        return JuicerProcess::root().assets().print_paper_for_index(index);
     }
 
     inline bool approx_equal(double a, double b, double eps = 1e-6) {
@@ -1081,14 +1070,14 @@ namespace {
 
     inline bool triplet_is_finite(const float values[3]) {
         return is_finite(values[0]) &&
-            is_finite(values[1]) &&
-            is_finite(values[2]);
+               is_finite(values[1]) &&
+               is_finite(values[2]);
     }
 
     inline bool normalized_white_triplet_is_valid(const float whiteXYZ[3], double yTolerance = 1e-4) {
         return triplet_is_finite(whiteXYZ) &&
-            whiteXYZ[1] > 0.0f &&
-            approx_equal(static_cast<double>(whiteXYZ[1]), 1.0, yTolerance);
+               whiteXYZ[1] > 0.0f &&
+               approx_equal(static_cast<double>(whiteXYZ[1]), 1.0, yTolerance);
     }
 
     static Spectral::Curve build_blackbody_curve(float temperature) {
@@ -1284,8 +1273,7 @@ namespace {
         const float whiteXYZ[3] = {
             static_cast<float>(sumX * invYn),
             1.0f,
-            static_cast<float>(sumZ * invYn)
-        };
+            static_cast<float>(sumZ * invYn)};
         copy_float3(out.whiteXYZ, whiteXYZ);
 
         const double whiteSum = sumX + sumY + sumZ;
@@ -1307,8 +1295,7 @@ namespace {
                 kReferenceAxisSampleCount * sizeof(float));
             hashSamples[kReferenceAxisSampleCount] = out.normalization;
             out.hash = Hash::hash_float_span(hashSamples, kReferenceAxisSampleCount + 1u);
-        }
-        else {
+        } else {
             std::vector<float> hashSamples(sampleCount + 1);
             if (sampleCount > 0) {
                 std::memcpy(
@@ -1375,9 +1362,7 @@ namespace {
         }
 
         float hashVals[6] = {
-            range.min_cmy[0], range.min_cmy[1], range.min_cmy[2],
-            range.max_cmy[0], range.max_cmy[1], range.max_cmy[2]
-        };
+            range.min_cmy[0], range.min_cmy[1], range.min_cmy[2], range.max_cmy[0], range.max_cmy[1], range.max_cmy[2]};
         range.digest = Hash::hash_float_span(hashVals, std::size(hashVals));
         if (range.digest == 0) {
             JTRACE("HASH", hashFailMessage);
@@ -1391,8 +1376,7 @@ namespace {
         const Spectral::Curve& densG,
         const Spectral::Curve& densR,
         const Profiles::GrainMetadata& grain,
-        Scanner::ScannerDensityRange& outRange)
-    {
+        Scanner::ScannerDensityRange& outRange) {
         outRange = Scanner::ScannerDensityRange{};
         const float* densityMinIt = grain.densityMin.data();
         float* minCmyIt = outRange.min_cmy;
@@ -1414,7 +1398,7 @@ namespace {
             return false;
         }
 
-        const float maxCmy[3] = { maxC, maxM, maxY };
+        const float maxCmy[3] = {maxC, maxM, maxY};
         add_triplet(outRange.max_cmy, maxCmy, outRange.min_cmy);
         return finalize_density_range(
             outRange,
@@ -1424,8 +1408,7 @@ namespace {
 
     static bool compute_print_density_range(
         const Print::Profile& profile,
-        Scanner::ScannerDensityRange& outRange)
-    {
+        Scanner::ScannerDensityRange& outRange) {
         outRange = Scanner::ScannerDensityRange{};
         float maxC = 0.0f, maxM = 0.0f, maxY = 0.0f;
         const bool okC = nanmax_curve(profile.dcC, maxC);
@@ -1436,14 +1419,14 @@ namespace {
             return false;
         }
 
-        const float maxCmy[3] = { maxC, maxM, maxY };
+        const float maxCmy[3] = {maxC, maxM, maxY};
         copy_float3(outRange.max_cmy, maxCmy);
         return finalize_density_range(
             outRange,
             "FATAL: invalid print density range (non-positive max)",
             "FATAL: failed to hash print density range");
     }
-}
+} // namespace
 
 uint64_t hash_params(const ParamSnapshot& p) {
     uint64_t h = 0;
@@ -1478,38 +1461,72 @@ uint64_t hash_params_dir(const ParamSnapshot& p) {
     return h;
 }
 
-const char* print_paper_json_key_for_index(int index) {
-    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
-    return paper.jsonKey.empty() ? nullptr : paper.jsonKey.c_str();
+namespace {
+    const Spektrafilm::ProfileCatalog& current_profile_catalog() {
+        return JuicerProcess::root().assets().spektrafilm_profile_catalog();
+    }
+
+    const Spektrafilm::ProfileCatalogEntry* film_profile_entry_for_index(int index) {
+        const Spektrafilm::ProfileCatalog& catalog = current_profile_catalog();
+        if (index < 0 || index >= static_cast<int>(catalog.filmProfiles.size())) {
+            return nullptr;
+        }
+        return &catalog.filmProfiles[static_cast<std::size_t>(index)];
+    }
+
+    const Spektrafilm::ProfileCatalogEntry* print_profile_entry_for_index(int index) {
+        const Spektrafilm::ProfileCatalog& catalog = current_profile_catalog();
+        if (index < 0 || index >= static_cast<int>(catalog.printProfiles.size())) {
+            return nullptr;
+        }
+        return &catalog.printProfiles[static_cast<std::size_t>(index)];
+    }
+} // namespace
+
+bool spektrafilm_profile_catalog_ready() {
+    return current_profile_catalog().valid;
 }
 
-const char* negative_json_key_for_stock_index(int filmIndex) {
-    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(filmIndex);
-    return stock.jsonKey.empty() ? nullptr : stock.jsonKey.c_str();
+const char* spektrafilm_profile_catalog_failure() {
+    const Spektrafilm::ProfileCatalog& catalog = current_profile_catalog();
+    return catalog.failure.empty() ? "" : catalog.failure.c_str();
 }
 
-int film_stock_option_count() {
-    return JuicerProcess::root().assets().film_stock_count();
+int film_profile_option_count() {
+    return static_cast<int>(current_profile_catalog().filmProfiles.size());
 }
 
-const char* film_stock_option_label(int index) {
-    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(index);
-    return stock.optionLabel.empty() ? "" : stock.optionLabel.c_str();
+const char* film_profile_option_key(int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = film_profile_entry_for_index(index);
+    return entry ? entry->key.c_str() : "";
 }
 
-int print_paper_option_count() {
-    return JuicerProcess::root().assets().print_paper_count();
+const char* film_profile_option_label(int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = film_profile_entry_for_index(index);
+    return entry ? entry->label.c_str() : "";
 }
 
-const char* print_paper_option_label(int index) {
-    const JuicerAssets::PrintPaperAsset& paper = print_paper_for_index(index);
-    return paper.optionLabel.empty() ? "" : paper.optionLabel.c_str();
+int print_profile_option_count() {
+    return static_cast<int>(current_profile_catalog().printProfiles.size());
 }
 
-bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
-    const JuicerAssets::FilmStockAsset& stock = film_stock_for_index(filmIndex);
+const char* print_profile_option_key(int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = print_profile_entry_for_index(index);
+    return entry ? entry->key.c_str() : "";
+}
+
+const char* print_profile_option_label(int index) {
+    const Spektrafilm::ProfileCatalogEntry* entry = print_profile_entry_for_index(index);
+    return entry ? entry->label.c_str() : "";
+}
+
+bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceState& S) {
+    // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase3 direct/Phase4 print:
+    // key-addressed legacy payload glue retained only behind the Phase 1A product-render cutoff.
+    const JuicerAssets::FilmStockAsset& stock =
+        JuicerProcess::root().assets().film_profile_for_key(filmProfileKey);
     const bool stockTraceEnabled = JTRACE_ENABLED(1);
-    JTRACE_SCOPE("STOCK", "load_film_stock_into_base");
+    JTRACE_SCOPE("STOCK", "load_film_profile_into_base");
     auto trace_stock_key = [&](const char* prefix) {
         if (stockTraceEnabled) {
             std::string msg;
@@ -1520,7 +1537,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         }
     };
     if (stockTraceEnabled) {
-        trace_stock_key("load_film_stock_into_base: ");
+        trace_stock_key("load_film_profile_into_base: ");
     }
 
     std::vector<std::pair<float, float>> c_data;
@@ -1545,8 +1562,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     S.base.viewingIlluminant.clear();
     S.filmReferenceIlluminant.clear();
     S.base.dyeDensityMinFactor = 1.0f;
-    S.base.cameraFilterUV = { {1.0f, 410.0f, 8.0f} };
-    S.base.cameraFilterIR = { {1.0f, 675.0f, 15.0f} };
+    S.base.cameraFilterUV = {{1.0f, 410.0f, 8.0f}};
+    S.base.cameraFilterIR = {{1.0f, 675.0f, 15.0f}};
     S.base.cameraFilterDefined = false;
     S.base.grain = Profiles::GrainMetadata{};
     S.base.halation = Profiles::HalationMetadata{};
@@ -1599,8 +1616,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         const float spatialSigmaUm = std::clamp(profile.dirCouplers.diffusionSizeUm, 0.0f, 50.0f);
         S.couplerProfileSpatialSigmaMicrometers = static_cast<double>(spatialSigmaUm);
         S.couplerProfileSpatialSigmaValid = true;
-    }
-    else {
+    } else {
         S.couplerProfileSpatialSigmaMicrometers = 0.0;
         S.couplerProfileSpatialSigmaValid = false;
     }
@@ -1635,14 +1651,15 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             oss << "density curves loaded from JSON '" << stock.jsonKey << "' samples R/G/B="
                 << dc_r.size() << "/" << dc_g.size() << "/" << dc_b.size();
             JTRACE("STOCK", oss.str());
-        }
-        else {
+        } else {
             trace_stock_key("density curves missing in JSON profile: ");
         }
     }
 
     if (stockTraceEnabled) {
-        auto sz = [](const auto& v) { return static_cast<int>(v.size()); };
+        auto sz = [](const auto& v) {
+            return static_cast<int>(v.size());
+        };
         std::ostringstream oss;
         oss << "c/m/y=" << sz(c_data) << "/" << sz(m_data) << "/" << sz(y_data)
             << " sens r/g/b=" << sz(r_sens) << "/" << sz(g_sens) << "/" << sz(b_sens)
@@ -1651,15 +1668,24 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         JTRACE("STOCK", oss.str());
     }
 
-    if (c_data.empty()) JTRACE("STOCK", "dye_density_c missing/empty");
-    if (m_data.empty()) JTRACE("STOCK", "dye_density_m missing/empty");
-    if (y_data.empty()) JTRACE("STOCK", "dye_density_y missing/empty");
-    if (r_sens.empty()) JTRACE("STOCK", "log_sensitivity_r missing/empty");
-    if (g_sens.empty()) JTRACE("STOCK", "log_sensitivity_g missing/empty");
-    if (b_sens.empty()) JTRACE("STOCK", "log_sensitivity_b missing/empty");
-    if (dc_r.empty()) JTRACE("STOCK", "density_curve_r missing/empty");
-    if (dc_g.empty()) JTRACE("STOCK", "density_curve_g missing/empty");
-    if (dc_b.empty()) JTRACE("STOCK", "density_curve_b missing/empty");
+    if (c_data.empty())
+        JTRACE("STOCK", "dye_density_c missing/empty");
+    if (m_data.empty())
+        JTRACE("STOCK", "dye_density_m missing/empty");
+    if (y_data.empty())
+        JTRACE("STOCK", "dye_density_y missing/empty");
+    if (r_sens.empty())
+        JTRACE("STOCK", "log_sensitivity_r missing/empty");
+    if (g_sens.empty())
+        JTRACE("STOCK", "log_sensitivity_g missing/empty");
+    if (b_sens.empty())
+        JTRACE("STOCK", "log_sensitivity_b missing/empty");
+    if (dc_r.empty())
+        JTRACE("STOCK", "density_curve_r missing/empty");
+    if (dc_g.empty())
+        JTRACE("STOCK", "density_curve_g missing/empty");
+    if (dc_b.empty())
+        JTRACE("STOCK", "density_curve_b missing/empty");
 
     const bool okCore =
         !c_data.empty() && !m_data.empty() && !y_data.empty() &&
@@ -1720,7 +1746,8 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
     }
 
     auto subtract_baseline_floor = [](Spectral::Curve& curve) {
-        if (curve.linear.empty()) return;
+        if (curve.linear.empty())
+            return;
         float minVal = FLT_MAX;
         const float* inData = curve.linear.data();
         const float* const inEnd = inData + curve.linear.size();
@@ -1747,7 +1774,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
                 }
             }
         }
-        };
+    };
     subtract_baseline_floor(S.base.densB);
     subtract_baseline_floor(S.base.densG);
     subtract_baseline_floor(S.base.densR);
@@ -1759,8 +1786,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             S.base.baseMin.lambda_nm.clear();
             S.base.baseMin.linear.clear();
         }
-    }
-    else {
+    } else {
         S.base.baseMin.lambda_nm.clear();
         S.base.baseMin.linear.clear();
     }
@@ -1772,8 +1798,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
             S.base.baseMid.lambda_nm.clear();
             S.base.baseMid.linear.clear();
         }
-    }
-    else {
+    } else {
         S.base.baseMid.lambda_nm.clear();
         S.base.baseMid.linear.clear();
     }
@@ -1783,8 +1808,7 @@ bool load_film_stock_into_base(int filmIndex, InstanceState& S) {
         std::ostringstream oss;
         oss << "baseline resample failure (min=" << (baseMinOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
-    }
-    else if (!baseMidOk && !dmid.empty() && stockTraceEnabled) {
+    } else if (!baseMidOk && !dmid.empty() && stockTraceEnabled) {
         std::ostringstream oss;
         oss << "baseline resample warning (mid=" << (baseMidOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
@@ -1824,85 +1848,85 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             float& v = *values;
             v = sanitize_nonnegative_or(v, 0.0f);
         }
-        };
+    };
 
     auto estimate_base_dyes = [](const Spectral::Curve& baseCurve,
-        const Spectral::Curve& epsY,
-        const Spectral::Curve& epsM,
-        const Spectral::Curve& epsC) -> std::array<float, 3>
-        {
-            std::array<float, 3> result{ 0.0f, 0.0f, 0.0f };
-            const size_t K = baseCurve.linear.size();
-            if (K == 0 || epsY.linear.size() != K || epsM.linear.size() != K || epsC.linear.size() != K) {
+                                 const Spectral::Curve& epsY,
+                                 const Spectral::Curve& epsM,
+                                 const Spectral::Curve& epsC) -> std::array<float, 3> {
+        std::array<float, 3> result{0.0f, 0.0f, 0.0f};
+        const size_t K = baseCurve.linear.size();
+        if (K == 0 || epsY.linear.size() != K || epsM.linear.size() != K || epsC.linear.size() != K) {
+            return result;
+        }
+
+        double ATA[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+        double ATb[3] = {0.0, 0.0, 0.0};
+
+        const float* yData = epsY.linear.data();
+        const float* mData = epsM.linear.data();
+        const float* cData = epsC.linear.data();
+        const float* bData = baseCurve.linear.data();
+        for (size_t i = 0; i < K; ++i, ++yData, ++mData, ++cData, ++bData) {
+            const double ay = *yData;
+            const double am = *mData;
+            const double ac = *cData;
+            const double b = *bData;
+            if (!is_finite(ay) || !is_finite(am) || !is_finite(ac) || !is_finite(b)) {
+                continue;
+            }
+            const double vec[3] = {ay, am, ac};
+            for (int r = 0; r < 3; ++r) {
+                ATb[r] += vec[r] * b;
+                for (int c = 0; c < 3; ++c) {
+                    ATA[r][c] += vec[r] * vec[c];
+                }
+            }
+        }
+
+        double mat[3][4];
+        copy_3x3_and_append_rhs(ATA, ATb, mat);
+
+        for (int i = 0; i < 3; ++i) {
+            int pivot = i;
+            double maxAbs = std::fabs(mat[i][i]);
+            for (int r = i + 1; r < 3; ++r) {
+                const double absVal = std::fabs(mat[r][i]);
+                if (absVal > maxAbs) {
+                    maxAbs = absVal;
+                    pivot = r;
+                }
+            }
+            if (maxAbs < 1e-9) {
                 return result;
             }
-
-            double ATA[3][3] = { {0.0,0.0,0.0}, {0.0,0.0,0.0}, {0.0,0.0,0.0} };
-            double ATb[3] = { 0.0, 0.0, 0.0 };
-
-            const float* yData = epsY.linear.data();
-            const float* mData = epsM.linear.data();
-            const float* cData = epsC.linear.data();
-            const float* bData = baseCurve.linear.data();
-            for (size_t i = 0; i < K; ++i, ++yData, ++mData, ++cData, ++bData) {
-                const double ay = *yData;
-                const double am = *mData;
-                const double ac = *cData;
-                const double b = *bData;
-                if (!is_finite(ay) || !is_finite(am) || !is_finite(ac) || !is_finite(b)) {
-                    continue;
-                }
-                const double vec[3] = { ay, am, ac };
-                for (int r = 0; r < 3; ++r) {
-                    ATb[r] += vec[r] * b;
-                    for (int c = 0; c < 3; ++c) {
-                        ATA[r][c] += vec[r] * vec[c];
-                    }
-                }
-            }
-
-            double mat[3][4];
-            copy_3x3_and_append_rhs(ATA, ATb, mat);
-
-            for (int i = 0; i < 3; ++i) {
-                int pivot = i;
-                double maxAbs = std::fabs(mat[i][i]);
-                for (int r = i + 1; r < 3; ++r) {
-                    const double absVal = std::fabs(mat[r][i]);
-                    if (absVal > maxAbs) {
-                        maxAbs = absVal;
-                        pivot = r;
-                    }
-                }
-                if (maxAbs < 1e-9) {
-                    return result;
-                }
-                if (pivot != i) {
-                    for (int c = i; c < 4; ++c) {
-                        std::swap(mat[i][c], mat[pivot][c]);
-                    }
-                }
-                const double inv = 1.0 / mat[i][i];
+            if (pivot != i) {
                 for (int c = i; c < 4; ++c) {
-                    mat[i][c] *= inv;
-                }
-                for (int r = 0; r < 3; ++r) {
-                    if (r == i) continue;
-                    const double factor = mat[r][i];
-                    for (int c = i; c < 4; ++c) {
-                        mat[r][c] -= factor * mat[i][c];
-                    }
+                    std::swap(mat[i][c], mat[pivot][c]);
                 }
             }
-
-            float* outData = result.data();
-            for (int i = 0; i < 3; ++i, ++outData) {
-                float v = static_cast<float>(mat[i][3]);
-                *outData = sanitize_nonnegative_or(v, 0.0f);
+            const double inv = 1.0 / mat[i][i];
+            for (int c = i; c < 4; ++c) {
+                mat[i][c] *= inv;
             }
+            for (int r = 0; r < 3; ++r) {
+                if (r == i)
+                    continue;
+                const double factor = mat[r][i];
+                for (int c = i; c < 4; ++c) {
+                    mat[r][c] -= factor * mat[i][c];
+                }
+            }
+        }
 
-            return result;
-        };
+        float* outData = result.data();
+        for (int i = 0; i < 3; ++i, ++outData) {
+            float v = static_cast<float>(mat[i][3]);
+            *outData = sanitize_nonnegative_or(v, 0.0f);
+        }
+
+        return result;
+    };
 
     JTRACE_SCOPE("BUILD", "rebuild_working_state");
 
@@ -1928,8 +1952,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         if (!printTraceEnabled) {
             return;
         }
-        const char* paperKey = print_paper_json_key_for_index(P.printPaperIndex);
-        const char* filmKey = negative_json_key_for_stock_index(P.filmStockIndex);
+        const char* paperKey = P.printProfileKey.empty() ? nullptr : P.printProfileKey.c_str();
+        const char* filmKey = P.filmProfileKey.empty() ? nullptr : P.filmProfileKey.c_str();
         const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
         const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
         const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
@@ -1988,7 +2012,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 JTRACE("BUILD", oss.str());
             }
 
-            publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/true);
+            publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/ true);
             if (buildTraceEnabled) {
                 std::ostringstream oss;
                 oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
@@ -2078,8 +2102,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 #if JUICER_DIAGNOSTICS_COMPILED
         if (hasRefIlluminant) {
             JTRACE("BUILD", "loaded reference illuminant for metadata (no runtime balancing applied)");
-        }
-        else {
+        } else {
             JTRACE("BUILD", "reference illuminant failed to load; SPD reconstruction will be disabled");
         }
 #endif
@@ -2098,7 +2121,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 }
             }
             return out;
-            };
+        };
 
         std::array<float, 3> filterUV = base.cameraFilterUV;
         std::array<float, 3> filterIR = base.cameraFilterIR;
@@ -2123,7 +2146,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                     for (size_t i = 0; i < bandPassCount; ++i, ++curveData, ++bandData) {
                         *curveData *= *bandData;
                     }
-                    };
+                };
 
                 // Apply UV/IR band-pass filters to sensitivities (agx-emulsion parity)
                 applyFilter(sensB);
@@ -2143,8 +2166,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     std::array<float, 3> densityMaxPostDir{
         curve_max_clamped_or_default(densBForCalibration),
         curve_max_clamped_or_default(densGForCalibration),
-        curve_max_clamped_or_default(densRForCalibration)
-    };
+        curve_max_clamped_or_default(densRForCalibration)};
 
     const Profiles::DirCouplersProfile& dirCfg = base.dirCouplers;
 
@@ -2166,8 +2188,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float amount[3] = {
             amountScale * clamp_coupler_ratio(effectiveRatioB),
             amountScale * clamp_coupler_ratio(effectiveRatioG),
-            amountScale * clamp_coupler_ratio(effectiveRatioR)
-        };
+            amountScale * clamp_coupler_ratio(effectiveRatioR)};
 #ifdef JUICER_ENABLE_COUPLERS
         Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #else
@@ -2187,13 +2208,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 curve_has_nonfinite_samples(densR)) {
                 precorrectApplied = false;
                 JTRACE("BUILD", "precorrect: skipped (density curves contain non-finite samples; NaN toe parity)");
-            }
-            else {
+            } else {
                 Spectral::Curve densB_corr, densG_corr, densR_corr;
                 Couplers::precorrect_density_curves_before_DIR_into(
-                    dirRT.M, dirRT.highShift,
-                    densB, densG, densR,
-                    densB_corr, densG_corr, densR_corr);
+                    dirRT.M, dirRT.highShift, densB, densG, densR, densB_corr, densG_corr, densR_corr);
                 dirDensB = std::move(densB_corr);
                 dirDensG = std::move(densG_corr);
                 dirDensR = std::move(densR_corr);
@@ -2228,9 +2246,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     negParams.kR = 6.0f;
     {
         const float defaultMask[9] = {
-            0.98f, -0.06f, -0.02f,
-           -0.03f,  0.98f, -0.05f,
-           -0.02f, -0.04f,  0.98f };
+            0.98f, -0.06f, -0.02f, -0.03f, 0.98f, -0.05f, -0.02f, -0.04f, 0.98f};
         std::copy(std::begin(defaultMask), std::end(defaultMask), negParams.mask);
     }
 
@@ -2244,8 +2260,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     if (dirCfg.hasData) {
         auto computeK = [&](int idx) -> float {
             float amount = is_finite(static_cast<double>(dirCfg.amount))
-                ? static_cast<float>(dirCfg.amount)
-                : 1.0f;
+                               ? static_cast<float>(dirCfg.amount)
+                               : 1.0f;
             if (amount <= 0.0f) {
                 amount = 0.1f;
             }
@@ -2253,7 +2269,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             float k = 6.0f * amount * ratio;
             k = sanitize_positive_or(k, 6.0f);
             return std::clamp(k, 1.0f, 24.0f);
-            };
+        };
         negParams.kB = computeK(0);
         negParams.kG = computeK(1);
         negParams.kR = computeK(2);
@@ -2261,7 +2277,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     const bool hasMaskingData = base.maskingCouplers.hasData;
     if (dirCfg.hasData || hasMaskingData) {
-        float amountRGB[3] = { 1.0f, 1.0f, 1.0f };
+        float amountRGB[3] = {1.0f, 1.0f, 1.0f};
         if (dirCfg.hasData) {
             const float amount = sanitize_nonnegative_or(static_cast<float>(dirCfg.amount), 1.0f);
             float* amountRgbIt = amountRGB;
@@ -2272,20 +2288,20 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             }
         }
 
-        float dirMatrix[3][3] = { {0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f},{0.0f,0.0f,0.0f} };
+        float dirMatrix[3][3] = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
 #ifdef JUICER_ENABLE_COUPLERS
         Couplers::build_dir_matrix(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
 #else
         build_dir_matrix_fallback(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
 #endif
 
-        std::array<float, 3> maskScaleCh{ {1.0f, 1.0f, 1.0f} };
-        std::array<float, 3> maskOffsetCh{ {0.0f, 0.0f, 0.0f} };
+        std::array<float, 3> maskScaleCh{{1.0f, 1.0f, 1.0f}};
+        std::array<float, 3> maskOffsetCh{{0.0f, 0.0f, 0.0f}};
         if (hasMaskingData) {
             const auto& maskProfile = base.maskingCouplers;
             const auto& lambda = Spectral::gShape.wavelengths;
             const size_t K = lambda.size();
-            const Spectral::Curve* epsCurves[3] = { &base.epsY, &base.epsM, &base.epsC };
+            const Spectral::Curve* epsCurves[3] = {&base.epsY, &base.epsM, &base.epsC};
             const float effectiveness = 1.0f;
             for (int ch = 0; ch < 3; ++ch) {
                 const Spectral::Curve* eps = epsCurves[ch];
@@ -2293,11 +2309,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                     continue;
                 }
                 const float cross = (maskProfile.crossOverPoints.size() > static_cast<size_t>(ch))
-                    ? maskProfile.crossOverPoints[ch]
-                    : std::numeric_limits<float>::quiet_NaN();
+                                        ? maskProfile.crossOverPoints[ch]
+                                        : std::numeric_limits<float>::quiet_NaN();
                 const float widthRaw = (maskProfile.transitionWidths.size() > static_cast<size_t>(ch))
-                    ? maskProfile.transitionWidths[ch]
-                    : std::numeric_limits<float>::quiet_NaN();
+                                           ? maskProfile.transitionWidths[ch]
+                                           : std::numeric_limits<float>::quiet_NaN();
                 const float width = sanitize_abs_positive_or_nan(widthRaw);
 
                 double weightSum = 0.0;
@@ -2364,8 +2380,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float maskScaleOffset = hasMaskingData ? 0.05f : 0.0f;
         for (int r = 0; r < 3; ++r) {
             float maskStrength = hasMaskingData
-                ? ((1.0f - maskScaleCh[r]) + maskOffsetCh[r])
-                : 0.0f;
+                                     ? ((1.0f - maskScaleCh[r]) + maskOffsetCh[r])
+                                     : 0.0f;
             maskStrength = sanitize_nonnegative_or(maskStrength, 0.0f);
             float amountRow = sanitize_nonnegative_clamped_or(
                 dirCfg.hasData ? amountRGB[r] : 1.0f, 0.0f, 1.0f);
@@ -2382,8 +2398,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 if (r == c) {
                     const float diag = sanitize_nonnegative_or(1.0f - delta, 1.0f);
                     *maskRow = diag;
-                }
-                else {
+                } else {
                     const float off = std::clamp(finite_or_fallback(-delta, 0.0f), -1.0f, 1.0f);
                     *maskRow = off;
                 }
@@ -2410,8 +2425,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         for (size_t ch = 0; ch < channelCount; ++ch, ++dstChannel, ++srcChannel) {
             if (target->hasDensityCurvesLayers) {
                 *dstChannel = *srcChannel;
-            }
-            else {
+            } else {
                 dstChannel->clear();
             }
         }
@@ -2430,31 +2444,39 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             }
         }
         return (count > 0) ? (sum / static_cast<float>(count)) : 0.0f;
-        };
+    };
 
     const float baselineMixReference = !base.densityMidNeutral.empty()
-        ? average_positive(base.densityMidNeutral)
-        : 0.0f;
+                                           ? average_positive(base.densityMidNeutral)
+                                           : 0.0f;
     const float printBaselineMixReference =
         (printRT.profile.hasBaseline && printRT.hasMidNeutralDensity)
-        ? average_positive(printRT.midNeutralDensity)
-        : 0.0f;
+            ? average_positive(printRT.midNeutralDensity)
+            : 0.0f;
 
-        Spectral::build_tables_from_curves_non_global(
-            /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
-            /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
-            /*illumView*/ printRT.illumView,
-            /*baseMin*/ baseMin, /*baseMid*/ baseMid, /*hasBaseline*/ hasBaseline,
-            baselineMixReference,
-            target->tablesView,
-            printScannerIlluminant.hash);
+    Spectral::build_tables_from_curves_non_global(
+        /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
+        /*xbar*/ Spectral::gXBar,
+        /*ybar*/ Spectral::gYBar,
+        /*zbar*/ Spectral::gZBar,
+        /*illumView*/ printRT.illumView,
+        /*baseMin*/ baseMin,
+        /*baseMid*/ baseMid,
+        /*hasBaseline*/ hasBaseline,
+        baselineMixReference,
+        target->tablesView,
+        printScannerIlluminant.hash);
 
     if (hasRefIlluminant) {
         Spectral::build_tables_from_curves_non_global(
             /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
-            /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
+            /*xbar*/ Spectral::gXBar,
+            /*ybar*/ Spectral::gYBar,
+            /*zbar*/ Spectral::gZBar,
             /*illumView*/ illumRef,
-            /*baseMin*/ baseMin, /*baseMid*/ baseMid, /*hasBaseline*/ hasBaseline,
+            /*baseMin*/ baseMin,
+            /*baseMid*/ baseMid,
+            /*hasBaseline*/ hasBaseline,
             baselineMixReference,
             target->tablesRef);
 
@@ -2466,8 +2488,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             target->tablesRef = Spectral::SpectralTables{};
             hasRefIlluminant = false;
         }
-    }
-    else {
+    } else {
         target->tablesRef = Spectral::SpectralTables{};
     }
 
@@ -2477,8 +2498,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     Scanner::ScannerDensityRange printDensityRange;
     bool printRangeOk = false;
     bool printDensityOk = !printCurves.cyan.empty() &&
-        !printCurves.magenta.empty() &&
-        !printCurves.yellow.empty();
+                          !printCurves.magenta.empty() &&
+                          !printCurves.yellow.empty();
     bool printRuntimeOk = false;
     if (printDensityOk) {
         const float factor = static_cast<float>(clamp_finite_or(P.glareCompRemovalFactor, 0.0, 0.0, 1.0));
@@ -2514,8 +2535,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     if (printDensityOk &&
         Print::profile_is_valid(printProfile) &&
-        printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K))
-    {
+        printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K)) {
         const float printDminFactor = static_cast<float>(clamp_finite_or(P.printDminFactor, 0.4, 0.0, 1.0));
         if (printProfile.hasBaseline && !approx_equal(printDminFactor, 1.0f)) {
             scale_finite_curve_samples(printProfile.baseMin, printDminFactor);
@@ -2529,7 +2549,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             /*epsY*/ printProfile.epsY,
             /*epsM*/ printProfile.epsM,
             /*epsC*/ printProfile.epsC,
-            /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
+            /*xbar*/ Spectral::gXBar,
+            /*ybar*/ Spectral::gYBar,
+            /*zbar*/ Spectral::gZBar,
             /*illumView*/ printRuntimeCopy->illumView,
             /*baseMin*/ printProfile.baseMin,
             /*baseMid*/ printProfile.baseMid,
@@ -2538,13 +2560,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             target->tablesPrint,
             printScannerIlluminant.hash);
         printRuntimeOk = true;
-    }
-    else {
+    } else {
 #if JUICER_DIAGNOSTICS_COMPILED
         if (!printDensityOk) {
             JTRACE("BUILD", "FATAL: missing spectral data (print profile) after glare processing");
-        }
-        else {
+        } else {
             JTRACE("BUILD", "FATAL: print profile invalid or viewing illuminant missing");
         }
 #endif
@@ -2558,9 +2578,13 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
     Spectral::build_tables_from_curves_non_global(
         /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
-        /*xbar*/ Spectral::gXBar, /*ybar*/ Spectral::gYBar, /*zbar*/ Spectral::gZBar,
+        /*xbar*/ Spectral::gXBar,
+        /*ybar*/ Spectral::gYBar,
+        /*zbar*/ Spectral::gZBar,
         /*illumView*/ illumScan,
-        /*baseMin*/ baseMin, /*baseMid*/ baseMid, /*hasBaseline*/ hasBaseline,
+        /*baseMin*/ baseMin,
+        /*baseMid*/ baseMid,
+        /*hasBaseline*/ hasBaseline,
         baselineMixReference,
         target->tablesScan,
         negativeScannerIlluminant.hash);
@@ -2575,13 +2599,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         if (validWhite && validRefWhite) {
             Spectral::compute_S_inverse_from_tables(target->tablesRef, target->spdSInv);
             target->spdReady = true;
-        }
-        else {
+        } else {
             target->spdReady = false;
             JTRACE("BUILD", "Reference white XYZ validation failed; disabling SPD exposure");
         }
-    }
-    else {
+    } else {
         target->spdReady = false;
     }
 
@@ -2592,13 +2614,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         if (!target->spdReady || target->tablesRef.K <= 0) {
             JTRACE("BUILD", "tablesRef or spdSInv not ready; SPD exposure disabled.");
         }
-    }
-    else {
+    } else {
         JTRACE("BUILD", "reference illuminant missing; SPD exposure disabled.");
     }
 
     {
-        auto all_finite_curve = [](const Spectral::Curve& c)->bool {
+        auto all_finite_curve = [](const Spectral::Curve& c) -> bool {
             const float* values = c.linear.data();
             const float* const valuesEnd = values + c.linear.size();
             for (; values < valuesEnd; ++values) {
@@ -2608,8 +2629,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 }
             }
             return true;
-            };
-        auto density_curve_ok = [](const Spectral::Curve& c)->bool {
+        };
+        auto density_curve_ok = [](const Spectral::Curve& c) -> bool {
             // agx-emulsion parity: density curves may contain toe NaNs; allow NaNs but reject
             // infinities and require at least one finite sample for calibration.
             bool anyFinite = false;
@@ -2625,14 +2646,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 }
             }
             return anyFinite;
-            };
+        };
 
         const bool ok_dens = density_curve_ok(densB) && density_curve_ok(densG) && density_curve_ok(densR);
         const bool ok_sens = all_finite_curve(sensB) && all_finite_curve(sensG) && all_finite_curve(sensR);
         const bool baseMidOk = baseMid.linear.empty() ||
-            static_cast<int>(baseMid.linear.size()) == Spectral::gShape.K;
+                               static_cast<int>(baseMid.linear.size()) == Spectral::gShape.K;
         const bool ok_base = !hasBaseline ||
-            (static_cast<int>(baseMin.linear.size()) == Spectral::gShape.K && baseMidOk);
+                             (static_cast<int>(baseMin.linear.size()) == Spectral::gShape.K && baseMidOk);
         const bool ok_tables =
             (target->tablesView.K == Spectral::gShape.K) &&
             (target->tablesScan.K == Spectral::gShape.K) &&
@@ -2659,7 +2680,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float* spdInvIt = target->spdSInv;
         const float* const spdInvEnd = spdInvIt + 9;
         for (; spdInvIt != spdInvEnd; ++spdInvIt) {
-            if (!is_finite(*spdInvIt)) { ok_spd = false; break; }
+            if (!is_finite(*spdInvIt)) {
+                ok_spd = false;
+                break;
+            }
         }
         const bool ok_invYn =
             is_positive_finite(target->tablesView.invYn) &&
@@ -2679,7 +2703,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         }
     }
 
-    std::array<float, 3> densityMidRGB{ {0.0f, 0.0f, 0.0f} };
+    std::array<float, 3> densityMidRGB{{0.0f, 0.0f, 0.0f}};
     bool hasDensityMid = !base.densityMidNeutral.empty();
     if (hasDensityMid) {
         float seed = 0.0f;
@@ -2697,13 +2721,13 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             }
         }
     }
-    std::array<float, 3> densityOffsets{ {0.0f, 0.0f, 0.0f} };
+    std::array<float, 3> densityOffsets{{0.0f, 0.0f, 0.0f}};
     if (hasDensityMid) {
         densityOffsets = RebuildWorkingState::compute_mid_neutral_logE_offsets_rgb(
             densRForCalibration, densGForCalibration, densBForCalibration, densityMidRGB);
     }
 
-    std::array<float, 3> logMidRGB{ {0.0f, 0.0f, 0.0f} };
+    std::array<float, 3> logMidRGB{{0.0f, 0.0f, 0.0f}};
     bool hasLogEMid = !base.logExposureMidNeutral.empty();
     if (hasLogEMid) {
         float seed = 0.0f;
@@ -2726,15 +2750,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         }
         if (!seedValid && finiteCount == 0u) {
             hasLogEMid = false;
-            logMidRGB = { {0.0f, 0.0f, 0.0f} };
+            logMidRGB = {{0.0f, 0.0f, 0.0f}};
         }
     }
 
-    std::array<float, 3> offsetsRGB{ {0.0f, 0.0f, 0.0f} };
+    std::array<float, 3> offsetsRGB{{0.0f, 0.0f, 0.0f}};
     if (hasLogEMid) {
         offsetsRGB = logMidRGB;
-    }
-    else if (hasDensityMid) {
+    } else if (hasDensityMid) {
         offsetsRGB = densityOffsets;
     }
 
@@ -2751,12 +2774,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
                 oss << " density_midscale_neutral=" << densityOffsets[2] << "/"
                     << densityOffsets[1] << "/" << densityOffsets[0];
             }
-        }
-        else if (hasDensityMid) {
+        } else if (hasDensityMid) {
             oss << "negative logE offsets B/G/R=" << offB << "/" << offG << "/" << offR
                 << " (density_midscale_neutral)";
-        }
-        else {
+        } else {
             oss << "negative logE offsets B/G/R=" << offB << "/" << offG << "/" << offR
                 << " (no midscale metadata)";
         }
@@ -2770,8 +2791,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target->dirDensB = std::move(dirDensB);
         target->dirDensG = std::move(dirDensG);
         target->dirDensR = std::move(dirDensR);
-    }
-    else {
+    } else {
         target->dirDensB = target->densB;
         target->dirDensG = target->densG;
         target->dirDensR = target->densR;
@@ -2809,12 +2829,12 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         RebuildWorkingState::NegativeReuseContext reuseCtx;
         reuseCtx.activeBuildCounter = snapshot.activeBuildCounter;
         reuseCtx.lastHash = snapshot.lastHash;
-        reuseCtx.lastFilmStock = snapshot.lastParams.filmStockIndex;
+        reuseCtx.lastFilmProfileKey = snapshot.lastParams.filmProfileKey;
         reuseCtx.lastEnlargerIll = snapshot.lastParams.enlIll;
 
         const std::shared_ptr<const WorkingState> prev = snapshot.activeWorkingState;
         if (RebuildWorkingState::can_reuse_negative_params(
-            reuseCtx, prev.get(), *target, P.filmStockIndex, P.enlIll)) {
+                reuseCtx, prev.get(), *target, P.filmProfileKey, P.enlIll)) {
             // Only reuse metadata that is guaranteed to be identical. Density
             // curves and dMax are left untouched so freshly computed values stay
             // active after rebuilds (agx-emulsion parity for stock/illuminant swaps).
@@ -2839,8 +2859,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             target->tablesRef.refIllumWhiteXYZ,
             3u * sizeof(float));
         target->filmRaw.hasRefIllumWhite = true;
-    }
-    else {
+    } else {
         copy_float3(target->filmRaw.refIllumWhiteXYZ, Spectral::gDWG_WhitePoint_XYZ);
         target->filmRaw.hasRefIllumWhite = false;
     }
@@ -2902,7 +2921,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
 
-    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/true);
+    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/ true);
     if (buildTraceEnabled) {
         std::ostringstream oss;
         oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
@@ -2974,6 +2993,6 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     trace_working_state_core_share(coreShareInitial, target->buildCounter, "couplers_only_shell_acquire");
     trace_working_state_core_share(coreShare, target->buildCounter, "couplers_only");
 
-    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/true);
+    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/ true);
 #endif
 }
