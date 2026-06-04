@@ -3720,6 +3720,9 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
     JuicerProcessor::FrameRequest frameRequest{};
     frameRequest.workingState = wsHold;
+    if (wsHold) {
+        frameRequest.recipe = std::shared_ptr<const Spektrafilm::RenderRecipe>(wsHold, &wsHold->recipe);
+    }
     frameRequest.printRuntime = prt;
     frameRequest.workingStateReady = wsReady;
     frameRequest.printRuntimeReady = printReady;

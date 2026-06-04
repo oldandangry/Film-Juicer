@@ -89,6 +89,9 @@ namespace RebuildWorkingState {
 
 namespace WorkingStateSharing {
 
+    // SF_TEMP_BRIDGE_WorkingStateCorePayload:
+    // retained legacy shared payload for buildability while RenderRecipe becomes the publication
+    // contract. It must not gain spektrafilm fields; owning pixel/resource phases narrow or delete it.
     struct WorkingStateCorePayload {
         Spectral::Curve densB;
         Spectral::Curve densG;
@@ -1939,6 +1942,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
+    target->recipe = Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
     const bool buildTraceEnabled = JTRACE_ENABLED(1);
     const bool printTraceEnabled = JTRACE_ENABLED(3);
     RebuildStateSnapshot snapshot{};
@@ -2952,6 +2956,7 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
+    target->recipe = Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
     RebuildStateSnapshot snapshot{};
     {
         std::lock_guard<std::mutex> stateLock(S.m);

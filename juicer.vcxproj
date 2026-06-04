@@ -312,6 +312,8 @@
     <ClInclude Include="src\ProfileCatalog.h" />
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\ProcessRoot.h" />
+    <ClInclude Include="src\RenderFrameRequest.h" />
+    <ClInclude Include="src\RenderRecipe.h" />
     <ClInclude Include="src\ResourceAssetLibrary.h" />
     <ClInclude Include="src\ScanRoute.h" />
     <ClInclude Include="src\Scanner.h" />

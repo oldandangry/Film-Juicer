@@ -176,6 +176,12 @@
     <ClInclude Include="src\ProcessRoot.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\RenderFrameRequest.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\RenderRecipe.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\ResourceAssetLibrary.h">
       <Filter>Header Files</Filter>
     </ClInclude>

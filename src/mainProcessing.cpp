@@ -1784,6 +1784,8 @@ void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
 }
 
 void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
+    // SF_TEMP_BRIDGE_FrameRequestSideChannelCopy keeps legacy mutable processor members in sync
+    // with the stable request.recipe boundary until the owning pixel phases consume the request directly.
     setRenderWindowRect(request.renderWindow);
     setComponents(request.components);
     _scannerOptions = request.scannerOptions;

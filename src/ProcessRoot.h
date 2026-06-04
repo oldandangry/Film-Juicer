@@ -425,6 +425,9 @@ namespace JuicerProcess {
             std::unique_ptr<State> _state;
         };
 
+        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput:
+        // retained CUDA preparation input still consumes WorkingState upload data. The Phase 1C
+        // manifest owns the bridge inventory; Phase 3/4 pixel acceptance must narrow this path.
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,

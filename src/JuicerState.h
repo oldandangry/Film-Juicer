@@ -19,6 +19,7 @@
 #include "Print.h"
 #include "ProfileCatalog.h"
 #include "ProfileJSONLoader.h"
+#include "RenderRecipe.h"
 #include "ScanRoute.h"
 #include "ColorTransforms.h"
 #include "FilmProcessing.h"
@@ -198,6 +199,8 @@ namespace WorkingStateSharing {
 // Per-instance, derived state used for rendering.
 // Built from BaseState in rebuild_working_state() and never mutated in render().
 struct WorkingState {
+    Spektrafilm::RenderRecipe recipe;
+
     Spectral::Curve densB;
     Spectral::Curve densG;
     Spectral::Curve densR;
