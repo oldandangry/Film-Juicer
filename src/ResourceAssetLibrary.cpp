@@ -33,6 +33,9 @@ namespace JuicerAssets {
 
     struct Library::DichroicFilterAssetSet {
         std::string directory;
+        std::string filterCPath;
+        std::string filterMPath;
+        std::string filterYPath;
         std::uint64_t version = 0;
     };
 
@@ -119,7 +122,20 @@ namespace JuicerAssets {
             Profiles::AgxFilmProfile profile;
         };
 
+        struct ValidatedFilmProfileCacheEntry {
+            std::string cacheKey;
+            ProfileFileStamp stamp;
+            std::shared_ptr<const Profiles::ValidatedFilmProfile> profile;
+        };
+
+        struct ValidatedPrintProfileCacheEntry {
+            std::string cacheKey;
+            ProfileFileStamp stamp;
+            std::shared_ptr<const Profiles::ValidatedPrintProfile> profile;
+        };
+
         constexpr std::size_t kProfileCacheCapacity = 2;
+        constexpr std::size_t kValidatedProfileCacheCapacity = 4;
 
         std::string to_lower(std::string s) {
             std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -266,6 +282,56 @@ namespace JuicerAssets {
                     profile});
             if (cache.size() > kProfileCacheCapacity) {
                 cache.resize(kProfileCacheCapacity);
+            }
+        }
+
+        template <typename EntryT, typename ProfileT>
+        std::shared_ptr<const ProfileT> get_validated_profile(
+            std::vector<EntryT>& cache,
+            const std::string& cacheKey,
+            const ProfileFileStamp& stamp) {
+            if (cacheKey.empty() || !stamp.valid) {
+                return {};
+            }
+
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                EntryT& entry = cache[i];
+                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
+                    continue;
+                }
+
+                if (i != 0) {
+                    std::swap(cache[0], cache[i]);
+                }
+                return cache[0].profile;
+            }
+            return {};
+        }
+
+        template <typename EntryT, typename ProfileT>
+        void store_validated_profile(
+            std::vector<EntryT>& cache,
+            std::string cacheKey,
+            const ProfileFileStamp& stamp,
+            std::shared_ptr<const ProfileT> profile) {
+            if (cacheKey.empty() || !stamp.valid || !profile) {
+                return;
+            }
+
+            for (std::size_t i = 0; i < cache.size(); ++i) {
+                if (cache[i].cacheKey == cacheKey) {
+                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
+                    break;
+                }
+            }
+
+            EntryT entry;
+            entry.cacheKey = std::move(cacheKey);
+            entry.stamp = stamp;
+            entry.profile = std::move(profile);
+            cache.insert(cache.begin(), std::move(entry));
+            if (cache.size() > kValidatedProfileCacheCapacity) {
+                cache.resize(kValidatedProfileCacheCapacity);
             }
         }
 
@@ -525,12 +591,12 @@ namespace JuicerAssets {
             return path.string();
         }
 
-        struct ProfileJsonPathRequest {
+        struct ProfilePathRequest {
             const std::string& dataDir;
             const std::string& jsonKey;
         };
 
-        std::string profile_json_path_for_key(const ProfileJsonPathRequest& request) {
+        std::string profile_path_for_key(const ProfilePathRequest& request) {
             if (request.jsonKey.empty()) {
                 return {};
             }
@@ -541,6 +607,10 @@ namespace JuicerAssets {
 
         std::string profile_asset_path(const std::string& dataDir, const char* fileName) {
             return data_path_string(dataDir, {"profiles", fileName});
+        }
+
+        std::string phase2b_neutral_filter_inventory_path(const std::string& dataDir) {
+            return data_path_string(dataDir, {"filters", "neutral_print_filters.json"});
         }
 
         std::string noise_asset_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
@@ -567,6 +637,8 @@ namespace JuicerAssets {
         }
 
         std::string paper_dir_for_folder(const std::string& dataDir, const std::string& folderName) {
+            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
+            // remove=Phase4: old print-paper folder path bridge, not selected spektrafilm payload ownership.
             if (folderName.empty() || dataDir.empty()) {
                 return {};
             }
@@ -821,6 +893,9 @@ namespace JuicerAssets {
         Library::DichroicFilterAssetSet make_dichroic_filter_set(const std::string& dataDir, const char* folderName) {
             Library::DichroicFilterAssetSet asset;
             asset.directory = data_directory_path(dataDir, {"filters", "dichroics", folderName});
+            asset.filterCPath = data_path_string(dataDir, {"filters", "dichroics", folderName, "filter_c.csv"});
+            asset.filterMPath = data_path_string(dataDir, {"filters", "dichroics", folderName, "filter_m.csv"});
+            asset.filterYPath = data_path_string(dataDir, {"filters", "dichroics", folderName, "filter_y.csv"});
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
@@ -848,6 +923,8 @@ namespace JuicerAssets {
             const std::string& dataDir,
             const std::string& folderName,
             const char* fileName) {
+            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
+            // remove=Phase4: old print-paper CSV bridge, not selected spektrafilm payload ownership.
             const std::string path = print_paper_file_path(dataDir, folderName, fileName);
             if (path.empty()) {
                 return {};
@@ -915,13 +992,11 @@ namespace JuicerAssets {
                 return curves;
             }
 
-            const std::string yPath = asset.directory + "filter_y.csv";
-            const std::string mPath = asset.directory + "filter_m.csv";
-            const std::string cPath = asset.directory + "filter_c.csv";
-
-            apply_dichroic_channel(load_pairs_silent(yPath), curves.filterY);
-            apply_dichroic_channel(load_pairs_silent(mPath), curves.filterM);
-            apply_dichroic_channel(load_pairs_silent(cPath), curves.filterC);
+            apply_dichroic_channel(load_pairs_silent(asset.filterYPath), curves.filterY);
+            apply_dichroic_channel(load_pairs_silent(asset.filterMPath), curves.filterM);
+            apply_dichroic_channel(load_pairs_silent(asset.filterCPath), curves.filterC);
+            // Phase 2B inventory token for the future selected measured-filter preflight:
+            // SelectedDichroicResourceMissing phase=2.
             return curves;
         }
 
@@ -1000,6 +1075,12 @@ namespace JuicerAssets {
         std::vector<ProfileCacheEntry> profiles;
     };
 
+    struct Library::ValidatedProfileCacheState {
+        std::mutex mutex;
+        std::vector<ValidatedFilmProfileCacheEntry> filmProfiles;
+        std::vector<ValidatedPrintProfileCacheEntry> printProfiles;
+    };
+
     Library::Library(std::string dataDir)
         : _dataDir(std::move(dataDir)),
           _neutralFilterDatabasePaths(std::make_unique<NeutralFilterDatabasePathSet[]>(kNeutralFilterDatabaseCount)),
@@ -1011,7 +1092,8 @@ namespace JuicerAssets {
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
-          _profileCache(std::make_unique<ProfileCacheState>()) {
+          _profileCache(std::make_unique<ProfileCacheState>()),
+          _validatedProfileCache(std::make_unique<ValidatedProfileCacheState>()) {
     }
 
     Library::~Library() = default;
@@ -1084,6 +1166,10 @@ namespace JuicerAssets {
     }
 
     void Library::load_neutral_filter_databases() {
+        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase2B allowed=JuicerEffect::applyNeutralFilters
+        // remove=Phase4: old neutral DB lookup remains outside selected direct-route profile preflight.
+        const std::string phase2bNeutralInventoryPath = phase2b_neutral_filter_inventory_path(_dataDir);
+        (void)phase2bNeutralInventoryPath;
         auto makePaths = [this](const char* selectedFileName) {
             NeutralFilterDatabasePathSet paths;
             paths.selectedPath = profile_asset_path(_dataDir, selectedFileName);
@@ -1159,6 +1245,8 @@ namespace JuicerAssets {
         if (result.found || paths.selectedPath == paths.defaultPath) {
             return result;
         }
+        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase2B allowed=JuicerEffect::applyNeutralFilters
+        // remove=Phase4: selected-neutral DB miss checks are not part of direct-route selected preflight.
         return lookup_neutral_filter_path(
             NeutralFilterPathLookup{paths.defaultPath, lookupKey, threadClass});
     }
@@ -1204,6 +1292,118 @@ namespace JuicerAssets {
         return empty;
     }
 
+    std::shared_ptr<const Profiles::ValidatedFilmProfile> Library::selected_film_profile_for_key(
+        const std::string& key) {
+        const FilmStockAsset& asset = film_profile_for_key(key);
+        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
+        if (jsonPath.empty()) {
+            return {};
+        }
+
+        const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
+        const ProfileFileStamp stamp = read_profile_file_stamp(jsonPath);
+        {
+            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
+            std::shared_ptr<const Profiles::ValidatedFilmProfile> cached =
+                get_validated_profile<ValidatedFilmProfileCacheEntry, Profiles::ValidatedFilmProfile>(
+                    _validatedProfileCache->filmProfiles,
+                    cacheKey,
+                    stamp);
+            if (cached) {
+                return cached;
+            }
+        }
+
+        Profiles::ValidatedFilmProfile parsedProfile;
+        std::string diagnostic;
+        if (!Profiles::load_validated_film_profile_json(jsonPath, parsedProfile, &diagnostic)) {
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("PROFILE", diagnostic.empty() ? "MalformedRequiredProfileData phase=2 selected film profile load failed" : diagnostic);
+            }
+            return {};
+        }
+
+        std::shared_ptr<const Profiles::ValidatedFilmProfile> loaded =
+            std::make_shared<Profiles::ValidatedFilmProfile>(std::move(parsedProfile));
+        {
+            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
+            store_validated_profile<ValidatedFilmProfileCacheEntry, Profiles::ValidatedFilmProfile>(
+                _validatedProfileCache->filmProfiles,
+                cacheKey,
+                stamp,
+                loaded);
+        }
+        return loaded;
+    }
+
+    std::shared_ptr<const Profiles::ValidatedPrintProfile> Library::selected_print_profile_for_key(
+        const std::string& key) {
+        const PrintPaperAsset& asset = print_profile_for_key(key);
+        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
+        if (jsonPath.empty()) {
+            return {};
+        }
+
+        const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
+        const ProfileFileStamp stamp = read_profile_file_stamp(jsonPath);
+        {
+            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
+            std::shared_ptr<const Profiles::ValidatedPrintProfile> cached =
+                get_validated_profile<ValidatedPrintProfileCacheEntry, Profiles::ValidatedPrintProfile>(
+                    _validatedProfileCache->printProfiles,
+                    cacheKey,
+                    stamp);
+            if (cached) {
+                return cached;
+            }
+        }
+
+        Profiles::ValidatedPrintProfile parsedProfile;
+        std::string diagnostic;
+        if (!Profiles::load_validated_print_profile_json(jsonPath, parsedProfile, &diagnostic)) {
+            if (JTRACE_ENABLED(1)) {
+                JTRACE("PROFILE", diagnostic.empty() ? "MalformedRequiredProfileData phase=2 selected print profile load failed" : diagnostic);
+            }
+            return {};
+        }
+
+        std::shared_ptr<const Profiles::ValidatedPrintProfile> loaded =
+            std::make_shared<Profiles::ValidatedPrintProfile>(std::move(parsedProfile));
+        {
+            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
+            store_validated_profile<ValidatedPrintProfileCacheEntry, Profiles::ValidatedPrintProfile>(
+                _validatedProfileCache->printProfiles,
+                cacheKey,
+                stamp,
+                loaded);
+        }
+        return loaded;
+    }
+
+    SelectedProfileResult Library::selected_profiles_for_route(const SelectedProfileRequest& request) {
+        SelectedProfileResult result;
+        result.filmProfile = selected_film_profile_for_key(request.filmProfileKey);
+        if (!result.filmProfile) {
+            result.diagnostic = "MissingRequiredResource phase=2 field=film_profile key=" + request.filmProfileKey;
+            return result;
+        }
+
+        if (!Spektrafilm::scan_route_is_print(request.scanRoute)) {
+            result.directRoutePrintProfileExcluded = true;
+            result.directRouteNeutralCalibrationExcluded = true;
+            result.valid = true;
+            return result;
+        }
+
+        result.printProfile = selected_print_profile_for_key(request.printProfileKey);
+        if (!result.printProfile) {
+            result.diagnostic = "MissingRequiredResource phase=2 field=print_profile key=" + request.printProfileKey;
+            return result;
+        }
+        result.valid = true;
+        return result;
+    }
+
     std::string Library::print_paper_folder_name_for_asset(const PrintPaperAsset& asset) {
         ensure_catalogs();
         const size_t count = std::min(_printPapers.size(), _printPaperFolderNames.size());
@@ -1218,6 +1418,8 @@ namespace JuicerAssets {
 
     std::shared_ptr<const PrintPaperFolderProfilePayload> Library::print_paper_folder_profile_payload(
         const PrintPaperAsset& asset) {
+        // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
+        // remove=Phase4: not used by selected spektrafilm payload loading.
         const std::string folderName = print_paper_folder_name_for_asset(asset);
         const std::string cacheKey = print_paper_folder_profile_payload_key(asset, folderName);
         std::lock_guard<std::mutex> lock(_printPaperFolderProfilePayloadCache->mutex);
@@ -1231,6 +1433,8 @@ namespace JuicerAssets {
     }
 
     const NeutralFilterDatabaseAsset& Library::neutral_filter_database_for_dichroic_set(int dichroicSetChoice) {
+        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase2B allowed=JuicerEffect::applyNeutralFilters
+        // remove=Phase4: invalid old dichroic choices stay isolated from selected direct-route loading.
         ensure_neutral_filter_databases();
         if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_neutralFilterDatabases.size())) {
             dichroicSetChoice = 0;
@@ -1284,7 +1488,9 @@ namespace JuicerAssets {
     }
 
     bool Library::load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        const std::string jsonPath = profile_json_path_for_key(ProfileJsonPathRequest{_dataDir, asset.jsonKey});
+        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase3 direct/Phase4 print:
+        // old AgxFilmProfile carrier retained only behind the Phase 1A product-render cutoff.
+        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
             outProfile = Profiles::AgxFilmProfile{};
             return false;
@@ -1293,7 +1499,9 @@ namespace JuicerAssets {
     }
 
     bool Library::load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        const std::string jsonPath = profile_json_path_for_key(ProfileJsonPathRequest{_dataDir, asset.jsonKey});
+        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase4:
+        // old AgxFilmProfile carrier retained only behind the Phase 1A product-render cutoff.
+        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
             outProfile = Profiles::AgxFilmProfile{};
             return false;
@@ -1353,6 +1561,11 @@ namespace JuicerAssets {
             if (_profileCache) {
                 std::lock_guard<std::mutex> lock(_profileCache->mutex);
                 _profileCache->profiles.clear();
+            }
+            if (_validatedProfileCache) {
+                std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
+                _validatedProfileCache->filmProfiles.clear();
+                _validatedProfileCache->printProfiles.clear();
             }
         } catch (...) {
             JuicerLogging::discard_current_exception();

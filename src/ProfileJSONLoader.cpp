@@ -14,12 +14,14 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <cstring>
 #include <system_error>
 #include <vector>
 #include <utility>
 #include <string_view>
 
 #include "nlohmann/json.hpp"
+#include "Hash.h"
 #include "Logging.h"
 #include "Illuminants.h"
 #include "SpectralData.h"
@@ -43,20 +45,20 @@ namespace Profiles {
                 return true;
             }
             switch (prev) {
-            case ',':
-            case ':':
-            case '[':
-            case ']':
-            case '{':
-            case '}':
-            case '(':
-            case ')':
-            case '+':
-            case '-':
-            case '=':
-                return true;
-            default:
-                break;
+                case ',':
+                case ':':
+                case '[':
+                case ']':
+                case '{':
+                case '}':
+                case '(':
+                case ')':
+                case '+':
+                case '-':
+                case '=':
+                    return true;
+                default:
+                    break;
             }
             return !is_identifier_char(prev);
         }
@@ -76,43 +78,44 @@ namespace Profiles {
         }
 
         void sanitize_non_finite_literals(std::string& text) {
+            // SF_TEMP_BRIDGE_AgxProfileNonFiniteLiteralParser owner=Phase2B remove=Phase3/Phase4:
+            // retained only for the old AgxFilmProfile bridge behind the Phase 1A product-render cutoff.
+            // Selected spektrafilm payload loading below uses field-gated parsing and rejects Inf.
             // Replace bare non-finite tokens with string sentinels that will be
             // accepted by the JSON parser and decoded later.
-            static constexpr std::array<std::pair<std::string_view, std::string_view>, 33> kReplacements{ {
-                { "-infinity", "\"__-inf__\"" },
-                { "+infinity", "\"__inf__\"" },
-                { "infinity",  "\"__inf__\"" },
-                { "-inf",      "\"__-inf__\"" },
-                { "+inf",      "\"__inf__\"" },
-                { "inf",       "\"__inf__\"" },
-                { "-nan",      "\"__nan__\"" },
-                { "+nan",      "\"__nan__\"" },
-                { "nan",       "\"__nan__\"" },
-                { "-1.#inf",   "\"__-inf__\"" },
-                { "+1.#inf",   "\"__inf__\"" },
-                { "1.#inf",    "\"__inf__\"" },
-                { "-1.#ind",   "\"__-inf__\"" },
-                { "+1.#ind",   "\"__inf__\"" },
-                { "1.#ind",    "\"__inf__\"" },
-                { "-1.#nan",   "\"__nan__\"" },
-                { "+1.#nan",   "\"__nan__\"" },
-                { "1.#nan",    "\"__nan__\"" },
-                { "-1.#qnan",  "\"__nan__\"" },
-                { "+1.#qnan",  "\"__nan__\"" },
-                { "1.#qnan",   "\"__nan__\"" },
-                { "-1.#snan",  "\"__nan__\"" },
-                { "+1.#snan",  "\"__nan__\"" },
-                { "1.#snan",   "\"__nan__\"" },
-                { "-nan(ind)", "\"__nan__\"" },
-                { "+nan(ind)", "\"__nan__\"" },
-                { "nan(ind)",  "\"__nan__\"" },
-                { "-nan(qnan)","\"__nan__\"" },
-                { "+nan(qnan)","\"__nan__\"" },
-                { "nan(qnan)", "\"__nan__\"" },
-                { "-nan(snan)","\"__nan__\"" },
-                { "+nan(snan)","\"__nan__\"" },
-                { "nan(snan)", "\"__nan__\"" }
-            } };
+            static constexpr std::array<std::pair<std::string_view, std::string_view>, 33> kReplacements{{{"-infinity", "\"__-inf__\""},
+                                                                                                          {"+infinity", "\"__inf__\""},
+                                                                                                          {"infinity", "\"__inf__\""},
+                                                                                                          {"-inf", "\"__-inf__\""},
+                                                                                                          {"+inf", "\"__inf__\""},
+                                                                                                          {"inf", "\"__inf__\""},
+                                                                                                          {"-nan", "\"__nan__\""},
+                                                                                                          {"+nan", "\"__nan__\""},
+                                                                                                          {"nan", "\"__nan__\""},
+                                                                                                          {"-1.#inf", "\"__-inf__\""},
+                                                                                                          {"+1.#inf", "\"__inf__\""},
+                                                                                                          {"1.#inf", "\"__inf__\""},
+                                                                                                          {"-1.#ind", "\"__-inf__\""},
+                                                                                                          {"+1.#ind", "\"__inf__\""},
+                                                                                                          {"1.#ind", "\"__inf__\""},
+                                                                                                          {"-1.#nan", "\"__nan__\""},
+                                                                                                          {"+1.#nan", "\"__nan__\""},
+                                                                                                          {"1.#nan", "\"__nan__\""},
+                                                                                                          {"-1.#qnan", "\"__nan__\""},
+                                                                                                          {"+1.#qnan", "\"__nan__\""},
+                                                                                                          {"1.#qnan", "\"__nan__\""},
+                                                                                                          {"-1.#snan", "\"__nan__\""},
+                                                                                                          {"+1.#snan", "\"__nan__\""},
+                                                                                                          {"1.#snan", "\"__nan__\""},
+                                                                                                          {"-nan(ind)", "\"__nan__\""},
+                                                                                                          {"+nan(ind)", "\"__nan__\""},
+                                                                                                          {"nan(ind)", "\"__nan__\""},
+                                                                                                          {"-nan(qnan)", "\"__nan__\""},
+                                                                                                          {"+nan(qnan)", "\"__nan__\""},
+                                                                                                          {"nan(qnan)", "\"__nan__\""},
+                                                                                                          {"-nan(snan)", "\"__nan__\""},
+                                                                                                          {"+nan(snan)", "\"__nan__\""},
+                                                                                                          {"nan(snan)", "\"__nan__\""}}};
 
             bool inString = false;
             bool escaping = false;
@@ -154,7 +157,7 @@ namespace Profiles {
                         ++bodyStart;
                     }
                     const bool requiresSeparator = bodyStart < token.size() &&
-                        (std::isdigit(static_cast<unsigned char>(token[bodyStart])) || token[bodyStart] == '#');
+                                                   (std::isdigit(static_cast<unsigned char>(token[bodyStart])) || token[bodyStart] == '#');
                     if (requiresSeparator && !has_separator_before(text, i)) {
                         continue;
                     }
@@ -180,8 +183,7 @@ namespace Profiles {
                 if (!JTRACE_ENABLED(1)) {
                     return;
                 }
-                JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': "
-                    + (reason ? reason : "unknown exception"));
+                JTRACE("PROFILE", std::string("failed to parse profile '") + path + "': " + (reason ? reason : "unknown exception"));
             };
 
             errno = 0;
@@ -209,19 +211,16 @@ namespace Profiles {
             // Keep them intact so downstream NaN handling mirrors agx.
             try {
                 out = Json::parse(text,
-                    /*cb*/nullptr,
-                    /*allow_exceptions*/true,
-                    /*ignore_comments*/true);
-            }
-            catch (const Json::parse_error& e) {
+                                  /*cb*/ nullptr,
+                                  /*allow_exceptions*/ true,
+                                  /*ignore_comments*/ true);
+            } catch (const Json::parse_error& e) {
                 trace_parse_failure(e.what());
                 return false;
-            }
-            catch (const std::exception& e) {
+            } catch (const std::exception& e) {
                 trace_parse_failure(e.what());
                 return false;
-            }
-            catch (...) {
+            } catch (...) {
                 trace_parse_failure(nullptr);
                 return false;
             }
@@ -242,8 +241,7 @@ namespace Profiles {
                 if (std::isfinite(v)) {
                     return v;
                 }
-            }
-            else if (node.is_string()) {
+            } else if (node.is_string()) {
                 const std::string& str = node.get_ref<const std::string&>();
                 const char* begin = str.c_str();
                 char* end = nullptr;
@@ -252,8 +250,7 @@ namespace Profiles {
                 if (end != begin && end == begin + str.size() && errno == 0 && std::isfinite(v)) {
                     return v;
                 }
-            }
-            else if (node.is_boolean()) {
+            } else if (node.is_boolean()) {
                 return node.get<bool>() ? 1.0f : 0.0f;
             }
             return std::nullopt;
@@ -277,6 +274,9 @@ namespace Profiles {
         }
 
         std::optional<float> parse_optional_float_allow_nan(const Json& node) {
+            // SF_TEMP_BRIDGE_AgxProfileAllowNanParser owner=Phase2B remove=Phase3/Phase4:
+            // allowed only inside parse_agx_film_profile_json; selected spektrafilm loading uses
+            // parse_selected_number with schema-lock field policy and rejects Inf.
             if (auto special = decode_nonfinite_sentinel(node)) {
                 return special;
             }
@@ -285,8 +285,7 @@ namespace Profiles {
                 if (std::isfinite(v) || std::isnan(v)) {
                     return v;
                 }
-            }
-            else if (node.is_string()) {
+            } else if (node.is_string()) {
                 const std::string& str = node.get_ref<const std::string&>();
                 const char* begin = str.c_str();
                 char* end = nullptr;
@@ -296,8 +295,7 @@ namespace Profiles {
                     (std::isfinite(v) || std::isnan(v))) {
                     return v;
                 }
-            }
-            else if (node.is_boolean()) {
+            } else if (node.is_boolean()) {
                 return node.get<bool>() ? 1.0f : 0.0f;
             }
             return std::nullopt;
@@ -345,9 +343,9 @@ namespace Profiles {
 
         bool same_file_stamp(const FileStamp& a, const FileStamp& b) {
             return a.valid &&
-                b.valid &&
-                a.sizeBytes == b.sizeBytes &&
-                a.writeTimeTicks == b.writeTimeTicks;
+                   b.valid &&
+                   a.sizeBytes == b.sizeBytes &&
+                   a.writeTimeTicks == b.writeTimeTicks;
         }
 
         std::string normalize_profile_cache_key(const std::string& jsonPath) {
@@ -369,8 +367,7 @@ namespace Profiles {
         bool try_load_cached_profile_info(
             const std::string& cacheKey,
             const FileStamp& stamp,
-            ProfileInfoSummary& outInfo)
-        {
+            ProfileInfoSummary& outInfo) {
             if (cacheKey.empty() || !stamp.valid) {
                 return false;
             }
@@ -396,8 +393,7 @@ namespace Profiles {
         void store_cached_profile_info(
             std::string cacheKey,
             const FileStamp& stamp,
-            const ProfileInfoSummary& info)
-        {
+            const ProfileInfoSummary& info) {
             if (cacheKey.empty() || !stamp.valid) {
                 return;
             }
@@ -416,8 +412,7 @@ namespace Profiles {
                 CachedProfileInfoEntry{
                     std::move(cacheKey),
                     stamp,
-                    info
-                });
+                    info});
             if (cache.size() > kProfileInfoCacheCapacity) {
                 cache.resize(kProfileInfoCacheCapacity);
             }
@@ -458,8 +453,8 @@ namespace Profiles {
             if (!wavelengths.is_array()) {
                 if (JTRACE_ENABLED(1)) {
                     const std::string_view label = sourceLabel.empty()
-                        ? std::string_view("profile JSON")
-                        : sourceLabel;
+                                                       ? std::string_view("profile JSON")
+                                                       : sourceLabel;
                     std::ostringstream oss;
                     oss << "JSON wavelengths not an array (" << label << ')';
                     JTRACE("PROFILE", oss.str());
@@ -469,8 +464,8 @@ namespace Profiles {
             if (wavelengths.size() != Spectral::kNumSamples) {
                 if (JTRACE_ENABLED(1)) {
                     const std::string_view label = sourceLabel.empty()
-                        ? std::string_view("profile JSON")
-                        : sourceLabel;
+                                                       ? std::string_view("profile JSON")
+                                                       : sourceLabel;
                     std::ostringstream oss;
                     oss << "JSON wavelengths mismatch (" << label << "): expected "
                         << Spectral::kNumSamples << " samples, got " << wavelengths.size();
@@ -484,8 +479,8 @@ namespace Profiles {
                 if (!wlOpt) {
                     if (JTRACE_ENABLED(1)) {
                         const std::string_view label = sourceLabel.empty()
-                            ? std::string_view("profile JSON")
-                            : sourceLabel;
+                                                           ? std::string_view("profile JSON")
+                                                           : sourceLabel;
                         std::ostringstream oss;
                         oss << "JSON wavelength missing at index " << i
                             << " (" << label << ')';
@@ -497,8 +492,8 @@ namespace Profiles {
                 if (*wlOpt != expected) {
                     if (JTRACE_ENABLED(1)) {
                         const std::string_view label = sourceLabel.empty()
-                            ? std::string_view("profile JSON")
-                            : sourceLabel;
+                                                           ? std::string_view("profile JSON")
+                                                           : sourceLabel;
                         std::ostringstream oss;
                         oss << "JSON wavelength mismatch at index " << i
                             << " (" << label << "): expected "
@@ -596,13 +591,12 @@ namespace Profiles {
                         if (!peak.is_array() || peak.size() < 3) {
                             continue;
                         }
-                        std::array<float, 3> triplet{ 0.0f, 0.0f, 0.0f };
+                        std::array<float, 3> triplet{0.0f, 0.0f, 0.0f};
                         bool ok = true;
                         for (size_t k = 0; k < 3; ++k) {
                             if (auto val = parse_optional_float(peak[k])) {
                                 triplet[k] = *val;
-                            }
-                            else {
+                            } else {
                                 ok = false;
                                 break;
                             }
@@ -630,8 +624,7 @@ namespace Profiles {
                         any = true;
                     }
                 }
-            }
-            else if (node.is_object()) {
+            } else if (node.is_object()) {
                 auto try_key = [&](const char* key, size_t idx) {
                     auto it = node.find(key);
                     if (it != node.end()) {
@@ -640,7 +633,7 @@ namespace Profiles {
                             any = true;
                         }
                     }
-                    };
+                };
 
                 try_key("amplitude", 0);
                 try_key("amp", 0);
@@ -652,8 +645,7 @@ namespace Profiles {
                 try_key("sigma", 2);
                 try_key("width", 2);
                 try_key("transition", 2);
-            }
-            else if (auto scalar = parse_optional_float(node)) {
+            } else if (auto scalar = parse_optional_float(node)) {
                 result[0] = *scalar;
                 any = true;
             }
@@ -662,6 +654,837 @@ namespace Profiles {
                 dest = result;
             }
             return any;
+        }
+
+        enum class SelectedNumericPolicy : unsigned char {
+            FiniteOnly,
+            NullableNan
+        };
+
+        struct SelectedProfileContext {
+            std::string path;
+            std::string key;
+            const char* role = "film";
+        };
+
+        std::string selected_profile_diagnostic(
+            const SelectedProfileContext& ctx,
+            std::string field,
+            std::string expected,
+            std::string actual) {
+            std::ostringstream oss;
+            oss << "MalformedRequiredProfileData phase=2"
+                << " profile=" << (ctx.key.empty() ? "<unknown>" : ctx.key)
+                << " role=" << (ctx.role ? ctx.role : "unknown")
+                << " field=" << field
+                << " expected=" << expected
+                << " actual=" << actual;
+            if (!ctx.path.empty()) {
+                oss << " path=" << ctx.path;
+            }
+            return oss.str();
+        }
+
+        bool set_error(
+            std::string& error,
+            const SelectedProfileContext& ctx,
+            const std::string& field,
+            const std::string& expected,
+            const std::string& actual) {
+            error = selected_profile_diagnostic(ctx, field, expected, actual);
+            return false;
+        }
+
+        std::string json_type_name(const Json& node) {
+            if (node.is_null()) {
+                return "null";
+            }
+            if (node.is_boolean()) {
+                return "boolean";
+            }
+            if (node.is_number()) {
+                return "number";
+            }
+            if (node.is_string()) {
+                return "string";
+            }
+            if (node.is_array()) {
+                return "array";
+            }
+            if (node.is_object()) {
+                return "object";
+            }
+            return "unknown";
+        }
+
+        bool is_nan_string_token(const std::string& value) {
+            const std::string lower = to_lower_ascii(value);
+            return lower == "nan" || lower == "+nan" || lower == "-nan" || lower == "__nan__";
+        }
+
+        bool is_inf_string_token(const std::string& value) {
+            const std::string lower = to_lower_ascii(value);
+            return lower == "inf" || lower == "+inf" || lower == "-inf" ||
+                   lower == "infinity" || lower == "+infinity" || lower == "-infinity" ||
+                   lower == "__inf__" || lower == "__-inf__";
+        }
+
+        bool quote_bare_nan_literals_for_json_parse(std::string& text) {
+            bool inString = false;
+            bool escaping = false;
+
+            for (std::size_t i = 0; i < text.size();) {
+                const char c = text[i];
+                if (inString) {
+                    if (escaping) {
+                        escaping = false;
+                        ++i;
+                        continue;
+                    }
+                    if (c == '\\') {
+                        escaping = true;
+                        ++i;
+                        continue;
+                    }
+                    if (c == '"') {
+                        inString = false;
+                    }
+                    ++i;
+                    continue;
+                }
+
+                if (c == '"') {
+                    inString = true;
+                    ++i;
+                    continue;
+                }
+
+                std::size_t tokenOffset = 0;
+                if ((c == '+' || c == '-') && i + 1 < text.size()) {
+                    tokenOffset = 1;
+                }
+                const std::size_t tokenIndex = i + tokenOffset;
+                if (matches_case_insensitive(text, tokenIndex, "nan")) {
+                    const std::size_t end = tokenIndex + 3u;
+                    const bool hasPrev = i > 0 && is_identifier_char(text[i - 1]);
+                    const bool hasNext = end < text.size() && is_identifier_char(text[end]);
+                    if (!hasPrev && !hasNext) {
+                        text.replace(i, end - i, "\"NaN\"");
+                        i += 5u;
+                        continue;
+                    }
+                }
+                ++i;
+            }
+
+            return true;
+        }
+
+        bool parse_selected_json_file(const std::string& path, Json& out, std::string& error) {
+            errno = 0;
+            std::ifstream file(path, std::ios::binary);
+            if (!file.is_open()) {
+                const int err = errno;
+                error = std::string("MissingRequiredResource phase=2 field=<file> expected=profile-json actual=open-failed path=") +
+                        path + (err != 0 ? (" reason=" + std::system_category().message(err)) : std::string());
+                return false;
+            }
+
+            std::ostringstream oss;
+            oss << file.rdbuf();
+            std::string text = oss.str();
+            quote_bare_nan_literals_for_json_parse(text);
+
+            try {
+                out = Json::parse(text, nullptr, true, true);
+            } catch (const Json::exception& ex) {
+                error = std::string("MalformedRequiredProfileData phase=2 field=<json> expected=strict-json-or-field-gated-NaN actual=parse-error path=") +
+                        path + " reason=" + ex.what();
+                return false;
+            }
+            return out.is_object();
+        }
+
+        bool require_array_size(
+            const Json& node,
+            std::size_t expected,
+            const SelectedProfileContext& ctx,
+            const std::string& field,
+            std::string& error) {
+            if (!node.is_array() || node.size() != expected) {
+                const std::string actual = node.is_array() ? std::to_string(node.size()) : json_type_name(node);
+                return set_error(error, ctx, field, "array[" + std::to_string(expected) + "]", actual);
+            }
+            return true;
+        }
+
+        bool parse_selected_number(
+            const Json& node,
+            SelectedNumericPolicy policy,
+            const SelectedProfileContext& ctx,
+            const std::string& field,
+            float& out,
+            std::string& error) {
+            if (node.is_null()) {
+                if (policy == SelectedNumericPolicy::NullableNan) {
+                    out = std::numeric_limits<float>::quiet_NaN();
+                    return true;
+                }
+                return set_error(error, ctx, field, "finite-number", "null");
+            }
+
+            if (node.is_string()) {
+                const std::string value = node.get<std::string>();
+                if (is_nan_string_token(value) && policy == SelectedNumericPolicy::NullableNan) {
+                    out = std::numeric_limits<float>::quiet_NaN();
+                    return true;
+                }
+                if (is_inf_string_token(value)) {
+                    return set_error(error, ctx, field, "finite-or-field-gated-NaN", value);
+                }
+                return set_error(error, ctx, field, "numeric-token", "string");
+            }
+
+            if (!node.is_number() || node.is_boolean()) {
+                return set_error(error, ctx, field, "numeric-token", json_type_name(node));
+            }
+
+            const double raw = node.get<double>();
+            if (std::isnan(raw) && policy == SelectedNumericPolicy::NullableNan) {
+                out = std::numeric_limits<float>::quiet_NaN();
+                return true;
+            }
+            if (!std::isfinite(raw)) {
+                return set_error(error, ctx, field, "finite-number", std::isnan(raw) ? "NaN" : "Inf");
+            }
+
+            out = static_cast<float>(raw);
+            return true;
+        }
+
+        bool parse_selected_vector(
+            const Json& node,
+            std::size_t expected,
+            SelectedNumericPolicy policy,
+            const SelectedProfileContext& ctx,
+            const std::string& field,
+            std::vector<float>& out,
+            std::string& error) {
+            if (!require_array_size(node, expected, ctx, field, error)) {
+                return false;
+            }
+            out.assign(expected, 0.0f);
+            for (std::size_t i = 0; i < expected; ++i) {
+                if (!parse_selected_number(
+                        node[i],
+                        policy,
+                        ctx,
+                        field + "[" + std::to_string(i) + "]",
+                        out[i],
+                        error)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool parse_selected_triplet_matrix(
+            const Json& node,
+            std::size_t expectedRows,
+            SelectedNumericPolicy policy,
+            const SelectedProfileContext& ctx,
+            const std::string& field,
+            std::vector<std::array<float, 3>>& out,
+            std::string& error) {
+            if (!require_array_size(node, expectedRows, ctx, field, error)) {
+                return false;
+            }
+            out.assign(expectedRows, std::array<float, 3>{0.0f, 0.0f, 0.0f});
+            for (std::size_t row = 0; row < expectedRows; ++row) {
+                const Json& rowNode = node[row];
+                if (!require_array_size(rowNode, 3u, ctx, field + "[" + std::to_string(row) + "]", error)) {
+                    return false;
+                }
+                for (std::size_t ch = 0; ch < 3u; ++ch) {
+                    if (!parse_selected_number(
+                            rowNode[ch],
+                            policy,
+                            ctx,
+                            field + "[" + std::to_string(row) + "][" + std::to_string(ch) + "]",
+                            out[row][ch],
+                            error)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        bool parse_selected_layers(
+            const Json& node,
+            std::size_t expectedRows,
+            const SelectedProfileContext& ctx,
+            std::vector<std::array<std::array<float, 3>, 3>>& out,
+            std::string& error) {
+            if (!require_array_size(node, expectedRows, ctx, "data.density_curves_layers", error)) {
+                return false;
+            }
+            out.assign(expectedRows, std::array<std::array<float, 3>, 3>{});
+            for (std::size_t row = 0; row < expectedRows; ++row) {
+                const std::string rowField = "data.density_curves_layers[" + std::to_string(row) + "]";
+                if (!require_array_size(node[row], 3u, ctx, rowField, error)) {
+                    return false;
+                }
+                for (std::size_t layer = 0; layer < 3u; ++layer) {
+                    const std::string layerField = rowField + "[" + std::to_string(layer) + "]";
+                    if (!require_array_size(node[row][layer], 3u, ctx, layerField, error)) {
+                        return false;
+                    }
+                    for (std::size_t ch = 0; ch < 3u; ++ch) {
+                        if (!parse_selected_number(
+                                node[row][layer][ch],
+                                SelectedNumericPolicy::NullableNan,
+                                ctx,
+                                layerField + "[" + std::to_string(ch) + "]",
+                                out[row][layer][ch],
+                                error)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        template <std::size_t N>
+        void copy_vector_to_array(const std::vector<float>& src, std::array<float, N>& dst) {
+            for (std::size_t i = 0; i < N; ++i) {
+                dst[i] = src[i];
+            }
+        }
+
+        template <std::size_t N>
+        void copy_matrix_to_array(
+            const std::vector<std::array<float, 3>>& src,
+            std::array<std::array<float, 3>, N>& dst) {
+            for (std::size_t i = 0; i < N; ++i) {
+                dst[i] = src[i];
+            }
+        }
+
+        bool validate_reference_axis(
+            const std::array<float, 81>& wavelengths,
+            const SelectedProfileContext& ctx,
+            std::string& error) {
+            for (std::size_t i = 0; i < wavelengths.size(); ++i) {
+                const float expected = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
+                if (wavelengths[i] != expected) {
+                    return set_error(
+                        error,
+                        ctx,
+                        "data.wavelengths[" + std::to_string(i) + "]",
+                        std::to_string(expected),
+                        std::to_string(wavelengths[i]));
+                }
+            }
+            return true;
+        }
+
+        bool validate_log_exposure_axis(
+            const std::vector<float>& logExposure,
+            const SelectedProfileContext& ctx,
+            std::string& error) {
+            if (logExposure.empty()) {
+                return set_error(error, ctx, "data.log_exposure", "non-empty finite array", "empty");
+            }
+            for (std::size_t i = 1; i < logExposure.size(); ++i) {
+                if (logExposure[i] < logExposure[i - 1]) {
+                    return set_error(
+                        error,
+                        ctx,
+                        "data.log_exposure[" + std::to_string(i) + "]",
+                        "non-decreasing",
+                        std::to_string(logExposure[i]));
+                }
+            }
+            return true;
+        }
+
+        struct SelectedStringMemberSpec {
+            const char* key = "";
+            const char* fallback = "";
+            bool required = false;
+        };
+
+        bool string_member_or_default(
+            const Json& object,
+            const SelectedStringMemberSpec& spec,
+            std::string& out,
+            bool& defaulted,
+            const SelectedProfileContext& ctx,
+            std::string& error) {
+            const char* key = spec.key;
+            const auto it = object.find(key);
+            defaulted = it == object.end() || it->is_null();
+            if (defaulted) {
+                if (spec.required) {
+                    return set_error(error, ctx, std::string("info.") + key, "string", "missing");
+                }
+                out = spec.fallback ? spec.fallback : "";
+                return true;
+            }
+            if (!it->is_string()) {
+                return set_error(error, ctx, std::string("info.") + key, "string", json_type_name(*it));
+            }
+            out = it->get<std::string>();
+            return true;
+        }
+
+        Spektrafilm::ProfileSupport parse_selected_support(const std::string& value) {
+            if (value == "film") {
+                return Spektrafilm::ProfileSupport::Film;
+            }
+            if (value == "paper") {
+                return Spektrafilm::ProfileSupport::Paper;
+            }
+            return Spektrafilm::ProfileSupport::Unsupported;
+        }
+
+        Spektrafilm::ProfileStage parse_selected_stage(const std::string& value) {
+            if (value == "filming") {
+                return Spektrafilm::ProfileStage::Filming;
+            }
+            if (value == "printing") {
+                return Spektrafilm::ProfileStage::Printing;
+            }
+            return Spektrafilm::ProfileStage::Unsupported;
+        }
+
+        Spektrafilm::ProfilePolarity parse_selected_polarity(const std::string& value) {
+            if (value == "negative") {
+                return Spektrafilm::ProfilePolarity::Negative;
+            }
+            if (value == "positive") {
+                return Spektrafilm::ProfilePolarity::Positive;
+            }
+            return Spektrafilm::ProfilePolarity::Unsupported;
+        }
+
+        ProfileUse parse_profile_use(const std::string& value) {
+            if (value == "still") {
+                return ProfileUse::Still;
+            }
+            if (value == "cine") {
+                return ProfileUse::Cine;
+            }
+            return ProfileUse::Unsupported;
+        }
+
+        ProfileAntihalation parse_profile_antihalation(const std::string& value) {
+            if (value == "strong") {
+                return ProfileAntihalation::Strong;
+            }
+            if (value == "weak") {
+                return ProfileAntihalation::Weak;
+            }
+            if (value == "no") {
+                return ProfileAntihalation::No;
+            }
+            return ProfileAntihalation::Unsupported;
+        }
+
+        ProfileChannelModel parse_profile_channel_model(const std::string& value) {
+            if (value == "color") {
+                return ProfileChannelModel::Color;
+            }
+            if (value == "bw") {
+                return ProfileChannelModel::Bw;
+            }
+            return ProfileChannelModel::Unsupported;
+        }
+
+        bool string_has_only_digits(const std::string& value, std::size_t first) {
+            if (first >= value.size()) {
+                return false;
+            }
+            for (std::size_t i = first; i < value.size(); ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(value[i]))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool is_supported_profile_illuminant(const std::string& value) {
+            const std::string normalized = IlluminantKeys::normalize(value);
+            if (IlluminantKeys::matches_any(
+                    normalized,
+                    {"D50", "D55", "D65", "T", "K75P", "KINOTON75P", "TH-KG3", "THKG3", "TH-KG3-L", "THKG3L"})) {
+                return true;
+            }
+            if (normalized.size() >= 2u && normalized[0] == 'D' && string_has_only_digits(normalized, 1u)) {
+                return true;
+            }
+            if (normalized.size() > 2u && normalized[0] == 'B' && normalized[1] == 'B') {
+                const char* start = normalized.c_str() + 2;
+                char* endPtr = nullptr;
+                const double temperature = std::strtod(start, &endPtr);
+                return endPtr && *endPtr == '\0' && std::isfinite(temperature) && temperature > 0.0;
+            }
+            return false;
+        }
+
+        bool parse_profile_info(
+            const Json& root,
+            ProfileRole role,
+            SpektrafilmProfileInfo& out,
+            SelectedProfileContext& ctx,
+            std::string& error) {
+            const Json empty = Json::object();
+            const Json& info = root.contains("info") && root["info"].is_object() ? root["info"] : empty;
+            if (!root.contains("info") || !root["info"].is_object()) {
+                return set_error(error, ctx, "info", "object", root.contains("info") ? json_type_name(root["info"]) : "missing");
+            }
+
+            std::string raw;
+            bool stockDefaulted = false;
+            if (!string_member_or_default(info, {"stock", "", true}, out.stock, stockDefaulted, ctx, error)) {
+                return false;
+            }
+            ctx.key = out.stock;
+            bool labelDefaulted = false;
+            if (!string_member_or_default(info, {"name", out.stock.c_str()}, out.name, labelDefaulted, ctx, error)) {
+                return false;
+            }
+
+            if (!string_member_or_default(info, {"support", "film"}, raw, out.supportDefaulted, ctx, error)) {
+                return false;
+            }
+            out.support = parse_selected_support(raw);
+            if (out.support == Spektrafilm::ProfileSupport::Unsupported) {
+                return set_error(error, ctx, "info.support", "film|paper", raw);
+            }
+
+            if (!string_member_or_default(info, {"stage", "filming"}, raw, out.stageDefaulted, ctx, error)) {
+                return false;
+            }
+            out.stage = parse_selected_stage(raw);
+            if (out.stage == Spektrafilm::ProfileStage::Unsupported) {
+                return set_error(error, ctx, "info.stage", "filming|printing", raw);
+            }
+
+            if (!string_member_or_default(info, {"type", "negative"}, raw, out.typeDefaulted, ctx, error)) {
+                return false;
+            }
+            out.type = parse_selected_polarity(raw);
+            if (out.type == Spektrafilm::ProfilePolarity::Unsupported) {
+                return set_error(error, ctx, "info.type", "negative|positive", raw);
+            }
+
+            if (role == ProfileRole::Film &&
+                !(out.support == Spektrafilm::ProfileSupport::Film && out.stage == Spektrafilm::ProfileStage::Filming)) {
+                return set_error(error, ctx, "info", "support=film stage=filming", "role-mismatch");
+            }
+            if (role == ProfileRole::Print && out.stage != Spektrafilm::ProfileStage::Printing) {
+                return set_error(error, ctx, "info.stage", "printing", "role-mismatch");
+            }
+
+            if (!string_member_or_default(info, {"use", "still"}, raw, out.useDefaulted, ctx, error)) {
+                return false;
+            }
+            out.use = parse_profile_use(raw);
+            if (out.use == ProfileUse::Unsupported) {
+                return set_error(error, ctx, "info.use", "still|cine", raw);
+            }
+
+            if (!string_member_or_default(info, {"antihalation", "weak"}, raw, out.antihalationDefaulted, ctx, error)) {
+                return false;
+            }
+            out.antihalation = parse_profile_antihalation(raw);
+            if (out.antihalation == ProfileAntihalation::Unsupported) {
+                return set_error(error, ctx, "info.antihalation", "strong|weak|no", raw);
+            }
+
+            if (!string_member_or_default(info, {"channel_model", "color"}, raw, out.channelModelDefaulted, ctx, error)) {
+                return false;
+            }
+            out.channelModel = parse_profile_channel_model(raw);
+            if (out.channelModel == ProfileChannelModel::Unsupported) {
+                return set_error(error, ctx, "info.channel_model", "color|bw", raw);
+            }
+
+            if (!string_member_or_default(info, {"densitometer", "status_M"}, out.densitometer.value, out.densitometerDefaulted, ctx, error)) {
+                return false;
+            }
+            if (!string_member_or_default(info, {"reference_illuminant", "D55"}, out.referenceIlluminant.value, out.referenceIlluminantDefaulted, ctx, error)) {
+                return false;
+            }
+            if (!is_supported_profile_illuminant(out.referenceIlluminant.value)) {
+                return set_error(error, ctx, "info.reference_illuminant", "supported illuminant key including BB<temperature>", out.referenceIlluminant.value);
+            }
+            if (!string_member_or_default(info, {"viewing_illuminant", "D50"}, out.viewingIlluminant.value, out.viewingIlluminantDefaulted, ctx, error)) {
+                return false;
+            }
+            if (!is_supported_profile_illuminant(out.viewingIlluminant.value)) {
+                return set_error(error, ctx, "info.viewing_illuminant", "supported illuminant key including BB<temperature>", out.viewingIlluminant.value);
+            }
+
+            const auto densityOverMinIt = info.find("log_sensitivity_density_over_min");
+            out.logSensitivityDensityOverMinDefaulted = densityOverMinIt == info.end() || densityOverMinIt->is_null();
+            if (out.logSensitivityDensityOverMinDefaulted) {
+                out.logSensitivityDensityOverMin = 0.2f;
+            } else if (!parse_selected_number(
+                           *densityOverMinIt,
+                           SelectedNumericPolicy::FiniteOnly,
+                           ctx,
+                           "info.log_sensitivity_density_over_min",
+                           out.logSensitivityDensityOverMin,
+                           error)) {
+                return false;
+            }
+
+            return true;
+        }
+
+        void derive_linear_sensitivity(SpektrafilmProfileSamples& samples) {
+            for (std::size_t row = 0; row < samples.logSensitivity.size(); ++row) {
+                for (std::size_t ch = 0; ch < 3u; ++ch) {
+                    const float authored = samples.logSensitivity[row][ch];
+                    const float linear = std::pow(10.0f, authored);
+                    samples.linearSensitivity[row][ch] = std::isfinite(linear) ? linear : 0.0f;
+                }
+            }
+        }
+
+        bool parse_profile_samples(
+            const Json& root,
+            SpektrafilmProfileSamples& out,
+            const SelectedProfileContext& ctx,
+            std::string& error) {
+            if (!root.contains("data") || !root["data"].is_object()) {
+                return set_error(error, ctx, "data", "object", root.contains("data") ? json_type_name(root["data"]) : "missing");
+            }
+            const Json& data = root["data"];
+
+            std::vector<float> wavelengths;
+            if (!parse_selected_vector(
+                    data.value("wavelengths", Json{}),
+                    Spectral::kNumSamples,
+                    SelectedNumericPolicy::FiniteOnly,
+                    ctx,
+                    "data.wavelengths",
+                    wavelengths,
+                    error)) {
+                return false;
+            }
+            copy_vector_to_array(wavelengths, out.wavelengths);
+            if (!validate_reference_axis(out.wavelengths, ctx, error)) {
+                return false;
+            }
+
+            std::vector<std::array<float, 3>> matrix;
+            if (!parse_selected_triplet_matrix(
+                    data.value("log_sensitivity", Json{}),
+                    Spectral::kNumSamples,
+                    SelectedNumericPolicy::NullableNan,
+                    ctx,
+                    "data.log_sensitivity",
+                    matrix,
+                    error)) {
+                return false;
+            }
+            copy_matrix_to_array(matrix, out.logSensitivity);
+            derive_linear_sensitivity(out);
+
+            if (!parse_selected_triplet_matrix(
+                    data.value("channel_density", Json{}),
+                    Spectral::kNumSamples,
+                    SelectedNumericPolicy::NullableNan,
+                    ctx,
+                    "data.channel_density",
+                    matrix,
+                    error)) {
+                return false;
+            }
+            copy_matrix_to_array(matrix, out.channelDensity);
+
+            std::vector<float> baseDensity;
+            if (!parse_selected_vector(
+                    data.value("base_density", Json{}),
+                    Spectral::kNumSamples,
+                    SelectedNumericPolicy::NullableNan,
+                    ctx,
+                    "data.base_density",
+                    baseDensity,
+                    error)) {
+                return false;
+            }
+            copy_vector_to_array(baseDensity, out.baseDensity);
+
+            const Json& logExposureNode = data.value("log_exposure", Json{});
+            if (!logExposureNode.is_array()) {
+                return set_error(error, ctx, "data.log_exposure", "array[N]", json_type_name(logExposureNode));
+            }
+            if (!parse_selected_vector(
+                    logExposureNode,
+                    logExposureNode.size(),
+                    SelectedNumericPolicy::FiniteOnly,
+                    ctx,
+                    "data.log_exposure",
+                    out.logExposure,
+                    error)) {
+                return false;
+            }
+            if (!validate_log_exposure_axis(out.logExposure, ctx, error)) {
+                return false;
+            }
+
+            if (!parse_selected_triplet_matrix(
+                    data.value("density_curves", Json{}),
+                    out.logExposure.size(),
+                    SelectedNumericPolicy::NullableNan,
+                    ctx,
+                    "data.density_curves",
+                    out.densityCurves,
+                    error)) {
+                return false;
+            }
+
+            const auto layersIt = data.find("density_curves_layers");
+            out.hasDensityCurvesLayers = false;
+            out.densityCurvesLayers.clear();
+            if (layersIt != data.end() && !layersIt->is_null()) {
+                if (!parse_selected_layers(*layersIt, out.logExposure.size(), ctx, out.densityCurvesLayers, error)) {
+                    return false;
+                }
+                out.hasDensityCurvesLayers = true;
+            }
+
+            const auto windowIt = data.find("hanatos2025_adaptation_window_params");
+            out.hasHanatos2025AdaptationWindowParams = false;
+            if (windowIt != data.end() && windowIt->is_array() && !windowIt->empty()) {
+                std::vector<float> window;
+                if (!parse_selected_vector(
+                        *windowIt,
+                        4u,
+                        SelectedNumericPolicy::FiniteOnly,
+                        ctx,
+                        "data.hanatos2025_adaptation_window_params",
+                        window,
+                        error)) {
+                    return false;
+                }
+                copy_vector_to_array(window, out.hanatos2025AdaptationWindowParams);
+                out.hasHanatos2025AdaptationWindowParams = true;
+            } else if (windowIt != data.end() && !(windowIt->is_array() && windowIt->empty())) {
+                return set_error(error, ctx, "data.hanatos2025_adaptation_window_params", "array[4] or []", json_type_name(*windowIt));
+            }
+
+            const auto surfaceIt = data.find("hanatos2025_adaptation_surface_params");
+            out.hasHanatos2025AdaptationSurfaceParams = false;
+            if (surfaceIt != data.end() && surfaceIt->is_array() && !surfaceIt->empty()) {
+                std::vector<std::array<float, 3>> unusedTriplets;
+                if (!require_array_size(*surfaceIt, 3u, ctx, "data.hanatos2025_adaptation_surface_params", error)) {
+                    return false;
+                }
+                for (std::size_t ch = 0; ch < 3u; ++ch) {
+                    const std::string rowField = "data.hanatos2025_adaptation_surface_params[" + std::to_string(ch) + "]";
+                    if (!require_array_size((*surfaceIt)[ch], 15u, ctx, rowField, error)) {
+                        return false;
+                    }
+                    for (std::size_t k = 0; k < 15u; ++k) {
+                        if (!parse_selected_number(
+                                (*surfaceIt)[ch][k],
+                                SelectedNumericPolicy::FiniteOnly,
+                                ctx,
+                                rowField + "[" + std::to_string(k) + "]",
+                                out.hanatos2025AdaptationSurfaceParams[ch][k],
+                                error)) {
+                            return false;
+                        }
+                    }
+                }
+                out.hasHanatos2025AdaptationSurfaceParams = true;
+            } else if (surfaceIt != data.end() && !(surfaceIt->is_array() && surfaceIt->empty())) {
+                return set_error(error, ctx, "data.hanatos2025_adaptation_surface_params", "array[3][15] or []", json_type_name(*surfaceIt));
+            }
+
+            return true;
+        }
+
+        void hash_u64_update(std::uint64_t& hash, std::uint64_t value) {
+            Hash::hash_bytes_update(hash, &value, sizeof(value));
+        }
+
+        void hash_string_update(std::uint64_t& hash, const char* value) {
+            if (!value) {
+                return;
+            }
+            Hash::hash_bytes_update(hash, value, std::strlen(value));
+        }
+
+        void hash_string_update(std::uint64_t& hash, const std::string& value) {
+            Hash::hash_bytes_update(hash, value.data(), value.size());
+        }
+
+        void hash_float_values_allowing_nan(std::uint64_t& hash, const float* values, std::size_t count) {
+            const Hash::FloatSpanHash pair = Hash::hash_float_span_with_nan_mask(values, count);
+            hash_u64_update(hash, pair.valueHash);
+            hash_u64_update(hash, pair.nanMaskHash);
+        }
+
+        void hash_profile_sample_data(std::uint64_t& hash, const SpektrafilmProfileSamples& data) {
+            hash_string_update(hash, "data.wavelengths");
+            hash_float_values_allowing_nan(hash, data.wavelengths.data(), data.wavelengths.size());
+            hash_string_update(hash, "data.log_sensitivity");
+            hash_float_values_allowing_nan(hash, &data.logSensitivity[0][0], data.logSensitivity.size() * 3u);
+            hash_string_update(hash, "data.channel_density");
+            hash_float_values_allowing_nan(hash, &data.channelDensity[0][0], data.channelDensity.size() * 3u);
+            hash_string_update(hash, "data.base_density");
+            hash_float_values_allowing_nan(hash, data.baseDensity.data(), data.baseDensity.size());
+            hash_string_update(hash, "data.midscale_neutral_density");
+            hash_string_update(hash, "data.log_exposure");
+            hash_float_values_allowing_nan(hash, data.logExposure.data(), data.logExposure.size());
+            hash_string_update(hash, "data.density_curves");
+            if (!data.densityCurves.empty()) {
+                hash_float_values_allowing_nan(hash, &data.densityCurves[0][0], data.densityCurves.size() * 3u);
+            }
+            hash_string_update(hash, "data.density_curves_layers");
+            hash_u64_update(hash, data.hasDensityCurvesLayers ? 1u : 0u);
+            if (!data.densityCurvesLayers.empty()) {
+                hash_float_values_allowing_nan(
+                    hash,
+                    &data.densityCurvesLayers[0][0][0],
+                    data.densityCurvesLayers.size() * 9u);
+            }
+            hash_string_update(hash, "hanatos2025_adaptation_window_params");
+            hash_u64_update(hash, data.hasHanatos2025AdaptationWindowParams ? 1u : 0u);
+            if (data.hasHanatos2025AdaptationWindowParams) {
+                hash_float_values_allowing_nan(hash, data.hanatos2025AdaptationWindowParams.data(), data.hanatos2025AdaptationWindowParams.size());
+            }
+            hash_string_update(hash, "hanatos2025_adaptation_surface_params");
+            hash_u64_update(hash, data.hasHanatos2025AdaptationSurfaceParams ? 1u : 0u);
+            if (data.hasHanatos2025AdaptationSurfaceParams) {
+                hash_float_values_allowing_nan(hash, &data.hanatos2025AdaptationSurfaceParams[0][0], 45u);
+            }
+        }
+
+        std::uint64_t hash_profile_payload_identity(const SpektrafilmProfileInfo& info, const SpektrafilmProfileSamples& data) {
+            std::uint64_t hash = Hash::kFnvOffset;
+            hash_string_update(hash, info.stock);
+            hash_string_update(hash, info.name);
+            hash_u64_update(hash, static_cast<std::uint64_t>(info.support));
+            hash_u64_update(hash, static_cast<std::uint64_t>(info.stage));
+            hash_u64_update(hash, static_cast<std::uint64_t>(info.type));
+            hash_u64_update(hash, static_cast<std::uint64_t>(info.use));
+            hash_u64_update(hash, static_cast<std::uint64_t>(info.antihalation));
+            hash_u64_update(hash, static_cast<std::uint64_t>(info.channelModel));
+            hash_string_update(hash, info.densitometer.value);
+            hash_string_update(hash, info.referenceIlluminant.value);
+            hash_string_update(hash, info.viewingIlluminant.value);
+            hash_float_values_allowing_nan(hash, &info.logSensitivityDensityOverMin, 1u);
+            hash_profile_sample_data(hash, data);
+            return hash == 0 ? 1u : hash;
         }
 
     } // namespace
@@ -701,8 +1524,7 @@ namespace Profiles {
                             outProfile.densityMidNeutral.push_back(*val);
                         }
                     }
-                }
-                else if (auto val = parse_optional_float(mid)) {
+                } else if (auto val = parse_optional_float(mid)) {
                     outProfile.densityMidNeutral.push_back(*val);
                 }
             }
@@ -715,8 +1537,7 @@ namespace Profiles {
                             outProfile.logExposureMidNeutral.push_back(*val);
                         }
                     }
-                }
-                else if (auto val = parse_optional_float(mid)) {
+                } else if (auto val = parse_optional_float(mid)) {
                     outProfile.logExposureMidNeutral.push_back(*val);
                 }
             }
@@ -727,11 +1548,11 @@ namespace Profiles {
             std::array<float, 3> uv = outProfile.cameraFilterUV;
             std::array<float, 3> ir = outProfile.cameraFilterIR;
             const bool hasUV = camera.contains("filter_uv")
-                ? parse_filter_triplet(camera["filter_uv"], uv)
-                : false;
+                                   ? parse_filter_triplet(camera["filter_uv"], uv)
+                                   : false;
             const bool hasIR = camera.contains("filter_ir")
-                ? parse_filter_triplet(camera["filter_ir"], ir)
-                : false;
+                                   ? parse_filter_triplet(camera["filter_ir"], ir)
+                                   : false;
             if (hasUV) {
                 outProfile.cameraFilterUV = uv;
                 outProfile.hasCameraFilterUV = true;
@@ -756,7 +1577,7 @@ namespace Profiles {
             }
             if (tune.contains("gamma_factor")) {
                 const Json& gf = tune["gamma_factor"];
-                std::array<float, 3> gamma{ {1.0f, 1.0f, 1.0f} };
+                std::array<float, 3> gamma{{1.0f, 1.0f, 1.0f}};
                 bool any = false;
                 if (auto scalar = parse_optional_float(gf)) {
                     const float v = *scalar;
@@ -764,8 +1585,7 @@ namespace Profiles {
                         gamma.fill(v);
                         any = true;
                     }
-                }
-                else if (gf.is_array()) {
+                } else if (gf.is_array()) {
                     const size_t count = std::min<size_t>(3, gf.size());
                     for (size_t i = 0; i < count; ++i) {
                         if (auto val = parse_optional_float(gf[i])) {
@@ -794,8 +1614,8 @@ namespace Profiles {
             return false;
         }
         const std::string_view wavelengthLabel = jsonPath.empty()
-            ? std::string_view("profile JSON")
-            : std::string_view(jsonPath);
+                                                     ? std::string_view("profile JSON")
+                                                     : std::string_view(jsonPath);
         if (!json_wavelengths_match_reference_axis(wavelengths, wavelengthLabel)) {
             return false;
         }
@@ -819,6 +1639,8 @@ namespace Profiles {
             }
             const Json& row = dyeDensity[i];
             if (!row.is_array()) {
+                // SF_TEMP_BRIDGE_AgxProfileMalformedRowPlaceholder owner=Phase2B remove=Phase3/Phase4:
+                // old AgxFilmProfile bridge behavior retained only behind the Phase 1A product-render cutoff.
                 JTRACE("PROFILE", "dye_density row missing or not array; inserting NaNs");
                 outProfile.dyeC.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
                 outProfile.dyeM.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
@@ -828,8 +1650,9 @@ namespace Profiles {
                 continue;
             }
 
-            auto get = [&](size_t idx)->std::optional<float> {
-                if (idx >= row.size()) return std::nullopt;
+            auto get = [&](size_t idx) -> std::optional<float> {
+                if (idx >= row.size())
+                    return std::nullopt;
                 return parse_optional_float_allow_nan(row[idx]);
             };
             auto cVal = get(0);
@@ -975,18 +1798,18 @@ namespace Profiles {
 
         // Require the core spectral assets to be present.
         const bool haveDyes = !outProfile.dyeC.empty() &&
-            !outProfile.dyeM.empty() && !outProfile.dyeY.empty();
+                              !outProfile.dyeM.empty() && !outProfile.dyeY.empty();
         const bool haveCurves = !outProfile.densityCurveR.empty() &&
-            !outProfile.densityCurveG.empty() && !outProfile.densityCurveB.empty();
+                                !outProfile.densityCurveG.empty() && !outProfile.densityCurveB.empty();
         const bool haveSens = !outProfile.logSensR.empty() &&
-            !outProfile.logSensG.empty() && !outProfile.logSensB.empty();
+                              !outProfile.logSensG.empty() && !outProfile.logSensB.empty();
         if (!(haveDyes && haveCurves && haveSens)) {
             return false;
         }
 
         outProfile.type = to_lower_ascii(outProfile.type);
         const bool isPaper = outProfile.type == "paper" ||
-            outProfile.type == "print" || outProfile.type == "print_paper";
+                             outProfile.type == "print" || outProfile.type == "print_paper";
         const bool isNegative = !isPaper;
 
         if (root.contains("dir_couplers")) {
@@ -1016,7 +1839,7 @@ namespace Profiles {
 
         const Json& glareNode = root["glare"];
         ProfileGlare glare{};
-        auto require_bool = [&](const char* key, bool& dst)->bool {
+        auto require_bool = [&](const char* key, bool& dst) -> bool {
             auto it = glareNode.find(key);
             if (it != glareNode.end() && it->is_boolean()) {
                 dst = it->get<bool>();
@@ -1025,7 +1848,7 @@ namespace Profiles {
             log_glare_failure(key);
             return false;
         };
-        auto require_float = [&](const char* key, float& dst)->bool {
+        auto require_float = [&](const char* key, float& dst) -> bool {
             auto val = parse_optional_float(glareNode.value(key, Json{}));
             if (val && std::isfinite(*val)) {
                 dst = *val;
@@ -1035,25 +1858,34 @@ namespace Profiles {
             return false;
         };
 
-        if (!require_bool("active", glare.active)) return false;
-        if (!require_float("percent", glare.percent)) return false;
-        if (!require_float("roughness", glare.roughness)) return false;
-        if (!require_float("blur", glare.blur)) return false;
+        if (!require_bool("active", glare.active))
+            return false;
+        if (!require_float("percent", glare.percent))
+            return false;
+        if (!require_float("roughness", glare.roughness))
+            return false;
+        if (!require_float("blur", glare.blur))
+            return false;
 
         if (isPaper) {
-            if (!require_float("compensation_removal_factor", glare.compensationRemovalFactor)) return false;
-            if (!require_float("compensation_removal_density", glare.compensationRemovalDensity)) return false;
-            if (!require_float("compensation_removal_transition", glare.compensationRemovalTransition)) return false;
-        }
-        else {
+            if (!require_float("compensation_removal_factor", glare.compensationRemovalFactor))
+                return false;
+            if (!require_float("compensation_removal_density", glare.compensationRemovalDensity))
+                return false;
+            if (!require_float("compensation_removal_transition", glare.compensationRemovalTransition))
+                return false;
+        } else {
             if (auto val = parse_optional_float(glareNode.value("compensation_removal_factor", Json{}))) {
-                if (std::isfinite(*val)) glare.compensationRemovalFactor = *val;
+                if (std::isfinite(*val))
+                    glare.compensationRemovalFactor = *val;
             }
             if (auto val = parse_optional_float(glareNode.value("compensation_removal_density", Json{}))) {
-                if (std::isfinite(*val)) glare.compensationRemovalDensity = *val;
+                if (std::isfinite(*val))
+                    glare.compensationRemovalDensity = *val;
             }
             if (auto val = parse_optional_float(glareNode.value("compensation_removal_transition", Json{}))) {
-                if (std::isfinite(*val)) glare.compensationRemovalTransition = *val;
+                if (std::isfinite(*val))
+                    glare.compensationRemovalTransition = *val;
             }
         }
 
@@ -1079,7 +1911,7 @@ namespace Profiles {
             const Json& grainNode = root["grain"];
             GrainMetadata grain{};
 
-            auto require_bool = [&](const char* key, bool& dst)->bool {
+            auto require_bool = [&](const char* key, bool& dst) -> bool {
                 auto it = grainNode.find(key);
                 if (it != grainNode.end() && it->is_boolean()) {
                     dst = it->get<bool>();
@@ -1088,7 +1920,7 @@ namespace Profiles {
                 log_grain_failure(key);
                 return false;
             };
-            auto require_float = [&](const char* key, float& dst)->bool {
+            auto require_float = [&](const char* key, float& dst) -> bool {
                 auto val = parse_optional_float(grainNode.value(key, Json{}));
                 if (val && std::isfinite(*val)) {
                     dst = *val;
@@ -1097,7 +1929,7 @@ namespace Profiles {
                 log_grain_failure(key);
                 return false;
             };
-            auto require_float_array3 = [&](const char* key, std::array<float, 3>& dst)->bool {
+            auto require_float_array3 = [&](const char* key, std::array<float, 3>& dst) -> bool {
                 if (!grainNode.contains(key) || !grainNode[key].is_array() || grainNode[key].size() < 3) {
                     log_grain_failure(key);
                     return false;
@@ -1112,7 +1944,7 @@ namespace Profiles {
                 }
                 return true;
             };
-            auto require_float_array2 = [&](const char* key, std::array<float, 2>& dst)->bool {
+            auto require_float_array2 = [&](const char* key, std::array<float, 2>& dst) -> bool {
                 if (!grainNode.contains(key) || !grainNode[key].is_array() || grainNode[key].size() < 2) {
                     log_grain_failure(key);
                     return false;
@@ -1127,7 +1959,7 @@ namespace Profiles {
                 }
                 return true;
             };
-            auto require_int = [&](const char* key, int& dst)->bool {
+            auto require_int = [&](const char* key, int& dst) -> bool {
                 if (!grainNode.contains(key)) {
                     log_grain_failure(key);
                     return false;
@@ -1148,17 +1980,28 @@ namespace Profiles {
                 return false;
             };
 
-            if (!require_bool("active", grain.active)) return false;
-            if (!require_bool("sublayers_active", grain.sublayersActive)) return false;
-            if (!require_float("agx_particle_area_um2", grain.agxParticleAreaUm2)) return false;
-            if (!require_float_array3("agx_particle_scale", grain.agxParticleScale)) return false;
-            if (!require_float_array3("agx_particle_scale_layers", grain.agxParticleScaleLayers)) return false;
-            if (!require_float_array3("density_min", grain.densityMin)) return false;
-            if (!require_float_array3("uniformity", grain.uniformity)) return false;
-            if (!require_float("blur", grain.blur)) return false;
-            if (!require_float("blur_dye_clouds_um", grain.blurDyeCloudsUm)) return false;
-            if (!require_float_array2("micro_structure", grain.microStructure)) return false;
-            if (!require_int("n_sub_layers", grain.nSubLayers)) return false;
+            if (!require_bool("active", grain.active))
+                return false;
+            if (!require_bool("sublayers_active", grain.sublayersActive))
+                return false;
+            if (!require_float("agx_particle_area_um2", grain.agxParticleAreaUm2))
+                return false;
+            if (!require_float_array3("agx_particle_scale", grain.agxParticleScale))
+                return false;
+            if (!require_float_array3("agx_particle_scale_layers", grain.agxParticleScaleLayers))
+                return false;
+            if (!require_float_array3("density_min", grain.densityMin))
+                return false;
+            if (!require_float_array3("uniformity", grain.uniformity))
+                return false;
+            if (!require_float("blur", grain.blur))
+                return false;
+            if (!require_float("blur_dye_clouds_um", grain.blurDyeCloudsUm))
+                return false;
+            if (!require_float_array2("micro_structure", grain.microStructure))
+                return false;
+            if (!require_int("n_sub_layers", grain.nSubLayers))
+                return false;
             if (auto val = parse_optional_float(grainNode.value("size_mix_weight_mid", Json{}))) {
                 if (std::isfinite(*val)) {
                     grain.sizeMixWeightMid = *val;
@@ -1185,7 +2028,7 @@ namespace Profiles {
             const Json& halationNode = root["halation"];
             HalationMetadata halation{};
 
-            auto require_hal_bool = [&](const char* key, bool& dst)->bool {
+            auto require_hal_bool = [&](const char* key, bool& dst) -> bool {
                 auto it = halationNode.find(key);
                 if (it != halationNode.end() && it->is_boolean()) {
                     dst = it->get<bool>();
@@ -1194,7 +2037,7 @@ namespace Profiles {
                 log_halation_failure(key);
                 return false;
             };
-            auto require_hal_array3 = [&](const char* key, std::array<float, 3>& dst)->bool {
+            auto require_hal_array3 = [&](const char* key, std::array<float, 3>& dst) -> bool {
                 if (!halationNode.contains(key) || !halationNode[key].is_array() || halationNode[key].size() < 3) {
                     log_halation_failure(key);
                     return false;
@@ -1210,16 +2053,20 @@ namespace Profiles {
                 return true;
             };
 
-            if (!require_hal_bool("active", halation.active)) return false;
-            if (!require_hal_array3("strength", halation.strength)) return false;
-            if (!require_hal_array3("size_um", halation.sizeUm)) return false;
-            if (!require_hal_array3("scattering_strength", halation.scatteringStrength)) return false;
-            if (!require_hal_array3("scattering_size_um", halation.scatteringSizeUm)) return false;
+            if (!require_hal_bool("active", halation.active))
+                return false;
+            if (!require_hal_array3("strength", halation.strength))
+                return false;
+            if (!require_hal_array3("size_um", halation.sizeUm))
+                return false;
+            if (!require_hal_array3("scattering_strength", halation.scatteringStrength))
+                return false;
+            if (!require_hal_array3("scattering_size_um", halation.scatteringSizeUm))
+                return false;
 
             outProfile.halation = halation;
             outProfile.hasHalation = true;
-        }
-        else {
+        } else {
             outProfile.hasGrain = false;
             outProfile.hasHalation = false;
         }
@@ -1250,6 +2097,140 @@ namespace Profiles {
 
         store_cached_profile_info(cacheKey, stamp, outInfo);
         return true;
+    }
+
+    ProfileDigest build_profile_digest(const SpektrafilmProfileInfo& info, ProfileRole role) {
+        ProfileDigest digest{};
+        digest.profileRole = role;
+        digest.optionalNeutralCalibrationStatus = NeutralCalibrationStatus::NotConsumedInPhase2B;
+
+        const bool positive = info.type == Spektrafilm::ProfilePolarity::Positive;
+        if (positive) {
+            digest.gammaSamelayerRgb = {{0.12f, 0.08f, 0.06f}};
+            digest.gammaInterlayerRToGb = {{0.12f, 0.06f}};
+            digest.gammaInterlayerGToRb = {{0.08f, 0.06f}};
+            digest.gammaInterlayerBToRg = {{0.06f, 0.06f}};
+            digest.dirGammaSource = "positive-default";
+        } else {
+            digest.gammaSamelayerRgb = {{0.336f, 0.319f, 0.273f}};
+            digest.gammaInterlayerRToGb = {{0.353f, 0.302f}};
+            digest.gammaInterlayerGToRb = {{0.154f, 0.353f}};
+            digest.gammaInterlayerBToRg = {{0.168f, 0.226f}};
+            digest.dirGammaSource = "negative-default";
+        }
+
+        if (info.stock == "fujifilm_velvia_100") {
+            digest.gammaSamelayerRgb = {{0.108f, 0.072f, 0.054f}};
+            digest.gammaInterlayerRToGb = {{0.108f, 0.054f}};
+            digest.gammaInterlayerGToRb = {{0.072f, 0.054f}};
+            digest.gammaInterlayerBToRg = {{0.054f, 0.054f}};
+            digest.dirGammaSource = "stock-override";
+        } else if (info.stock == "fujifilm_provia_100f") {
+            digest.gammaSamelayerRgb = {{0.156f, 0.104f, 0.078f}};
+            digest.gammaInterlayerRToGb = {{0.156f, 0.078f}};
+            digest.gammaInterlayerGToRb = {{0.104f, 0.078f}};
+            digest.gammaInterlayerBToRg = {{0.078f, 0.078f}};
+            digest.dirGammaSource = "stock-override";
+        }
+
+        const bool cine = info.use == ProfileUse::Cine;
+        digest.halationFirstSigmaUm = cine
+                                          ? std::array<float, 3>{{50.0f, 50.0f, 50.0f}}
+                                          : std::array<float, 3>{{65.0f, 65.0f, 65.0f}};
+        switch (info.antihalation) {
+            case ProfileAntihalation::Strong:
+                digest.halationStrength = {{0.015f, 0.005f, 0.0f}};
+                digest.halationPresetApplied = true;
+                break;
+            case ProfileAntihalation::Weak:
+                digest.halationStrength = {{0.08f, 0.02f, 0.0f}};
+                digest.halationPresetApplied = true;
+                break;
+            case ProfileAntihalation::No:
+                digest.halationStrength = {{0.30f, 0.10f, 0.015f}};
+                digest.halationPresetApplied = true;
+                break;
+            default:
+                digest.halationPresetApplied = false;
+                break;
+        }
+
+        digest.grainContract.density_min = {{0.07f, 0.08f, 0.12f}};
+        return digest;
+    }
+
+    namespace {
+        template <typename ProfileT, typename DataT>
+        bool load_validated_profile_json_impl(
+            const std::string& jsonPath,
+            ProfileRole role,
+            ProfileT& outProfile,
+            std::string* outDiagnostic) {
+            outProfile = ProfileT{};
+            Json root;
+            std::string error;
+            if (!parse_selected_json_file(jsonPath, root, error)) {
+                if (outDiagnostic) {
+                    *outDiagnostic = error;
+                }
+                return false;
+            }
+
+            SelectedProfileContext ctx;
+            ctx.path = jsonPath;
+            ctx.role = role == ProfileRole::Print ? "print" : "film";
+
+            SpektrafilmProfileInfo info;
+            if (!parse_profile_info(root, role, info, ctx, error)) {
+                if (outDiagnostic) {
+                    *outDiagnostic = error;
+                }
+                return false;
+            }
+
+            DataT data;
+            if (!parse_profile_samples(root, data, ctx, error)) {
+                if (outDiagnostic) {
+                    *outDiagnostic = error;
+                }
+                return false;
+            }
+
+            outProfile.info = std::move(info);
+            outProfile.data = std::move(data);
+            outProfile.digest = build_profile_digest(outProfile.info, role);
+            outProfile.digest.hanatosWindowAuthored = outProfile.data.hasHanatos2025AdaptationWindowParams;
+            outProfile.digest.hanatosSurfaceAuthored = outProfile.data.hasHanatos2025AdaptationSurfaceParams;
+            outProfile.digest.grainContract.densityCurvesLayersAuthored = outProfile.data.hasDensityCurvesLayers;
+            outProfile.sourcePath = jsonPath;
+            outProfile.assetVersionToken = hash_profile_payload_identity(outProfile.info, outProfile.data);
+            if (outDiagnostic) {
+                outDiagnostic->clear();
+            }
+            return outProfile.assetVersionToken != 0;
+        }
+    } // namespace
+
+    bool load_validated_film_profile_json(
+        const std::string& jsonPath,
+        ValidatedFilmProfile& outProfile,
+        std::string* outDiagnostic) {
+        return load_validated_profile_json_impl<ValidatedFilmProfile, SpektrafilmFilmData>(
+            jsonPath,
+            ProfileRole::Film,
+            outProfile,
+            outDiagnostic);
+    }
+
+    bool load_validated_print_profile_json(
+        const std::string& jsonPath,
+        ValidatedPrintProfile& outProfile,
+        std::string* outDiagnostic) {
+        return load_validated_profile_json_impl<ValidatedPrintProfile, SpektrafilmPrintData>(
+            jsonPath,
+            ProfileRole::Print,
+            outProfile,
+            outDiagnostic);
     }
 
 } // namespace Profiles

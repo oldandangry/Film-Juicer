@@ -786,25 +786,31 @@ namespace {
 
     template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        const JuicerAssets::PrintRuntimeAssetSet assets =
-            JuicerProcess::root().assets().print_runtime_assets_for_profile_keys(
-                JuicerAssets::PrintRuntimeProfileKeyChoices{
+        const JuicerAssets::SelectedProfileResult selectedProfiles =
+            JuicerProcess::root().assets().selected_profiles_for_route(
+                JuicerAssets::SelectedProfileRequest{
                     p.filmProfileKey,
                     p.printProfileKey,
-                    p.enlDichroicSet});
+                    p.scanRoute});
 
-        // Shared host derivation follows logical asset identity, not UI catalog positions.
+        // Phase 2B selected payload identity follows parsed authored content, not menu order.
         mix_hash_string(h, p.filmProfileKey, mix);
-        mix_hash_field(h, assets.filmStock.version, mix);
-        mix_hash_string(h, p.printProfileKey, mix);
-        mix_hash_field(h, assets.printPaper.version, mix);
+        mix_hash_field(
+            h,
+            selectedProfiles.filmProfile ? selectedProfiles.filmProfile->assetVersionToken : 0,
+            mix);
         mix_scan_route_hash_field(h, p, mix);
-        mix_hash_field(h, assets.neutralFilters.databaseId, mix);
-        mix_hash_field(h, assets.neutralFilters.version, mix);
+        if (Spektrafilm::scan_route_is_print(p.scanRoute)) {
+            mix_hash_string(h, p.printProfileKey, mix);
+            mix_hash_field(
+                h,
+                selectedProfiles.printProfile ? selectedProfiles.printProfile->assetVersionToken : 0,
+                mix);
+            mix_hash_field(h, p.enlIll, mix);
+            mix_hash_field(h, p.enlDichroicSet, mix);
+        }
         mix_hash_field(h, p.spectralUpsamplingMode, mix);
         mix_hash_field(h, p.refIll, mix);
-        mix_hash_field(h, p.enlIll, mix);
-        mix_hash_field(h, p.enlDichroicSet, mix);
     }
 
     template <typename MixFn>

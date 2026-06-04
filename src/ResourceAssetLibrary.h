@@ -9,11 +9,14 @@
 #include <vector>
 
 #include "ProfileCatalog.h"
+#include "ScanRoute.h"
 #include "SpectralData.h"
 
 namespace Profiles {
     struct AgxFilmProfile;
-}
+    struct ValidatedFilmProfile;
+    struct ValidatedPrintProfile;
+} // namespace Profiles
 
 namespace JuicerAssets {
 
@@ -32,6 +35,8 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
+    // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
+    // remove=Phase4: old print-paper folder CSV bridge retained behind the Phase 1A product-render cutoff.
     struct PrintPaperFolderProfilePayload {
         std::vector<std::pair<float, float>> dyeC;
         std::vector<std::pair<float, float>> dyeM;
@@ -123,6 +128,21 @@ namespace JuicerAssets {
         int dichroicSetChoice = 0;
     };
 
+    struct SelectedProfileRequest {
+        std::string filmProfileKey;
+        std::string printProfileKey;
+        Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
+    };
+
+    struct SelectedProfileResult {
+        std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
+        std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
+        bool directRoutePrintProfileExcluded = false;
+        bool directRouteNeutralCalibrationExcluded = false;
+        bool valid = false;
+        std::string diagnostic;
+    };
+
     class Library {
     public:
         struct StaticNoiseAssetSet;
@@ -137,6 +157,11 @@ namespace JuicerAssets {
         const Spektrafilm::ProfileCatalog& spektrafilm_profile_catalog();
         const JuicerAssets::FilmStockAsset& film_profile_for_key(const std::string& key);
         const JuicerAssets::PrintPaperAsset& print_profile_for_key(const std::string& key);
+        std::shared_ptr<const Profiles::ValidatedFilmProfile> selected_film_profile_for_key(
+            const std::string& key);
+        std::shared_ptr<const Profiles::ValidatedPrintProfile> selected_print_profile_for_key(
+            const std::string& key);
+        SelectedProfileResult selected_profiles_for_route(const SelectedProfileRequest& request);
         std::shared_ptr<const PrintPaperFolderProfilePayload> print_paper_folder_profile_payload(
             const PrintPaperAsset& asset);
         const NeutralFilterDatabaseAsset& neutral_filter_database_for_dichroic_set(int dichroicSetChoice);
@@ -183,6 +208,7 @@ namespace JuicerAssets {
         struct DichroicFilterCurveCacheState;
         struct IlluminantFilterCurveCacheState;
         struct ProfileCacheState;
+        struct ValidatedProfileCacheState;
 
         std::once_flag _catalogOnce;
         std::once_flag _neutralFilterOnce;
@@ -205,6 +231,7 @@ namespace JuicerAssets {
         std::unique_ptr<DichroicFilterCurveCacheState> _dichroicFilterCurveCache;
         std::unique_ptr<IlluminantFilterCurveCacheState> _illuminantFilterCurveCache;
         std::unique_ptr<ProfileCacheState> _profileCache;
+        std::unique_ptr<ValidatedProfileCacheState> _validatedProfileCache;
     };
 
 } // namespace JuicerAssets
