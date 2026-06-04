@@ -5,6 +5,7 @@ namespace JuicerParams {
     inline constexpr const char kCameraMeteringMethod[] = "CameraMeteringMethod";
     inline constexpr const char kFilmProfileKey[] = "FilmProfileKey";
     inline constexpr const char kPrintProfileKey[] = "PrintProfileKey";
+    inline constexpr const char kParamScanRoute[] = "ScanRoute";
     inline constexpr const char kInputColorSpace[] = "InputColorSpace";
     inline constexpr const char kInputCctfDecoding[] = "InputCctfDecoding";
     inline constexpr const char kDirCouplersInitVersion[] = "DIRCouplersInitVersion";

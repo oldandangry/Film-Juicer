@@ -375,9 +375,12 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam("PrintBypass");
-            p->setLabel("Bypass print");
-            p->setDefault(false);
+            OFX::StrChoiceParamDescriptor* p = desc.defineStrChoiceParam(JuicerParams::kParamScanRoute);
+            p->setLabel("Scan route");
+            for (int i = 0; i < Spektrafilm::scan_route_option_count(); ++i) {
+                p->appendOption(Spektrafilm::scan_route_option_key(i), Spektrafilm::scan_route_option_label(i));
+            }
+            p->setDefault(Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute));
             if (grpPrint)
                 p->setParent(*grpPrint);
             p->setEvaluateOnChange(true);

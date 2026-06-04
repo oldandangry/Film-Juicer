@@ -706,8 +706,8 @@ namespace {
 
     inline void copy_3x3_and_append_rhs(const double matrix3x3[3][3], const double rhs[3], double augmented[3][4]) {
         const double* rhsIt = rhs;
-        double (*dstRow)[4] = augmented;
-        const double (*srcRow)[3] = matrix3x3;
+        double(*dstRow)[4] = augmented;
+        const double(*srcRow)[3] = matrix3x3;
         for (int r = 0; r < 3; ++r, ++rhsIt, ++dstRow, ++srcRow) {
             std::memcpy(*dstRow, *srcRow, 3u * sizeof(double));
             (*dstRow)[3] = *rhsIt;
@@ -777,6 +777,11 @@ namespace {
     }
 
     template <typename MixFn>
+    inline void mix_scan_route_hash_field(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        mix_hash_field(h, static_cast<std::uint8_t>(p.scanRoute), mix);
+    }
+
+    template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         const JuicerAssets::PrintRuntimeAssetSet assets =
             JuicerProcess::root().assets().print_runtime_assets_for_profile_keys(
@@ -790,6 +795,7 @@ namespace {
         mix_hash_field(h, assets.filmStock.version, mix);
         mix_hash_string(h, p.printProfileKey, mix);
         mix_hash_field(h, assets.printPaper.version, mix);
+        mix_scan_route_hash_field(h, p, mix);
         mix_hash_field(h, assets.neutralFilters.databaseId, mix);
         mix_hash_field(h, assets.neutralFilters.version, mix);
         mix_hash_field(h, p.spectralUpsamplingMode, mix);

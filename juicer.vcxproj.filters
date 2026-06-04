@@ -179,6 +179,9 @@
     <ClInclude Include="src\ResourceAssetLibrary.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\ScanRoute.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\Scanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>

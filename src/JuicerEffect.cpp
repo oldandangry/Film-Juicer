@@ -242,7 +242,7 @@ namespace {
         return state ? state->frameBoundsVersion.load(std::memory_order_acquire) : 0u;
     }
 
-    inline float print_runtime_value_or_zero(const Print::Runtime* runtime, float Print::Runtime::* field) {
+    inline float print_runtime_value_or_zero(const Print::Runtime* runtime, float Print::Runtime::*field) {
         return runtime ? (runtime->*field) : 0.0f;
     }
 
@@ -1247,6 +1247,31 @@ namespace {
         return value.empty() ? fallback : value;
     }
 
+    inline Spektrafilm::ProfilePolarity capture_profile_polarity_for_key(const std::string& filmProfileKey) {
+        const Spektrafilm::ProfileCatalog& catalog =
+            JuicerProcess::root().assets().spektrafilm_profile_catalog();
+        for (const Spektrafilm::ProfileCatalogEntry& entry : catalog.filmProfiles) {
+            if (entry.key == filmProfileKey) {
+                return entry.polarity;
+            }
+        }
+        return Spektrafilm::ProfilePolarity::Negative;
+    }
+
+    inline Spektrafilm::ScanRoute read_resolved_scan_route(
+        OFX::StrChoiceParam* scanRouteParam,
+        const std::string& filmProfileKey) {
+        const Spektrafilm::ProfilePolarity capturePolarity =
+            capture_profile_polarity_for_key(filmProfileKey);
+        const Spektrafilm::ScanRoute defaultRoute =
+            Spektrafilm::default_scan_route_for_polarity(capturePolarity);
+        const std::string routeKey =
+            read_str_choice_param_or(scanRouteParam, Spektrafilm::scan_route_key(defaultRoute));
+        const Spektrafilm::ScanRoute userRouteSelection =
+            Spektrafilm::scan_route_from_key_or(routeKey, defaultRoute);
+        return Spektrafilm::resolve_scan_route(capturePolarity, userRouteSelection);
+    }
+
     inline bool spektrafilm_phase1a_blocks_old_working_state_rebuild() {
         return true;
     }
@@ -1342,6 +1367,12 @@ namespace {
 
     inline void set_choice_param_if(OFX::ChoiceParam* param, int value) {
         if (param) {
+            param->setValue(value);
+        }
+    }
+
+    inline void set_str_choice_param_if(OFX::StrChoiceParam* param, const char* value) {
+        if (param && value) {
             param->setValue(value);
         }
     }
@@ -1622,6 +1653,7 @@ namespace {
     inline void read_profile_snapshot_choices(
         OFX::StrChoiceParam* filmProfileKeyParam,
         OFX::StrChoiceParam* printProfileKeyParam,
+        OFX::StrChoiceParam* scanRouteParam,
         OFX::ChoiceParam* spectralModeParam,
         OFX::ChoiceParam* refIlluminantParam,
         OFX::ChoiceParam* enlargerIlluminantParam,
@@ -1629,6 +1661,7 @@ namespace {
         ParamSnapshot& snapshot) {
         snapshot.filmProfileKey = read_str_choice_param_or(filmProfileKeyParam, snapshot.filmProfileKey);
         snapshot.printProfileKey = read_str_choice_param_or(printProfileKeyParam, snapshot.printProfileKey);
+        snapshot.scanRoute = read_resolved_scan_route(scanRouteParam, snapshot.filmProfileKey);
         snapshot.spectralUpsamplingMode = read_choice_param_or(spectralModeParam, snapshot.spectralUpsamplingMode);
         snapshot.refIll = read_choice_param_or(refIlluminantParam, snapshot.refIll);
         snapshot.enlIll = read_choice_param_or(enlargerIlluminantParam, snapshot.enlIll);
@@ -2468,13 +2501,13 @@ Scanner::Settings JuicerEffect::gatherScannerSettings() const {
 
 Print::Params JuicerEffect::gatherPrintParams() const {
     Print::Params params{};
-    const bool bypass = read_bool_param_or(_pPrintBypass, false);
+    const ParamSnapshot snapshot = snapshotParams();
     const double pexp = read_double_param_or(_pPrintExposure, 1.0);
     const double preflash = read_double_param_or(_pPrintPreflash, 0.0);
     const double y = read_double_param_or(_pEnlargerY, 0.0);
     const double m = read_double_param_or(_pEnlargerM, 0.0);
     const double c = read_double_param_or(_pEnlargerC, 0.0);
-    params.bypass = bypass;
+    params.bypass = !Spektrafilm::scan_route_is_print(snapshot.scanRoute);
     params.exposure = static_cast<float>(pexp);
     params.preflashExposure = static_cast<float>(preflash);
     params.yFilter = static_cast<float>(sanitize_enlarger_filter_shift_or_zero(y));
@@ -3302,6 +3335,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pEnlDichroicSet = fetchChoiceParam(kParamEnlargerDichroicSet);
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
+        _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
         _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
         _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
         _pOutputLinearPassThrough = fetchBooleanParam(kParamOutputLinearPassThrough);
@@ -3325,7 +3359,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pScannerUseLut = fetchBooleanParam(JuicerParams::kScannerUseLut);
         _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
 
-        _pPrintBypass = fetchBooleanParam("PrintBypass");
         _pPrintExposure = fetchDoubleParam("PrintExposure");
         _pPrintPreflash = fetchDoubleParam("PrintPreflash");
         _pPrintExposureComp = fetchBooleanParam("PrintExposureCompensation");
@@ -3747,6 +3780,15 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     };
 
     const bool userEdit = (args.reason == OFX::eChangeUserEdit);
+
+    if (param_name_is(paramName, JuicerParams::kFilmProfileKey)) {
+        const std::string filmKey =
+            read_str_choice_param_or(_pFilmProfileKey, Spektrafilm::kDefaultFilmProfileKey);
+        const Spektrafilm::ProfilePolarity polarity = capture_profile_polarity_for_key(filmKey);
+        const Spektrafilm::ScanRoute defaultRoute = Spektrafilm::default_scan_route_for_polarity(polarity);
+        const ScopedParamEventSuppression suppressEvents(_state.get());
+        set_str_choice_param_if(_pScanRoute, Spektrafilm::scan_route_key(defaultRoute));
+    }
 
 #ifdef JUICER_ENABLE_COUPLERS
     if (userEdit && is_coupler_param_name(paramName.c_str())) {
@@ -4181,6 +4223,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     read_profile_snapshot_choices(
         _pFilmProfileKey,
         _pPrintProfileKey,
+        _pScanRoute,
         _pSpectralMode,
         _pRefIll,
         _pEnlIll,

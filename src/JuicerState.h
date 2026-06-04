@@ -19,6 +19,7 @@
 #include "Print.h"
 #include "ProfileCatalog.h"
 #include "ProfileJSONLoader.h"
+#include "ScanRoute.h"
 #include "ColorTransforms.h"
 #include "FilmProcessing.h"
 #include "Couplers.h"
@@ -324,6 +325,7 @@ inline void sample_negative_densities(
 struct ParamSnapshot {
     std::string filmProfileKey = Spektrafilm::kDefaultFilmProfileKey;
     std::string printProfileKey = Spektrafilm::kDefaultPrintProfileKey;
+    Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
     int spectralUpsamplingMode = 0;
     int refIll = 0;
     int enlIll = 3;

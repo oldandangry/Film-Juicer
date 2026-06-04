@@ -313,6 +313,7 @@
     <ClInclude Include="src\ProfileJSONLoader.h" />
     <ClInclude Include="src\ProcessRoot.h" />
     <ClInclude Include="src\ResourceAssetLibrary.h" />
+    <ClInclude Include="src\ScanRoute.h" />
     <ClInclude Include="src\Scanner.h" />
     <ClInclude Include="src\SpectralData.h" />
     <ClInclude Include="src\SpectralProcessing.h" />

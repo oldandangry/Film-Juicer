@@ -152,6 +152,7 @@ private:
     OFX::ChoiceParam* _pEnlDichroicSet = nullptr;
     OFX::ChoiceParam* _pInputColorSpace = nullptr;
     OFX::BooleanParam* _pInputCctfDecoding = nullptr;
+    OFX::StrChoiceParam* _pScanRoute = nullptr;
     OFX::ChoiceParam* _pOutputColorSpace = nullptr;
     OFX::BooleanParam* _pOutputCctfEncoding = nullptr;
     OFX::BooleanParam* _pOutputLinearPassThrough = nullptr;
@@ -176,7 +177,6 @@ private:
     OFX::BooleanParam* _pScannerUseLut = nullptr;
     OFX::IntParam* _pScannerLutResolution = nullptr;
 
-    OFX::BooleanParam* _pPrintBypass = nullptr;
     OFX::DoubleParam* _pPrintExposure = nullptr;
     OFX::DoubleParam* _pPrintPreflash = nullptr;
     OFX::BooleanParam* _pPrintExposureComp = nullptr;
