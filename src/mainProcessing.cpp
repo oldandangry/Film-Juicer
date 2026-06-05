@@ -1784,8 +1784,9 @@ void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
 }
 
 void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
-    // SF_TEMP_BRIDGE_FrameRequestSideChannelCopy keeps legacy mutable processor members in sync
-    // with the stable request.recipe boundary until the owning pixel phases consume the request directly.
+    // SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase3A direct-boundary audit:
+    // allowed=JuicerEffect::render adapter; hash_owner=none; output_impact=blocked legacy path;
+    // remove=Phase3B/3C for direct recipe/profile/scanner/resource policy.
     setRenderWindowRect(request.renderWindow);
     setComponents(request.components);
     _scannerOptions = request.scannerOptions;

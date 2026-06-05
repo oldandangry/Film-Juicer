@@ -2332,8 +2332,9 @@ namespace JuicerProcess {
                 *frame._state->grainStaticResources,
                 cudaStreamOpaque,
                 outError)) {
-            // SF_TEMP_BRIDGE_StaticNoiseUpload: existing unconditional static-noise upload is
-            // inventoried by Phase 1C and must be descriptor-gated before Phase 3 pixels.
+            // SF_TEMP_BRIDGE_StaticNoiseUpload owner=Phase3A direct-preparation audit:
+            // allowed=existing blocked legacy prepare_cuda_frame only; hash_owner=none;
+            // output_impact=no direct Phase3A pixels; removal gate=Phase3C before direct pixels.
             frame._state->set_failure(
                 "ensure_grain_static_assets_uploaded",
                 "CUDA grain-static asset upload failed");

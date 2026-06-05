@@ -89,9 +89,10 @@ namespace RebuildWorkingState {
 
 namespace WorkingStateSharing {
 
-    // SF_TEMP_BRIDGE_WorkingStateCorePayload:
+    // SF_TEMP_BRIDGE_WorkingStateCorePayload owner=Phase3A publication audit:
     // retained legacy shared payload for buildability while RenderRecipe becomes the publication
-    // contract. It must not gain spektrafilm fields; owning pixel/resource phases narrow or delete it.
+    // contract. Allowed=existing blocked rebuild sharing only; hash/output impact=legacy core-share
+    // lane; direct removal gate=Phase3B/3C. It must not gain spektrafilm recipe/descriptor fields.
     struct WorkingStateCorePayload {
         Spectral::Curve densB;
         Spectral::Curve densG;
@@ -786,26 +787,14 @@ namespace {
 
     template <typename MixFn>
     inline void mix_profile_selection_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        const JuicerAssets::SelectedProfileResult selectedProfiles =
-            JuicerProcess::root().assets().selected_profiles_for_route(
-                JuicerAssets::SelectedProfileRequest{
-                    p.filmProfileKey,
-                    p.printProfileKey,
-                    p.scanRoute});
-
-        // Phase 2B selected payload identity follows parsed authored content, not menu order.
+        // Phase 3A hash builders consume pre-resolved selected asset tokens. Selected loader/cache
+        // access happens before hashing, so direct-route hashes perform no catalog/file/assets lookup.
         mix_hash_string(h, p.filmProfileKey, mix);
-        mix_hash_field(
-            h,
-            selectedProfiles.filmProfile ? selectedProfiles.filmProfile->assetVersionToken : 0,
-            mix);
+        mix_hash_field(h, p.filmProfileAssetVersionToken, mix);
         mix_scan_route_hash_field(h, p, mix);
         if (Spektrafilm::scan_route_is_print(p.scanRoute)) {
             mix_hash_string(h, p.printProfileKey, mix);
-            mix_hash_field(
-                h,
-                selectedProfiles.printProfile ? selectedProfiles.printProfile->assetVersionToken : 0,
-                mix);
+            mix_hash_field(h, p.printProfileAssetVersionToken, mix);
             mix_hash_field(h, p.enlIll, mix);
             mix_hash_field(h, p.enlDichroicSet, mix);
         }
@@ -821,6 +810,31 @@ namespace {
         mix_hash_field(h, p.outputColorSpace, mix);
         mix_hash_field(h, p.outputCctfEncoding, mix);
         mix_hash_field(h, p.outputLinearPassThrough, mix);
+    }
+
+    template <typename MixFn>
+    inline void mix_direct_phase3a_recipe_hash_fields(
+        uint64_t& h,
+        const ParamSnapshot& p,
+        const MixFn& mix) {
+        if (Spektrafilm::scan_route_is_print(p.scanRoute)) {
+            return;
+        }
+        mix_hash_field(h, p.cameraAutoExposureEnabled, mix);
+        mix_hash_field(h, p.cameraMeteringMethod, mix);
+        mix_hash_field_scaled_rounded_if_finite(
+            h,
+            p.cameraExposureCompensationEv,
+            10000.0,
+            mix);
+        mix_hash_field_scaled_rounded_if_finite(
+            h,
+            p.cameraFilmFormatLongEdgeMm,
+            10000.0,
+            mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.scannerLensBlurSigmaPx, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[0], 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[1], 10000.0, mix);
     }
 
     template <typename MixFn>
@@ -1386,6 +1400,10 @@ namespace {
         return true;
     }
 
+    // SF_TEMP_BRIDGE_DirectScannerBoundsRecompute owner=Phase3A density-bounds audit:
+    // allowed=existing blocked legacy WorkingState scanner path; hash/output impact=legacy scanner
+    // range/static-key lanes; removal gate=Phase3B/3C. Direct descriptors consume
+    // RenderRecipe::DensityBoundsRecipe and must not call this helper.
     static bool compute_negative_density_range(
         const Spectral::Curve& densB,
         const Spectral::Curve& densG,
@@ -1441,6 +1459,77 @@ namespace {
             "FATAL: invalid print density range (non-positive max)",
             "FATAL: failed to hash print density range");
     }
+
+    bool publish_direct_recipe_if_selected(const ParamSnapshot& params, RenderRecipe& outRecipe) {
+        if (Spektrafilm::scan_route_is_print(params.scanRoute)) {
+            return true;
+        }
+
+        const JuicerAssets::SelectedProfileResult selected =
+            JuicerProcess::root().assets().selected_profiles_for_route(
+                JuicerAssets::SelectedProfileRequest{
+                    params.filmProfileKey,
+                    params.printProfileKey,
+                    params.scanRoute});
+        Spektrafilm::DirectRecipeBuildInput input{};
+        input.filmProfileKey = params.filmProfileKey;
+        input.printProfileKey = params.printProfileKey;
+        input.scanRoute = params.scanRoute;
+        input.filmProfile = selected.filmProfile;
+        input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
+        input.directRouteNeutralCalibrationExcluded =
+            selected.directRouteNeutralCalibrationExcluded;
+        input.spectralUpsamplingMode = params.spectralUpsamplingMode;
+        input.inputColorSpace = params.inputColorSpace;
+        input.inputCctfDecoding = params.inputCctfDecoding != 0;
+        input.cameraAutoExposureEnabled = params.cameraAutoExposureEnabled != 0;
+        input.cameraMeteringMethod = params.cameraMeteringMethod;
+        input.manualExposureCompensationEv =
+            static_cast<float>(params.cameraExposureCompensationEv);
+        input.filmFormatLongEdgeMm = static_cast<float>(params.cameraFilmFormatLongEdgeMm);
+        input.cameraFilterOverride = params.cameraFilterOverride;
+        input.cameraFilterUV = params.cameraFilterUV;
+        input.cameraFilterIR = params.cameraFilterIR;
+        input.scannerLutResolution =
+            static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
+        input.outputColorSpace = params.outputColorSpace;
+        input.outputCctfEncoding = params.outputCctfEncoding != 0;
+        input.outputLinearPassThrough = params.outputLinearPassThrough != 0;
+        input.scannerLensBlurSigmaPx = static_cast<float>(params.scannerLensBlurSigmaPx);
+        input.scannerUnsharpSigmaPx = static_cast<float>(params.scannerUnsharpMask[0]);
+        input.scannerUnsharpAmount = static_cast<float>(params.scannerUnsharpMask[1]);
+
+        Spektrafilm::DirectRecipeBuildResult built =
+            Spektrafilm::build_direct_render_recipe(input);
+        if (!built.valid) {
+            JTRACE(
+                "SPEKTRAFILM",
+                built.diagnostic.empty()
+                    ? "ResourceDescriptorMismatch phase=3A direct recipe build failed"
+                    : built.diagnostic);
+            return false;
+        }
+
+        Scanner::ScannerSpectralLutDescriptor descriptor{};
+        std::string descriptorDiagnostic;
+        if (!Scanner::build_direct_scanner_spectral_lut_descriptor(
+                Scanner::DirectScannerSpectralLutDescriptorInput{
+                    &built.recipe.profileRoute,
+                    &built.recipe.densityBounds,
+                    &built.recipe.scannerOutput},
+                descriptor,
+                descriptorDiagnostic)) {
+            JTRACE(
+                "SPEKTRAFILM",
+                descriptorDiagnostic.empty()
+                    ? "ResourceDescriptorMismatch phase=3A scanner descriptor build failed"
+                    : descriptorDiagnostic);
+            return false;
+        }
+
+        outRecipe = std::move(built.recipe);
+        return true;
+    }
 } // namespace
 
 uint64_t hash_params(const ParamSnapshot& p) {
@@ -1450,6 +1539,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     mix_coupler_hash_fields(h, p, hash_mix);
     mix_output_encoding_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
+    mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -1459,6 +1549,7 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     mix_glare_print_hash_fields(h, p, hash_mix);
     mix_output_encoding_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
+    mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -1949,6 +2040,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
     target->recipe = Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
+    if (!publish_direct_recipe_if_selected(P, target->recipe)) {
+        return;
+    }
     const bool buildTraceEnabled = JTRACE_ENABLED(1);
     const bool printTraceEnabled = JTRACE_ENABLED(3);
     RebuildStateSnapshot snapshot{};
@@ -2963,6 +3057,9 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
     WorkingState* target = next.get();
     target->recipe = Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
+    if (!publish_direct_recipe_if_selected(P, target->recipe)) {
+        return;
+    }
     RebuildStateSnapshot snapshot{};
     {
         std::lock_guard<std::mutex> stateLock(S.m);

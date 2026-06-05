@@ -278,7 +278,9 @@
     <ClCompile Include="src\ProfileCatalog.cpp" />
     <ClCompile Include="src\ProfileJSONLoader.cpp" />
     <ClCompile Include="src\ProcessRoot.cpp" />
+    <ClCompile Include="src\RenderRecipe.cpp" />
     <ClCompile Include="src\ResourceAssetLibrary.cpp" />
+    <ClCompile Include="src\Scanner.cpp" />
     <ClCompile Include="src\ScannerOptics.cpp" />
   </ItemGroup>
   <ItemGroup Condition="'$(JuicerEnableCudaBuild)'=='1'">

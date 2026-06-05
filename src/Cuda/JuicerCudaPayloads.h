@@ -320,6 +320,10 @@ namespace JuicerCuda {
         int glareRadius = 0;
     };
 
+    // SF_TEMP_BRIDGE_PipelineRunParams owner=Phase3A direct-payload audit:
+    // allowed=existing blocked legacy CUDA pack/launch call sites only; hash_owner=none;
+    // output_impact=would be broad if Phase 1A cutoff were lifted; remove/narrow=Phase3B/3C before
+    // direct-route pixel acceptance. Phase 3A adds no recipe fields or inactive-stage population.
     struct PipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;

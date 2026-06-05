@@ -6,12 +6,19 @@
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "Hash.h"
 #include "ProfileJSONLoader.h"
+#include "ScanRoute.h"
 #include "SpectralData.h"
 #include "OutputColor.h"
+
+struct DensityBoundsRecipe;
+struct ProfileRoute;
+struct ScannerOutputRecipe;
 
 namespace Scanner {
 
@@ -107,6 +114,85 @@ namespace Scanner {
         const ColorRuntime* color = nullptr;
         ScannerStaticKey staticKey;
     };
+
+    enum class ScannedMediumKind : std::uint8_t {
+        Film,
+        Print
+    };
+
+    enum class ScannerXyzNormalization : std::uint8_t {
+        ScannerIlluminantY
+    };
+
+    enum class ScannerLutInterpolation : std::uint8_t {
+        PchipClamped
+    };
+
+    enum class ScannerLutAxisOrder : std::uint8_t {
+        Cmy
+    };
+
+    enum class ScannerLutStoredValueDomain : std::uint8_t {
+        LogXyz
+    };
+
+    enum class ScannerLutLogBase : std::uint8_t {
+        Base10
+    };
+
+    enum class ScannerLutNumericFormat : std::uint8_t {
+        Float64
+    };
+
+    enum class ScannerLutOutputTripletOrder : std::uint8_t {
+        Xyz
+    };
+
+    // ScannerSpectralLutDescriptor family contract:
+    // Producer: direct scanner descriptor builder from RenderRecipe/ProfileRoute selected payload.
+    // Consumer: Phase 3B/3C scanner LUT preparation; Phase 3A structural validation only.
+    // Identity: route, film medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
+    // viewing illuminant, observer/Y normalization, LUT resolution, interpolation, axes, stored
+    // value domain/log base/format/output order, and schema version. Scanner correction, output
+    // color/CCTF, glare, blur, unsharp, frame bounds, auto exposure, and other post-LUT identity
+    // are excluded.
+    // Lifetime: plain host descriptor; no upload/admission/allocation occurs in Phase 3A.
+    struct ScannerSpectralLutDescriptor {
+        Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+        ScannedMediumKind medium = ScannedMediumKind::Film;
+        Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
+        std::uint64_t densityBoundsHash = 0;
+        std::uint64_t channelDensityHash = 0;
+        std::uint64_t baseDensityHash = 0;
+        std::uint64_t scanIlluminantHash = 0;
+        std::uint64_t observerHash = 0;
+        ScannerXyzNormalization xyzNormalization = ScannerXyzNormalization::ScannerIlluminantY;
+        std::uint32_t lutResolution = 17;
+        ScannerLutInterpolation interpolation = ScannerLutInterpolation::PchipClamped;
+        ScannerLutAxisOrder semanticInputAxisOrder = ScannerLutAxisOrder::Cmy;
+        ScannerLutAxisOrder storageInputAxisOrder = ScannerLutAxisOrder::Cmy;
+        ScannerLutStoredValueDomain storedValueDomain = ScannerLutStoredValueDomain::LogXyz;
+        ScannerLutLogBase logBase = ScannerLutLogBase::Base10;
+        ScannerLutNumericFormat numericFormat = ScannerLutNumericFormat::Float64;
+        ScannerLutOutputTripletOrder storedOutputTripletOrder = ScannerLutOutputTripletOrder::Xyz;
+        std::uint32_t schemaVersion = 1;
+        std::uint64_t hash = 0;
+    };
+
+    struct DirectScannerSpectralLutDescriptorInput {
+        const ::ProfileRoute* profileRoute = nullptr;
+        const ::DensityBoundsRecipe* densityBounds = nullptr;
+        const ::ScannerOutputRecipe* scannerOutput = nullptr;
+        std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
+    };
+
+    std::uint64_t hash_scanner_spectral_lut_descriptor(
+        const ScannerSpectralLutDescriptor& descriptor);
+
+    bool build_direct_scanner_spectral_lut_descriptor(
+        const DirectScannerSpectralLutDescriptorInput& input,
+        ScannerSpectralLutDescriptor& outDescriptor,
+        std::string& outDiagnostic);
 
     // Canonical scanner spectral core (agx-emulsion parity):
     // - Accepts normalized density (0..1), denormalizes per medium range

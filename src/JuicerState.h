@@ -329,6 +329,10 @@ struct ParamSnapshot {
     std::string filmProfileKey = Spektrafilm::kDefaultFilmProfileKey;
     std::string printProfileKey = Spektrafilm::kDefaultPrintProfileKey;
     Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
+    std::uint64_t filmProfileAssetVersionToken = 0;
+    std::uint64_t printProfileAssetVersionToken = 0;
+    bool directRoutePrintProfileExcluded = false;
+    bool directRouteNeutralCalibrationExcluded = false;
     int spectralUpsamplingMode = 0;
     int refIll = 0;
     int enlIll = 3;
@@ -343,6 +347,10 @@ struct ParamSnapshot {
     double sigma = 2.0, high = 0.0;
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
+    int cameraAutoExposureEnabled = 1;
+    int cameraMeteringMethod = 0;
+    double cameraExposureCompensationEv = 0.0;
+    double cameraFilmFormatLongEdgeMm = 36.0;
     double scannerLensBlurSigmaPx = 0.55;
     std::array<double, 2> scannerUnsharpMask{{0.7, 1.0}};
     int scannerUseLut = 1;

@@ -293,6 +293,10 @@ namespace JuicerProcess {
             void record_use(void* cudaStreamOpaque) noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
+            // SF_TEMP_BRIDGE_PreparedDirectScannerWorkingState owner=Phase3A descriptor audit:
+            // allowed=existing blocked legacy CUDA path; hash/output impact=legacy current-medium
+            // and scan-LUT preparation from WorkingState; removal gate=Phase3B/3C direct descriptor
+            // cutover. No new prepare/ensure surface may be added beside these bridges.
             bool prepare_current_medium(
                 const WorkingState& workingState,
                 bool negativeMedium,
@@ -425,9 +429,10 @@ namespace JuicerProcess {
             std::unique_ptr<State> _state;
         };
 
-        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput:
-        // retained CUDA preparation input still consumes WorkingState upload data. The Phase 1C
-        // manifest owns the bridge inventory; Phase 3/4 pixel acceptance must narrow this path.
+        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase3A direct-boundary audit:
+        // allowed=existing blocked legacy CUDA path; hash/output impact=uploads broad WorkingState;
+        // direct removal gate=Phase3B/3C, print removal gate=Phase4. No accepted direct pixel path
+        // may use this broad input as its recipe/resource contract.
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,

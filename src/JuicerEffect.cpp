@@ -4232,6 +4232,19 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
         _pEnlIll,
         _pEnlDichroicSet,
         P);
+    const JuicerAssets::SelectedProfileResult selectedProfiles =
+        JuicerProcess::root().assets().selected_profiles_for_route(
+            JuicerAssets::SelectedProfileRequest{
+                P.filmProfileKey,
+                P.printProfileKey,
+                P.scanRoute});
+    P.filmProfileAssetVersionToken =
+        selectedProfiles.filmProfile ? selectedProfiles.filmProfile->assetVersionToken : 0;
+    P.printProfileAssetVersionToken =
+        selectedProfiles.printProfile ? selectedProfiles.printProfile->assetVersionToken : 0;
+    P.directRoutePrintProfileExcluded = selectedProfiles.directRoutePrintProfileExcluded;
+    P.directRouteNeutralCalibrationExcluded =
+        selectedProfiles.directRouteNeutralCalibrationExcluded;
 
     const GlareCompensationSnapshotValues compensation = read_glare_compensation_snapshot_values(
         _pGlareCompRemovalFactor,
@@ -4246,6 +4259,11 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.printDminFactor =
         read_sanitized_unit_double(_pPrintDminFactor, P.printDminFactor);
     read_input_snapshot_values(_pInputColorSpace, _pInputCctfDecoding, P);
+    const ExposureParams exposure = gatherExposureParams();
+    P.cameraAutoExposureEnabled = exposure.cameraAutoEnabled ? 1 : 0;
+    P.cameraMeteringMethod = exposure.meteringMethod;
+    P.cameraExposureCompensationEv = exposure.sliderEV;
+    P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
 #ifdef JUICER_ENABLE_COUPLERS
     apply_coupler_snapshot_values(
         P,
@@ -4285,8 +4303,11 @@ void JuicerEffect::bootstrap_after_attach() {
     Print::Runtime nextPrintRuntime{};
     ParamSnapshot P = snapshotParams();
 
-    // Load selected print paper profile
-    (void)load_print_profile_for_snapshot(P, nextPrintRuntime);
+    const bool printRoute = Spektrafilm::scan_route_is_print(P.scanRoute);
+    if (printRoute) {
+        // Load selected print paper profile only for routes that consume print state.
+        (void)load_print_profile_for_snapshot(P, nextPrintRuntime);
+    }
 
     // Load film profile before applying metadata-driven illuminant defaults.
     load_film_profile_into_base_locked(P.filmProfileKey, *_state);
@@ -4294,19 +4315,25 @@ void JuicerEffect::bootstrap_after_attach() {
         applyHalationProfileDefaults();
     }
 
-    // Apply metadata-driven illuminant defaults and rebuild runtime illuminants
-    applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-    update_print_illuminant_runtime(P, nextPrintRuntime);
+    if (printRoute) {
+        // Apply metadata-driven illuminant defaults and rebuild runtime illuminants.
+        applyMetadataIlluminantDefaults(P, nextPrintRuntime);
+        update_print_illuminant_runtime(P, nextPrintRuntime);
 
-    // Load dichroic filters (set selection controls which vendor curves are used).
-    // Identity fallback is already handled in loader via 1.0 curves.
-    (void)try_load_dichroic_filters(
-        P.enlDichroicSet,
-        nextPrintRuntime,
-        "dichroic load failed",
-        "using identity filters");
+        // Load dichroic filters (set selection controls which vendor curves are used).
+        // Identity fallback is already handled in loader via 1.0 curves.
+        (void)try_load_dichroic_filters(
+            P.enlDichroicSet,
+            nextPrintRuntime,
+            "dichroic load failed",
+            "using identity filters");
 
-    applyNeutralFilters(P, nextPrintRuntime);
+        applyNeutralFilters(P, nextPrintRuntime);
+    } else {
+        JTRACE_VERBOSE(
+            "SPEKTRAFILM",
+            "phase=3A direct route excludes print profile, dichroic, and neutral-calibration bootstrap");
+    }
     publish_print_runtime_locked(*_state, std::move(nextPrintRuntime));
 
     if (has_loaded_base_state(_state.get())) {
