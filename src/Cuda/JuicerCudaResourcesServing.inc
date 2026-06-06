@@ -1607,6 +1607,21 @@
             return false;
         }
 
+        // Direct and broad packages share physical slots but never share resource identity.
+        // A broad upload must force a rebuild after any direct package and invalidate direct hits.
+        if (resources.directFinalSensitivityHash != 0 ||
+            resources.directDensityCurvesHash != 0 ||
+            resources.directDensityBoundsHash != 0 ||
+            resources.directScannerDescriptorHash != 0) {
+            resources.uploadedBuildCounter = 0;
+            resources.uploadedCoreHash = 0;
+            resources.uploadedDirHash = 0;
+            resources.directFinalSensitivityHash = 0;
+            resources.directDensityCurvesHash = 0;
+            resources.directDensityBoundsHash = 0;
+            resources.directScannerDescriptorHash = 0;
+        }
+
         const bool coreUpToDate = (resources.uploadedCoreHash != 0) && (resources.uploadedCoreHash == wsCoreHash);
         const bool dirUpToDate = (resources.uploadedDirHash != 0) && (resources.uploadedDirHash == wsDirHash);
 

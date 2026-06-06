@@ -2120,9 +2120,340 @@ namespace JuicerCuda {
     // Split implementation sections (single-TU include model to preserve exact behavior while
     // reducing monolithic file size and keeping ownership boundaries explicit).
     #include "Cuda/JuicerCudaResourcesServing.inc"
-// Cuda/JuicerCudaResourcesScratch.cpp
-//
-// Included by JuicerCudaResources.cpp (single-TU split).
+    bool prepare_direct_resources(
+        Resources& resources,
+        const DirectResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)request;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (!request.recipe || !request.exposureTables || !request.spdSInv ||
+            !request.filmRawConfig || !request.scannerTables || !request.scannerColor ||
+            !request.scannerLutDescriptor) {
+            outError = "direct resource preparation request is incomplete";
+            return false;
+        }
+
+        const RenderRecipe& recipe = *request.recipe;
+        const FilmRawRecipe& filmRaw = recipe.filmRaw;
+        const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
+        const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
+        const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
+            *request.scannerLutDescriptor;
+        if (!recipe.directStructuralReady || recipe.hash == 0 ||
+            filmRaw.finalSensitivityHash == 0 ||
+            filmDevelop.normalizedDensityCurvesHash == 0 ||
+            densityBounds.hash == 0 ||
+            scannerDescriptor.hash == 0 ||
+            scannerDescriptor.densityBoundsHash != densityBounds.hash) {
+            outError = "direct resource descriptor mismatch";
+            return false;
+        }
+        if (request.exposureTables->K != Spectral::kNumSamples ||
+            request.scannerTables->K != Spectral::kNumSamples ||
+            filmDevelop.logExposure.empty() ||
+            filmDevelop.logExposure.size() != filmDevelop.normalizedDensityCurves.size()) {
+            outError = "direct resource host derivation shape mismatch";
+            return false;
+        }
+
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
+        std::unique_lock<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        const bool alreadyPrepared =
+            resources.directFinalSensitivityHash == filmRaw.finalSensitivityHash &&
+            resources.directDensityCurvesHash == filmDevelop.normalizedDensityCurvesHash &&
+            resources.directDensityBoundsHash == densityBounds.hash &&
+            resources.directScannerDescriptorHash == scannerDescriptor.hash &&
+            resources.directSelectedMethod == filmRaw.rgbToRawMethod &&
+            resources.sensB.x && resources.sensG.x && resources.sensR.x &&
+            resources.densB.x && resources.densG.x && resources.densR.x &&
+            resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesIllum &&
+            resources.scanNegative.tables.epsC && resources.scanNegativeLut.log2XYZ &&
+            resources.scanNegativeLut.hash == scannerDescriptor.hash &&
+            ((filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 &&
+              resources.hanatosLut && resources.hanatosLutIntegrated && !resources.mallettBasis) ||
+             (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 &&
+              resources.mallettBasis && !resources.hanatosLut && !resources.hanatosLutIntegrated));
+        if (alreadyPrepared) {
+            return true;
+        }
+
+        Spectral::Curve sensB;
+        Spectral::Curve sensG;
+        Spectral::Curve sensR;
+        sensB.lambda_nm.assign(Spectral::gShape.wavelengths.begin(), Spectral::gShape.wavelengths.end());
+        sensG.lambda_nm = sensB.lambda_nm;
+        sensR.lambda_nm = sensB.lambda_nm;
+        sensB.linear.resize(Spectral::kNumSamples);
+        sensG.linear.resize(Spectral::kNumSamples);
+        sensR.linear.resize(Spectral::kNumSamples);
+        for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
+            const auto& rgb = filmRaw.finalSensitivity[static_cast<std::size_t>(sample)];
+            sensB.linear[static_cast<std::size_t>(sample)] = rgb[2];
+            sensG.linear[static_cast<std::size_t>(sample)] = rgb[1];
+            sensR.linear[static_cast<std::size_t>(sample)] = rgb[0];
+        }
+
+        Spectral::Curve densB;
+        Spectral::Curve densG;
+        Spectral::Curve densR;
+        densB.lambda_nm = filmDevelop.logExposure;
+        densG.lambda_nm = filmDevelop.logExposure;
+        densR.lambda_nm = filmDevelop.logExposure;
+        densB.linear.resize(filmDevelop.normalizedDensityCurves.size());
+        densG.linear.resize(filmDevelop.normalizedDensityCurves.size());
+        densR.linear.resize(filmDevelop.normalizedDensityCurves.size());
+        for (std::size_t sample = 0; sample < filmDevelop.normalizedDensityCurves.size(); ++sample) {
+            const auto& rgb = filmDevelop.normalizedDensityCurves[sample];
+            densB.linear[sample] = rgb[2];
+            densG.linear[sample] = rgb[1];
+            densR.linear[sample] = rgb[0];
+        }
+
+        if (!upload_curve_locked(resources, resources.sensB, sensB, cudaStreamOpaque, &lock, "direct finalSensB", outError) ||
+            !upload_curve_locked(resources, resources.sensG, sensG, cudaStreamOpaque, &lock, "direct finalSensG", outError) ||
+            !upload_curve_locked(resources, resources.sensR, sensR, cudaStreamOpaque, &lock, "direct finalSensR", outError) ||
+            !upload_curve_locked(resources, resources.densB, densB, cudaStreamOpaque, &lock, "direct normalizedDensB", outError) ||
+            !upload_curve_locked(resources, resources.densG, densG, cudaStreamOpaque, &lock, "direct normalizedDensG", outError) ||
+            !upload_curve_locked(resources, resources.densR, densR, cudaStreamOpaque, &lock, "direct normalizedDensR", outError)) {
+            return false;
+        }
+
+        const Spectral::SpectralTables& exposureTables = *request.exposureTables;
+        const int exposureK = exposureTables.K;
+        if (!upload_array_locked(resources, resources.tablesAx, resources.tablesK, exposureTables.Ax.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesAx", outError) ||
+            !upload_array_locked(resources, resources.tablesAy, resources.tablesK, exposureTables.Ay.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesAy", outError) ||
+            !upload_array_locked(resources, resources.tablesAz, resources.tablesK, exposureTables.Az.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesAz", outError) ||
+            !upload_array_locked(resources, resources.tablesIllum, resources.tablesK, exposureTables.illum.data(), exposureK, cudaStreamOpaque, &lock, "direct tablesIllum", outError)) {
+            return false;
+        }
+        resources.tablesK = exposureK;
+        std::copy_n(request.spdSInv, 9, resources.spdSInv);
+        std::copy_n(request.filmRawConfig->refIllumWhiteXYZ, 3, resources.refIllumWhiteXYZ);
+
+        Spectral::SpectralContext& context = Spectral::context();
+        if (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
+            const int n = context.hanSpectra.size;
+            const int k = context.hanSpectra.numSamples;
+            if (!context.hanatosAvailable.load(std::memory_order_acquire) ||
+                n <= 0 || k != Spectral::kNumSamples || context.hanSpectra.data.empty()) {
+                outError = "selected Hanatos resource family is unavailable";
+                return false;
+            }
+            const int lutCount = n * n * k;
+            if (!upload_array_locked(resources, resources.hanatosLut, resources.hanatosN * resources.hanatosN * k, context.hanSpectra.data.data(), lutCount, cudaStreamOpaque, &lock, "direct Hanatos LUT", outError)) {
+                return false;
+            }
+            resources.hanatosN = n;
+
+            std::vector<float> integrated(static_cast<std::size_t>(n) * static_cast<std::size_t>(n) * 4u, 0.0f);
+            for (int x = 0; x < n; ++x) {
+                for (int y = 0; y < n; ++y) {
+                    double accR = 0.0;
+                    double accG = 0.0;
+                    double accB = 0.0;
+                    const std::size_t base =
+                        (static_cast<std::size_t>(x) * static_cast<std::size_t>(n) + static_cast<std::size_t>(y)) *
+                        static_cast<std::size_t>(k);
+                    for (int sample = 0; sample < k; ++sample) {
+                        const float energy = std::max(0.0f, context.hanSpectra.data[base + static_cast<std::size_t>(sample)]);
+                        const auto& rgb = filmRaw.finalSensitivity[static_cast<std::size_t>(sample)];
+                        accR += static_cast<double>(energy) * rgb[0];
+                        accG += static_cast<double>(energy) * rgb[1];
+                        accB += static_cast<double>(energy) * rgb[2];
+                    }
+                    const std::size_t outBase =
+                        (static_cast<std::size_t>(x) * static_cast<std::size_t>(n) + static_cast<std::size_t>(y)) * 4u;
+                    integrated[outBase + 0] = static_cast<float>(accR);
+                    integrated[outBase + 1] = static_cast<float>(accG);
+                    integrated[outBase + 2] = static_cast<float>(accB);
+                }
+            }
+            const int integratedCount = n * n * 4;
+            if (!upload_array_locked(resources, resources.hanatosLutIntegrated, resources.hanatosNIntegrated * resources.hanatosNIntegrated * 4, integrated.data(), integratedCount, cudaStreamOpaque, &lock, "direct Hanatos integrated LUT", outError)) {
+                return false;
+            }
+            resources.hanatosNIntegrated = n;
+            resources.hanatosIntegratedKeyHash = filmRaw.finalSensitivityHash;
+            if (resources.mallettBasis) {
+                const std::size_t bytes = static_cast<std::size_t>(resources.mallettBasisK) * 3u * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.mallettBasis, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unselected Mallett basis", outError)) {
+                    return false;
+                }
+                resources.mallettBasis = nullptr;
+                resources.mallettBasisK = 0;
+            }
+        } else {
+            const int k = context.mallettBasis.rows;
+            if (!context.mallettAvailable.load(std::memory_order_acquire) ||
+                k != Spectral::kNumSamples || context.mallettBasis.cols != 3 ||
+                context.mallettBasis.data.empty()) {
+                outError = "selected Mallett resource family is unavailable";
+                return false;
+            }
+            const int count = k * 3;
+            if (!upload_array_locked(resources, resources.mallettBasis, resources.mallettBasisK * 3, context.mallettBasis.data.data(), count, cudaStreamOpaque, &lock, "direct Mallett basis", outError)) {
+                return false;
+            }
+            resources.mallettBasisK = k;
+            if (resources.hanatosLut) {
+                const std::size_t bytes = static_cast<std::size_t>(resources.hanatosN) *
+                                          static_cast<std::size_t>(resources.hanatosN) * Spectral::kNumSamples * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.hanatosLut, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unselected Hanatos LUT", outError)) {
+                    return false;
+                }
+                resources.hanatosLut = nullptr;
+                resources.hanatosN = 0;
+            }
+            if (resources.hanatosLutIntegrated) {
+                const std::size_t bytes = static_cast<std::size_t>(resources.hanatosNIntegrated) *
+                                          static_cast<std::size_t>(resources.hanatosNIntegrated) * 4u * sizeof(float);
+                if (!retire_ptr_locked(resources, resources.hanatosLutIntegrated, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unselected Hanatos integrated LUT", outError)) {
+                    return false;
+                }
+                resources.hanatosLutIntegrated = nullptr;
+                resources.hanatosNIntegrated = 0;
+                resources.hanatosIntegratedKeyHash = 0;
+            }
+        }
+
+        const Spectral::SpectralTables& scannerTables = *request.scannerTables;
+        Resources::DeviceScanMedium& scan = resources.scanNegative;
+        const int scanK = scannerTables.K;
+        if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, scannerTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsC", outError) ||
+            !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, scannerTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsM", outError) ||
+            !upload_array_locked(resources, scan.tables.epsY, scan.tables.K, scannerTables.epsY.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsY", outError) ||
+            !upload_array_locked(resources, scan.tables.Ax, scan.tables.K, scannerTables.Ax.data(), scanK, cudaStreamOpaque, &lock, "direct scan Ax", outError) ||
+            !upload_array_locked(resources, scan.tables.Ay, scan.tables.K, scannerTables.Ay.data(), scanK, cudaStreamOpaque, &lock, "direct scan Ay", outError) ||
+            !upload_array_locked(resources, scan.tables.Az, scan.tables.K, scannerTables.Az.data(), scanK, cudaStreamOpaque, &lock, "direct scan Az", outError)) {
+            return false;
+        }
+        if (scannerTables.hasBaseline) {
+            if (!upload_array_locked(resources, scan.tables.baseMin, scan.tables.K, scannerTables.baseMin.data(), scanK, cudaStreamOpaque, &lock, "direct scan baseMin", outError)) {
+                return false;
+            }
+        } else if (scan.tables.baseMin) {
+            const std::size_t bytes = static_cast<std::size_t>(scan.tables.K) * sizeof(float);
+            if (!retire_ptr_locked(resources, scan.tables.baseMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "direct scan baseMin", outError)) {
+                return false;
+            }
+            scan.tables.baseMin = nullptr;
+        }
+        scan.tables.K = scanK;
+        scan.tables.hasBaseline = scannerTables.hasBaseline ? 1 : 0;
+        scan.tables.invYn = scannerTables.invYn;
+        scan.mediumIsNegative = 1;
+        for (int channel = 0; channel < 3; ++channel) {
+            scan.min_cmy[channel] = -densityBounds.dataMinCmy[static_cast<std::size_t>(channel)];
+            scan.inv_max_cmy[channel] = densityBounds.invSpanCmy[static_cast<std::size_t>(channel)];
+        }
+
+        Scanner::ScannerMediumRuntime medium{};
+        medium.medium = Scanner::ScannerMedium::Negative;
+        medium.tables = request.scannerTables;
+        medium.color = request.scannerColor;
+        for (int channel = 0; channel < 3; ++channel) {
+            medium.range.min_cmy[channel] = scan.min_cmy[channel];
+            medium.range.inv_max_cmy[channel] = scan.inv_max_cmy[channel];
+            medium.range.max_cmy[channel] =
+                scan.inv_max_cmy[channel] > 0.0f ? 1.0f / scan.inv_max_cmy[channel] : 0.0f;
+        }
+
+        std::vector<double> lutCpu;
+        lock.unlock();
+        const bool lutBuilt = Precompute::build_scan_lut_cpu(
+            medium,
+            scannerDescriptor.lutResolution,
+            lutCpu,
+            outError);
+        lock.lock();
+        if (!validate_resource_owner_locked(resources, outError, false) || !lutBuilt) {
+            return false;
+        }
+        Resources::DeviceSpectralLut& lut = resources.scanNegativeLut;
+        const std::size_t lutBytes = lutCpu.size() * sizeof(double);
+        if (lut.log2XYZ && lut.res == scannerDescriptor.lutResolution) {
+            if (!wait_for_frame_use_events_locked(resources, cudaStreamOpaque, "direct scan LUT", outError) ||
+                !enqueue_host_to_device_copy(
+                    "prepare_direct_resources",
+                    "direct scan LUT",
+                    lut.log2XYZ,
+                    lutCpu.data(),
+                    lutBytes,
+                    cudaStreamOpaque,
+                    outError)) {
+                return false;
+            }
+        } else {
+            double* nextLut = nullptr;
+            lock.unlock();
+            const cudaError_t allocError = cudaMalloc(reinterpret_cast<void**>(&nextLut), lutBytes);
+            const bool copyOk =
+                allocError == cudaSuccess &&
+                enqueue_host_to_device_copy(
+                    "prepare_direct_resources",
+                    "direct scan LUT",
+                    nextLut,
+                    lutCpu.data(),
+                    lutBytes,
+                    cudaStreamOpaque,
+                    outError);
+            lock.lock();
+            if (!validate_resource_owner_locked(resources, outError, false)) {
+                if (nextLut) {
+                    cudaFree(nextLut);
+                }
+                return false;
+            }
+            if (allocError != cudaSuccess) {
+                outError = std::string("cudaMalloc(direct scan LUT) failed: ") +
+                           (cudaGetErrorString(allocError) ? cudaGetErrorString(allocError) : "(unknown)");
+                return false;
+            }
+            if (!copyOk) {
+                cudaFree(nextLut);
+                return false;
+            }
+            if (lut.log2XYZ) {
+                const std::size_t oldCount =
+                    static_cast<std::size_t>(lut.res) * lut.res * lut.res * 3u;
+                if (!retire_ptr_locked(resources, lut.log2XYZ, oldCount * sizeof(double), Resources::RetireKind::DeviceFree, cudaStreamOpaque, "direct scan LUT", outError)) {
+                    cudaFree(nextLut);
+                    return false;
+                }
+            }
+            lut.log2XYZ = nextLut;
+        }
+        lut.res = scannerDescriptor.lutResolution;
+        lut.hash = scannerDescriptor.hash;
+
+        resources.directFinalSensitivityHash = filmRaw.finalSensitivityHash;
+        resources.directDensityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
+        resources.directDensityBoundsHash = densityBounds.hash;
+        resources.directScannerDescriptorHash = scannerDescriptor.hash;
+        resources.directSelectedMethod = filmRaw.rgbToRawMethod;
+        ++resources.directUploadCounter;
+        resources.uploadedBuildCounter = 0;
+        resources.uploadedCoreHash = 0;
+        resources.uploadedDirHash = 0;
+        resources.validatedBuildCounter = 0;
+        return true;
+#endif
+    }
+    // Cuda/JuicerCudaResourcesScratch.cpp
+    //
+    // Included by JuicerCudaResources.cpp (single-TU split).
     enum class SharedGaussianKind : std::uint8_t {
         Standard = 0,
         Halation = 1,

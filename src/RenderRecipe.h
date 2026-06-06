@@ -24,6 +24,12 @@ namespace Spektrafilm {
 
     inline constexpr const char kScannerPostEffectsNotImplementedForPhase3[] =
         "ScannerPostEffectsNotImplementedForPhase3";
+    inline constexpr const char kDirNotImplementedForPhase3[] =
+        "DirNotImplementedForPhase3";
+    inline constexpr const char kPositiveCorrectionNotImplementedForPhase3[] =
+        "PositiveCorrectionNotImplementedForPhase3";
+    inline constexpr const char kQuantizedMedianNotAcceptedForPhase3[] =
+        "QuantizedMedianNotAcceptedForPhase3";
 
     enum class RgbToRawMethod : std::uint8_t {
         Hanatos2025,

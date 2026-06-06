@@ -423,8 +423,15 @@ namespace Spektrafilm {
         scanner.lensBlurSigmaPx = input.scannerLensBlurSigmaPx;
         scanner.unsharpSigmaPx = input.scannerUnsharpSigmaPx;
         scanner.unsharpAmount = input.scannerUnsharpAmount;
-        scanner.postEffectsDisposition = ScannerPostEffectDisposition::BlockedNotImplementedForPhase3;
-        scanner.blockingDiagnostic = kScannerPostEffectsNotImplementedForPhase3;
+        const bool scannerPostEffectsIdentity =
+            scanner.lensBlurSigmaPx <= 0.0f &&
+            (scanner.unsharpSigmaPx <= 0.0f || scanner.unsharpAmount <= 0.0f);
+        scanner.postEffectsDisposition = scannerPostEffectsIdentity
+                                             ? ScannerPostEffectDisposition::Identity
+                                             : ScannerPostEffectDisposition::BlockedNotImplementedForPhase3;
+        scanner.blockingDiagnostic = scannerPostEffectsIdentity
+                                         ? std::string()
+                                         : kScannerPostEffectsNotImplementedForPhase3;
         scanner.hash = hash_scanner_output_recipe(scanner);
 
         result.recipe.directStructuralReady = true;

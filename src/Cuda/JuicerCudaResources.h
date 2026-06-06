@@ -19,6 +19,14 @@
 #include "RenderRecipe.h"
 
 struct WorkingState;
+namespace Spectral {
+    struct FilmRawConfig;
+    struct SpectralTables;
+} // namespace Spectral
+namespace Scanner {
+    struct ColorRuntime;
+    struct ScannerSpectralLutDescriptor;
+} // namespace Scanner
 namespace Print {
     struct Runtime;
     struct Params;
@@ -169,6 +177,12 @@ namespace JuicerCuda {
         std::uint64_t validatedBuildCounter = 0;
         std::uint64_t validatedPrintBuildCounter = 0;
         std::uint64_t validatedPrintParamsHash = 0;
+        std::uint64_t directFinalSensitivityHash = 0;
+        std::uint64_t directDensityCurvesHash = 0;
+        std::uint64_t directDensityBoundsHash = 0;
+        std::uint64_t directScannerDescriptorHash = 0;
+        Spektrafilm::RgbToRawMethod directSelectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
+        std::uint64_t directUploadCounter = 0;
 
         struct PendingFrameUseEvent {
             void* eventOpaque = nullptr;
@@ -432,6 +446,24 @@ namespace JuicerCuda {
 
     // Narrow context-static serving helper used by the process-owned Root grain slots.
     bool ensure_grain_static_assets_uploaded(Resources& resources, void* cudaStreamOpaque, std::string& outError);
+
+    struct DirectResourcePreparation {
+        const RenderRecipe* recipe = nullptr;
+        const Spectral::SpectralTables* exposureTables = nullptr;
+        const float* spdSInv = nullptr;
+        const Spectral::FilmRawConfig* filmRawConfig = nullptr;
+        const Spectral::SpectralTables* scannerTables = nullptr;
+        const Scanner::ColorRuntime* scannerColor = nullptr;
+        const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
+    };
+
+    // Descriptor-driven direct-route preparation. This is called only behind Root's prepared
+    // frame boundary and intentionally has no WorkingState or static-noise input.
+    bool prepare_direct_resources(
+        Resources& resources,
+        const DirectResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError);
 
     // Runtime serving acquisition/rebuild calls are intentionally manager-only via
     // ResourceManager::command_* wrappers.

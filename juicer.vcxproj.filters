@@ -113,6 +113,9 @@
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h">
       <Filter>Cuda</Filter>
     </ClInclude>
+    <ClInclude Include="src\Cuda\JuicerCudaDirectFilmPayloads.h">
+      <Filter>Cuda</Filter>
+    </ClInclude>
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh">
       <Filter>Cuda</Filter>
     </ClInclude>

@@ -11,6 +11,7 @@
 #include "ResourceAssetLibrary.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/JuicerCudaDirectFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #endif
 
@@ -80,6 +81,16 @@ namespace JuicerProcess {
             bool enabled = false;
             JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
             std::uint64_t reusableKeyHash = 0;
+        };
+
+        struct DirectCudaPreparationRequest {
+            const Spektrafilm::RenderRecipe* recipe = nullptr;
+            const Spectral::SpectralTables* exposureTables = nullptr;
+            const float* spdSInv = nullptr;
+            const Spectral::FilmRawConfig* filmRawConfig = nullptr;
+            const Spectral::SpectralTables* scannerTables = nullptr;
+            const Scanner::ColorRuntime* scannerColor = nullptr;
+            const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
         };
 
         class PreparedCudaFrame final {
@@ -232,6 +243,22 @@ namespace JuicerProcess {
                 float printIllumCShiftSteps = 0.0f;
                 bool printPreflashValid = false;
                 std::uint64_t printPreflashKeyHash = 0;
+                std::uint64_t directUploadCounter = 0;
+                std::uint64_t finalSensitivityHash = 0;
+                std::uint64_t densityCurvesHash = 0;
+                std::uint64_t densityBoundsHash = 0;
+                std::uint64_t scannerDescriptorHash = 0;
+                bool active = false;
+            };
+
+            struct DirectPreparedView {
+                JuicerCuda::DirectFilmPreparedView film{};
+                const JuicerCuda::Resources::DeviceScanMedium* scanMedium = nullptr;
+                const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
+                const Scanner::ColorRuntime* scannerColor = nullptr;
+                std::uint64_t densityBoundsHash = 0;
+                std::uint64_t scannerDescriptorHash = 0;
+                Spektrafilm::RgbToRawMethod selectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
                 bool active = false;
             };
 
@@ -272,6 +299,7 @@ namespace JuicerProcess {
             OpticsKernelView optics_kernels() const noexcept;
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
             UploadTraceView upload_trace_view() const noexcept;
+            DirectPreparedView direct_resources() const noexcept;
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             ScannerOpticsScratchView scanner_optics_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             struct AutoExposureWeightsExtent {
@@ -434,6 +462,13 @@ namespace JuicerProcess {
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const WorkingState& workingState,
+            const AutoExposureBufferRequest& autoExposureBufferRequest,
+            void* cudaStreamOpaque,
+            std::string& outError);
+        PreparedCudaFrame prepare_cuda_frame(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            const DirectCudaPreparationRequest& request,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
             std::string& outError);

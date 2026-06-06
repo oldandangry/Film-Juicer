@@ -3064,8 +3064,8 @@ OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
     return params;
 }
 
-// SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3:
-// retained CPU metering helper is unreachable from product render after JuicerEffect::render cutoff.
+// SF_TEMP_BRIDGE_CPUAutoExposure owner=Phase3C remove=Phase4:
+// retained for blocked non-direct routes; direct CUDA rendering meters the full source on device.
 JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     const OFX::RenderArguments& args,
     OFX::Image* srcImg,
@@ -3534,7 +3534,14 @@ JuicerEffect::~JuicerEffect() {
 }
 
 void JuicerEffect::render(const OFX::RenderArguments& args) {
-    throw_spektrafilm_phase1a_render_cutoff(args);
+    const Spektrafilm::ScanRoute requestedRoute = Spektrafilm::scan_route_from_key_or(
+        read_str_choice_param_or(_pScanRoute, Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute)),
+        Spektrafilm::kDefaultScanRoute);
+    const bool directCudaRoute =
+        args.isEnabledCudaRender && !Spektrafilm::scan_route_is_print(requestedRoute);
+    if (!directCudaRoute) {
+        throw_spektrafilm_phase1a_render_cutoff(args);
+    }
 
     auto framePreparation = JuicerProcess::root().begin_frame_preparation();
     if (!framePreparation.active()) {
@@ -3612,7 +3619,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const int fullHeight = fullBounds.y2 - fullBounds.y1;
     const bool fullFrame = (roi.x1 == fullBounds.x1 && roi.y1 == fullBounds.y1 &&
                             roi.x2 == fullBounds.x2 && roi.y2 == fullBounds.y2);
-    if (!fullFrame) {
+    if (!fullFrame && !directCudaRoute) {
         JTRACE("RENDER", "FATAL: render window must match full frame; tiles/ROIs are unsupported");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
@@ -3646,11 +3653,9 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const double gateWeaveAmount = read_double_param_or(_pGateWeaveAmount, 1.0);
     OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
 
-    const AutoExposureResult autoExposure = computeAutoExposure(
-        args,
-        srcImg.get(),
-        fullBounds,
-        exposureParams);
+    // Direct CUDA metering consumes the full source device image and publishes same-frame scale
+    // on device; the retained CPU helper remains unreachable from the direct product path.
+    const AutoExposureResult autoExposure{};
 
 #ifdef JUICER_ENABLE_COUPLERS
     Couplers::Runtime dirRT = prepareCouplers(args, fullWidth, fullHeight, pixelSizeUm);
@@ -3698,7 +3703,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: working state not ready; aborting render"});
     }
 
-    if (!printParams.bypass && !printReady) {
+    if (!directCudaRoute && !printParams.bypass && !printReady) {
         trace_and_throw_render_fatal(RenderFatalTrace{"PRINT", "FATAL: print runtime not ready while print path requested"});
     }
 

@@ -285,6 +285,8 @@ namespace JuicerProcess {
         Root::CudaResourceOwner grainStaticOwner;
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::Resources* grainStaticResources = nullptr;
+        const Spectral::FilmRawConfig* directFilmRawConfig = nullptr;
+        const Scanner::ColorRuntime* directScannerColor = nullptr;
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         ScanErrorFrameStage scanErrorStage{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
@@ -1933,7 +1935,55 @@ namespace JuicerProcess {
         view.printIllumCShiftSteps = _state->resources->printIllumCShiftSteps;
         view.printPreflashValid = _state->resources->printPreflashValid;
         view.printPreflashKeyHash = _state->resources->printPreflashKeyHash;
+        view.directUploadCounter = _state->resources->directUploadCounter;
+        view.finalSensitivityHash = _state->resources->directFinalSensitivityHash;
+        view.densityCurvesHash = _state->resources->directDensityCurvesHash;
+        view.densityBoundsHash = _state->resources->directDensityBoundsHash;
+        view.scannerDescriptorHash = _state->resources->directScannerDescriptorHash;
         view.active = true;
+        return view;
+    }
+
+    Root::PreparedCudaFrame::DirectPreparedView Root::PreparedCudaFrame::direct_resources() const noexcept {
+        DirectPreparedView view{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
+            !_state->directFilmRawConfig || !_state->directScannerColor) {
+            return view;
+        }
+
+        const JuicerCuda::Resources& resources = *_state->resources;
+        view.film.finalSensB = {resources.sensB.x, resources.sensB.y, resources.sensB.n, resources.sensB.domainBegin, resources.sensB.domainEnd};
+        view.film.finalSensG = {resources.sensG.x, resources.sensG.y, resources.sensG.n, resources.sensG.domainBegin, resources.sensG.domainEnd};
+        view.film.finalSensR = {resources.sensR.x, resources.sensR.y, resources.sensR.n, resources.sensR.domainBegin, resources.sensR.domainEnd};
+        view.film.normalizedDensB = {resources.densB.x, resources.densB.y, resources.densB.n, resources.densB.domainBegin, resources.densB.domainEnd};
+        view.film.normalizedDensG = {resources.densG.x, resources.densG.y, resources.densG.n, resources.densG.domainBegin, resources.densG.domainEnd};
+        view.film.normalizedDensR = {resources.densR.x, resources.densR.y, resources.densR.n, resources.densR.domainBegin, resources.densR.domainEnd};
+        view.film.tablesAx = resources.tablesAx;
+        view.film.tablesAy = resources.tablesAy;
+        view.film.tablesAz = resources.tablesAz;
+        view.film.tablesIllum = resources.tablesIllum;
+        view.film.tablesK = resources.tablesK;
+        std::copy_n(resources.spdSInv, 9, view.film.spdSInv);
+        view.film.hanatosLut = resources.hanatosLut;
+        view.film.hanatosN = resources.hanatosN;
+        view.film.hanatosLutIntegrated = resources.hanatosLutIntegrated;
+        view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
+        view.film.mallettBasis = resources.mallettBasis;
+        view.film.mallettBasisK = resources.mallettBasisK;
+        std::copy_n(_state->directFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
+        std::copy_n(_state->directFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
+        view.film.applyInputChromaticAdapt = _state->directFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
+        std::copy_n(resources.refIllumWhiteXYZ, 3, view.film.refIllumWhiteXYZ);
+        view.film.finalSensitivityHash = resources.directFinalSensitivityHash;
+        view.film.normalizedDensityCurvesHash = resources.directDensityCurvesHash;
+        view.scanMedium = &resources.scanNegative;
+        view.scanLut = &resources.scanNegativeLut;
+        view.scannerColor = _state->directScannerColor;
+        view.densityBoundsHash = resources.directDensityBoundsHash;
+        view.scannerDescriptorHash = resources.directScannerDescriptorHash;
+        view.selectedMethod = resources.directSelectedMethod;
+        view.active = view.scanMedium && view.scanLut->log2XYZ &&
+                      view.densityBoundsHash != 0 && view.scannerDescriptorHash != 0;
         return view;
     }
 
@@ -2375,6 +2425,79 @@ namespace JuicerProcess {
         return frame;
     }
 
+    Root::PreparedCudaFrame Root::prepare_cuda_frame(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        const DirectCudaPreparationRequest& request,
+        const AutoExposureBufferRequest& autoExposureBufferRequest,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        std::unique_ptr<PreparedCudaFrame::State> state;
+        try {
+            state = std::make_unique<PreparedCudaFrame::State>();
+        } catch (...) {
+            outError = "failed to allocate direct CUDA prepared frame";
+            return PreparedCudaFrame{};
+        }
+
+        PreparedCudaFrame frame(std::move(state));
+        frame._state->root = this;
+        frame._state->remember_stream(cudaStreamOpaque);
+        frame._state->set_failure("prepare_cuda_frame_direct", "CUDA direct prepared frame failed");
+        if (!begin_submission(frame._state->transaction, snapshot, outError)) {
+            frame._state->set_failure("begin_submission_direct", "direct begin_submission failed");
+            return frame;
+        }
+        if (!resolve_cuda_frame_resources(
+                deviceContextKey,
+                frame._state->transaction.snapshot.contextEpoch,
+                frame._state->resourceOwner,
+                frame._state->resources,
+                outError)) {
+            frame._state->set_failure("resolve_cuda_direct_resources", "CUDA direct resource acquisition failed");
+            frame.abort("direct_prepared_frame_resource_acquire_failed");
+            return frame;
+        }
+        if (!acquire_submission_plan(frame._state->transaction, outError)) {
+            frame._state->set_failure("acquire_direct_plan", "direct acquire_plan failed");
+            frame.abort("direct_prepared_frame_acquire_failed");
+            return frame;
+        }
+
+        JuicerCuda::DirectResourcePreparation directRequest{};
+        directRequest.recipe = request.recipe;
+        directRequest.exposureTables = request.exposureTables;
+        directRequest.spdSInv = request.spdSInv;
+        directRequest.filmRawConfig = request.filmRawConfig;
+        directRequest.scannerTables = request.scannerTables;
+        directRequest.scannerColor = request.scannerColor;
+        directRequest.scannerLutDescriptor = request.scannerLutDescriptor;
+        if (!JuicerCuda::prepare_direct_resources(
+                *frame._state->resources,
+                directRequest,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure("prepare_direct_resources", "CUDA direct resource preparation failed");
+            frame.abort("direct_prepared_frame_upload_failed");
+            return frame;
+        }
+        frame._state->directFilmRawConfig = request.filmRawConfig;
+        frame._state->directScannerColor = request.scannerColor;
+        if (!frame._state->allocate_scan_error_stage(outError)) {
+            frame._state->set_failure("allocate_direct_scan_error_stage", "CUDA direct scan error staging allocation failed");
+            frame.abort("direct_prepared_frame_scan_error_flag_failed");
+            return frame;
+        }
+        if (autoExposureBufferRequest.enabled &&
+            !frame._state->allocate_auto_exposure_workspace(autoExposureBufferRequest.descriptor, outError)) {
+            frame._state->set_failure("allocate_direct_auto_exposure_workspace", "CUDA direct auto-exposure workspace allocation failed");
+            frame.abort("direct_prepared_frame_auto_exposure_failed");
+            return frame;
+        }
+        return frame;
+    }
+
     bool Root::begin_submission(
         JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
@@ -2411,8 +2534,7 @@ namespace JuicerProcess {
             JuicerLogging::discard_current_exception();
             try {
                 outError = "registry-wide context retire threw";
-            }
-            catch (...) {
+            } catch (...) {
                 JuicerLogging::discard_current_exception();
             }
             return false;

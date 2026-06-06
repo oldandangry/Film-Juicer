@@ -294,6 +294,7 @@
     <ClInclude Include="src\ColorTransforms.h" />
     <ClInclude Include="src\Couplers.h" />
     <ClInclude Include="src\Cuda\JuicerCudaPayloads.h" />
+    <ClInclude Include="src\Cuda\JuicerCudaDirectFilmPayloads.h" />
     <ClInclude Include="src\Cuda\JuicerCudaDeviceHelpers.cuh" />
     <ClInclude Include="src\Cuda\JuicerCudaResources.h" />
     <ClInclude Include="src\Cuda\ResourceManager\JuicerCudaResourceManager.h" />
