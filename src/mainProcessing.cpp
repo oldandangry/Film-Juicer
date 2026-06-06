@@ -25,6 +25,7 @@
 #endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/JuicerCudaDirectFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
@@ -1472,30 +1473,59 @@ namespace JuicerProcScanner {
 
 namespace {
 
-    struct AutoExposureReusableKeyInputs {
-        const OfxRectI& meterBounds;
-        const OfxRectI& srcBounds;
-        std::ptrdiff_t srcRowBytes;
-        int nComponents;
-        const Spectral::FilmRawConfig& filmRaw;
-        int meteringMethod;
-    };
+    JuicerCuda::AutoExposurePreviewDescriptor make_auto_exposure_preview_descriptor(
+        const OfxRectI& sourceBounds,
+        const OfxRectI& meterBounds,
+        Spektrafilm::AutoExposureMethod method) {
+        JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
+        descriptor.sourceX1 = sourceBounds.x1;
+        descriptor.sourceY1 = sourceBounds.y1;
+        descriptor.sourceX2 = sourceBounds.x2;
+        descriptor.sourceY2 = sourceBounds.y2;
+        descriptor.meterX1 = meterBounds.x1;
+        descriptor.meterY1 = meterBounds.y1;
+        descriptor.meterX2 = meterBounds.x2;
+        descriptor.meterY2 = meterBounds.y2;
+        descriptor.method = method;
+        descriptor.sampling = JuicerCuda::AutoExposurePreviewDescriptor::Sampling::NearestNeighbor;
 
-    std::uint64_t make_auto_exposure_reusable_key_hash(
-        const AutoExposureReusableKeyInputs& inputs) {
-        std::uint64_t h = Hash::kFnvOffset;
-        Hash::hash_bytes_update(h, &inputs.meterBounds, sizeof(inputs.meterBounds));
-        Hash::hash_bytes_update(h, &inputs.srcBounds, sizeof(inputs.srcBounds));
-        Hash::hash_bytes_update(h, &inputs.srcRowBytes, sizeof(inputs.srcRowBytes));
-        Hash::hash_bytes_update(h, &inputs.nComponents, sizeof(inputs.nComponents));
-        Hash::hash_bytes_update(h, &inputs.filmRaw.inputColorSpace, sizeof(inputs.filmRaw.inputColorSpace));
-        Hash::hash_bytes_update(h, &inputs.filmRaw.applyCctfDecoding, sizeof(inputs.filmRaw.applyCctfDecoding));
-        Hash::hash_bytes_update(h, &inputs.filmRaw.inputRGBToXYZ, sizeof(inputs.filmRaw.inputRGBToXYZ));
-        Hash::hash_bytes_update(h, &inputs.meteringMethod, sizeof(inputs.meteringMethod));
-        if (h == 0) {
-            h = 1;
+        const int width = std::max(0, meterBounds.x2 - meterBounds.x1);
+        const int height = std::max(0, meterBounds.y2 - meterBounds.y1);
+        const int longEdge = std::max(width, height);
+        descriptor.previewWidth = width;
+        descriptor.previewHeight = height;
+        if (longEdge > JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge) {
+            if (width >= height) {
+                descriptor.previewWidth = JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge;
+                descriptor.previewHeight = std::max(
+                    1,
+                    (height * JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge + width / 2) /
+                        width);
+            } else {
+                descriptor.previewHeight = JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge;
+                descriptor.previewWidth = std::max(
+                    1,
+                    (width * JuicerCuda::AutoExposurePreviewDescriptor::kMaxLongEdge + height / 2) /
+                        height);
+            }
         }
-        return h;
+        descriptor.hash = Hash::kFnvOffset;
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceX1, sizeof(descriptor.sourceX1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceY1, sizeof(descriptor.sourceY1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceX2, sizeof(descriptor.sourceX2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sourceY2, sizeof(descriptor.sourceY2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterX1, sizeof(descriptor.meterX1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterY1, sizeof(descriptor.meterY1));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterX2, sizeof(descriptor.meterX2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.meterY2, sizeof(descriptor.meterY2));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.previewWidth, sizeof(descriptor.previewWidth));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.previewHeight, sizeof(descriptor.previewHeight));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.method, sizeof(descriptor.method));
+        Hash::hash_bytes_update(descriptor.hash, &descriptor.sampling, sizeof(descriptor.sampling));
+        if (descriptor.hash == 0) {
+            descriptor.hash = 1;
+        }
+        return descriptor;
     }
 
     float compute_print_midgray_factor(
@@ -1784,9 +1814,10 @@ void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
 }
 
 void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
-    // SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase3A direct-boundary audit:
+    // SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase3C direct-launch/Phase4 print audit:
     // allowed=JuicerEffect::render adapter; hash_owner=none; output_impact=blocked legacy path;
-    // remove=Phase3B/3C for direct recipe/profile/scanner/resource policy.
+    // direct film-raw/develop and auto-exposure policy now reads request.recipe through
+    // _recipeHold; remove remaining scanner/print/optics/grain copies in their owning phases.
     setRenderWindowRect(request.renderWindow);
     setComponents(request.components);
     _scannerOptions = request.scannerOptions;
@@ -1803,6 +1834,7 @@ void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
     _hasPrintGlareOverride = request.hasPrintGlareOverride;
     _dirRT = request.dirRuntime;
 
+    _recipeHold = request.recipe;
     _wsHold = request.workingState;
     setWorkingState(_wsHold.get(), request.workingStateReady);
     setPrintRuntime(
@@ -2878,16 +2910,20 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    const std::uint64_t autoExposureReusableKeyHash = make_auto_exposure_reusable_key_hash(
-        AutoExposureReusableKeyInputs{
-            srcBounds,
-            srcBounds,
-            srcRowBytes,
-            _nComponents,
-            _ws->filmRaw,
-            _cameraMeteringMethod});
+    const RenderRecipe* directRecipe =
+        (_recipeHold && !Spektrafilm::scan_route_is_print(_recipeHold->profileRoute.scanRoute))
+            ? _recipeHold.get()
+            : nullptr;
+    const FilmRawRecipe* directFilmRaw = directRecipe ? &directRecipe->filmRaw : nullptr;
+    const bool cameraAutoEnabled =
+        directFilmRaw ? directFilmRaw->autoExposureEnabled : _cameraAutoEnabled;
+    const Spektrafilm::AutoExposureMethod cameraMeteringMethod =
+        directFilmRaw
+            ? directFilmRaw->autoExposureMethod
+            : static_cast<Spektrafilm::AutoExposureMethod>(
+                  std::clamp(_cameraMeteringMethod, 0, 6));
     OfxRectI meterBounds = srcBounds;
-    if (_cameraAutoEnabled && _autoExposureMeterBoundsValid) {
+    if (!directFilmRaw && cameraAutoEnabled && _autoExposureMeterBoundsValid) {
         meterBounds = _autoExposureMeterBounds;
     }
     auto clamp_rect = [](OfxRectI r, const OfxRectI& bounds) {
@@ -2911,17 +2947,16 @@ void JuicerProcessor::processImagesCUDA() {
     if ((meterBounds.x2 - meterBounds.x1) <= 0 || (meterBounds.y2 - meterBounds.y1) <= 0) {
         meterBounds = srcBounds;
     }
-    const int autoExposureMeterWidth = meterBounds.x2 - meterBounds.x1;
-    const int autoExposureMeterHeight = meterBounds.y2 - meterBounds.y1;
+    const JuicerCuda::AutoExposurePreviewDescriptor autoExposureDescriptor =
+        make_auto_exposure_preview_descriptor(srcBounds, meterBounds, cameraMeteringMethod);
     JuicerProcess::Root::AutoExposureBufferRequest autoExposureBufferRequest{};
     autoExposureBufferRequest.enabled =
-        _cameraAutoEnabled &&
+        cameraAutoEnabled &&
         (_nComponents == 3 || _nComponents == 4) &&
-        autoExposureMeterWidth > 0 &&
-        autoExposureMeterHeight > 0;
-    autoExposureBufferRequest.meterWidth = autoExposureMeterWidth;
-    autoExposureBufferRequest.meterHeight = autoExposureMeterHeight;
-    autoExposureBufferRequest.reusableKeyHash = autoExposureReusableKeyHash;
+        autoExposureDescriptor.previewWidth > 0 &&
+        autoExposureDescriptor.previewHeight > 0;
+    autoExposureBufferRequest.descriptor = autoExposureDescriptor;
+    autoExposureBufferRequest.reusableKeyHash = autoExposureDescriptor.hash;
 
     JuicerCuda::ResourceManager::SubmissionSnapshot snapshot{};
     {
@@ -2939,7 +2974,7 @@ void JuicerProcessor::processImagesCUDA() {
                 uploadCoreHash,
                 _ws->dirHash,
                 scannerRuntimeHash,
-                autoExposureReusableKeyHash);
+                autoExposureDescriptor.hash);
         snapshot.keySchemaVersion = JuicerCuda::ResourceManager::kSubmissionKeySchemaVersion;
         snapshot.traceSchemaVersion = JuicerCuda::ResourceManager::kTraceSchemaVersion;
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -3140,7 +3175,7 @@ void JuicerProcessor::processImagesCUDA() {
     const RenderMode renderMode = render_mode_from_print_bypass(_printParams.bypass);
 
     auto setup_camera_auto_exposure = [&](JuicerCuda::PipelineRunParams& run) {
-        if (!_cameraAutoEnabled) {
+        if (!cameraAutoEnabled) {
             return;
         }
         if (should_abort_effect()) {
@@ -3150,7 +3185,7 @@ void JuicerProcessor::processImagesCUDA() {
             return;
         }
 
-        if (autoExposureMeterWidth <= 0 || autoExposureMeterHeight <= 0) {
+        if (autoExposureDescriptor.previewWidth <= 0 || autoExposureDescriptor.previewHeight <= 0) {
             return;
         }
 
@@ -3175,36 +3210,30 @@ void JuicerProcessor::processImagesCUDA() {
         const double timeFrames = finite_or(_timeFrames, 0.0);
         Hash::hash_bytes_update(meterStateKey, &timeFrames, sizeof(timeFrames));
         Hash::hash_bytes_update(meterStateKey, &_clipToken, sizeof(_clipToken));
-        Hash::hash_bytes_update(meterStateKey, &meterBounds, sizeof(meterBounds));
-        Hash::hash_bytes_update(meterStateKey, &srcBounds, sizeof(srcBounds));
+        Hash::hash_bytes_update(
+            meterStateKey,
+            &autoExposureDescriptor.hash,
+            sizeof(autoExposureDescriptor.hash));
         Hash::hash_bytes_update(meterStateKey, &srcRowBytes, sizeof(srcRowBytes));
         Hash::hash_bytes_update(meterStateKey, &run.nComponents, sizeof(run.nComponents));
         Hash::hash_bytes_update(meterStateKey, &run.filmRaw.inputColorSpaceIndex, sizeof(run.filmRaw.inputColorSpaceIndex));
         Hash::hash_bytes_update(meterStateKey, &run.filmRaw.applyCctfDecoding, sizeof(run.filmRaw.applyCctfDecoding));
         Hash::hash_bytes_update(meterStateKey, &run.filmRaw.inputRGBToXYZ, sizeof(run.filmRaw.inputRGBToXYZ));
-        Hash::hash_bytes_update(meterStateKey, &_cameraMeteringMethod, sizeof(_cameraMeteringMethod));
+        Hash::hash_bytes_update(meterStateKey, &cameraMeteringMethod, sizeof(cameraMeteringMethod));
         if (meterStateKey == 0) {
             meterStateKey = 1;
         }
 
-        auto slider_equal = [](double a, double b) -> bool {
-            if (!(is_finite(a) && is_finite(b))) {
-                return false;
-            }
-            return std::abs(a - b) <= 1e-12;
-        };
-
         const bool needMeter = (autoExposureBuffers.keyHash != meterStateKey);
-        const bool needSliderUpdate = !slider_equal(autoExposureBuffers.sliderEV, _cameraSliderEV);
         const char* errMsg = nullptr;
         if (needMeter) {
-            if (_cameraMeteringMethod == 0) {
+            if (cameraMeteringMethod == Spektrafilm::AutoExposureMethod::CenterWeighted) {
                 if (!scratch.weightsX || !scratch.weightsY ||
-                    autoExposureBuffers.weightsWidth != autoExposureMeterWidth ||
-                    autoExposureBuffers.weightsHeight != autoExposureMeterHeight) {
+                    autoExposureBuffers.weightsWidth != autoExposureDescriptor.previewWidth ||
+                    autoExposureBuffers.weightsHeight != autoExposureDescriptor.previewHeight) {
                     const int rcW = juicer_cuda_auto_exposure_build_center_weight_tables(
-                        autoExposureMeterWidth,
-                        autoExposureMeterHeight,
+                        autoExposureDescriptor.previewWidth,
+                        autoExposureDescriptor.previewHeight,
                         scratch.weightsX,
                         scratch.weightsY,
                         _pCudaStream,
@@ -3216,28 +3245,19 @@ void JuicerProcessor::processImagesCUDA() {
                     }
                     preparedFrame.mark_auto_exposure_weights_built(
                         JuicerProcess::Root::PreparedCudaFrame::AutoExposureWeightsExtent{
-                            autoExposureMeterWidth,
-                            autoExposureMeterHeight});
+                            autoExposureDescriptor.previewWidth,
+                            autoExposureDescriptor.previewHeight});
                 }
             }
 
             const int rc = juicer_cuda_auto_exposure_meter_to_device(
                 srcBase,
                 static_cast<std::size_t>(srcRowBytes),
-                srcBounds.x1,
-                srcBounds.y1,
-                srcBounds.x2,
-                srcBounds.y2,
-                meterBounds.x1,
-                meterBounds.y1,
-                meterBounds.x2,
-                meterBounds.y2,
+                autoExposureDescriptor,
                 run.nComponents,
                 run.filmRaw.inputColorSpaceIndex,
                 run.filmRaw.applyCctfDecoding,
                 run.filmRaw.inputRGBToXYZ,
-                _cameraMeteringMethod,
-                _cameraSliderEV,
                 scratch,
                 state,
                 _pCudaStream,
@@ -3249,24 +3269,10 @@ void JuicerProcessor::processImagesCUDA() {
             }
             preparedFrame.mark_auto_exposure_metered(
                 JuicerProcess::Root::PreparedCudaFrame::AutoExposureMeteredResult{
-                    meterStateKey,
-                    _cameraSliderEV});
-        } else if (needSliderUpdate) {
-            const int rc = juicer_cuda_auto_exposure_update_scale_to_device(
-                _cameraSliderEV,
-                state,
-                _pCudaStream,
-                &errMsg);
-            if (rc != 0) {
-                throw_auto_exposure_mode_fatal(
-                    "CUDA auto-exposure slider update failed",
-                    errMsg);
-            }
-            preparedFrame.mark_auto_exposure_slider_updated(_cameraSliderEV);
+                    meterStateKey});
         }
 
         run.filmExpose.exposureScaleDevice = autoExposureBuffers.deviceState.exposureScale;
-        run.filmExpose.exposureScale = 1.0f;
     };
 
     struct GrainSetupResult {
@@ -4578,10 +4584,28 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmRaw.spectralUpsamplingMode = static_cast<int>(_ws->filmRaw.spectralUpsamplingMode);
         copy_float9(run.filmRaw.inputRGBToXYZ, _ws->filmRaw.inputRGBToXYZ.m);
         copy_float9(run.filmRaw.inputXYZAdapt, _ws->filmRaw.inputXYZAdapt.m);
-        run.filmRaw.midgrayScale = _ws->filmRaw.midgrayScale;
+        run.filmRaw.mallettGreenMidgrayScale =
+            directFilmRaw ? directFilmRaw->mallettGreenMidgrayScale : _ws->filmRaw.midgrayScale;
         copy_float3(run.filmRaw.refIllumWhiteXYZ, _ws->filmRaw.refIllumWhiteXYZ);
 
-        run.filmExpose.exposureScale = _exposureScale;
+        const double manualExposureEv =
+            directFilmRaw
+                ? static_cast<double>(directFilmRaw->manualExposureCompensationEv)
+                : _cameraSliderEV;
+        const double manualExposureScale = std::exp2(manualExposureEv);
+        run.filmExpose.manualExposureScale =
+            std::isfinite(manualExposureScale) && manualExposureScale > 0.0
+                ? static_cast<float>(manualExposureScale)
+                : 1.0f;
+        if (directFilmRaw) {
+            run.filmRaw.inputColorSpaceIndex = directFilmRaw->inputColorSpace;
+            run.filmRaw.applyCctfDecoding = bool_to_i32(directFilmRaw->inputCctfDecoding);
+            run.filmRaw.spectralUpsamplingMode =
+                directFilmRaw->rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 ? 1 : 0;
+            run.filmExpose.highlightBoost.boostEv = directFilmRaw->highlightBoost.boostEv;
+            run.filmExpose.highlightBoost.boostRange = directFilmRaw->highlightBoost.boostRange;
+            run.filmExpose.highlightBoost.protectEv = directFilmRaw->highlightBoost.protectEv;
+        }
         run.filmDevelop.gammaFactorB = _ws->gammaFactorB;
         run.filmDevelop.gammaFactorG = _ws->gammaFactorG;
         run.filmDevelop.gammaFactorR = _ws->gammaFactorR;

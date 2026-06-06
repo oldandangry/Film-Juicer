@@ -32,7 +32,12 @@
 namespace {
     enum class MeteringMethod : int {
         CenterWeighted = 0,
-        Median = 1
+        Average = 1,
+        Median = 2,
+        Partial = 3,
+        Matrix = 4,
+        MultiZone = 5,
+        HighlightWeighted = 6
     };
 
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);

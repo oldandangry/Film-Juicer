@@ -14,12 +14,12 @@
 struct WorkingState;
 
 // Phase 1C request bridge ledger:
-// - SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase3A direct-boundary audit:
+// - SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase3C direct-launch/Phase4 print audit:
 //   JuicerProcessor::setFrameRequest still copies this immutable boundary into mutable processor
 //   members while Phase 1A blocks product pixels. Allowed call site: JuicerEffect::render adapter
-//   only. Direct recipe/profile/scanner/resource policy must use request.recipe after Phase 3B;
-//   this bridge currently affects only the blocked legacy output path and owns no hash. Direct
-//   removal gate: Phase 3B/3C; print/DIR/optics/scanner/grain remnants stay with owning phases.
+//   only. Phase 3B film-raw/develop and auto-exposure policy uses request.recipe; this bridge
+//   affects only the blocked broad launch/resource path and owns no hash. Direct removal gate:
+//   Phase 3C; print/DIR/optics/scanner/grain remnants stay with owning phases.
 // - SF_TEMP_BRIDGE_CPUAutoExposureBlocked: current CPU auto-exposure fields are retained only as
 //   blocked legacy request facts; product spektrafilm rendering is cut off before CPU pixel reads.
 struct FrameRequest {

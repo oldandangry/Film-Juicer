@@ -132,7 +132,12 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kCameraMeteringMethod);
         p->setLabel("Camera metering");
         p->appendOption("Center-weighted");
+        p->appendOption("Average");
         p->appendOption("Median");
+        p->appendOption("Partial");
+        p->appendOption("Matrix");
+        p->appendOption("Multi-zone");
+        p->appendOption("Highlight-weighted");
         p->setDefault(0);
         p->setEvaluateOnChange(true);
     }

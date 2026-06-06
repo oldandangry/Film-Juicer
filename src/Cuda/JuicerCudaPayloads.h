@@ -47,7 +47,7 @@ namespace JuicerCuda {
             0,0,1
         };
 
-        float midgrayScale = 1.0f;
+        float mallettGreenMidgrayScale = 1.0f;
         float refIllumWhiteXYZ[3] = { 0.950455f, 1.0f, 1.089058f };
     };
 
@@ -119,9 +119,16 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT corrC = nullptr;
     };
 
+    struct HighlightBoostPayload {
+        float boostEv = 0.0f;
+        float boostRange = 0.3f;
+        float protectEv = 4.0f;
+    };
+
     struct FilmExposurePayload {
-        float exposureScale = 1.0f;
+        float manualExposureScale = 1.0f;
         const float* JUICER_RESTRICT exposureScaleDevice = nullptr;
+        HighlightBoostPayload highlightBoost{};
         DeviceCurveView sensB{};
         DeviceCurveView sensG{};
         DeviceCurveView sensR{};
@@ -320,10 +327,11 @@ namespace JuicerCuda {
         int glareRadius = 0;
     };
 
-    // SF_TEMP_BRIDGE_PipelineRunParams owner=Phase3A direct-payload audit:
+    // SF_TEMP_BRIDGE_PipelineRunParams owner=Phase3C direct-launch/Phase4 print audit:
     // allowed=existing blocked legacy CUDA pack/launch call sites only; hash_owner=none;
-    // output_impact=would be broad if Phase 1A cutoff were lifted; remove/narrow=Phase3B/3C before
-    // direct-route pixel acceptance. Phase 3A adds no recipe fields or inactive-stage population.
+    // output_impact=would be broad if Phase 1A cutoff were lifted; direct film payload ownership
+    // is now isolated in pack_direct_film_payloads; remove/narrow=Phase3C before direct-route
+    // pixel acceptance and Phase4 before print-route acceptance.
     struct PipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;

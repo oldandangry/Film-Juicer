@@ -255,8 +255,8 @@ namespace JuicerProcess {
             int weightsHeight = 0;
             int weightsXCapacity = 0;
             int weightsYCapacity = 0;
+            Spektrafilm::AutoExposureMethod method = Spektrafilm::AutoExposureMethod::CenterWeighted;
             std::uint64_t keyHash = 0;
-            double sliderEV = std::numeric_limits<double>::quiet_NaN();
             bool active = false;
         };
 
@@ -308,8 +308,7 @@ namespace JuicerProcess {
         }
 
         bool allocate_auto_exposure_workspace(
-            int meterWidth,
-            int meterHeight,
+            const JuicerCuda::AutoExposurePreviewDescriptor& descriptor,
             std::string& outError);
         bool allocate_scan_error_stage(std::string& outError);
         bool release_scan_error_stage_after_use(
@@ -439,11 +438,12 @@ namespace JuicerProcess {
     }
 
     bool Root::PreparedCudaFrame::State::allocate_auto_exposure_workspace(
-        int meterWidth,
-        int meterHeight,
+        const JuicerCuda::AutoExposurePreviewDescriptor& descriptor,
         std::string& outError) {
         outError.clear();
         free_auto_exposure_workspace_now();
+        const int meterWidth = descriptor.previewWidth;
+        const int meterHeight = descriptor.previewHeight;
         if (meterWidth <= 0 || meterHeight <= 0) {
             outError = "auto-exposure meter dimensions invalid";
             return false;
@@ -453,8 +453,11 @@ namespace JuicerProcess {
         const int blockY = 16;
         const int gridX = (meterWidth + blockX - 1) / blockX;
         const int gridY = (meterHeight + blockY - 1) / blockY;
-        const int neededPartials = gridX * gridY;
-        if (neededPartials <= 0) {
+        const bool needsHistogram = descriptor.method == Spektrafilm::AutoExposureMethod::Median;
+        const bool needsWeights = descriptor.method == Spektrafilm::AutoExposureMethod::CenterWeighted;
+        const bool needsPartials = !needsHistogram;
+        const int neededPartials = needsPartials ? gridX * gridY : 0;
+        if (needsPartials && neededPartials <= 0) {
             outError = "auto-exposure partial count invalid";
             return false;
         }
@@ -473,31 +476,46 @@ namespace JuicerProcess {
         AutoExposureFrameWorkspace next{};
         if (!alloc_device(next.deviceState.exposureScale, sizeof(float), "frame auto-exposure scale") ||
             !alloc_device(next.deviceState.autoEV, sizeof(double), "frame auto-exposure autoEV") ||
-            !alloc_device(next.deviceState.valid, sizeof(int), "frame auto-exposure valid") ||
-            !alloc_device(next.scratch.maxYBits, sizeof(unsigned int), "frame auto-exposure maxYBits") ||
-            !alloc_device(next.scratch.histogram, sizeof(unsigned int) * 2048u, "frame auto-exposure histogram") ||
-            !alloc_device(next.scratch.weightsX, static_cast<std::size_t>(meterWidth) * sizeof(float), "frame auto-exposure weightsX") ||
-            !alloc_device(next.scratch.weightsY, static_cast<std::size_t>(meterHeight) * sizeof(float), "frame auto-exposure weightsY") ||
-            !alloc_device(
-                next.scratch.partialsA,
-                static_cast<std::size_t>(neededPartials) * sizeof(JuicerCudaAutoExposurePartial),
-                "frame auto-exposure partialsA") ||
-            !alloc_device(
-                next.scratch.partialsB,
-                static_cast<std::size_t>(neededPartials) * sizeof(JuicerCudaAutoExposurePartial),
-                "frame auto-exposure partialsB")) {
+            !alloc_device(next.deviceState.valid, sizeof(int), "frame auto-exposure valid")) {
+            autoExposureWorkspace = next;
+            free_auto_exposure_workspace_now();
+            return false;
+        }
+        if (needsHistogram &&
+            (!alloc_device(next.scratch.maxYBits, sizeof(unsigned int), "frame auto-exposure maxYBits") ||
+             !alloc_device(next.scratch.histogram, sizeof(unsigned int) * 2048u, "frame auto-exposure histogram"))) {
+            autoExposureWorkspace = next;
+            free_auto_exposure_workspace_now();
+            return false;
+        }
+        if (needsWeights &&
+            (!alloc_device(next.scratch.weightsX, static_cast<std::size_t>(meterWidth) * sizeof(float), "frame auto-exposure weightsX") ||
+             !alloc_device(next.scratch.weightsY, static_cast<std::size_t>(meterHeight) * sizeof(float), "frame auto-exposure weightsY"))) {
+            autoExposureWorkspace = next;
+            free_auto_exposure_workspace_now();
+            return false;
+        }
+        if (needsPartials &&
+            (!alloc_device(
+                 next.scratch.partialsA,
+                 static_cast<std::size_t>(neededPartials) * sizeof(JuicerCudaAutoExposurePartial),
+                 "frame auto-exposure partialsA") ||
+             !alloc_device(
+                 next.scratch.partialsB,
+                 static_cast<std::size_t>(neededPartials) * sizeof(JuicerCudaAutoExposurePartial),
+                 "frame auto-exposure partialsB"))) {
             autoExposureWorkspace = next;
             free_auto_exposure_workspace_now();
             return false;
         }
 
         next.scratch.partialCapacity = neededPartials;
-        next.weightsXCapacity = meterWidth;
-        next.weightsYCapacity = meterHeight;
+        next.weightsXCapacity = needsWeights ? meterWidth : 0;
+        next.weightsYCapacity = needsWeights ? meterHeight : 0;
         next.weightsWidth = 0;
         next.weightsHeight = 0;
+        next.method = descriptor.method;
         next.keyHash = 0;
-        next.sliderEV = std::numeric_limits<double>::quiet_NaN();
         next.active = true;
         autoExposureWorkspace = next;
         return true;
@@ -1879,16 +1897,20 @@ namespace JuicerProcess {
         view.weightsWidth = workspace.weightsWidth;
         view.weightsHeight = workspace.weightsHeight;
         view.keyHash = workspace.keyHash;
-        view.sliderEV = workspace.sliderEV;
+        const bool histogramReady =
+            workspace.method != Spektrafilm::AutoExposureMethod::Median ||
+            (view.scratch.maxYBits && view.scratch.histogram);
+        const bool partialsReady =
+            workspace.method == Spektrafilm::AutoExposureMethod::Median ||
+            (view.scratch.partialsA && view.scratch.partialsB && view.scratch.partialCapacity > 0);
+        const bool weightsReady =
+            workspace.method != Spektrafilm::AutoExposureMethod::CenterWeighted ||
+            (view.scratch.weightsX && view.scratch.weightsY);
         view.active =
             workspace.active &&
-            view.scratch.partialsA &&
-            view.scratch.partialsB &&
-            view.scratch.partialCapacity > 0 &&
-            view.scratch.maxYBits &&
-            view.scratch.histogram &&
-            view.scratch.weightsX &&
-            view.scratch.weightsY &&
+            histogramReady &&
+            partialsReady &&
+            weightsReady &&
             view.deviceState.exposureScale &&
             view.deviceState.autoEV &&
             view.deviceState.valid;
@@ -1932,14 +1954,6 @@ namespace JuicerProcess {
         }
         State::AutoExposureFrameWorkspace& workspace = _state->autoExposureWorkspace;
         workspace.keyHash = result.keyHash;
-        workspace.sliderEV = result.sliderEV;
-    }
-
-    void Root::PreparedCudaFrame::mark_auto_exposure_slider_updated(double sliderEV) noexcept {
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            return;
-        }
-        _state->autoExposureWorkspace.sliderEV = sliderEV;
     }
 
     Root::PreparedCudaFrame::SpatialDirScratchView Root::PreparedCudaFrame::spatial_dir_scratch(
@@ -2350,8 +2364,7 @@ namespace JuicerProcess {
         }
         if (autoExposureBufferRequest.enabled &&
             !frame._state->allocate_auto_exposure_workspace(
-                autoExposureBufferRequest.meterWidth,
-                autoExposureBufferRequest.meterHeight,
+                autoExposureBufferRequest.descriptor,
                 outError)) {
             frame._state->set_failure(
                 "allocate_auto_exposure_workspace",

@@ -16,16 +16,18 @@
 #include <vector>
 
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
+#include "RenderRecipe.h"
 
 struct WorkingState;
 namespace Print {
     struct Runtime;
     struct Params;
-}
+} // namespace Print
 
 struct JuicerCudaAutoExposurePartial {
-    double sumY;
-    double sumW;
+    static constexpr int kLaneCount = 4;
+    double sumY[kLaneCount];
+    double sumW[kLaneCount];
 };
 
 // Device-side scratch buffers for metering. All pointers are CUDA device pointers.
@@ -45,6 +47,32 @@ struct JuicerCudaAutoExposureDeviceState {
     double* autoEV = nullptr;       // double scalar
     int* valid = nullptr;           // int scalar (0/1)
 };
+
+namespace JuicerCuda {
+
+    struct AutoExposurePreviewDescriptor {
+        enum class Sampling : std::uint8_t {
+            NearestNeighbor = 0
+        };
+
+        static constexpr int kMaxLongEdge = 256;
+
+        int sourceX1 = 0;
+        int sourceY1 = 0;
+        int sourceX2 = 0;
+        int sourceY2 = 0;
+        int meterX1 = 0;
+        int meterY1 = 0;
+        int meterX2 = 0;
+        int meterY2 = 0;
+        int previewWidth = 0;
+        int previewHeight = 0;
+        Spektrafilm::AutoExposureMethod method = Spektrafilm::AutoExposureMethod::CenterWeighted;
+        Sampling sampling = Sampling::NearestNeighbor;
+        std::uint64_t hash = 0;
+    };
+
+} // namespace JuicerCuda
 
 // Returns 0 on success, non-zero on failure; on failure outErrorMsg points to a stable message.
 extern "C" int juicer_cuda_measure_center_weighted_Y(
@@ -91,30 +119,13 @@ extern "C" int juicer_cuda_measure_median_Y(
 extern "C" int juicer_cuda_auto_exposure_meter_to_device(
     const void* srcDeviceBase,
     std::size_t srcRowBytes,
-    int srcBoundsX1,
-    int srcBoundsY1,
-    int srcBoundsX2,
-    int srcBoundsY2,
-    int meterX1,
-    int meterY1,
-    int meterX2,
-    int meterY2,
+    JuicerCuda::AutoExposurePreviewDescriptor descriptor,
     int nComponents,
     int inputColorSpaceIndex,
     int applyCctfDecoding,
     const float* rgbToXYZ9,
-    int meteringMethod,
-    double sliderEV,
     JuicerCudaAutoExposureScratch scratch,
     JuicerCudaAutoExposureDeviceState outState,
-    void* cudaStreamOpaque,
-    const char** outErrorMsg);
-
-// Updates exposureScale from an existing autoEV (no re-meter). This function does not
-// synchronize.
-extern "C" int juicer_cuda_auto_exposure_update_scale_to_device(
-    double sliderEV,
-    JuicerCudaAutoExposureDeviceState state,
     void* cudaStreamOpaque,
     const char** outErrorMsg);
 
@@ -425,7 +436,7 @@ namespace JuicerCuda {
     // Runtime serving acquisition/rebuild calls are intentionally manager-only via
     // ResourceManager::command_* wrappers.
 
-    // Optional debug validation of primitives (kept here to avoid a separate JUICER_TESTS harness).
+    // Optional debug validation of primitives, kept in the production CUDA validation surface.
     bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError);
     bool validate_print_primitives(
         Resources& resources,

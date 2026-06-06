@@ -65,11 +65,27 @@ namespace {
 
     Spektrafilm::AutoExposureMethod auto_exposure_method_from_index(int index) {
         switch (index) {
+            case 0:
+                return Spektrafilm::AutoExposureMethod::CenterWeighted;
             case 1:
+                return Spektrafilm::AutoExposureMethod::Average;
+            case 2:
                 return Spektrafilm::AutoExposureMethod::Median;
+            case 3:
+                return Spektrafilm::AutoExposureMethod::Partial;
+            case 4:
+                return Spektrafilm::AutoExposureMethod::Matrix;
+            case 5:
+                return Spektrafilm::AutoExposureMethod::MultiZone;
+            case 6:
+                return Spektrafilm::AutoExposureMethod::HighlightWeighted;
             default:
                 return Spektrafilm::AutoExposureMethod::CenterWeighted;
         }
+    }
+
+    bool auto_exposure_method_index_valid(int index) {
+        return index >= 0 && index <= 6;
     }
 
     std::array<float, 3> copy_filter_triplet(const std::array<double, 3>& values, bool active) {
@@ -109,17 +125,99 @@ namespace {
         hash_value(hash, recipe.cameraBandPass.active);
         Hash::hash_bytes_update(hash, recipe.cameraBandPass.uv.data(), sizeof(recipe.cameraBandPass.uv));
         Hash::hash_bytes_update(hash, recipe.cameraBandPass.ir.data(), sizeof(recipe.cameraBandPass.ir));
-        hash_value(hash, recipe.hanatos.applyWindow);
-        hash_value(hash, recipe.hanatos.applySurface);
-        hash_value(hash, recipe.hanatos.spectralGaussianBlur);
-        Hash::hash_bytes_update(hash, recipe.hanatos.windowParams.data(), sizeof(recipe.hanatos.windowParams));
-        Hash::hash_bytes_update(hash, recipe.hanatos.surfaceParams.data(), sizeof(recipe.hanatos.surfaceParams));
-        hash_string(hash, recipe.hanatos.referenceIlluminant);
         hash_value(hash, recipe.highlightBoost.boostEv);
         hash_value(hash, recipe.highlightBoost.boostRange);
         hash_value(hash, recipe.highlightBoost.protectEv);
-        hash_value(hash, recipe.linearSensitivityHash);
+        hash_value(hash, recipe.finalSensitivityHash);
+        if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
+            hash_value(hash, recipe.hanatos.applyWindow);
+            hash_value(hash, recipe.hanatos.applySurface);
+            hash_value(hash, recipe.hanatos.spectralGaussianBlur);
+            Hash::hash_bytes_update(hash, recipe.hanatos.windowParams.data(), sizeof(recipe.hanatos.windowParams));
+            Hash::hash_bytes_update(hash, recipe.hanatos.surfaceParams.data(), sizeof(recipe.hanatos.surfaceParams));
+            hash_string(hash, recipe.hanatos.referenceIlluminant);
+        } else {
+            hash_value(hash, recipe.mallettGreenMidgrayScale);
+        }
         return hash;
+    }
+
+    float camera_filter_sample(float wavelength, const std::array<float, 3>& filter, bool uv) {
+        const float amplitude = std::clamp(filter[0], 0.0f, 1.0f);
+        if (!(amplitude > 0.0f)) {
+            return 1.0f;
+        }
+        float width = filter[2];
+        if (!std::isfinite(width) || std::abs(width) < 1e-6f) {
+            width = uv ? 1e-6f : -1e-6f;
+        }
+        width = uv ? std::abs(width) : -std::abs(width);
+        const float sigmoid = 0.5f * (std::erf((wavelength - filter[1]) / width) + 1.0f);
+        return 1.0f - amplitude + amplitude * sigmoid;
+    }
+
+    bool derive_final_sensitivity(
+        FilmRawRecipe& recipe,
+        const std::array<float, 81>& referenceIlluminant) {
+        std::array<double, 3> unfilteredResponse{};
+        std::array<double, 3> filteredResponse{};
+        std::array<float, 81> bandPass{};
+        for (std::size_t wavelengthIndex = 0; wavelengthIndex < bandPass.size(); ++wavelengthIndex) {
+            const float wavelength = 380.0f + 5.0f * static_cast<float>(wavelengthIndex);
+            const float filter = recipe.cameraBandPass.active
+                                     ? camera_filter_sample(wavelength, recipe.cameraBandPass.uv, true) *
+                                           camera_filter_sample(wavelength, recipe.cameraBandPass.ir, false)
+                                     : 1.0f;
+            bandPass[wavelengthIndex] = std::isfinite(filter) ? std::max(0.0f, filter) : 0.0f;
+            const float illuminant = referenceIlluminant[wavelengthIndex];
+            if (!std::isfinite(illuminant) || illuminant < 0.0f) {
+                return false;
+            }
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                const float sensitivity = recipe.linearSensitivity[wavelengthIndex][channel];
+                const double finiteSensitivity =
+                    std::isfinite(sensitivity) ? std::max(0.0, static_cast<double>(sensitivity)) : 0.0;
+                unfilteredResponse[channel] += finiteSensitivity * static_cast<double>(illuminant);
+                filteredResponse[channel] +=
+                    finiteSensitivity * static_cast<double>(bandPass[wavelengthIndex]) *
+                    static_cast<double>(illuminant);
+            }
+        }
+
+        std::array<double, 3> normalization{};
+        for (std::size_t channel = 0; channel < normalization.size(); ++channel) {
+            if (!(std::isfinite(unfilteredResponse[channel]) && unfilteredResponse[channel] > 0.0) ||
+                !(std::isfinite(filteredResponse[channel]) && filteredResponse[channel] > 0.0)) {
+                return false;
+            }
+            normalization[channel] = filteredResponse[channel] / unfilteredResponse[channel];
+        }
+
+        for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                const float source = recipe.linearSensitivity[wavelengthIndex][channel];
+                const double finiteSource =
+                    std::isfinite(source) ? std::max(0.0, static_cast<double>(source)) : 0.0;
+                const double derived =
+                    finiteSource * static_cast<double>(bandPass[wavelengthIndex]) / normalization[channel];
+                recipe.finalSensitivity[wavelengthIndex][channel] =
+                    std::isfinite(derived) ? static_cast<float>(std::max(0.0, derived)) : 0.0f;
+            }
+        }
+        recipe.finalSensitivityHash =
+            Hash::hash_float_span(&recipe.finalSensitivity[0][0], recipe.finalSensitivity.size() * 3u);
+
+        double greenMidgray = 0.0;
+        for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
+            greenMidgray +=
+                0.184 * static_cast<double>(referenceIlluminant[wavelengthIndex]) *
+                static_cast<double>(recipe.finalSensitivity[wavelengthIndex][1]);
+        }
+        recipe.mallettGreenMidgrayScale =
+            (std::isfinite(greenMidgray) && greenMidgray > 0.0)
+                ? static_cast<float>(1.0 / greenMidgray)
+                : 1.0f;
+        return recipe.finalSensitivityHash != 0;
     }
 
     std::uint64_t hash_film_develop_recipe(const FilmDevelopRecipe& recipe) {
@@ -200,11 +298,19 @@ namespace Spektrafilm {
             return result;
         }
         if (!input.filmProfile) {
-            result.diagnostic = "MissingRequiredResource phase=3A field=film_profile";
+            result.diagnostic = "MissingRequiredResource phase=3B field=film_profile";
             return result;
         }
         if (!input.directRoutePrintProfileExcluded || !input.directRouteNeutralCalibrationExcluded) {
             result.diagnostic = "ResourceDescriptorMismatch phase=3A direct route print/neutral exclusion";
+            return result;
+        }
+        if (!input.referenceIlluminantValid) {
+            result.diagnostic = "MissingRequiredResource phase=3B field=reference_illuminant";
+            return result;
+        }
+        if (!auto_exposure_method_index_valid(input.cameraMeteringMethod)) {
+            result.diagnostic = "UnsupportedMode phase=3B field=auto_exposure_method";
             return result;
         }
 
@@ -254,9 +360,13 @@ namespace Spektrafilm {
         filmRaw.linearSensitivity = profile.data.linearSensitivity;
         filmRaw.linearSensitivityHash =
             Hash::hash_float_span(&filmRaw.linearSensitivity[0][0], filmRaw.linearSensitivity.size() * 3u);
+        if (!derive_final_sensitivity(filmRaw, input.referenceIlluminant)) {
+            result.diagnostic = "MalformedRequiredProfileData phase=3B field=final_sensitivity";
+            return result;
+        }
         filmRaw.hash = hash_film_raw_recipe(filmRaw);
-        if (filmRaw.linearSensitivityHash == 0 || filmRaw.hash == 0) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3A field=data.log_sensitivity";
+        if (filmRaw.linearSensitivityHash == 0 || filmRaw.finalSensitivityHash == 0 || filmRaw.hash == 0) {
+            result.diagnostic = "MalformedRequiredProfileData phase=3B field=data.log_sensitivity";
             return result;
         }
 

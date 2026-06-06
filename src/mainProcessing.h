@@ -186,6 +186,7 @@ private:
     const Print::Runtime* _prt;
     const WorkingState* _ws;
     std::shared_ptr<const WorkingState> _wsHold;
+    std::shared_ptr<const RenderRecipe> _recipeHold;
     InstanceState* _instanceState = nullptr;
     bool _wsReady;
     bool _printReady;

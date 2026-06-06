@@ -89,10 +89,11 @@ namespace RebuildWorkingState {
 
 namespace WorkingStateSharing {
 
-    // SF_TEMP_BRIDGE_WorkingStateCorePayload owner=Phase3A publication audit:
+    // SF_TEMP_BRIDGE_WorkingStateCorePayload owner=Phase3C resource cutover/Phase4 print audit:
     // retained legacy shared payload for buildability while RenderRecipe becomes the publication
     // contract. Allowed=existing blocked rebuild sharing only; hash/output impact=legacy core-share
-    // lane; direct removal gate=Phase3B/3C. It must not gain spektrafilm recipe/descriptor fields.
+    // lane; direct resource removal gate=Phase3C. It must not gain spektrafilm recipe/descriptor
+    // fields or become the direct CUDA payload packer.
     struct WorkingStateCorePayload {
         Spectral::Curve densB;
         Spectral::Curve densG;
@@ -1490,6 +1491,32 @@ namespace {
         input.cameraFilterOverride = params.cameraFilterOverride;
         input.cameraFilterUV = params.cameraFilterUV;
         input.cameraFilterIR = params.cameraFilterIR;
+        if (selected.filmProfile) {
+            const std::string illuminantKey =
+                IlluminantKeys::normalize(selected.filmProfile->info.referenceIlluminant.value);
+            const JuicerAssets::IlluminantFilterCurveSet& illuminants =
+                JuicerProcess::root().assets().illuminant_filter_curves();
+            const Spectral::Curve* referenceIlluminant = nullptr;
+            if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
+                referenceIlluminant = &illuminants.d65;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {
+                referenceIlluminant = &illuminants.d55;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"D50"})) {
+                referenceIlluminant = &illuminants.d50;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"T", "TUNGSTEN"})) {
+                referenceIlluminant = &illuminants.tungsten;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"TH-KG3", "TUNGSTEN-KG3"})) {
+                referenceIlluminant = &illuminants.tungstenKg3Lens;
+            }
+            if (referenceIlluminant &&
+                referenceIlluminant->linear.size() == input.referenceIlluminant.size()) {
+                std::copy(
+                    referenceIlluminant->linear.begin(),
+                    referenceIlluminant->linear.end(),
+                    input.referenceIlluminant.begin());
+                input.referenceIlluminantValid = true;
+            }
+        }
         input.scannerLutResolution =
             static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
         input.outputColorSpace = params.outputColorSpace;

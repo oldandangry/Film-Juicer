@@ -78,8 +78,7 @@ namespace JuicerProcess {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         struct AutoExposureBufferRequest {
             bool enabled = false;
-            int meterWidth = 0;
-            int meterHeight = 0;
+            JuicerCuda::AutoExposurePreviewDescriptor descriptor{};
             std::uint64_t reusableKeyHash = 0;
         };
 
@@ -220,7 +219,6 @@ namespace JuicerProcess {
                 int weightsWidth = 0;
                 int weightsHeight = 0;
                 std::uint64_t keyHash = 0;
-                double sliderEV = 0.0;
                 bool active = false;
             };
 
@@ -283,20 +281,18 @@ namespace JuicerProcess {
 
             struct AutoExposureMeteredResult {
                 std::uint64_t keyHash = 0;
-                double sliderEV = 0.0;
             };
 
             void mark_auto_exposure_weights_built(const AutoExposureWeightsExtent& weights) noexcept;
             void mark_auto_exposure_metered(const AutoExposureMeteredResult& result) noexcept;
-            void mark_auto_exposure_slider_updated(double sliderEV) noexcept;
             void mark_gate_mask_built(std::uint64_t gateMaskHash) noexcept;
             void record_use(void* cudaStreamOpaque) noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
-            // SF_TEMP_BRIDGE_PreparedDirectScannerWorkingState owner=Phase3A descriptor audit:
+            // SF_TEMP_BRIDGE_PreparedDirectScannerWorkingState owner=Phase3C descriptor audit:
             // allowed=existing blocked legacy CUDA path; hash/output impact=legacy current-medium
-            // and scan-LUT preparation from WorkingState; removal gate=Phase3B/3C direct descriptor
-            // cutover. No new prepare/ensure surface may be added beside these bridges.
+            // and scan-LUT preparation from WorkingState; removal gate=Phase3C direct descriptor
+            // cutover. Phase 3B adds no new prepare/ensure surface beside these bridges.
             bool prepare_current_medium(
                 const WorkingState& workingState,
                 bool negativeMedium,
@@ -429,10 +425,11 @@ namespace JuicerProcess {
             std::unique_ptr<State> _state;
         };
 
-        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase3A direct-boundary audit:
+        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase3C direct-resource audit:
         // allowed=existing blocked legacy CUDA path; hash/output impact=uploads broad WorkingState;
-        // direct removal gate=Phase3B/3C, print removal gate=Phase4. No accepted direct pixel path
-        // may use this broad input as its recipe/resource contract.
+        // Phase 3B direct payload packing does not consume it; direct removal gate=Phase3C,
+        // print removal gate=Phase4. No accepted direct pixel path may use this broad input as
+        // its recipe/resource contract.
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,

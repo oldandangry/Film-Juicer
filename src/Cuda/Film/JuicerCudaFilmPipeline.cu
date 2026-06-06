@@ -48,6 +48,80 @@ __global__ void expose_film_raw_kernel(
     }
 }
 
+__global__ void film_raw_max_kernel(
+    const float* inB,
+    const float* inG,
+    const float* inR,
+    int n,
+    unsigned int* outMaxBits) {
+    if (!inB || !inG || !inR || !outMaxBits) {
+        return;
+    }
+    const int threadIndex = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int gridStride = static_cast<int>(blockDim.x * gridDim.x);
+    float localMax = 0.0f;
+    for (int idx = threadIndex; idx < n; idx += gridStride) {
+        localMax = fmaxf(localMax, fmaxf(inB[idx], fmaxf(inG[idx], inR[idx])));
+    }
+
+    __shared__ float sMax[256];
+    sMax[threadIdx.x] = localMax;
+    __syncthreads();
+    for (int stride = static_cast<int>(blockDim.x / 2); stride > 0; stride /= 2) {
+        if (threadIdx.x < stride) {
+            sMax[threadIdx.x] = fmaxf(sMax[threadIdx.x], sMax[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        atomicMax(outMaxBits, __float_as_uint(sMax[0]));
+    }
+}
+
+__global__ void highlight_boost_film_raw_kernel(
+    JuicerCuda::HighlightBoostPayload boost,
+    const unsigned int* maxRawBits,
+    float* inOutB,
+    float* inOutG,
+    float* inOutR,
+    int n) {
+    if (!maxRawBits || !inOutB || !inOutG || !inOutR || !(boost.boostEv > 0.0f)) {
+        return;
+    }
+    const float maxRaw = __uint_as_float(*maxRawBits);
+    if (!(maxRaw > 0.0f) || !isfinite(maxRaw)) {
+        return;
+    }
+
+    const float rawX0 = fminf(fmaxf(0.184f * exp2f(boost.protectEv), 0.0f), maxRaw);
+    if (!(rawX0 < maxRaw)) {
+        return;
+    }
+    const float boostRange = fminf(fmaxf(boost.boostRange, 0.0f), 1.0f);
+    const float a = powf(28.0f, 1.0f - boostRange);
+    const float oneMinusX0 = 1.0f - rawX0 / maxRaw;
+    const float denom = expf(a * oneMinusX0) - a * oneMinusX0 - 1.0f;
+    if (!(denom > 0.0f) || !isfinite(denom)) {
+        return;
+    }
+    const float boostScale = ((exp2f(boost.boostEv) - 1.0f) / denom) * maxRaw;
+    const float invMaxRaw = 1.0f / maxRaw;
+    const int threadIndex = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+    const int gridStride = static_cast<int>(blockDim.x * gridDim.x);
+
+    for (int idx = threadIndex; idx < n; idx += gridStride) {
+        float* channels[3] = {inOutB, inOutG, inOutR};
+        for (int channel = 0; channel < 3; ++channel) {
+            const float x = channels[channel][idx];
+            if (x > rawX0) {
+                const float dx = (x - rawX0) * invMaxRaw;
+                const float delta = boostScale * (expf(a * dx) - a * dx - 1.0f);
+                channels[channel][idx] = x + delta;
+            }
+        }
+    }
+}
+
 __global__ void halation_apply_kernel(float* inOut, const float* blurred, int n, float strength) {
     if (!inOut || !blurred) {
         return;

@@ -966,9 +966,21 @@ static __device__ __forceinline__ void compute_film_raw_device(
         (expose.mallettBasisK == 81) &&
         canTables;
 
+    float autoExposureScale = 1.0f;
+    if (expose.exposureScaleDevice) {
+        const float deviceScale = *expose.exposureScaleDevice;
+        if (isfinite(deviceScale) && deviceScale > 0.0f) {
+            autoExposureScale = deviceScale;
+        }
+    }
+    const float autoExposedRgb[3] = {
+        rgbIn[0] * autoExposureScale,
+        rgbIn[1] * autoExposureScale,
+        rgbIn[2] * autoExposureScale};
+
     float rgbDWG[3];
     if (!useMallett) {
-        convert_input_to_DWG_device(params.filmRaw, rgbIn, rgbDWG, !useHanatos);
+        convert_input_to_DWG_device(params.filmRaw, autoExposedRgb, rgbDWG, !useHanatos);
     }
 
     if (useHanatosIntegrated) {
@@ -992,7 +1004,7 @@ static __device__ __forceinline__ void compute_film_raw_device(
     }
     else if (useMallett) {
         float rgbSRGB[3];
-        convert_input_to_sRGB_device(params.filmRaw, rgbIn, rgbSRGB);
+        convert_input_to_sRGB_device(params.filmRaw, autoExposedRgb, rgbSRGB);
         mallett_layer_exposures_device(
             rgbSRGB,
             expose.mallettBasis,
@@ -1017,28 +1029,22 @@ static __device__ __forceinline__ void compute_film_raw_device(
             E_raw);
     }
 
-    float midgrayScale = params.filmRaw.midgrayScale;
-    if (!isfinite(midgrayScale) || !(midgrayScale > 0.0f)) {
-        midgrayScale = 1.0f;
+    float mallettGreenMidgrayScale = params.filmRaw.mallettGreenMidgrayScale;
+    if (!isfinite(mallettGreenMidgrayScale) || !(mallettGreenMidgrayScale > 0.0f)) {
+        mallettGreenMidgrayScale = 1.0f;
     }
 
-    float exposureScale = expose.exposureScale;
-    if (!isfinite(exposureScale) || !(exposureScale > 0.0f)) {
-        exposureScale = 1.0f;
+    float manualExposureScale = expose.manualExposureScale;
+    if (!isfinite(manualExposureScale) || !(manualExposureScale > 0.0f)) {
+        manualExposureScale = 1.0f;
     }
-    if (expose.exposureScaleDevice) {
-        float deviceScale = *expose.exposureScaleDevice;
-        if (!isfinite(deviceScale) || !(deviceScale > 0.0f)) {
-            deviceScale = 1.0f;
-        }
-        exposureScale = deviceScale;
-    }
-
     for (int i = 0; i < 3; ++i) {
         float v = E_raw[i];
         if (!isfinite(v) || v < 0.0f) v = 0.0f;
-        v = fmaxf(0.0f, v * midgrayScale);
-        v = fmaxf(0.0f, v * exposureScale);
+        if (useMallett) {
+            v = fmaxf(0.0f, v * mallettGreenMidgrayScale);
+        }
+        v = fmaxf(0.0f, v * manualExposureScale);
         filmRaw[i] = v;
     }
 }

@@ -587,6 +587,19 @@ __global__ void expose_film_raw_kernel(
     float* outB,
     float* outG,
     float* outR);
+__global__ void film_raw_max_kernel(
+    const float* inB,
+    const float* inG,
+    const float* inR,
+    int n,
+    unsigned int* outMaxBits);
+__global__ void highlight_boost_film_raw_kernel(
+    JuicerCuda::HighlightBoostPayload boost,
+    const unsigned int* maxRawBits,
+    float* inOutB,
+    float* inOutG,
+    float* inOutR,
+    int n);
 __global__ void develop_film_density_kernel(
     JuicerCuda::PipelineRunParams params,
     float* outC,
@@ -1536,6 +1549,34 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         return err;
+    }
+
+    const JuicerCuda::HighlightBoostPayload& highlightBoost = params.filmExpose.highlightBoost;
+    if (highlightBoost.boostEv > 0.0f) {
+        const int total = params.width * params.height;
+        const int threads1D = 256;
+        const int blocks1D = (total + threads1D - 1) / threads1D;
+        unsigned int* maxRawBits = reinterpret_cast<unsigned int*>(dTmp);
+        err = cudaMemsetAsync(maxRawBits, 0, sizeof(unsigned int), stream);
+        if (err != cudaSuccess) {
+            return err;
+        }
+        film_raw_max_kernel<<<blocks1D, threads1D, 0, stream>>>(dRgbR, dRgbG, dRgbB, total, maxRawBits);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            return err;
+        }
+        highlight_boost_film_raw_kernel<<<blocks1D, threads1D, 0, stream>>>(
+            highlightBoost,
+            maxRawBits,
+            dRgbR,
+            dRgbG,
+            dRgbB,
+            total);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            return err;
+        }
     }
 
     const JuicerCuda::HalationPayload& halation = params.halation;

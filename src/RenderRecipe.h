@@ -110,8 +110,13 @@ struct FilmRawRecipe {
     CameraBandPassRecipe cameraBandPass;
     HanatosAdaptationRecipe hanatos;
     HighlightBoostRecipe highlightBoost;
+    // Loader-linear sensitivity is retained as provenance. finalSensitivity is the only
+    // sensitivity payload/resource identity consumed by direct film-raw processing.
     std::array<std::array<float, 3>, 81> linearSensitivity{};
     std::uint64_t linearSensitivityHash = 0;
+    std::array<std::array<float, 3>, 81> finalSensitivity{};
+    std::uint64_t finalSensitivityHash = 0;
+    float mallettGreenMidgrayScale = 1.0f;
     std::uint64_t hash = 0;
 };
 
@@ -198,6 +203,8 @@ namespace Spektrafilm {
         bool cameraFilterOverride = false;
         std::array<double, 3> cameraFilterUV{{1.0, 410.0, 8.0}};
         std::array<double, 3> cameraFilterIR{{1.0, 675.0, 15.0}};
+        std::array<float, 81> referenceIlluminant{};
+        bool referenceIlluminantValid = false;
         std::uint32_t scannerLutResolution = 17;
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
