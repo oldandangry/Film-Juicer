@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "ProfileCatalog.h"
+#include "ProfileAssets.h"
 
 namespace Profiles {
 
@@ -128,143 +128,6 @@ namespace Profiles {
         bool hasHalation = false;
     };
 
-    enum class ProfileRole : unsigned char {
-        Film,
-        Print
-    };
-
-    enum class ProfileUse : unsigned char {
-        Still,
-        Cine,
-        Unsupported
-    };
-
-    enum class ProfileAntihalation : unsigned char {
-        Strong,
-        Weak,
-        No,
-        Unsupported
-    };
-
-    enum class ProfileChannelModel : unsigned char {
-        Color,
-        Bw,
-        Unsupported
-    };
-
-    enum class NeutralCalibrationStatus : unsigned char {
-        NotConsumedInPhase2B,
-        ExcludedForDirectRoute,
-        OptionalPresent,
-        OptionalMissing
-    };
-
-    struct DensitometerLabel {
-        std::string value = "status_M";
-    };
-
-    struct IlluminantKey {
-        std::string value;
-    };
-
-    struct SpektrafilmProfileInfo {
-        std::string stock;
-        std::string name;
-        Spektrafilm::ProfileSupport support = Spektrafilm::ProfileSupport::Film;
-        Spektrafilm::ProfileStage stage = Spektrafilm::ProfileStage::Filming;
-        Spektrafilm::ProfilePolarity type = Spektrafilm::ProfilePolarity::Negative;
-        ProfileUse use = ProfileUse::Still;
-        ProfileAntihalation antihalation = ProfileAntihalation::Weak;
-        ProfileChannelModel channelModel = ProfileChannelModel::Color;
-        DensitometerLabel densitometer{};
-        IlluminantKey referenceIlluminant{"D55"};
-        IlluminantKey viewingIlluminant{"D50"};
-        float logSensitivityDensityOverMin = 0.2f;
-        bool supportDefaulted = false;
-        bool stageDefaulted = false;
-        bool typeDefaulted = false;
-        bool useDefaulted = false;
-        bool antihalationDefaulted = false;
-        bool channelModelDefaulted = false;
-        bool densitometerDefaulted = false;
-        bool referenceIlluminantDefaulted = false;
-        bool viewingIlluminantDefaulted = false;
-        bool logSensitivityDensityOverMinDefaulted = false;
-    };
-
-    struct SpektrafilmProfileSamples {
-        std::array<float, 81> wavelengths{};
-        std::array<std::array<float, 3>, 81> logSensitivity{};
-        std::array<std::array<float, 3>, 81> linearSensitivity{};
-        std::array<std::array<float, 3>, 81> channelDensity{};
-        std::array<float, 81> baseDensity{};
-        std::vector<float> logExposure;
-        std::vector<std::array<float, 3>> densityCurves;
-        std::vector<std::array<std::array<float, 3>, 3>> densityCurvesLayers;
-        std::array<float, 4> hanatos2025AdaptationWindowParams{};
-        std::array<std::array<float, 15>, 3> hanatos2025AdaptationSurfaceParams{};
-        bool hasDensityCurvesLayers = false;
-        bool hasHanatos2025AdaptationWindowParams = false;
-        bool hasHanatos2025AdaptationSurfaceParams = false;
-    };
-
-    struct SpektrafilmFilmData : SpektrafilmProfileSamples {
-    };
-
-    struct SpektrafilmPrintData : SpektrafilmProfileSamples {
-    };
-
-    struct GrainContract {
-        std::array<float, 3> density_min{{0.07f, 0.08f, 0.12f}};
-        bool densityCurvesLayersAuthored = false;
-    };
-
-    struct ProfileDigest {
-        ProfileRole profileRole = ProfileRole::Film;
-        NeutralCalibrationStatus optionalNeutralCalibrationStatus = NeutralCalibrationStatus::NotConsumedInPhase2B;
-        std::array<float, 3> gammaSamelayerRgb{{0.336f, 0.319f, 0.273f}};
-        std::array<float, 2> gammaInterlayerRToGb{{0.353f, 0.302f}};
-        std::array<float, 2> gammaInterlayerGToRb{{0.154f, 0.353f}};
-        std::array<float, 2> gammaInterlayerBToRg{{0.168f, 0.226f}};
-        std::string dirGammaSource = "negative-default";
-        std::array<float, 3> halationFirstSigmaUm{{65.0f, 65.0f, 65.0f}};
-        std::array<float, 3> halationStrength{{0.08f, 0.02f, 0.0f}};
-        bool halationPresetApplied = true;
-        bool hanatosWindowAuthored = false;
-        bool hanatosSurfaceAuthored = false;
-        bool hanatosRuntimeApplyWindowDefault = true;
-        bool hanatosRuntimeApplySurfaceDefault = false;
-        float hanatosSpectralGaussianBlurDefault = 0.0f;
-        GrainContract grainContract{};
-    };
-
-    struct SelectedProfileDiagnostic {
-        std::string message;
-        std::string profileKey;
-        std::string sourcePath;
-        std::string field;
-        std::string route;
-        bool failed = false;
-    };
-
-    struct ValidatedFilmProfile {
-        SpektrafilmProfileInfo info;
-        SpektrafilmFilmData data;
-        ProfileDigest digest;
-        SelectedProfileDiagnostic diagnostic;
-        std::uint64_t assetVersionToken = 0;
-        std::string sourcePath;
-    };
-
-    struct ValidatedPrintProfile {
-        SpektrafilmProfileInfo info;
-        SpektrafilmPrintData data;
-        ProfileDigest digest;
-        SelectedProfileDiagnostic diagnostic;
-        std::uint64_t assetVersionToken = 0;
-        std::string sourcePath;
-    };
-
     bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile);
 
     bool load_profile_info(const std::string& jsonPath, ProfileInfoSummary& outInfo);
@@ -278,7 +141,5 @@ namespace Profiles {
         const std::string& jsonPath,
         ValidatedPrintProfile& outProfile,
         std::string* outDiagnostic = nullptr);
-
-    ProfileDigest build_profile_digest(const SpektrafilmProfileInfo& info, ProfileRole role);
 
 } // namespace Profiles

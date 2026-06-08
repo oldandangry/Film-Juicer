@@ -14,14 +14,12 @@
 #include <mutex>
 #include <sstream>
 #include <string>
-#include <cstring>
 #include <system_error>
 #include <vector>
 #include <utility>
 #include <string_view>
 
 #include "nlohmann/json.hpp"
-#include "Hash.h"
 #include "Logging.h"
 #include "Illuminants.h"
 #include "SpectralData.h"
@@ -920,42 +918,6 @@ namespace Profiles {
             return true;
         }
 
-        bool parse_selected_layers(
-            const Json& node,
-            std::size_t expectedRows,
-            const SelectedProfileContext& ctx,
-            std::vector<std::array<std::array<float, 3>, 3>>& out,
-            std::string& error) {
-            if (!require_array_size(node, expectedRows, ctx, "data.density_curves_layers", error)) {
-                return false;
-            }
-            out.assign(expectedRows, std::array<std::array<float, 3>, 3>{});
-            for (std::size_t row = 0; row < expectedRows; ++row) {
-                const std::string rowField = "data.density_curves_layers[" + std::to_string(row) + "]";
-                if (!require_array_size(node[row], 3u, ctx, rowField, error)) {
-                    return false;
-                }
-                for (std::size_t layer = 0; layer < 3u; ++layer) {
-                    const std::string layerField = rowField + "[" + std::to_string(layer) + "]";
-                    if (!require_array_size(node[row][layer], 3u, ctx, layerField, error)) {
-                        return false;
-                    }
-                    for (std::size_t ch = 0; ch < 3u; ++ch) {
-                        if (!parse_selected_number(
-                                node[row][layer][ch],
-                                SelectedNumericPolicy::NullableNan,
-                                ctx,
-                                layerField + "[" + std::to_string(ch) + "]",
-                                out[row][layer][ch],
-                                error)) {
-                            return false;
-                        }
-                    }
-                }
-            }
-            return true;
-        }
-
         template <std::size_t N>
         void copy_vector_to_array(const std::vector<float>& src, std::array<float, N>& dst) {
             for (std::size_t i = 0; i < N; ++i) {
@@ -1025,7 +987,7 @@ namespace Profiles {
             std::string& error) {
             const char* key = spec.key;
             const auto it = object.find(key);
-            defaulted = it == object.end() || it->is_null();
+            defaulted = it == object.end();
             if (defaulted) {
                 if (spec.required) {
                     return set_error(error, ctx, std::string("info.") + key, "string", "missing");
@@ -1213,9 +1175,6 @@ namespace Profiles {
                 return set_error(error, ctx, "info.channel_model", "color|bw", raw);
             }
 
-            if (!string_member_or_default(info, {"densitometer", "status_M"}, out.densitometer.value, out.densitometerDefaulted, ctx, error)) {
-                return false;
-            }
             if (!string_member_or_default(info, {"reference_illuminant", "D55"}, out.referenceIlluminant.value, out.referenceIlluminantDefaulted, ctx, error)) {
                 return false;
             }
@@ -1227,20 +1186,6 @@ namespace Profiles {
             }
             if (!is_supported_profile_illuminant(out.viewingIlluminant.value)) {
                 return set_error(error, ctx, "info.viewing_illuminant", "supported illuminant key including BB<temperature>", out.viewingIlluminant.value);
-            }
-
-            const auto densityOverMinIt = info.find("log_sensitivity_density_over_min");
-            out.logSensitivityDensityOverMinDefaulted = densityOverMinIt == info.end() || densityOverMinIt->is_null();
-            if (out.logSensitivityDensityOverMinDefaulted) {
-                out.logSensitivityDensityOverMin = 0.2f;
-            } else if (!parse_selected_number(
-                           *densityOverMinIt,
-                           SelectedNumericPolicy::FiniteOnly,
-                           ctx,
-                           "info.log_sensitivity_density_over_min",
-                           out.logSensitivityDensityOverMin,
-                           error)) {
-                return false;
             }
 
             return true;
@@ -1350,16 +1295,6 @@ namespace Profiles {
                 return false;
             }
 
-            const auto layersIt = data.find("density_curves_layers");
-            out.hasDensityCurvesLayers = false;
-            out.densityCurvesLayers.clear();
-            if (layersIt != data.end() && !layersIt->is_null()) {
-                if (!parse_selected_layers(*layersIt, out.logExposure.size(), ctx, out.densityCurvesLayers, error)) {
-                    return false;
-                }
-                out.hasDensityCurvesLayers = true;
-            }
-
             const auto windowIt = data.find("hanatos2025_adaptation_window_params");
             out.hasHanatos2025AdaptationWindowParams = false;
             if (windowIt != data.end() && windowIt->is_array() && !windowIt->empty()) {
@@ -1410,81 +1345,6 @@ namespace Profiles {
             }
 
             return true;
-        }
-
-        void hash_u64_update(std::uint64_t& hash, std::uint64_t value) {
-            Hash::hash_bytes_update(hash, &value, sizeof(value));
-        }
-
-        void hash_string_update(std::uint64_t& hash, const char* value) {
-            if (!value) {
-                return;
-            }
-            Hash::hash_bytes_update(hash, value, std::strlen(value));
-        }
-
-        void hash_string_update(std::uint64_t& hash, const std::string& value) {
-            Hash::hash_bytes_update(hash, value.data(), value.size());
-        }
-
-        void hash_float_values_allowing_nan(std::uint64_t& hash, const float* values, std::size_t count) {
-            const Hash::FloatSpanHash pair = Hash::hash_float_span_with_nan_mask(values, count);
-            hash_u64_update(hash, pair.valueHash);
-            hash_u64_update(hash, pair.nanMaskHash);
-        }
-
-        void hash_profile_sample_data(std::uint64_t& hash, const SpektrafilmProfileSamples& data) {
-            hash_string_update(hash, "data.wavelengths");
-            hash_float_values_allowing_nan(hash, data.wavelengths.data(), data.wavelengths.size());
-            hash_string_update(hash, "data.log_sensitivity");
-            hash_float_values_allowing_nan(hash, &data.logSensitivity[0][0], data.logSensitivity.size() * 3u);
-            hash_string_update(hash, "data.channel_density");
-            hash_float_values_allowing_nan(hash, &data.channelDensity[0][0], data.channelDensity.size() * 3u);
-            hash_string_update(hash, "data.base_density");
-            hash_float_values_allowing_nan(hash, data.baseDensity.data(), data.baseDensity.size());
-            hash_string_update(hash, "data.midscale_neutral_density");
-            hash_string_update(hash, "data.log_exposure");
-            hash_float_values_allowing_nan(hash, data.logExposure.data(), data.logExposure.size());
-            hash_string_update(hash, "data.density_curves");
-            if (!data.densityCurves.empty()) {
-                hash_float_values_allowing_nan(hash, &data.densityCurves[0][0], data.densityCurves.size() * 3u);
-            }
-            hash_string_update(hash, "data.density_curves_layers");
-            hash_u64_update(hash, data.hasDensityCurvesLayers ? 1u : 0u);
-            if (!data.densityCurvesLayers.empty()) {
-                hash_float_values_allowing_nan(
-                    hash,
-                    &data.densityCurvesLayers[0][0][0],
-                    data.densityCurvesLayers.size() * 9u);
-            }
-            hash_string_update(hash, "hanatos2025_adaptation_window_params");
-            hash_u64_update(hash, data.hasHanatos2025AdaptationWindowParams ? 1u : 0u);
-            if (data.hasHanatos2025AdaptationWindowParams) {
-                hash_float_values_allowing_nan(hash, data.hanatos2025AdaptationWindowParams.data(), data.hanatos2025AdaptationWindowParams.size());
-            }
-            hash_string_update(hash, "hanatos2025_adaptation_surface_params");
-            hash_u64_update(hash, data.hasHanatos2025AdaptationSurfaceParams ? 1u : 0u);
-            if (data.hasHanatos2025AdaptationSurfaceParams) {
-                hash_float_values_allowing_nan(hash, &data.hanatos2025AdaptationSurfaceParams[0][0], 45u);
-            }
-        }
-
-        std::uint64_t hash_profile_payload_identity(const SpektrafilmProfileInfo& info, const SpektrafilmProfileSamples& data) {
-            std::uint64_t hash = Hash::kFnvOffset;
-            hash_string_update(hash, info.stock);
-            hash_string_update(hash, info.name);
-            hash_u64_update(hash, static_cast<std::uint64_t>(info.support));
-            hash_u64_update(hash, static_cast<std::uint64_t>(info.stage));
-            hash_u64_update(hash, static_cast<std::uint64_t>(info.type));
-            hash_u64_update(hash, static_cast<std::uint64_t>(info.use));
-            hash_u64_update(hash, static_cast<std::uint64_t>(info.antihalation));
-            hash_u64_update(hash, static_cast<std::uint64_t>(info.channelModel));
-            hash_string_update(hash, info.densitometer.value);
-            hash_string_update(hash, info.referenceIlluminant.value);
-            hash_string_update(hash, info.viewingIlluminant.value);
-            hash_float_values_allowing_nan(hash, &info.logSensitivityDensityOverMin, 1u);
-            hash_profile_sample_data(hash, data);
-            return hash == 0 ? 1u : hash;
         }
 
     } // namespace
@@ -2099,66 +1959,6 @@ namespace Profiles {
         return true;
     }
 
-    ProfileDigest build_profile_digest(const SpektrafilmProfileInfo& info, ProfileRole role) {
-        ProfileDigest digest{};
-        digest.profileRole = role;
-        digest.optionalNeutralCalibrationStatus = NeutralCalibrationStatus::NotConsumedInPhase2B;
-
-        const bool positive = info.type == Spektrafilm::ProfilePolarity::Positive;
-        if (positive) {
-            digest.gammaSamelayerRgb = {{0.12f, 0.08f, 0.06f}};
-            digest.gammaInterlayerRToGb = {{0.12f, 0.06f}};
-            digest.gammaInterlayerGToRb = {{0.08f, 0.06f}};
-            digest.gammaInterlayerBToRg = {{0.06f, 0.06f}};
-            digest.dirGammaSource = "positive-default";
-        } else {
-            digest.gammaSamelayerRgb = {{0.336f, 0.319f, 0.273f}};
-            digest.gammaInterlayerRToGb = {{0.353f, 0.302f}};
-            digest.gammaInterlayerGToRb = {{0.154f, 0.353f}};
-            digest.gammaInterlayerBToRg = {{0.168f, 0.226f}};
-            digest.dirGammaSource = "negative-default";
-        }
-
-        if (info.stock == "fujifilm_velvia_100") {
-            digest.gammaSamelayerRgb = {{0.108f, 0.072f, 0.054f}};
-            digest.gammaInterlayerRToGb = {{0.108f, 0.054f}};
-            digest.gammaInterlayerGToRb = {{0.072f, 0.054f}};
-            digest.gammaInterlayerBToRg = {{0.054f, 0.054f}};
-            digest.dirGammaSource = "stock-override";
-        } else if (info.stock == "fujifilm_provia_100f") {
-            digest.gammaSamelayerRgb = {{0.156f, 0.104f, 0.078f}};
-            digest.gammaInterlayerRToGb = {{0.156f, 0.078f}};
-            digest.gammaInterlayerGToRb = {{0.104f, 0.078f}};
-            digest.gammaInterlayerBToRg = {{0.078f, 0.078f}};
-            digest.dirGammaSource = "stock-override";
-        }
-
-        const bool cine = info.use == ProfileUse::Cine;
-        digest.halationFirstSigmaUm = cine
-                                          ? std::array<float, 3>{{50.0f, 50.0f, 50.0f}}
-                                          : std::array<float, 3>{{65.0f, 65.0f, 65.0f}};
-        switch (info.antihalation) {
-            case ProfileAntihalation::Strong:
-                digest.halationStrength = {{0.015f, 0.005f, 0.0f}};
-                digest.halationPresetApplied = true;
-                break;
-            case ProfileAntihalation::Weak:
-                digest.halationStrength = {{0.08f, 0.02f, 0.0f}};
-                digest.halationPresetApplied = true;
-                break;
-            case ProfileAntihalation::No:
-                digest.halationStrength = {{0.30f, 0.10f, 0.015f}};
-                digest.halationPresetApplied = true;
-                break;
-            default:
-                digest.halationPresetApplied = false;
-                break;
-        }
-
-        digest.grainContract.density_min = {{0.07f, 0.08f, 0.12f}};
-        return digest;
-    }
-
     namespace {
         template <typename ProfileT, typename DataT>
         bool load_validated_profile_json_impl(
@@ -2201,9 +2001,8 @@ namespace Profiles {
             outProfile.digest = build_profile_digest(outProfile.info, role);
             outProfile.digest.hanatosWindowAuthored = outProfile.data.hasHanatos2025AdaptationWindowParams;
             outProfile.digest.hanatosSurfaceAuthored = outProfile.data.hasHanatos2025AdaptationSurfaceParams;
-            outProfile.digest.grainContract.densityCurvesLayersAuthored = outProfile.data.hasDensityCurvesLayers;
             outProfile.sourcePath = jsonPath;
-            outProfile.assetVersionToken = hash_profile_payload_identity(outProfile.info, outProfile.data);
+            outProfile.assetVersionToken = build_profile_asset_version_token(outProfile.info, outProfile.data);
             if (outDiagnostic) {
                 outDiagnostic->clear();
             }

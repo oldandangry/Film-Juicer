@@ -122,20 +122,7 @@ namespace JuicerAssets {
             Profiles::AgxFilmProfile profile;
         };
 
-        struct ValidatedFilmProfileCacheEntry {
-            std::string cacheKey;
-            ProfileFileStamp stamp;
-            std::shared_ptr<const Profiles::ValidatedFilmProfile> profile;
-        };
-
-        struct ValidatedPrintProfileCacheEntry {
-            std::string cacheKey;
-            ProfileFileStamp stamp;
-            std::shared_ptr<const Profiles::ValidatedPrintProfile> profile;
-        };
-
         constexpr std::size_t kProfileCacheCapacity = 2;
-        constexpr std::size_t kValidatedProfileCacheCapacity = 4;
 
         std::string to_lower(std::string s) {
             std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -282,56 +269,6 @@ namespace JuicerAssets {
                     profile});
             if (cache.size() > kProfileCacheCapacity) {
                 cache.resize(kProfileCacheCapacity);
-            }
-        }
-
-        template <typename EntryT, typename ProfileT>
-        std::shared_ptr<const ProfileT> get_validated_profile(
-            std::vector<EntryT>& cache,
-            const std::string& cacheKey,
-            const ProfileFileStamp& stamp) {
-            if (cacheKey.empty() || !stamp.valid) {
-                return {};
-            }
-
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                EntryT& entry = cache[i];
-                if (entry.cacheKey != cacheKey || !same_file_stamp(entry.stamp, stamp)) {
-                    continue;
-                }
-
-                if (i != 0) {
-                    std::swap(cache[0], cache[i]);
-                }
-                return cache[0].profile;
-            }
-            return {};
-        }
-
-        template <typename EntryT, typename ProfileT>
-        void store_validated_profile(
-            std::vector<EntryT>& cache,
-            std::string cacheKey,
-            const ProfileFileStamp& stamp,
-            std::shared_ptr<const ProfileT> profile) {
-            if (cacheKey.empty() || !stamp.valid || !profile) {
-                return;
-            }
-
-            for (std::size_t i = 0; i < cache.size(); ++i) {
-                if (cache[i].cacheKey == cacheKey) {
-                    cache.erase(cache.begin() + static_cast<std::ptrdiff_t>(i));
-                    break;
-                }
-            }
-
-            EntryT entry;
-            entry.cacheKey = std::move(cacheKey);
-            entry.stamp = stamp;
-            entry.profile = std::move(profile);
-            cache.insert(cache.begin(), std::move(entry));
-            if (cache.size() > kValidatedProfileCacheCapacity) {
-                cache.resize(kValidatedProfileCacheCapacity);
             }
         }
 
@@ -1075,12 +1012,6 @@ namespace JuicerAssets {
         std::vector<ProfileCacheEntry> profiles;
     };
 
-    struct Library::ValidatedProfileCacheState {
-        std::mutex mutex;
-        std::vector<ValidatedFilmProfileCacheEntry> filmProfiles;
-        std::vector<ValidatedPrintProfileCacheEntry> printProfiles;
-    };
-
     Library::Library(std::string dataDir)
         : _dataDir(std::move(dataDir)),
           _neutralFilterDatabasePaths(std::make_unique<NeutralFilterDatabasePathSet[]>(kNeutralFilterDatabaseCount)),
@@ -1093,7 +1024,7 @@ namespace JuicerAssets {
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
           _profileCache(std::make_unique<ProfileCacheState>()),
-          _validatedProfileCache(std::make_unique<ValidatedProfileCacheState>()) {
+          _selectedProfileAssets(std::make_unique<Profiles::ProfileAssetStore>()) {
     }
 
     Library::~Library() = default;
@@ -1294,114 +1225,19 @@ namespace JuicerAssets {
 
     std::shared_ptr<const Profiles::ValidatedFilmProfile> Library::selected_film_profile_for_key(
         const std::string& key) {
-        const FilmStockAsset& asset = film_profile_for_key(key);
-        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
-        if (jsonPath.empty()) {
-            return {};
-        }
-
-        const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
-        const ProfileFileStamp stamp = read_profile_file_stamp(jsonPath);
-        {
-            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
-            std::shared_ptr<const Profiles::ValidatedFilmProfile> cached =
-                get_validated_profile<ValidatedFilmProfileCacheEntry, Profiles::ValidatedFilmProfile>(
-                    _validatedProfileCache->filmProfiles,
-                    cacheKey,
-                    stamp);
-            if (cached) {
-                return cached;
-            }
-        }
-
-        Profiles::ValidatedFilmProfile parsedProfile;
-        std::string diagnostic;
-        if (!Profiles::load_validated_film_profile_json(jsonPath, parsedProfile, &diagnostic)) {
-            if (JTRACE_ENABLED(1)) {
-                JTRACE("PROFILE", diagnostic.empty() ? "MalformedRequiredProfileData phase=2 selected film profile load failed" : diagnostic);
-            }
-            return {};
-        }
-
-        std::shared_ptr<const Profiles::ValidatedFilmProfile> loaded =
-            std::make_shared<Profiles::ValidatedFilmProfile>(std::move(parsedProfile));
-        {
-            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
-            store_validated_profile<ValidatedFilmProfileCacheEntry, Profiles::ValidatedFilmProfile>(
-                _validatedProfileCache->filmProfiles,
-                cacheKey,
-                stamp,
-                loaded);
-        }
-        return loaded;
+        ensure_catalogs();
+        return _selectedProfileAssets->load_film_profile_by_key(_spektrafilmProfileCatalog, key);
     }
 
     std::shared_ptr<const Profiles::ValidatedPrintProfile> Library::selected_print_profile_for_key(
         const std::string& key) {
-        const PrintPaperAsset& asset = print_profile_for_key(key);
-        const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
-        if (jsonPath.empty()) {
-            return {};
-        }
-
-        const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
-        const ProfileFileStamp stamp = read_profile_file_stamp(jsonPath);
-        {
-            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
-            std::shared_ptr<const Profiles::ValidatedPrintProfile> cached =
-                get_validated_profile<ValidatedPrintProfileCacheEntry, Profiles::ValidatedPrintProfile>(
-                    _validatedProfileCache->printProfiles,
-                    cacheKey,
-                    stamp);
-            if (cached) {
-                return cached;
-            }
-        }
-
-        Profiles::ValidatedPrintProfile parsedProfile;
-        std::string diagnostic;
-        if (!Profiles::load_validated_print_profile_json(jsonPath, parsedProfile, &diagnostic)) {
-            if (JTRACE_ENABLED(1)) {
-                JTRACE("PROFILE", diagnostic.empty() ? "MalformedRequiredProfileData phase=2 selected print profile load failed" : diagnostic);
-            }
-            return {};
-        }
-
-        std::shared_ptr<const Profiles::ValidatedPrintProfile> loaded =
-            std::make_shared<Profiles::ValidatedPrintProfile>(std::move(parsedProfile));
-        {
-            std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
-            store_validated_profile<ValidatedPrintProfileCacheEntry, Profiles::ValidatedPrintProfile>(
-                _validatedProfileCache->printProfiles,
-                cacheKey,
-                stamp,
-                loaded);
-        }
-        return loaded;
+        ensure_catalogs();
+        return _selectedProfileAssets->load_print_profile_by_key(_spektrafilmProfileCatalog, key);
     }
 
     SelectedProfileResult Library::selected_profiles_for_route(const SelectedProfileRequest& request) {
-        SelectedProfileResult result;
-        result.filmProfile = selected_film_profile_for_key(request.filmProfileKey);
-        if (!result.filmProfile) {
-            result.diagnostic = "MissingRequiredResource phase=2 field=film_profile key=" + request.filmProfileKey;
-            return result;
-        }
-
-        if (!Spektrafilm::scan_route_is_print(request.scanRoute)) {
-            result.directRoutePrintProfileExcluded = true;
-            result.directRouteNeutralCalibrationExcluded = true;
-            result.valid = true;
-            return result;
-        }
-
-        result.printProfile = selected_print_profile_for_key(request.printProfileKey);
-        if (!result.printProfile) {
-            result.diagnostic = "MissingRequiredResource phase=2 field=print_profile key=" + request.printProfileKey;
-            return result;
-        }
-        result.valid = true;
-        return result;
+        ensure_catalogs();
+        return _selectedProfileAssets->selected_profiles_for_route(_spektrafilmProfileCatalog, request);
     }
 
     std::string Library::print_paper_folder_name_for_asset(const PrintPaperAsset& asset) {
@@ -1562,10 +1398,8 @@ namespace JuicerAssets {
                 std::lock_guard<std::mutex> lock(_profileCache->mutex);
                 _profileCache->profiles.clear();
             }
-            if (_validatedProfileCache) {
-                std::lock_guard<std::mutex> lock(_validatedProfileCache->mutex);
-                _validatedProfileCache->filmProfiles.clear();
-                _validatedProfileCache->printProfiles.clear();
+            if (_selectedProfileAssets) {
+                _selectedProfileAssets->release_cached_payloads();
             }
         } catch (...) {
             JuicerLogging::discard_current_exception();

@@ -73,11 +73,59 @@ namespace Spektrafilm {
             return ProfilePolarity::Unsupported;
         }
 
-        bool read_profile_entry(const fs::path& path, ProfileCatalogEntry& entry, std::string& error) {
+        enum class EntryReadDisposition {
+            Profile,
+            NonProfile,
+            Unavailable
+        };
+
+        bool has_profile_shaped_data(const Json& root) {
+            const auto dataIt = root.find("data");
+            if (dataIt == root.end() || !dataIt->is_object()) {
+                return false;
+            }
+            static constexpr const char* kProfileDataMembers[] = {
+                "wavelengths",
+                "log_sensitivity",
+                "channel_density",
+                "base_density",
+                "log_exposure",
+                "density_curves"};
+            return std::any_of(
+                std::begin(kProfileDataMembers),
+                std::end(kProfileDataMembers),
+                [dataIt](const char* key) {
+                    return dataIt->contains(key);
+                });
+        }
+
+        template <typename ValueT, typename ParseFn>
+        ValueT read_bounded_metadata(
+            const Json& info,
+            const char* key,
+            const char* defaultValue,
+            ValueT unsupportedValue,
+            bool& defaulted,
+            ParseFn&& parse) {
+            const auto it = info.find(key);
+            defaulted = it == info.end();
+            if (defaulted) {
+                return parse(defaultValue);
+            }
+            if (!it->is_string()) {
+                return unsupportedValue;
+            }
+            return parse(it->get<std::string>());
+        }
+
+        EntryReadDisposition read_profile_entry(
+            const fs::path& path,
+            ProfileCatalogEntry& entry,
+            std::string& error) {
             std::ifstream file(path, std::ios::binary);
             if (!file.is_open()) {
                 error = "open failed";
-                return false;
+                return EntryReadDisposition::Unavailable;
             }
 
             Json root;
@@ -85,7 +133,11 @@ namespace Spektrafilm {
                 file >> root;
             } catch (const Json::exception& ex) {
                 error = ex.what();
-                return false;
+                return EntryReadDisposition::Unavailable;
+            }
+
+            if (!has_profile_shaped_data(root)) {
+                return EntryReadDisposition::NonProfile;
             }
 
             const Json empty = Json::object();
@@ -94,19 +146,34 @@ namespace Spektrafilm {
             entry.key = json_string_member_or(info, "stock", std::string());
             if (entry.key.empty()) {
                 error = "missing info.stock";
-                return false;
+                return EntryReadDisposition::Unavailable;
             }
 
             entry.label = json_string_member_or(info, "name", entry.key);
             entry.sourcePath = path.generic_string();
-            entry.supportDefaulted = !info.contains("support");
-            entry.stageDefaulted = !info.contains("stage");
-            entry.polarityDefaulted = !info.contains("type");
-            entry.support = parse_support(json_string_member_or(info, "support", "film"));
-            entry.stage = parse_stage(json_string_member_or(info, "stage", "filming"));
-            entry.polarity = parse_polarity(json_string_member_or(info, "type", "negative"));
+            entry.support = read_bounded_metadata(
+                info,
+                "support",
+                "film",
+                ProfileSupport::Unsupported,
+                entry.supportDefaulted,
+                parse_support);
+            entry.stage = read_bounded_metadata(
+                info,
+                "stage",
+                "filming",
+                ProfileStage::Unsupported,
+                entry.stageDefaulted,
+                parse_stage);
+            entry.polarity = read_bounded_metadata(
+                info,
+                "type",
+                "negative",
+                ProfilePolarity::Unsupported,
+                entry.polarityDefaulted,
+                parse_polarity);
             entry.sourceVersion = source_version_for_path(path);
-            return true;
+            return EntryReadDisposition::Profile;
         }
 
         bool role_key_inserted(
@@ -154,7 +221,12 @@ namespace Spektrafilm {
 
             ProfileCatalogEntry entry;
             std::string error;
-            if (!read_profile_entry(it->path(), entry, error)) {
+            const EntryReadDisposition disposition = read_profile_entry(it->path(), entry, error);
+            if (disposition == EntryReadDisposition::NonProfile) {
+                catalog.ignoredResources.emplace_back(it->path().generic_string());
+                continue;
+            }
+            if (disposition == EntryReadDisposition::Unavailable) {
                 catalog.unavailableProfiles.emplace_back(it->path().generic_string() + ": " + error);
                 continue;
             }
@@ -162,7 +234,9 @@ namespace Spektrafilm {
             const bool visibleAsFilm = entry.support == ProfileSupport::Film &&
                                        entry.stage == ProfileStage::Filming &&
                                        entry.polarity != ProfilePolarity::Unsupported;
-            const bool visibleAsPrint = entry.stage == ProfileStage::Printing;
+            const bool visibleAsPrint = entry.support != ProfileSupport::Unsupported &&
+                                        entry.stage == ProfileStage::Printing &&
+                                        entry.polarity != ProfilePolarity::Unsupported;
 
             if (visibleAsFilm) {
                 if (!role_key_inserted(filmKeys, entry, "film", catalog)) {

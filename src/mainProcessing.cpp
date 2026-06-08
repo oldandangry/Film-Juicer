@@ -2906,6 +2906,12 @@ void JuicerProcessor::processImagesCUDA() {
         (_recipeHold && !Spektrafilm::scan_route_is_print(_recipeHold->profileRoute.scanRoute))
             ? _recipeHold.get()
             : nullptr;
+    if (!directRecipe) {
+        JTRACE(
+            "SPEKTRAFILM",
+            "FATAL: DirectStructuralRecipeNotReadyForPhase3C; refusing legacy CUDA fallback");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
     const Spektrafilm::ScanRoute scanRoute =
         _recipeHold ? _recipeHold->profileRoute.scanRoute : Spektrafilm::kDefaultScanRoute;
     const FilmRawRecipe* directFilmRaw = directRecipe ? &directRecipe->filmRaw : nullptr;
@@ -3047,6 +3053,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!(_nComponents == 3 || _nComponents == 4)) {
             throw_direct_restriction("UnsupportedDirectComponentCountForPhase3C");
         }
+        JTRACE("PHASE3D", "direct_negative branch accepted; restrictions=clear");
 
         Scanner::ScannerSpectralLutDescriptor scannerDescriptor{};
         std::string scannerDescriptorDiagnostic;
@@ -3215,6 +3222,7 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.abort("direct_negative_pipeline_launch_failed");
             throw_cuda_stage_fatal("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
         }
+        JTRACE("PHASE3D", "direct_negative kernel launch accepted");
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, _pCudaStream, scanError)) {
             preparedFrame.abort("direct_scan_error_finalize_failed");
             throw_submission_fatal("direct_scan_error_finalize", "direct scan error finalize failed", scanError);
@@ -3224,6 +3232,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!preparedFrame.finish(_pCudaStream, finishError)) {
             throw_submission_fatal("direct_prepared_frame_finish", "direct prepared frame finish failed", finishError);
         }
+        JTRACE("PHASE3D", "direct_negative destination submission completed");
         JuicerCuda::LaunchGraphCounters::record_frame_completed();
         return;
     }

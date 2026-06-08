@@ -264,6 +264,7 @@ namespace {
     bool build_direct_density_bounds(
         const Profiles::ValidatedFilmProfile& profile,
         const FilmDevelopRecipe& develop,
+        const GrainContract& grain,
         Spektrafilm::ScanRoute route,
         DensityBoundsRecipe& out) {
         out = DensityBoundsRecipe{};
@@ -274,7 +275,7 @@ namespace {
         out.authoredMinCmy = develop.authoredMinCmy;
         out.authoredMaxCmy = develop.authoredMaxCmy;
         for (std::size_t channel = 0; channel < out.dataMinCmy.size(); ++channel) {
-            out.dataMinCmy[channel] = -profile.digest.grainContract.density_min[channel];
+            out.dataMinCmy[channel] = -grain.densityMinCmy[channel];
             out.dataMaxCmy[channel] = develop.authoredMaxCmy[channel];
             const float span = out.dataMaxCmy[channel] - out.dataMinCmy[channel];
             if (!(std::isfinite(span) && span > 0.0f)) {
@@ -404,6 +405,7 @@ namespace Spektrafilm {
         if (!build_direct_density_bounds(
                 profile,
                 filmDevelop,
+                input.grainContract,
                 input.scanRoute,
                 result.recipe.densityBounds)) {
             result.diagnostic = "MalformedRequiredProfileData phase=3A field=density_bounds";

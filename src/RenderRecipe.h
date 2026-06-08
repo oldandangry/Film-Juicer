@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "ProfileJSONLoader.h"
+#include "ProfileAssets.h"
 #include "ScanRoute.h"
 
 // RenderRecipe owner map:
@@ -15,8 +15,12 @@
 //   references, asset tokens, and resolved ScanRoute.
 // - FilmRawRecipe owns direct-route input color, RGB-to-raw, sensitivity, and exposure ordering.
 // - FilmDevelopRecipe owns direct-route authored/normalized film density development inputs.
+// - DirRecipe owns development-inhibitor release behavior when Phase 5 introduces it.
 // - DensityBoundsRecipe owns final route/media scanner and enlarger density bounds.
+// - PrintRecipe owns print exposure, filters, development, and print-route policy when Phase 4 introduces it.
 // - ScannerOutputRecipe owns scanner/output policy; scanner LUT resources own their descriptor.
+// - OpticsRecipe owns lens, halation, scattering, and diffusion behavior when Phase 6 introduces it.
+// - GrainContract/GrainRecipe own density_min and visual-grain behavior; density_min is not profile digest data.
 // - FrameRequest owns frame-local extent, pixel size, temporal tokens, and metering request facts.
 // - PreparedCudaFrame/context resource internals own durable GPU handles, scratch, staging, and views.
 // This is source-adjacent orientation, not a runtime registry.
@@ -139,6 +143,10 @@ struct FilmDevelopRecipe {
     std::uint64_t hash = 0;
 };
 
+struct GrainContract {
+    std::array<float, 3> densityMinCmy{{0.07f, 0.08f, 0.12f}};
+};
+
 struct DensityBoundsRecipe {
     Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
     Spektrafilm::DensityMedium medium = Spektrafilm::DensityMedium::Film;
@@ -188,6 +196,7 @@ namespace Spektrafilm {
     using ::DensityBoundsRecipe;
     using ::FilmDevelopRecipe;
     using ::FilmRawRecipe;
+    using ::GrainContract;
     using ::ProfileRoute;
     using ::RenderRecipe;
     using ::ScannerOutputRecipe;
@@ -197,6 +206,7 @@ namespace Spektrafilm {
         std::string printProfileKey;
         ScanRoute scanRoute = kDefaultScanRoute;
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
+        GrainContract grainContract;
         bool directRoutePrintProfileExcluded = false;
         bool directRouteNeutralCalibrationExcluded = false;
         int spectralUpsamplingMode = 0;

@@ -8,14 +8,13 @@
 #include <tuple>
 #include <vector>
 
+#include "ProfileAssets.h"
 #include "ProfileCatalog.h"
 #include "ScanRoute.h"
 #include "SpectralData.h"
 
 namespace Profiles {
     struct AgxFilmProfile;
-    struct ValidatedFilmProfile;
-    struct ValidatedPrintProfile;
 } // namespace Profiles
 
 namespace JuicerAssets {
@@ -128,20 +127,8 @@ namespace JuicerAssets {
         int dichroicSetChoice = 0;
     };
 
-    struct SelectedProfileRequest {
-        std::string filmProfileKey;
-        std::string printProfileKey;
-        Spektrafilm::ScanRoute scanRoute = Spektrafilm::kDefaultScanRoute;
-    };
-
-    struct SelectedProfileResult {
-        std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
-        std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
-        bool directRoutePrintProfileExcluded = false;
-        bool directRouteNeutralCalibrationExcluded = false;
-        bool valid = false;
-        std::string diagnostic;
-    };
+    using SelectedProfileRequest = Profiles::SelectedProfileRequest;
+    using SelectedProfileResult = Profiles::SelectedProfileResult;
 
     class Library {
     public:
@@ -208,7 +195,6 @@ namespace JuicerAssets {
         struct DichroicFilterCurveCacheState;
         struct IlluminantFilterCurveCacheState;
         struct ProfileCacheState;
-        struct ValidatedProfileCacheState;
 
         std::once_flag _catalogOnce;
         std::once_flag _neutralFilterOnce;
@@ -231,7 +217,7 @@ namespace JuicerAssets {
         std::unique_ptr<DichroicFilterCurveCacheState> _dichroicFilterCurveCache;
         std::unique_ptr<IlluminantFilterCurveCacheState> _illuminantFilterCurveCache;
         std::unique_ptr<ProfileCacheState> _profileCache;
-        std::unique_ptr<ValidatedProfileCacheState> _validatedProfileCache;
+        std::unique_ptr<Profiles::ProfileAssetStore> _selectedProfileAssets;
     };
 
 } // namespace JuicerAssets

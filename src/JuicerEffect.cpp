@@ -1277,8 +1277,8 @@ namespace {
         return Spektrafilm::resolve_scan_route(capturePolarity, userRouteSelection);
     }
 
-    inline bool spektrafilm_phase1a_blocks_old_working_state_rebuild() {
-        return true;
+    inline bool spektrafilm_phase1a_blocks_old_working_state_rebuild(Spektrafilm::ScanRoute route) {
+        return Spektrafilm::scan_route_is_print(route);
     }
 
     inline int read_choice_param_clamped(
@@ -3542,6 +3542,13 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (!directCudaRoute) {
         throw_spektrafilm_phase1a_render_cutoff(args);
     }
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (JTRACE_ENABLED(1)) {
+        std::string msg = "plugin=com.juicer.Juicer render backend=cuda route=";
+        msg += Spektrafilm::scan_route_key(requestedRoute);
+        JTRACE("PHASE3D", msg);
+    }
+#endif
 
     auto framePreparation = JuicerProcess::root().begin_frame_preparation();
     if (!framePreparation.active()) {
@@ -4776,9 +4783,9 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         return;
     }
 
-    if (spektrafilm_phase1a_blocks_old_working_state_rebuild()) {
-        const ParamSnapshot snapshot = snapshotParams();
-        const ProfileKeyLabels labels = resolve_profile_key_labels(snapshot);
+    const ParamSnapshot phaseGateSnapshot = snapshotParams();
+    if (spektrafilm_phase1a_blocks_old_working_state_rebuild(phaseGateSnapshot.scanRoute)) {
+        const ProfileKeyLabels labels = resolve_profile_key_labels(phaseGateSnapshot);
         std::string msg;
         msg.reserve(160);
         msg = "SpektrafilmPixelPipelineNotImplementedForPhase1A blocks parameter-triggered old WorkingState rebuild";
