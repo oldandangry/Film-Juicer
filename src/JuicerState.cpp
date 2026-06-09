@@ -1968,6 +1968,83 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
     return true;
 }
 
+bool load_selected_spektrafilm_film_profile_into_base(
+    const Profiles::ValidatedFilmProfile& profile,
+    InstanceState& S) {
+    // SF_TEMP_BRIDGE_DirectSelectedProfilePublicationEnvelope owner=Phase3A remove=Phase3D:
+    // direct CUDA preparation still consumes a few host derivations published through BaseState.
+    const Profiles::SpektrafilmFilmData& data = profile.data;
+    BaseState next{};
+
+    auto assign_reference_channel = [&](Spectral::Curve& curve, const auto& samples, std::size_t channel) {
+        curve.lambda_nm.assign(data.wavelengths.begin(), data.wavelengths.end());
+        curve.linear.resize(samples.size());
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            curve.linear[i] = samples[i][channel];
+        }
+    };
+    auto assign_reference_scalar = [&](Spectral::Curve& curve, const auto& samples) {
+        curve.lambda_nm.assign(data.wavelengths.begin(), data.wavelengths.end());
+        curve.linear.assign(samples.begin(), samples.end());
+    };
+    auto assign_normalized_density_channel = [&](Spectral::Curve& curve, std::size_t channel) {
+        curve.lambda_nm = data.logExposure;
+        curve.linear.resize(data.densityCurves.size());
+        float finiteMin = std::numeric_limits<float>::infinity();
+        for (const std::array<float, 3>& row : data.densityCurves) {
+            if (std::isfinite(row[channel])) {
+                finiteMin = std::min(finiteMin, row[channel]);
+            }
+        }
+        if (!std::isfinite(finiteMin)) {
+            curve = Spectral::Curve{};
+            return;
+        }
+        for (std::size_t i = 0; i < data.densityCurves.size(); ++i) {
+            const float value = data.densityCurves[i][channel];
+            curve.linear[i] = std::isfinite(value) ? value - finiteMin : value;
+        }
+    };
+
+    assign_reference_channel(next.epsC, data.channelDensity, 0u);
+    assign_reference_channel(next.epsM, data.channelDensity, 1u);
+    assign_reference_channel(next.epsY, data.channelDensity, 2u);
+    assign_reference_channel(next.sensR, data.linearSensitivity, 0u);
+    assign_reference_channel(next.sensG, data.linearSensitivity, 1u);
+    assign_reference_channel(next.sensB, data.linearSensitivity, 2u);
+    assign_normalized_density_channel(next.densR, 0u);
+    assign_normalized_density_channel(next.densG, 1u);
+    assign_normalized_density_channel(next.densB, 2u);
+    assign_reference_scalar(next.baseMin, data.baseDensity);
+    next.hasBaseline = true;
+    next.referenceIlluminant = profile.info.referenceIlluminant.value;
+    next.viewingIlluminant = profile.info.viewingIlluminant.value;
+    next.grain.densityMin = {{0.07f, 0.08f, 0.12f}};
+
+    const bool ready =
+        next.epsC.linear.size() == data.wavelengths.size() &&
+        next.epsM.linear.size() == data.wavelengths.size() &&
+        next.epsY.linear.size() == data.wavelengths.size() &&
+        next.sensR.linear.size() == data.wavelengths.size() &&
+        next.sensG.linear.size() == data.wavelengths.size() &&
+        next.sensB.linear.size() == data.wavelengths.size() &&
+        next.densR.linear.size() == data.logExposure.size() &&
+        next.densG.linear.size() == data.logExposure.size() &&
+        next.densB.linear.size() == data.logExposure.size() &&
+        next.baseMin.linear.size() == data.wavelengths.size();
+    if (!ready) {
+        JTRACE("SPEKTRAFILM", "MalformedRequiredProfileData phase=3A field=direct_publication_envelope");
+        return false;
+    }
+
+    S.base = std::move(next);
+    S.filmReferenceIlluminant = S.base.referenceIlluminant;
+    S.couplerProfileSpatialSigmaMicrometers = 0.0;
+    S.couplerProfileSpatialSigmaValid = false;
+    JTRACE_VERBOSE("SPEKTRAFILM", "phase=3A direct bootstrap consumed selected validated Spektrafilm film payload");
+    return true;
+}
+
 void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P) {
     Spectral::SpectralMutationScope mutationScope(
         Spectral::SpectralMutationStage::Rebuild,
@@ -2160,22 +2237,24 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("MSWSC", "event=core_share_fastpath_fallback reason=scanner_runtime_rebuild_failed");
     }
 
-    Print::build_illuminant_from_choice(P.enlIll, printRT, /*forEnlarger*/ true);
-    Scanner::ScannerIlluminant printScannerIlluminant;
-    if (!build_scanner_illuminant(printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
-        return;
-    }
-    printRT.illumView = printScannerIlluminant.curve;
-    if (buildTraceEnabled) {
-        std::ostringstream oss;
-        oss << "Enl illum K=" << static_cast<int>(printRT.illumEnlarger.linear.size())
-            << " View illum K=" << static_cast<int>(printRT.illumView.linear.size());
-        JTRACE("BUILD", oss.str());
-    }
-
     Scanner::ScannerIlluminant negativeScannerIlluminant;
     if (!build_scanner_illuminant(base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
         return;
+    }
+    const bool directRoute = !Spektrafilm::scan_route_is_print(P.scanRoute);
+    Scanner::ScannerIlluminant printScannerIlluminant;
+    if (!directRoute) {
+        Print::build_illuminant_from_choice(P.enlIll, printRT, /*forEnlarger*/ true);
+        if (!build_scanner_illuminant(printRT.viewingIlluminant, "print viewing", printScannerIlluminant)) {
+            return;
+        }
+        printRT.illumView = printScannerIlluminant.curve;
+        if (buildTraceEnabled) {
+            std::ostringstream oss;
+            oss << "Enl illum K=" << static_cast<int>(printRT.illumEnlarger.linear.size())
+                << " View illum K=" << static_cast<int>(printRT.illumView.linear.size());
+            JTRACE("BUILD", oss.str());
+        }
     }
     Scanner::ScannerDensityRange negativeDensityRange;
     bool negativeRangeOk = false;
@@ -2226,6 +2305,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         if (!profileRefIll.linear.empty() &&
             static_cast<int>(profileRefIll.linear.size()) == Spectral::gShape.K) {
             tmpRT.illumView = profileRefIll;
+        } else if (directRoute) {
+            JTRACE("SPEKTRAFILM", "MissingRequiredResource phase=3A field=selected_reference_illuminant");
+            return;
         } else {
             Print::build_illuminant_from_choice(P.refIll, tmpRT, /*forEnlarger*/ false);
         }
@@ -2591,18 +2673,22 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             ? average_positive(printRT.midNeutralDensity)
             : 0.0f;
 
+    const Spectral::Curve& compatibilityViewIlluminant =
+        directRoute ? negativeScannerIlluminant.curve : printRT.illumView;
+    const std::uint64_t compatibilityViewIlluminantHash =
+        directRoute ? negativeScannerIlluminant.hash : printScannerIlluminant.hash;
     Spectral::build_tables_from_curves_non_global(
         /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
         /*xbar*/ Spectral::gXBar,
         /*ybar*/ Spectral::gYBar,
         /*zbar*/ Spectral::gZBar,
-        /*illumView*/ printRT.illumView,
+        /*illumView*/ compatibilityViewIlluminant,
         /*baseMin*/ baseMin,
         /*baseMid*/ baseMid,
         /*hasBaseline*/ hasBaseline,
         baselineMixReference,
         target->tablesView,
-        printScannerIlluminant.hash);
+        compatibilityViewIlluminantHash);
 
     if (hasRefIlluminant) {
         Spectral::build_tables_from_curves_non_global(

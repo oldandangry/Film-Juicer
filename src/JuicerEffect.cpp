@@ -393,6 +393,37 @@ namespace {
         return state.baseLoaded;
     }
 
+    inline bool load_direct_film_profile_into_base_locked(
+        const ParamSnapshot& snapshot,
+        InstanceState& state) {
+        const JuicerAssets::SelectedProfileResult selected =
+            JuicerProcess::root().assets().selected_profiles_for_route(
+                JuicerAssets::SelectedProfileRequest{
+                    snapshot.filmProfileKey,
+                    snapshot.printProfileKey,
+                    snapshot.scanRoute});
+        const bool validDirectSelection =
+            selected.valid &&
+            selected.filmProfile &&
+            selected.directRoutePrintProfileExcluded &&
+            selected.directRouteNeutralCalibrationExcluded;
+        if (!validDirectSelection) {
+            JTRACE(
+                "SPEKTRAFILM",
+                selected.diagnostic.empty()
+                    ? "MissingRequiredResource phase=3A field=selected_direct_film_profile"
+                    : selected.diagnostic);
+            std::lock_guard<std::mutex> lock(state.m);
+            state.baseLoaded = false;
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(state.m);
+        state.baseLoaded =
+            load_selected_spektrafilm_film_profile_into_base(*selected.filmProfile, state);
+        return state.baseLoaded;
+    }
+
     struct PendingStateSnapshot {
         ParamSnapshot params{};
         std::uint64_t fullHash = 0ull;
@@ -910,15 +941,19 @@ namespace {
 
     inline bool reload_film_stock_if_requested(
         bool requested,
-        const std::string& filmProfileKey,
+        const ParamSnapshot& snapshot,
         InstanceState& state) {
         if (!requested) {
             return false;
         }
-        return load_film_profile_into_base_locked(filmProfileKey, state);
+        if (!Spektrafilm::scan_route_is_print(snapshot.scanRoute)) {
+            return load_direct_film_profile_into_base_locked(snapshot, state);
+        }
+        return load_film_profile_into_base_locked(snapshot.filmProfileKey, state);
     }
 
     struct OnParamsReloadStatus {
+        bool printRoute = false;
         bool printReloaded = false;
         bool dichroicReloaded = false;
         bool filmReloaded = false;
@@ -931,21 +966,26 @@ namespace {
         Print::Runtime& runtime,
         bool traceVerbose) {
         OnParamsReloadStatus status{};
-        status.printReloaded =
-            reload_print_profile_if_requested(changed.printProfile, snapshot, runtime, traceVerbose);
-        status.dichroicReloaded =
-            reload_dichroic_filters_if_requested(changed.enlargerDichroicSet, snapshot, runtime);
+        status.printRoute = Spektrafilm::scan_route_is_print(snapshot.scanRoute);
+        if (status.printRoute) {
+            status.printReloaded =
+                reload_print_profile_if_requested(changed.printProfile, snapshot, runtime, traceVerbose);
+            status.dichroicReloaded =
+                reload_dichroic_filters_if_requested(changed.enlargerDichroicSet, snapshot, runtime);
+        }
         status.filmReloaded =
-            reload_film_stock_if_requested(changed.filmProfile, snapshot.filmProfileKey, state);
+            reload_film_stock_if_requested(changed.filmProfile, snapshot, state);
         return status;
     }
 
     inline bool should_refresh_print_illuminant_for_reload_status(const OnParamsReloadStatus& status) {
-        return should_refresh_print_illuminant(status.printReloaded, status.filmReloaded);
+        return status.printRoute &&
+               should_refresh_print_illuminant(status.printReloaded, status.filmReloaded);
     }
 
     inline bool should_apply_reload_neutral_filters(const OnParamsReloadStatus& status) {
-        return should_apply_neutral_after_reload(status.printReloaded, status.dichroicReloaded);
+        return status.printRoute &&
+               should_apply_neutral_after_reload(status.printReloaded, status.dichroicReloaded);
     }
 
     inline bool should_skip_param_change_due_to_suppression(const InstanceState* state) {
@@ -991,7 +1031,8 @@ namespace {
         const OnParamsReloadStatus& status,
         bool neutralApplied,
         ApplyFn&& applyFn) {
-        if (!should_apply_film_neutral_filters(status.filmReloaded, neutralApplied)) {
+        if (!status.printRoute ||
+            !should_apply_film_neutral_filters(status.filmReloaded, neutralApplied)) {
             return;
         }
         std::forward<ApplyFn>(applyFn)();
@@ -1000,8 +1041,9 @@ namespace {
     template <typename ApplyFn>
     inline void apply_when_enlarger_illuminant_changed(
         const ChangedParamFlags& changed,
+        const OnParamsReloadStatus& status,
         ApplyFn&& applyFn) {
-        if (!changed.enlargerIlluminant) {
+        if (!status.printRoute || !changed.enlargerIlluminant) {
             return;
         }
         std::forward<ApplyFn>(applyFn)();
@@ -4326,8 +4368,12 @@ void JuicerEffect::bootstrap_after_attach() {
         (void)load_print_profile_for_snapshot(P, nextPrintRuntime);
     }
 
-    // Load film profile before applying metadata-driven illuminant defaults.
-    load_film_profile_into_base_locked(P.filmProfileKey, *_state);
+    // Direct product bootstrap consumes the selected validated Spektrafilm payload.
+    if (printRoute) {
+        load_film_profile_into_base_locked(P.filmProfileKey, *_state);
+    } else {
+        load_direct_film_profile_into_base_locked(P, *_state);
+    }
     if (has_loaded_base_state(_state.get())) {
         applyHalationProfileDefaults();
     }
@@ -4854,7 +4900,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         printRuntimeDirty = true;
     });
 
-    apply_when_enlarger_illuminant_changed(changed, [&]() {
+    apply_when_enlarger_illuminant_changed(changed, reloadStatus, [&]() {
         applyNeutralFilters(P, nextPrintRuntime);
         printRuntimeDirty = true;
     });

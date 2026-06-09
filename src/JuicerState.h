@@ -489,5 +489,8 @@ int print_profile_option_count();
 const char* print_profile_option_key(int index);
 const char* print_profile_option_label(int index);
 bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceState& S);
+bool load_selected_spektrafilm_film_profile_into_base(
+    const Profiles::ValidatedFilmProfile& profile,
+    InstanceState& S);
 void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);
 void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);
