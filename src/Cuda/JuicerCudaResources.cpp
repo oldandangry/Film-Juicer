@@ -956,6 +956,9 @@ namespace JuicerCuda {
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrY != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrM != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrC != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.mixY != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.mixM != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.mixC != nullptr, spatialDirPlaneBytes);
 
         if (resources.sharedTmpPlane) {
             next.helperSharedBytes = sharedTmpBytes;
@@ -2129,7 +2132,9 @@ namespace JuicerCuda {
                 free_gaussian_kernel(halationScatterKernel[i]);
             }
             free_optics_scratch(*this, scannerScratch, nullptr);
-            free_gaussian_kernel(spatialDirKernel);
+            for (auto& kernel : spatialDirKernels) {
+                free_gaussian_kernel(kernel);
+            }
             free_spatial_dir_scratch(*this, spatialDirScratch, nullptr);
             free_shared_tmp_plane(*this);
             free_stbn(*this);
@@ -2491,6 +2496,7 @@ namespace JuicerCuda {
         const RenderRecipe& recipe = *request.recipe;
         const FilmRawRecipe& filmRaw = recipe.filmRaw;
         const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
+        const DirCouplersRecipe& dirCouplers = recipe.dirCouplers;
         const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
             *request.scannerLutDescriptor;
@@ -2521,11 +2527,14 @@ namespace JuicerCuda {
         const bool alreadyPrepared =
             resources.directFinalSensitivityHash == filmRaw.finalSensitivityHash &&
             resources.directDensityCurvesHash == filmDevelop.normalizedDensityCurvesHash &&
+            resources.directDirHash == (dirCouplers.active ? dirCouplers.hash : 0) &&
             resources.directDensityBoundsHash == densityBounds.hash &&
             resources.directScannerDescriptorHash == scannerDescriptor.hash &&
             resources.directSelectedMethod == filmRaw.rgbToRawMethod &&
             resources.sensB.x && resources.sensG.x && resources.sensR.x &&
             resources.densB.x && resources.densG.x && resources.densR.x &&
+            (!dirCouplers.active ||
+             (resources.dirDensB.x && resources.dirDensG.x && resources.dirDensR.x)) &&
             resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesIllum &&
             resources.scanNegative.tables.epsC && resources.scanNegativeLut.canonical_ready() &&
             resources.scanNegativeLut.hash == scannerDescriptor.hash &&
@@ -2578,6 +2587,34 @@ namespace JuicerCuda {
             !upload_curve_locked(resources, resources.densG, densG, cudaStreamOpaque, &lock, "direct normalizedDensG", outError) ||
             !upload_curve_locked(resources, resources.densR, densR, cudaStreamOpaque, &lock, "direct normalizedDensR", outError)) {
             return false;
+        }
+        if (dirCouplers.active) {
+            if (dirCouplers.hash == 0 ||
+                dirCouplers.precorrectedDensityCurvesHash == 0 ||
+                dirCouplers.precorrectedDensityCurves.size() != filmDevelop.logExposure.size()) {
+                outError = "direct DIR resource descriptor mismatch";
+                return false;
+            }
+            Spectral::Curve dirB = densB;
+            Spectral::Curve dirG = densG;
+            Spectral::Curve dirR = densR;
+            for (std::size_t sample = 0; sample < dirCouplers.precorrectedDensityCurves.size(); ++sample) {
+                const auto& rgb = dirCouplers.precorrectedDensityCurves[sample];
+                dirB.linear[sample] = rgb[2];
+                dirG.linear[sample] = rgb[1];
+                dirR.linear[sample] = rgb[0];
+            }
+            if (!upload_curve_locked(resources, resources.dirDensB, dirB, cudaStreamOpaque, &lock, "direct DIR densB", outError) ||
+                !upload_curve_locked(resources, resources.dirDensG, dirG, cudaStreamOpaque, &lock, "direct DIR densG", outError) ||
+                !upload_curve_locked(resources, resources.dirDensR, dirR, cudaStreamOpaque, &lock, "direct DIR densR", outError)) {
+                return false;
+            }
+        } else {
+            if (!retire_curve_locked(resources, resources.dirDensB, cudaStreamOpaque, "disabled direct DIR densB", outError) ||
+                !retire_curve_locked(resources, resources.dirDensG, cudaStreamOpaque, "disabled direct DIR densG", outError) ||
+                !retire_curve_locked(resources, resources.dirDensR, cudaStreamOpaque, "disabled direct DIR densR", outError)) {
+                return false;
+            }
         }
 
         const Spectral::SpectralTables& exposureTables = *request.exposureTables;
@@ -2808,6 +2845,7 @@ namespace JuicerCuda {
 
         resources.directFinalSensitivityHash = filmRaw.finalSensitivityHash;
         resources.directDensityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
+        resources.directDirHash = dirCouplers.active ? dirCouplers.hash : 0;
         resources.directDensityBoundsHash = densityBounds.hash;
         resources.directScannerDescriptorHash = scannerDescriptor.hash;
         resources.directSelectedMethod = filmRaw.rgbToRawMethod;
@@ -3554,6 +3592,9 @@ namespace JuicerCuda {
         free_tracked_device_ptr_locked(resources, s.corrY, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.corrM, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.corrC, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.mixY, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.mixM, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.mixC, cudaStreamOpaque);
 #endif
         s.tmp = nullptr;
         s.width = 0;
@@ -3582,6 +3623,21 @@ namespace JuicerCuda {
         if (s.corrC) {
             if (!retire_ptr_locked(resources, s.corrC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
             s.corrC = nullptr;
+        }
+        if (s.mixY) {
+            if (!retire_ptr_locked(resources, s.mixY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
+            s.mixY = nullptr;
+        }
+        if (s.mixM) {
+            if (!retire_ptr_locked(resources, s.mixM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
+            s.mixM = nullptr;
+        }
+        if (s.mixC) {
+            if (!retire_ptr_locked(resources, s.mixC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
+            s.mixC = nullptr;
         }
         s.tmp = nullptr;
         s.width = 0;
@@ -3619,7 +3675,8 @@ namespace JuicerCuda {
 
     static bool spatial_dir_base_live_locked(const Resources& resources) noexcept {
         const auto& scratch = resources.spatialDirScratch;
-        return scratch.corrY || scratch.corrM || scratch.corrC;
+        return scratch.corrY || scratch.corrM || scratch.corrC ||
+               scratch.mixY || scratch.mixM || scratch.mixC;
     }
 
     static bool retire_shared_tmp_plane_locked(
@@ -3929,6 +3986,23 @@ namespace JuicerCuda {
                 return false;
             }
             scratch.corrC = nullptr;
+        }
+        float** mixPlanes[3] = {&scratch.mixY, &scratch.mixM, &scratch.mixC};
+        for (float** mixPlane : mixPlanes) {
+            if (*mixPlane) {
+                if (!retire_ptr_locked(
+                        resources,
+                        *mixPlane,
+                        bytes,
+                        Resources::RetireKind::DeviceFree,
+                        cudaStreamOpaque,
+                        "scratch normalization spatial dir mixture",
+                        outError,
+                        true)) {
+                    return false;
+                }
+                *mixPlane = nullptr;
+            }
         }
         scratch.tmp = nullptr;
         scratch.width = 0;
@@ -4689,7 +4763,8 @@ namespace JuicerCuda {
         const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
         const bool dimsMatch = (scratch.width == width && scratch.height == height);
         const bool capacityMatch = scratch.capacityElements >= requiredElements;
-        const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC;
+        const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC &&
+                              scratch.mixY && scratch.mixM && scratch.mixC;
         if (dimsMatch && capacityMatch && haveBase) {
             if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
                 return false;
@@ -4698,7 +4773,8 @@ namespace JuicerCuda {
             return true;
         }
 
-        if (scratch.corrY || scratch.corrM || scratch.corrC) {
+        if (scratch.corrY || scratch.corrM || scratch.corrC ||
+            scratch.mixY || scratch.mixM || scratch.mixC) {
             if (!capacityMatch || !haveBase) {
                 if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
                     return false;
@@ -4723,6 +4799,30 @@ namespace JuicerCuda {
                 bytes,
                 cudaStreamOpaque,
                 "spatial DIR corrY",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+            return false;
+        }
+        if (!allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.mixY,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR mixY",
+                outError) ||
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.mixM,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR mixM",
+                outError) ||
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.mixC,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR mixC",
                 outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
@@ -4924,12 +5024,16 @@ namespace JuicerCuda {
     }
 
     bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError) {
-        constexpr int kMaxRadius = 75;
+        constexpr int kMaxRadius = 2048;
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         const int radiusRaw = sigmaOk
             ? std::max(1, static_cast<int>(std::ceil(3.0f * sigma)))
             : 0;
-        const int radius = std::min(radiusRaw, kMaxRadius);
+        if (radiusRaw > kMaxRadius) {
+            outError = "spatial DIR kernel radius exceeds prepared-frame limit";
+            return false;
+        }
+        const int radius = radiusRaw;
         return ensure_shared_gaussian_kernel(
             resources,
             kernel,

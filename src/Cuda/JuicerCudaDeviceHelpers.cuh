@@ -1460,28 +1460,15 @@ static __device__ __forceinline__ void apply_dir_runtime_logE_device(
         return;
     }
 
-    auto safe_norm = [](float D, float dmax) -> float {
-        float Din = (!isfinite(D) || D < 0.0f) ? 0.0f : D;
-        float m = (isfinite(dmax) && dmax > 1e-4f) ? dmax : 1.0f;
-        float n = Din / m;
-        if (!isfinite(n) || n < 0.0f) n = 0.0f;
-        return n;
+    auto silver_density = [&](float density, float dmax) -> float {
+        const float finiteDensity = isfinite(density) ? density : 0.0f;
+        const float silver = dir.positive ? dmax - finiteDensity : finiteDensity;
+        return isfinite(silver) ? fmaxf(0.0f, silver) : 0.0f;
     };
 
-    float nB = safe_norm(layerD_BGR[0], dir.dMax[0]);
-    float nG = safe_norm(layerD_BGR[1], dir.dMax[1]);
-    float nR = safe_norm(layerD_BGR[2], dir.dMax[2]);
-
-    auto high_boost = [&](float n) -> float {
-        const float nb = n + dir.highShift * n * n;
-        if (!isfinite(nb)) {
-            return (n >= 0.0f && isfinite(n)) ? n : 0.0f;
-        }
-        return fmaxf(0.0f, nb);
-    };
-    nB = high_boost(nB);
-    nG = high_boost(nG);
-    nR = high_boost(nR);
+    const float nB = silver_density(layerD_BGR[0], dir.dMax[0]);
+    const float nG = silver_density(layerD_BGR[1], dir.dMax[1]);
+    const float nR = silver_density(layerD_BGR[2], dir.dMax[2]);
 
     float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
     float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;

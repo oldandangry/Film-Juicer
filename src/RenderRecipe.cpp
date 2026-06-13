@@ -308,6 +308,165 @@ namespace {
         return hash;
     }
 
+    bool finite_nonnegative(float value) {
+        return std::isfinite(value) && value >= 0.0f;
+    }
+
+    float interp_clamped(
+        float x,
+        const std::vector<float>& xp,
+        const std::vector<std::array<float, 3>>& values,
+        std::size_t channel) {
+        if (x <= xp.front()) {
+            return values.front()[channel];
+        }
+        if (x >= xp.back()) {
+            return values.back()[channel];
+        }
+        const auto upper = std::upper_bound(xp.begin(), xp.end(), x);
+        const std::size_t hi = static_cast<std::size_t>(upper - xp.begin());
+        const std::size_t lo = hi - 1u;
+        const float span = xp[hi] - xp[lo];
+        if (!(std::isfinite(span) && span > 0.0f)) {
+            return values[lo][channel];
+        }
+        const float t = (x - xp[lo]) / span;
+        return values[lo][channel] + t * (values[hi][channel] - values[lo][channel]);
+    }
+
+    std::uint64_t hash_dir_couplers_recipe(const DirCouplersRecipe& recipe) {
+        if (!recipe.active) {
+            return 0;
+        }
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, recipe.polarity);
+        hash_value(hash, recipe.amount);
+        hash_value(hash, recipe.inhibitionSameLayer);
+        hash_value(hash, recipe.inhibitionInterlayer);
+        Hash::hash_bytes_update(hash, recipe.gammaSameLayerRgb.data(), sizeof(recipe.gammaSameLayerRgb));
+        Hash::hash_bytes_update(hash, recipe.gammaInterlayerRToGb.data(), sizeof(recipe.gammaInterlayerRToGb));
+        Hash::hash_bytes_update(hash, recipe.gammaInterlayerGToRb.data(), sizeof(recipe.gammaInterlayerGToRb));
+        Hash::hash_bytes_update(hash, recipe.gammaInterlayerBToRg.data(), sizeof(recipe.gammaInterlayerBToRg));
+        hash_value(hash, recipe.precorrectedDensityCurvesHash);
+        if (recipe.diffusionSizeUm > 0.0f) {
+            hash_value(hash, recipe.diffusionSizeUm);
+            hash_value(hash, recipe.diffusionTailWeight);
+            if (recipe.diffusionTailWeight > 0.0f) {
+                hash_value(hash, recipe.diffusionTailUm);
+            }
+        }
+        return hash;
+    }
+
+    bool build_dir_couplers_recipe(
+        const Profiles::ValidatedFilmProfile& profile,
+        const FilmDevelopRecipe& develop,
+        const DirCouplersControls& controls,
+        DirCouplersRecipe& out) {
+        out = DirCouplersRecipe{};
+        if (!finite_nonnegative(controls.amount) ||
+            !finite_nonnegative(controls.inhibitionSameLayer) ||
+            !finite_nonnegative(controls.inhibitionInterlayer) ||
+            !finite_nonnegative(controls.diffusionSizeUm) ||
+            !finite_nonnegative(controls.diffusionTailUm) ||
+            !std::isfinite(controls.diffusionTailWeight) ||
+            controls.diffusionTailWeight < 0.0f || controls.diffusionTailWeight > 1.0f) {
+            return false;
+        }
+
+        out.polarity = profile.info.type;
+        out.active = controls.active && controls.amount > 0.0f;
+        if (!out.active) {
+            return true;
+        }
+        out.amount = controls.amount;
+        out.inhibitionSameLayer = controls.inhibitionSameLayer;
+        out.inhibitionInterlayer = controls.inhibitionInterlayer;
+        out.gammaSameLayerRgb = profile.digest.gammaSamelayerRgb;
+        out.gammaInterlayerRToGb = profile.digest.gammaInterlayerRToGb;
+        out.gammaInterlayerGToRb = profile.digest.gammaInterlayerGToRb;
+        out.gammaInterlayerBToRg = profile.digest.gammaInterlayerBToRg;
+        out.diffusionSizeUm = controls.diffusionSizeUm;
+        out.diffusionTailUm = controls.diffusionTailUm;
+        out.diffusionTailWeight = controls.diffusionTailWeight;
+
+        out.matrixRgb[0][0] = out.gammaSameLayerRgb[0] * out.inhibitionSameLayer;
+        out.matrixRgb[1][1] = out.gammaSameLayerRgb[1] * out.inhibitionSameLayer;
+        out.matrixRgb[2][2] = out.gammaSameLayerRgb[2] * out.inhibitionSameLayer;
+        out.matrixRgb[0][1] = out.gammaInterlayerRToGb[0] * out.inhibitionInterlayer;
+        out.matrixRgb[0][2] = out.gammaInterlayerRToGb[1] * out.inhibitionInterlayer;
+        out.matrixRgb[1][0] = out.gammaInterlayerGToRb[0] * out.inhibitionInterlayer;
+        out.matrixRgb[1][2] = out.gammaInterlayerGToRb[1] * out.inhibitionInterlayer;
+        out.matrixRgb[2][0] = out.gammaInterlayerBToRg[0] * out.inhibitionInterlayer;
+        out.matrixRgb[2][1] = out.gammaInterlayerBToRg[1] * out.inhibitionInterlayer;
+        for (auto& row : out.matrixRgb) {
+            for (float& value : row) {
+                value *= out.amount;
+            }
+        }
+
+        if (develop.logExposure.empty() ||
+            develop.logExposure.size() != develop.normalizedDensityCurves.size()) {
+            return false;
+        }
+        out.densityMaxRgb.fill(-std::numeric_limits<float>::infinity());
+        for (const auto& row : develop.normalizedDensityCurves) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                if (std::isfinite(row[channel])) {
+                    out.densityMaxRgb[channel] = std::max(out.densityMaxRgb[channel], row[channel]);
+                }
+            }
+        }
+        if (!std::all_of(out.densityMaxRgb.begin(), out.densityMaxRgb.end(), finite_nonnegative)) {
+            return false;
+        }
+
+        std::array<std::vector<float>, 3> shiftedExposure;
+        for (auto& axis : shiftedExposure) {
+            axis.resize(develop.logExposure.size());
+        }
+        const bool positive = out.polarity == Spektrafilm::ProfilePolarity::Positive;
+        for (std::size_t sample = 0; sample < develop.logExposure.size(); ++sample) {
+            if (!std::isfinite(develop.logExposure[sample])) {
+                return false;
+            }
+            for (std::size_t receiver = 0; receiver < 3; ++receiver) {
+                double correction = 0.0;
+                for (std::size_t donor = 0; donor < 3; ++donor) {
+                    const float density = develop.normalizedDensityCurves[sample][donor];
+                    if (!std::isfinite(density)) {
+                        return false;
+                    }
+                    const float silver = positive ? out.densityMaxRgb[donor] - density : density;
+                    correction += static_cast<double>(silver) *
+                                  static_cast<double>(out.matrixRgb[donor][receiver]);
+                }
+                shiftedExposure[receiver][sample] =
+                    develop.logExposure[sample] - static_cast<float>(correction);
+                if (sample > 0u &&
+                    !(shiftedExposure[receiver][sample] > shiftedExposure[receiver][sample - 1u])) {
+                    return false;
+                }
+            }
+        }
+
+        out.precorrectedDensityCurves.resize(develop.normalizedDensityCurves.size());
+        for (std::size_t sample = 0; sample < develop.logExposure.size(); ++sample) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                out.precorrectedDensityCurves[sample][channel] = interp_clamped(
+                    develop.logExposure[sample],
+                    shiftedExposure[channel],
+                    develop.normalizedDensityCurves,
+                    channel);
+            }
+        }
+        out.precorrectedDensityCurvesHash = hash_nan_preserving_floats(
+            &out.precorrectedDensityCurves[0][0],
+            out.precorrectedDensityCurves.size() * 3u);
+        out.hash = hash_dir_couplers_recipe(out);
+        return out.precorrectedDensityCurvesHash != 0 && out.hash != 0;
+    }
+
     std::uint64_t hash_density_bounds_recipe(const DensityBoundsRecipe& recipe) {
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, recipe.route);
@@ -502,6 +661,15 @@ namespace Spektrafilm {
             return result;
         }
 
+        if (!build_dir_couplers_recipe(
+                profile,
+                filmDevelop,
+                input.dirCouplers,
+                result.recipe.dirCouplers)) {
+            result.diagnostic = "MalformedRequiredProfileData phase=3D-3 field=dir_couplers";
+            return result;
+        }
+
         if (!build_direct_density_bounds(
                 profile,
                 filmDevelop,
@@ -538,16 +706,65 @@ namespace Spektrafilm {
 
         result.recipe.directStructuralReady = true;
         result.recipe.directPixelAcceptance = false;
-        result.recipe.hash = Hash::hash_uint64_values({profileRoute.hash,
-                                                       filmRaw.hash,
-                                                       filmDevelop.hash,
-                                                       result.recipe.densityBounds.hash,
-                                                       scanner.hash});
+        if (result.recipe.dirCouplers.active) {
+            result.recipe.hash = Hash::hash_uint64_values({profileRoute.hash,
+                                                           filmRaw.hash,
+                                                           filmDevelop.hash,
+                                                           result.recipe.dirCouplers.hash,
+                                                           result.recipe.densityBounds.hash,
+                                                           scanner.hash});
+        } else {
+            result.recipe.hash = Hash::hash_uint64_values({profileRoute.hash,
+                                                           filmRaw.hash,
+                                                           filmDevelop.hash,
+                                                           result.recipe.densityBounds.hash,
+                                                           scanner.hash});
+        }
         result.valid = result.recipe.hash != 0;
         if (!result.valid) {
             result.diagnostic = "ResourceDescriptorMismatch phase=3A field=render_recipe_hash";
         }
         return result;
+    }
+
+    bool build_spatial_dir_descriptor(
+        const DirCouplersRecipe& recipe,
+        float pixelSizeUm,
+        SpatialDirDescriptor& out) {
+        out = SpatialDirDescriptor{};
+        if (!recipe.active || !(recipe.diffusionSizeUm > 0.0f)) {
+            return true;
+        }
+        if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0f)) {
+            return false;
+        }
+        out.dirRecipeHash = recipe.hash;
+        out.gaussianSigmaPixels = recipe.diffusionSizeUm / pixelSizeUm;
+        out.gaussianWeight = 1.0f - recipe.diffusionTailWeight;
+        if (!(std::isfinite(out.gaussianSigmaPixels) && out.gaussianSigmaPixels > 0.0f) ||
+            !finite_nonnegative(out.gaussianWeight)) {
+            return false;
+        }
+        if (recipe.diffusionTailWeight > 0.0f) {
+            const float tailSigmaPixels = recipe.diffusionTailUm / pixelSizeUm;
+            if (!(std::isfinite(tailSigmaPixels) && tailSigmaPixels > 0.0f)) {
+                return false;
+            }
+            for (std::size_t component = 0; component < out.exponentialSigmaPixels.size(); ++component) {
+                out.exponentialSigmaPixels[component] =
+                    tailSigmaPixels * SpatialDirDescriptor::kExponentialSigmaRatios[component];
+                out.exponentialWeights[component] =
+                    recipe.diffusionTailWeight * SpatialDirDescriptor::kExponentialAmplitudes[component];
+            }
+        }
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, out.dirRecipeHash);
+        hash_value(hash, out.gaussianSigmaPixels);
+        hash_value(hash, out.gaussianWeight);
+        Hash::hash_bytes_update(hash, out.exponentialSigmaPixels.data(), sizeof(out.exponentialSigmaPixels));
+        Hash::hash_bytes_update(hash, out.exponentialWeights.data(), sizeof(out.exponentialWeights));
+        out.hash = hash;
+        return out.hash != 0;
     }
 
 } // namespace Spektrafilm

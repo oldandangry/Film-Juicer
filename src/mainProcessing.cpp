@@ -49,9 +49,26 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     float* dCorrY,
     float* dCorrM,
     float* dCorrC,
+    float* dMixY,
+    float* dMixM,
+    float* dMixC,
     float* dTmp,
-    const float* dKernel,
-    int kernelRadius,
+    const float* dGaussianKernel,
+    int gaussianRadius,
+    float gaussianSigma,
+    float gaussianWeight,
+    const float* dTailKernel0,
+    int tailRadius0,
+    float tailSigma0,
+    float tailWeight0,
+    const float* dTailKernel1,
+    int tailRadius1,
+    float tailSigma1,
+    float tailWeight1,
+    const float* dTailKernel2,
+    int tailRadius2,
+    float tailSigma2,
+    float tailWeight2,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
@@ -2972,7 +2989,7 @@ void JuicerProcessor::processImagesCUDA() {
         snapshot.keyDigests =
             JuicerCuda::ResourceManager::make_key_digests(
                 uploadCoreHash,
-                _ws->dirHash,
+                directRecipe ? directRecipe->dirCouplers.hash : _ws->dirHash,
                 scannerRuntimeHash,
                 autoExposureDescriptor.hash);
         snapshot.keySchemaVersion = JuicerCuda::ResourceManager::kSubmissionKeySchemaVersion;
@@ -3037,9 +3054,6 @@ void JuicerProcessor::processImagesCUDA() {
         if (!directRecipe->directStructuralReady) {
             throw_direct_restriction("DirectStructuralRecipeNotReadyForPhase3C");
         }
-        if (_dirRT.active) {
-            throw_direct_restriction(Spektrafilm::kDirNotImplementedForPhase3);
-        }
         if (directRecipe->scannerOutput.postEffectsDisposition !=
             Spektrafilm::ScannerPostEffectDisposition::Identity) {
             throw_direct_restriction(Spektrafilm::kScannerPostEffectsNotImplementedForPhase3);
@@ -3066,6 +3080,14 @@ void JuicerProcessor::processImagesCUDA() {
                 scannerDescriptor,
                 scannerDescriptorDiagnostic)) {
             throw_direct_restriction(scannerDescriptorDiagnostic.c_str());
+        }
+        Spektrafilm::SpatialDirDescriptor directSpatialDir{};
+        if (!Spektrafilm::build_spatial_dir_descriptor(
+                directRecipe->dirCouplers,
+                _pixelSizeUm,
+                directSpatialDir)) {
+            throw_direct_restriction(
+                "ResourceDescriptorMismatch phase=3D-3 field=spatial_dir_descriptor");
         }
 
         JuicerProcess::Root::DirectCudaPreparationRequest directPreparation{};
@@ -3170,6 +3192,7 @@ void JuicerProcessor::processImagesCUDA() {
         if (!JuicerCuda::pack_direct_film_payloads(
                 directRecipe->filmRaw,
                 directRecipe->filmDevelop,
+                directRecipe->dirCouplers,
                 directRecipe->densityBounds,
                 prepared.film,
                 autoExposureScaleDevice,
@@ -3181,6 +3204,71 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmRaw = directFilmPayloads.filmRaw;
         run.filmExpose = directFilmPayloads.filmExposure;
         run.filmDevelop = directFilmPayloads.filmDevelop;
+
+        if (directSpatialDir.hash != 0) {
+            JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest spatialRequest{};
+            spatialRequest.needSpatialDir = true;
+            spatialRequest.requestedWidth = width;
+            spatialRequest.requestedHeight = height;
+            const auto spatialWorkspace = preparedFrame.bind_workspace_request(spatialRequest);
+            std::string spatialError;
+            if (!preparedFrame.prepare_spatial_dir_resources(
+                    directSpatialDir,
+                    spatialWorkspace,
+                    _pCudaStream,
+                    spatialError)) {
+                preparedFrame.abort("direct_spatial_dir_prepare_failed");
+                throw_submission_fatal(
+                    "direct_spatial_dir_prepare",
+                    "direct spatial DIR preparation failed",
+                    spatialError);
+            }
+            const auto scratch = preparedFrame.spatial_dir_scratch(spatialWorkspace);
+            const auto resources =
+                preparedFrame.spatial_dir_resources(spatialWorkspace, directSpatialDir.hash);
+            if (!scratch.active || !resources.active) {
+                preparedFrame.abort("direct_spatial_dir_binding_failed");
+                throw_direct_restriction(
+                    "MissingRequiredResource phase=3D-3 field=prepared_spatial_dir");
+            }
+            run.filmDevelop.spatialDir.active = 1;
+            run.filmDevelop.spatialDir.corrY = scratch.corrY;
+            run.filmDevelop.spatialDir.corrM = scratch.corrM;
+            run.filmDevelop.spatialDir.corrC = scratch.corrC;
+            const cudaError_t dirError = juicer_cuda_build_spatial_dir(
+                &run,
+                scratch.corrY,
+                scratch.corrM,
+                scratch.corrC,
+                scratch.mixY,
+                scratch.mixM,
+                scratch.mixC,
+                scratch.tmp,
+                resources.gaussian.weights,
+                resources.gaussian.radius,
+                resources.gaussian.sigma,
+                directSpatialDir.gaussianWeight,
+                resources.exponential[0].weights,
+                resources.exponential[0].radius,
+                resources.exponential[0].sigma,
+                directSpatialDir.exponentialWeights[0],
+                resources.exponential[1].weights,
+                resources.exponential[1].radius,
+                resources.exponential[1].sigma,
+                directSpatialDir.exponentialWeights[1],
+                resources.exponential[2].weights,
+                resources.exponential[2].radius,
+                resources.exponential[2].sigma,
+                directSpatialDir.exponentialWeights[2],
+                _pCudaStream);
+            if (dirError != cudaSuccess) {
+                preparedFrame.abort("direct_spatial_dir_launch_failed");
+                throw_cuda_stage_fatal(
+                    "direct_spatial_dir_launch",
+                    "direct spatial DIR build failed",
+                    dirError);
+            }
+        }
 
         const JuicerCuda::Resources::DeviceScanMedium& scanMedium = *prepared.scanMedium;
         copy_scan_tables_payload(
@@ -4199,9 +4287,26 @@ void JuicerProcessor::processImagesCUDA() {
             spatialDirScratch.corrY,
             spatialDirScratch.corrM,
             spatialDirScratch.corrC,
+            spatialDirScratch.mixY,
+            spatialDirScratch.mixM,
+            spatialDirScratch.mixC,
             spatialDirScratch.tmp,
             opticsKernels.spatialDir.weights,
             opticsKernels.spatialDir.radius,
+            opticsKernels.spatialDir.sigma,
+            1.0f,
+            nullptr,
+            0,
+            0.0f,
+            0.0f,
+            nullptr,
+            0,
+            0.0f,
+            0.0f,
+            nullptr,
+            0,
+            0.0f,
+            0.0f,
             _pCudaStream);
         if (dirErr != cudaSuccess) {
             throw_cuda_stage_fatal("build_spatial_dir", "spatial DIR build failed", dirErr);

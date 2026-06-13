@@ -1477,6 +1477,10 @@ namespace {
         input.printProfileKey = params.printProfileKey;
         input.scanRoute = params.scanRoute;
         input.filmProfile = selected.filmProfile;
+        // Phase 3D-3 direct production consumes only typed recipe controls. The old ratio,
+        // layer-diffusion, high-shift, and runtime Couplers::Runtime fields remain legacy-only.
+        input.dirCouplers.active = params.couplersActive != 0;
+        input.dirCouplers.amount = static_cast<float>(params.couplersAmount);
         input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
         input.directRouteNeutralCalibrationExcluded =
             selected.directRouteNeutralCalibrationExcluded;

@@ -15,7 +15,7 @@
 //   references, asset tokens, and resolved ScanRoute.
 // - FilmRawRecipe owns direct-route input color, RGB-to-raw, sensitivity, and exposure ordering.
 // - FilmDevelopRecipe owns direct-route authored/normalized film density development inputs.
-// - DirRecipe owns development-inhibitor release behavior when Phase 5 introduces it.
+// - DirCouplersRecipe owns development-inhibitor release behavior.
 // - DensityBoundsRecipe owns final route/media scanner and enlarger density bounds.
 // - PrintRecipe owns print exposure, filters, development, and print-route policy when Phase 4 introduces it.
 // - ScannerOutputRecipe owns scanner/output policy; scanner LUT resources own their descriptor.
@@ -28,8 +28,6 @@ namespace Spektrafilm {
 
     inline constexpr const char kScannerPostEffectsNotImplementedForPhase3[] =
         "ScannerPostEffectsNotImplementedForPhase3";
-    inline constexpr const char kDirNotImplementedForPhase3[] =
-        "DirNotImplementedForPhase3";
     inline constexpr const char kPositiveCorrectionNotImplementedForPhase3[] =
         "PositiveCorrectionNotImplementedForPhase3";
     inline constexpr const char kQuantizedMedianNotAcceptedForPhase3[] =
@@ -144,6 +142,48 @@ struct FilmDevelopRecipe {
     std::uint64_t hash = 0;
 };
 
+struct DirCouplersControls {
+    bool active = true;
+    float amount = 1.0f;
+    float inhibitionSameLayer = 1.0f;
+    float inhibitionInterlayer = 1.0f;
+    float diffusionSizeUm = 20.0f;
+    float diffusionTailUm = 200.0f;
+    float diffusionTailWeight = 0.06f;
+};
+
+struct DirCouplersRecipe {
+    Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
+    bool active = false;
+    float amount = 1.0f;
+    float inhibitionSameLayer = 1.0f;
+    float inhibitionInterlayer = 1.0f;
+    std::array<float, 3> gammaSameLayerRgb{};
+    std::array<float, 2> gammaInterlayerRToGb{};
+    std::array<float, 2> gammaInterlayerGToRb{};
+    std::array<float, 2> gammaInterlayerBToRg{};
+    std::array<std::array<float, 3>, 3> matrixRgb{};
+    float diffusionSizeUm = 0.0f;
+    float diffusionTailUm = 0.0f;
+    float diffusionTailWeight = 0.0f;
+    std::array<float, 3> densityMaxRgb{};
+    std::vector<std::array<float, 3>> precorrectedDensityCurves;
+    std::uint64_t precorrectedDensityCurvesHash = 0;
+    std::uint64_t hash = 0;
+};
+
+struct SpatialDirDescriptor {
+    static constexpr std::array<float, 3> kExponentialAmplitudes{{0.1633f, 0.6496f, 0.1870f}};
+    static constexpr std::array<float, 3> kExponentialSigmaRatios{{0.5360f, 1.5236f, 2.7684f}};
+
+    std::uint64_t dirRecipeHash = 0;
+    float gaussianSigmaPixels = 0.0f;
+    std::array<float, 3> exponentialSigmaPixels{};
+    float gaussianWeight = 0.0f;
+    std::array<float, 3> exponentialWeights{};
+    std::uint64_t hash = 0;
+};
+
 struct GrainContract {
     std::array<float, 3> densityMinCmy{{0.07f, 0.08f, 0.12f}};
 };
@@ -185,6 +225,7 @@ struct RenderRecipe {
     ProfileRoute profileRoute;
     FilmRawRecipe filmRaw;
     FilmDevelopRecipe filmDevelop;
+    DirCouplersRecipe dirCouplers;
     DensityBoundsRecipe densityBounds;
     ScannerOutputRecipe scannerOutput;
     bool directStructuralReady = false;
@@ -195,12 +236,15 @@ struct RenderRecipe {
 namespace Spektrafilm {
 
     using ::DensityBoundsRecipe;
+    using ::DirCouplersControls;
+    using ::DirCouplersRecipe;
     using ::FilmDevelopRecipe;
     using ::FilmRawRecipe;
     using ::GrainContract;
     using ::ProfileRoute;
     using ::RenderRecipe;
     using ::ScannerOutputRecipe;
+    using ::SpatialDirDescriptor;
 
     struct DirectRecipeBuildInput {
         std::string filmProfileKey;
@@ -208,6 +252,7 @@ namespace Spektrafilm {
         ScanRoute scanRoute = kDefaultScanRoute;
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
         GrainContract grainContract;
+        DirCouplersControls dirCouplers;
         bool directRoutePrintProfileExcluded = false;
         bool directRouteNeutralCalibrationExcluded = false;
         int spectralUpsamplingMode = 0;
@@ -255,5 +300,9 @@ namespace Spektrafilm {
     }
 
     DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input);
+    bool build_spatial_dir_descriptor(
+        const DirCouplersRecipe& recipe,
+        float pixelSizeUm,
+        SpatialDirDescriptor& out);
 
 } // namespace Spektrafilm

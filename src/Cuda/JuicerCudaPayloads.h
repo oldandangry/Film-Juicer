@@ -79,11 +79,13 @@ namespace JuicerCuda {
 
     struct DirPayload {
         int active = 0;
+        int positive = 0;
         float M[9] = {
             0,0,0,
             0,0,0,
             0,0,0
         };
+        // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime: blocked broad/print path only.
         float highShift = 0.0f;
         float dMax[3] = { 1.0f, 1.0f, 1.0f };
     };
@@ -147,6 +149,9 @@ namespace JuicerCuda {
     };
 
     struct FilmDevelopPayload {
+        // SF_TEMP_BRIDGE_DirPipelineRunParams owner=Phase3D-3 launch ABI:
+        // direct production packs only DirCouplersRecipe/prepared-frame views into these fields;
+        // the blocked broad path still populates them from Couplers::Runtime.
         float gammaFactorB = 1.0f;
         float gammaFactorG = 1.0f;
         float gammaFactorR = 1.0f;

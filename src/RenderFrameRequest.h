@@ -40,6 +40,7 @@ struct FrameRequest {
     bool hasGrainOverride = false;
     Profiles::ProfileGlare printGlareOverride{};
     bool hasPrintGlareOverride = false;
+    // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime: blocked broad/print path only.
     Couplers::Runtime dirRuntime;
     float exposureScale = 1.0f;
     bool cameraAutoEnabled = false;

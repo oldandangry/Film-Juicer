@@ -10,7 +10,9 @@
 #include "ofxProperty.h"
 #include "ofxParam.h"
 
-// Couplers.h — REPLACE the entire stub namespace block under #ifndef JUICER_ENABLE_COUPLERS with this
+// SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=legacy-print-route:
+// allowed=blocked broad/print path and compile-time ABI stubs only; direct production consumes
+// RenderRecipe::dirCouplers. Removal gate=Phase 4 print-route recipe cutover.
 #ifndef JUICER_ENABLE_COUPLERS
 // Stubs: compiled out safely
 namespace Couplers {
@@ -661,7 +663,7 @@ namespace Couplers {
     }
 
 
-    // Public: apply ΔlogE by subtraction (agx: log_raw_corrected = log_raw - correction)    
+    // Public: apply ΔlogE by subtraction (agx: log_raw_corrected = log_raw - correction)
     inline void apply_runtime_logE_with_curves(
         ApplyInputLogE& io,
         const Runtime& rt,

@@ -3707,7 +3707,10 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const AutoExposureResult autoExposure{};
 
 #ifdef JUICER_ENABLE_COUPLERS
-    Couplers::Runtime dirRT = prepareCouplers(args, fullWidth, fullHeight, pixelSizeUm);
+    // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=legacy-print-route:
+    // allowed=blocked broad/print path only; direct production consumes recipe.dirCouplers.
+    Couplers::Runtime dirRT =
+        directCudaRoute ? Couplers::Runtime{} : prepareCouplers(args, fullWidth, fullHeight, pixelSizeUm);
 #else
     Couplers::Runtime dirRT{};
 #endif

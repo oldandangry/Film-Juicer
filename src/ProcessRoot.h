@@ -209,6 +209,7 @@ namespace JuicerProcess {
             struct KernelView {
                 const float* weights = nullptr;
                 int radius = 0;
+                float sigma = 0.0f;
             };
 
             struct OpticsKernelView {
@@ -266,7 +267,17 @@ namespace JuicerProcess {
                 float* corrY = nullptr;
                 float* corrM = nullptr;
                 float* corrC = nullptr;
+                float* mixY = nullptr;
+                float* mixM = nullptr;
+                float* mixC = nullptr;
                 float* tmp = nullptr;
+                bool active = false;
+            };
+
+            struct SpatialDirPreparedView {
+                KernelView gaussian{};
+                KernelView exponential[3]{};
+                std::uint64_t descriptorHash = 0;
                 bool active = false;
             };
 
@@ -301,6 +312,9 @@ namespace JuicerProcess {
             UploadTraceView upload_trace_view() const noexcept;
             DirectPreparedView direct_resources() const noexcept;
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
+            SpatialDirPreparedView spatial_dir_resources(
+                const WorkspaceLeaseMarker& workspace,
+                std::uint64_t descriptorHash) const noexcept;
             ScannerOpticsScratchView scanner_optics_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             struct AutoExposureWeightsExtent {
                 int width = 0;
@@ -338,6 +352,11 @@ namespace JuicerProcess {
                 void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_spatial_dir_scratch(
+                const WorkspaceLeaseMarker& workspace,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool prepare_spatial_dir_resources(
+                const Spektrafilm::SpatialDirDescriptor& descriptor,
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);

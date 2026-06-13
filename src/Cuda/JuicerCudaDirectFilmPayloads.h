@@ -16,6 +16,9 @@ namespace JuicerCuda {
         DeviceCurveView normalizedDensB{};
         DeviceCurveView normalizedDensG{};
         DeviceCurveView normalizedDensR{};
+        DeviceCurveView dirDensB{};
+        DeviceCurveView dirDensG{};
+        DeviceCurveView dirDensR{};
         const float* tablesAx = nullptr;
         const float* tablesAy = nullptr;
         const float* tablesAz = nullptr;
@@ -34,6 +37,7 @@ namespace JuicerCuda {
         float refIllumWhiteXYZ[3] = {0.950455f, 1.0f, 1.089058f};
         std::uint64_t finalSensitivityHash = 0;
         std::uint64_t normalizedDensityCurvesHash = 0;
+        std::uint64_t dirCouplersHash = 0;
     };
 
     struct DirectFilmPayloadPack {
@@ -58,6 +62,7 @@ namespace JuicerCuda {
     inline bool pack_direct_film_payloads(
         const FilmRawRecipe& filmRaw,
         const FilmDevelopRecipe& filmDevelop,
+        const DirCouplersRecipe& dirCouplers,
         const DensityBoundsRecipe& densityBounds,
         const DirectFilmPreparedView& prepared,
         const float* autoExposureScaleDevice,
@@ -79,13 +84,30 @@ namespace JuicerCuda {
             diagnostic = "ResourceDescriptorMismatch phase=3B field=density_bounds";
             return false;
         }
+        const int densitySamples = static_cast<int>(filmDevelop.logExposure.size());
+        if (dirCouplers.active) {
+            if (dirCouplers.hash == 0 ||
+                dirCouplers.precorrectedDensityCurvesHash == 0 ||
+                prepared.dirCouplersHash != dirCouplers.hash) {
+                diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=dir_couplers";
+                return false;
+            }
+            if (!direct_film_curve_ready(prepared.dirDensB, densitySamples) ||
+                !direct_film_curve_ready(prepared.dirDensG, densitySamples) ||
+                !direct_film_curve_ready(prepared.dirDensR, densitySamples)) {
+                diagnostic = "MissingRequiredResource phase=3D-3 field=dir_density_device_curves";
+                return false;
+            }
+        } else if (prepared.dirCouplersHash != 0) {
+            diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=disabled_dir_resources";
+            return false;
+        }
         if (!direct_film_curve_ready(prepared.finalSensB, 81) ||
             !direct_film_curve_ready(prepared.finalSensG, 81) ||
             !direct_film_curve_ready(prepared.finalSensR, 81)) {
             diagnostic = "MissingRequiredResource phase=3B field=final_sensitivity_device_curves";
             return false;
         }
-        const int densitySamples = static_cast<int>(filmDevelop.logExposure.size());
         if (densitySamples <= 0 ||
             !direct_film_curve_ready(prepared.normalizedDensB, densitySamples) ||
             !direct_film_curve_ready(prepared.normalizedDensG, densitySamples) ||
@@ -150,6 +172,22 @@ namespace JuicerCuda {
         out.filmDevelop.densB = prepared.normalizedDensB;
         out.filmDevelop.densG = prepared.normalizedDensG;
         out.filmDevelop.densR = prepared.normalizedDensR;
+        if (dirCouplers.active) {
+            out.filmDevelop.dirPrecorrected = 1;
+            out.filmDevelop.dir.active = 1;
+            out.filmDevelop.dir.positive =
+                dirCouplers.polarity == Spektrafilm::ProfilePolarity::Positive ? 1 : 0;
+            for (int donorBgr = 0; donorBgr < 3; ++donorBgr) {
+                for (int receiverBgr = 0; receiverBgr < 3; ++receiverBgr) {
+                    out.filmDevelop.dir.M[donorBgr * 3 + receiverBgr] =
+                        dirCouplers.matrixRgb[2 - donorBgr][2 - receiverBgr];
+                }
+                out.filmDevelop.dir.dMax[donorBgr] = dirCouplers.densityMaxRgb[2 - donorBgr];
+            }
+            out.filmDevelop.dirDensB = prepared.dirDensB;
+            out.filmDevelop.dirDensG = prepared.dirDensG;
+            out.filmDevelop.dirDensR = prepared.dirDensR;
+        }
         out.densityBoundsHash = densityBounds.hash;
         return true;
     }

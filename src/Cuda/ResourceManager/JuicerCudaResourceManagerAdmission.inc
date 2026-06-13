@@ -2371,7 +2371,8 @@ std::size_t estimate_spatial_dir_growth_bytes(
     std::lock_guard<std::mutex> lock(resources.m);
     const auto& scratch = resources.spatialDirScratch;
     const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC;
+    const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC &&
+                          scratch.mixY && scratch.mixM && scratch.mixC;
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool sharedTmpMatch = resources.sharedTmpPlane &&
         resources.sharedTmpCapacityElements >= requiredElements;
@@ -2379,6 +2380,18 @@ std::size_t estimate_spatial_dir_growth_bytes(
     std::size_t estimate = 0;
     if (!haveBase || !capacityMatch) {
         std::size_t next = 0;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        estimate = next;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        estimate = next;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        estimate = next;
         if (!add_bytes_checked(estimate, planeBytes, next)) {
             return std::numeric_limits<std::size_t>::max();
         }

@@ -291,6 +291,7 @@ namespace JuicerProcess {
         ScanErrorFrameStage scanErrorStage{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
         FrameScratchWorkspace scratchWorkspace{};
+        Spektrafilm::SpatialDirDescriptor spatialDirDescriptor{};
         void* lastCudaStreamOpaque = nullptr;
         bool frameUseEventSubmitted = false;
         const char* failureStageTag = "prepare_frame";
@@ -830,7 +831,10 @@ namespace JuicerProcess {
             JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = next.spatialDir;
             if (!alloc_float(spatialDir.corrY, planeBytes, "frame spatial DIR corrY") ||
                 !alloc_float(spatialDir.corrM, planeBytes, "frame spatial DIR corrM") ||
-                !alloc_float(spatialDir.corrC, planeBytes, "frame spatial DIR corrC")) {
+                !alloc_float(spatialDir.corrC, planeBytes, "frame spatial DIR corrC") ||
+                !alloc_float(spatialDir.mixY, planeBytes, "frame spatial DIR mixY") ||
+                !alloc_float(spatialDir.mixM, planeBytes, "frame spatial DIR mixM") ||
+                !alloc_float(spatialDir.mixC, planeBytes, "frame spatial DIR mixC")) {
                 return fail_after_partial_alloc();
             }
             spatialDir.tmp = next.sharedTmpPlane;
@@ -921,6 +925,9 @@ namespace JuicerProcess {
         retire_ptr(workspace.spatialDir.corrY, planeBytes, "frame spatial DIR corrY");
         retire_ptr(workspace.spatialDir.corrM, planeBytes, "frame spatial DIR corrM");
         retire_ptr(workspace.spatialDir.corrC, planeBytes, "frame spatial DIR corrC");
+        retire_ptr(workspace.spatialDir.mixY, planeBytes, "frame spatial DIR mixY");
+        retire_ptr(workspace.spatialDir.mixM, planeBytes, "frame spatial DIR mixM");
+        retire_ptr(workspace.spatialDir.mixC, planeBytes, "frame spatial DIR mixC");
         retire_ptr(
             workspace.sharedTmpPlane,
             workspace.sharedTmpCapacityElements * sizeof(float),
@@ -976,6 +983,15 @@ namespace JuicerProcess {
         }
         if (workspace.spatialDir.corrC) {
             cudaFree(workspace.spatialDir.corrC);
+        }
+        if (workspace.spatialDir.mixY) {
+            cudaFree(workspace.spatialDir.mixY);
+        }
+        if (workspace.spatialDir.mixM) {
+            cudaFree(workspace.spatialDir.mixM);
+        }
+        if (workspace.spatialDir.mixC) {
+            cudaFree(workspace.spatialDir.mixC);
         }
         if (workspace.sharedTmpPlane) {
             cudaFree(workspace.sharedTmpPlane);
@@ -1293,6 +1309,54 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::prepare_spatial_dir_resources(
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const WorkspaceLeaseMarker& workspace,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        if (!validate_workspace_lease_marker(workspace, outError) || !workspace._request.needSpatialDir) {
+            if (outError.empty()) {
+                outError = "spatial DIR workspace was not admitted";
+            }
+            return false;
+        }
+        if (descriptor.hash == 0 || descriptor.dirRecipeHash == 0 ||
+            !(descriptor.gaussianSigmaPixels > 0.0f)) {
+            outError = "spatial DIR descriptor is invalid";
+            return false;
+        }
+        if (!prepare_spatial_dir_scratch(workspace, cudaStreamOpaque, outError)) {
+            return false;
+        }
+        const float sigmas[4] = {
+            descriptor.gaussianSigmaPixels,
+            descriptor.exponentialSigmaPixels[0],
+            descriptor.exponentialSigmaPixels[1],
+            descriptor.exponentialSigmaPixels[2]};
+        for (int slot = 0; slot < 4; ++slot) {
+            if (slot > 0 && !(descriptor.exponentialWeights[slot - 1] > 0.0f)) {
+                continue;
+            }
+            if (sigmas[slot] >= 3.0f) {
+                continue;
+            }
+            if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
+                    _state->transaction,
+                    *_state->resources,
+                    _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
+                    sigmas[slot],
+                    cudaStreamOpaque,
+                    outError)) {
+                _state->set_failure(
+                    "command_ensure_spatial_dir_kernel",
+                    "CUDA spatial DIR kernel upload failed");
+                return false;
+            }
+        }
+        _state->spatialDirDescriptor = descriptor;
+        return true;
+    }
+
     bool Root::PreparedCudaFrame::prepare_print_illuminant_filtered(
         const WorkingState& workingState,
         const Print::Runtime& printRuntime,
@@ -1481,7 +1545,7 @@ namespace JuicerProcess {
         if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
                 _state->transaction,
                 *_state->resources,
-                _state->resources->spatialDirKernel,
+                _state->resources->spatialDirKernels[0],
                 sigma,
                 cudaStreamOpaque,
                 outError)) {
@@ -1862,7 +1926,10 @@ namespace JuicerProcess {
         }
 
         const JuicerCuda::Resources& resources = *_state->resources;
-        kernels.spatialDir = { resources.spatialDirKernel.weights, resources.spatialDirKernel.radius };
+        kernels.spatialDir = {
+            resources.spatialDirKernels[0].weights,
+            resources.spatialDirKernels[0].radius,
+            resources.spatialDirKernels[0].sigma};
         kernels.scannerLensBlur = { resources.scannerLensBlurKernel.weights, resources.scannerLensBlurKernel.radius };
         kernels.scannerUnsharp = { resources.scannerUnsharpKernel.weights, resources.scannerUnsharpKernel.radius };
         kernels.scannerGlare = { resources.scannerGlareKernel.weights, resources.scannerGlareKernel.radius };
@@ -1958,6 +2025,11 @@ namespace JuicerProcess {
         view.film.normalizedDensB = {resources.densB.x, resources.densB.y, resources.densB.n, resources.densB.domainBegin, resources.densB.domainEnd};
         view.film.normalizedDensG = {resources.densG.x, resources.densG.y, resources.densG.n, resources.densG.domainBegin, resources.densG.domainEnd};
         view.film.normalizedDensR = {resources.densR.x, resources.densR.y, resources.densR.n, resources.densR.domainBegin, resources.densR.domainEnd};
+        if (resources.directDirHash != 0) {
+            view.film.dirDensB = {resources.dirDensB.x, resources.dirDensB.y, resources.dirDensB.n, resources.dirDensB.domainBegin, resources.dirDensB.domainEnd};
+            view.film.dirDensG = {resources.dirDensG.x, resources.dirDensG.y, resources.dirDensG.n, resources.dirDensG.domainBegin, resources.dirDensG.domainEnd};
+            view.film.dirDensR = {resources.dirDensR.x, resources.dirDensR.y, resources.dirDensR.n, resources.dirDensR.domainBegin, resources.dirDensR.domainEnd};
+        }
         view.film.tablesAx = resources.tablesAx;
         view.film.tablesAy = resources.tablesAy;
         view.film.tablesAz = resources.tablesAz;
@@ -1976,6 +2048,7 @@ namespace JuicerProcess {
         std::copy_n(resources.refIllumWhiteXYZ, 3, view.film.refIllumWhiteXYZ);
         view.film.finalSensitivityHash = resources.directFinalSensitivityHash;
         view.film.normalizedDensityCurvesHash = resources.directDensityCurvesHash;
+        view.film.dirCouplersHash = resources.directDirHash;
         view.scanMedium = &resources.scanNegative;
         view.scanLut = &resources.scanNegativeLut;
         view.scannerColor = _state->directScannerColor;
@@ -2023,8 +2096,47 @@ namespace JuicerProcess {
         view.corrY = scratch.corrY;
         view.corrM = scratch.corrM;
         view.corrC = scratch.corrC;
+        view.mixY = scratch.mixY;
+        view.mixM = scratch.mixM;
+        view.mixC = scratch.mixC;
         view.tmp = scratch.tmp;
-        view.active = view.corrY && view.corrM && view.corrC && view.tmp;
+        view.active = view.corrY && view.corrM && view.corrC &&
+                      view.mixY && view.mixM && view.mixC && view.tmp;
+        return view;
+    }
+
+    Root::PreparedCudaFrame::SpatialDirPreparedView Root::PreparedCudaFrame::spatial_dir_resources(
+        const WorkspaceLeaseMarker& workspace,
+        std::uint64_t descriptorHash) const noexcept {
+        SpatialDirPreparedView view{};
+        if (!workspace_marker_matches_current_frame(workspace) ||
+            !workspace._request.needSpatialDir ||
+            !_state ||
+            _state->spatialDirDescriptor.hash == 0 ||
+            _state->spatialDirDescriptor.hash != descriptorHash) {
+            return view;
+        }
+        const auto& kernels = _state->resources->spatialDirKernels;
+        view.gaussian = {
+            kernels[0].weights,
+            kernels[0].radius,
+            _state->spatialDirDescriptor.gaussianSigmaPixels};
+        for (int slot = 0; slot < 3; ++slot) {
+            view.exponential[slot] = {
+                kernels[static_cast<std::size_t>(slot) + 1].weights,
+                kernels[static_cast<std::size_t>(slot) + 1].radius,
+                _state->spatialDirDescriptor.exponentialSigmaPixels[slot]};
+        }
+        view.descriptorHash = descriptorHash;
+        view.active = view.gaussian.sigma >= 3.0f ||
+                      (view.gaussian.weights && view.gaussian.radius > 0);
+        for (int slot = 0; slot < 3; ++slot) {
+            const bool required = _state->spatialDirDescriptor.exponentialWeights[slot] > 0.0f;
+            view.active = view.active &&
+                          (!required ||
+                           view.exponential[slot].sigma >= 3.0f ||
+                           (view.exponential[slot].weights && view.exponential[slot].radius > 0));
+        }
         return view;
     }
 

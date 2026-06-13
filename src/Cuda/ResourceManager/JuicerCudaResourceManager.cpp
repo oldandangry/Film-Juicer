@@ -1768,6 +1768,12 @@ void add_spatial_dir_scratch_bytes(
     if (scratch.corrY) add_snapshot_bytes(snapshot, planeBytes);
     if (scratch.corrM) add_snapshot_bytes(snapshot, planeBytes);
     if (scratch.corrC) add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.mixY)
+        add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.mixM)
+        add_snapshot_bytes(snapshot, planeBytes);
+    if (scratch.mixC)
+        add_snapshot_bytes(snapshot, planeBytes);
 }
 
 void add_resources_active_bytes_locked(
@@ -1858,7 +1864,9 @@ void add_resources_active_bytes_locked(
     add_kernel_bytes(resources.grainBlurKernel, snapshot);
     add_kernel_bytes(resources.grainBlurKernelMid, snapshot);
     add_kernel_bytes(resources.grainBlurKernelCoarse, snapshot);
-    add_kernel_bytes(resources.spatialDirKernel, snapshot);
+    for (const auto& kernel : resources.spatialDirKernels) {
+        add_kernel_bytes(kernel, snapshot);
+    }
     for (int layer = 0; layer < 3; ++layer) {
         for (int ch = 0; ch < 3; ++ch) {
             add_kernel_bytes(resources.grainDyeKernel[layer][ch], snapshot);

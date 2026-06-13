@@ -179,6 +179,7 @@ namespace JuicerCuda {
         std::uint64_t validatedPrintParamsHash = 0;
         std::uint64_t directFinalSensitivityHash = 0;
         std::uint64_t directDensityCurvesHash = 0;
+        std::uint64_t directDirHash = 0;
         std::uint64_t directDensityBoundsHash = 0;
         std::uint64_t directScannerDescriptorHash = 0;
         Spektrafilm::RgbToRawMethod directSelectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
@@ -342,6 +343,9 @@ namespace JuicerCuda {
             float* corrY = nullptr;
             float* corrM = nullptr;
             float* corrC = nullptr;
+            float* mixY = nullptr;
+            float* mixM = nullptr;
+            float* mixC = nullptr;
             float* tmp = nullptr;
             int width = 0;
             int height = 0;
@@ -358,7 +362,7 @@ namespace JuicerCuda {
         DeviceGaussianKernel halationKernel[3];
         DeviceGaussianKernel halationScatterKernel[3];
         DeviceOpticsScratch scannerScratch;
-        DeviceGaussianKernel spatialDirKernel;
+        std::array<DeviceGaussianKernel, 4> spatialDirKernels{};
         DeviceSpatialDirScratch spatialDirScratch;
         std::uint64_t retainedScratchLeaseGeneration = 0;
 

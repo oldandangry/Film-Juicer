@@ -158,6 +158,18 @@ __global__ void optics_blur_vertical_kernel(
 
 namespace {
 
+    __device__ __forceinline__ int spatial_dir_reflect_index_device(int index, int size) {
+        if (size <= 1) {
+            return 0;
+        }
+        const int period = 2 * size;
+        index %= period;
+        if (index < 0) {
+            index += period;
+        }
+        return index >= size ? period - 1 - index : index;
+    }
+
     __device__ __forceinline__ void compute_dir_corrections_device(
         const JuicerCuda::DirPayload& dir,
         const float dYMC[3],
@@ -173,28 +185,15 @@ namespace {
             return;
         }
 
-        auto safe_norm = [](float D, float dmax) -> float {
-            float Din = (!isfinite(D) || D < 0.0f) ? 0.0f : D;
-            float m = (isfinite(dmax) && dmax > 1e-4f) ? dmax : 1.0f;
-            float n = Din / m;
-            if (!isfinite(n) || n < 0.0f) n = 0.0f;
-            return n;
+        auto silver_density = [&](float density, float dmax) -> float {
+            const float finiteDensity = isfinite(density) ? density : 0.0f;
+            const float silver = dir.positive ? dmax - finiteDensity : finiteDensity;
+            return isfinite(silver) ? fmaxf(0.0f, silver) : 0.0f;
         };
 
-        float nB = safe_norm(dYMC[0], dir.dMax[0]);
-        float nG = safe_norm(dYMC[1], dir.dMax[1]);
-        float nR = safe_norm(dYMC[2], dir.dMax[2]);
-
-        auto high_boost = [&](float n) -> float {
-            const float nb = n + dir.highShift * n * n;
-            if (!isfinite(nb)) {
-                return (n >= 0.0f && isfinite(n)) ? n : 0.0f;
-            }
-            return fmaxf(0.0f, nb);
-        };
-        nB = high_boost(nB);
-        nG = high_boost(nG);
-        nR = high_boost(nR);
+        const float nB = silver_density(dYMC[0], dir.dMax[0]);
+        const float nG = silver_density(dYMC[1], dir.dMax[1]);
+        const float nR = silver_density(dYMC[2], dir.dMax[2]);
 
         float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
         float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
@@ -262,75 +261,156 @@ namespace {
         }
     }
 
-    __global__ void spatial_dir_blur_vertical_clamp_kernel(
+    __global__ void spatial_dir_blur_horizontal_reflect_kernel(
         const float* JUICER_RESTRICT in,
         float* out,
         int width,
         int height,
-        const float* JUICER_RESTRICT k,
-        int radius)
-    {
-        if (!in || !out || !k || radius <= 0) {
+        const float* JUICER_RESTRICT kernel,
+        int radius) {
+        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
+        if (x >= width || y >= height || !in || !out || !kernel || radius <= 0) {
             return;
         }
-
-        const int kLen = 2 * radius + 1;
-        const int tileW = blockDim.x;
-        const int tileH = blockDim.y + 2 * radius;
-
-        extern __shared__ float shared[];
-        float* sWeights = shared;
-        float* sTile = shared + kLen;
-
-        const int tid = threadIdx.y * blockDim.x + threadIdx.x;
-        const int tcount = blockDim.x * blockDim.y;
-        const int xLocal = threadIdx.x;
-
-        for (int i = tid; i < kLen; i += tcount) {
-            sWeights[i] = k[i];
+        double sum = 0.0;
+        for (int offset = -radius; offset <= radius; ++offset) {
+            const int sx = spatial_dir_reflect_index_device(x + offset, width);
+            sum += static_cast<double>(
+                       in[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(sx)]) *
+                   static_cast<double>(kernel[offset + radius]);
         }
-        __syncthreads();
+        out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
+            isfinite(sum) ? static_cast<float>(sum) : 0.0f;
+    }
 
-        for (int blockY = blockIdx.y * blockDim.y; blockY < height; blockY += blockDim.y * gridDim.y) {
-            for (int blockX = blockIdx.x * blockDim.x; blockX < width; blockX += blockDim.x * gridDim.x) {
-                const int x = blockX + threadIdx.x;
-                const int y = blockY + threadIdx.y;
-                const bool inBounds = (x < width && y < height);
-                const int xLoad = blockX + xLocal;
-                if (xLoad < width) {
-                    for (int i = threadIdx.y; i < tileH; i += blockDim.y) {
-                        const int yLoad = blockY + i - radius;
-                        const int yy = reflect_index_repeat_device(yLoad, height);
-                        sTile[i * tileW + xLocal] =
-                            in[static_cast<size_t>(yy) * static_cast<size_t>(width) + static_cast<size_t>(xLoad)];
-                    }
-                }
+    __global__ void spatial_dir_blur_vertical_reflect_kernel(
+        const float* JUICER_RESTRICT in,
+        float* out,
+        int width,
+        int height,
+        const float* JUICER_RESTRICT kernel,
+        int radius) {
+        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
+        if (x >= width || y >= height || !in || !out || !kernel || radius <= 0) {
+            return;
+        }
+        double sum = 0.0;
+        for (int offset = -radius; offset <= radius; ++offset) {
+            const int sy = spatial_dir_reflect_index_device(y + offset, height);
+            sum += static_cast<double>(
+                       in[static_cast<size_t>(sy) * static_cast<size_t>(width) + static_cast<size_t>(x)]) *
+                   static_cast<double>(kernel[offset + radius]);
+        }
+        out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
+            isfinite(sum) ? static_cast<float>(sum) : 0.0f;
+    }
 
-                __syncthreads();
+    __global__ void spatial_dir_iir_horizontal_kernel(
+        const float* input,
+        float* output,
+        int width,
+        int height, // NOLINT(bugprone-easily-swappable-parameters)
+        double B,
+        double B1,
+        double B2,
+        double B3) {
+        const int y = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        if (y >= height || width <= 0 || !input || !output) {
+            return;
+        }
+        const size_t row = static_cast<size_t>(y) * static_cast<size_t>(width);
+        double w1 = static_cast<double>(input[row]);
+        double w2 = w1;
+        double w3 = w1;
+        for (int x = 0; x < width; ++x) {
+            const double w =
+                B * static_cast<double>(input[row + static_cast<size_t>(x)]) +
+                B1 * w1 + B2 * w2 + B3 * w3;
+            output[row + static_cast<size_t>(x)] = static_cast<float>(w);
+            w3 = w2;
+            w2 = w1;
+            w1 = w;
+        }
+        double y1 = static_cast<double>(output[row + static_cast<size_t>(width - 1)]);
+        double y2 = y1;
+        double y3 = y1;
+        for (int x = width - 1; x >= 0; --x) {
+            const double value =
+                B * static_cast<double>(output[row + static_cast<size_t>(x)]) +
+                B1 * y1 + B2 * y2 + B3 * y3;
+            output[row + static_cast<size_t>(x)] = static_cast<float>(value);
+            y3 = y2;
+            y2 = y1;
+            y1 = value;
+        }
+    }
 
-                if (inBounds) {
-                    double acc = 0.0;
-                    const int tileY = threadIdx.y + radius;
-                    for (int j = -radius; j <= radius; ++j) {
-                        const float v = sTile[(tileY + j) * tileW + xLocal];
-                        const float w = sWeights[j + radius];
-                        acc += static_cast<double>(v) * static_cast<double>(w);
-                    }
+    __global__ void spatial_dir_iir_vertical_kernel(
+        const float* input,
+        float* output,
+        int width,
+        int height, // NOLINT(bugprone-easily-swappable-parameters)
+        double B,
+        double B1,
+        double B2,
+        double B3) {
+        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        if (x >= width || height <= 0 || !input || !output) {
+            return;
+        }
+        // OFX device row zero is the visual bottom row. Traverse from the
+        // visual top so the direction-sensitive YVV boundary initialization
+        // matches Spektrafilm's top-to-bottom NumPy recurrence.
+        const size_t visualTop =
+            static_cast<size_t>(height - 1) * static_cast<size_t>(width) + static_cast<size_t>(x);
+        double w1 = static_cast<double>(input[visualTop]);
+        double w2 = w1;
+        double w3 = w1;
+        for (int y = height - 1; y >= 0; --y) {
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const double w = B * static_cast<double>(input[index]) + B1 * w1 + B2 * w2 + B3 * w3;
+            output[index] = static_cast<float>(w);
+            w3 = w2;
+            w2 = w1;
+            w1 = w;
+        }
+        double y1 = static_cast<double>(output[x]);
+        double y2 = y1;
+        double y3 = y1;
+        for (int y = 0; y < height; ++y) {
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const double value =
+                B * static_cast<double>(output[index]) + B1 * y1 + B2 * y2 + B3 * y3;
+            output[index] = static_cast<float>(value);
+            y3 = y2;
+            y2 = y1;
+            y1 = value;
+        }
+    }
 
-                    float outV = (isfinite(acc) && !isnan(acc)) ? static_cast<float>(acc) : 0.0f;
-                    if (!isfinite(outV) || isnan(outV)) {
-                        outV = 0.0f;
-                    }
-                    if (outV < -10.0f)
-                        outV = -10.0f;
-                    if (outV > 10.0f)
-                        outV = 10.0f;
+    __global__ void spatial_dir_scale_copy_kernel(
+        const float* source,
+        float* destination,
+        int count, // NOLINT(bugprone-easily-swappable-parameters)
+        float weight) {
+        for (int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+             index < count;
+             index += static_cast<int>(blockDim.x * gridDim.x)) {
+            destination[index] = source[index] * weight;
+        }
+    }
 
-                    out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] = outV;
-                }
-
-                __syncthreads();
-            }
+    __global__ void spatial_dir_add_scaled_kernel(
+        const float* source,
+        float* destination,
+        int count, // NOLINT(bugprone-easily-swappable-parameters)
+        float weight) {
+        for (int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+             index < count;
+             index += static_cast<int>(blockDim.x * gridDim.x)) {
+            destination[index] += source[index] * weight;
         }
     }
 
@@ -341,9 +421,26 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     float* dCorrY,
     float* dCorrM,
     float* dCorrC,
+    float* dMixY,
+    float* dMixM,
+    float* dMixC,
     float* dTmp,
-    const float* dKernel,
-    int radius,
+    const float* dGaussianKernel,
+    int gaussianRadius,
+    float gaussianSigma,
+    float gaussianWeight,
+    const float* dTailKernel0,
+    int tailRadius0, // NOLINT(bugprone-easily-swappable-parameters)
+    float tailSigma0,
+    float tailWeight0,
+    const float* dTailKernel1,
+    int tailRadius1, // NOLINT(bugprone-easily-swappable-parameters)
+    float tailSigma1,
+    float tailWeight1,
+    const float* dTailKernel2,
+    int tailRadius2, // NOLINT(bugprone-easily-swappable-parameters)
+    float tailSigma2,
+    float tailWeight2,
     void* cudaStreamOpaque)
 {
     if (!hParams) {
@@ -360,7 +457,8 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     if (!(params.nComponents == 3 || params.nComponents == 4)) {
         return cudaErrorInvalidValue;
     }
-    if (!dCorrY || !dCorrM || !dCorrC || !dTmp) {
+    if (!dCorrY || !dCorrM || !dCorrC || !dMixY || !dMixM || !dMixC || !dTmp ||
+        !(gaussianSigma > 0.0f) || !(gaussianWeight >= 0.0f)) {
         return cudaErrorInvalidValue;
     }
 
@@ -377,31 +475,102 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
         return err;
     }
 
-    auto blur_plane_in_place = [&](float* plane, float* tmpBuf, const float* k, int r) -> cudaError_t {
-        if (!plane || !tmpBuf || !k || r <= 0) {
-            return cudaSuccess;
+    auto blur_plane = [&](const float* plane, float* blurred, const float* k, int r, float sigma) // NOLINT(bugprone-easily-swappable-parameters)
+        -> cudaError_t {
+        if (!plane || !blurred || !(sigma > 0.0f)) {
+            return cudaErrorInvalidValue;
         }
-        const int kLen = 2 * r + 1;
-        const size_t shmemH = (static_cast<size_t>(kLen) +
-            static_cast<size_t>(threads2D.y) * static_cast<size_t>(threads2D.x + 2 * r)) * sizeof(float);
-        const size_t shmemV = (static_cast<size_t>(kLen) +
-            static_cast<size_t>(threads2D.x) * static_cast<size_t>(threads2D.y + 2 * r)) * sizeof(float);
-
-        optics_blur_horizontal_kernel<<<blocks2D, threads2D, shmemH, stream>>>(plane, tmpBuf, params.width, params.height, k, r);
+        if (sigma >= 3.0f) {
+            const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
+            const double q2 = q * q;
+            const double q3 = q2 * q;
+            const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q2 + 0.422205 * q3;
+            const double b1 = 2.44413 * q + 2.85619 * q2 + 1.26661 * q3;
+            const double b2 = -(1.4281 * q2 + 1.26661 * q3);
+            const double b3 = 0.422205 * q3;
+            const double B1 = b1 / b0;
+            const double B2 = b2 / b0;
+            const double B3 = b3 / b0;
+            const double B = 1.0 - (b1 + b2 + b3) / b0;
+            const int threads = 128;
+            spatial_dir_iir_horizontal_kernel<<<(params.height + threads - 1) / threads, threads, 0, stream>>>(
+                plane, dTmp, params.width, params.height, B, B1, B2, B3);
+            cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            spatial_dir_iir_vertical_kernel<<<(params.width + threads - 1) / threads, threads, 0, stream>>>(
+                dTmp, blurred, params.width, params.height, B, B1, B2, B3);
+            return cudaGetLastError();
+        }
+        if (!k || r <= 0) {
+            return cudaErrorInvalidValue;
+        }
+        spatial_dir_blur_horizontal_reflect_kernel<<<blocks2D, threads2D, 0, stream>>>(
+            plane, dTmp, params.width, params.height, k, r);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
         }
-        spatial_dir_blur_vertical_clamp_kernel<<<blocks2D, threads2D, shmemV, stream>>>(tmpBuf, plane, params.width, params.height, k, r);
+        spatial_dir_blur_vertical_reflect_kernel<<<blocks2D, threads2D, 0, stream>>>(
+            dTmp, blurred, params.width, params.height, k, r);
         return cudaGetLastError();
     };
 
-    if (radius > 0 && dKernel) {
-        err = blur_plane_in_place(dCorrY, dTmp, dKernel, radius);
+    float* originals[3] = {dCorrY, dCorrM, dCorrC};
+    float* mixtures[3] = {dMixY, dMixM, dMixC};
+    const int count = params.width * params.height;
+    const int threads1D = 256;
+    const int blocks1D = (count + threads1D - 1) / threads1D;
+    for (int channel = 0; channel < 3; ++channel) {
+        err = blur_plane(
+            originals[channel],
+            mixtures[channel],
+            dGaussianKernel,
+            gaussianRadius,
+            gaussianSigma);
         if (err != cudaSuccess) return err;
-        err = blur_plane_in_place(dCorrM, dTmp, dKernel, radius);
+        spatial_dir_scale_copy_kernel<<<blocks1D, threads1D, 0, stream>>>(
+            mixtures[channel], mixtures[channel], count, gaussianWeight);
+        err = cudaGetLastError();
         if (err != cudaSuccess) return err;
-        err = blur_plane_in_place(dCorrC, dTmp, dKernel, radius);
+    }
+
+    const float* tailKernels[3] = {dTailKernel0, dTailKernel1, dTailKernel2};
+    const int tailRadii[3] = {tailRadius0, tailRadius1, tailRadius2};
+    const float tailSigmas[3] = {tailSigma0, tailSigma1, tailSigma2};
+    const float tailWeights[3] = {tailWeight0, tailWeight1, tailWeight2};
+    for (int component = 0; component < 3; ++component) {
+        if (!(tailWeights[component] > 0.0f)) {
+            continue;
+        }
+        if (!(tailSigmas[component] > 0.0f) ||
+            (tailSigmas[component] < 3.0f &&
+             (!tailKernels[component] || tailRadii[component] <= 0))) {
+            return cudaErrorInvalidValue;
+        }
+        spatial_dir_corrections_kernel<<<blocks2D, threads2D, 0, stream>>>(
+            params, dCorrY, dCorrM, dCorrC);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) return err;
+        for (int channel = 0; channel < 3; ++channel) {
+            err = blur_plane(
+                originals[channel],
+                originals[channel],
+                tailKernels[component],
+                tailRadii[component],
+                tailSigmas[component]);
+            if (err != cudaSuccess) return err;
+            spatial_dir_add_scaled_kernel<<<blocks1D, threads1D, 0, stream>>>(
+                originals[channel], mixtures[channel], count, tailWeights[component]);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) return err;
+        }
+    }
+    for (int channel = 0; channel < 3; ++channel) {
+        spatial_dir_scale_copy_kernel<<<blocks1D, threads1D, 0, stream>>>(
+            mixtures[channel], originals[channel], count, 1.0f);
+        err = cudaGetLastError();
         if (err != cudaSuccess) return err;
     }
 
