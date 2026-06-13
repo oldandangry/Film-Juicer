@@ -280,8 +280,18 @@ namespace JuicerCuda {
 
         struct DeviceSpectralLut {
             double* log2XYZ = nullptr; // layout: ((z*res + y)*res + x) * 3 + c
+            double* log10XYZ = nullptr; // canonical layout: ((C*res + M)*res + Y) * 3 + XYZ
+            double* slopeC = nullptr;
+            double* slopeM = nullptr;
+            double* slopeY = nullptr;
+            double* cellMin = nullptr; // layout: ((C*(res-1) + M)*(res-1) + Y) * 3 + XYZ
+            double* cellMax = nullptr;
             std::uint32_t res = 0;
             std::uint64_t hash = 0;
+
+            bool canonical_ready() const noexcept {
+                return log10XYZ && slopeC && slopeM && slopeY && cellMin && cellMax && res >= 2u;
+            }
         };
 
         DeviceSpectralLut scanNegativeLut;

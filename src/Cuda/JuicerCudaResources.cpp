@@ -30,6 +30,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -45,6 +46,165 @@
 
 namespace JuicerCuda {
 namespace Precompute {
+
+    struct CanonicalScanLutCpu {
+        std::vector<double> log10XYZ;
+        std::vector<double> slopeC;
+        std::vector<double> slopeM;
+        std::vector<double> slopeY;
+        std::vector<double> cellMin;
+        std::vector<double> cellMax;
+    };
+
+    namespace {
+
+        size_t scan_lut_index(std::uint32_t res, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
+            return (((static_cast<size_t>(c) * res + m) * res + y) * 3u) + out;
+        }
+
+        size_t scan_lut_cell_index(std::uint32_t cellRes, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
+            return (((static_cast<size_t>(c) * cellRes + m) * cellRes + y) * 3u) + out;
+        }
+
+        void fill_monotone_slopes_1d(const std::vector<double>& values, std::vector<double>& slopes) {
+            const size_t size = values.size();
+            slopes.assign(size, 0.0);
+            if (size <= 1u) {
+                return;
+            }
+
+            std::vector<double> deltas(size - 1u);
+            for (size_t index = 0; index + 1u < size; ++index) {
+                deltas[index] = values[index + 1u] - values[index];
+            }
+            if (size == 2u) {
+                slopes[0] = deltas[0];
+                slopes[1] = deltas[0];
+                return;
+            }
+
+            double left = 0.5 * (3.0 * deltas[0] - deltas[1]);
+            if (left * deltas[0] <= 0.0) {
+                left = 0.0;
+            } else if (deltas[0] * deltas[1] < 0.0 && std::abs(left) > std::abs(3.0 * deltas[0])) {
+                left = 3.0 * deltas[0];
+            }
+            slopes[0] = left;
+
+            for (size_t index = 1u; index + 1u < size; ++index) {
+                const double previous = deltas[index - 1u];
+                const double next = deltas[index];
+                slopes[index] =
+                    previous == 0.0 || next == 0.0 || previous * next <= 0.0
+                        ? 0.0
+                        : 2.0 * previous * next / (previous + next);
+            }
+
+            double right = 0.5 * (3.0 * deltas[size - 2u] - deltas[size - 3u]);
+            if (right * deltas[size - 2u] <= 0.0) {
+                right = 0.0;
+            } else if (deltas[size - 2u] * deltas[size - 3u] < 0.0 &&
+                       std::abs(right) > std::abs(3.0 * deltas[size - 2u])) {
+                right = 3.0 * deltas[size - 2u];
+            }
+            slopes[size - 1u] = right;
+        }
+
+        int scipy_reflect_index(int index, int size) {
+            if (size <= 1) {
+                return 0;
+            }
+            while (index < 0 || index >= size) {
+                index = index < 0 ? -index - 1 : 2 * size - index - 1;
+            }
+            return index;
+        }
+
+        bool build_blurred_hanatos_spectra(
+            const NpySpectraLUT& source,
+            float sigma,
+            std::vector<float>& out,
+            std::string& outError) {
+            if (!(sigma > 0.0f)) {
+                out = source.data;
+                return true;
+            }
+            const int n = source.size;
+            const int k = source.numSamples;
+            const int radius = JuicerGaussian::scipy_gaussian_radius(sigma);
+            if (n <= 0 || k <= 0 || radius <= 0 || source.data.size() != static_cast<size_t>(n) * n * k) {
+                outError = "direct Hanatos spectral blur source is invalid";
+                return false;
+            }
+
+            std::vector<double> kernel(static_cast<size_t>(radius * 2 + 1));
+            double kernelSum = 0.0;
+            const double sigmaSquared = static_cast<double>(sigma) * static_cast<double>(sigma);
+            for (int offset = -radius; offset <= radius; ++offset) {
+                const double weight = std::exp(-0.5 * static_cast<double>(offset * offset) / sigmaSquared);
+                const int kernelOffset = offset + radius;
+                const size_t kernelIndex = static_cast<size_t>(kernelOffset);
+                kernel[kernelIndex] = weight;
+                kernelSum += weight;
+            }
+            if (!(std::isfinite(kernelSum) && kernelSum > 0.0)) {
+                outError = "direct Hanatos spectral blur kernel is invalid";
+                return false;
+            }
+            for (double& weight : kernel) {
+                weight /= kernelSum;
+            }
+
+            out.assign(source.data.size(), 0.0f);
+            for (int c = 0; c < n; ++c) {
+                for (int m = 0; m < n; ++m) {
+                    const size_t base =
+                        (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) *
+                        static_cast<size_t>(k);
+                    for (int sample = 0; sample < k; ++sample) {
+                        double value = 0.0;
+                        for (int offset = -radius; offset <= radius; ++offset) {
+                            const int reflected = scipy_reflect_index(sample + offset, k);
+                            const int kernelOffset = offset + radius;
+                            const size_t kernelIndex = static_cast<size_t>(kernelOffset);
+                            value += kernel[kernelIndex] *
+                                     static_cast<double>(source.data[base + static_cast<size_t>(reflected)]);
+                        }
+                        if (!std::isfinite(value)) {
+                            outError = "direct Hanatos spectral blur produced non-finite data";
+                            return false;
+                        }
+                        out[base + static_cast<size_t>(sample)] = static_cast<float>(value);
+                    }
+                }
+            }
+            return true;
+        }
+
+        // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+        double eval_hanatos_surface(
+            const std::array<float, 15>& params,
+            double tcC,
+            double tcM,
+            double centerC,
+            double centerM) {
+            const double x = tcC - centerC;
+            const double y = tcM - centerM;
+            const double x2 = x * x;
+            const double y2 = y * y;
+            const double x3 = x2 * x;
+            const double y3 = y2 * y;
+            const double raw =
+                params[1] * x + params[2] * y + params[3] * x2 + params[4] * y2 + params[5] * x * y +
+                params[6] * x3 + params[7] * y3 + params[8] * x2 * y + params[9] * x * y2 +
+                params[10] * x2 * x2 + params[11] * y2 * y2 + params[12] * x3 * y +
+                params[13] * x2 * y2 + params[14] * x * y3;
+            constexpr double kMaxCorrectionStops = 2.0;
+            return raw / std::sqrt(1.0 + (raw / kMaxCorrectionStops) * (raw / kMaxCorrectionStops));
+        }
+        // NOLINTEND(bugprone-easily-swappable-parameters)
+
+    } // namespace
 
 bool build_scan_lut_cpu(const Scanner::ScannerMediumRuntime& medium, std::uint32_t res, std::vector<double>& out, std::string& outError) {
     // Match the GPU hot path: store log2(XYZ) so device code can use exp2() instead of pow(10, ...).
@@ -83,6 +243,194 @@ bool build_scan_lut_cpu(const Scanner::ScannerMediumRuntime& medium, std::uint32
         }
     }
 
+    return true;
+}
+
+bool build_canonical_scan_lut_cpu(
+    const Scanner::ScannerMediumRuntime& medium,
+    std::uint32_t res,
+    CanonicalScanLutCpu& out,
+    std::string& outError) {
+    if (res < 2u) {
+        outError = "canonical scan LUT resolution must be at least two";
+        return false;
+    }
+
+    const size_t voxelValues = static_cast<size_t>(res) * res * res * 3u;
+    const std::uint32_t cellRes = res - 1u;
+    const size_t cellValues = static_cast<size_t>(cellRes) * cellRes * cellRes * 3u;
+    out.log10XYZ.assign(voxelValues, 0.0);
+    out.slopeC.assign(voxelValues, 0.0);
+    out.slopeM.assign(voxelValues, 0.0);
+    out.slopeY.assign(voxelValues, 0.0);
+    out.cellMin.assign(cellValues, 0.0);
+    out.cellMax.assign(cellValues, 0.0);
+
+    for (std::uint32_t c = 0; c < res; ++c) {
+        const double nc = static_cast<double>(c) / static_cast<double>(res - 1u);
+        for (std::uint32_t m = 0; m < res; ++m) {
+            const double nm = static_cast<double>(m) / static_cast<double>(res - 1u);
+            for (std::uint32_t y = 0; y < res; ++y) {
+                const double ny = static_cast<double>(y) / static_cast<double>(res - 1u);
+                const double normalizedCmy[3] = {nc, nm, ny};
+                double logXYZ[3] = {0.0, 0.0, 0.0};
+                Scanner::spectral_to_log_xyz(medium, normalizedCmy, logXYZ);
+                for (std::uint32_t output = 0; output < 3u; ++output) {
+                    if (!std::isfinite(logXYZ[output])) {
+                        outError = "canonical scan LUT build produced non-finite log10 XYZ";
+                        return false;
+                    }
+                    out.log10XYZ[scan_lut_index(res, c, m, y, output)] = logXYZ[output];
+                }
+            }
+        }
+    }
+
+    std::vector<double> line(res);
+    std::vector<double> slopes;
+    for (std::uint32_t m = 0; m < res; ++m) {
+        for (std::uint32_t y = 0; y < res; ++y) {
+            for (std::uint32_t output = 0; output < 3u; ++output) {
+                for (std::uint32_t c = 0; c < res; ++c) {
+                    line[c] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                }
+                fill_monotone_slopes_1d(line, slopes);
+                for (std::uint32_t c = 0; c < res; ++c) {
+                    out.slopeC[scan_lut_index(res, c, m, y, output)] = slopes[c];
+                }
+            }
+        }
+    }
+    for (std::uint32_t c = 0; c < res; ++c) {
+        for (std::uint32_t y = 0; y < res; ++y) {
+            for (std::uint32_t output = 0; output < 3u; ++output) {
+                for (std::uint32_t m = 0; m < res; ++m) {
+                    line[m] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                }
+                fill_monotone_slopes_1d(line, slopes);
+                for (std::uint32_t m = 0; m < res; ++m) {
+                    out.slopeM[scan_lut_index(res, c, m, y, output)] = slopes[m];
+                }
+            }
+        }
+    }
+    for (std::uint32_t c = 0; c < res; ++c) {
+        for (std::uint32_t m = 0; m < res; ++m) {
+            for (std::uint32_t output = 0; output < 3u; ++output) {
+                for (std::uint32_t y = 0; y < res; ++y) {
+                    line[y] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                }
+                fill_monotone_slopes_1d(line, slopes);
+                for (std::uint32_t y = 0; y < res; ++y) {
+                    out.slopeY[scan_lut_index(res, c, m, y, output)] = slopes[y];
+                }
+            }
+        }
+    }
+
+    for (std::uint32_t c = 0; c < cellRes; ++c) {
+        for (std::uint32_t m = 0; m < cellRes; ++m) {
+            for (std::uint32_t y = 0; y < cellRes; ++y) {
+                for (std::uint32_t output = 0; output < 3u; ++output) {
+                    double minimum = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                    double maximum = minimum;
+                    for (std::uint32_t dc = 0; dc < 2u; ++dc) {
+                        for (std::uint32_t dm = 0; dm < 2u; ++dm) {
+                            for (std::uint32_t dy = 0; dy < 2u; ++dy) {
+                                const double sample =
+                                    out.log10XYZ[scan_lut_index(res, c + dc, m + dm, y + dy, output)];
+                                minimum = std::min(minimum, sample);
+                                maximum = std::max(maximum, sample);
+                            }
+                        }
+                    }
+                    const size_t cellIndex = scan_lut_cell_index(cellRes, c, m, y, output);
+                    out.cellMin[cellIndex] = minimum;
+                    out.cellMax[cellIndex] = maximum;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool build_direct_hanatos_integrated_lut_cpu(
+    const Spectral::SpectralContext& context,
+    const FilmRawRecipe& filmRaw,
+    const float referenceWhiteXYZ[3],
+    std::vector<float>& out,
+    std::string& outError) {
+    const int n = context.hanSpectra.size;
+    const int k = context.hanSpectra.numSamples;
+    if (n <= 0 || k != Spectral::kNumSamples || filmRaw.hanatosLutHash == 0) {
+        outError = "direct Hanatos integrated LUT input is invalid";
+        return false;
+    }
+
+    std::vector<float> spectra;
+    if (!build_blurred_hanatos_spectra(
+            context.hanSpectra,
+            filmRaw.hanatos.spectralGaussianBlur,
+            spectra,
+            outError)) {
+        return false;
+    }
+
+    double centerC = 0.0;
+    double centerM = 0.0;
+    if (filmRaw.hanatos.applySurface) {
+        const double sum =
+            static_cast<double>(referenceWhiteXYZ[0]) +
+            static_cast<double>(referenceWhiteXYZ[1]) +
+            static_cast<double>(referenceWhiteXYZ[2]);
+        if (!(std::isfinite(sum) && sum > 0.0)) {
+            outError = "direct Hanatos adaptation surface reference illuminant is invalid";
+            return false;
+        }
+        const double x = std::clamp(static_cast<double>(referenceWhiteXYZ[0]) / sum, 0.0, 1.0);
+        const double y = std::clamp(static_cast<double>(referenceWhiteXYZ[1]) / sum, 0.0, 1.0);
+        centerC = (1.0 - x) * (1.0 - x);
+        centerM = std::clamp(y / std::max(1.0 - x, 1e-10), 0.0, 1.0);
+    }
+
+    out.assign(static_cast<size_t>(n) * static_cast<size_t>(n) * 4u, 0.0f);
+    for (int c = 0; c < n; ++c) {
+        const double tcC = static_cast<double>(c) / static_cast<double>(n - 1);
+        for (int m = 0; m < n; ++m) {
+            const double tcM = static_cast<double>(m) / static_cast<double>(n - 1);
+            double raw[3] = {0.0, 0.0, 0.0};
+            const size_t base =
+                (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) *
+                static_cast<size_t>(k);
+            for (int sample = 0; sample < k; ++sample) {
+                const double energy = static_cast<double>(spectra[base + static_cast<size_t>(sample)]);
+                const auto& sensitivity = filmRaw.finalSensitivity[static_cast<size_t>(sample)];
+                raw[0] += energy * static_cast<double>(sensitivity[0]);
+                raw[1] += energy * static_cast<double>(sensitivity[1]);
+                raw[2] += energy * static_cast<double>(sensitivity[2]);
+            }
+            if (filmRaw.hanatos.applySurface) {
+                for (size_t channel = 0; channel < 3u; ++channel) {
+                    const double correction = eval_hanatos_surface(
+                        filmRaw.hanatos.surfaceParams[channel],
+                        tcC,
+                        tcM,
+                        centerC,
+                        centerM);
+                    raw[channel] *= std::exp2(correction);
+                }
+            }
+            const size_t outBase =
+                (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) * 4u;
+            for (size_t channel = 0; channel < 3u; ++channel) {
+                if (!std::isfinite(raw[channel])) {
+                    outError = "direct Hanatos integrated LUT produced non-finite data";
+                    return false;
+                }
+                out[outBase + channel] = static_cast<float>(raw[channel]);
+            }
+        }
+    }
     return true;
 }
 
@@ -2179,10 +2527,12 @@ namespace JuicerCuda {
             resources.sensB.x && resources.sensG.x && resources.sensR.x &&
             resources.densB.x && resources.densG.x && resources.densR.x &&
             resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesIllum &&
-            resources.scanNegative.tables.epsC && resources.scanNegativeLut.log2XYZ &&
+            resources.scanNegative.tables.epsC && resources.scanNegativeLut.canonical_ready() &&
             resources.scanNegativeLut.hash == scannerDescriptor.hash &&
             ((filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 &&
-              resources.hanatosLut && resources.hanatosLutIntegrated && !resources.mallettBasis) ||
+              resources.hanatosLut && resources.hanatosLutIntegrated &&
+              resources.hanatosIntegratedKeyHash == filmRaw.hanatosLutHash &&
+              !resources.mallettBasis) ||
              (filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019 &&
               resources.mallettBasis && !resources.hanatosLut && !resources.hanatosLutIntegrated));
         if (alreadyPrepared) {
@@ -2257,35 +2607,21 @@ namespace JuicerCuda {
             }
             resources.hanatosN = n;
 
-            std::vector<float> integrated(static_cast<std::size_t>(n) * static_cast<std::size_t>(n) * 4u, 0.0f);
-            for (int x = 0; x < n; ++x) {
-                for (int y = 0; y < n; ++y) {
-                    double accR = 0.0;
-                    double accG = 0.0;
-                    double accB = 0.0;
-                    const std::size_t base =
-                        (static_cast<std::size_t>(x) * static_cast<std::size_t>(n) + static_cast<std::size_t>(y)) *
-                        static_cast<std::size_t>(k);
-                    for (int sample = 0; sample < k; ++sample) {
-                        const float energy = std::max(0.0f, context.hanSpectra.data[base + static_cast<std::size_t>(sample)]);
-                        const auto& rgb = filmRaw.finalSensitivity[static_cast<std::size_t>(sample)];
-                        accR += static_cast<double>(energy) * rgb[0];
-                        accG += static_cast<double>(energy) * rgb[1];
-                        accB += static_cast<double>(energy) * rgb[2];
-                    }
-                    const std::size_t outBase =
-                        (static_cast<std::size_t>(x) * static_cast<std::size_t>(n) + static_cast<std::size_t>(y)) * 4u;
-                    integrated[outBase + 0] = static_cast<float>(accR);
-                    integrated[outBase + 1] = static_cast<float>(accG);
-                    integrated[outBase + 2] = static_cast<float>(accB);
-                }
+            std::vector<float> integrated;
+            if (!Precompute::build_direct_hanatos_integrated_lut_cpu(
+                    context,
+                    filmRaw,
+                    request.filmRawConfig->refIllumWhiteXYZ,
+                    integrated,
+                    outError)) {
+                return false;
             }
             const int integratedCount = n * n * 4;
             if (!upload_array_locked(resources, resources.hanatosLutIntegrated, resources.hanatosNIntegrated * resources.hanatosNIntegrated * 4, integrated.data(), integratedCount, cudaStreamOpaque, &lock, "direct Hanatos integrated LUT", outError)) {
                 return false;
             }
             resources.hanatosNIntegrated = n;
-            resources.hanatosIntegratedKeyHash = filmRaw.finalSensitivityHash;
+            resources.hanatosIntegratedKeyHash = filmRaw.hanatosLutHash;
             if (resources.mallettBasis) {
                 const std::size_t bytes = static_cast<std::size_t>(resources.mallettBasisK) * 3u * sizeof(float);
                 if (!retire_ptr_locked(resources, resources.mallettBasis, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unselected Mallett basis", outError)) {
@@ -2370,9 +2706,9 @@ namespace JuicerCuda {
                 scan.inv_max_cmy[channel] > 0.0f ? 1.0f / scan.inv_max_cmy[channel] : 0.0f;
         }
 
-        std::vector<double> lutCpu;
+        Precompute::CanonicalScanLutCpu lutCpu;
         lock.unlock();
-        const bool lutBuilt = Precompute::build_scan_lut_cpu(
+        const bool lutBuilt = Precompute::build_canonical_scan_lut_cpu(
             medium,
             scannerDescriptor.lutResolution,
             lutCpu,
@@ -2382,59 +2718,91 @@ namespace JuicerCuda {
             return false;
         }
         Resources::DeviceSpectralLut& lut = resources.scanNegativeLut;
-        const std::size_t lutBytes = lutCpu.size() * sizeof(double);
-        if (lut.log2XYZ && lut.res == scannerDescriptor.lutResolution) {
-            if (!wait_for_frame_use_events_locked(resources, cudaStreamOpaque, "direct scan LUT", outError) ||
-                !enqueue_host_to_device_copy(
-                    "prepare_direct_resources",
-                    "direct scan LUT",
-                    lut.log2XYZ,
-                    lutCpu.data(),
-                    lutBytes,
+        struct NextCanonicalScanLut {
+            double* log10XYZ = nullptr;
+            double* slopeC = nullptr;
+            double* slopeM = nullptr;
+            double* slopeY = nullptr;
+            double* cellMin = nullptr;
+            double* cellMax = nullptr;
+        } next;
+        auto free_next = [&]() {
+            cudaFree(next.log10XYZ);
+            cudaFree(next.slopeC);
+            cudaFree(next.slopeM);
+            cudaFree(next.slopeY);
+            cudaFree(next.cellMin);
+            cudaFree(next.cellMax);
+            next = {};
+        };
+        auto upload_next = [&](double*& destination, const std::vector<double>& source, const char* label) {
+            void* raw = nullptr;
+            if (!alloc_and_upload_bytes(
+                    raw,
+                    source.data(),
+                    source.size() * sizeof(double),
                     cudaStreamOpaque,
+                    label,
                     outError)) {
                 return false;
             }
-        } else {
-            double* nextLut = nullptr;
-            lock.unlock();
-            const cudaError_t allocError = cudaMalloc(reinterpret_cast<void**>(&nextLut), lutBytes);
-            const bool copyOk =
-                allocError == cudaSuccess &&
-                enqueue_host_to_device_copy(
-                    "prepare_direct_resources",
-                    "direct scan LUT",
-                    nextLut,
-                    lutCpu.data(),
-                    lutBytes,
-                    cudaStreamOpaque,
-                    outError);
-            lock.lock();
-            if (!validate_resource_owner_locked(resources, outError, false)) {
-                if (nextLut) {
-                    cudaFree(nextLut);
-                }
-                return false;
-            }
-            if (allocError != cudaSuccess) {
-                outError = std::string("cudaMalloc(direct scan LUT) failed: ") +
-                           (cudaGetErrorString(allocError) ? cudaGetErrorString(allocError) : "(unknown)");
-                return false;
-            }
-            if (!copyOk) {
-                cudaFree(nextLut);
-                return false;
-            }
-            if (lut.log2XYZ) {
-                const std::size_t oldCount =
-                    static_cast<std::size_t>(lut.res) * lut.res * lut.res * 3u;
-                if (!retire_ptr_locked(resources, lut.log2XYZ, oldCount * sizeof(double), Resources::RetireKind::DeviceFree, cudaStreamOpaque, "direct scan LUT", outError)) {
-                    cudaFree(nextLut);
-                    return false;
-                }
-            }
-            lut.log2XYZ = nextLut;
+            destination = static_cast<double*>(raw);
+            return true;
+        };
+
+        lock.unlock();
+        const bool canonicalUploaded =
+            upload_next(next.log10XYZ, lutCpu.log10XYZ, "direct canonical scan log10 XYZ") &&
+            upload_next(next.slopeC, lutCpu.slopeC, "direct canonical scan C slopes") &&
+            upload_next(next.slopeM, lutCpu.slopeM, "direct canonical scan M slopes") &&
+            upload_next(next.slopeY, lutCpu.slopeY, "direct canonical scan Y slopes") &&
+            upload_next(next.cellMin, lutCpu.cellMin, "direct canonical scan cell minima") &&
+            upload_next(next.cellMax, lutCpu.cellMax, "direct canonical scan cell maxima");
+        lock.lock();
+        if (!validate_resource_owner_locked(resources, outError, false) || !canonicalUploaded) {
+            free_next();
+            return false;
         }
+
+        const std::size_t oldVoxelBytes =
+            static_cast<std::size_t>(lut.res) * lut.res * lut.res * 3u * sizeof(double);
+        const std::size_t oldCellRes = lut.res > 0u ? static_cast<std::size_t>(lut.res - 1u) : 0u;
+        const std::size_t oldCellBytes = oldCellRes * oldCellRes * oldCellRes * 3u * sizeof(double);
+        auto retire_old = [&](double*& pointer, std::size_t bytes, const char* label) {
+            if (!pointer) {
+                return true;
+            }
+            if (!retire_ptr_locked(
+                    resources,
+                    pointer,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    label,
+                    outError)) {
+                return false;
+            }
+            pointer = nullptr;
+            return true;
+        };
+        lut.hash = 0;
+        if (!retire_old(lut.log2XYZ, oldVoxelBytes, "legacy direct scan log2 LUT") ||
+            !retire_old(lut.log10XYZ, oldVoxelBytes, "direct canonical scan log10 LUT") ||
+            !retire_old(lut.slopeC, oldVoxelBytes, "direct canonical scan C slopes") ||
+            !retire_old(lut.slopeM, oldVoxelBytes, "direct canonical scan M slopes") ||
+            !retire_old(lut.slopeY, oldVoxelBytes, "direct canonical scan Y slopes") ||
+            !retire_old(lut.cellMin, oldCellBytes, "direct canonical scan cell minima") ||
+            !retire_old(lut.cellMax, oldCellBytes, "direct canonical scan cell maxima")) {
+            free_next();
+            return false;
+        }
+        lut.log10XYZ = next.log10XYZ;
+        lut.slopeC = next.slopeC;
+        lut.slopeM = next.slopeM;
+        lut.slopeY = next.slopeY;
+        lut.cellMin = next.cellMin;
+        lut.cellMax = next.cellMax;
+        next = {};
         lut.res = scannerDescriptor.lutResolution;
         lut.hash = scannerDescriptor.hash;
 
@@ -3048,6 +3416,30 @@ namespace JuicerCuda {
         if (lut.log2XYZ) {
             cudaFree(lut.log2XYZ);
             lut.log2XYZ = nullptr;
+        }
+        if (lut.log10XYZ) {
+            cudaFree(lut.log10XYZ);
+            lut.log10XYZ = nullptr;
+        }
+        if (lut.slopeC) {
+            cudaFree(lut.slopeC);
+            lut.slopeC = nullptr;
+        }
+        if (lut.slopeM) {
+            cudaFree(lut.slopeM);
+            lut.slopeM = nullptr;
+        }
+        if (lut.slopeY) {
+            cudaFree(lut.slopeY);
+            lut.slopeY = nullptr;
+        }
+        if (lut.cellMin) {
+            cudaFree(lut.cellMin);
+            lut.cellMin = nullptr;
+        }
+        if (lut.cellMax) {
+            cudaFree(lut.cellMax);
+            lut.cellMax = nullptr;
         }
 #endif
         lut.res = 0;

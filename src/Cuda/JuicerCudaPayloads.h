@@ -306,6 +306,12 @@ namespace JuicerCuda {
     struct ScanStagePayload {
         int scannerUseLut = 0;
         const double* JUICER_RESTRICT scanLutLog2XYZ = nullptr;
+        const double* JUICER_RESTRICT scanLutLog10XYZ = nullptr;
+        const double* JUICER_RESTRICT scanLutSlopeC = nullptr;
+        const double* JUICER_RESTRICT scanLutSlopeM = nullptr;
+        const double* JUICER_RESTRICT scanLutSlopeY = nullptr;
+        const double* JUICER_RESTRICT scanLutCellMin = nullptr;
+        const double* JUICER_RESTRICT scanLutCellMax = nullptr;
         int scanLutRes = 0;
         ScanTablesPayload scanTables{};
         ScanColorPayload scanColor{};

@@ -472,10 +472,9 @@ namespace Scanner {
         };
 
         constexpr double kEps = 1e-10;
-        // agx-emulsion parity: do not clamp XYZ before log.
-        logXYZ[0] = std::log10(XYZ[0] + kEps);
-        logXYZ[1] = std::log10(XYZ[1] + kEps);
-        logXYZ[2] = std::log10(XYZ[2] + kEps);
+        logXYZ[0] = std::log10(std::fmax(XYZ[0], 0.0) + kEps);
+        logXYZ[1] = std::log10(std::fmax(XYZ[1], 0.0) + kEps);
+        logXYZ[2] = std::log10(std::fmax(XYZ[2], 0.0) + kEps);
     }
 
 } // namespace Scanner

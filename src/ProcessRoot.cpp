@@ -1982,7 +1982,7 @@ namespace JuicerProcess {
         view.densityBoundsHash = resources.directDensityBoundsHash;
         view.scannerDescriptorHash = resources.directScannerDescriptorHash;
         view.selectedMethod = resources.directSelectedMethod;
-        view.active = view.scanMedium && view.scanLut->log2XYZ &&
+        view.active = view.scanMedium && view.scanLut->canonical_ready() &&
                       view.densityBoundsHash != 0 && view.scannerDescriptorHash != 0;
         return view;
     }

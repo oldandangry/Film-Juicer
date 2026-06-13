@@ -3190,7 +3190,12 @@ void JuicerProcessor::processImagesCUDA() {
             run.scanStage.scanTables.inv_max_cmy,
             scanMedium);
         run.scanStage.scannerUseLut = 1;
-        run.scanStage.scanLutLog2XYZ = prepared.scanLut->log2XYZ;
+        run.scanStage.scanLutLog10XYZ = prepared.scanLut->log10XYZ;
+        run.scanStage.scanLutSlopeC = prepared.scanLut->slopeC;
+        run.scanStage.scanLutSlopeM = prepared.scanLut->slopeM;
+        run.scanStage.scanLutSlopeY = prepared.scanLut->slopeY;
+        run.scanStage.scanLutCellMin = prepared.scanLut->cellMin;
+        run.scanStage.scanLutCellMax = prepared.scanLut->cellMax;
         run.scanStage.scanLutRes = static_cast<int>(prepared.scanLut->res);
         const Scanner::ColorRuntime& color = *prepared.scannerColor;
         copy_float9(run.scanStage.scanColor.cat02, color.cat02);

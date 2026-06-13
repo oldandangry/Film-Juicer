@@ -126,6 +126,7 @@ struct FilmRawRecipe {
     std::uint64_t linearSensitivityHash = 0;
     std::array<std::array<float, 3>, 81> finalSensitivity{};
     std::uint64_t finalSensitivityHash = 0;
+    std::uint64_t hanatosLutHash = 0;
     float mallettGreenMidgrayScale = 1.0f;
     std::uint64_t hash = 0;
 };

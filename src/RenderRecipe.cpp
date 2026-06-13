@@ -130,11 +130,7 @@ namespace {
         hash_value(hash, recipe.highlightBoost.protectEv);
         hash_value(hash, recipe.finalSensitivityHash);
         if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
-            hash_value(hash, recipe.hanatos.applyWindow);
-            hash_value(hash, recipe.hanatos.applySurface);
-            hash_value(hash, recipe.hanatos.spectralGaussianBlur);
-            Hash::hash_bytes_update(hash, recipe.hanatos.windowParams.data(), sizeof(recipe.hanatos.windowParams));
-            Hash::hash_bytes_update(hash, recipe.hanatos.surfaceParams.data(), sizeof(recipe.hanatos.surfaceParams));
+            hash_value(hash, recipe.hanatosLutHash);
             hash_string(hash, recipe.hanatos.referenceIlluminant);
         } else {
             hash_value(hash, recipe.mallettGreenMidgrayScale);
@@ -154,6 +150,36 @@ namespace {
         width = uv ? std::abs(width) : -std::abs(width);
         const float sigmoid = 0.5f * (std::erf((wavelength - filter[1]) / width) + 1.0f);
         return 1.0f - amplitude + amplitude * sigmoid;
+    }
+
+    float hanatos_window_sample(float wavelength, const std::array<float, 4>& params) {
+        constexpr float kSqrt2 = 1.4142135623730950488f;
+        const float uv = 0.5f * (1.0f + std::erf((wavelength - params[0]) / (params[1] * kSqrt2)));
+        const float ir = 0.5f * (1.0f - std::erf((wavelength - params[2]) / (params[3] * kSqrt2)));
+        return uv * ir;
+    }
+
+    bool hanatos_window_params_valid(const std::array<float, 4>& params) {
+        return std::all_of(params.begin(), params.end(), [](float value) {
+                   return std::isfinite(value);
+               }) &&
+               params[1] > 0.0f && params[3] > 0.0f;
+    }
+
+    std::uint64_t hash_hanatos_lut_recipe(const FilmRawRecipe& recipe) {
+        std::uint64_t hash = Hash::kFnvOffset;
+        constexpr std::uint32_t kSchemaVersion = 1u;
+        hash_value(hash, kSchemaVersion);
+        hash_value(hash, recipe.finalSensitivityHash);
+        if (recipe.hanatos.spectralGaussianBlur > 0.0f) {
+            hash_value(hash, recipe.hanatos.spectralGaussianBlur);
+        }
+        hash_value(hash, recipe.hanatos.applySurface);
+        if (recipe.hanatos.applySurface) {
+            Hash::hash_bytes_update(hash, recipe.hanatos.surfaceParams.data(), sizeof(recipe.hanatos.surfaceParams));
+            hash_string(hash, recipe.hanatos.referenceIlluminant);
+        }
+        return hash;
     }
 
     bool derive_final_sensitivity(
@@ -204,8 +230,61 @@ namespace {
                     std::isfinite(derived) ? static_cast<float>(std::max(0.0, derived)) : 0.0f;
             }
         }
+
+        if (recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 &&
+            recipe.hanatos.applyWindow) {
+            if (!hanatos_window_params_valid(recipe.hanatos.windowParams)) {
+                return false;
+            }
+
+            std::array<double, 3> response{};
+            std::array<double, 3> windowedResponse{};
+            std::array<float, 81> window{};
+            for (std::size_t wavelengthIndex = 0; wavelengthIndex < window.size(); ++wavelengthIndex) {
+                const float wavelength = 380.0f + 5.0f * static_cast<float>(wavelengthIndex);
+                const float sample = hanatos_window_sample(wavelength, recipe.hanatos.windowParams);
+                if (!std::isfinite(sample) || sample < 0.0f) {
+                    return false;
+                }
+                window[wavelengthIndex] = sample;
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const double weighted =
+                        static_cast<double>(recipe.finalSensitivity[wavelengthIndex][channel]) *
+                        static_cast<double>(referenceIlluminant[wavelengthIndex]);
+                    response[channel] += weighted;
+                    windowedResponse[channel] += weighted * static_cast<double>(sample);
+                }
+            }
+
+            std::array<double, 3> normalization{};
+            for (std::size_t channel = 0; channel < normalization.size(); ++channel) {
+                if (!(std::isfinite(response[channel]) && response[channel] > 0.0) ||
+                    !(std::isfinite(windowedResponse[channel]) && windowedResponse[channel] > 0.0)) {
+                    return false;
+                }
+                normalization[channel] = windowedResponse[channel] / response[channel];
+            }
+
+            for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const double adapted =
+                        static_cast<double>(recipe.finalSensitivity[wavelengthIndex][channel]) *
+                        static_cast<double>(window[wavelengthIndex]) /
+                        normalization[channel];
+                    if (!std::isfinite(adapted) || adapted < 0.0) {
+                        return false;
+                    }
+                    recipe.finalSensitivity[wavelengthIndex][channel] = static_cast<float>(adapted);
+                }
+            }
+        }
+
         recipe.finalSensitivityHash =
             Hash::hash_float_span(&recipe.finalSensitivity[0][0], recipe.finalSensitivity.size() * 3u);
+        recipe.hanatosLutHash =
+            recipe.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025
+                ? hash_hanatos_lut_recipe(recipe)
+                : 0;
 
         double greenMidgray = 0.0;
         for (std::size_t wavelengthIndex = 0; wavelengthIndex < recipe.finalSensitivity.size(); ++wavelengthIndex) {
@@ -361,12 +440,33 @@ namespace Spektrafilm {
         filmRaw.linearSensitivity = profile.data.linearSensitivity;
         filmRaw.linearSensitivityHash =
             Hash::hash_float_span(&filmRaw.linearSensitivity[0][0], filmRaw.linearSensitivity.size() * 3u);
+        if (filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025) {
+            if (filmRaw.hanatos.applyWindow && !profile.data.hasHanatos2025AdaptationWindowParams) {
+                result.diagnostic =
+                    "MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_window_params";
+                return result;
+            }
+            if (filmRaw.hanatos.applySurface && !profile.data.hasHanatos2025AdaptationSurfaceParams) {
+                result.diagnostic =
+                    "MalformedRequiredProfileData phase=3D-2 field=data.hanatos2025_adaptation_surface_params";
+                return result;
+            }
+            if (!std::isfinite(filmRaw.hanatos.spectralGaussianBlur) ||
+                filmRaw.hanatos.spectralGaussianBlur < 0.0f) {
+                result.diagnostic =
+                    "MalformedRequiredProfileData phase=3D-2 field=settings.spectral_gaussian_blur";
+                return result;
+            }
+        }
         if (!derive_final_sensitivity(filmRaw, input.referenceIlluminant)) {
             result.diagnostic = "MalformedRequiredProfileData phase=3B field=final_sensitivity";
             return result;
         }
         filmRaw.hash = hash_film_raw_recipe(filmRaw);
-        if (filmRaw.linearSensitivityHash == 0 || filmRaw.finalSensitivityHash == 0 || filmRaw.hash == 0) {
+        if (filmRaw.linearSensitivityHash == 0 ||
+            filmRaw.finalSensitivityHash == 0 ||
+            (filmRaw.rgbToRawMethod == RgbToRawMethod::Hanatos2025 && filmRaw.hanatosLutHash == 0) ||
+            filmRaw.hash == 0) {
             result.diagnostic = "MalformedRequiredProfileData phase=3B field=data.log_sensitivity";
             return result;
         }

@@ -1653,7 +1653,7 @@ void add_scan_medium_bytes(
 void add_scan_lut_bytes(
     const JuicerCuda::Resources::DeviceSpectralLut& lut,
     ManagerMemorySnapshot& snapshot) noexcept {
-    if (!lut.log2XYZ || lut.res == 0u) {
+    if (lut.res == 0u) {
         return;
     }
     const std::uint64_t res = static_cast<std::uint64_t>(lut.res);
@@ -1668,7 +1668,38 @@ void add_scan_lut_bytes(
     if (overflow) {
         snapshot.overflow = true;
     }
-    add_snapshot_bytes(snapshot, bytes);
+    if (lut.log2XYZ)
+        add_snapshot_bytes(snapshot, bytes);
+    if (lut.log10XYZ)
+        add_snapshot_bytes(snapshot, bytes);
+    if (lut.slopeC)
+        add_snapshot_bytes(snapshot, bytes);
+    if (lut.slopeM)
+        add_snapshot_bytes(snapshot, bytes);
+    if (lut.slopeY)
+        add_snapshot_bytes(snapshot, bytes);
+
+    if (lut.res < 2u || (!lut.cellMin && !lut.cellMax)) {
+        return;
+    }
+    const std::uint64_t cellRes = res - 1u;
+    std::uint64_t cellCount = 0;
+    if (!mul_u64_checked(cellRes, cellRes, cellCount) ||
+        !mul_u64_checked(cellCount, cellRes, cellCount) ||
+        !mul_u64_checked(cellCount, 3ull, cellCount)) {
+        snapshot.overflow = true;
+        add_snapshot_bytes(snapshot, std::numeric_limits<std::uint64_t>::max());
+        return;
+    }
+    bool cellOverflow = false;
+    const std::uint64_t cellBytes = bytes_for_count_u64(cellCount, sizeof(double), cellOverflow);
+    if (cellOverflow) {
+        snapshot.overflow = true;
+    }
+    if (lut.cellMin)
+        add_snapshot_bytes(snapshot, cellBytes);
+    if (lut.cellMax)
+        add_snapshot_bytes(snapshot, cellBytes);
 }
 
 void add_kernel_bytes(

@@ -175,7 +175,7 @@ namespace Scanner {
         ScannerLutLogBase logBase = ScannerLutLogBase::Base10;
         ScannerLutNumericFormat numericFormat = ScannerLutNumericFormat::Float64;
         ScannerLutOutputTripletOrder storedOutputTripletOrder = ScannerLutOutputTripletOrder::Xyz;
-        std::uint32_t schemaVersion = 1;
+        std::uint32_t schemaVersion = 2;
         std::uint64_t hash = 0;
     };
 
@@ -197,7 +197,7 @@ namespace Scanner {
     // Canonical scanner spectral core (agx-emulsion parity):
     // - Accepts normalized density (0..1), denormalizes per medium range
     // - Converts dyes -> XYZ under the medium's spectral tables
-    // - Applies log10(xyz + 1e-10) without clamping
+    // - Applies log10(max(xyz, 0) + 1e-10)
     void spectral_to_log_xyz(const ScannerMediumRuntime& medium, const double D_norm[3], double logXYZ[3]);
 
     // Canonical normalization for LUT coordinates (mirrors agx _normalize_* semantics).

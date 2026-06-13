@@ -105,7 +105,7 @@ namespace Scanner {
         descriptor.logBase = ScannerLutLogBase::Base10;
         descriptor.numericFormat = ScannerLutNumericFormat::Float64;
         descriptor.storedOutputTripletOrder = ScannerLutOutputTripletOrder::Xyz;
-        descriptor.schemaVersion = 1;
+        descriptor.schemaVersion = 2;
         descriptor.hash = hash_scanner_spectral_lut_descriptor(descriptor);
         if (descriptor.channelDensityHash == 0 ||
             descriptor.baseDensityHash == 0 ||

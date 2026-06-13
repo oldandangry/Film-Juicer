@@ -77,9 +77,9 @@ namespace {
         const double XYZ2 = Z * invNormalization;
 
         constexpr double kEps = 1e-10;
-        logXYZ[0] = log10(XYZ0 + kEps);
-        logXYZ[1] = log10(XYZ1 + kEps);
-        logXYZ[2] = log10(XYZ2 + kEps);
+        logXYZ[0] = log10(fmax(XYZ0, 0.0) + kEps);
+        logXYZ[1] = log10(fmax(XYZ1, 0.0) + kEps);
+        logXYZ[2] = log10(fmax(XYZ2, 0.0) + kEps);
     }
 
     __device__ __forceinline__ void scan_log_xyz_device(
@@ -92,10 +92,30 @@ namespace {
         }
 
         const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
-        if (scanStage.scannerUseLut && scanStage.scanLutLog2XYZ && scanStage.scanLutRes > 0 && D_norm_finite) {
+        const bool canonicalReady =
+            scanStage.scannerUseLut &&
+            scanStage.scanLutLog10XYZ &&
+            scanStage.scanLutSlopeC &&
+            scanStage.scanLutSlopeM &&
+            scanStage.scanLutSlopeY &&
+            scanStage.scanLutCellMin &&
+            scanStage.scanLutCellMax &&
+            scanStage.scanLutRes >= 2 &&
+            D_norm_finite;
+        if (canonicalReady) {
+            sample_pchip_scan_lut_device(
+                scanStage.scanLutLog10XYZ,
+                scanStage.scanLutSlopeC,
+                scanStage.scanLutSlopeM,
+                scanStage.scanLutSlopeY,
+                scanStage.scanLutCellMin,
+                scanStage.scanLutCellMax,
+                scanStage.scanLutRes,
+                D_norm,
+                logXYZ);
+        } else if (scanStage.scannerUseLut && scanStage.scanLutLog2XYZ && scanStage.scanLutRes > 0 && D_norm_finite) {
             sample_cubic_scan_lut_device(scanStage.scanLutLog2XYZ, scanStage.scanLutRes, D_norm, logXYZ);
-        }
-        else {
+        } else {
             scan_spectral_to_log_xyz_device(scanStage.scanTables, D_norm, logXYZ);
         }
     }
@@ -1070,7 +1090,11 @@ namespace {
         scan_log_xyz_device(scan, D_norm, logXYZ);
 
         const bool useLutLog2 =
-            scan.scannerUseLut && scan.scanLutLog2XYZ && scan.scanLutRes > 0 && D_norm_finite;
+            scan.scannerUseLut &&
+            !scan.scanLutLog10XYZ &&
+            scan.scanLutLog2XYZ &&
+            scan.scanLutRes > 0 &&
+            D_norm_finite;
         const double xyz[3] = {
             useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
             useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
@@ -1151,7 +1175,11 @@ namespace {
                 scan_log_xyz_device(scan, D_norm, logXYZ);
 
                 const bool useLutLog2 =
-                    scan.scannerUseLut && scan.scanLutLog2XYZ && scan.scanLutRes > 0 && D_norm_finite;
+                    scan.scannerUseLut &&
+                    !scan.scanLutLog10XYZ &&
+                    scan.scanLutLog2XYZ &&
+                    scan.scanLutRes > 0 &&
+                    D_norm_finite;
                 double xyz[3] = {
                     useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
                     useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),

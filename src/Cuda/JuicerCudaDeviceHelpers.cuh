@@ -396,6 +396,102 @@ static __device__ __forceinline__ double mitchell_weight_device(double t) {
     return 0.0;
 }
 
+static __device__ __forceinline__ void hanatos_cubic_coordinate_device(
+    float normalized,
+    int size,
+    int& base,
+    double& fraction) {
+    double coordinate =
+        static_cast<double>(fminf(1.0f, fmaxf(0.0f, normalized))) *
+        static_cast<double>(size - 1);
+    if (coordinate >= static_cast<double>(size - 1)) {
+        base = size - 2;
+        fraction = 1.0;
+        return;
+    }
+    base = static_cast<int>(floor(coordinate));
+    fraction = coordinate - static_cast<double>(base);
+}
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+static __device__ __forceinline__ float sample_hanatos_spectrum_cubic_device(
+    const float* JUICER_RESTRICT lut,
+    int size,
+    int samples,
+    int sample,
+    float tcC,
+    float tcM) {
+    int cBase = 0;
+    int mBase = 0;
+    double cFraction = 0.0;
+    double mFraction = 0.0;
+    hanatos_cubic_coordinate_device(tcC, size, cBase, cFraction);
+    hanatos_cubic_coordinate_device(tcM, size, mBase, mFraction);
+
+    const double wc[4] = {
+        mitchell_weight_device(cFraction + 1.0),
+        mitchell_weight_device(cFraction),
+        mitchell_weight_device(cFraction - 1.0),
+        mitchell_weight_device(cFraction - 2.0)};
+    const double wm[4] = {
+        mitchell_weight_device(mFraction + 1.0),
+        mitchell_weight_device(mFraction),
+        mitchell_weight_device(mFraction - 1.0),
+        mitchell_weight_device(mFraction - 2.0)};
+
+    double value = 0.0;
+    double weightSum = 0.0;
+    for (int dc = 0; dc < 4; ++dc) {
+        const int c = reflect_index_device(cBase - 1 + dc, size);
+        for (int dm = 0; dm < 4; ++dm) {
+            const int m = reflect_index_device(mBase - 1 + dm, size);
+            const double weight = wc[dc] * wm[dm];
+            weightSum += weight;
+            value += weight * static_cast<double>(hanatos_bilinear_at(lut, size, samples, c, m, sample));
+        }
+    }
+    return static_cast<float>(weightSum != 0.0 ? value / weightSum : 0.0);
+}
+
+static __device__ __forceinline__ float sample_hanatos_integrated_cubic_device(
+    const float* JUICER_RESTRICT lut,
+    int size,
+    int channel,
+    float tcC,
+    float tcM) {
+    int cBase = 0;
+    int mBase = 0;
+    double cFraction = 0.0;
+    double mFraction = 0.0;
+    hanatos_cubic_coordinate_device(tcC, size, cBase, cFraction);
+    hanatos_cubic_coordinate_device(tcM, size, mBase, mFraction);
+
+    const double wc[4] = {
+        mitchell_weight_device(cFraction + 1.0),
+        mitchell_weight_device(cFraction),
+        mitchell_weight_device(cFraction - 1.0),
+        mitchell_weight_device(cFraction - 2.0)};
+    const double wm[4] = {
+        mitchell_weight_device(mFraction + 1.0),
+        mitchell_weight_device(mFraction),
+        mitchell_weight_device(mFraction - 1.0),
+        mitchell_weight_device(mFraction - 2.0)};
+
+    double value = 0.0;
+    double weightSum = 0.0;
+    for (int dc = 0; dc < 4; ++dc) {
+        const int c = reflect_index_device(cBase - 1 + dc, size);
+        for (int dm = 0; dm < 4; ++dm) {
+            const int m = reflect_index_device(mBase - 1 + dm, size);
+            const double weight = wc[dc] * wm[dm];
+            weightSum += weight;
+            value += weight * static_cast<double>(hanatos_integrated_at(lut, size, c, m, channel));
+        }
+    }
+    return static_cast<float>(weightSum != 0.0 ? value / weightSum : 0.0);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
 static __device__ __forceinline__ double scan_lut_fetch_device(const double* JUICER_RESTRICT lut, int res, size_t limit, int xi, int yi, int zi, int c) {
     const size_t sRes = static_cast<size_t>(res);
     const size_t idx = (static_cast<size_t>(zi) * sRes + static_cast<size_t>(yi)) * sRes + static_cast<size_t>(xi);
@@ -482,6 +578,172 @@ static __device__ __forceinline__ void sample_cubic_scan_lut_device(const double
     out[2] = sum[2] * inv;
 }
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+static __device__ __forceinline__ double scan_lut_fetch_cmy_device(
+    const double* JUICER_RESTRICT lut,
+    int res,
+    int c,
+    int m,
+    int y,
+    int output) {
+    const size_t sRes = static_cast<size_t>(res);
+    const size_t index =
+        ((static_cast<size_t>(c) * sRes + static_cast<size_t>(m)) * sRes + static_cast<size_t>(y)) * 3u +
+        static_cast<size_t>(output);
+    return ldg_d(lut + index);
+}
+
+static __device__ __forceinline__ double scan_lut_fetch_cell_cmy_device(
+    const double* JUICER_RESTRICT lut,
+    int cellRes,
+    int c,
+    int m,
+    int y,
+    int output) {
+    const size_t sRes = static_cast<size_t>(cellRes);
+    const size_t index =
+        ((static_cast<size_t>(c) * sRes + static_cast<size_t>(m)) * sRes + static_cast<size_t>(y)) * 3u +
+        static_cast<size_t>(output);
+    return ldg_d(lut + index);
+}
+
+static __device__ __forceinline__ void pchip_coordinate_device(
+    double normalized,
+    int res,
+    int& base,
+    double& fraction) {
+    double coordinate = normalized * static_cast<double>(res - 1);
+    coordinate = fmin(static_cast<double>(res - 1), fmax(0.0, coordinate));
+    if (coordinate >= static_cast<double>(res - 1)) {
+        base = res - 2;
+        fraction = 1.0;
+        return;
+    }
+    base = static_cast<int>(floor(coordinate));
+    fraction = coordinate - static_cast<double>(base);
+}
+
+static __device__ __forceinline__ double hermite_value_device(
+    double y0,
+    double y1,
+    double m0,
+    double m1,
+    double t) {
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    const double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    const double h10 = t3 - 2.0 * t2 + t;
+    const double h01 = -2.0 * t3 + 3.0 * t2;
+    const double h11 = t3 - t2;
+    return h00 * y0 + h10 * m0 + h01 * y1 + h11 * m1;
+}
+
+static __device__ __forceinline__ double linear_mix_device(double v0, double v1, double t) {
+    return v0 + t * (v1 - v0);
+}
+
+static __device__ __forceinline__ double bilinear_mix_device(
+    double v00,
+    double v10,
+    double v01,
+    double v11,
+    double tc,
+    double tm) {
+    return linear_mix_device(
+        linear_mix_device(v00, v10, tc),
+        linear_mix_device(v01, v11, tc),
+        tm);
+}
+
+static __device__ __forceinline__ void sample_pchip_scan_lut_device(
+    const double* JUICER_RESTRICT values,
+    const double* JUICER_RESTRICT slopeC,
+    const double* JUICER_RESTRICT slopeM,
+    const double* JUICER_RESTRICT slopeY,
+    const double* JUICER_RESTRICT cellMin,
+    const double* JUICER_RESTRICT cellMax,
+    int res,
+    const double normalizedCmy[3],
+    double out[3]) {
+    int c = 0;
+    int m = 0;
+    int y = 0;
+    double tc = 0.0;
+    double tm = 0.0;
+    double ty = 0.0;
+    pchip_coordinate_device(normalizedCmy[0], res, c, tc);
+    pchip_coordinate_device(normalizedCmy[1], res, m, tm);
+    pchip_coordinate_device(normalizedCmy[2], res, y, ty);
+
+    const int cellRes = res - 1;
+    for (int output = 0; output < 3; ++output) {
+        const double v000 = hermite_value_device(
+            scan_lut_fetch_cmy_device(values, res, c, m, y, output),
+            scan_lut_fetch_cmy_device(values, res, c + 1, m, y, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c, m, y, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m, y, output),
+            tc);
+        const double v010 = hermite_value_device(
+            scan_lut_fetch_cmy_device(values, res, c, m + 1, y, output),
+            scan_lut_fetch_cmy_device(values, res, c + 1, m + 1, y, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c, m + 1, y, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m + 1, y, output),
+            tc);
+        const double v001 = hermite_value_device(
+            scan_lut_fetch_cmy_device(values, res, c, m, y + 1, output),
+            scan_lut_fetch_cmy_device(values, res, c + 1, m, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c, m, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m, y + 1, output),
+            tc);
+        const double v011 = hermite_value_device(
+            scan_lut_fetch_cmy_device(values, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_cmy_device(values, res, c + 1, m + 1, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m + 1, y + 1, output),
+            tc);
+
+        const double sm00 = linear_mix_device(
+            scan_lut_fetch_cmy_device(slopeM, res, c, m, y, output),
+            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m, y, output),
+            tc);
+        const double sm10 = linear_mix_device(
+            scan_lut_fetch_cmy_device(slopeM, res, c, m + 1, y, output),
+            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m + 1, y, output),
+            tc);
+        const double sm01 = linear_mix_device(
+            scan_lut_fetch_cmy_device(slopeM, res, c, m, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m, y + 1, output),
+            tc);
+        const double sm11 = linear_mix_device(
+            scan_lut_fetch_cmy_device(slopeM, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m + 1, y + 1, output),
+            tc);
+        const double vy0 = hermite_value_device(v000, v010, sm00, sm10, tm);
+        const double vy1 = hermite_value_device(v001, v011, sm01, sm11, tm);
+
+        const double sy0 = bilinear_mix_device(
+            scan_lut_fetch_cmy_device(slopeY, res, c, m, y, output),
+            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m, y, output),
+            scan_lut_fetch_cmy_device(slopeY, res, c, m + 1, y, output),
+            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m + 1, y, output),
+            tc,
+            tm);
+        const double sy1 = bilinear_mix_device(
+            scan_lut_fetch_cmy_device(slopeY, res, c, m, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeY, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m + 1, y + 1, output),
+            tc,
+            tm);
+
+        const double interpolated = hermite_value_device(vy0, vy1, sy0, sy1, ty);
+        const double minimum = scan_lut_fetch_cell_cmy_device(cellMin, cellRes, c, m, y, output);
+        const double maximum = scan_lut_fetch_cell_cmy_device(cellMax, cellRes, c, m, y, output);
+        out[output] = fmin(maximum, fmax(minimum, interpolated));
+    }
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
 static __device__ __forceinline__ void convert_input_to_DWG_device(
     const JuicerCuda::FilmRawPayload& cfg,
     const float rgbIn[3],
@@ -545,8 +807,33 @@ static __device__ __forceinline__ void convert_input_to_sRGB_device(
     rgbSRGB[2] = device_isfinite(srgb[2]) ? srgb[2] : 0.0f;
 }
 
+static __device__ __forceinline__ void convert_input_to_working_xyz_device(
+    const JuicerCuda::FilmRawPayload& cfg,
+    const float rgbIn[3],
+    float workingXYZ[3])
+{
+    float linear[3];
+    apply_input_cctf_decoding_device(cfg.inputColorSpaceIndex, cfg.applyCctfDecoding, rgbIn, linear);
+
+    float inputXYZ[3];
+    mat3_mul9_device(cfg.inputRGBToXYZ, linear, inputXYZ);
+
+    if (cfg.applyInputChromaticAdapt) {
+        mat3_mul9_device(cfg.inputXYZAdapt, inputXYZ, workingXYZ);
+    }
+    else {
+        workingXYZ[0] = inputXYZ[0];
+        workingXYZ[1] = inputXYZ[1];
+        workingXYZ[2] = inputXYZ[2];
+    }
+
+    workingXYZ[0] = device_sanitize_channel(workingXYZ[0]);
+    workingXYZ[1] = device_sanitize_channel(workingXYZ[1]);
+    workingXYZ[2] = device_sanitize_channel(workingXYZ[2]);
+}
+
 static __device__ void hanatos_layer_exposures_device(
-    const float rgbDWG[3],
+    const float workingXYZ[3],
     const float* JUICER_RESTRICT hanatosLut,
     int hanatosN,
     const float refIllumWhiteXYZ[3],
@@ -563,21 +850,11 @@ static __device__ void hanatos_layer_exposures_device(
         return;
     }
 
-    // Convert DWG RGB to XYZ (D65).
-    const float DWG_RGB_to_XYZ[9] = {
-        0.70062239f,  0.14877482f,  0.10105872f,
-        0.27411851f,  0.87363190f, -0.14775041f,
-       -0.09896291f, -0.13789533f,  1.32591599f
-    };
-
     float XYZ[3] = {
-        DWG_RGB_to_XYZ[0] * rgbDWG[0] + DWG_RGB_to_XYZ[1] * rgbDWG[1] + DWG_RGB_to_XYZ[2] * rgbDWG[2],
-        DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
-        DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
+        device_sanitize_channel(workingXYZ[0]),
+        device_sanitize_channel(workingXYZ[1]),
+        device_sanitize_channel(workingXYZ[2])
     };
-    XYZ[0] = device_sanitize_channel(XYZ[0]);
-    XYZ[1] = device_sanitize_channel(XYZ[1]);
-    XYZ[2] = device_sanitize_channel(XYZ[2]);
 
     const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
 
@@ -611,30 +888,11 @@ static __device__ void hanatos_layer_exposures_device(
 
     const int N = hanatosN;
     const int K = 81;
-    const float fx = fminf(1.0f, fmaxf(0.0f, qx)) * static_cast<float>(N - 1);
-    const float fy = fminf(1.0f, fmaxf(0.0f, qy)) * static_cast<float>(N - 1);
-    int x0 = static_cast<int>(floorf(fx));
-    int y0 = static_cast<int>(floorf(fy));
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x0 > N - 1) x0 = N - 1;
-    if (y0 > N - 1) y0 = N - 1;
-    const int x1 = (x0 + 1 <= N - 1) ? (x0 + 1) : (N - 1);
-    const int y1 = (y0 + 1 <= N - 1) ? (y0 + 1) : (N - 1);
-    const float tx = fx - static_cast<float>(x0);
-    const float ty = fy - static_cast<float>(y0);
-
     double Eb = 0.0;
     double Eg = 0.0;
     double Er = 0.0;
     for (int k = 0; k < K; ++k) {
-        const float v00 = hanatos_bilinear_at(hanatosLut, N, K, x0, y0, k);
-        const float v10 = hanatos_bilinear_at(hanatosLut, N, K, x1, y0, k);
-        const float v01 = hanatos_bilinear_at(hanatosLut, N, K, x0, y1, k);
-        const float v11 = hanatos_bilinear_at(hanatosLut, N, K, x1, y1, k);
-        const float v0 = v00 * (1.0f - tx) + v10 * tx;
-        const float v1 = v01 * (1.0f - tx) + v11 * tx;
-        const float raw = v0 * (1.0f - ty) + v1 * ty;
+        const float raw = sample_hanatos_spectrum_cubic_device(hanatosLut, N, K, k, qx, qy);
 
         const float e = device_sanitize_channel(sumXYZ * raw);
         if (!device_isfinite(e)) {
@@ -656,7 +914,7 @@ static __device__ void hanatos_layer_exposures_device(
 }
 
 static __device__ void hanatos_integrated_exposures_device(
-    const float rgbDWG[3],
+    const float workingXYZ[3],
     const float* JUICER_RESTRICT lutIntegrated,
     int hanatosN,
     const float refIllumWhiteXYZ[3],
@@ -670,21 +928,11 @@ static __device__ void hanatos_integrated_exposures_device(
         return;
     }
 
-    // Convert DWG RGB to XYZ (D65).
-    const float DWG_RGB_to_XYZ[9] = {
-        0.70062239f,  0.14877482f,  0.10105872f,
-        0.27411851f,  0.87363190f, -0.14775041f,
-       -0.09896291f, -0.13789533f,  1.32591599f
-    };
-
     float XYZ[3] = {
-        DWG_RGB_to_XYZ[0] * rgbDWG[0] + DWG_RGB_to_XYZ[1] * rgbDWG[1] + DWG_RGB_to_XYZ[2] * rgbDWG[2],
-        DWG_RGB_to_XYZ[3] * rgbDWG[0] + DWG_RGB_to_XYZ[4] * rgbDWG[1] + DWG_RGB_to_XYZ[5] * rgbDWG[2],
-        DWG_RGB_to_XYZ[6] * rgbDWG[0] + DWG_RGB_to_XYZ[7] * rgbDWG[1] + DWG_RGB_to_XYZ[8] * rgbDWG[2]
+        device_sanitize_channel(workingXYZ[0]),
+        device_sanitize_channel(workingXYZ[1]),
+        device_sanitize_channel(workingXYZ[2])
     };
-    XYZ[0] = device_sanitize_channel(XYZ[0]);
-    XYZ[1] = device_sanitize_channel(XYZ[1]);
-    XYZ[2] = device_sanitize_channel(XYZ[2]);
 
     const float D65[3] = { 0.950455f, 1.0f, 1.089058f };
 
@@ -717,44 +965,9 @@ static __device__ void hanatos_integrated_exposures_device(
     tri2quad_device(x, y, qx, qy);
 
     const int N = hanatosN;
-    const float fx = fminf(1.0f, fmaxf(0.0f, qx)) * static_cast<float>(N - 1);
-    const float fy = fminf(1.0f, fmaxf(0.0f, qy)) * static_cast<float>(N - 1);
-    int x0 = static_cast<int>(floorf(fx));
-    int y0 = static_cast<int>(floorf(fy));
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x0 > N - 1) x0 = N - 1;
-    if (y0 > N - 1) y0 = N - 1;
-    const int x1 = (x0 + 1 <= N - 1) ? (x0 + 1) : (N - 1);
-    const int y1 = (y0 + 1 <= N - 1) ? (y0 + 1) : (N - 1);
-    const float tx = fx - static_cast<float>(x0);
-    const float ty = fy - static_cast<float>(y0);
-
-    const float r00 = hanatos_integrated_at(lutIntegrated, N, x0, y0, 0);
-    const float r10 = hanatos_integrated_at(lutIntegrated, N, x1, y0, 0);
-    const float r01 = hanatos_integrated_at(lutIntegrated, N, x0, y1, 0);
-    const float r11 = hanatos_integrated_at(lutIntegrated, N, x1, y1, 0);
-
-    const float g00 = hanatos_integrated_at(lutIntegrated, N, x0, y0, 1);
-    const float g10 = hanatos_integrated_at(lutIntegrated, N, x1, y0, 1);
-    const float g01 = hanatos_integrated_at(lutIntegrated, N, x0, y1, 1);
-    const float g11 = hanatos_integrated_at(lutIntegrated, N, x1, y1, 1);
-
-    const float b00 = hanatos_integrated_at(lutIntegrated, N, x0, y0, 2);
-    const float b10 = hanatos_integrated_at(lutIntegrated, N, x1, y0, 2);
-    const float b01 = hanatos_integrated_at(lutIntegrated, N, x0, y1, 2);
-    const float b11 = hanatos_integrated_at(lutIntegrated, N, x1, y1, 2);
-
-    const float r0 = r00 * (1.0f - tx) + r10 * tx;
-    const float r1 = r01 * (1.0f - tx) + r11 * tx;
-    const float g0 = g00 * (1.0f - tx) + g10 * tx;
-    const float g1 = g01 * (1.0f - tx) + g11 * tx;
-    const float b0 = b00 * (1.0f - tx) + b10 * tx;
-    const float b1 = b01 * (1.0f - tx) + b11 * tx;
-
-    const float r = r0 * (1.0f - ty) + r1 * ty;
-    const float g = g0 * (1.0f - ty) + g1 * ty;
-    const float b = b0 * (1.0f - ty) + b1 * ty;
+    const float r = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 0, qx, qy);
+    const float g = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 1, qx, qy);
+    const float b = sample_hanatos_integrated_cubic_device(lutIntegrated, N, 2, qx, qy);
 
     const float rSafe = device_isfinite(r) ? r : 0.0f;
     const float gSafe = device_isfinite(g) ? g : 0.0f;
@@ -978,14 +1191,18 @@ static __device__ __forceinline__ void compute_film_raw_device(
         rgbIn[1] * autoExposureScale,
         rgbIn[2] * autoExposureScale};
 
-    float rgbDWG[3];
-    if (!useMallett) {
+    float rgbDWG[3] = { 0.0f, 0.0f, 0.0f };
+    float workingXYZ[3] = { 0.0f, 0.0f, 0.0f };
+    if (useHanatos) {
+        convert_input_to_working_xyz_device(params.filmRaw, autoExposedRgb, workingXYZ);
+    }
+    else if (!useMallett) {
         convert_input_to_DWG_device(params.filmRaw, autoExposedRgb, rgbDWG, !useHanatos);
     }
 
     if (useHanatosIntegrated) {
         hanatos_integrated_exposures_device(
-            rgbDWG,
+            workingXYZ,
             expose.hanatosLutIntegrated,
             expose.hanatosNIntegrated,
             params.filmRaw.refIllumWhiteXYZ,
@@ -993,7 +1210,7 @@ static __device__ __forceinline__ void compute_film_raw_device(
     }
     else if (useHanatos) {
         hanatos_layer_exposures_device(
-            rgbDWG,
+            workingXYZ,
             expose.hanatosLut,
             expose.hanatosN,
             params.filmRaw.refIllumWhiteXYZ,
