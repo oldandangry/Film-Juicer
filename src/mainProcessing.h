@@ -61,7 +61,8 @@ namespace SpatialDIR {
             kernel[kernelIndex] = w;
             wsum += w;
         }
-        for (float& w : kernel) w /= wsum;
+        for (float& w : kernel)
+            w /= wsum;
     }
 
     void buildSpatialDIRCorrections(
@@ -94,13 +95,14 @@ namespace JuicerProc {
         std::vector<float> gaussianKernel;
         std::vector<PrintPipelineScratch> printScratchPerWorker;
     };
-}
+} // namespace JuicerProc
 
 // Full class declaration
 class JuicerProcessor : public OFX::ImageProcessor {
 public:
     explicit JuicerProcessor(OFX::ImageEffect& effect);
 
+    using DirectFrameRequest = Spektrafilm::DirectFrameRequest;
     using FrameRequest = Spektrafilm::FrameRequest;
 
     struct SourceDestinationImages {
@@ -120,6 +122,7 @@ public:
     };
 
     void setSrcDst(const SourceDestinationImages& images);
+    void setDirectFrameRequest(const DirectFrameRequest& request);
     void setFrameRequest(const FrameRequest& request);
     void setRenderWindowRect(const OfxRectI& rect);
     void setComponents(int n);
@@ -167,7 +170,7 @@ private:
     void writeMediumDensities(const RenderContext& ctx, unsigned int threadCount);
     void renderScannerFromDensity(const RenderContext& ctx, unsigned int threadCount);
 
-	    void processImpl();
+    void processImpl();
 
     OFX::Image* _srcImg;
     int _nComponents;
@@ -187,6 +190,7 @@ private:
     const WorkingState* _ws;
     std::shared_ptr<const WorkingState> _wsHold;
     std::shared_ptr<const RenderRecipe> _recipeHold;
+    std::shared_ptr<const DirectRenderState> _directStateHold;
     InstanceState* _instanceState = nullptr;
     bool _wsReady;
     bool _printReady;
@@ -227,16 +231,20 @@ namespace JuicerProcTest {
     // Curve sanity check (monotonic X, matching sizes), mirrors internal curve_ok().
     inline bool curveOk(const Spectral::Curve& c) {
         const size_t N = c.lambda_nm.size();
-        if (N < 2 || c.linear.size() != N) return false;
+        if (N < 2 || c.linear.size() != N)
+            return false;
         float prev = c.lambda_nm[0];
-        if (!std::isfinite(prev)) return false;
+        if (!std::isfinite(prev))
+            return false;
         for (size_t i = 1; i < N; ++i) {
             const float xi = c.lambda_nm[i];
-            if (!std::isfinite(xi)) return false;
-            if (xi < prev) return false; // allow duplicates, never decreasing
+            if (!std::isfinite(xi))
+                return false;
+            if (xi < prev)
+                return false; // allow duplicates, never decreasing
             prev = xi;
         }
         return true;
     }
 
-}
+} // namespace JuicerProcTest

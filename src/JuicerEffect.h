@@ -108,8 +108,10 @@ private:
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
-    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3:
-    // retained declaration is unreachable from product render after the Phase 1A cutoff.
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase4-print-route:
+    // reason=legacy declaration for blocked CPU implementation; allowed=unreachable legacy CPU
+    // implementation only; output_impact=none; hash_impact=none; resource_impact=none;
+    // removal=Phase4 print cutover.
     AutoExposureResult computeAutoExposure(
         const OFX::RenderArguments& args,
         OFX::Image* srcImg,

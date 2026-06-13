@@ -1143,8 +1143,9 @@ static __device__ void mallett_layer_exposures_device(
     E_out[2] = device_isfinite(static_cast<float>(Er)) ? static_cast<float>(Er) : 0.0f;
 }
 
+template <typename Params>
 static __device__ __forceinline__ void compute_film_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float rgbIn[3],
     float filmRaw[3])
 {
@@ -1266,8 +1267,9 @@ static __device__ __forceinline__ void compute_film_raw_device(
     }
 }
 
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_raw_from_film_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float filmRaw[3],
     float logE_raw[3])
 {
@@ -1278,8 +1280,9 @@ static __device__ __forceinline__ void compute_logE_raw_from_film_raw_device(
     logE_raw[2] = log10f(fmaxf(filmRaw[2], 0.0f) + kLogEps);
 }
 
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float rgbIn[3],
     float logE_raw[3])
 {
@@ -1288,8 +1291,9 @@ static __device__ __forceinline__ void compute_logE_raw_device(
     compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
 }
 
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_from_film_raw_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float filmRaw[3],
     float logE_raw[3],
     float logE_sanitized[3],
@@ -1308,8 +1312,9 @@ static __device__ __forceinline__ void compute_logE_from_film_raw_device(
     layerPre[2] = sample_density_at_logE_device(develop.densR, logE_sanitized[2], develop.gammaFactorR);
 }
 
+template <typename Params>
 static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
-    const JuicerCuda::PipelineRunParams& params,
+    const Params& params,
     const float rgbIn[3],
     float logE_raw[3],
     float logE_sanitized[3],

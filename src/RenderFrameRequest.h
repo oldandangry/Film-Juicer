@@ -12,16 +12,17 @@
 #include "ofxsProcessing.h"
 
 struct WorkingState;
+struct DirectRenderState;
 
 // Phase 1C request bridge ledger:
-// - SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase3C direct-launch/Phase4 print audit:
-//   JuicerProcessor::setFrameRequest still copies this immutable boundary into mutable processor
-//   members while Phase 1A blocks product pixels. Allowed call site: JuicerEffect::render adapter
-//   only. Phase 3B film-raw/develop and auto-exposure policy uses request.recipe; this bridge
-//   affects only the blocked broad launch/resource path and owns no hash. Direct removal gate:
-//   Phase 3C; print/DIR/optics/scanner/grain remnants stay with owning phases.
-// - SF_TEMP_BRIDGE_CPUAutoExposureBlocked: current CPU auto-exposure fields are retained only as
-//   blocked legacy request facts; product spektrafilm rendering is cut off before CPU pixel reads.
+// - SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase4-print-route:
+//   reason=retained Phase 4-only broad adapter; allowed=FrameRequest declaration and
+//   JuicerProcessor::setFrameRequest only; output_impact=blocked print route; hash_impact=none;
+//   resource_impact=broad legacy preparation; removal=Phase4 print cutover.
+// - SF_TEMP_BRIDGE_CPUAutoExposureBlocked owner=Phase4-print-route:
+//   reason=legacy non-direct request facts; allowed=JuicerProcessor::setFrameRequest only;
+//   output_impact=blocked non-direct route; hash_impact=none; resource_impact=none;
+//   removal=Phase4 print-route request cutover.
 struct FrameRequest {
     std::shared_ptr<const RenderRecipe> recipe;
     std::shared_ptr<const ::WorkingState> workingState;
@@ -40,7 +41,11 @@ struct FrameRequest {
     bool hasGrainOverride = false;
     Profiles::ProfileGlare printGlareOverride{};
     bool hasPrintGlareOverride = false;
-    // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime: blocked broad/print path only.
+    // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=Phase4-print-route:
+    // reason=legacy broad DIR request field; allowed=FrameRequest::dirRuntime declaration and
+    // JuicerProcessor::setFrameRequest only;
+    // output_impact=blocked print route;
+    // hash_impact=none on direct route; resource_impact=legacy print DIR runtime; removal=Phase4.
     Couplers::Runtime dirRuntime;
     float exposureScale = 1.0f;
     bool cameraAutoEnabled = false;
@@ -62,8 +67,21 @@ struct FrameRequest {
     bool sequentialRenderStatus = false;
 };
 
+struct DirectFrameRequest {
+    std::shared_ptr<const DirectRenderState> state;
+    int components = 0;
+    OfxRectI renderWindow{0, 0, 0, 0};
+    std::uint64_t sessionSeed = 1;
+    std::uint64_t instanceToken = 1;
+    std::uintptr_t clipToken = 0;
+    double frameTime = 0.0;
+    double frameRate = 0.0;
+    float pixelSizeUm = 0.0f;
+};
+
 namespace Spektrafilm {
 
+    using ::DirectFrameRequest;
     using ::FrameRequest;
 
 } // namespace Spektrafilm

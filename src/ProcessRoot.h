@@ -331,10 +331,11 @@ namespace JuicerProcess {
             void record_use(void* cudaStreamOpaque) noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
-            // SF_TEMP_BRIDGE_PreparedDirectScannerWorkingState owner=Phase3C descriptor audit:
-            // allowed=existing blocked legacy CUDA path; hash/output impact=legacy current-medium
-            // and scan-LUT preparation from WorkingState; removal gate=Phase3C direct descriptor
-            // cutover. Phase 3B adds no new prepare/ensure surface beside these bridges.
+            // SF_TEMP_BRIDGE_PreparedDirectScannerWorkingState owner=Phase4-print-route:
+            // reason=legacy broad medium/LUT preparation; allowed=prepare_current_medium and
+            // prepare_scan_lut calls in processImagesCUDA after the accepted direct return only;
+            // output_impact=blocked print route; hash_impact=legacy scanner key;
+            // resource_impact=broad WorkingState upload; removal=Phase4 print cutover.
             bool prepare_current_medium(
                 const WorkingState& workingState,
                 bool negativeMedium,
@@ -472,11 +473,11 @@ namespace JuicerProcess {
             std::unique_ptr<State> _state;
         };
 
-        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase3C direct-resource audit:
-        // allowed=existing blocked legacy CUDA path; hash/output impact=uploads broad WorkingState;
-        // Phase 3B direct payload packing does not consume it; direct removal gate=Phase3C,
-        // print removal gate=Phase4. No accepted direct pixel path may use this broad input as
-        // its recipe/resource contract.
+        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase4-print-route:
+        // reason=legacy broad print preparation; allowed=processImagesCUDA post-direct
+        // prepare_cuda_frame overload call only; output_impact=blocked print route;
+        // hash_impact=legacy print keys; resource_impact=uploads broad WorkingState;
+        // removal=Phase4 print cutover.
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,

@@ -196,6 +196,22 @@ namespace WorkingStateSharing {
     struct WorkingStateCoreShared;
 }
 
+struct DirectRenderPayload {
+    Spectral::SpectralTables exposureTables;
+    std::array<float, 9> spdSInv{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+    Spectral::FilmRawConfig filmRawConfig;
+    Spectral::SpectralTables scannerTables;
+    Scanner::ColorRuntime scannerColor;
+    std::uint64_t uploadCoreHash = 0;
+    std::uint64_t scannerHash = 0;
+};
+
+struct DirectRenderState {
+    Spektrafilm::RenderRecipe recipe;
+    DirectRenderPayload payload;
+    std::uint64_t buildCounter = 0;
+};
+
 // Per-instance, derived state used for rendering.
 // Built from BaseState in rebuild_working_state() and never mutated in render().
 struct WorkingState {
@@ -401,6 +417,7 @@ struct InstanceState {
     BaseState base;
     // Published render snapshot. Readers use std::atomic_load; writers use std::atomic_store.
     std::shared_ptr<const WorkingState> activeWorkingState;
+    std::shared_ptr<const DirectRenderState> activeDirectState;
     uint64_t activeBuildCounter = 0;
     std::atomic<std::uint64_t> buildCounterNext{0};
     std::atomic<std::uint32_t> frameBoundsVersion{0};

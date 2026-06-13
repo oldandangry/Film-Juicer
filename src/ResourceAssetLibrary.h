@@ -19,9 +19,10 @@ namespace Profiles {
 
 namespace JuicerAssets {
 
-    // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase3/Phase4:
-    // key-addressed only, non-rendering while SpektrafilmPixelPipelineNotImplementedForPhase1A
-    // blocks product output; retained until selected-profile payloads replace old asset carriers.
+    // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
+    // reason=legacy print/bootstrap carrier; allowed=Library::load_agx_film_profile and blocked
+    // print runtime consumers only; output_impact=blocked print route; hash_impact=none on direct
+    // route; resource_impact=legacy Agx profile payload; removal=Phase4 print profile cutover.
     struct FilmStockAsset {
         std::string optionLabel;
         std::string jsonKey;
@@ -34,8 +35,10 @@ namespace JuicerAssets {
         std::uint64_t version = 0;
     };
 
-    // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
-    // remove=Phase4: old print-paper folder CSV bridge retained behind the Phase 1A product-render cutoff.
+    // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase4-print-route:
+    // reason=legacy print paper CSV payload; allowed=Print::load_profile_from_asset only;
+    // output_impact=blocked print route; hash_impact=none on direct route;
+    // resource_impact=print-folder CSV reads; removal=Phase4 print profile cutover.
     struct PrintPaperFolderProfilePayload {
         std::vector<std::pair<float, float>> dyeC;
         std::vector<std::pair<float, float>> dyeM;

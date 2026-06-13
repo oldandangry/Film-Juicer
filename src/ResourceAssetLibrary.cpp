@@ -574,8 +574,10 @@ namespace JuicerAssets {
         }
 
         std::string paper_dir_for_folder(const std::string& dataDir, const std::string& folderName) {
-            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
-            // remove=Phase4: old print-paper folder path bridge, not selected spektrafilm payload ownership.
+            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase4-print-route:
+            // reason=legacy print-folder path compatibility; allowed=Print::load_profile_from_asset
+            // path resolution only; output_impact=blocked print route; hash_impact=none;
+            // resource_impact=print-folder path read; removal=Phase4.
             if (folderName.empty() || dataDir.empty()) {
                 return {};
             }
@@ -860,8 +862,10 @@ namespace JuicerAssets {
             const std::string& dataDir,
             const std::string& folderName,
             const char* fileName) {
-            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
-            // remove=Phase4: old print-paper CSV bridge, not selected spektrafilm payload ownership.
+            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase4-print-route:
+            // reason=legacy print-folder CSV compatibility; allowed=Print::load_profile_from_asset
+            // CSV read only; output_impact=blocked print route; hash_impact=none;
+            // resource_impact=print-folder CSV read; removal=Phase4.
             const std::string path = print_paper_file_path(dataDir, folderName, fileName);
             if (path.empty()) {
                 return {};
@@ -1097,8 +1101,10 @@ namespace JuicerAssets {
     }
 
     void Library::load_neutral_filter_databases() {
-        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase2B allowed=JuicerEffect::applyNeutralFilters
-        // remove=Phase4: old neutral DB lookup remains outside selected direct-route profile preflight.
+        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase4-print-route:
+        // reason=legacy neutral-filter database; allowed=JuicerEffect::applyNeutralFilters only;
+        // output_impact=blocked print route; hash_impact=none on direct route;
+        // resource_impact=legacy neutral DB load; removal=Phase4.
         const std::string phase2bNeutralInventoryPath = phase2b_neutral_filter_inventory_path(_dataDir);
         (void)phase2bNeutralInventoryPath;
         auto makePaths = [this](const char* selectedFileName) {
@@ -1176,8 +1182,10 @@ namespace JuicerAssets {
         if (result.found || paths.selectedPath == paths.defaultPath) {
             return result;
         }
-        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase2B allowed=JuicerEffect::applyNeutralFilters
-        // remove=Phase4: selected-neutral DB miss checks are not part of direct-route selected preflight.
+        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase4-print-route:
+        // reason=legacy neutral-filter fallback lookup; allowed=JuicerEffect::applyNeutralFilters
+        // miss lookup only; output_impact=blocked print route; hash_impact=none;
+        // resource_impact=legacy neutral DB read; removal=Phase4.
         return lookup_neutral_filter_path(
             NeutralFilterPathLookup{paths.defaultPath, lookupKey, threadClass});
     }
@@ -1254,8 +1262,10 @@ namespace JuicerAssets {
 
     std::shared_ptr<const PrintPaperFolderProfilePayload> Library::print_paper_folder_profile_payload(
         const PrintPaperAsset& asset) {
-        // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase2B allowed=Print::load_profile_from_asset
-        // remove=Phase4: not used by selected spektrafilm payload loading.
+        // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase4-print-route:
+        // reason=legacy print-folder payload cache; allowed=Print::load_profile_from_asset only;
+        // output_impact=blocked print route; hash_impact=none;
+        // resource_impact=cached print-folder CSV payload; removal=Phase4.
         const std::string folderName = print_paper_folder_name_for_asset(asset);
         const std::string cacheKey = print_paper_folder_profile_payload_key(asset, folderName);
         std::lock_guard<std::mutex> lock(_printPaperFolderProfilePayloadCache->mutex);
@@ -1269,8 +1279,10 @@ namespace JuicerAssets {
     }
 
     const NeutralFilterDatabaseAsset& Library::neutral_filter_database_for_dichroic_set(int dichroicSetChoice) {
-        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase2B allowed=JuicerEffect::applyNeutralFilters
-        // remove=Phase4: invalid old dichroic choices stay isolated from selected direct-route loading.
+        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase4-print-route:
+        // reason=legacy neutral-filter database selection; allowed=JuicerEffect::applyNeutralFilters
+        // only; output_impact=blocked print route; hash_impact=none;
+        // resource_impact=legacy neutral DB selection; removal=Phase4.
         ensure_neutral_filter_databases();
         if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_neutralFilterDatabases.size())) {
             dichroicSetChoice = 0;
@@ -1324,8 +1336,10 @@ namespace JuicerAssets {
     }
 
     bool Library::load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase3 direct/Phase4 print:
-        // old AgxFilmProfile carrier retained only behind the Phase 1A product-render cutoff.
+        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
+        // reason=legacy Agx film carrier; allowed=load_film_profile_into_base print bootstrap only;
+        // output_impact=blocked print route; hash_impact=none on direct route;
+        // resource_impact=Agx film JSON load; removal=Phase4.
         const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
             outProfile = Profiles::AgxFilmProfile{};
@@ -1335,8 +1349,10 @@ namespace JuicerAssets {
     }
 
     bool Library::load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase4:
-        // old AgxFilmProfile carrier retained only behind the Phase 1A product-render cutoff.
+        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
+        // reason=legacy Agx print carrier; allowed=Print::load_profile_from_asset only;
+        // output_impact=blocked print route; hash_impact=none on direct route;
+        // resource_impact=Agx print JSON load; removal=Phase4.
         const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
             outProfile = Profiles::AgxFilmProfile{};

@@ -37,6 +37,10 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline(
     const JuicerCuda::PipelineRunParams* hParams,
     void* cudaStreamOpaque);
 
+extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    void* cudaStreamOpaque);
+
 extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
     const JuicerCuda::PipelineRunParams* hParams,
     float* dGateMask,
@@ -46,6 +50,33 @@ extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
 
 extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     const JuicerCuda::PipelineRunParams* hParams,
+    float* dCorrY,
+    float* dCorrM,
+    float* dCorrC,
+    float* dMixY,
+    float* dMixM,
+    float* dMixC,
+    float* dTmp,
+    const float* dGaussianKernel,
+    int gaussianRadius,
+    float gaussianSigma,
+    float gaussianWeight,
+    const float* dTailKernel0,
+    int tailRadius0,
+    float tailSigma0,
+    float tailWeight0,
+    const float* dTailKernel1,
+    int tailRadius1,
+    float tailSigma1,
+    float tailWeight1,
+    const float* dTailKernel2,
+    int tailRadius2,
+    float tailSigma2,
+    float tailWeight2,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
     float* dCorrY,
     float* dCorrM,
     float* dCorrC,
@@ -1681,8 +1712,9 @@ namespace {
 
 namespace JuicerProc {
 
-    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3/Phase4:
-    // retained CPU copy/read helpers are unreachable from product render after JuicerEffect::render cutoff.
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase4-print-route:
+    // reason=legacy CPU helper retained behind hard block; allowed=processImpl dead body only;
+    // output_impact=none; hash_impact=none; resource_impact=none; removal=Phase4 print cutover.
     // Copied from main.cpp helper, unchanged behavior.
     void copyNonFloatRect(OFX::Image* src, OFX::Image* dst) {
         if (!src || !dst) {
@@ -1830,11 +1862,30 @@ void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
     setDstImg(images.dst);
 }
 
+void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
+    setRenderWindowRect(request.renderWindow);
+    setComponents(request.components);
+    _directStateHold = request.state;
+    _recipeHold = _directStateHold
+                      ? std::shared_ptr<const RenderRecipe>(_directStateHold, &_directStateHold->recipe)
+                      : nullptr;
+    _wsHold.reset();
+    _ws = nullptr;
+    _wsReady = false;
+    _prt = nullptr;
+    _printReady = false;
+    setSessionTokens(SessionTokens{request.sessionSeed, request.instanceToken});
+    setClipToken(request.clipToken);
+    setFrameTime(request.frameTime);
+    setFrameRate(request.frameRate);
+    setPixelSizeUm(request.pixelSizeUm);
+}
+
 void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
-    // SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase3C direct-launch/Phase4 print audit:
-    // allowed=JuicerEffect::render adapter; hash_owner=none; output_impact=blocked legacy path;
-    // direct film-raw/develop and auto-exposure policy now reads request.recipe through
-    // _recipeHold; remove remaining scanner/print/optics/grain copies in their owning phases.
+    // SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase4-print-route:
+    // reason=legacy non-direct adapter; allowed=no product call site while JuicerEffect::render
+    // blocks non-direct routes; output_impact=blocked print route; hash_impact=legacy print only;
+    // resource_impact=broad print preparation; removal=Phase4 print request cutover.
     setRenderWindowRect(request.renderWindow);
     setComponents(request.components);
     _scannerOptions = request.scannerOptions;
@@ -2526,9 +2577,10 @@ void JuicerProcessor::renderScannerFromDensity(const RenderContext& ctx, unsigne
 
 
 void JuicerProcessor::processImpl() {
-    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase1A remove=Phase3/Phase4:
-    // old CPU renderer is retained only as unreachable bridge debt; JuicerEffect::render()
-    // blocks product output first with SpektrafilmPixelPipelineNotImplementedForPhase1A.
+    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase4-print-route:
+    // reason=legacy CPU implementation retained below this unconditional fatal; allowed=no
+    // reachable product call site; output_impact=none; hash_impact=none; resource_impact=none;
+    // removal=Phase4 print cutover.
     JTRACE("SPEKTRAFILM", "FATAL: SpektrafilmPixelPipelineNotImplementedForPhase1A at JuicerProcessor::processImpl");
     throw OFX::Exception::Suite(kOfxStatErrFatal);
 
@@ -2757,21 +2809,30 @@ void JuicerProcessor::processImagesCUDA() {
 
     JTRACE_VERBOSE("CUDA", "processImagesCUDA");
 
+    const RenderRecipe* directRecipe =
+        (_directStateHold &&
+         !Spektrafilm::scan_route_is_print(_directStateHold->recipe.profileRoute.scanRoute))
+            ? &_directStateHold->recipe
+            : nullptr;
+    const DirectRenderPayload* directPayload =
+        directRecipe ? &_directStateHold->payload : nullptr;
     const bool wsReady = _wsReady && _ws;
-    if (!wsReady) {
-        JTRACE("CUDA", "FATAL: working state unavailable; cannot serve CUDA render");
+    if (!directRecipe && !wsReady) {
+        JTRACE("CUDA", "FATAL: render state unavailable; cannot serve CUDA render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
     if (!_instanceState) {
         JTRACE("CUDA", "FATAL: instance state missing; cannot serve CUDA render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    const bool printActiveForRender = print_pipeline_active(
-        wsReady,
-        _ws,
-        _printReady,
-        _prt,
-        _printParams.bypass);
+    const bool printActiveForRender =
+        !directRecipe &&
+        print_pipeline_active(
+            wsReady,
+            _ws,
+            _printReady,
+            _prt,
+            _printParams.bypass);
     const float printMidgrayFactor = printActiveForRender
                                          ? compute_print_midgray_factor(*_ws, *_prt, _printParams, _dirRT)
                                          : 1.0f;
@@ -2919,18 +2980,13 @@ void JuicerProcessor::processImagesCUDA() {
         return;
     }
 
-    const RenderRecipe* directRecipe =
-        (_recipeHold && !Spektrafilm::scan_route_is_print(_recipeHold->profileRoute.scanRoute))
-            ? _recipeHold.get()
-            : nullptr;
     if (!directRecipe) {
         JTRACE(
             "SPEKTRAFILM",
             "FATAL: DirectStructuralRecipeNotReadyForPhase3C; refusing legacy CUDA fallback");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
-    const Spektrafilm::ScanRoute scanRoute =
-        _recipeHold ? _recipeHold->profileRoute.scanRoute : Spektrafilm::kDefaultScanRoute;
+    const Spektrafilm::ScanRoute scanRoute = directRecipe->profileRoute.scanRoute;
     const FilmRawRecipe* directFilmRaw = directRecipe ? &directRecipe->filmRaw : nullptr;
     const bool cameraAutoEnabled =
         directFilmRaw ? directFilmRaw->autoExposureEnabled : _cameraAutoEnabled;
@@ -2980,16 +3036,12 @@ void JuicerProcessor::processImagesCUDA() {
         snapshot.instanceToken.value = instance_token_or_session_seed(_instanceToken, _sessionSeed);
         snapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
         snapshot.deviceContextKey = deviceContextKey;
-        const std::uint64_t uploadCoreHash = upload_core_hash_or_core_hash(*_ws);
-        const std::uint64_t scannerRuntimeHash = JuicerProcScanner::hash_scanner_runtime_lane(
-            _ws,
-            _scannerSettings,
-            _scannerOptions,
-            _frameBoundsVersion);
+        const std::uint64_t uploadCoreHash = directPayload->uploadCoreHash;
+        const std::uint64_t scannerRuntimeHash = directPayload->scannerHash;
         snapshot.keyDigests =
             JuicerCuda::ResourceManager::make_key_digests(
                 uploadCoreHash,
-                directRecipe ? directRecipe->dirCouplers.hash : _ws->dirHash,
+                directRecipe->dirCouplers.hash,
                 scannerRuntimeHash,
                 autoExposureDescriptor.hash);
         snapshot.keySchemaVersion = JuicerCuda::ResourceManager::kSubmissionKeySchemaVersion;
@@ -3092,11 +3144,11 @@ void JuicerProcessor::processImagesCUDA() {
 
         JuicerProcess::Root::DirectCudaPreparationRequest directPreparation{};
         directPreparation.recipe = directRecipe;
-        directPreparation.exposureTables = &_ws->tablesRef;
-        directPreparation.spdSInv = _ws->spdSInv;
-        directPreparation.filmRawConfig = &_ws->filmRaw;
-        directPreparation.scannerTables = &_ws->tablesScan;
-        directPreparation.scannerColor = &_ws->negativeColorRuntime;
+        directPreparation.exposureTables = &directPayload->exposureTables;
+        directPreparation.spdSInv = directPayload->spdSInv.data();
+        directPreparation.filmRawConfig = &directPayload->filmRawConfig;
+        directPreparation.scannerTables = &directPayload->scannerTables;
+        directPreparation.scannerColor = &directPayload->scannerColor;
         directPreparation.scannerLutDescriptor = &scannerDescriptor;
 
         std::string directPrepareError;
@@ -3125,7 +3177,7 @@ void JuicerProcessor::processImagesCUDA() {
             throw_direct_restriction("ResourceDescriptorMismatch phase=3C field=direct_prepared_view");
         }
 
-        JuicerCuda::PipelineRunParams run{};
+        JuicerCuda::DirectPipelineRunParams run{};
         run.src = srcPtr;
         run.srcRowBytes = static_cast<std::size_t>(srcRowBytes);
         run.dst = dstPtr;
@@ -3235,7 +3287,7 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmDevelop.spatialDir.corrY = scratch.corrY;
             run.filmDevelop.spatialDir.corrM = scratch.corrM;
             run.filmDevelop.spatialDir.corrC = scratch.corrC;
-            const cudaError_t dirError = juicer_cuda_build_spatial_dir(
+            const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
                 &run,
                 scratch.corrY,
                 scratch.corrM,
@@ -3310,7 +3362,7 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.abort("direct_scan_error_stage_failed");
             throw_submission_fatal("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
-        const cudaError_t launchError = juicer_cuda_negative_pipeline(&run, _pCudaStream);
+        const cudaError_t launchError = juicer_cuda_negative_direct_pipeline(&run, _pCudaStream);
         if (launchError != cudaSuccess) {
             preparedFrame.abort("direct_negative_pipeline_launch_failed");
             throw_cuda_stage_fatal("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);

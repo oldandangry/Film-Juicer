@@ -85,7 +85,11 @@ namespace JuicerCuda {
             0,0,0,
             0,0,0
         };
-        // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime: blocked broad/print path only.
+        // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=Phase4-print-route:
+        // reason=legacy broad DIR high-shift field; allowed=processImagesCUDA post-direct
+        // FilmDevelopPayload pack only;
+        // output_impact=blocked print route; hash_impact=none on direct route;
+        // resource_impact=none; removal=Phase4.
         float highShift = 0.0f;
         float dMax[3] = { 1.0f, 1.0f, 1.0f };
     };
@@ -149,9 +153,7 @@ namespace JuicerCuda {
     };
 
     struct FilmDevelopPayload {
-        // SF_TEMP_BRIDGE_DirPipelineRunParams owner=Phase3D-3 launch ABI:
-        // direct production packs only DirCouplersRecipe/prepared-frame views into these fields;
-        // the blocked broad path still populates them from Couplers::Runtime.
+        // Direct production packs only DirCouplersRecipe and prepared-frame views here.
         float gammaFactorB = 1.0f;
         float gammaFactorG = 1.0f;
         float gammaFactorR = 1.0f;
@@ -338,11 +340,26 @@ namespace JuicerCuda {
         int glareRadius = 0;
     };
 
-    // SF_TEMP_BRIDGE_PipelineRunParams owner=Phase3C direct-launch/Phase4 print audit:
-    // allowed=existing blocked legacy CUDA pack/launch call sites only; hash_owner=none;
-    // output_impact=would be broad if Phase 1A cutoff were lifted; direct film payload ownership
-    // is now isolated in pack_direct_film_payloads; remove/narrow=Phase3C before direct-route
-    // pixel acceptance and Phase4 before print-route acceptance.
+    struct DirectPipelineRunParams {
+        const void* src = nullptr;
+        std::size_t srcRowBytes = 0;
+        void* dst = nullptr;
+        std::size_t dstRowBytes = 0;
+        int width = 0;
+        int height = 0;
+        int nComponents = 0;
+        FilmExposurePayload filmExpose{};
+        FilmDevelopPayload filmDevelop{};
+        ScanStagePayload scanStage{};
+        FilmRawPayload filmRaw{};
+    };
+
+    // SF_TEMP_BRIDGE_PipelineRunParams owner=Phase4 print-route audit:
+    // reason=legacy broad print launch ABI; allowed=processImagesCUDA post-direct branch,
+    // ResourceManager commands, broad CUDA kernels, and JuicerCudaValidation only;
+    // output_impact=blocked print route; hash_impact=none on direct route;
+    // resource_impact=broad inactive-stage payload surface; removal=Phase4 print cutover.
+    // Accepted direct rendering uses DirectPipelineRunParams.
     struct PipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;

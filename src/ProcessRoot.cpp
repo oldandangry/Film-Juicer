@@ -2479,16 +2479,6 @@ namespace JuicerProcess {
             frame.abort("prepared_frame_resource_acquire_failed");
             return frame;
         }
-        if (!resolve_cuda_grain_static_resources(
-                deviceContextKey,
-                frame._state->transaction.snapshot.contextEpoch,
-                frame._state->grainStaticOwner,
-                frame._state->grainStaticResources,
-                outError)) {
-            frame._state->set_failure("resolve_grain_static_resources", "CUDA grain-static resource acquisition failed");
-            frame.abort("prepared_frame_grain_static_acquire_failed");
-            return frame;
-        }
         if (!acquire_submission_plan(frame._state->transaction, outError)) {
             frame._state->set_failure("acquire_plan", "acquire_plan failed");
             frame.abort("prepared_frame_acquire_failed");
@@ -2502,19 +2492,6 @@ namespace JuicerProcess {
                 outError)) {
             frame._state->set_failure("command_ensure_uploaded", "CUDA WorkingState upload failed");
             frame.abort("prepared_frame_upload_failed");
-            return frame;
-        }
-        if (!JuicerCuda::ensure_grain_static_assets_uploaded(
-                *frame._state->grainStaticResources,
-                cudaStreamOpaque,
-                outError)) {
-            // SF_TEMP_BRIDGE_StaticNoiseUpload owner=Phase3A direct-preparation audit:
-            // allowed=existing blocked legacy prepare_cuda_frame only; hash_owner=none;
-            // output_impact=no direct Phase3A pixels; removal gate=Phase3C before direct pixels.
-            frame._state->set_failure(
-                "ensure_grain_static_assets_uploaded",
-                "CUDA grain-static asset upload failed");
-            frame.abort("prepared_frame_grain_static_upload_failed");
             return frame;
         }
         if (!frame._state->allocate_scan_error_stage(outError)) {

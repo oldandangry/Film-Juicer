@@ -219,10 +219,6 @@ namespace {
         return snapshot;
     }
 
-    inline std::uint64_t working_state_build_counter_or_zero(const WorkingState* ws) {
-        return ws ? ws->buildCounter : 0ull;
-    }
-
     inline std::uint64_t working_state_build_counter_or_zero(const std::shared_ptr<const WorkingState>& ws) {
         return ws ? ws->buildCounter : 0ull;
     }
@@ -243,16 +239,8 @@ namespace {
         return state ? JuicerAtomic::load_shared_ptr(&state->activeWorkingState) : nullptr;
     }
 
-    inline std::uint32_t frame_bounds_version_or_zero(const InstanceState* state) {
-        return state ? state->frameBoundsVersion.load(std::memory_order_acquire) : 0u;
-    }
-
-    inline float print_runtime_value_or_zero(const Print::Runtime* runtime, float Print::Runtime::*field) {
-        return runtime ? (runtime->*field) : 0.0f;
-    }
-
-    inline float scale_if_enabled_or_one(bool enabled, float scale) {
-        return enabled ? scale : 1.0f;
+    inline std::shared_ptr<const DirectRenderState> load_active_direct_state_if(const InstanceState* state) {
+        return state ? JuicerAtomic::load_shared_ptr(&state->activeDirectState) : nullptr;
     }
 
     inline void append_ymc_triplet(std::string& msg, float y, float m, float c) {
@@ -3106,8 +3094,10 @@ OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
     return params;
 }
 
-// SF_TEMP_BRIDGE_CPUAutoExposure owner=Phase3C remove=Phase4:
-// retained for blocked non-direct routes; direct CUDA rendering meters the full source on device.
+// SF_TEMP_BRIDGE_CPUAutoExposure owner=Phase4-print-route:
+// reason=legacy non-direct metering; allowed=no product call site while non-direct render is
+// blocked; output_impact=blocked print route; hash_impact=none; resource_impact=CPU source reads;
+// removal=Phase4 print-route metering cutover.
 JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     const OFX::RenderArguments& args,
     OFX::Image* srcImg,
@@ -3506,6 +3496,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     _state = std::make_unique<InstanceState>();
     _state->dataDir = ensure_trailing_separator(data_dir_string());
     JuicerAtomic::store_shared_ptr(&_state->activeWorkingState, std::shared_ptr<const WorkingState>{});
+    JuicerAtomic::store_shared_ptr(&_state->activeDirectState, std::shared_ptr<const DirectRenderState>{});
     _state->activeBuildCounter = 0;
     {
         const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -3673,12 +3664,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 
-    const double filmFormatMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
     const double longEdgePx = static_cast<double>(std::max(fullWidth, fullHeight));
-    float pixelSizeUm = 0.0f;
-    if (filmFormatMm > 0.0 && longEdgePx > 0.0) {
-        pixelSizeUm = static_cast<float>((filmFormatMm * 1000.0) / longEdgePx);
-    }
 
     // Ensure bootstrap has run before we rely on parameter state
     if (bootstrap_needed(_state.get())) {
@@ -3692,79 +3678,21 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (has_loaded_base_state(_state.get())) {
         rebuild_pending_state_if_needed(*this, *_state);
     }
-    const ExposureParams exposureParams = gatherExposureParams();
-    const Scanner::Options scannerOptions = gatherScannerOptions();
-    const Scanner::Settings scannerSettings = gatherScannerSettings();
-    Print::Params printParams = gatherPrintParams();
-    const Profiles::HalationMetadata halationUi = gatherHalationUi();
-    const Profiles::GrainMetadata grainUi = gatherGrainUi();
-    const Profiles::ProfileGlare glareUi = gatherGlareUi();
-    const double gateWeaveAmount = read_double_param_or(_pGateWeaveAmount, 1.0);
-    OutputEncoding::Params outputEncodingParams = gatherOutputEncodingParams();
-
-    // Direct CUDA metering consumes the full source device image and publishes same-frame scale
-    // on device; the retained CPU helper remains unreachable from the direct product path.
-    const AutoExposureResult autoExposure{};
-
-#ifdef JUICER_ENABLE_COUPLERS
-    // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=legacy-print-route:
-    // allowed=blocked broad/print path only; direct production consumes recipe.dirCouplers.
-    Couplers::Runtime dirRT =
-        directCudaRoute ? Couplers::Runtime{} : prepareCouplers(args, fullWidth, fullHeight, pixelSizeUm);
-#else
-    Couplers::Runtime dirRT{};
-#endif
-
-    WorkingStateInfo wsInfo = prepareWorkingState();
-    std::shared_ptr<const WorkingState> wsHold = wsInfo.workingState;
-    const Print::Runtime* prt = wsInfo.printRuntime;
-    const bool wsReady = wsInfo.workingStateReady;
-    const bool printReady = wsInfo.printRuntimeReady;
+    const std::shared_ptr<const DirectRenderState> directState = load_active_direct_state_if(_state.get());
+    if (!directState || directState->buildCounter == 0 || !directState->recipe.directStructuralReady) {
+        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: direct render state not ready; aborting render"});
+    }
+    const double filmFormatMm = directState->recipe.filmRaw.filmFormatLongEdgeMm;
+    const float pixelSizeUm =
+        (filmFormatMm > 0.0 && longEdgePx > 0.0)
+            ? static_cast<float>((filmFormatMm * 1000.0) / longEdgePx)
+            : 0.0f;
     if (traceVerbose) {
-        const WorkingState* ws = wsHold.get();
-        ParamSnapshot Pdbg = snapshotParams();
-        const ProfileKeyLabels labels = resolve_profile_key_labels(Pdbg);
-        const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(prt);
-        const std::uint64_t buildCounter = working_state_build_counter_or_zero(ws);
-        const float neutralY = print_runtime_value_or_zero(prt, &Print::Runtime::neutralY);
-        const float neutralM = print_runtime_value_or_zero(prt, &Print::Runtime::neutralM);
-        const float neutralC = print_runtime_value_or_zero(prt, &Print::Runtime::neutralC);
-        std::string msg;
-        msg.reserve(256);
-        msg = "render print state build=";
-        msg += std::to_string(buildCounter);
-        msg += " paper=";
-        msg += labels.paperLabel;
-        msg += " film=";
-        msg += labels.filmLabel;
-        msg += " printRT=";
-        msg += std::to_string(prtPtr);
-        msg += " neutralY/M/C=";
-        append_ymc_triplet(msg, neutralY, neutralM, neutralC);
-        msg += " yFilter=";
-        msg += std::to_string(printParams.yFilter);
-        msg += " mFilter=";
-        msg += std::to_string(printParams.mFilter);
-        msg += " cFilter=";
-        msg += std::to_string(printParams.cFilter);
-        msg += " bypass=";
-        msg += std::to_string(bool_to_i32(printParams.bypass));
-        JTRACE_VERBOSE("PRINTDBG", msg);
-    }
-    if (!wsReady) {
-        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: working state not ready; aborting render"});
-    }
-
-    if (!directCudaRoute && !printParams.bypass && !printReady) {
-        trace_and_throw_render_fatal(RenderFatalTrace{"PRINT", "FATAL: print runtime not ready while print path requested"});
-    }
-
-    // --- Print exposure compensation via spectral mid-gray probe (agx parity) ---
-    {
-        const bool printComp = read_bool_param_or(_pPrintExposureComp, false);
-
-        printParams.exposureCompensationEnabled = printComp;
-        printParams.exposureCompensationScale = scale_if_enabled_or_one(printComp, exposureParams.sliderScale);
+        std::string msg = "render direct state build=";
+        msg += std::to_string(directState->buildCounter);
+        msg += " recipe_hash=";
+        msg += std::to_string(directState->recipe.hash);
+        JTRACE_VERBOSE("PHASE3D", msg);
     }
 
     // Tile-based multithreaded processing via OFX::ImageProcessor
@@ -3775,50 +3703,19 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     proc.setSrcDst(images);
     proc.setInstanceState(_state.get());
     const SessionTokenSnapshot sessionTokens = snapshot_session_tokens(_state.get());
-    const std::uint32_t frameVersion = frame_bounds_version_or_zero(_state.get());
-    // Per agx-emulsion parity: autoExposure.exposureScale already encodes 2^(autoEV + sliderEV).
-    float filmExposureScale = static_cast<float>(sanitize_positive_finite_or(autoExposure.exposureScale, 1.0));
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
 
-    JuicerProcessor::FrameRequest frameRequest{};
-    frameRequest.workingState = wsHold;
-    if (wsHold) {
-        frameRequest.recipe = std::shared_ptr<const Spektrafilm::RenderRecipe>(wsHold, &wsHold->recipe);
-    }
-    frameRequest.printRuntime = prt;
-    frameRequest.workingStateReady = wsReady;
-    frameRequest.printRuntimeReady = printReady;
+    JuicerProcessor::DirectFrameRequest frameRequest{};
+    frameRequest.state = directState;
     frameRequest.components = nComponents;
     frameRequest.renderWindow = roi;
-    frameRequest.scannerOptions = scannerOptions;
-    frameRequest.scannerSettings = scannerSettings;
-    frameRequest.printParams = printParams;
-    frameRequest.halationOverride = halationUi;
-    frameRequest.hasHalationOverride = true;
-    frameRequest.grainOverride = grainUi;
-    frameRequest.hasGrainOverride = true;
-    frameRequest.printGlareOverride = glareUi;
-    frameRequest.hasPrintGlareOverride = true;
-    frameRequest.dirRuntime = dirRT;
-    frameRequest.exposureScale = filmExposureScale;
-    frameRequest.cameraAutoEnabled = exposureParams.cameraAutoEnabled;
-    frameRequest.cameraMeteringMethod = exposureParams.meteringMethod;
-    frameRequest.cameraSliderEV = exposureParams.sliderEV;
-    frameRequest.autoExposureMeterBounds = autoExposure.meterBounds;
-    frameRequest.autoExposureMeterBoundsValid = autoExposure.meterBoundsValid;
-    frameRequest.outputEncoding = outputEncodingParams;
     frameRequest.sessionSeed = sessionTokens.sessionSeed;
     frameRequest.instanceToken = sessionTokens.instanceToken;
     frameRequest.clipToken = renderClipToken;
-    frameRequest.gateWeaveAmount = gateWeaveAmount;
     frameRequest.frameTime = args.time;
     frameRequest.frameRate = getFrameRate();
-    frameRequest.frameBoundsVersion = frameVersion;
     frameRequest.pixelSizeUm = pixelSizeUm;
-    frameRequest.interactiveRenderStatus = args.interactiveRenderStatus;
-    frameRequest.renderQualityDraft = args.renderQualityDraft;
-    frameRequest.sequentialRenderStatus = args.sequentialRenderStatus;
-    proc.setFrameRequest(frameRequest);
+    proc.setDirectFrameRequest(frameRequest);
     proc.setGPURenderArgs(args);
 
     // Dispatch to support library's threaded/tiled CPU path

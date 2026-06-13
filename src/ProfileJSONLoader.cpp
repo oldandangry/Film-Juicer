@@ -76,9 +76,10 @@ namespace Profiles {
         }
 
         void sanitize_non_finite_literals(std::string& text) {
-            // SF_TEMP_BRIDGE_AgxProfileNonFiniteLiteralParser owner=Phase2B remove=Phase3/Phase4:
-            // retained only for the old AgxFilmProfile bridge behind the Phase 1A product-render cutoff.
-            // Selected spektrafilm payload loading below uses field-gated parsing and rejects Inf.
+            // SF_TEMP_BRIDGE_AgxProfileNonFiniteLiteralParser owner=Phase4-print-route:
+            // reason=legacy Agx non-finite compatibility; allowed=parse_agx_film_profile_json only;
+            // output_impact=blocked print route;
+            // hash_impact=none on direct route; resource_impact=legacy Agx parse; removal=Phase4.
             // Replace bare non-finite tokens with string sentinels that will be
             // accepted by the JSON parser and decoded later.
             static constexpr std::array<std::pair<std::string_view, std::string_view>, 33> kReplacements{{{"-infinity", "\"__-inf__\""},
@@ -272,9 +273,10 @@ namespace Profiles {
         }
 
         std::optional<float> parse_optional_float_allow_nan(const Json& node) {
-            // SF_TEMP_BRIDGE_AgxProfileAllowNanParser owner=Phase2B remove=Phase3/Phase4:
-            // allowed only inside parse_agx_film_profile_json; selected spektrafilm loading uses
-            // parse_selected_number with schema-lock field policy and rejects Inf.
+            // SF_TEMP_BRIDGE_AgxProfileAllowNanParser owner=Phase4-print-route:
+            // reason=legacy Agx NaN compatibility; allowed=parse_agx_film_profile_json only;
+            // output_impact=blocked print route;
+            // hash_impact=none on direct route; resource_impact=legacy Agx parse; removal=Phase4.
             if (auto special = decode_nonfinite_sentinel(node)) {
                 return special;
             }
@@ -1499,8 +1501,10 @@ namespace Profiles {
             }
             const Json& row = dyeDensity[i];
             if (!row.is_array()) {
-                // SF_TEMP_BRIDGE_AgxProfileMalformedRowPlaceholder owner=Phase2B remove=Phase3/Phase4:
-                // old AgxFilmProfile bridge behavior retained only behind the Phase 1A product-render cutoff.
+                // SF_TEMP_BRIDGE_AgxProfileMalformedRowPlaceholder owner=Phase4-print-route:
+                // reason=legacy Agx malformed-row compatibility; allowed=parse_agx_film_profile_json
+                // dye-density rows only; output_impact=blocked print route; hash_impact=none;
+                // resource_impact=legacy Agx parse; removal=Phase4.
                 JTRACE("PROFILE", "dye_density row missing or not array; inserting NaNs");
                 outProfile.dyeC.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
                 outProfile.dyeM.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());

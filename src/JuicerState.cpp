@@ -89,11 +89,11 @@ namespace RebuildWorkingState {
 
 namespace WorkingStateSharing {
 
-    // SF_TEMP_BRIDGE_WorkingStateCorePayload owner=Phase3C resource cutover/Phase4 print audit:
-    // retained legacy shared payload for buildability while RenderRecipe becomes the publication
-    // contract. Allowed=existing blocked rebuild sharing only; hash/output impact=legacy core-share
-    // lane; direct resource removal gate=Phase3C. It must not gain spektrafilm recipe/descriptor
-    // fields or become the direct CUDA payload packer.
+    // SF_TEMP_BRIDGE_WorkingStateCorePayload owner=Phase4-print-route:
+    // reason=retain legacy print rebuild sharing; allowed=rebuild_working_state print branch and
+    // rebuild_working_state_couplers_only print branch only; output_impact=blocked print route;
+    // hash_impact=legacy print core-share hash; resource_impact=none on accepted direct route;
+    // removal=Phase4 print recipe/publication cutover.
     struct WorkingStateCorePayload {
         Spectral::Curve densB;
         Spectral::Curve densG;
@@ -578,6 +578,34 @@ namespace {
         return snapshot;
     }
 
+    inline std::shared_ptr<const DirectRenderState> make_direct_render_state(const WorkingState& source) {
+        if (Spektrafilm::scan_route_is_print(source.recipe.profileRoute.scanRoute) ||
+            !source.recipe.directStructuralReady ||
+            source.buildCounter == 0) {
+            return nullptr;
+        }
+
+        auto direct = std::make_shared<DirectRenderState>();
+        direct->recipe = source.recipe;
+        direct->payload.exposureTables = source.tablesRef;
+        std::copy_n(source.spdSInv, direct->payload.spdSInv.size(), direct->payload.spdSInv.begin());
+        direct->payload.filmRawConfig = source.filmRaw;
+        direct->payload.scannerTables = source.tablesScan;
+        direct->payload.scannerColor = source.negativeColorRuntime;
+        direct->payload.uploadCoreHash = source.recipe.hash;
+        const std::uint64_t scannerFields[] = {
+            source.recipe.densityBounds.hash,
+            source.recipe.scannerOutput.hash,
+            source.negativeColorRuntime.hash,
+            source.tablesScan.tablesHash};
+        direct->payload.scannerHash = Hash::hash_bytes(scannerFields, sizeof(scannerFields));
+        direct->buildCounter = source.buildCounter;
+        if (direct->payload.uploadCoreHash == 0 || direct->payload.scannerHash == 0) {
+            return nullptr;
+        }
+        return direct;
+    }
+
     inline void publish_rebuilt_working_state(
         InstanceState& state,
         const ParamSnapshot& params,
@@ -585,11 +613,14 @@ namespace {
         bool invalidateSpatialSigmaCache) {
         const std::uint64_t buildCounter = next ? next->buildCounter : 0;
         const std::uint64_t fullHash = next ? next->fullHash : 0;
+        const std::shared_ptr<const DirectRenderState> directState =
+            next ? make_direct_render_state(*next) : nullptr;
         std::lock_guard<std::mutex> lock(state.m);
         if (invalidateSpatialSigmaCache) {
             state.spatialSigmaCacheValid.store(false, std::memory_order_release);
         }
         JuicerAtomic::store_shared_ptr(&state.activeWorkingState, std::shared_ptr<const WorkingState>(std::move(next)));
+        JuicerAtomic::store_shared_ptr(&state.activeDirectState, directState);
         state.activeBuildCounter = buildCounter;
         state.lastParams = params;
         state.lastHash.store(fullHash, std::memory_order_release);
@@ -711,8 +742,8 @@ namespace {
 
     inline void copy_3x3_and_append_rhs(const double matrix3x3[3][3], const double rhs[3], double augmented[3][4]) {
         const double* rhsIt = rhs;
-        double(*dstRow)[4] = augmented;
-        const double(*srcRow)[3] = matrix3x3;
+        double (*dstRow)[4] = augmented;
+        const double (*srcRow)[3] = matrix3x3;
         for (int r = 0; r < 3; ++r, ++rhsIt, ++dstRow, ++srcRow) {
             std::memcpy(*dstRow, *srcRow, 3u * sizeof(double));
             (*dstRow)[3] = *rhsIt;
@@ -1401,10 +1432,6 @@ namespace {
         return true;
     }
 
-    // SF_TEMP_BRIDGE_DirectScannerBoundsRecompute owner=Phase3A density-bounds audit:
-    // allowed=existing blocked legacy WorkingState scanner path; hash/output impact=legacy scanner
-    // range/static-key lanes; removal gate=Phase3B/3C. Direct descriptors consume
-    // RenderRecipe::DensityBoundsRecipe and must not call this helper.
     static bool compute_negative_density_range(
         const Spectral::Curve& densB,
         const Spectral::Curve& densG,
@@ -1438,6 +1465,24 @@ namespace {
             outRange,
             "FATAL: invalid negative density range (non-positive max)",
             "FATAL: failed to hash negative density range");
+    }
+
+    static bool direct_density_range_from_recipe(
+        const DensityBoundsRecipe& bounds,
+        Scanner::ScannerDensityRange& outRange) {
+        outRange = Scanner::ScannerDensityRange{};
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            const float dataMin = bounds.dataMinCmy[channel];
+            const float invSpan = bounds.invSpanCmy[channel];
+            if (!is_finite(dataMin) || !is_positive_finite(invSpan)) {
+                return false;
+            }
+            outRange.min_cmy[channel] = -dataMin;
+            outRange.max_cmy[channel] = 1.0f / invSpan;
+            outRange.inv_max_cmy[channel] = invSpan;
+        }
+        outRange.digest = bounds.hash;
+        return outRange.digest != 0;
     }
 
     static bool compute_print_density_range(
@@ -1658,8 +1703,10 @@ const char* print_profile_option_label(int index) {
 }
 
 bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceState& S) {
-    // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase1A remove=Phase3 direct/Phase4 print:
-    // key-addressed legacy payload glue retained only behind the Phase 1A product-render cutoff.
+    // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
+    // reason=legacy print bootstrap; allowed=bootstrap_after_attach and reset changedParam print
+    // branches only; output_impact=blocked print route; hash_impact=none on direct route;
+    // resource_impact=legacy Agx profile load; removal=Phase4 print profile cutover.
     const JuicerAssets::FilmStockAsset& stock =
         JuicerProcess::root().assets().film_profile_for_key(filmProfileKey);
     const bool stockTraceEnabled = JTRACE_ENABLED(1);
@@ -1975,8 +2022,6 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
 bool load_selected_spektrafilm_film_profile_into_base(
     const Profiles::ValidatedFilmProfile& profile,
     InstanceState& S) {
-    // SF_TEMP_BRIDGE_DirectSelectedProfilePublicationEnvelope owner=Phase3A remove=Phase3D:
-    // direct CUDA preparation still consumes a few host derivations published through BaseState.
     const Profiles::SpektrafilmFilmData& data = profile.data;
     BaseState next{};
 
@@ -2203,11 +2248,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE_VERBOSE("PRINTDBG", msg);
     };
 
-    const std::uint64_t coreShareHash = hash_params_core(P);
-    WorkingStateSharing::AcquireCoreSharedResult coreShare =
-        JuicerProcess::root().acquire_working_state_core(coreShareHash);
+    const bool directRoute = !Spektrafilm::scan_route_is_print(P.scanRoute);
+    const std::uint64_t coreShareHash = directRoute ? 0 : hash_params_core(P);
+    WorkingStateSharing::AcquireCoreSharedResult coreShare{};
+    if (!directRoute) {
+        coreShare = JuicerProcess::root().acquire_working_state_core(coreShareHash);
+    }
     const WorkingStateSharing::AcquireCoreSharedResult& coreShareInitial = coreShare;
-    if (coreShare.sharedCore && coreShare.sharedCore->payload) {
+    if (!directRoute && coreShare.sharedCore && coreShare.sharedCore->payload) {
         WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
         target->coreShareHash = coreShareHash;
         target->sharedCore = coreShare.sharedCore;
@@ -2245,7 +2293,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     if (!build_scanner_illuminant(base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
         return;
     }
-    const bool directRoute = !Spektrafilm::scan_route_is_print(P.scanRoute);
     Scanner::ScannerIlluminant printScannerIlluminant;
     if (!directRoute) {
         Print::build_illuminant_from_choice(P.enlIll, printRT, /*forEnlarger*/ true);
@@ -3046,8 +3093,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->dirPrecorrected = precorrectApplied;
     copy_float3(target->dMax, dirRT.dMax);
 
-    negativeRangeOk = compute_negative_density_range(
-        target->densB, target->densG, target->densR, target->grain, negativeDensityRange);
+    negativeRangeOk = directRoute
+                          ? direct_density_range_from_recipe(target->recipe.densityBounds, negativeDensityRange)
+                          : compute_negative_density_range(
+                                target->densB,
+                                target->densG,
+                                target->densR,
+                                target->grain,
+                                negativeDensityRange);
     if (!negativeRangeOk) {
         return;
     }
@@ -3131,7 +3184,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->coreShareHash = coreShareHash;
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-    {
+    if (!directRoute) {
         auto corePayload = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
         WorkingStateSharing::capture_working_state_core_payload(*target, *corePayload);
         const WorkingStateSharing::AcquireCoreSharedResult coreShareSeed =
@@ -3181,6 +3234,11 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     {
         std::lock_guard<std::mutex> stateLock(S.m);
         snapshot = snapshot_rebuild_state_locked(S);
+    }
+    if (!Spektrafilm::scan_route_is_print(P.scanRoute)) {
+        rebuildLock.unlock();
+        rebuild_working_state(instance, S, P);
+        return;
     }
     const std::uint64_t coreShareHash = hash_params_core(P);
     WorkingStateSharing::AcquireCoreSharedResult coreShare =

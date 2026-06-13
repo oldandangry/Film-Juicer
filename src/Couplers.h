@@ -10,9 +10,10 @@
 #include "ofxProperty.h"
 #include "ofxParam.h"
 
-// SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=legacy-print-route:
-// allowed=blocked broad/print path and compile-time ABI stubs only; direct production consumes
-// RenderRecipe::dirCouplers. Removal gate=Phase 4 print-route recipe cutover.
+// SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=Phase4-print-route:
+// reason=legacy print/CPU DIR ABI; allowed=Couplers compile-time ABI stubs, prepareCouplers, and
+// processImagesCUDA post-direct branch only; output_impact=blocked print route; hash_impact=none;
+// resource_impact=legacy broad DIR fields; removal=Phase4 print-route recipe cutover.
 #ifndef JUICER_ENABLE_COUPLERS
 // Stubs: compiled out safely
 namespace Couplers {
