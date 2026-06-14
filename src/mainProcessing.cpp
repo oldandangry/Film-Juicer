@@ -2833,9 +2833,6 @@ void JuicerProcessor::processImagesCUDA() {
             _printReady,
             _prt,
             _printParams.bypass);
-    const float printMidgrayFactor = printActiveForRender
-                                         ? compute_print_midgray_factor(*_ws, *_prt, _printParams, _dirRT)
-                                         : 1.0f;
 
     JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
     deviceContextKey.deviceId = deviceId;
@@ -2981,11 +2978,117 @@ void JuicerProcessor::processImagesCUDA() {
     }
 
     if (!directRecipe) {
-        JTRACE(
-            "SPEKTRAFILM",
-            "FATAL: DirectStructuralRecipeNotReadyForPhase3C; refusing legacy CUDA fallback");
-        throw OFX::Exception::Suite(kOfxStatErrFatal);
+        if (!printActiveForRender || !_ws || !_ws->recipe.printStructuralReady) {
+            JTRACE(
+                "SPEKTRAFILM",
+                "FATAL: PrintStructuralRecipeNotReadyForPhase4B; refusing legacy CUDA fallback");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+
+        JuicerProcess::Root::PrintCudaPreparationRequest printPreparation{};
+        printPreparation.recipe = &_ws->recipe;
+        JuicerCuda::ResourceManager::SubmissionSnapshot printSnapshot{};
+        printSnapshot.instanceToken.value =
+            instance_token_or_session_seed(_instanceToken, _sessionSeed);
+        printSnapshot.frameToken.value = static_cast<std::uint64_t>(_frameIndex);
+        printSnapshot.deviceContextKey = deviceContextKey;
+        printSnapshot.keyDigests =
+            JuicerCuda::ResourceManager::make_key_digests(
+                _ws->recipe.hash,
+                0,
+                0,
+                0);
+        printSnapshot.keySchemaVersion =
+            JuicerCuda::ResourceManager::kSubmissionKeySchemaVersion;
+        printSnapshot.traceSchemaVersion =
+            JuicerCuda::ResourceManager::kTraceSchemaVersion;
+        {
+            std::lock_guard<std::mutex> latchLock(
+                _instanceState->submissionSnapshotLatchMutex);
+            const auto& latched = _instanceState->submissionSnapshotLatch;
+            const bool digestsMatch =
+                latched.keyDigests.uploadCoreHash ==
+                    printSnapshot.keyDigests.uploadCoreHash &&
+                latched.keyDigests.dirHash == printSnapshot.keyDigests.dirHash &&
+                latched.keyDigests.scannerHash == printSnapshot.keyDigests.scannerHash &&
+                latched.keyDigests.autoExposureHash ==
+                    printSnapshot.keyDigests.autoExposureHash;
+            if (_instanceState->submissionSnapshotLatchValid &&
+                latched.instanceToken.value == printSnapshot.instanceToken.value &&
+                latched.frameToken.value == printSnapshot.frameToken.value &&
+                latched.deviceContextKey == printSnapshot.deviceContextKey &&
+                latched.keySchemaVersion == printSnapshot.keySchemaVersion &&
+                latched.traceSchemaVersion == printSnapshot.traceSchemaVersion &&
+                digestsMatch &&
+                latched.snapshotId != 0) {
+                printSnapshot = latched;
+            } else {
+                std::uint64_t nextSnapshotId =
+                    _instanceState->submissionSnapshotIdNext.fetch_add(
+                        1,
+                        std::memory_order_relaxed);
+                if (nextSnapshotId == 0) {
+                    nextSnapshotId =
+                        _instanceState->submissionSnapshotIdNext.fetch_add(
+                            1,
+                            std::memory_order_relaxed);
+                }
+                printSnapshot.snapshotId = nextSnapshotId;
+                _instanceState->submissionSnapshotLatch = printSnapshot;
+                _instanceState->submissionSnapshotLatchValid = true;
+            }
+        }
+        std::string printPrepareError;
+        JuicerProcess::Root::PreparedCudaFrame preparedPrintFrame =
+            JuicerProcess::root().prepare_cuda_frame(
+                deviceContextKey,
+                printSnapshot,
+                printPreparation,
+                _pCudaStream,
+                printPrepareError);
+        if (!preparedPrintFrame.active()) {
+            throw_submission_fatal(
+                preparedPrintFrame.failure_stage_tag(),
+                preparedPrintFrame.failure_prefix(),
+                printPrepareError);
+        }
+
+        const JuicerProcess::Root::PreparedCudaFrame::PrintPreparedView preparedPrint =
+            preparedPrintFrame.print_resources();
+        JuicerCuda::PrintCudaPayloadPack printPayloads{};
+        std::string printPayloadDiagnostic;
+        if (!JuicerCuda::pack_print_cuda_payloads(
+                _ws->recipe.print,
+                preparedPrint,
+                printPayloads,
+                printPayloadDiagnostic)) {
+            preparedPrintFrame.abort("print_phase4B_payload_pack_failed");
+            throw_submission_fatal(
+                "pack_print_cuda_payloads_phase4B",
+                "Phase 4B print CUDA payload packing failed",
+                printPayloadDiagnostic);
+        }
+        (void)printPayloads;
+
+        std::string printFinishError;
+        if (!preparedPrintFrame.finish(_pCudaStream, printFinishError)) {
+            throw_submission_fatal(
+                "finish_print_prepared_frame_phase4B",
+                "Phase 4B print prepared frame finish failed",
+                printFinishError);
+        }
+        trace_and_throw_cuda_policy_fatal(
+            "CUDA print route launch blocked",
+            "PrintRouteLaunchNotAcceptedForPhase4C");
     }
+    // SF_TEMP_BRIDGE_Phase4CPrintLaunch owner=Phase4C:
+    // reason=legacy broad print launch source retained below the accepted Phase 4B prelaunch
+    // hard block; allowed=unreachable legacy print launch block in processImagesCUDA only;
+    // output_impact=none in Phase4B; hash_impact=legacy broad keys only;
+    // resource_impact=none in Phase4B; removal=Phase4C launch cutover.
+    const float printMidgrayFactor = printActiveForRender
+                                         ? compute_print_midgray_factor(*_ws, *_prt, _printParams, _dirRT)
+                                         : 1.0f;
     const Spektrafilm::ScanRoute scanRoute = directRecipe->profileRoute.scanRoute;
     const FilmRawRecipe* directFilmRaw = directRecipe ? &directRecipe->filmRaw : nullptr;
     const bool cameraAutoEnabled =
@@ -4380,6 +4483,10 @@ void JuicerProcessor::processImagesCUDA() {
             "CUDA");
     };
 
+    // SF_TEMP_BRIDGE_Phase4CPrintIlluminantEnsure owner=Phase4C:
+    // reason=legacy old-filter-unit Print::Runtime launch preparation; allowed=unreachable legacy
+    // print launch block only; output_impact=none in Phase4B; hash_impact=none in Phase4B;
+    // resource_impact=none in Phase4B; removal=Phase4C.
     auto ensure_print_illuminant_filtered_or_throw =
         [&](const JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker& workspace) {
             std::string illumError;
@@ -5174,6 +5281,10 @@ void JuicerProcessor::processImagesCUDA() {
             _pCudaStream);
     };
 
+    // SF_TEMP_BRIDGE_Phase4CPrintPipelinePayload owner=Phase4C:
+    // reason=legacy broad PipelineRunParams launch packing; allowed=unreachable legacy print
+    // launch block only; output_impact=none in Phase4B; hash_impact=none in Phase4B;
+    // resource_impact=none in Phase4B; removal=Phase4C.
     auto populate_print_pipeline_payload = [&](JuicerCuda::PipelineRunParams& run,
                                                float midgrayFactor) {
         const JuicerProcess::Root::PreparedCudaFrame::DurableBundleView durableBundle =

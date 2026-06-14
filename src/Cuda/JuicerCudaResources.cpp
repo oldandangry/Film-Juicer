@@ -1519,6 +1519,10 @@ namespace JuicerCuda {
             cudaFree(resources.printIllumFiltered);
             resources.printIllumFiltered = nullptr;
         }
+        if (resources.printPreflashIllumFiltered) {
+            cudaFree(resources.printPreflashIllumFiltered);
+            resources.printPreflashIllumFiltered = nullptr;
+        }
 #endif
         resources.printIllumK = 0;
         resources.printIllumYShiftSteps = 0.0f;
@@ -1528,6 +1532,9 @@ namespace JuicerCuda {
         resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
         resources.printIllumCoreHash = 0;
+        resources.printPreflashIllumK = 0;
+        resources.printIllumFilteredHostValid = false;
+        resources.printPreflashIllumFilteredHostValid = false;
 
         resources.printGammaC = 1.0f;
         resources.printGammaM = 1.0f;
@@ -1537,6 +1544,16 @@ namespace JuicerCuda {
         resources.printPreflashValid = false;
         resources.printPreflashKeyHash = 0;
         resources.printPreflashShapeK = 0;
+        resources.printBalanceFactorMidgray = 1.0f;
+        resources.printBalanceFactorMidgrayComp = 1.0f;
+        resources.printBalanceNormalizer = 1.0f;
+        resources.printProfileTablesDescriptorHash = 0;
+        resources.printMainIlluminantDescriptorHash = 0;
+        resources.printPreflashIlluminantDescriptorHash = 0;
+        resources.printPreflashRawDescriptorHash = 0;
+        resources.printBalanceDescriptorHash = 0;
+        resources.printPreparationDescriptorHash = 0;
+        resources.printPreparationCounter = 0;
     }
 
     static bool retire_print_payloads_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -1561,6 +1578,13 @@ namespace JuicerCuda {
             }
             resources.printIllumFiltered = nullptr;
         }
+        if (resources.printPreflashIllumFiltered) {
+            const size_t bytes = static_cast<size_t>(std::max(0, resources.printPreflashIllumK)) * sizeof(float);
+            if (!retire_ptr_locked(resources, resources.printPreflashIllumFiltered, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) {
+                return false;
+            }
+            resources.printPreflashIllumFiltered = nullptr;
+        }
 
         resources.printIllumK = 0;
         resources.printIllumYShiftSteps = 0.0f;
@@ -1570,6 +1594,9 @@ namespace JuicerCuda {
         resources.printIllumShapeK = 0;
         resources.printIllumBuildCounter = 0;
         resources.printIllumCoreHash = 0;
+        resources.printPreflashIllumK = 0;
+        resources.printIllumFilteredHostValid = false;
+        resources.printPreflashIllumFilteredHostValid = false;
 
         resources.printGammaC = 1.0f;
         resources.printGammaM = 1.0f;
@@ -1579,6 +1606,16 @@ namespace JuicerCuda {
         resources.printPreflashValid = false;
         resources.printPreflashKeyHash = 0;
         resources.printPreflashShapeK = 0;
+        resources.printBalanceFactorMidgray = 1.0f;
+        resources.printBalanceFactorMidgrayComp = 1.0f;
+        resources.printBalanceNormalizer = 1.0f;
+        resources.printProfileTablesDescriptorHash = 0;
+        resources.printMainIlluminantDescriptorHash = 0;
+        resources.printPreflashIlluminantDescriptorHash = 0;
+        resources.printPreflashRawDescriptorHash = 0;
+        resources.printBalanceDescriptorHash = 0;
+        resources.printPreparationDescriptorHash = 0;
+        resources.printPreparationCounter = 0;
         return true;
 #endif
     }
@@ -2857,6 +2894,698 @@ namespace JuicerCuda {
         return true;
 #endif
     }
+    namespace {
+
+        template <typename T>
+        void hash_print_descriptor_value(std::uint64_t& hash, const T& value) {
+            Hash::hash_bytes_update(hash, &value, sizeof(value));
+        }
+
+        void hash_print_descriptor_cmy(std::uint64_t& hash, const CmyCcTriplet& value) {
+            hash_print_descriptor_value(hash, value.c);
+            hash_print_descriptor_value(hash, value.m);
+            hash_print_descriptor_value(hash, value.y);
+        }
+
+        std::uint64_t hash_profile_density_curves(const Profiles::SpektrafilmPrintData& data) {
+            if (data.logExposure.empty() || data.densityCurves.empty() ||
+                data.logExposure.size() != data.densityCurves.size()) {
+                return 0;
+            }
+            const Hash::FloatSpanHash curves = Hash::hash_float_span_with_nan_mask(
+                &data.densityCurves[0][0],
+                data.densityCurves.size() * 3u);
+            return Hash::hash_uint64_values({Hash::hash_float_span(data.logExposure.data(), data.logExposure.size()),
+                                             curves.valueHash,
+                                             curves.nanMaskHash});
+        }
+
+        std::uint64_t hash_profile_sensitivities(const Profiles::SpektrafilmPrintData& data) {
+            const Hash::FloatSpanHash sensitivities = Hash::hash_float_span_with_nan_mask(
+                &data.linearSensitivity[0][0],
+                data.linearSensitivity.size() * 3u);
+            return Hash::hash_uint64_values({sensitivities.valueHash,
+                                             sensitivities.nanMaskHash});
+        }
+
+        bool print_curve_ready(const DeviceCurveView& curve, int expectedSamples, bool requireX) {
+            return curve.y && (!requireX || curve.x) && curve.n == expectedSamples &&
+                   curve.domainBegin >= 0 && curve.domainEnd >= curve.domainBegin &&
+                   curve.domainEnd < curve.n;
+        }
+
+        const Spectral::Curve* select_print_illuminant(
+            const JuicerAssets::IlluminantFilterCurveSet& curves,
+            const std::string& key) {
+            if (key == "D65")
+                return &curves.d65;
+            if (key == "D55")
+                return &curves.d55;
+            if (key == "D50")
+                return &curves.d50;
+            if (key == "TH-KG3")
+                return &curves.tungstenKg3;
+            if (key == "TH-KG3-L")
+                return &curves.tungstenKg3Lens;
+            if (key == "T")
+                return &curves.tungsten;
+            if (key == "K75P")
+                return &curves.kinoton75P;
+            return nullptr;
+        }
+
+        bool copy_source_illuminant(
+            JuicerAssets::Library& assets,
+            const std::string& key,
+            std::array<float, Spectral::kNumSamples>& out,
+            std::string& diagnostic) {
+            if (key == "EQUAL") {
+                out.fill(1.0f);
+                return true;
+            }
+            const JuicerAssets::IlluminantFilterCurveSet& curves =
+                assets.illuminant_filter_curves();
+            const Spectral::Curve* selected = select_print_illuminant(curves, key);
+            if (!selected ||
+                selected->linear.size() != out.size() ||
+                selected->lambda_nm.size() != out.size()) {
+                diagnostic = "MissingRequiredResource phase=4B field=print_illuminant key=" + key;
+                return false;
+            }
+            std::copy(selected->linear.begin(), selected->linear.end(), out.begin());
+            const bool valid = std::all_of(out.begin(), out.end(), [](float value) {
+                return std::isfinite(value) && value >= 0.0f;
+            });
+            if (!valid) {
+                diagnostic =
+                    "MalformedRequiredResource phase=4B field=print_illuminant key=" + key;
+            }
+            return valid;
+        }
+
+        bool build_dichroic_curves(
+            JuicerAssets::Library& assets,
+            const DichroicResourceIdentity& identity,
+            std::array<std::array<float, Spectral::kNumSamples>, 3>& out,
+            std::string& diagnostic) {
+            if (identity.kind == Spektrafilm::DichroicResourceKind::MeasuredCsv) {
+                const JuicerAssets::MeasuredDichroicCurveResult measured =
+                    assets.measured_dichroic_curves(identity.setKey);
+                if (!measured.valid ||
+                    measured.hash != identity.hash ||
+                    measured.resourceHashesCmy != identity.resourceHashesCmy) {
+                    diagnostic = measured.diagnostic.empty()
+                                     ? "ResourceDescriptorMismatch phase=4B field=measured_dichroic"
+                                     : measured.diagnostic;
+                    return false;
+                }
+                out = measured.transmittanceCmy;
+                return true;
+            }
+
+            for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
+                const float wavelength = Spectral::gShape.wavelengths[sample];
+                const float c =
+                    0.5f * std::erf((wavelength - identity.customEdgesNm[0]) /
+                                    identity.customTransitionsNm[0]) +
+                    0.5f;
+                const float mErf =
+                    wavelength <= 550.0f
+                        ? -std::erf((wavelength - identity.customEdgesNm[1]) /
+                                    identity.customTransitionsNm[1])
+                        : std::erf((wavelength - identity.customEdgesNm[2]) /
+                                   identity.customTransitionsNm[2]);
+                const float y =
+                    -0.5f * std::erf((wavelength - identity.customEdgesNm[3]) /
+                                     identity.customTransitionsNm[3]) +
+                    0.5f;
+                out[0][static_cast<std::size_t>(sample)] = c;
+                out[1][static_cast<std::size_t>(sample)] = 0.5f * mErf + 0.5f;
+                out[2][static_cast<std::size_t>(sample)] = y;
+            }
+            return true;
+        }
+
+        bool derive_filtered_print_illuminant(
+            JuicerAssets::Library& assets,
+            const PrintRecipe& recipe,
+            const CmyCcTriplet& cc,
+            std::array<float, Spectral::kNumSamples>& out,
+            std::string& diagnostic) {
+            std::array<float, Spectral::kNumSamples> source{};
+            std::array<std::array<float, Spectral::kNumSamples>, 3> filters{};
+            if (!copy_source_illuminant(assets, recipe.illuminant.key, source, diagnostic) ||
+                !build_dichroic_curves(assets, recipe.filters.dichroic, filters, diagnostic)) {
+                return false;
+            }
+            const std::array<float, 3> transmittance{{std::pow(10.0f, -cc.c / 100.0f),
+                                                      std::pow(10.0f, -cc.m / 100.0f),
+                                                      std::pow(10.0f, -cc.y / 100.0f)}};
+            for (std::size_t sample = 0; sample < out.size(); ++sample) {
+                float total = source[sample];
+                for (std::size_t channel = 0; channel < filters.size(); ++channel) {
+                    const float dimmed =
+                        1.0f - (1.0f - filters[channel][sample]) *
+                                   (1.0f - transmittance[channel]);
+                    total *= dimmed;
+                }
+                if (!std::isfinite(total) || total < 0.0f) {
+                    diagnostic = "MalformedRequiredResource phase=4B field=filtered_print_illuminant";
+                    return false;
+                }
+                out[sample] = total;
+            }
+            return true;
+        }
+
+        float sample_profile_density_curve(
+            float logExposure,
+            const Profiles::SpektrafilmProfileSamples& profile,
+            std::size_t channel) {
+            if (profile.logExposure.empty() || profile.densityCurves.empty()) {
+                return 0.0f;
+            }
+            if (logExposure <= profile.logExposure.front()) {
+                return profile.densityCurves.front()[channel];
+            }
+            if (logExposure >= profile.logExposure.back()) {
+                return profile.densityCurves.back()[channel];
+            }
+            const auto upper =
+                std::upper_bound(profile.logExposure.begin(), profile.logExposure.end(), logExposure);
+            const std::size_t hi = static_cast<std::size_t>(upper - profile.logExposure.begin());
+            const std::size_t lo = hi - 1u;
+            const float span = profile.logExposure[hi] - profile.logExposure[lo];
+            const float t = span > 0.0f ? (logExposure - profile.logExposure[lo]) / span : 0.0f;
+            const float a = profile.densityCurves[lo][channel];
+            const float b = profile.densityCurves[hi][channel];
+            return std::isfinite(a) && std::isfinite(b) ? a + t * (b - a) : 0.0f;
+        }
+
+        bool derive_print_raw_for_midgray(
+            JuicerAssets::Library& assets,
+            const RenderRecipe& recipe,
+            const std::array<float, Spectral::kNumSamples>& mainIlluminant,
+            float exposureEv,
+            float& outFactor,
+            std::string& diagnostic) {
+            const Profiles::ValidatedFilmProfile& film = *recipe.profileRoute.filmProfile;
+            const Profiles::ValidatedPrintProfile& print = *recipe.profileRoute.printProfile;
+            std::array<float, Spectral::kNumSamples> filmIlluminant{};
+            if (!copy_source_illuminant(
+                    assets,
+                    film.info.referenceIlluminant.value,
+                    filmIlluminant,
+                    diagnostic)) {
+                return false;
+            }
+            const float exposureScale = std::exp2(exposureEv);
+            std::array<float, 3> densityCmy{};
+            for (std::size_t channel = 0; channel < densityCmy.size(); ++channel) {
+                double raw = 0.0;
+                for (std::size_t sample = 0; sample < filmIlluminant.size(); ++sample) {
+                    raw += 0.184 * static_cast<double>(exposureScale) *
+                           static_cast<double>(filmIlluminant[sample]) *
+                           static_cast<double>(film.data.linearSensitivity[sample][channel]);
+                }
+                const float logRaw =
+                    static_cast<float>(std::log10(std::max(1e-10, raw)));
+                const float rawScale =
+                    recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019
+                        ? recipe.filmRaw.mallettGreenMidgrayScale
+                        : 1.0f;
+                const float gamma = recipe.filmDevelop.densityCurveGamma[channel];
+                const float gammaSafe = std::isfinite(gamma) && gamma > 0.0f ? gamma : 1.0f;
+                densityCmy[channel] = sample_profile_density_curve(
+                    (logRaw + std::log10(std::max(1e-10f, rawScale))) * gammaSafe,
+                    film.data,
+                    channel);
+            }
+
+            std::array<double, 3> printRaw{};
+            for (std::size_t sample = 0; sample < mainIlluminant.size(); ++sample) {
+                double density = static_cast<double>(film.data.baseDensity[sample]);
+                for (std::size_t channel = 0; channel < densityCmy.size(); ++channel) {
+                    density += static_cast<double>(densityCmy[channel]) *
+                               static_cast<double>(film.data.channelDensity[sample][channel]);
+                }
+                const double light =
+                    static_cast<double>(mainIlluminant[sample]) * std::pow(10.0, -density);
+                for (std::size_t channel = 0; channel < printRaw.size(); ++channel) {
+                    const float sensitivity = print.data.linearSensitivity[sample][channel];
+                    if (std::isfinite(sensitivity)) {
+                        printRaw[channel] += light * static_cast<double>(sensitivity);
+                    }
+                }
+            }
+            double meanLogRaw = 0.0;
+            for (double raw : printRaw) {
+                if (!(std::isfinite(raw) && raw >= 0.0)) {
+                    diagnostic = "MalformedRequiredResource phase=4B field=print_balance_midgray";
+                    return false;
+                }
+                meanLogRaw += std::log(std::max(1e-10, raw));
+            }
+            const double geometricMean = std::exp(meanLogRaw / 3.0);
+            outFactor = static_cast<float>(1.0 / geometricMean);
+            return std::isfinite(outFactor) && outFactor > 0.0f;
+        }
+
+        bool derive_preflash_raw(
+            const Profiles::ValidatedFilmProfile& film,
+            const Profiles::ValidatedPrintProfile& print,
+            const std::array<float, Spectral::kNumSamples>& preflashIlluminant,
+            std::array<float, 3>& out,
+            std::string& diagnostic) {
+            std::array<double, 3> raw{};
+            for (std::size_t sample = 0; sample < preflashIlluminant.size(); ++sample) {
+                const double light =
+                    static_cast<double>(preflashIlluminant[sample]) *
+                    std::pow(10.0, -static_cast<double>(film.data.baseDensity[sample]));
+                for (std::size_t channel = 0; channel < raw.size(); ++channel) {
+                    const float sensitivity = print.data.linearSensitivity[sample][channel];
+                    if (std::isfinite(sensitivity)) {
+                        raw[channel] += light * static_cast<double>(sensitivity);
+                    }
+                }
+            }
+            for (std::size_t channel = 0; channel < raw.size(); ++channel) {
+                if (!std::isfinite(raw[channel]) || raw[channel] < 0.0) {
+                    diagnostic = "MalformedRequiredResource phase=4B field=preflash_raw";
+                    return false;
+                }
+                out[channel] = static_cast<float>(raw[channel]);
+            }
+            return true;
+        }
+
+    } // namespace
+
+    bool build_print_resource_descriptors(
+        const RenderRecipe& recipe,
+        PrintResourceDescriptors& out,
+        std::string& diagnostic) {
+        diagnostic.clear();
+        out = PrintResourceDescriptors{};
+        if (!recipe.printStructuralReady ||
+            !Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
+            !recipe.profileRoute.filmProfile ||
+            !recipe.profileRoute.printProfile ||
+            recipe.print.hash == 0 ||
+            recipe.print.filters.hash == 0 ||
+            recipe.print.exposure.hash == 0 ||
+            recipe.print.illuminant.hash == 0) {
+            diagnostic = "ResourceDescriptorMismatch phase=4B field=print_recipe";
+            return false;
+        }
+
+        const Profiles::ValidatedPrintProfile& print = *recipe.profileRoute.printProfile;
+        PrintProfileTablesDescriptor& profile = out.profileTables;
+        profile.printProfileAssetVersionToken = recipe.profileRoute.printProfileAssetVersionToken;
+        profile.densityCurvesHash = hash_profile_density_curves(print.data);
+        profile.sensitivitiesHash = hash_profile_sensitivities(print.data);
+        profile.densitySampleCount = static_cast<std::uint32_t>(print.data.logExposure.size());
+        profile.spectralSampleCount = static_cast<std::uint32_t>(print.data.linearSensitivity.size());
+        profile.hash = Hash::kFnvOffset;
+        hash_print_descriptor_value(profile.hash, PrintProfileTablesDescriptor::kSchemaVersion);
+        hash_print_descriptor_value(profile.hash, profile.printProfileAssetVersionToken);
+        hash_print_descriptor_value(profile.hash, profile.densityCurvesHash);
+        hash_print_descriptor_value(profile.hash, profile.sensitivitiesHash);
+        hash_print_descriptor_value(profile.hash, profile.densitySampleCount);
+        hash_print_descriptor_value(profile.hash, profile.spectralSampleCount);
+
+        auto build_illuminant = [&](FilteredPrintIlluminantDescriptor& descriptor,
+                                    const CmyCcTriplet& cc,
+                                    bool preflash) {
+            descriptor.printIlluminantHash = recipe.print.illuminant.hash;
+            descriptor.dichroicResourceHash = recipe.print.filters.dichroic.hash;
+            descriptor.cmyCc = cc;
+            descriptor.preflash = preflash;
+            descriptor.hash = Hash::kFnvOffset;
+            hash_print_descriptor_value(
+                descriptor.hash,
+                FilteredPrintIlluminantDescriptor::kSchemaVersion);
+            hash_print_descriptor_value(descriptor.hash, descriptor.printIlluminantHash);
+            hash_print_descriptor_value(descriptor.hash, descriptor.dichroicResourceHash);
+            hash_print_descriptor_cmy(descriptor.hash, descriptor.cmyCc);
+            hash_print_descriptor_value(descriptor.hash, descriptor.preflash);
+        };
+        build_illuminant(out.mainIlluminant, recipe.print.filters.mainCmyCc, false);
+
+        out.preflashActive = recipe.print.exposure.preflashExposure > 0.0f;
+        if (out.preflashActive) {
+            build_illuminant(out.preflashIlluminant, recipe.print.filters.preflashCmyCc, true);
+            out.preflashRaw.filmProfileAssetVersionToken =
+                recipe.profileRoute.filmProfileAssetVersionToken;
+            out.preflashRaw.printProfileTablesHash = profile.hash;
+            out.preflashRaw.filteredPreflashIlluminantHash = out.preflashIlluminant.hash;
+            out.preflashRaw.hash = Hash::kFnvOffset;
+            hash_print_descriptor_value(out.preflashRaw.hash, PrintPreflashRawDescriptor::kSchemaVersion);
+            hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.filmProfileAssetVersionToken);
+            hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.printProfileTablesHash);
+            hash_print_descriptor_value(out.preflashRaw.hash, out.preflashRaw.filteredPreflashIlluminantHash);
+        }
+
+        out.balance.filmProfileAssetVersionToken = recipe.profileRoute.filmProfileAssetVersionToken;
+        out.balance.filmRawRecipeHash = recipe.filmRaw.hash;
+        out.balance.filmDevelopRecipeHash = recipe.filmDevelop.hash;
+        out.balance.printProfileTablesHash = profile.hash;
+        out.balance.filteredMainIlluminantHash = out.mainIlluminant.hash;
+        out.balance.normalizationMode = recipe.print.exposure.normalizationMode;
+        out.balance.cameraExposureCompensationEv =
+            recipe.print.exposure.printExposureCompensation
+                ? recipe.print.exposure.cameraExposureCompensationEv
+                : 0.0f;
+        out.balance.hash = Hash::kFnvOffset;
+        hash_print_descriptor_value(out.balance.hash, PrintBalanceDescriptor::kSchemaVersion);
+        hash_print_descriptor_value(out.balance.hash, out.balance.filmProfileAssetVersionToken);
+        hash_print_descriptor_value(out.balance.hash, out.balance.filmRawRecipeHash);
+        hash_print_descriptor_value(out.balance.hash, out.balance.filmDevelopRecipeHash);
+        hash_print_descriptor_value(out.balance.hash, out.balance.printProfileTablesHash);
+        hash_print_descriptor_value(out.balance.hash, out.balance.filteredMainIlluminantHash);
+        hash_print_descriptor_value(out.balance.hash, out.balance.normalizationMode);
+        hash_print_descriptor_value(out.balance.hash, out.balance.cameraExposureCompensationEv);
+
+        out.hash = Hash::hash_uint64_values({profile.hash,
+                                             out.mainIlluminant.hash,
+                                             out.preflashIlluminant.hash,
+                                             out.preflashRaw.hash,
+                                             out.balance.hash});
+        if (profile.densityCurvesHash == 0 ||
+            profile.sensitivitiesHash == 0 ||
+            profile.densitySampleCount == 0 ||
+            profile.spectralSampleCount != Spectral::kNumSamples ||
+            profile.hash == 0 ||
+            out.mainIlluminant.hash == 0 ||
+            out.balance.hash == 0 ||
+            out.balance.filmRawRecipeHash == 0 ||
+            out.balance.filmDevelopRecipeHash == 0 ||
+            out.hash == 0 ||
+            (out.preflashActive &&
+             (out.preflashIlluminant.hash == 0 || out.preflashRaw.hash == 0))) {
+            diagnostic = "ResourceDescriptorMismatch phase=4B field=print_resource_descriptors";
+            return false;
+        }
+        return true;
+    }
+
+    bool prepare_print_resources(
+        Resources& resources,
+        const PrintResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)request;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outError.clear();
+        if (!request.recipe || !request.assets) {
+            outError = "MissingRequiredResource phase=4B field=print_preparation_request";
+            return false;
+        }
+        PrintResourceDescriptors descriptors{};
+        if (!build_print_resource_descriptors(*request.recipe, descriptors, outError)) {
+            return false;
+        }
+        const Profiles::ValidatedFilmProfile& film = *request.recipe->profileRoute.filmProfile;
+        const Profiles::ValidatedPrintProfile& print = *request.recipe->profileRoute.printProfile;
+
+        std::lock_guard<std::mutex> servingUpdateLock(resources.servingUpdateMutex);
+        std::unique_lock<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        const bool profileHit =
+            resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
+            resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
+            resources.printSensC.y && resources.printSensM.y && resources.printSensY.y;
+        const bool mainHit =
+            resources.printMainIlluminantDescriptorHash == descriptors.mainIlluminant.hash &&
+            resources.printIllumFiltered &&
+            resources.printIllumK == Spectral::kNumSamples &&
+            resources.printIllumFilteredHostValid;
+        const bool preflashIlluminantHit =
+            !descriptors.preflashActive ||
+            (resources.printPreflashIlluminantDescriptorHash == descriptors.preflashIlluminant.hash &&
+             resources.printPreflashIllumFiltered &&
+             resources.printPreflashIllumK == Spectral::kNumSamples &&
+             resources.printPreflashIllumFilteredHostValid);
+        const bool preflashRawHit =
+            !descriptors.preflashActive ||
+            (resources.printPreflashRawDescriptorHash == descriptors.preflashRaw.hash &&
+             resources.printPreflashValid);
+        const bool balanceHit =
+            resources.printBalanceDescriptorHash == descriptors.balance.hash &&
+            std::isfinite(resources.printBalanceFactorMidgray) &&
+            std::isfinite(resources.printBalanceFactorMidgrayComp) &&
+            std::isfinite(resources.printBalanceNormalizer);
+        if (profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
+            balanceHit &&
+            resources.printPreparationDescriptorHash == descriptors.hash) {
+            return true;
+        }
+
+        std::array<float, Spectral::kNumSamples> mainIlluminant{};
+        std::array<float, Spectral::kNumSamples> preflashIlluminant{};
+        std::array<float, 3> preflashRaw{};
+        if (mainHit && !balanceHit) {
+            mainIlluminant = resources.printIllumFilteredHost;
+        }
+        if (descriptors.preflashActive && preflashIlluminantHit && !preflashRawHit) {
+            preflashIlluminant = resources.printPreflashIllumFilteredHost;
+        }
+        float factorMidgray = resources.printBalanceFactorMidgray;
+        float factorMidgrayComp = resources.printBalanceFactorMidgrayComp;
+        float normalizer = resources.printBalanceNormalizer;
+
+        lock.unlock();
+        if (!mainHit &&
+            !derive_filtered_print_illuminant(
+                *request.assets,
+                request.recipe->print,
+                request.recipe->print.filters.mainCmyCc,
+                mainIlluminant,
+                outError)) {
+            return false;
+        }
+        if (descriptors.preflashActive && !preflashIlluminantHit &&
+            !derive_filtered_print_illuminant(
+                *request.assets,
+                request.recipe->print,
+                request.recipe->print.filters.preflashCmyCc,
+                preflashIlluminant,
+                outError)) {
+            return false;
+        }
+        if (!balanceHit) {
+            if (!derive_print_raw_for_midgray(
+                    *request.assets,
+                    *request.recipe,
+                    mainIlluminant,
+                    0.0f,
+                    factorMidgray,
+                    outError) ||
+                !derive_print_raw_for_midgray(
+                    *request.assets,
+                    *request.recipe,
+                    mainIlluminant,
+                    descriptors.balance.cameraExposureCompensationEv,
+                    factorMidgrayComp,
+                    outError)) {
+                return false;
+            }
+            normalizer = Spektrafilm::print_exposure_normalizer(
+                request.recipe->print.exposure.normalizationMode,
+                factorMidgray,
+                factorMidgrayComp);
+            if (!(std::isfinite(normalizer) && normalizer > 0.0f)) {
+                outError = "MalformedRequiredResource phase=4B field=print_exposure_normalizer";
+                return false;
+            }
+        }
+        if (descriptors.preflashActive && !preflashRawHit &&
+            !derive_preflash_raw(film, print, preflashIlluminant, preflashRaw, outError)) {
+            return false;
+        }
+        lock.lock();
+        if (!validate_resource_owner_locked(resources, outError, false)) {
+            return false;
+        }
+
+        if (!profileHit) {
+            Spectral::Curve dcC;
+            Spectral::Curve dcM;
+            Spectral::Curve dcY;
+            dcC.lambda_nm = print.data.logExposure;
+            dcM.lambda_nm = print.data.logExposure;
+            dcY.lambda_nm = print.data.logExposure;
+            dcC.linear.resize(print.data.densityCurves.size());
+            dcM.linear.resize(print.data.densityCurves.size());
+            dcY.linear.resize(print.data.densityCurves.size());
+            std::vector<float> sensC(Spectral::kNumSamples);
+            std::vector<float> sensM(Spectral::kNumSamples);
+            std::vector<float> sensY(Spectral::kNumSamples);
+            for (std::size_t sample = 0; sample < print.data.densityCurves.size(); ++sample) {
+                dcC.linear[sample] = print.data.densityCurves[sample][0];
+                dcM.linear[sample] = print.data.densityCurves[sample][1];
+                dcY.linear[sample] = print.data.densityCurves[sample][2];
+            }
+            for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
+                const auto& cmy = print.data.linearSensitivity[static_cast<std::size_t>(sample)];
+                sensC[static_cast<std::size_t>(sample)] = cmy[0];
+                sensM[static_cast<std::size_t>(sample)] = cmy[1];
+                sensY[static_cast<std::size_t>(sample)] = cmy[2];
+            }
+            if (!upload_curve_locked(resources, resources.printDcC, dcC, cudaStreamOpaque, &lock, "phase4B print dcC", outError) ||
+                !upload_curve_locked(resources, resources.printDcM, dcM, cudaStreamOpaque, &lock, "phase4B print dcM", outError) ||
+                !upload_curve_locked(resources, resources.printDcY, dcY, cudaStreamOpaque, &lock, "phase4B print dcY", outError) ||
+                !upload_spectral_samples_locked(resources, resources.printSensC, sensC, cudaStreamOpaque, &lock, "phase4B print sensC", outError) ||
+                !upload_spectral_samples_locked(resources, resources.printSensM, sensM, cudaStreamOpaque, &lock, "phase4B print sensM", outError) ||
+                !upload_spectral_samples_locked(resources, resources.printSensY, sensY, cudaStreamOpaque, &lock, "phase4B print sensY", outError)) {
+                return false;
+            }
+            resources.printProfileTablesDescriptorHash = descriptors.profileTables.hash;
+        }
+        if (!mainHit) {
+            if (!upload_array_locked(
+                    resources,
+                    resources.printIllumFiltered,
+                    resources.printIllumK,
+                    mainIlluminant.data(),
+                    Spectral::kNumSamples,
+                    cudaStreamOpaque,
+                    &lock,
+                    "phase4B filtered main print illuminant",
+                    outError)) {
+                return false;
+            }
+            resources.printIllumK = Spectral::kNumSamples;
+            resources.printIllumFilteredHost = mainIlluminant;
+            resources.printIllumFilteredHostValid = true;
+            resources.printMainIlluminantDescriptorHash = descriptors.mainIlluminant.hash;
+        }
+        if (descriptors.preflashActive) {
+            if (!preflashIlluminantHit &&
+                !upload_array_locked(
+                    resources,
+                    resources.printPreflashIllumFiltered,
+                    resources.printPreflashIllumK,
+                    preflashIlluminant.data(),
+                    Spectral::kNumSamples,
+                    cudaStreamOpaque,
+                    &lock,
+                    "phase4B filtered preflash print illuminant",
+                    outError)) {
+                return false;
+            }
+            resources.printPreflashIllumK = Spectral::kNumSamples;
+            resources.printPreflashIllumFilteredHost = preflashIlluminant;
+            resources.printPreflashIllumFilteredHostValid = true;
+            resources.printPreflashIlluminantDescriptorHash = descriptors.preflashIlluminant.hash;
+            if (!preflashRawHit) {
+                std::copy(preflashRaw.begin(), preflashRaw.end(), resources.printPreflashRaw);
+                resources.printPreflashValid = true;
+                resources.printPreflashRawDescriptorHash = descriptors.preflashRaw.hash;
+            }
+        } else {
+            if (resources.printPreflashIllumFiltered) {
+                const std::size_t bytes =
+                    static_cast<std::size_t>(std::max(0, resources.printPreflashIllumK)) * sizeof(float);
+                if (!retire_ptr_locked(
+                        resources,
+                        resources.printPreflashIllumFiltered,
+                        bytes,
+                        Resources::RetireKind::DeviceFree,
+                        cudaStreamOpaque,
+                        "disabled phase4B preflash illuminant",
+                        outError)) {
+                    return false;
+                }
+                resources.printPreflashIllumFiltered = nullptr;
+            }
+            resources.printPreflashIllumK = 0;
+            resources.printPreflashIllumFilteredHost.fill(0.0f);
+            resources.printPreflashIllumFilteredHostValid = false;
+            resources.printPreflashIlluminantDescriptorHash = 0;
+            resources.printPreflashRaw[0] = 0.0f;
+            resources.printPreflashRaw[1] = 0.0f;
+            resources.printPreflashRaw[2] = 0.0f;
+            resources.printPreflashValid = false;
+            resources.printPreflashRawDescriptorHash = 0;
+        }
+        if (!balanceHit) {
+            resources.printBalanceFactorMidgray = factorMidgray;
+            resources.printBalanceFactorMidgrayComp = factorMidgrayComp;
+            resources.printBalanceNormalizer = normalizer;
+            resources.printBalanceDescriptorHash = descriptors.balance.hash;
+        }
+        resources.printPreparationDescriptorHash = descriptors.hash;
+        ++resources.printPreparationCounter;
+        return true;
+#endif
+    }
+
+    bool pack_print_cuda_payloads(
+        const PrintRecipe& recipe,
+        const PrintPreparedView& prepared,
+        PrintCudaPayloadPack& out,
+        std::string& diagnostic) {
+        diagnostic.clear();
+        out = PrintCudaPayloadPack{};
+        if (!prepared.active ||
+            prepared.preparationHash == 0 ||
+            prepared.profileTablesHash == 0 ||
+            prepared.mainIlluminantHash == 0 ||
+            prepared.balanceHash == 0 ||
+            !prepared.mainIlluminant ||
+            prepared.spectralSampleCount != Spectral::kNumSamples ||
+            !print_curve_ready(prepared.printSensC, Spectral::kNumSamples, false) ||
+            !print_curve_ready(prepared.printSensM, Spectral::kNumSamples, false) ||
+            !print_curve_ready(prepared.printSensY, Spectral::kNumSamples, false) ||
+            !print_curve_ready(prepared.printDcC, prepared.printDcC.n, true) ||
+            !print_curve_ready(prepared.printDcM, prepared.printDcC.n, true) ||
+            !print_curve_ready(prepared.printDcY, prepared.printDcC.n, true)) {
+            diagnostic = "ResourceDescriptorMismatch phase=4B field=print_prepared_view";
+            return false;
+        }
+        if (prepared.preflashActive &&
+            (!prepared.preflashIlluminant ||
+             prepared.preflashIlluminantHash == 0 ||
+             prepared.preflashRawHash == 0)) {
+            diagnostic = "MissingRequiredResource phase=4B field=preflash_prepared_view";
+            return false;
+        }
+
+        out.expose.active = 1;
+        out.expose.printIllumFiltered = prepared.mainIlluminant;
+        out.expose.printIllumK = prepared.spectralSampleCount;
+        out.expose.printSensC = prepared.printSensC;
+        out.expose.printSensM = prepared.printSensM;
+        out.expose.printSensY = prepared.printSensY;
+        out.expose.printExposure = recipe.exposure.printExposure;
+        out.expose.printPreflashExposure =
+            prepared.preflashActive ? recipe.exposure.preflashExposure : 0.0f;
+        out.expose.printMidgrayFactor = prepared.normalizer;
+        if (prepared.preflashActive) {
+            std::copy_n(prepared.preflashRawCmy, 3, out.expose.printPreflashRaw);
+        }
+        out.develop.printDcC = prepared.printDcC;
+        out.develop.printDcM = prepared.printDcM;
+        out.develop.printDcY = prepared.printDcY;
+        out.printRawScale = recipe.exposure.printExposure * prepared.normalizer;
+        out.scalingOrder = recipe.exposure.scalingOrder;
+        out.preparationHash = prepared.preparationHash;
+        if (!(std::isfinite(out.printRawScale) && out.printRawScale >= 0.0f)) {
+            diagnostic = "MalformedRequiredResource phase=4B field=print_raw_scale";
+            return false;
+        }
+        return true;
+    }
+
     // Cuda/JuicerCudaResourcesScratch.cpp
     //
     // Included by JuicerCudaResources.cpp (single-TU split).

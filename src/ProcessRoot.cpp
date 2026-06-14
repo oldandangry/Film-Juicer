@@ -158,6 +158,7 @@ namespace JuicerProcess {
             } catch (const std::exception& ex) {
                 Spectral::set_hanatos_available(false);
                 Spectral::set_mallett_available(false);
+                (void)ex;
 #if JUICER_DIAGNOSTICS_COMPILED
                 if (JTRACE_ENABLED(1)) {
                     std::string msg = "FATAL: spectral bootstrap failed: ";
@@ -287,6 +288,8 @@ namespace JuicerProcess {
         JuicerCuda::Resources* grainStaticResources = nullptr;
         const Spectral::FilmRawConfig* directFilmRawConfig = nullptr;
         const Scanner::ColorRuntime* directScannerColor = nullptr;
+        const PrintRecipe* printRecipe = nullptr;
+        JuicerCuda::PrintResourceDescriptors printDescriptors{};
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
         ScanErrorFrameStage scanErrorStage{};
         AutoExposureFrameWorkspace autoExposureWorkspace{};
@@ -343,7 +346,7 @@ namespace JuicerProcess {
         cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&next.deviceFlag), sizeof(int));
         if (err != cudaSuccess) {
             outError = std::string("cudaMalloc(frame scan error flag) failed: ") +
-                (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             next.deviceFlag = nullptr;
             return false;
         }
@@ -469,7 +472,7 @@ namespace JuicerProcess {
             const cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&ptr), bytes);
             if (err != cudaSuccess) {
                 outError = std::string("cudaMalloc(") + label + ") failed: " +
-                    (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                           (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
                 ptr = nullptr;
                 return false;
             }
@@ -561,7 +564,7 @@ namespace JuicerProcess {
                 retiredAll = false;
                 if (localError.empty()) {
                     outError = std::string(label ? label : "frame auto-exposure buffer") +
-                        " retire failed";
+                               " retire failed";
                 } else {
                     outError = localError;
                 }
@@ -653,18 +656,18 @@ namespace JuicerProcess {
         const cudaError_t createErr = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
         if (createErr != cudaSuccess || !ev) {
             outError = std::string("cudaEventCreateWithFlags(frame use) failed: ") +
-                (cudaGetErrorString(createErr) ? cudaGetErrorString(createErr) : "(unknown)");
+                       (cudaGetErrorString(createErr) ? cudaGetErrorString(createErr) : "(unknown)");
             return false;
         }
 
         const cudaStream_t stream = cudaStreamOpaque
-            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-            : nullptr;
+                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                                        : nullptr;
         const cudaError_t recordErr = cudaEventRecord(ev, stream);
         if (recordErr != cudaSuccess) {
             cudaEventDestroy(ev);
             outError = std::string("cudaEventRecord(frame use) failed: ") +
-                (cudaGetErrorString(recordErr) ? cudaGetErrorString(recordErr) : "(unknown)");
+                       (cudaGetErrorString(recordErr) ? cudaGetErrorString(recordErr) : "(unknown)");
             return false;
         }
 
@@ -701,14 +704,14 @@ namespace JuicerProcess {
 
         auto requests_match = [](const WorkspaceRequest& a, const WorkspaceRequest& b) noexcept {
             return a.needOptics == b.needOptics &&
-                a.needSpatialDir == b.needSpatialDir &&
-                a.requestedWidth == b.requestedWidth &&
-                a.requestedHeight == b.requestedHeight &&
-                a.needBlurred == b.needBlurred &&
-                a.needAux == b.needAux &&
-                a.needGrainTriplet == b.needGrainTriplet &&
-                a.needGrainShared == b.needGrainShared &&
-                a.needGateMask == b.needGateMask;
+                   a.needSpatialDir == b.needSpatialDir &&
+                   a.requestedWidth == b.requestedWidth &&
+                   a.requestedHeight == b.requestedHeight &&
+                   a.needBlurred == b.needBlurred &&
+                   a.needAux == b.needAux &&
+                   a.needGrainTriplet == b.needGrainTriplet &&
+                   a.needGrainShared == b.needGrainShared &&
+                   a.needGateMask == b.needGateMask;
         };
 
         if (scratchWorkspace.retainedLeaseActive || scratchWorkspace.overflowActive) {
@@ -758,7 +761,7 @@ namespace JuicerProcess {
                 return true;
             }
             outError = std::string("cudaMalloc(") + (label ? label : "frame scratch") + ") failed: " +
-                (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             ptr = nullptr;
             return false;
         };
@@ -902,13 +905,13 @@ namespace JuicerProcess {
             }
             retiredAll = false;
             outError = localError.empty()
-                ? std::string(label ? label : "frame scratch") + " retire failed"
-                : localError;
+                           ? std::string(label ? label : "frame scratch") + " retire failed"
+                           : localError;
         };
 
         const std::size_t planeBytes = workspace.optics.capacityElements > 0
-            ? workspace.optics.capacityElements * sizeof(float)
-            : workspace.spatialDir.capacityElements * sizeof(float);
+                                           ? workspace.optics.capacityElements * sizeof(float)
+                                           : workspace.spatialDir.capacityElements * sizeof(float);
         retire_ptr(workspace.optics.rgbR, planeBytes, "frame scannerScratch.rgbR");
         retire_ptr(workspace.optics.rgbG, planeBytes, "frame scannerScratch.rgbG");
         retire_ptr(workspace.optics.rgbB, planeBytes, "frame scannerScratch.rgbB");
@@ -1022,9 +1025,7 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::WorkspaceLeaseMarker::WorkspaceLeaseMarker(
         const WorkspaceRequest& request,
         std::uint64_t leaseGeneration) noexcept
-        : _request(request)
-        , _leaseGeneration(leaseGeneration)
-        , _active(leaseGeneration != 0) {
+        : _request(request), _leaseGeneration(leaseGeneration), _active(leaseGeneration != 0) {
     }
 
     bool Root::PreparedCudaFrame::WorkspaceLeaseMarker::active() const noexcept {
@@ -1471,8 +1472,8 @@ namespace JuicerProcess {
         }
 
         cudaEvent_t scanEvent = stage.eventOpaque
-            ? reinterpret_cast<cudaEvent_t>(stage.eventOpaque)
-            : nullptr;
+                                    ? reinterpret_cast<cudaEvent_t>(stage.eventOpaque)
+                                    : nullptr;
         cudaStream_t stream = reinterpret_cast<cudaStream_t>(cudaStreamOpaque);
         if (stage.hostFlag && scanEvent) {
             cudaError_t flagErr = cudaMemcpyAsync(
@@ -1497,9 +1498,8 @@ namespace JuicerProcess {
                 return false;
             }
             stage.readbackPending = true;
-        }
-        else {
-            static std::atomic<bool> sScanErrorReadbackUnavailableWarned{ false };
+        } else {
+            static std::atomic<bool> sScanErrorReadbackUnavailableWarned{false};
             if (!sScanErrorReadbackUnavailableWarned.exchange(true)) {
                 JTRACE("CUDA", "scan error host/event staging unavailable; skipping asynchronous scan-error readback validation");
             }
@@ -1930,26 +1930,24 @@ namespace JuicerProcess {
             resources.spatialDirKernels[0].weights,
             resources.spatialDirKernels[0].radius,
             resources.spatialDirKernels[0].sigma};
-        kernels.scannerLensBlur = { resources.scannerLensBlurKernel.weights, resources.scannerLensBlurKernel.radius };
-        kernels.scannerUnsharp = { resources.scannerUnsharpKernel.weights, resources.scannerUnsharpKernel.radius };
-        kernels.scannerGlare = { resources.scannerGlareKernel.weights, resources.scannerGlareKernel.radius };
-        kernels.grainBlur = { resources.grainBlurKernel.weights, resources.grainBlurKernel.radius };
-        kernels.grainBlurMid = { resources.grainBlurKernelMid.weights, resources.grainBlurKernelMid.radius };
-        kernels.grainBlurCoarse = { resources.grainBlurKernelCoarse.weights, resources.grainBlurKernelCoarse.radius };
+        kernels.scannerLensBlur = {resources.scannerLensBlurKernel.weights, resources.scannerLensBlurKernel.radius};
+        kernels.scannerUnsharp = {resources.scannerUnsharpKernel.weights, resources.scannerUnsharpKernel.radius};
+        kernels.scannerGlare = {resources.scannerGlareKernel.weights, resources.scannerGlareKernel.radius};
+        kernels.grainBlur = {resources.grainBlurKernel.weights, resources.grainBlurKernel.radius};
+        kernels.grainBlurMid = {resources.grainBlurKernelMid.weights, resources.grainBlurKernelMid.radius};
+        kernels.grainBlurCoarse = {resources.grainBlurKernelCoarse.weights, resources.grainBlurKernelCoarse.radius};
         for (int layer = 0; layer < 3; ++layer) {
             for (int ch = 0; ch < 3; ++ch) {
                 kernels.grainDye[layer][ch] = {
                     resources.grainDyeKernel[layer][ch].weights,
-                    resources.grainDyeKernel[layer][ch].radius
-                };
+                    resources.grainDyeKernel[layer][ch].radius};
             }
         }
         for (int i = 0; i < 3; ++i) {
-            kernels.halation[i] = { resources.halationKernel[i].weights, resources.halationKernel[i].radius };
+            kernels.halation[i] = {resources.halationKernel[i].weights, resources.halationKernel[i].radius};
             kernels.halationScatter[i] = {
                 resources.halationScatterKernel[i].weights,
-                resources.halationScatterKernel[i].radius
-            };
+                resources.halationScatterKernel[i].radius};
         }
         return kernels;
     }
@@ -2007,6 +2005,9 @@ namespace JuicerProcess {
         view.densityCurvesHash = _state->resources->directDensityCurvesHash;
         view.densityBoundsHash = _state->resources->directDensityBoundsHash;
         view.scannerDescriptorHash = _state->resources->directScannerDescriptorHash;
+        view.printPreparationCounter = _state->resources->printPreparationCounter;
+        view.printPreparationDescriptorHash =
+            _state->resources->printPreparationDescriptorHash;
         view.active = true;
         return view;
     }
@@ -2057,6 +2058,46 @@ namespace JuicerProcess {
         view.selectedMethod = resources.directSelectedMethod;
         view.active = view.scanMedium && view.scanLut->canonical_ready() &&
                       view.densityBoundsHash != 0 && view.scannerDescriptorHash != 0;
+        return view;
+    }
+
+    Root::PreparedCudaFrame::PrintPreparedView Root::PreparedCudaFrame::print_resources() const noexcept {
+        PrintPreparedView view{};
+        if (!_state || !_state->resources || !_state->printRecipe ||
+            !_state->transaction.active || _state->transaction.committed ||
+            _state->printDescriptors.hash == 0) {
+            return view;
+        }
+        const JuicerCuda::Resources& resources = *_state->resources;
+        const JuicerCuda::PrintResourceDescriptors& descriptors = _state->printDescriptors;
+        view.printSensC = {resources.printSensC.x, resources.printSensC.y, resources.printSensC.n, resources.printSensC.domainBegin, resources.printSensC.domainEnd};
+        view.printSensM = {resources.printSensM.x, resources.printSensM.y, resources.printSensM.n, resources.printSensM.domainBegin, resources.printSensM.domainEnd};
+        view.printSensY = {resources.printSensY.x, resources.printSensY.y, resources.printSensY.n, resources.printSensY.domainBegin, resources.printSensY.domainEnd};
+        view.printDcC = {resources.printDcC.x, resources.printDcC.y, resources.printDcC.n, resources.printDcC.domainBegin, resources.printDcC.domainEnd};
+        view.printDcM = {resources.printDcM.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd};
+        view.printDcY = {resources.printDcY.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd};
+        view.mainIlluminant = resources.printIllumFiltered;
+        view.preflashIlluminant = resources.printPreflashIllumFiltered;
+        view.spectralSampleCount = resources.printIllumK;
+        std::copy_n(resources.printPreflashRaw, 3, view.preflashRawCmy);
+        view.factorMidgray = resources.printBalanceFactorMidgray;
+        view.factorMidgrayComp = resources.printBalanceFactorMidgrayComp;
+        view.normalizer = resources.printBalanceNormalizer;
+        view.profileTablesHash = resources.printProfileTablesDescriptorHash;
+        view.mainIlluminantHash = resources.printMainIlluminantDescriptorHash;
+        view.preflashIlluminantHash = resources.printPreflashIlluminantDescriptorHash;
+        view.preflashRawHash = resources.printPreflashRawDescriptorHash;
+        view.balanceHash = resources.printBalanceDescriptorHash;
+        view.preparationHash = resources.printPreparationDescriptorHash;
+        view.preflashActive = descriptors.preflashActive;
+        view.active =
+            view.profileTablesHash == descriptors.profileTables.hash &&
+            view.mainIlluminantHash == descriptors.mainIlluminant.hash &&
+            view.balanceHash == descriptors.balance.hash &&
+            view.preparationHash == descriptors.hash &&
+            (!view.preflashActive ||
+             (view.preflashIlluminantHash == descriptors.preflashIlluminant.hash &&
+              view.preflashRawHash == descriptors.preflashRaw.hash));
         return view;
     }
 
@@ -2198,8 +2239,7 @@ namespace JuicerProcess {
             }
             std::string ignoredError;
             (void)_state->submit_frame_use_event(cudaStreamOpaque, ignoredError);
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
@@ -2292,8 +2332,7 @@ namespace JuicerProcess {
             set_shutdown_retire_blocked(false);
             release_cuda_context_resource_owners();
             release_process_host_services();
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
@@ -2367,7 +2406,7 @@ namespace JuicerProcess {
             return false;
         }
 
-        const ContextCudaResourceKey resourceKey{ deviceContextKey, contextEpoch };
+        const ContextCudaResourceKey resourceKey{deviceContextKey, contextEpoch};
         std::vector<CudaResourceOwner> retiredOwners;
         {
             std::lock_guard<std::mutex> lock(_cudaResourcesMutex);
@@ -2511,6 +2550,82 @@ namespace JuicerProcess {
             frame.abort("prepared_frame_auto_exposure_failed");
             return frame;
         }
+        return frame;
+    }
+
+    Root::PreparedCudaFrame Root::prepare_cuda_frame(
+        const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+        const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+        const PrintCudaPreparationRequest& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        std::unique_ptr<PreparedCudaFrame::State> state;
+        try {
+            state = std::make_unique<PreparedCudaFrame::State>();
+        } catch (...) {
+            outError = "failed to allocate Phase 4B print CUDA prepared frame";
+            return PreparedCudaFrame{};
+        }
+
+        PreparedCudaFrame frame(std::move(state));
+        frame._state->root = this;
+        frame._state->remember_stream(cudaStreamOpaque);
+        frame._state->set_failure(
+            "prepare_cuda_frame_print_phase4B",
+            "CUDA Phase 4B print prepared frame failed",
+            false);
+        if (!request.recipe) {
+            outError = "MissingRequiredResource phase=4B field=print_recipe";
+            return frame;
+        }
+        if (!JuicerCuda::build_print_resource_descriptors(
+                *request.recipe,
+                frame._state->printDescriptors,
+                outError)) {
+            return frame;
+        }
+        if (!begin_submission(frame._state->transaction, snapshot, outError)) {
+            frame._state->set_failure(
+                "begin_submission_print_phase4B",
+                "Phase 4B print begin_submission failed");
+            return frame;
+        }
+        if (!resolve_cuda_frame_resources(
+                deviceContextKey,
+                frame._state->transaction.snapshot.contextEpoch,
+                frame._state->resourceOwner,
+                frame._state->resources,
+                outError)) {
+            frame._state->set_failure(
+                "resolve_cuda_print_resources_phase4B",
+                "Phase 4B print CUDA resource acquisition failed");
+            frame.abort("print_phase4B_resource_acquire_failed");
+            return frame;
+        }
+        if (!acquire_submission_plan(frame._state->transaction, outError)) {
+            frame._state->set_failure(
+                "acquire_print_plan_phase4B",
+                "Phase 4B print acquire_plan failed");
+            frame.abort("print_phase4B_acquire_failed");
+            return frame;
+        }
+        JuicerCuda::PrintResourcePreparation preparation{};
+        preparation.recipe = request.recipe;
+        preparation.assets = &_assets;
+        if (!JuicerCuda::prepare_print_resources(
+                *frame._state->resources,
+                preparation,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure(
+                "prepare_print_resources_phase4B",
+                "Phase 4B print resource preparation failed",
+                false);
+            frame.abort("print_phase4B_preparation_failed");
+            return frame;
+        }
+        frame._state->printRecipe = &request.recipe->print;
         return frame;
     }
 

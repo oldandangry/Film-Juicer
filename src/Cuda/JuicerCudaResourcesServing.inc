@@ -2020,6 +2020,11 @@
             }
         }
 
+        // SF_TEMP_BRIDGE_WorkingStatePrintUpload owner=Phase4C-print-launch:
+        // reason=legacy broad WorkingState/Print::Runtime launch preparation;
+        // allowed=unreachable legacy print launch preparation only;
+        // output_impact=none in Phase4B; hash_impact=none in Phase4B;
+        // resource_impact=none in Phase4B; removal=Phase4C.
         // Print pipeline: upload payloads when a valid print runtime is present.
         if (needPrintMediumUploads) {
             const Print::Runtime* prt = ws.printRT.get();

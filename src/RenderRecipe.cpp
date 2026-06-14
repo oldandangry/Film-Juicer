@@ -637,6 +637,7 @@ namespace {
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, recipe.printExposure);
         hash_value(hash, recipe.preflashExposure);
+        hash_value(hash, recipe.cameraExposureCompensationEv);
         hash_value(hash, recipe.normalizePrintExposure);
         hash_value(hash, recipe.printExposureCompensation);
         hash_value(hash, recipe.normalizationMode);
@@ -872,7 +873,7 @@ namespace Spektrafilm {
             !std::all_of(input.uiYmcCc.begin(), input.uiYmcCc.end(), [](float value) {
                 return std::isfinite(value);
             }) ||
-            !std::isfinite(input.preflashMFilterCc) || !std::isfinite(input.preflashYFilterCc) || !std::isfinite(input.printExposure) || !std::isfinite(input.preflashExposure)) {
+            !std::isfinite(input.preflashMFilterCc) || !std::isfinite(input.preflashYFilterCc) || !std::isfinite(input.printExposure) || !std::isfinite(input.preflashExposure) || !std::isfinite(input.cameraExposureCompensationEv)) {
             result.diagnostic = "ResourceDescriptorMismatch phase=4A field=print_recipe_input";
             return result;
         }
@@ -931,6 +932,7 @@ namespace Spektrafilm {
 
         print.exposure.printExposure = input.printExposure;
         print.exposure.preflashExposure = input.preflashExposure;
+        print.exposure.cameraExposureCompensationEv = input.cameraExposureCompensationEv;
         print.exposure.normalizePrintExposure = input.normalizePrintExposure;
         print.exposure.printExposureCompensation = input.printExposureCompensation;
         print.exposure.normalizationMode =

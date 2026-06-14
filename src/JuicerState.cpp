@@ -1755,6 +1755,8 @@ namespace {
         input.preflashYFilterCc = static_cast<float>(params.preflashYFilterCc);
         input.printExposure = static_cast<float>(params.printExposure);
         input.preflashExposure = static_cast<float>(params.printPreflashExposure);
+        input.cameraExposureCompensationEv =
+            static_cast<float>(params.cameraExposureCompensationEv);
         input.normalizePrintExposure = params.normalizePrintExposure != 0;
         input.printExposureCompensation = params.printExposureCompensation != 0;
 

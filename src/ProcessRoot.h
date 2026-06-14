@@ -93,6 +93,10 @@ namespace JuicerProcess {
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
         };
 
+        struct PrintCudaPreparationRequest {
+            const Spektrafilm::RenderRecipe* recipe = nullptr;
+        };
+
         class PreparedCudaFrame final {
         public:
             PreparedCudaFrame() noexcept = default;
@@ -156,13 +160,13 @@ namespace JuicerProcess {
                     const JuicerCuda::DeviceCurve* sensG = nullptr;
                     const JuicerCuda::DeviceCurve* sensR = nullptr;
                     bool hasDensityCurvesLayers = false;
-                    const float* densityCurvesLayers[3][3] = { { nullptr, nullptr, nullptr }, { nullptr, nullptr, nullptr }, { nullptr, nullptr, nullptr } };
+                    const float* densityCurvesLayers[3][3] = {{nullptr, nullptr, nullptr}, {nullptr, nullptr, nullptr}, {nullptr, nullptr, nullptr}};
                     const float* tablesAx = nullptr;
                     const float* tablesAy = nullptr;
                     const float* tablesAz = nullptr;
                     const float* tablesIllum = nullptr;
                     int tablesK = 0;
-                    float spdSInv[9] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+                    float spdSInv[9] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
                     const float* hanatosLut = nullptr;
                     int hanatosN = 0;
                     const float* hanatosLutIntegrated = nullptr;
@@ -198,7 +202,7 @@ namespace JuicerProcess {
                     float printGammaC = 1.0f;
                     float printGammaM = 1.0f;
                     float printGammaY = 1.0f;
-                    float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
+                    float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
                 };
 
                 FilmRuntimeView film{};
@@ -249,6 +253,8 @@ namespace JuicerProcess {
                 std::uint64_t densityCurvesHash = 0;
                 std::uint64_t densityBoundsHash = 0;
                 std::uint64_t scannerDescriptorHash = 0;
+                std::uint64_t printPreparationCounter = 0;
+                std::uint64_t printPreparationDescriptorHash = 0;
                 bool active = false;
             };
 
@@ -262,6 +268,8 @@ namespace JuicerProcess {
                 Spektrafilm::RgbToRawMethod selectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
                 bool active = false;
             };
+
+            using PrintPreparedView = JuicerCuda::PrintPreparedView;
 
             struct SpatialDirScratchView {
                 float* corrY = nullptr;
@@ -311,6 +319,7 @@ namespace JuicerProcess {
             AutoExposureBufferView auto_exposure_buffers() const noexcept;
             UploadTraceView upload_trace_view() const noexcept;
             DirectPreparedView direct_resources() const noexcept;
+            PrintPreparedView print_resources() const noexcept;
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             SpatialDirPreparedView spatial_dir_resources(
                 const WorkspaceLeaseMarker& workspace,
@@ -361,6 +370,10 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            // SF_TEMP_BRIDGE_PreparePrintIlluminantFiltered owner=Phase4C-print-launch:
+            // reason=legacy old-filter-unit launch preparation; allowed=unreachable legacy print
+            // launch block only; output_impact=none in Phase4B; hash_impact=none in Phase4B;
+            // resource_impact=none in Phase4B; removal=Phase4C.
             bool prepare_print_illuminant_filtered(
                 const WorkingState& workingState,
                 const Print::Runtime& printRuntime,
@@ -434,6 +447,10 @@ namespace JuicerProcess {
                 const WorkingState& workingState,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            // SF_TEMP_BRIDGE_ValidatePrintPrimitives owner=Phase4C-print-launch:
+            // reason=legacy broad launch validation; allowed=unreachable legacy print launch
+            // block only; output_impact=none in Phase4B; hash_impact=none in Phase4B;
+            // resource_impact=none in Phase4B; removal=Phase4C.
             bool validate_print_primitives(
                 const WorkingState& workingState,
                 const Print::Runtime& printRuntime,
@@ -473,16 +490,22 @@ namespace JuicerProcess {
             std::unique_ptr<State> _state;
         };
 
-        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase4-print-route:
-        // reason=legacy broad print preparation; allowed=processImagesCUDA post-direct
-        // prepare_cuda_frame overload call only; output_impact=blocked print route;
-        // hash_impact=legacy print keys; resource_impact=uploads broad WorkingState;
-        // removal=Phase4 print cutover.
+        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase4C-print-launch:
+        // reason=legacy broad print launch source; allowed=unreachable processImagesCUDA legacy
+        // print launch block after the accepted Phase 4B hard stop only;
+        // output_impact=none in Phase4B; hash_impact=legacy print keys only;
+        // resource_impact=none in Phase4B; removal=Phase4C launch cutover.
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const WorkingState& workingState,
             const AutoExposureBufferRequest& autoExposureBufferRequest,
+            void* cudaStreamOpaque,
+            std::string& outError);
+        PreparedCudaFrame prepare_cuda_frame(
+            const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
+            const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
+            const PrintCudaPreparationRequest& request,
             void* cudaStreamOpaque,
             std::string& outError);
         PreparedCudaFrame prepare_cuda_frame(
@@ -567,7 +590,7 @@ namespace JuicerProcess {
 
             bool operator==(const ContextCudaResourceKey& other) const noexcept {
                 return deviceContextKey == other.deviceContextKey &&
-                    contextEpoch == other.contextEpoch;
+                       contextEpoch == other.contextEpoch;
             }
         };
 

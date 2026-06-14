@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Cuda/JuicerCudaPayloads.h"
 #include "Cuda/ResourceManager/JuicerCudaResourceCore.h"
 #include "RenderRecipe.h"
 
@@ -31,6 +32,9 @@ namespace Print {
     struct Runtime;
     struct Params;
 } // namespace Print
+namespace JuicerAssets {
+    class Library;
+} // namespace JuicerAssets
 
 struct JuicerCudaAutoExposurePartial {
     static constexpr int kLaneCount = 4;
@@ -45,8 +49,8 @@ struct JuicerCudaAutoExposureScratch {
     int partialCapacity = 0;
     unsigned int* maxYBits = nullptr;
     unsigned int* histogram = nullptr; // 2048 bins
-    float* weightsX = nullptr; // meterWidth floats
-    float* weightsY = nullptr; // meterHeight floats
+    float* weightsX = nullptr;         // meterWidth floats
+    float* weightsY = nullptr;         // meterHeight floats
 };
 
 // Device-side outputs for metering. All pointers are CUDA device pointers.
@@ -57,6 +61,111 @@ struct JuicerCudaAutoExposureDeviceState {
 };
 
 namespace JuicerCuda {
+
+    // Phase 4B focused print-preparation contract:
+    // - producer: build_print_resource_descriptors() from RenderRecipe::print and selected
+    //   validated profiles; consumer: prepare_print_resources() and pack_print_cuda_payloads().
+    // - update frequency: descriptor miss only; descriptor hits perform no asset lookup,
+    //   spectral derivation, profile packing, allocation, or upload.
+    // - layouts/units: canonical 81-sample host/device spectra, density curves on authored logE,
+    //   and C/M/Y channel order. Filter values are Kodak CC units.
+    // - ownership/lifetime: immutable host derivations are temporary; device arrays and scalar
+    //   results are exact-context/epoch Resources residency exposed through PreparedCudaFrame.
+    // - schema/hash: schema v1 includes selected profile tokens and Phase 4A recipe/resource
+    //   identities; excludes file discovery, CUDA pointers, frame tokens, and launch policy.
+    // - preparation point: Root's Phase 4B print prelaunch prepared-frame overload.
+    // - disabled behavior: disabled preflash has zero descriptor identity and no derivation/upload.
+    struct PrintProfileTablesDescriptor {
+        static constexpr std::uint32_t kSchemaVersion = 1u;
+
+        std::uint64_t printProfileAssetVersionToken = 0;
+        std::uint64_t densityCurvesHash = 0;
+        std::uint64_t sensitivitiesHash = 0;
+        std::uint32_t densitySampleCount = 0;
+        std::uint32_t spectralSampleCount = 0;
+        std::uint64_t hash = 0;
+    };
+
+    struct FilteredPrintIlluminantDescriptor {
+        static constexpr std::uint32_t kSchemaVersion = 1u;
+
+        std::uint64_t printIlluminantHash = 0;
+        std::uint64_t dichroicResourceHash = 0;
+        CmyCcTriplet cmyCc{};
+        bool preflash = false;
+        std::uint64_t hash = 0;
+    };
+
+    struct PrintPreflashRawDescriptor {
+        static constexpr std::uint32_t kSchemaVersion = 1u;
+
+        std::uint64_t filmProfileAssetVersionToken = 0;
+        std::uint64_t printProfileTablesHash = 0;
+        std::uint64_t filteredPreflashIlluminantHash = 0;
+        std::uint64_t hash = 0;
+    };
+
+    struct PrintBalanceDescriptor {
+        static constexpr std::uint32_t kSchemaVersion = 1u;
+
+        std::uint64_t filmProfileAssetVersionToken = 0;
+        std::uint64_t filmRawRecipeHash = 0;
+        std::uint64_t filmDevelopRecipeHash = 0;
+        std::uint64_t printProfileTablesHash = 0;
+        std::uint64_t filteredMainIlluminantHash = 0;
+        Spektrafilm::PrintNormalizationMode normalizationMode =
+            Spektrafilm::PrintNormalizationMode::None;
+        float cameraExposureCompensationEv = 0.0f;
+        std::uint64_t hash = 0;
+    };
+
+    struct PrintResourceDescriptors {
+        PrintProfileTablesDescriptor profileTables{};
+        FilteredPrintIlluminantDescriptor mainIlluminant{};
+        FilteredPrintIlluminantDescriptor preflashIlluminant{};
+        PrintPreflashRawDescriptor preflashRaw{};
+        PrintBalanceDescriptor balance{};
+        bool preflashActive = false;
+        std::uint64_t hash = 0;
+    };
+
+    struct PrintResourcePreparation {
+        const RenderRecipe* recipe = nullptr;
+        JuicerAssets::Library* assets = nullptr;
+    };
+
+    struct PrintPreparedView {
+        DeviceCurveView printSensC{};
+        DeviceCurveView printSensM{};
+        DeviceCurveView printSensY{};
+        DeviceCurveView printDcC{};
+        DeviceCurveView printDcM{};
+        DeviceCurveView printDcY{};
+        const float* mainIlluminant = nullptr;
+        const float* preflashIlluminant = nullptr;
+        int spectralSampleCount = 0;
+        float preflashRawCmy[3] = {0.0f, 0.0f, 0.0f};
+        float factorMidgray = 1.0f;
+        float factorMidgrayComp = 1.0f;
+        float normalizer = 1.0f;
+        std::uint64_t profileTablesHash = 0;
+        std::uint64_t mainIlluminantHash = 0;
+        std::uint64_t preflashIlluminantHash = 0;
+        std::uint64_t preflashRawHash = 0;
+        std::uint64_t balanceHash = 0;
+        std::uint64_t preparationHash = 0;
+        bool preflashActive = false;
+        bool active = false;
+    };
+
+    struct PrintCudaPayloadPack {
+        PrintExposePayload expose{};
+        PrintDevelopPayload develop{};
+        float printRawScale = 1.0f;
+        Spektrafilm::PrintExposureScalingOrder scalingOrder =
+            Spektrafilm::PrintExposureScalingOrder::NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection;
+        std::uint64_t preparationHash = 0;
+    };
 
     struct AutoExposurePreviewDescriptor {
         enum class Sampling : std::uint8_t {
@@ -230,9 +339,9 @@ namespace JuicerCuda {
         DeviceCurve densB;
         DeviceCurve densG;
         DeviceCurve densR;
-        float* densityCurvesLayers[3][3] = { {nullptr, nullptr, nullptr},
-                                             {nullptr, nullptr, nullptr},
-                                             {nullptr, nullptr, nullptr} };
+        float* densityCurvesLayers[3][3] = {{nullptr, nullptr, nullptr},
+                                            {nullptr, nullptr, nullptr},
+                                            {nullptr, nullptr, nullptr}};
         int densityCurvesLayersChannelN[3] = {0, 0, 0};
         int hasDensityCurvesLayers = 0;
 
@@ -250,8 +359,8 @@ namespace JuicerCuda {
         float* tablesAz = nullptr;
         float* tablesIllum = nullptr;
         int tablesK = 0;
-        float spdSInv[9] = { 1,0,0, 0,1,0, 0,0,1 };
-        float refIllumWhiteXYZ[3] = { 0.950455f, 1.0f, 1.089058f };
+        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        float refIllumWhiteXYZ[3] = {0.950455f, 1.0f, 1.089058f};
 
         float* mallettBasis = nullptr;
         int mallettBasisK = 0;
@@ -272,15 +381,15 @@ namespace JuicerCuda {
         struct DeviceScanMedium {
             DeviceSpectralTables tables;
             int mediumIsNegative = 1;
-            float min_cmy[3] = { 0.0f, 0.0f, 0.0f };
-            float inv_max_cmy[3] = { 1.0f, 1.0f, 1.0f };
+            float min_cmy[3] = {0.0f, 0.0f, 0.0f};
+            float inv_max_cmy[3] = {1.0f, 1.0f, 1.0f};
         };
 
         DeviceScanMedium scanNegative;
         DeviceScanMedium scanPrint;
 
         struct DeviceSpectralLut {
-            double* log2XYZ = nullptr; // layout: ((z*res + y)*res + x) * 3 + c
+            double* log2XYZ = nullptr;  // layout: ((z*res + y)*res + x) * 3 + c
             double* log10XYZ = nullptr; // canonical layout: ((C*res + M)*res + Y) * 3 + XYZ
             double* slopeC = nullptr;
             double* slopeM = nullptr;
@@ -390,7 +499,7 @@ namespace JuicerCuda {
         float printGammaM = 1.0f;
         float printGammaY = 1.0f;
 
-        float printPreflashRaw[3] = { 0.0f, 0.0f, 0.0f };
+        float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
         bool printPreflashValid = false;
         std::uint64_t printPreflashKeyHash = 0;
         int printPreflashShapeK = 0;
@@ -405,6 +514,25 @@ namespace JuicerCuda {
         int printIllumShapeK = 0;
         std::uint64_t printIllumBuildCounter = 0;
         std::uint64_t printIllumCoreHash = 0;
+
+        // Focused Phase 4B print resources. The legacy fields above remain Phase 4C launch
+        // bridges; these descriptor identities are the accepted preparation contract.
+        float* printPreflashIllumFiltered = nullptr;
+        int printPreflashIllumK = 0;
+        std::array<float, 81> printIllumFilteredHost{};
+        std::array<float, 81> printPreflashIllumFilteredHost{};
+        bool printIllumFilteredHostValid = false;
+        bool printPreflashIllumFilteredHostValid = false;
+        float printBalanceFactorMidgray = 1.0f;
+        float printBalanceFactorMidgrayComp = 1.0f;
+        float printBalanceNormalizer = 1.0f;
+        std::uint64_t printProfileTablesDescriptorHash = 0;
+        std::uint64_t printMainIlluminantDescriptorHash = 0;
+        std::uint64_t printPreflashIlluminantDescriptorHash = 0;
+        std::uint64_t printPreflashRawDescriptorHash = 0;
+        std::uint64_t printBalanceDescriptorHash = 0;
+        std::uint64_t printPreparationDescriptorHash = 0;
+        std::uint64_t printPreparationCounter = 0;
 
         // Hanatos LUT (process-global on CPU, uploaded on demand).
         // Layout matches NpySpectraLUT: ((x*N + y) * K + k), K=81.
@@ -478,6 +606,23 @@ namespace JuicerCuda {
         const DirectResourcePreparation& request,
         void* cudaStreamOpaque,
         std::string& outError);
+
+    bool build_print_resource_descriptors(
+        const RenderRecipe& recipe,
+        PrintResourceDescriptors& out,
+        std::string& diagnostic);
+
+    bool prepare_print_resources(
+        Resources& resources,
+        const PrintResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError);
+
+    bool pack_print_cuda_payloads(
+        const PrintRecipe& recipe,
+        const PrintPreparedView& prepared,
+        PrintCudaPayloadPack& out,
+        std::string& diagnostic);
 
     // Runtime serving acquisition/rebuild calls are intentionally manager-only via
     // ResourceManager::command_* wrappers.

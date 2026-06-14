@@ -592,6 +592,7 @@ namespace JuicerAssets {
         bool parse_measured_dichroic_channel(
             const MeasuredDichroicChannelRequest& request,
             std::uint64_t& outHash,
+            std::array<float, 81>* outTransmittance,
             std::string& diagnostic) {
             std::string bytes;
             std::uint64_t fileHash = 0;
@@ -663,6 +664,9 @@ namespace JuicerAssets {
             hash_value(hash, fileHash);
             hash = fnv1a_append(hash, transmittance.data(), sizeof(transmittance));
             outHash = hash;
+            if (outTransmittance) {
+                *outTransmittance = transmittance;
+            }
             return outHash != 0;
         }
 
@@ -1079,6 +1083,7 @@ namespace JuicerAssets {
             curves.d50 = Spectral::build_curve_D50_pinned(asset.d50Path);
             curves.tungsten = Spectral::build_curve_T_pinned(asset.tungstenPath);
             curves.kinoton75P = Spectral::build_curve_K75P_pinned(asset.kinoton75PPath);
+            curves.tungstenKg3 = Spectral::build_curve_TH_KG3_pinned(asset.kg3Path);
             curves.tungstenKg3Lens = Spectral::build_curve_TH_KG3_L_pinned(
                 asset.kg3Path,
                 asset.lensTransmissionPath);
@@ -1097,6 +1102,7 @@ namespace JuicerAssets {
                    curve_is_on_reference_axis(curves.d50) &&
                    curve_is_on_reference_axis(curves.tungsten) &&
                    curve_is_on_reference_axis(curves.kinoton75P) &&
+                   curve_is_on_reference_axis(curves.tungstenKg3) &&
                    curve_is_on_reference_axis(curves.tungstenKg3Lens);
         }
 
@@ -1456,6 +1462,7 @@ namespace JuicerAssets {
             if (!parse_measured_dichroic_channel(
                     MeasuredDichroicChannelRequest{path, result.resourcePathsCmy[channel]},
                     result.resourceHashesCmy[channel],
+                    nullptr,
                     result.diagnostic)) {
                 return result;
             }
@@ -1467,6 +1474,34 @@ namespace JuicerAssets {
         hash_string(hash, result.setKey);
         for (std::size_t channel = 0; channel < result.resourcePathsCmy.size(); ++channel) {
             hash_string(hash, result.resourcePathsCmy[channel]);
+            hash_value(hash, result.resourceHashesCmy[channel]);
+        }
+        result.hash = hash;
+        result.valid = result.hash != 0;
+        return result;
+    }
+
+    MeasuredDichroicCurveResult Library::measured_dichroic_curves(const std::string& setKey) {
+        MeasuredDichroicCurveResult result;
+        constexpr std::array<const char*, 3> kChannelsCmy{{"c", "m", "y"}};
+        std::uint64_t hash = kFnvOffsetBasis64;
+        constexpr std::uint32_t kSchemaVersion = 1u;
+        hash_value(hash, kSchemaVersion);
+        hash_string(hash, setKey);
+        for (std::size_t channel = 0; channel < kChannelsCmy.size(); ++channel) {
+            const char* channelKey = kChannelsCmy[channel];
+            const std::string relativePath = measured_dichroic_relative_path(setKey, channelKey);
+            const std::string fileName = std::string("filter_") + channelKey + ".csv";
+            const std::string path =
+                data_path_string(_dataDir, {"filters", "dichroics", setKey.c_str(), fileName.c_str()});
+            if (!parse_measured_dichroic_channel(
+                    MeasuredDichroicChannelRequest{path, relativePath},
+                    result.resourceHashesCmy[channel],
+                    &result.transmittanceCmy[channel],
+                    result.diagnostic)) {
+                return result;
+            }
+            hash_string(hash, relativePath);
             hash_value(hash, result.resourceHashesCmy[channel]);
         }
         result.hash = hash;

@@ -1924,6 +1924,17 @@ void add_resources_active_bytes_locked(
         }
         add_snapshot_bytes(snapshot, bytes);
     }
+    if (resources.printPreflashIllumFiltered && resources.printPreflashIllumK > 0) {
+        bool overflow = false;
+        const std::uint64_t bytes = bytes_for_count_u64(
+            non_negative_u64(resources.printPreflashIllumK),
+            sizeof(float),
+            overflow);
+        if (overflow) {
+            snapshot.overflow = true;
+        }
+        add_snapshot_bytes(snapshot, bytes);
+    }
 
     if (resources.hanatosLut && resources.hanatosN > 0) {
         std::uint64_t n = non_negative_u64(resources.hanatosN);

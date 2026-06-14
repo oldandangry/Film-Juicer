@@ -303,6 +303,7 @@ struct PrintFilterRecipe {
 struct PrintExposureRecipe {
     float printExposure = 1.0f;
     float preflashExposure = 0.0f;
+    float cameraExposureCompensationEv = 0.0f;
     bool normalizePrintExposure = true;
     bool printExposureCompensation = true;
     Spektrafilm::PrintNormalizationMode normalizationMode =
@@ -417,6 +418,7 @@ namespace Spektrafilm {
         float preflashYFilterCc = 0.0f;
         float printExposure = 1.0f;
         float preflashExposure = 0.0f;
+        float cameraExposureCompensationEv = 0.0f;
         bool normalizePrintExposure = true;
         bool printExposureCompensation = true;
         std::string printIlluminantKey = "TH-KG3";
