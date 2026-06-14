@@ -33,6 +33,10 @@ namespace Spektrafilm {
         "PositiveCorrectionNotImplementedForPhase3";
     inline constexpr const char kQuantizedMedianNotAcceptedForPhase3[] =
         "QuantizedMedianNotAcceptedForPhase3";
+    inline constexpr const char kGlareNotImplementedForPhase4[] =
+        "GlareNotImplementedForPhase4";
+    inline constexpr const char kScannerPostEffectsNotImplementedForPhase4[] =
+        "ScannerPostEffectsNotImplementedForPhase4";
 
     enum class RgbToRawMethod : std::uint8_t {
         Hanatos2025,
@@ -63,7 +67,8 @@ namespace Spektrafilm {
     enum class ScannerPostEffectDisposition : std::uint8_t {
         Identity,
         Implemented,
-        BlockedNotImplementedForPhase3
+        BlockedNotImplementedForPhase3,
+        BlockedNotImplementedForPhase4
     };
 
     enum class DichroicFilterSet : std::uint8_t {
@@ -249,6 +254,10 @@ struct ScannerOutputRecipe {
     bool outputCctfEncoding = true;
     bool outputLinearPassThrough = false;
     bool directGlareDisabled = true;
+    bool glareActive = false;
+    float glarePercent = 0.0f;
+    float glareRoughness = 0.0f;
+    float glareBlurSigmaPx = 0.0f;
     float lensBlurSigmaPx = 0.55f;
     float unsharpSigmaPx = 0.7f;
     float unsharpAmount = 1.0f;
@@ -341,6 +350,7 @@ struct RenderRecipe {
     FilmRawRecipe filmRaw;
     FilmDevelopRecipe filmDevelop;
     DirCouplersRecipe dirCouplers;
+    DensityBoundsRecipe enlargerFilmBounds;
     DensityBoundsRecipe densityBounds;
     ScannerOutputRecipe scannerOutput;
     PrintRecipe print;
@@ -406,6 +416,7 @@ namespace Spektrafilm {
         ScanRoute scanRoute = kDefaultScanRoute;
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
         std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
+        DirectRecipeBuildInput filmFoundation;
         DichroicResourceIdentity dichroic;
         NeutralCalibrationStatus neutralCalibrationStatus = NeutralCalibrationStatus::MissingEntry;
         std::uint64_t neutralCalibrationResourceHash = 0;
@@ -422,6 +433,17 @@ namespace Spektrafilm {
         bool normalizePrintExposure = true;
         bool printExposureCompensation = true;
         std::string printIlluminantKey = "TH-KG3";
+        std::uint32_t scannerLutResolution = 17;
+        int outputColorSpace = 0;
+        bool outputCctfEncoding = true;
+        bool outputLinearPassThrough = false;
+        bool glareActive = true;
+        float glarePercent = 0.10f;
+        float glareRoughness = 0.4f;
+        float glareBlurSigmaPx = 0.5f;
+        float scannerLensBlurSigmaPx = 0.55f;
+        float scannerUnsharpSigmaPx = 0.7f;
+        float scannerUnsharpAmount = 1.0f;
     };
 
     struct PrintRecipeBuildResult {

@@ -173,6 +173,8 @@ namespace JuicerAssets {
         struct DichroicFilterAssetSet;
         struct IlluminantFilterAssetSet;
 
+        // Identity for pinned process-owned spectral assets. Bump when their source set or
+        // derivation changes; focused descriptors enforce this token before consuming curves.
         static constexpr std::uint64_t kProcessAssetVersion = 1ull;
 
         explicit Library(std::string dataDir);

@@ -95,6 +95,12 @@ namespace JuicerProcess {
 
         struct PrintCudaPreparationRequest {
             const Spektrafilm::RenderRecipe* recipe = nullptr;
+            const Spectral::SpectralTables* exposureTables = nullptr;
+            const float* spdSInv = nullptr;
+            const Spectral::FilmRawConfig* filmRawConfig = nullptr;
+            const Spectral::SpectralTables* scannerTables = nullptr;
+            const Scanner::ColorRuntime* scannerColor = nullptr;
+            const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
         };
 
         class PreparedCudaFrame final {
@@ -271,6 +277,17 @@ namespace JuicerProcess {
 
             using PrintPreparedView = JuicerCuda::PrintPreparedView;
 
+            struct PrintRoutePreparedView {
+                JuicerCuda::DirectFilmPreparedView film{};
+                const JuicerCuda::Resources::DeviceScanMedium* scanMedium = nullptr;
+                const JuicerCuda::Resources::DeviceSpectralLut* scanLut = nullptr;
+                const Scanner::ColorRuntime* scannerColor = nullptr;
+                std::uint64_t densityBoundsHash = 0;
+                std::uint64_t scannerDescriptorHash = 0;
+                Spektrafilm::RgbToRawMethod selectedMethod = Spektrafilm::RgbToRawMethod::Hanatos2025;
+                bool active = false;
+            };
+
             struct SpatialDirScratchView {
                 float* corrY = nullptr;
                 float* corrM = nullptr;
@@ -320,6 +337,7 @@ namespace JuicerProcess {
             UploadTraceView upload_trace_view() const noexcept;
             DirectPreparedView direct_resources() const noexcept;
             PrintPreparedView print_resources() const noexcept;
+            PrintRoutePreparedView print_route_resources() const noexcept;
             SpatialDirScratchView spatial_dir_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
             SpatialDirPreparedView spatial_dir_resources(
                 const WorkspaceLeaseMarker& workspace,
@@ -506,6 +524,7 @@ namespace JuicerProcess {
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
             const PrintCudaPreparationRequest& request,
+            const AutoExposureBufferRequest& autoExposureBufferRequest,
             void* cudaStreamOpaque,
             std::string& outError);
         PreparedCudaFrame prepare_cuda_frame(

@@ -606,6 +606,203 @@ namespace {
         return direct;
     }
 
+    static bool build_scanner_illuminant(
+        const std::string& source,
+        const char* label,
+        Scanner::ScannerIlluminant& out);
+
+    inline bool build_focused_print_film_payload(
+        const RenderRecipe& recipe,
+        PrintRenderPayload& payload) {
+        if (!recipe.profileRoute.filmProfile) {
+            return false;
+        }
+
+        const Profiles::ValidatedFilmProfile& profile = *recipe.profileRoute.filmProfile;
+        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
+            curve.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+            curve.linear.resize(profile.data.channelDensity.size());
+            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
+                curve.linear[sample] = profile.data.channelDensity[sample][channel];
+            }
+        };
+        Spectral::Curve epsC;
+        Spectral::Curve epsM;
+        Spectral::Curve epsY;
+        Spectral::Curve baseMin;
+        Spectral::Curve baseMid;
+        assign_channel(epsC, 0u);
+        assign_channel(epsM, 1u);
+        assign_channel(epsY, 2u);
+        baseMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        baseMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
+
+        Scanner::ScannerIlluminant referenceIlluminant;
+        if (!build_scanner_illuminant(
+                profile.info.referenceIlluminant.value,
+                "focused print film reference",
+                referenceIlluminant)) {
+            return false;
+        }
+        Spectral::build_tables_from_curves_non_global(
+            epsY,
+            epsM,
+            epsC,
+            Spectral::gXBar,
+            Spectral::gYBar,
+            Spectral::gZBar,
+            referenceIlluminant.curve,
+            baseMin,
+            baseMid,
+            true,
+            0.0f,
+            payload.exposureTables,
+            referenceIlluminant.hash);
+        const auto valid_white = [](const float white[3]) {
+            return std::isfinite(white[0]) &&
+                   std::isfinite(white[1]) &&
+                   std::isfinite(white[2]) &&
+                   white[1] > 0.0f;
+        };
+        if (payload.exposureTables.K != Spectral::kNumSamples ||
+            payload.exposureTables.tablesHash == 0 ||
+            !valid_white(payload.exposureTables.whiteXYZ) ||
+            !valid_white(payload.exposureTables.refIllumWhiteXYZ)) {
+            return false;
+        }
+        Spectral::compute_S_inverse_from_tables(
+            payload.exposureTables,
+            payload.spdSInv.data());
+
+        payload.filmRawConfig = Spectral::FilmRawConfig{};
+        payload.filmRawConfig.inputColorSpace =
+            Spectral::inputColorSpaceFromIndex(recipe.filmRaw.inputColorSpace);
+        payload.filmRawConfig.applyCctfDecoding = recipe.filmRaw.inputCctfDecoding;
+        payload.filmRawConfig.spectralUpsamplingMode =
+            recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019
+                ? Spectral::SpectralUpsamplingMode::ForceMallett
+                : Spectral::SpectralUpsamplingMode::PreferHanatos;
+        Spectral::prepare_film_raw_config(payload.filmRawConfig);
+        std::copy_n(
+            payload.exposureTables.refIllumWhiteXYZ,
+            3,
+            payload.filmRawConfig.refIllumWhiteXYZ);
+        payload.filmRawConfig.hasRefIllumWhite = true;
+
+        Spectral::Curve sensB;
+        Spectral::Curve sensG;
+        Spectral::Curve sensR;
+        sensB.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        sensG.lambda_nm = sensB.lambda_nm;
+        sensR.lambda_nm = sensB.lambda_nm;
+        sensB.linear.resize(recipe.filmRaw.finalSensitivity.size());
+        sensG.linear.resize(recipe.filmRaw.finalSensitivity.size());
+        sensR.linear.resize(recipe.filmRaw.finalSensitivity.size());
+        for (std::size_t sample = 0; sample < recipe.filmRaw.finalSensitivity.size(); ++sample) {
+            const auto& rgb = recipe.filmRaw.finalSensitivity[sample];
+            sensB.linear[sample] = rgb[2];
+            sensG.linear[sample] = rgb[1];
+            sensR.linear[sample] = rgb[0];
+        }
+        Spectral::compute_film_raw_midgray(
+            payload.filmRawConfig,
+            &payload.exposureTables,
+            payload.spdSInv.data(),
+            sensB,
+            sensG,
+            sensR);
+        return payload.filmRawConfig.valid;
+    }
+
+    inline std::shared_ptr<PrintRenderState> make_print_render_state(const RenderRecipe& recipe) {
+        if (!Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) ||
+            !recipe.printStructuralReady ||
+            !recipe.profileRoute.filmProfile ||
+            !recipe.profileRoute.printProfile) {
+            return nullptr;
+        }
+
+        auto print = std::make_shared<PrintRenderState>();
+        print->recipe = recipe;
+        if (!build_focused_print_film_payload(recipe, print->payload)) {
+            return nullptr;
+        }
+
+        const Profiles::ValidatedPrintProfile& profile = *recipe.profileRoute.printProfile;
+        auto assign_channel = [&](Spectral::Curve& curve, std::size_t channel) {
+            curve.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+            curve.linear.resize(profile.data.channelDensity.size());
+            for (std::size_t sample = 0; sample < profile.data.channelDensity.size(); ++sample) {
+                curve.linear[sample] = profile.data.channelDensity[sample][channel];
+            }
+        };
+        Spectral::Curve epsC;
+        Spectral::Curve epsM;
+        Spectral::Curve epsY;
+        Spectral::Curve baseMin;
+        Spectral::Curve baseMid;
+        assign_channel(epsC, 0u);
+        assign_channel(epsM, 1u);
+        assign_channel(epsY, 2u);
+        baseMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        baseMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
+
+        Scanner::ScannerIlluminant scannerIlluminant;
+        if (!build_scanner_illuminant(
+                recipe.scannerOutput.viewingIlluminant,
+                "focused print viewing",
+                scannerIlluminant)) {
+            return nullptr;
+        }
+        Spectral::build_tables_from_curves_non_global(
+            epsY,
+            epsM,
+            epsC,
+            Spectral::gXBar,
+            Spectral::gYBar,
+            Spectral::gZBar,
+            scannerIlluminant.curve,
+            baseMin,
+            baseMid,
+            true,
+            0.0f,
+            print->payload.scannerTables,
+            scannerIlluminant.hash);
+        if (print->payload.scannerTables.tablesHash == 0) {
+            return nullptr;
+        }
+
+        Scanner::ScannerMediumRuntime medium{};
+        medium.medium = Scanner::ScannerMedium::Print;
+        medium.tables = &print->payload.scannerTables;
+        medium.illuminant = scannerIlluminant;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            medium.range.min_cmy[channel] = recipe.densityBounds.dataMinCmy[channel];
+            medium.range.max_cmy[channel] =
+                recipe.densityBounds.dataMaxCmy[channel] -
+                recipe.densityBounds.dataMinCmy[channel];
+            medium.range.inv_max_cmy[channel] = recipe.densityBounds.invSpanCmy[channel];
+        }
+        medium.range.digest = recipe.densityBounds.hash;
+        OutputEncoding::Params encoding{};
+        encoding.colorSpace = OutputEncoding::colorSpaceFromIndex(recipe.scannerOutput.outputColorSpace);
+        encoding.applyCctfEncoding = recipe.scannerOutput.outputCctfEncoding;
+        encoding.preserveLinearRange = recipe.scannerOutput.outputLinearPassThrough;
+        encoding.inputIsOutputSpace = true;
+        print->payload.scannerColor = ScannerOptics::build_color_runtime(medium, encoding);
+        print->payload.uploadCoreHash = recipe.hash;
+        print->payload.scannerHash = Hash::hash_uint64_values({recipe.densityBounds.hash,
+                                                               recipe.scannerOutput.hash,
+                                                               print->payload.scannerColor.hash,
+                                                               print->payload.scannerTables.tablesHash});
+        if (print->payload.scannerColor.hash == 0 ||
+            print->payload.uploadCoreHash == 0 ||
+            print->payload.scannerHash == 0) {
+            return nullptr;
+        }
+        return print;
+    }
+
     inline void publish_rebuilt_working_state(
         InstanceState& state,
         const ParamSnapshot& params,
@@ -621,6 +818,7 @@ namespace {
         }
         JuicerAtomic::store_shared_ptr(&state.activeWorkingState, std::shared_ptr<const WorkingState>(std::move(next)));
         JuicerAtomic::store_shared_ptr(&state.activeDirectState, directState);
+        JuicerAtomic::store_shared_ptr(&state.activePrintState, std::shared_ptr<const PrintRenderState>{});
         state.activeBuildCounter = buildCounter;
         state.lastParams = params;
         state.lastHash.store(fullHash, std::memory_order_release);
@@ -792,6 +990,10 @@ namespace {
         mix_hash_field_scaled(h, p.glareCompRemovalDensity, 10000.0, mix);
         mix_hash_field_scaled(h, p.glareCompRemovalTransition, 10000.0, mix);
         mix_hash_field_scaled(h, p.printDminFactor, 10000.0, mix);
+        mix_hash_field(h, p.glareActive ? 1 : 0, mix);
+        mix_hash_field_scaled(h, p.glarePercent, 10000.0, mix);
+        mix_hash_field_scaled(h, p.glareRoughness, 10000.0, mix);
+        mix_hash_field_scaled(h, p.glareBlurSigmaPx, 10000.0, mix);
     }
 
     template <typename MixFn>
@@ -858,9 +1060,6 @@ namespace {
         uint64_t& h,
         const ParamSnapshot& p,
         const MixFn& mix) {
-        if (Spektrafilm::scan_route_is_print(p.scanRoute)) {
-            return;
-        }
         mix_hash_field(h, p.cameraAutoExposureEnabled, mix);
         mix_hash_field(h, p.cameraMeteringMethod, mix);
         mix_hash_field_scaled_rounded_if_finite(
@@ -1692,6 +1891,47 @@ namespace {
         input.scanRoute = params.scanRoute;
         input.filmProfile = selected.filmProfile;
         input.printProfile = selected.printProfile;
+        input.filmFoundation.filmProfile = selected.filmProfile;
+        input.filmFoundation.spectralUpsamplingMode = params.spectralUpsamplingMode;
+        input.filmFoundation.inputColorSpace = params.inputColorSpace;
+        input.filmFoundation.inputCctfDecoding = params.inputCctfDecoding != 0;
+        input.filmFoundation.cameraAutoExposureEnabled = params.cameraAutoExposureEnabled != 0;
+        input.filmFoundation.cameraMeteringMethod = params.cameraMeteringMethod;
+        input.filmFoundation.manualExposureCompensationEv =
+            static_cast<float>(params.cameraExposureCompensationEv);
+        input.filmFoundation.filmFormatLongEdgeMm =
+            static_cast<float>(params.cameraFilmFormatLongEdgeMm);
+        input.filmFoundation.cameraFilterOverride = params.cameraFilterOverride;
+        input.filmFoundation.cameraFilterUV = params.cameraFilterUV;
+        input.filmFoundation.cameraFilterIR = params.cameraFilterIR;
+        input.filmFoundation.dirCouplers.active = params.couplersActive != 0;
+        input.filmFoundation.dirCouplers.amount = static_cast<float>(params.couplersAmount);
+        if (selected.filmProfile) {
+            const std::string illuminantKey =
+                IlluminantKeys::normalize(selected.filmProfile->info.referenceIlluminant.value);
+            const JuicerAssets::IlluminantFilterCurveSet& illuminants =
+                assets.illuminant_filter_curves();
+            const Spectral::Curve* referenceIlluminant = nullptr;
+            if (IlluminantKeys::matches_any(illuminantKey, {"D65"})) {
+                referenceIlluminant = &illuminants.d65;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"D55"})) {
+                referenceIlluminant = &illuminants.d55;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"D50"})) {
+                referenceIlluminant = &illuminants.d50;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"T", "TUNGSTEN"})) {
+                referenceIlluminant = &illuminants.tungsten;
+            } else if (IlluminantKeys::matches_any(illuminantKey, {"TH-KG3", "TUNGSTEN-KG3"})) {
+                referenceIlluminant = &illuminants.tungstenKg3Lens;
+            }
+            if (referenceIlluminant &&
+                referenceIlluminant->linear.size() == input.filmFoundation.referenceIlluminant.size()) {
+                std::copy(
+                    referenceIlluminant->linear.begin(),
+                    referenceIlluminant->linear.end(),
+                    input.filmFoundation.referenceIlluminant.begin());
+                input.filmFoundation.referenceIlluminantValid = true;
+            }
+        }
         input.dichroic.set = dichroic_filter_set_from_choice(params.enlDichroicSet);
         input.dichroic.setKey = dichroic_filter_set_key(input.dichroic.set);
         if (input.dichroic.set != Spektrafilm::DichroicFilterSet::Custom) {
@@ -1759,6 +1999,18 @@ namespace {
             static_cast<float>(params.cameraExposureCompensationEv);
         input.normalizePrintExposure = params.normalizePrintExposure != 0;
         input.printExposureCompensation = params.printExposureCompensation != 0;
+        input.scannerLutResolution =
+            static_cast<std::uint32_t>(std::clamp(params.scannerLutResolution, 17, 128));
+        input.outputColorSpace = params.outputColorSpace;
+        input.outputCctfEncoding = params.outputCctfEncoding != 0;
+        input.outputLinearPassThrough = params.outputLinearPassThrough != 0;
+        input.glareActive = params.glareActive;
+        input.glarePercent = static_cast<float>(params.glarePercent);
+        input.glareRoughness = static_cast<float>(params.glareRoughness);
+        input.glareBlurSigmaPx = static_cast<float>(params.glareBlurSigmaPx);
+        input.scannerLensBlurSigmaPx = static_cast<float>(params.scannerLensBlurSigmaPx);
+        input.scannerUnsharpSigmaPx = static_cast<float>(params.scannerUnsharpMask[0]);
+        input.scannerUnsharpAmount = static_cast<float>(params.scannerUnsharpMask[1]);
 
         Spektrafilm::PrintRecipeBuildResult built =
             Spektrafilm::build_print_render_recipe(input);
@@ -1871,9 +2123,9 @@ const char* print_profile_option_label(int index) {
 
 bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceState& S) {
     // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
-    // reason=legacy print bootstrap; allowed=bootstrap_after_attach and reset changedParam print
-    // branches only; output_impact=blocked print route; hash_impact=none on direct route;
-    // resource_impact=legacy Agx profile load; removal=Phase4 print profile cutover.
+    // reason=legacy broad renderer only; allowed=unreachable legacy broad rebuild helpers only;
+    // output_impact=none on accepted focused routes; hash_impact=none on accepted focused routes;
+    // resource_impact=legacy Agx profile load; removal=Phase4 legacy broad renderer deletion.
     const JuicerAssets::FilmStockAsset& stock =
         JuicerProcess::root().assets().film_profile_for_key(filmProfileKey);
     const bool stockTraceEnabled = JTRACE_ENABLED(1);
@@ -2258,6 +2510,65 @@ bool load_selected_spektrafilm_film_profile_into_base(
     S.couplerProfileSpatialSigmaMicrometers = 0.0;
     S.couplerProfileSpatialSigmaValid = false;
     JTRACE_VERBOSE("SPEKTRAFILM", "phase=3A direct bootstrap consumed selected validated Spektrafilm film payload");
+    return true;
+}
+
+bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P) {
+    Spectral::SpectralMutationScope mutationScope(
+        Spectral::SpectralMutationStage::Rebuild,
+        "rebuild_print_render_state");
+    (void)mutationScope;
+
+    if (!Spektrafilm::scan_route_is_print(P.scanRoute)) {
+        return false;
+    }
+
+    JTRACE_SCOPE("BUILD", "rebuild_print_render_state");
+    std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
+    RenderRecipe recipe =
+        Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
+    if (!publish_print_recipe_if_selected(P, recipe)) {
+        std::lock_guard<std::mutex> stateLock(S.m);
+        JuicerAtomic::store_shared_ptr(
+            &S.activePrintState,
+            std::shared_ptr<const PrintRenderState>{});
+        return false;
+    }
+
+    std::shared_ptr<PrintRenderState> next = make_print_render_state(recipe);
+    if (!next) {
+        JTRACE(
+            "SPEKTRAFILM",
+            "ResourceDescriptorMismatch phase=4C focused print publication payload build failed");
+        std::lock_guard<std::mutex> stateLock(S.m);
+        JuicerAtomic::store_shared_ptr(
+            &S.activePrintState,
+            std::shared_ptr<const PrintRenderState>{});
+        return false;
+    }
+
+    next->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
+    const std::uint64_t fullHash = hash_params(P);
+    {
+        std::lock_guard<std::mutex> stateLock(S.m);
+        S.spatialSigmaCacheValid.store(false, std::memory_order_release);
+        JuicerAtomic::store_shared_ptr(
+            &S.activeWorkingState,
+            std::shared_ptr<const WorkingState>{});
+        JuicerAtomic::store_shared_ptr(
+            &S.activeDirectState,
+            std::shared_ptr<const DirectRenderState>{});
+        JuicerAtomic::store_shared_ptr(
+            &S.activePrintState,
+            std::shared_ptr<const PrintRenderState>(next));
+        S.activeBuildCounter = next->buildCounter;
+        S.lastParams = P;
+        S.lastHash.store(fullHash, std::memory_order_release);
+    }
+
+    JTRACE_VERBOSE(
+        "SPEKTRAFILM",
+        "phase=4C focused print state published from validated profiles and RenderRecipe");
     return true;
 }
 

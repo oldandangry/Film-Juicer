@@ -119,4 +119,61 @@ namespace Scanner {
         return true;
     }
 
+    bool build_print_scanner_spectral_lut_descriptor(
+        const PrintScannerSpectralLutDescriptorInput& input,
+        ScannerSpectralLutDescriptor& outDescriptor,
+        std::string& outDiagnostic) {
+        outDescriptor = ScannerSpectralLutDescriptor{};
+        outDiagnostic.clear();
+        if (!input.profileRoute || !input.densityBounds || !input.scannerOutput ||
+            !input.mediumHandoff) {
+            outDiagnostic = "ResourceDescriptorMismatch phase=4C scanner print inputs unavailable";
+            return false;
+        }
+        const ProfileRoute& route = *input.profileRoute;
+        const DensityBoundsRecipe& bounds = *input.densityBounds;
+        const ScannerOutputRecipe& output = *input.scannerOutput;
+        const PrintMediumHandoffRecipe& handoff = *input.mediumHandoff;
+        if (!Spektrafilm::scan_route_is_print(route.scanRoute) || !route.printProfile ||
+            bounds.hash == 0 || bounds.medium != Spektrafilm::DensityMedium::Print ||
+            bounds.source != Spektrafilm::DensityBoundsSource::PrintMediaAuthoredCurves ||
+            output.medium != Spektrafilm::DensityMedium::Print ||
+            handoff.medium != Spektrafilm::DensityMedium::Print ||
+            handoff.printProfileKey != route.printProfileKey ||
+            handoff.printProfileAssetVersionToken != route.printProfileAssetVersionToken ||
+            handoff.viewingIlluminant != output.viewingIlluminant ||
+            input.observerIdentity.empty()) {
+            outDiagnostic = "ResourceDescriptorMismatch phase=4C scanner print handoff";
+            return false;
+        }
+
+        const Profiles::ValidatedPrintProfile& profile = *route.printProfile;
+        ScannerSpectralLutDescriptor descriptor{};
+        descriptor.route = route.scanRoute;
+        descriptor.medium = ScannedMediumKind::Print;
+        descriptor.polarity = route.capturePolarity;
+        descriptor.densityBoundsHash = bounds.hash;
+        descriptor.channelDensityHash = hash_nan_preserving_floats(
+            &profile.data.channelDensity[0][0],
+            profile.data.channelDensity.size() * 3u);
+        descriptor.baseDensityHash = hash_nan_preserving_floats(
+            profile.data.baseDensity.data(),
+            profile.data.baseDensity.size());
+        descriptor.scanIlluminantHash = Hash::kFnvOffset;
+        hash_string(descriptor.scanIlluminantHash, output.viewingIlluminant);
+        descriptor.observerHash = Hash::hash_bytes(
+            input.observerIdentity.data(),
+            input.observerIdentity.size());
+        descriptor.lutResolution = output.lutResolution;
+        descriptor.hash = hash_scanner_spectral_lut_descriptor(descriptor);
+        if (descriptor.channelDensityHash == 0 || descriptor.baseDensityHash == 0 ||
+            descriptor.scanIlluminantHash == 0 || descriptor.observerHash == 0 ||
+            descriptor.hash == 0) {
+            outDiagnostic = "ResourceDescriptorMismatch phase=4C scanner print descriptor hash";
+            return false;
+        }
+        outDescriptor = descriptor;
+        return true;
+    }
+
 } // namespace Scanner

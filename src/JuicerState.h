@@ -212,6 +212,22 @@ struct DirectRenderState {
     std::uint64_t buildCounter = 0;
 };
 
+struct PrintRenderPayload {
+    Spectral::SpectralTables exposureTables;
+    std::array<float, 9> spdSInv{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+    Spectral::FilmRawConfig filmRawConfig;
+    Spectral::SpectralTables scannerTables;
+    Scanner::ColorRuntime scannerColor;
+    std::uint64_t uploadCoreHash = 0;
+    std::uint64_t scannerHash = 0;
+};
+
+struct PrintRenderState {
+    Spektrafilm::RenderRecipe recipe;
+    PrintRenderPayload payload;
+    std::uint64_t buildCounter = 0;
+};
+
 // Per-instance, derived state used for rendering.
 // Built from BaseState in rebuild_working_state() and never mutated in render().
 struct WorkingState {
@@ -363,6 +379,10 @@ struct ParamSnapshot {
     double glareCompRemovalFactor = 0.0;
     double glareCompRemovalDensity = 1.2;
     double glareCompRemovalTransition = 0.3;
+    bool glareActive = true;
+    double glarePercent = 0.10;
+    double glareRoughness = 0.4;
+    double glareBlurSigmaPx = 0.5;
     double printDminFactor = 0.4;
     int couplersActive = 1;
     double couplersAmount = 1.0;
@@ -425,6 +445,7 @@ struct InstanceState {
     // Published render snapshot. Readers use std::atomic_load; writers use std::atomic_store.
     std::shared_ptr<const WorkingState> activeWorkingState;
     std::shared_ptr<const DirectRenderState> activeDirectState;
+    std::shared_ptr<const PrintRenderState> activePrintState;
     uint64_t activeBuildCounter = 0;
     std::atomic<std::uint64_t> buildCounterNext{0};
     std::atomic<std::uint32_t> frameBoundsVersion{0};
@@ -516,5 +537,6 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
 bool load_selected_spektrafilm_film_profile_into_base(
     const Profiles::ValidatedFilmProfile& profile,
     InstanceState& S);
+bool rebuild_print_render_state(InstanceState& S, const ParamSnapshot& P);
 void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);
 void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P);

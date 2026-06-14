@@ -31,9 +31,9 @@ namespace {
             D_denorm1 = D_norm[1] / static_cast<double>(medium.inv_max_cmy[1]) - static_cast<double>(medium.min_cmy[1]);
             D_denorm2 = D_norm[2] / static_cast<double>(medium.inv_max_cmy[2]) - static_cast<double>(medium.min_cmy[2]);
         } else {
-            D_denorm0 = D_norm[0] / static_cast<double>(medium.inv_max_cmy[0]);
-            D_denorm1 = D_norm[1] / static_cast<double>(medium.inv_max_cmy[1]);
-            D_denorm2 = D_norm[2] / static_cast<double>(medium.inv_max_cmy[2]);
+            D_denorm0 = D_norm[0] / static_cast<double>(medium.inv_max_cmy[0]) + static_cast<double>(medium.min_cmy[0]);
+            D_denorm1 = D_norm[1] / static_cast<double>(medium.inv_max_cmy[1]) + static_cast<double>(medium.min_cmy[1]);
+            D_denorm2 = D_norm[2] / static_cast<double>(medium.inv_max_cmy[2]) + static_cast<double>(medium.min_cmy[2]);
         }
 
         double X = 0.0;
@@ -1054,6 +1054,10 @@ namespace {
             }
         }
 
+        if constexpr (requires { params.printExpose; params.printDevelop; }) {
+            apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
+        }
+
         // Scan: normalize density -> logXYZ
         double D_norm[3];
         if (scan.scanTables.mediumIsNegative) {
@@ -1061,9 +1065,9 @@ namespace {
             D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
             D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
         } else {
-            D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
-            D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
-            D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+            D_norm[0] = (static_cast<double>(D_cmy[0]) - static_cast<double>(scan.scanTables.min_cmy[0])) * static_cast<double>(scan.scanTables.inv_max_cmy[0]);
+            D_norm[1] = (static_cast<double>(D_cmy[1]) - static_cast<double>(scan.scanTables.min_cmy[1])) * static_cast<double>(scan.scanTables.inv_max_cmy[1]);
+            D_norm[2] = (static_cast<double>(D_cmy[2]) - static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
         }
 
         const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
@@ -1492,8 +1496,8 @@ extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
 
     dim3 threads(32, 8);
     dim3 blocks(
-        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
-        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+        (params.width + threads.x - 1) / threads.x,
+        (params.height + threads.y - 1) / threads.y);
     pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
     return cudaGetLastError();
 }
@@ -2400,6 +2404,29 @@ extern "C" cudaError_t juicer_cuda_print_pipeline(
         return cudaErrorInvalidValue;
     }
     return juicer_cuda_negative_pipeline(hParams, cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_print_focused_pipeline(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    void* cudaStreamOpaque) {
+    if (!hParams || !hParams->printExpose.active || !hParams->src || !hParams->dst) {
+        return cudaErrorInvalidValue;
+    }
+    const JuicerCuda::PrintPipelineRunParams params = *hParams;
+    if (params.width <= 0 || params.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(params.nComponents == 3 || params.nComponents == 4) ||
+        params.srcRowBytes == 0 || params.dstRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    dim3 threads(32, 8);
+    dim3 blocks(
+        (params.width + threads.x - 1) / threads.x,
+        (params.height + threads.y - 1) / threads.y);
+    pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
+    return cudaGetLastError();
 }
 
 extern "C" cudaError_t juicer_cuda_print_pipeline_optics(

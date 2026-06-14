@@ -50,12 +50,13 @@ namespace {
             wsum += w;
         }
         const Scalar invW = (wsum != 0.0) ? static_cast<Scalar>(1.0 / wsum) : static_cast<Scalar>(0.0);
-        for (Scalar& w : kernel) w *= invW;
+        for (Scalar& w : kernel)
+            w *= invW;
     }
 
     template <typename Scalar>
-    void blur_separable(const std::vector<Scalar>& src, std::vector<Scalar>& tmp, std::vector<Scalar>& dst,
-        int width, int height, const std::vector<Scalar>& k) {
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) Established internal image-buffer interface.
+    void blur_separable(const std::vector<Scalar>& src, std::vector<Scalar>& tmp, std::vector<Scalar>& dst, int width, int height, const std::vector<Scalar>& k) {
         if (width <= 0 || height <= 0) {
             tmp.clear();
             dst.clear();
@@ -75,13 +76,12 @@ namespace {
             while (idx < 0 || idx >= size) {
                 if (idx < 0) {
                     idx = -idx;
-                }
-                else {
+                } else {
                     idx = 2 * size - idx - 2;
                 }
             }
             return idx;
-            };
+        };
         for (int y = 0; y < height; ++y) {
             const size_t rowOffset = static_cast<size_t>(y) * widthSize;
             const Scalar* srow = &src[rowOffset];
@@ -119,23 +119,20 @@ namespace {
         const double C = 1.0 / 3.0;
         const double x = std::fabs(t);
         if (x < 1.0) {
-            return (1.0 / 6.0) * ((12.0 - 9.0 * B - 6.0 * C) * x * x * x
-                + (-18.0 + 12.0 * B + 6.0 * C) * x * x
-                + (6.0 - 2.0 * B));
-        }
-        else if (x < 2.0) {
-            return (1.0 / 6.0) * ((-B - 6.0 * C) * x * x * x
-                + (6.0 * B + 30.0 * C) * x * x
-                + (-12.0 * B - 48.0 * C) * x
-                + (8.0 * B + 24.0 * C));
+            return (1.0 / 6.0) * ((12.0 - 9.0 * B - 6.0 * C) * x * x * x + (-18.0 + 12.0 * B + 6.0 * C) * x * x + (6.0 - 2.0 * B));
+        } else if (x < 2.0) {
+            return (1.0 / 6.0) * ((-B - 6.0 * C) * x * x * x + (6.0 * B + 30.0 * C) * x * x + (-12.0 * B - 48.0 * C) * x + (8.0 * B + 24.0 * C));
         }
         return 0.0;
     }
 
     inline int reflect_index(int idx, int size) {
-        if (size <= 1) return 0;
-        if (idx < 0) return -idx;
-        if (idx >= size) return 2 * (size - 1) - idx;
+        if (size <= 1)
+            return 0;
+        if (idx < 0)
+            return -idx;
+        if (idx >= size)
+            return 2 * (size - 1) - idx;
         return idx;
     }
 
@@ -170,11 +167,12 @@ namespace {
         auto lut_at = [&](int xi, int yi, int zi, int c) -> double {
             const size_t idx = (size_t(zi) * size_t(res) + size_t(yi)) * size_t(res) + size_t(xi);
             const size_t base = idx * 3 + size_t(c);
-            if (base >= lut.cpu.size()) return 0.0;
+            if (base >= lut.cpu.size())
+                return 0.0;
             return lut.cpu[base];
-            };
+        };
 
-        double sum[3] = { 0.0, 0.0, 0.0 };
+        double sum[3] = {0.0, 0.0, 0.0};
         double wsum = 0.0;
         for (int i = 0; i < 4; ++i) {
             const int xi = reflect_index(xBase - 1 + i, res);
@@ -222,8 +220,7 @@ namespace {
               ctr0(seed.counter0),
               ctr1(seed.counter1),
               ctr2(seed.globalSeed),
-              ctr3(0u)
-        {}
+              ctr3(0u) {}
 
         static std::uint32_t mulhilo(std::uint32_t a, std::uint32_t b, std::uint32_t& hi) {
             const std::uint64_t product = static_cast<std::uint64_t>(a) * static_cast<std::uint64_t>(b);
@@ -284,10 +281,10 @@ namespace {
 
         explicit GlareRngCpu(const Seed& seed)
             : rng(PhiloxRngCpu::Seed{
-                seed.sequence,
-                seed.xCounter,
-                seed.yCounter,
-                seed.mediumSeed}) {}
+                  seed.sequence,
+                  seed.xCounter,
+                  seed.yCounter,
+                  seed.mediumSeed}) {}
 
         float normal() {
             float u1 = rng.uniform();
@@ -318,32 +315,29 @@ namespace {
 
     inline bool should_rebuild_lut(
         const ScannerOptics::Runtime& runtime,
-        const Scanner::ScannerStaticKey& staticKey)
-    {
-        if (!runtime.lut.valid) return true;
+        const Scanner::ScannerStaticKey& staticKey) {
+        if (!runtime.lut.valid)
+            return true;
         const std::uint64_t expected = scanner_lut_digest(staticKey);
-        if (expected == 0) return true;
-        if (runtime.lut.hash != expected) return true;
+        if (expected == 0)
+            return true;
+        if (runtime.lut.hash != expected)
+            return true;
         return false;
     }
 
     inline std::uint64_t hash_color_runtime(
         const Scanner::ScannerMediumRuntime& medium,
         const OutputEncoding::Params& encoding,
-        const GeneratedColorSpaces::ColorSpaceEntry& outSpace)
-    {
-        const std::uint64_t encHash = Hash::hash_uint64_values({
-            static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
-            static_cast<std::uint64_t>(encoding.applyCctfEncoding),
-            static_cast<std::uint64_t>(encoding.preserveLinearRange),
-            static_cast<std::uint64_t>(encoding.inputIsOutputSpace)
-        });
-        return Hash::hash_uint64_values({
-            outSpace.hash,
-            medium.illuminant.hash,
-            static_cast<std::uint64_t>(medium.medium),
-            encHash
-        });
+        const GeneratedColorSpaces::ColorSpaceEntry& outSpace) {
+        const std::uint64_t encHash = Hash::hash_uint64_values({static_cast<std::uint64_t>(OutputEncoding::toIndex(encoding.colorSpace)),
+                                                                static_cast<std::uint64_t>(encoding.applyCctfEncoding),
+                                                                static_cast<std::uint64_t>(encoding.preserveLinearRange),
+                                                                static_cast<std::uint64_t>(encoding.inputIsOutputSpace)});
+        return Hash::hash_uint64_values({outSpace.hash,
+                                         medium.illuminant.hash,
+                                         static_cast<std::uint64_t>(medium.medium),
+                                         encHash});
     }
 
     inline void log_scanner_keys(
@@ -351,8 +345,7 @@ namespace {
         const Scanner::ScannerKey& key,
         const Scanner::ScannerMediumRuntime& medium,
         const Scanner::Settings& settings,
-        const Spectral::SpectralTables* tables)
-    {
+        const Spectral::SpectralTables* tables) {
         if (!JTRACE_ENABLED(1)) {
             return;
         }
@@ -382,8 +375,7 @@ namespace Scanner {
     void normalize_density(
         const ScannerMediumRuntime& medium,
         const float D_cmy[3],
-        double D_norm[3])
-    {
+        double D_norm[3]) {
         if (!D_cmy || !D_norm) {
             return;
         }
@@ -392,19 +384,17 @@ namespace Scanner {
             D_norm[0] = (static_cast<double>(D_cmy[0]) + static_cast<double>(medium.range.min_cmy[0])) * static_cast<double>(medium.range.inv_max_cmy[0]);
             D_norm[1] = (static_cast<double>(D_cmy[1]) + static_cast<double>(medium.range.min_cmy[1])) * static_cast<double>(medium.range.inv_max_cmy[1]);
             D_norm[2] = (static_cast<double>(D_cmy[2]) + static_cast<double>(medium.range.min_cmy[2])) * static_cast<double>(medium.range.inv_max_cmy[2]);
-        }
-        else {
-            D_norm[0] = static_cast<double>(D_cmy[0]) * static_cast<double>(medium.range.inv_max_cmy[0]);
-            D_norm[1] = static_cast<double>(D_cmy[1]) * static_cast<double>(medium.range.inv_max_cmy[1]);
-            D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(medium.range.inv_max_cmy[2]);
+        } else {
+            D_norm[0] = (static_cast<double>(D_cmy[0]) - static_cast<double>(medium.range.min_cmy[0])) * static_cast<double>(medium.range.inv_max_cmy[0]);
+            D_norm[1] = (static_cast<double>(D_cmy[1]) - static_cast<double>(medium.range.min_cmy[1])) * static_cast<double>(medium.range.inv_max_cmy[1]);
+            D_norm[2] = (static_cast<double>(D_cmy[2]) - static_cast<double>(medium.range.min_cmy[2])) * static_cast<double>(medium.range.inv_max_cmy[2]);
         }
     }
 
     void spectral_to_log_xyz(
         const ScannerMediumRuntime& medium,
         const double D_norm[3],
-        double logXYZ[3])
-    {
+        double logXYZ[3]) {
         if (!D_norm || !logXYZ) {
             return;
         }
@@ -420,11 +410,10 @@ namespace Scanner {
             D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]) - static_cast<double>(medium.range.min_cmy[0]);
             D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]) - static_cast<double>(medium.range.min_cmy[1]);
             D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]) - static_cast<double>(medium.range.min_cmy[2]);
-        }
-        else {
-            D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]);
-            D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]);
-            D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]);
+        } else {
+            D_denorm[0] = D_norm[0] / static_cast<double>(medium.range.inv_max_cmy[0]) + static_cast<double>(medium.range.min_cmy[0]);
+            D_denorm[1] = D_norm[1] / static_cast<double>(medium.range.inv_max_cmy[1]) + static_cast<double>(medium.range.min_cmy[1]);
+            D_denorm[2] = D_norm[2] / static_cast<double>(medium.range.inv_max_cmy[2]) + static_cast<double>(medium.range.min_cmy[2]);
         }
 
         const int K = tables->K;
@@ -441,10 +430,7 @@ namespace Scanner {
         double X = 0.0, Y = 0.0, Z = 0.0;
         for (int i = 0; i < K; ++i) {
             const double baseSpectral = (useBaseline) ? static_cast<double>(baseMin[i]) : 0.0;
-            const double Dlambda = D_denorm[0] * static_cast<double>(epsC[i])
-                + D_denorm[1] * static_cast<double>(epsM[i])
-                + D_denorm[2] * static_cast<double>(epsY[i])
-                + baseSpectral;
+            const double Dlambda = D_denorm[0] * static_cast<double>(epsC[i]) + D_denorm[1] * static_cast<double>(epsM[i]) + D_denorm[2] * static_cast<double>(epsY[i]) + baseSpectral;
 
             const double transmittance = std::pow(10.0, -Dlambda);
             const double ax = static_cast<double>(Ax[i]);
@@ -452,15 +438,18 @@ namespace Scanner {
             const double az = static_cast<double>(Az[i]);
             if (std::isfinite(ax)) {
                 const double out = transmittance * ax;
-                if (!std::isnan(out)) X += out;
+                if (!std::isnan(out))
+                    X += out;
             }
             if (std::isfinite(ay)) {
                 const double out = transmittance * ay;
-                if (!std::isnan(out)) Y += out;
+                if (!std::isnan(out))
+                    Y += out;
             }
             if (std::isfinite(az)) {
                 const double out = transmittance * az;
-                if (!std::isnan(out)) Z += out;
+                if (!std::isnan(out))
+                    Z += out;
             }
         }
 
@@ -468,8 +457,7 @@ namespace Scanner {
         const double XYZ[3] = {
             X * invNormalization,
             Y * invNormalization,
-            Z * invNormalization
-        };
+            Z * invNormalization};
 
         constexpr double kEps = 1e-10;
         logXYZ[0] = std::log10(std::fmax(XYZ[0], 0.0) + kEps);
@@ -483,8 +471,7 @@ namespace ScannerOptics {
 
     Scanner::ColorRuntime build_color_runtime(
         const Scanner::ScannerMediumRuntime& medium,
-        const OutputEncoding::Params& outputEncoding)
-    {
+        const OutputEncoding::Params& outputEncoding) {
         Scanner::ColorRuntime rt{};
         if (medium.illuminant.hash == 0) {
             JTRACE("HASH", "FATAL: scanner illuminant hash invalid for color runtime");
@@ -541,7 +528,10 @@ namespace ScannerOptics {
         const Spectral::SpectralTables* tables = medium.tables;
         if (staticKeyChanged || settingsChanged || frameBoundsChanged) {
             log_scanner_keys("scanner runtime rebuild",
-                ctx.scannerKey, medium, ctx.settings, tables);
+                             ctx.scannerKey,
+                             medium,
+                             ctx.settings,
+                             tables);
         }
         if (!tables || tables->K <= 0) {
             JTRACE("SCAN", "FATAL: scanner spectral tables unavailable");
@@ -683,7 +673,7 @@ namespace ScannerOptics {
                         const double nx = (res > 1u) ? double(x) / double(res - 1u) : 0.0;
                         const size_t idx = (size_t(z) * size_t(res) + size_t(y)) * size_t(res) + size_t(x);
                         double logXYZ[3];
-                        const double D_norm[3] = { nx, ny, nz };
+                        const double D_norm[3] = {nx, ny, nz};
                         spectral_to_logXYZ(D_norm, logXYZ);
                         if (!std::isfinite(logXYZ[0]) || !std::isfinite(logXYZ[1]) || !std::isfinite(logXYZ[2])) {
                             JTRACE("SCAN", "FATAL: invalid LUT sample during spectral computation");
@@ -719,8 +709,7 @@ namespace ScannerOptics {
                 ctx.seedBase,
                 static_cast<std::uint64_t>(ctx.runtimeKey.frameBoundsVersion),
                 medium.staticKey.glareHash,
-                static_cast<std::uint64_t>(medium.medium)
-            };
+                static_cast<std::uint64_t>(medium.medium)};
             const std::uint64_t glareSeed = Hash::hash_bytes(seedFields, sizeof(seedFields));
             const bool dimsChanged = runtime.glare.width != width || runtime.glare.height != height;
             const bool seedChanged = runtime.glare.seedHash != glareSeed;
@@ -766,8 +755,7 @@ namespace ScannerOptics {
                 runtime.glare.seedHash = glareSeed;
                 runtime.glare.valid = true;
             }
-        }
-        else {
+        } else {
             runtime.glare.valid = false;
         }
 
@@ -793,8 +781,8 @@ namespace ScannerOptics {
         std::vector<double>& rgbG = runtime.rgbG;
         std::vector<double>& rgbB = runtime.rgbB;
 
-        std::atomic<bool> abortFlag{ false };
-        std::atomic<bool> failure{ false };
+        std::atomic<bool> abortFlag{false};
+        std::atomic<bool> failure{false};
 
         struct StageAProcessor final : OFX::MultiThread::Processor {
             const RenderContext& ctx;
@@ -827,21 +815,7 @@ namespace ScannerOptics {
                 std::vector<double>& rgbB_,
                 std::atomic<bool>& abortFlag_,
                 std::atomic<bool>& failure_)
-                : ctx(ctx_)
-                , medium(medium_)
-                , density(density_)
-                , runtime(runtime_)
-                , useLut(useLut_)
-                , width(width_)
-                , height(height_)
-                , cat02(cat02_)
-                , xyzToRgb(xyzToRgb_)
-                , rgbR(rgbR_)
-                , rgbG(rgbG_)
-                , rgbB(rgbB_)
-                , abortFlag(abortFlag_)
-                , failure(failure_)
-            {
+                : ctx(ctx_), medium(medium_), density(density_), runtime(runtime_), useLut(useLut_), width(width_), height(height_), cat02(cat02_), xyzToRgb(xyzToRgb_), rgbR(rgbR_), rgbG(rgbG_), rgbB(rgbB_), abortFlag(abortFlag_), failure(failure_) {
             }
 
             void multiThreadFunction(unsigned int threadId, unsigned int nThreads) override {
@@ -863,7 +837,7 @@ namespace ScannerOptics {
                             break;
                         }
                         const size_t idx = rowOffset + size_t(xOff);
-                        float D_cmy[3] = { density.c[idx], density.m[idx], density.y[idx] };
+                        float D_cmy[3] = {density.c[idx], density.m[idx], density.y[idx]};
                         double D_norm[3];
                         Scanner::normalize_density(medium, D_cmy, D_norm);
                         double logXYZ[3];
@@ -871,15 +845,13 @@ namespace ScannerOptics {
                             std::isfinite(D_norm[0]) && std::isfinite(D_norm[1]) && std::isfinite(D_norm[2]);
                         if (useLut && runtime.lut.valid && D_norm_finite) {
                             sample_cubic(runtime.lut, D_norm, logXYZ);
-                        }
-                        else {
+                        } else {
                             Scanner::spectral_to_log_xyz(medium, D_norm, logXYZ);
                         }
                         double xyz[3] = {
                             std::pow(10.0, logXYZ[0]),
                             std::pow(10.0, logXYZ[1]),
-                            std::pow(10.0, logXYZ[2])
-                        };
+                            std::pow(10.0, logXYZ[2])};
                         if (runtime.glare.valid) {
                             const float glare = runtime.glare.amount[idx];
                             xyz[0] += static_cast<double>(glare) * static_cast<double>(ctx.color->illuminantXYZ[0]);
@@ -984,16 +956,7 @@ namespace ScannerOptics {
                 std::vector<double>& rgbG_,
                 std::vector<double>& rgbB_,
                 std::atomic<bool>& abortFlag_)
-                : ctx(ctx_)
-                , width(width_)
-                , height(height_)
-                , originX(originX_)
-                , originY(originY_)
-                , rgbR(rgbR_)
-                , rgbG(rgbG_)
-                , rgbB(rgbB_)
-                , abortFlag(abortFlag_)
-            {
+                : ctx(ctx_), width(width_), height(height_), originX(originX_), originY(originY_), rgbR(rgbR_), rgbG(rgbG_), rgbB(rgbB_), abortFlag(abortFlag_) {
             }
 
             void multiThreadFunction(unsigned int threadId, unsigned int nThreads) override {
@@ -1028,7 +991,7 @@ namespace ScannerOptics {
                             reinterpret_cast<char*>(ctx.dstView.r) + rowOffsetBytes);
                         float* dstPix = dstRow + static_cast<size_t>(xOff) * static_cast<size_t>(ctx.nComponents);
                         const size_t idx = rowOffset + size_t(xOff);
-                        double rgbOut[3] = { rgbR[idx], rgbG[idx], rgbB[idx] };
+                        double rgbOut[3] = {rgbR[idx], rgbG[idx], rgbB[idx]};
                         OutputEncoding::applyEncoding(ctx.color->encoding, rgbOut);
                         dstPix[0] = static_cast<float>(rgbOut[0]);
                         dstPix[1] = static_cast<float>(rgbOut[1]);

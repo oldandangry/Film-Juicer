@@ -67,12 +67,13 @@ namespace JuicerCuda {
     //   validated profiles; consumer: prepare_print_resources() and pack_print_cuda_payloads().
     // - update frequency: descriptor miss only; descriptor hits perform no asset lookup,
     //   spectral derivation, profile packing, allocation, or upload.
-    // - layouts/units: canonical 81-sample host/device spectra, density curves on authored logE,
-    //   and C/M/Y channel order. Filter values are Kodak CC units.
+    // - layouts/units: canonical 81-sample host/device spectra, capture-film spectral density,
+    //   density curves on authored logE, and C/M/Y channel order. Filter values are Kodak CC units.
     // - ownership/lifetime: immutable host derivations are temporary; device arrays and scalar
     //   results are exact-context/epoch Resources residency exposed through PreparedCudaFrame.
-    // - schema/hash: schema v1 includes selected profile tokens and Phase 4A recipe/resource
-    //   identities; excludes file discovery, CUDA pointers, frame tokens, and launch policy.
+    // - schema/hash: schema v1 includes selected profile tokens, process-owned source illuminant
+    //   asset version, and Phase 4A recipe/resource identities; excludes file discovery, CUDA
+    //   pointers, frame tokens, and launch policy.
     // - preparation point: Root's Phase 4B print prelaunch prepared-frame overload.
     // - disabled behavior: disabled preflash has zero descriptor identity and no derivation/upload.
     struct PrintProfileTablesDescriptor {
@@ -86,9 +87,19 @@ namespace JuicerCuda {
         std::uint64_t hash = 0;
     };
 
+    struct PrintFilmDensityTablesDescriptor {
+        static constexpr std::uint32_t kSchemaVersion = 1u;
+
+        std::uint64_t filmProfileAssetVersionToken = 0;
+        std::uint64_t densityTablesHash = 0;
+        std::uint32_t spectralSampleCount = 0;
+        std::uint64_t hash = 0;
+    };
+
     struct FilteredPrintIlluminantDescriptor {
         static constexpr std::uint32_t kSchemaVersion = 1u;
 
+        std::uint64_t sourceIlluminantAssetVersionToken = 0;
         std::uint64_t printIlluminantHash = 0;
         std::uint64_t dichroicResourceHash = 0;
         CmyCcTriplet cmyCc{};
@@ -109,6 +120,7 @@ namespace JuicerCuda {
         static constexpr std::uint32_t kSchemaVersion = 1u;
 
         std::uint64_t filmProfileAssetVersionToken = 0;
+        std::uint64_t filmReferenceIlluminantAssetVersionToken = 0;
         std::uint64_t filmRawRecipeHash = 0;
         std::uint64_t filmDevelopRecipeHash = 0;
         std::uint64_t printProfileTablesHash = 0;
@@ -121,6 +133,7 @@ namespace JuicerCuda {
 
     struct PrintResourceDescriptors {
         PrintProfileTablesDescriptor profileTables{};
+        PrintFilmDensityTablesDescriptor filmDensityTables{};
         FilteredPrintIlluminantDescriptor mainIlluminant{};
         FilteredPrintIlluminantDescriptor preflashIlluminant{};
         PrintPreflashRawDescriptor preflashRaw{};
@@ -135,6 +148,7 @@ namespace JuicerCuda {
     };
 
     struct PrintPreparedView {
+        ScanTablesPayload filmDensityTables{};
         DeviceCurveView printSensC{};
         DeviceCurveView printSensM{};
         DeviceCurveView printSensY{};
@@ -148,6 +162,7 @@ namespace JuicerCuda {
         float factorMidgray = 1.0f;
         float factorMidgrayComp = 1.0f;
         float normalizer = 1.0f;
+        std::uint64_t filmDensityTablesHash = 0;
         std::uint64_t profileTablesHash = 0;
         std::uint64_t mainIlluminantHash = 0;
         std::uint64_t preflashIlluminantHash = 0;
@@ -515,8 +530,9 @@ namespace JuicerCuda {
         std::uint64_t printIllumBuildCounter = 0;
         std::uint64_t printIllumCoreHash = 0;
 
-        // Focused Phase 4B print resources. The legacy fields above remain Phase 4C launch
-        // bridges; these descriptor identities are the accepted preparation contract.
+        // Focused Phase 4B print resources. Legacy fields above are confined to the hard-blocked
+        // broad launch path; these descriptor identities are the accepted preparation contract.
+        DeviceSpectralTables printFilmDensityTables;
         float* printPreflashIllumFiltered = nullptr;
         int printPreflashIllumK = 0;
         std::array<float, 81> printIllumFilteredHost{};
@@ -526,6 +542,7 @@ namespace JuicerCuda {
         float printBalanceFactorMidgray = 1.0f;
         float printBalanceFactorMidgrayComp = 1.0f;
         float printBalanceNormalizer = 1.0f;
+        std::uint64_t printFilmDensityTablesDescriptorHash = 0;
         std::uint64_t printProfileTablesDescriptorHash = 0;
         std::uint64_t printMainIlluminantDescriptorHash = 0;
         std::uint64_t printPreflashIlluminantDescriptorHash = 0;
@@ -599,11 +616,19 @@ namespace JuicerCuda {
         const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
     };
 
+    using PrintRouteResourcePreparation = DirectResourcePreparation;
+
     // Descriptor-driven direct-route preparation. This is called only behind Root's prepared
     // frame boundary and intentionally has no WorkingState or static-noise input.
     bool prepare_direct_resources(
         Resources& resources,
         const DirectResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError);
+
+    bool prepare_print_route_resources(
+        Resources& resources,
+        const PrintRouteResourcePreparation& request,
         void* cudaStreamOpaque,
         std::string& outError);
 

@@ -103,6 +103,7 @@ public:
     explicit JuicerProcessor(OFX::ImageEffect& effect);
 
     using DirectFrameRequest = Spektrafilm::DirectFrameRequest;
+    using PrintFrameRequest = Spektrafilm::PrintFrameRequest;
     using FrameRequest = Spektrafilm::FrameRequest;
 
     struct SourceDestinationImages {
@@ -123,6 +124,7 @@ public:
 
     void setSrcDst(const SourceDestinationImages& images);
     void setDirectFrameRequest(const DirectFrameRequest& request);
+    void setPrintFrameRequest(const PrintFrameRequest& request);
     void setFrameRequest(const FrameRequest& request);
     void setRenderWindowRect(const OfxRectI& rect);
     void setComponents(int n);
@@ -191,6 +193,7 @@ private:
     std::shared_ptr<const WorkingState> _wsHold;
     std::shared_ptr<const RenderRecipe> _recipeHold;
     std::shared_ptr<const DirectRenderState> _directStateHold;
+    std::shared_ptr<const PrintRenderState> _printStateHold;
     InstanceState* _instanceState = nullptr;
     bool _wsReady;
     bool _printReady;

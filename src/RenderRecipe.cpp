@@ -492,6 +492,10 @@ namespace {
         hash_value(hash, recipe.outputCctfEncoding);
         hash_value(hash, recipe.outputLinearPassThrough);
         hash_value(hash, recipe.directGlareDisabled);
+        hash_value(hash, recipe.glareActive);
+        hash_value(hash, recipe.glarePercent);
+        hash_value(hash, recipe.glareRoughness);
+        hash_value(hash, recipe.glareBlurSigmaPx);
         hash_value(hash, recipe.lensBlurSigmaPx);
         hash_value(hash, recipe.unsharpSigmaPx);
         hash_value(hash, recipe.unsharpAmount);
@@ -515,6 +519,37 @@ namespace {
         for (std::size_t channel = 0; channel < out.dataMinCmy.size(); ++channel) {
             out.dataMinCmy[channel] = -grain.densityMinCmy[channel];
             out.dataMaxCmy[channel] = develop.authoredMaxCmy[channel];
+            const float span = out.dataMaxCmy[channel] - out.dataMinCmy[channel];
+            if (!(std::isfinite(span) && span > 0.0f)) {
+                return false;
+            }
+            out.invSpanCmy[channel] = 1.0f / span;
+        }
+        out.hash = hash_density_bounds_recipe(out);
+        return out.hash != 0;
+    }
+
+    bool build_print_density_bounds(
+        const Profiles::ValidatedPrintProfile& profile,
+        Spektrafilm::ScanRoute route,
+        Spektrafilm::ProfilePolarity capturePolarity,
+        DensityBoundsRecipe& out) {
+        out = DensityBoundsRecipe{};
+        out.route = route;
+        out.medium = Spektrafilm::DensityMedium::Print;
+        out.polarity = capturePolarity;
+        out.source = Spektrafilm::DensityBoundsSource::PrintMediaAuthoredCurves;
+        std::vector<std::array<float, 3>> normalized;
+        if (!normalize_density_curves(
+                profile.data.densityCurves,
+                normalized,
+                out.authoredMinCmy,
+                out.authoredMaxCmy)) {
+            return false;
+        }
+        for (std::size_t channel = 0; channel < out.dataMinCmy.size(); ++channel) {
+            out.dataMinCmy[channel] = out.authoredMinCmy[channel];
+            out.dataMaxCmy[channel] = out.authoredMaxCmy[channel];
             const float span = out.dataMaxCmy[channel] - out.dataMinCmy[channel];
             if (!(std::isfinite(span) && span > 0.0f)) {
                 return false;
@@ -878,6 +913,24 @@ namespace Spektrafilm {
             return result;
         }
 
+        DirectRecipeBuildInput foundationInput = input.filmFoundation;
+        foundationInput.filmProfileKey = input.filmProfileKey;
+        foundationInput.printProfileKey = input.printProfileKey;
+        foundationInput.filmProfile = input.filmProfile;
+        foundationInput.scanRoute =
+            input.filmProfile->info.type == ProfilePolarity::Positive
+                ? ScanRoute::PositiveDirectScan
+                : ScanRoute::NegativeDirectScan;
+        foundationInput.directRoutePrintProfileExcluded = true;
+        foundationInput.directRouteNeutralCalibrationExcluded = true;
+        const DirectRecipeBuildResult foundation = build_direct_render_recipe(foundationInput);
+        if (!foundation.valid) {
+            result.diagnostic = foundation.diagnostic.empty()
+                                    ? "ResourceDescriptorMismatch phase=4C field=film_foundation"
+                                    : foundation.diagnostic;
+            return result;
+        }
+
         ProfileRoute& route = result.recipe.profileRoute;
         route.captureSupport = input.filmProfile->info.support;
         route.captureStage = input.filmProfile->info.stage;
@@ -890,6 +943,52 @@ namespace Spektrafilm {
         route.filmProfile = input.filmProfile;
         route.printProfile = input.printProfile;
         route.hash = hash_profile_route(route);
+
+        result.recipe.filmRaw = foundation.recipe.filmRaw;
+        result.recipe.filmDevelop = foundation.recipe.filmDevelop;
+        result.recipe.dirCouplers = foundation.recipe.dirCouplers;
+        result.recipe.enlargerFilmBounds = foundation.recipe.densityBounds;
+        result.recipe.enlargerFilmBounds.route = input.scanRoute;
+        result.recipe.enlargerFilmBounds.source =
+            DensityBoundsSource::EnlargerFilmGrainContractAndAuthoredCurves;
+        result.recipe.enlargerFilmBounds.hash =
+            hash_density_bounds_recipe(result.recipe.enlargerFilmBounds);
+        if (!build_print_density_bounds(
+                *input.printProfile,
+                input.scanRoute,
+                input.filmProfile->info.type,
+                result.recipe.densityBounds)) {
+            result.diagnostic = "MalformedRequiredProfileData phase=4C field=print_density_bounds";
+            return result;
+        }
+
+        ScannerOutputRecipe& scanner = result.recipe.scannerOutput;
+        scanner.route = input.scanRoute;
+        scanner.medium = DensityMedium::Print;
+        scanner.polarity = input.filmProfile->info.type;
+        scanner.viewingIlluminant = input.printProfile->info.viewingIlluminant.value;
+        scanner.lutResolution = std::clamp(input.scannerLutResolution, 17u, 128u);
+        scanner.outputColorSpace = input.outputColorSpace;
+        scanner.outputCctfEncoding = input.outputCctfEncoding;
+        scanner.outputLinearPassThrough = input.outputLinearPassThrough;
+        scanner.directGlareDisabled = false;
+        scanner.glareActive = input.glareActive;
+        scanner.glarePercent = input.glarePercent;
+        scanner.glareRoughness = input.glareRoughness;
+        scanner.glareBlurSigmaPx = input.glareBlurSigmaPx;
+        scanner.lensBlurSigmaPx = input.scannerLensBlurSigmaPx;
+        scanner.unsharpSigmaPx = input.scannerUnsharpSigmaPx;
+        scanner.unsharpAmount = input.scannerUnsharpAmount;
+        const bool scannerPostEffectsIdentity =
+            scanner.lensBlurSigmaPx <= 0.0f &&
+            (scanner.unsharpSigmaPx <= 0.0f || scanner.unsharpAmount <= 0.0f);
+        scanner.postEffectsDisposition = scannerPostEffectsIdentity
+                                             ? ScannerPostEffectDisposition::Identity
+                                             : ScannerPostEffectDisposition::BlockedNotImplementedForPhase4;
+        scanner.blockingDiagnostic = scannerPostEffectsIdentity
+                                         ? std::string()
+                                         : kScannerPostEffectsNotImplementedForPhase4;
+        scanner.hash = hash_scanner_output_recipe(scanner);
 
         PrintRecipe& print = result.recipe.print;
         print.filters.dichroic = input.dichroic;
@@ -962,9 +1061,33 @@ namespace Spektrafilm {
                                                print.illuminant.hash,
                                                print.mediumHandoff.hash});
         result.recipe.printStructuralReady = true;
-        result.recipe.hash = Hash::hash_uint64_values({route.hash, print.hash});
+        if (result.recipe.dirCouplers.active) {
+            result.recipe.hash = Hash::hash_uint64_values({route.hash,
+                                                           result.recipe.filmRaw.hash,
+                                                           result.recipe.filmDevelop.hash,
+                                                           result.recipe.dirCouplers.hash,
+                                                           result.recipe.enlargerFilmBounds.hash,
+                                                           result.recipe.densityBounds.hash,
+                                                           scanner.hash,
+                                                           print.hash});
+        } else {
+            result.recipe.hash = Hash::hash_uint64_values({route.hash,
+                                                           result.recipe.filmRaw.hash,
+                                                           result.recipe.filmDevelop.hash,
+                                                           result.recipe.enlargerFilmBounds.hash,
+                                                           result.recipe.densityBounds.hash,
+                                                           scanner.hash,
+                                                           print.hash});
+        }
         result.valid = route.hash != 0 && print.filters.hash != 0 &&
                        print.exposure.hash != 0 && print.illuminant.hash != 0 &&
+                       result.recipe.filmRaw.hash != 0 &&
+                       result.recipe.filmDevelop.hash != 0 &&
+                       (!result.recipe.dirCouplers.active ||
+                        result.recipe.dirCouplers.hash != 0) &&
+                       result.recipe.enlargerFilmBounds.hash != 0 &&
+                       result.recipe.densityBounds.hash != 0 &&
+                       scanner.hash != 0 &&
                        print.mediumHandoff.hash != 0 && print.hash != 0 &&
                        result.recipe.hash != 0;
         if (!result.valid) {

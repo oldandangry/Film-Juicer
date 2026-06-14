@@ -13,6 +13,7 @@
 
 struct WorkingState;
 struct DirectRenderState;
+struct PrintRenderState;
 
 // Phase 1C request bridge ledger:
 // - SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase4-print-route:
@@ -79,9 +80,22 @@ struct DirectFrameRequest {
     float pixelSizeUm = 0.0f;
 };
 
+struct PrintFrameRequest {
+    std::shared_ptr<const PrintRenderState> state;
+    int components = 0;
+    OfxRectI renderWindow{0, 0, 0, 0};
+    std::uint64_t sessionSeed = 1;
+    std::uint64_t instanceToken = 1;
+    std::uintptr_t clipToken = 0;
+    double frameTime = 0.0;
+    double frameRate = 0.0;
+    float pixelSizeUm = 0.0f;
+};
+
 namespace Spektrafilm {
 
     using ::DirectFrameRequest;
     using ::FrameRequest;
+    using ::PrintFrameRequest;
 
 } // namespace Spektrafilm

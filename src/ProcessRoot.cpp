@@ -286,8 +286,8 @@ namespace JuicerProcess {
         Root::CudaResourceOwner grainStaticOwner;
         JuicerCuda::Resources* resources = nullptr;
         JuicerCuda::Resources* grainStaticResources = nullptr;
-        const Spectral::FilmRawConfig* directFilmRawConfig = nullptr;
-        const Scanner::ColorRuntime* directScannerColor = nullptr;
+        const Spectral::FilmRawConfig* focusedFilmRawConfig = nullptr;
+        const Scanner::ColorRuntime* focusedScannerColor = nullptr;
         const PrintRecipe* printRecipe = nullptr;
         JuicerCuda::PrintResourceDescriptors printDescriptors{};
         JuicerCuda::ResourceManager::SubmissionTransaction transaction{};
@@ -2015,7 +2015,7 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::DirectPreparedView Root::PreparedCudaFrame::direct_resources() const noexcept {
         DirectPreparedView view{};
         if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
-            !_state->directFilmRawConfig || !_state->directScannerColor) {
+            !_state->focusedFilmRawConfig || !_state->focusedScannerColor) {
             return view;
         }
 
@@ -2043,20 +2043,68 @@ namespace JuicerProcess {
         view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
         view.film.mallettBasis = resources.mallettBasis;
         view.film.mallettBasisK = resources.mallettBasisK;
-        std::copy_n(_state->directFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
-        std::copy_n(_state->directFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
-        view.film.applyInputChromaticAdapt = _state->directFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
+        std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
+        std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
+        view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
         std::copy_n(resources.refIllumWhiteXYZ, 3, view.film.refIllumWhiteXYZ);
         view.film.finalSensitivityHash = resources.directFinalSensitivityHash;
         view.film.normalizedDensityCurvesHash = resources.directDensityCurvesHash;
         view.film.dirCouplersHash = resources.directDirHash;
         view.scanMedium = &resources.scanNegative;
         view.scanLut = &resources.scanNegativeLut;
-        view.scannerColor = _state->directScannerColor;
+        view.scannerColor = _state->focusedScannerColor;
         view.densityBoundsHash = resources.directDensityBoundsHash;
         view.scannerDescriptorHash = resources.directScannerDescriptorHash;
         view.selectedMethod = resources.directSelectedMethod;
         view.active = view.scanMedium && view.scanLut->canonical_ready() &&
+                      view.densityBoundsHash != 0 && view.scannerDescriptorHash != 0;
+        return view;
+    }
+
+    Root::PreparedCudaFrame::PrintRoutePreparedView Root::PreparedCudaFrame::print_route_resources() const noexcept {
+        PrintRoutePreparedView view{};
+        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed ||
+            !_state->focusedFilmRawConfig || !_state->focusedScannerColor) {
+            return view;
+        }
+        const JuicerCuda::Resources& resources = *_state->resources;
+        view.film.finalSensB = {resources.sensB.x, resources.sensB.y, resources.sensB.n, resources.sensB.domainBegin, resources.sensB.domainEnd};
+        view.film.finalSensG = {resources.sensG.x, resources.sensG.y, resources.sensG.n, resources.sensG.domainBegin, resources.sensG.domainEnd};
+        view.film.finalSensR = {resources.sensR.x, resources.sensR.y, resources.sensR.n, resources.sensR.domainBegin, resources.sensR.domainEnd};
+        view.film.normalizedDensB = {resources.densB.x, resources.densB.y, resources.densB.n, resources.densB.domainBegin, resources.densB.domainEnd};
+        view.film.normalizedDensG = {resources.densG.x, resources.densG.y, resources.densG.n, resources.densG.domainBegin, resources.densG.domainEnd};
+        view.film.normalizedDensR = {resources.densR.x, resources.densR.y, resources.densR.n, resources.densR.domainBegin, resources.densR.domainEnd};
+        if (resources.directDirHash != 0) {
+            view.film.dirDensB = {resources.dirDensB.x, resources.dirDensB.y, resources.dirDensB.n, resources.dirDensB.domainBegin, resources.dirDensB.domainEnd};
+            view.film.dirDensG = {resources.dirDensG.x, resources.dirDensG.y, resources.dirDensG.n, resources.dirDensG.domainBegin, resources.dirDensG.domainEnd};
+            view.film.dirDensR = {resources.dirDensR.x, resources.dirDensR.y, resources.dirDensR.n, resources.dirDensR.domainBegin, resources.dirDensR.domainEnd};
+        }
+        view.film.tablesAx = resources.tablesAx;
+        view.film.tablesAy = resources.tablesAy;
+        view.film.tablesAz = resources.tablesAz;
+        view.film.tablesIllum = resources.tablesIllum;
+        view.film.tablesK = resources.tablesK;
+        std::copy_n(resources.spdSInv, 9, view.film.spdSInv);
+        view.film.hanatosLut = resources.hanatosLut;
+        view.film.hanatosN = resources.hanatosN;
+        view.film.hanatosLutIntegrated = resources.hanatosLutIntegrated;
+        view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
+        view.film.mallettBasis = resources.mallettBasis;
+        view.film.mallettBasisK = resources.mallettBasisK;
+        std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
+        std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
+        view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
+        std::copy_n(resources.refIllumWhiteXYZ, 3, view.film.refIllumWhiteXYZ);
+        view.film.finalSensitivityHash = resources.directFinalSensitivityHash;
+        view.film.normalizedDensityCurvesHash = resources.directDensityCurvesHash;
+        view.film.dirCouplersHash = resources.directDirHash;
+        view.scanMedium = &resources.scanPrint;
+        view.scanLut = &resources.scanPrintLut;
+        view.scannerColor = _state->focusedScannerColor;
+        view.densityBoundsHash = resources.directDensityBoundsHash;
+        view.scannerDescriptorHash = resources.directScannerDescriptorHash;
+        view.selectedMethod = resources.directSelectedMethod;
+        view.active = view.scanLut->canonical_ready() &&
                       view.densityBoundsHash != 0 && view.scannerDescriptorHash != 0;
         return view;
     }
@@ -2070,6 +2118,13 @@ namespace JuicerProcess {
         }
         const JuicerCuda::Resources& resources = *_state->resources;
         const JuicerCuda::PrintResourceDescriptors& descriptors = _state->printDescriptors;
+        view.filmDensityTables.epsC = resources.printFilmDensityTables.epsC;
+        view.filmDensityTables.epsM = resources.printFilmDensityTables.epsM;
+        view.filmDensityTables.epsY = resources.printFilmDensityTables.epsY;
+        view.filmDensityTables.baseMin = resources.printFilmDensityTables.baseMin;
+        view.filmDensityTables.K = resources.printFilmDensityTables.K;
+        view.filmDensityTables.hasBaseline = resources.printFilmDensityTables.hasBaseline;
+        view.filmDensityTables.invYn = resources.printFilmDensityTables.invYn;
         view.printSensC = {resources.printSensC.x, resources.printSensC.y, resources.printSensC.n, resources.printSensC.domainBegin, resources.printSensC.domainEnd};
         view.printSensM = {resources.printSensM.x, resources.printSensM.y, resources.printSensM.n, resources.printSensM.domainBegin, resources.printSensM.domainEnd};
         view.printSensY = {resources.printSensY.x, resources.printSensY.y, resources.printSensY.n, resources.printSensY.domainBegin, resources.printSensY.domainEnd};
@@ -2083,6 +2138,7 @@ namespace JuicerProcess {
         view.factorMidgray = resources.printBalanceFactorMidgray;
         view.factorMidgrayComp = resources.printBalanceFactorMidgrayComp;
         view.normalizer = resources.printBalanceNormalizer;
+        view.filmDensityTablesHash = resources.printFilmDensityTablesDescriptorHash;
         view.profileTablesHash = resources.printProfileTablesDescriptorHash;
         view.mainIlluminantHash = resources.printMainIlluminantDescriptorHash;
         view.preflashIlluminantHash = resources.printPreflashIlluminantDescriptorHash;
@@ -2091,6 +2147,7 @@ namespace JuicerProcess {
         view.preparationHash = resources.printPreparationDescriptorHash;
         view.preflashActive = descriptors.preflashActive;
         view.active =
+            view.filmDensityTablesHash == descriptors.filmDensityTables.hash &&
             view.profileTablesHash == descriptors.profileTables.hash &&
             view.mainIlluminantHash == descriptors.mainIlluminant.hash &&
             view.balanceHash == descriptors.balance.hash &&
@@ -2557,6 +2614,7 @@ namespace JuicerProcess {
         const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
         const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
         const PrintCudaPreparationRequest& request,
+        const AutoExposureBufferRequest& autoExposureBufferRequest,
         void* cudaStreamOpaque,
         std::string& outError) {
         outError.clear();
@@ -2575,7 +2633,9 @@ namespace JuicerProcess {
             "prepare_cuda_frame_print_phase4B",
             "CUDA Phase 4B print prepared frame failed",
             false);
-        if (!request.recipe) {
+        if (!request.recipe || !request.exposureTables || !request.spdSInv ||
+            !request.filmRawConfig || !request.scannerTables || !request.scannerColor ||
+            !request.scannerLutDescriptor) {
             outError = "MissingRequiredResource phase=4B field=print_recipe";
             return frame;
         }
@@ -2610,6 +2670,26 @@ namespace JuicerProcess {
             frame.abort("print_phase4B_acquire_failed");
             return frame;
         }
+        JuicerCuda::PrintRouteResourcePreparation focusedPreparation{};
+        focusedPreparation.recipe = request.recipe;
+        focusedPreparation.exposureTables = request.exposureTables;
+        focusedPreparation.spdSInv = request.spdSInv;
+        focusedPreparation.filmRawConfig = request.filmRawConfig;
+        focusedPreparation.scannerTables = request.scannerTables;
+        focusedPreparation.scannerColor = request.scannerColor;
+        focusedPreparation.scannerLutDescriptor = request.scannerLutDescriptor;
+        if (!JuicerCuda::prepare_print_route_resources(
+                *frame._state->resources,
+                focusedPreparation,
+                cudaStreamOpaque,
+                outError)) {
+            frame._state->set_failure(
+                "prepare_print_route_resources_phase4C",
+                "Phase 4C focused print-route resource preparation failed",
+                false);
+            frame.abort("print_phase4C_focused_preparation_failed");
+            return frame;
+        }
         JuicerCuda::PrintResourcePreparation preparation{};
         preparation.recipe = request.recipe;
         preparation.assets = &_assets;
@@ -2626,6 +2706,25 @@ namespace JuicerProcess {
             return frame;
         }
         frame._state->printRecipe = &request.recipe->print;
+        frame._state->focusedFilmRawConfig = request.filmRawConfig;
+        frame._state->focusedScannerColor = request.scannerColor;
+        if (!frame._state->allocate_scan_error_stage(outError)) {
+            frame._state->set_failure(
+                "allocate_print_scan_error_stage_phase4C",
+                "CUDA print scan error staging allocation failed");
+            frame.abort("print_phase4C_scan_error_flag_failed");
+            return frame;
+        }
+        if (autoExposureBufferRequest.enabled &&
+            !frame._state->allocate_auto_exposure_workspace(
+                autoExposureBufferRequest.descriptor,
+                outError)) {
+            frame._state->set_failure(
+                "allocate_print_auto_exposure_workspace_phase4C",
+                "CUDA print auto-exposure workspace allocation failed");
+            frame.abort("print_phase4C_auto_exposure_failed");
+            return frame;
+        }
         return frame;
     }
 
@@ -2686,8 +2785,8 @@ namespace JuicerProcess {
             frame.abort("direct_prepared_frame_upload_failed");
             return frame;
         }
-        frame._state->directFilmRawConfig = request.filmRawConfig;
-        frame._state->directScannerColor = request.scannerColor;
+        frame._state->focusedFilmRawConfig = request.filmRawConfig;
+        frame._state->focusedScannerColor = request.scannerColor;
         if (!frame._state->allocate_scan_error_stage(outError)) {
             frame._state->set_failure("allocate_direct_scan_error_stage", "CUDA direct scan error staging allocation failed");
             frame.abort("direct_prepared_frame_scan_error_flag_failed");

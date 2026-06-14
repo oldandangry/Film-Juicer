@@ -41,25 +41,6 @@ namespace {
     };
 
     inline const char* cstr_or_default_if_null(const char* value, const char* fallback);
-    static int illuminant_choice_index_from_string(const std::string& value);
-
-    void trace_dichroic_load_failure(
-        const char* operation,
-        const char* detail,
-        const char* fallbackState) {
-        if (!JTRACE_ENABLED(1)) {
-            return;
-        }
-        const char* errorDetail = cstr_or_default_if_null(detail, "unknown error");
-        std::string msg;
-        msg.reserve(160);
-        msg = cstr_or_default_if_null(operation, "dichroic load failed");
-        msg += " (";
-        msg += errorDetail;
-        msg += "); ";
-        msg += cstr_or_default_if_null(fallbackState, "using identity filters");
-        JTRACE("PRINT", msg);
-    }
 
     struct RenderFatalTrace {
         const char* tag = nullptr;
@@ -69,34 +50,6 @@ namespace {
     [[noreturn]] inline void trace_and_throw_render_fatal(const RenderFatalTrace& fatal) {
         JTRACE(fatal.tag, cstr_or_default_if_null(fatal.message, "fatal render error"));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    bool try_load_dichroic_filters(
-        int dichroicSetChoice,
-        Print::Runtime& runtime,
-        const char* operation,
-        const char* fallbackState) {
-        try {
-            const JuicerAssets::DichroicFilterCurveSet& curves =
-                JuicerProcess::root().assets().dichroic_filter_curves_for_choice(dichroicSetChoice);
-            Print::load_dichroic_filters_from_assets(curves, runtime);
-            return true;
-        } catch (const std::exception& ex) {
-            trace_dichroic_load_failure(operation, ex.what(), fallbackState);
-        } catch (...) {
-            trace_dichroic_load_failure(operation, nullptr, fallbackState);
-        }
-        return false;
-    }
-
-    inline bool reload_dichroic_filters_with_identity_fallback(
-        int dichroicSetChoice,
-        Print::Runtime& runtime) {
-        return try_load_dichroic_filters(
-            dichroicSetChoice,
-            runtime,
-            "dichroic reload failed",
-            "identity filters remain active");
     }
 
     inline bool nearly_equal_double(double a, double b) {
@@ -124,10 +77,6 @@ namespace {
 #if JUICER_DIAGNOSTICS_COMPILED
     inline std::size_t cstr_len_or_zero(const char* value) {
         return value ? std::strlen(value) : 0u;
-    }
-
-    inline const char* cstr_or_default_if_empty(const std::string& value, const char* fallback) {
-        return value.empty() ? fallback : value.c_str();
     }
 #endif
 
@@ -184,19 +133,6 @@ namespace {
         return userEdit && param_name_is(paramName, expected);
     }
 
-    inline std::string first_nonempty_or(
-        const std::string& primary,
-        const std::string& secondary,
-        const std::string& fallback) {
-        if (!primary.empty()) {
-            return primary;
-        }
-        if (!secondary.empty()) {
-            return secondary;
-        }
-        return fallback;
-    }
-
     inline std::uint64_t instance_token_or_zero(const InstanceState* state) {
         return state ? state->instanceToken : 0ull;
     }
@@ -243,67 +179,9 @@ namespace {
         return state ? JuicerAtomic::load_shared_ptr(&state->activeDirectState) : nullptr;
     }
 
-    inline void append_ymc_triplet(std::string& msg, float y, float m, float c) {
-        msg += std::to_string(y);
-        msg += "/";
-        msg += std::to_string(m);
-        msg += "/";
-        msg += std::to_string(c);
+    inline std::shared_ptr<const PrintRenderState> load_active_print_state_if(const InstanceState* state) {
+        return state ? JuicerAtomic::load_shared_ptr(&state->activePrintState) : nullptr;
     }
-
-#if JUICER_DIAGNOSTICS_COMPILED
-    inline std::string join_keys_csv_or_none(const std::vector<std::string>& keys) {
-        std::string combined;
-        size_t reserveHint = 0;
-        const std::string* keyData = keys.data();
-        const size_t keyCount = keys.size();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            reserveHint += keyData->size() + 1;
-        }
-        combined.reserve(reserveHint);
-        keyData = keys.data();
-        for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-            if (!combined.empty()) {
-                combined += ",";
-            }
-            combined += *keyData;
-        }
-        if (combined.empty()) {
-            combined = "<none>";
-        }
-        return combined;
-    }
-
-    inline std::string neutral_filter_prereq_context(
-        const char* paperKey,
-        const char* negativeKey,
-        const std::string& illumChoices) {
-        std::string msg;
-        msg.reserve(96 + illumChoices.size());
-        msg = "paper=";
-        msg += cstr_or_default_if_null(paperKey, "<unset>");
-        msg += " negative=";
-        msg += cstr_or_default_if_null(negativeKey, "<unset>");
-        msg += " illum_choices=";
-        msg += illumChoices;
-        return msg;
-    }
-
-    inline std::string neutral_filter_missing_context(
-        const char* paperKey,
-        const char* negativeKey,
-        const std::string& illumKeys) {
-        std::string msg;
-        msg.reserve(96 + illumKeys.size());
-        msg = "paper=";
-        msg += cstr_or_default_if_null(paperKey, "<unset>");
-        msg += " illuminant_keys=";
-        msg += illumKeys;
-        msg += " negative=";
-        msg += cstr_or_default_if_null(negativeKey, "<unset>");
-        return msg;
-    }
-#endif
 
     struct ProfileKeyLabels {
         const char* paperKey = nullptr;
@@ -321,66 +199,6 @@ namespace {
         return labels;
     }
 
-    struct PrintProfileLoadInputs {
-        ProfileKeyLabels labels{};
-        JuicerAssets::PrintRuntimeAssetSet printAssets{};
-    };
-
-    inline void load_print_profile_into_runtime(
-        const JuicerAssets::PrintPaperAsset& printPaper,
-        Print::Runtime& runtime);
-
-    inline PrintProfileLoadInputs build_print_profile_load_inputs(const ParamSnapshot& snapshot) {
-        PrintProfileLoadInputs inputs{};
-        inputs.labels = resolve_profile_key_labels(snapshot);
-        inputs.printAssets = JuicerProcess::root().assets().print_runtime_assets_for_profile_keys(
-            JuicerAssets::PrintRuntimeProfileKeyChoices{
-                snapshot.filmProfileKey,
-                snapshot.printProfileKey,
-                snapshot.enlDichroicSet});
-        return inputs;
-    }
-
-    inline PrintProfileLoadInputs load_print_profile_for_snapshot(
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime) {
-        PrintProfileLoadInputs inputs = build_print_profile_load_inputs(snapshot);
-        load_print_profile_into_runtime(
-            inputs.printAssets.printPaper,
-            runtime);
-        return inputs;
-    }
-
-    inline void sync_print_runtime_mid_neutral_from_profile(Print::Runtime& runtime) {
-        runtime.hasMidNeutralDensity = runtime.profile.hasMidNeutralDensity;
-        runtime.hasMidNeutralLogE = runtime.profile.hasMidNeutralLogE;
-        runtime.midNeutralDensity = runtime.profile.midNeutralDensity;
-        runtime.midNeutralLogE = runtime.profile.midNeutralLogE;
-    }
-
-    inline void load_print_profile_into_runtime(
-        const JuicerAssets::PrintPaperAsset& printPaper,
-        Print::Runtime& runtime) {
-        Print::load_profile_from_asset(printPaper, runtime.profile, &runtime);
-        sync_print_runtime_mid_neutral_from_profile(runtime);
-    }
-
-    inline Print::Runtime snapshot_print_runtime_locked(InstanceState& state) {
-        std::lock_guard<std::mutex> lock(state.m);
-        return state.printRT;
-    }
-
-    inline void publish_print_runtime_locked(InstanceState& state, Print::Runtime runtime) {
-        std::lock_guard<std::mutex> lock(state.m);
-        state.printRT = std::move(runtime);
-    }
-
-    inline bool load_film_profile_into_base_locked(const std::string& filmProfileKey, InstanceState& state) {
-        std::lock_guard<std::mutex> lock(state.m);
-        state.baseLoaded = load_film_profile_into_base(filmProfileKey, state);
-        return state.baseLoaded;
-    }
-
     inline bool load_direct_film_profile_into_base_locked(
         const ParamSnapshot& snapshot,
         InstanceState& state) {
@@ -390,11 +208,7 @@ namespace {
                     snapshot.filmProfileKey,
                     snapshot.printProfileKey,
                     snapshot.scanRoute});
-        const bool validDirectSelection =
-            selected.valid &&
-            selected.filmProfile &&
-            selected.directRoutePrintProfileExcluded &&
-            selected.directRouteNeutralCalibrationExcluded;
+        const bool validDirectSelection = selected.valid && selected.filmProfile;
         if (!validDirectSelection) {
             JTRACE(
                 "SPEKTRAFILM",
@@ -473,6 +287,15 @@ namespace {
 
     inline void rebuild_pending_state_if_needed(JuicerEffect& effect, InstanceState& state) {
         const PendingStateSnapshot pending = load_pending_state_snapshot(state);
+        if (Spektrafilm::scan_route_is_print(pending.params.scanRoute)) {
+            const std::uint64_t builtFullHash =
+                state.lastHash.load(std::memory_order_acquire);
+            if (pending_rebuild_required(pending, builtFullHash)) {
+                (void)rebuild_print_render_state(state, pending.params);
+            }
+            return;
+        }
+
         const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(&state);
         const std::uint64_t builtFullHash = working_state_full_hash_or_zero(wsCur);
         if (!pending_rebuild_required(pending, builtFullHash)) {
@@ -648,14 +471,6 @@ namespace {
     }
 #endif
 
-    inline bool should_refresh_print_illuminant(bool printReloaded, bool filmReloaded) {
-        return printReloaded || filmReloaded;
-    }
-
-    inline bool should_apply_neutral_after_reload(bool printReloaded, bool dichroicReloaded) {
-        return printReloaded || dichroicReloaded;
-    }
-
     inline bool auto_exposure_cache_param_changed(const std::string& paramName) {
         return param_name_is(paramName, kParamCameraAutoExposure) ||
                param_name_is(paramName, JuicerParams::kCameraMeteringMethod);
@@ -689,12 +504,6 @@ namespace {
 
     inline bool grain_reset_advanced_param_changed_by_user(bool userEdit, const std::string& paramName) {
         return user_edit_param_is(userEdit, paramName, JuicerParams::kGrainResetAdvanced);
-    }
-
-    inline void update_print_illuminant_runtime(
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime) {
-        Print::build_illuminant_from_choice(snapshot.enlIll, runtime, /*forEnlarger*/ true);
     }
 
     template <typename MediumRuntimeT>
@@ -834,47 +643,6 @@ namespace {
         JTRACE_VERBOSE("PRINTDBG", msg);
     }
 
-    inline void trace_print_reload_verbose_if(
-        bool traceVerbose,
-        const PrintProfileLoadInputs& printLoad,
-        const Print::Runtime& runtime) {
-        if (!traceVerbose) {
-            return;
-        }
-        const ProfileKeyLabels& labels = printLoad.labels;
-        const std::uint64_t paperVersion = printLoad.printAssets.printPaper.version;
-        std::string msg;
-        msg.reserve(256);
-        msg = "print reload key=";
-        msg += labels.paperLabel;
-        msg += " assetVersion=";
-        msg += std::to_string(paperVersion);
-        msg += " ref=";
-        msg += runtime.referenceIlluminant;
-        msg += " view=";
-        msg += runtime.viewingIlluminant;
-        JTRACE_VERBOSE("PRINTDBG", msg);
-    }
-
-    inline bool reload_print_profile_if_requested(
-        bool requested,
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        bool traceVerbose) {
-        if (!requested) {
-            return false;
-        }
-        const PrintProfileLoadInputs printLoad =
-            load_print_profile_for_snapshot(snapshot, runtime);
-        trace_print_reload_verbose_if(traceVerbose, printLoad, runtime);
-
-        // Reload dichroic filters (vendor selection controls which curves are used).
-        (void)reload_dichroic_filters_with_identity_fallback(
-            snapshot.enlDichroicSet,
-            runtime);
-        return true;
-    }
-
     inline void store_pending_hashes_for_snapshot(InstanceState& state, const ParamSnapshot& snapshot) {
         store_pending_state_snapshot(
             state,
@@ -885,48 +653,6 @@ namespace {
                 hash_params_dir(snapshot)});
     }
 
-    inline void trace_neutral_filters_applied_if(
-        bool traceVerbose,
-        const ParamSnapshot& snapshot,
-        const Print::Runtime& runtime,
-        const char* reloadSource) {
-        if (!traceVerbose) {
-            return;
-        }
-        const ProfileKeyLabels labels = resolve_profile_key_labels(snapshot);
-        std::string msg;
-        msg.reserve(192);
-        msg = "neutral filters applied (";
-        msg += cstr_or_default_if_null(reloadSource, "unspecified");
-        msg += ") paper=";
-        msg += labels.paperLabel;
-        msg += " film=";
-        msg += labels.filmLabel;
-        msg += " Y/M/C=";
-        append_ymc_triplet(msg, runtime.neutralY, runtime.neutralM, runtime.neutralC);
-        JTRACE_VERBOSE("PRINTDBG", msg);
-    }
-
-    inline void mark_neutral_filters_applied_with_trace(
-        bool traceVerbose,
-        const ParamSnapshot& snapshot,
-        const Print::Runtime& runtime,
-        const char* reloadSource,
-        bool& neutralApplied) {
-        neutralApplied = true;
-        trace_neutral_filters_applied_if(traceVerbose, snapshot, runtime, reloadSource);
-    }
-
-    inline bool reload_dichroic_filters_if_requested(
-        bool requested,
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime) {
-        if (!requested) {
-            return false;
-        }
-        return reload_dichroic_filters_with_identity_fallback(snapshot.enlDichroicSet, runtime);
-    }
-
     inline bool reload_film_stock_if_requested(
         bool requested,
         const ParamSnapshot& snapshot,
@@ -934,46 +660,7 @@ namespace {
         if (!requested) {
             return false;
         }
-        if (!Spektrafilm::scan_route_is_print(snapshot.scanRoute)) {
-            return load_direct_film_profile_into_base_locked(snapshot, state);
-        }
-        return load_film_profile_into_base_locked(snapshot.filmProfileKey, state);
-    }
-
-    struct OnParamsReloadStatus {
-        bool printRoute = false;
-        bool printReloaded = false;
-        bool dichroicReloaded = false;
-        bool filmReloaded = false;
-    };
-
-    inline OnParamsReloadStatus evaluate_on_params_reload_status(
-        const ChangedParamFlags& changed,
-        const ParamSnapshot& snapshot,
-        InstanceState& state,
-        Print::Runtime& runtime,
-        bool traceVerbose) {
-        OnParamsReloadStatus status{};
-        status.printRoute = Spektrafilm::scan_route_is_print(snapshot.scanRoute);
-        if (status.printRoute) {
-            status.printReloaded =
-                reload_print_profile_if_requested(changed.printProfile, snapshot, runtime, traceVerbose);
-            status.dichroicReloaded =
-                reload_dichroic_filters_if_requested(changed.enlargerDichroicSet, snapshot, runtime);
-        }
-        status.filmReloaded =
-            reload_film_stock_if_requested(changed.filmProfile, snapshot, state);
-        return status;
-    }
-
-    inline bool should_refresh_print_illuminant_for_reload_status(const OnParamsReloadStatus& status) {
-        return status.printRoute &&
-               should_refresh_print_illuminant(status.printReloaded, status.filmReloaded);
-    }
-
-    inline bool should_apply_reload_neutral_filters(const OnParamsReloadStatus& status) {
-        return status.printRoute &&
-               should_apply_neutral_after_reload(status.printReloaded, status.dichroicReloaded);
+        return load_direct_film_profile_into_base_locked(snapshot, state);
     }
 
     inline bool should_skip_param_change_due_to_suppression(const InstanceState* state) {
@@ -984,86 +671,12 @@ namespace {
         return bootstrap_needed(state);
     }
 
-    inline bool should_apply_film_neutral_filters(bool filmReloaded, bool neutralApplied);
-
-    template <typename ApplyFn>
-    inline void apply_when_reload_requires_illuminant_refresh(
-        const OnParamsReloadStatus& status,
-        ApplyFn&& applyFn) {
-        if (!should_refresh_print_illuminant_for_reload_status(status)) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_when_reload_requires_neutral_filters(
-        const OnParamsReloadStatus& status,
-        ApplyFn&& applyFn) {
-        if (!should_apply_reload_neutral_filters(status)) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
     template <typename ApplyFn>
     inline void apply_when_film_reloaded(bool filmReloaded, ApplyFn&& applyFn) {
         if (!filmReloaded) {
             return;
         }
         std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_when_film_neutral_filters_needed(
-        const OnParamsReloadStatus& status,
-        bool neutralApplied,
-        ApplyFn&& applyFn) {
-        if (!status.printRoute ||
-            !should_apply_film_neutral_filters(status.filmReloaded, neutralApplied)) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_when_enlarger_illuminant_changed(
-        const ChangedParamFlags& changed,
-        const OnParamsReloadStatus& status,
-        ApplyFn&& applyFn) {
-        if (!status.printRoute || !changed.enlargerIlluminant) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    template <typename ApplyFn>
-    inline void apply_neutral_filters_with_optional_trace(
-        ApplyFn&& applyFn,
-        bool traceVerbose,
-        const ParamSnapshot& snapshot,
-        Print::Runtime& runtime,
-        const char* reloadSource,
-        bool& neutralApplied) {
-        std::forward<ApplyFn>(applyFn)();
-        mark_neutral_filters_applied_with_trace(
-            traceVerbose,
-            snapshot,
-            runtime,
-            reloadSource,
-            neutralApplied);
-    }
-
-    template <typename ApplyFn>
-    inline void apply_if_requested(bool requested, ApplyFn&& applyFn) {
-        if (!requested) {
-            return;
-        }
-        std::forward<ApplyFn>(applyFn)();
-    }
-
-    inline bool should_apply_film_neutral_filters(bool filmReloaded, bool neutralApplied) {
-        return filmReloaded && !neutralApplied;
     }
 
     inline double sanitize_finite_clamped(double value, double fallback, double minValue, double maxValue) {
@@ -1307,10 +920,6 @@ namespace {
         return Spektrafilm::resolve_scan_route(capturePolarity, userRouteSelection);
     }
 
-    inline bool spektrafilm_phase1a_blocks_old_working_state_rebuild(Spektrafilm::ScanRoute route) {
-        return Spektrafilm::scan_route_is_print(route);
-    }
-
     inline int read_choice_param_clamped(
         OFX::ChoiceParam* param,
         int fallback,
@@ -1395,12 +1004,6 @@ namespace {
     }
 
     inline void set_double_param_if(OFX::DoubleParam* param, double value) {
-        if (param) {
-            param->setValue(value);
-        }
-    }
-
-    inline void set_choice_param_if(OFX::ChoiceParam* param, int value) {
         if (param) {
             param->setValue(value);
         }
@@ -1519,23 +1122,6 @@ namespace {
         return followMask;
     }
 #endif
-
-    inline bool apply_illuminant_choice_from_source(
-        OFX::ChoiceParam* param,
-        int& currentIndex,
-        bool overrideFlag,
-        const std::string& source) {
-        if (overrideFlag || !param) {
-            return false;
-        }
-        const int mapped = illuminant_choice_index_from_string(source);
-        if (mapped < 0 || currentIndex == mapped) {
-            return false;
-        }
-        set_choice_param_if(param, mapped);
-        currentIndex = mapped;
-        return true;
-    }
 
     inline void set_double2_param_if(
         OFX::Double2DParam* param,
@@ -2455,47 +2041,6 @@ namespace {
         return static_cast<double>((low + high) * 0.5f);
     }
 
-    static std::vector<std::string> enlarger_illuminant_keys_for_choice(int choice) {
-        switch (choice) {
-            case 0:
-                return {"D65", "d65"};
-            case 1:
-                return {"D55", "d55"};
-            case 2:
-                return {"D50", "d50"};
-            case 3:
-                return {"TH-KG3-L", "th-kg3-l"};
-            case 4:
-                return {"T", "t", "Incandescent", "incandescent"};
-            case 5:
-                return {"K75P", "k75p", "Kinoton75P", "Kinoton 75P", "kinoton75p", "kinoton_75p"};
-            case 6:
-                return {"EqualEnergy", "equal_energy", "Equal energy"};
-            default:
-                break;
-        }
-        return {};
-    }
-
-    static int illuminant_choice_index_from_string(const std::string& value) {
-        const std::string normalized = IlluminantKeys::normalize(value);
-        if (normalized.empty()) {
-            return -1;
-        }
-        constexpr int kIlluminantChoiceCount = 7;
-        for (int choice = 0; choice < kIlluminantChoiceCount; ++choice) {
-            const auto keys = enlarger_illuminant_keys_for_choice(choice);
-            const std::string* keyData = keys.data();
-            const size_t keyCount = keys.size();
-            for (size_t i = 0; i < keyCount; ++i, ++keyData) {
-                if (IlluminantKeys::normalize(*keyData) == normalized) {
-                    return choice;
-                }
-            }
-        }
-        return -1;
-    }
-
     class ScopedParamEventSuppression {
     public:
         explicit ScopedParamEventSuppression(InstanceState* state)
@@ -2515,6 +2060,31 @@ namespace {
     private:
         InstanceState* _state = nullptr;
         bool _previous = false;
+    };
+
+    class ScopedBootstrapState {
+    public:
+        explicit ScopedBootstrapState(InstanceState* state)
+            : _state(state) {
+            if (_state) {
+                _previousSuppression = _state->suppressParamEvents;
+                _previousBootstrap = _state->inBootstrap;
+                _state->suppressParamEvents = true;
+                _state->inBootstrap = true;
+            }
+        }
+
+        ~ScopedBootstrapState() {
+            if (_state) {
+                _state->suppressParamEvents = _previousSuppression;
+                _state->inBootstrap = _previousBootstrap;
+            }
+        }
+
+    private:
+        InstanceState* _state = nullptr;
+        bool _previousSuppression = false;
+        bool _previousBootstrap = false;
     };
 
 } // namespace
@@ -3520,6 +3090,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
     _state->dataDir = ensure_trailing_separator(data_dir_string());
     JuicerAtomic::store_shared_ptr(&_state->activeWorkingState, std::shared_ptr<const WorkingState>{});
     JuicerAtomic::store_shared_ptr(&_state->activeDirectState, std::shared_ptr<const DirectRenderState>{});
+    JuicerAtomic::store_shared_ptr(&_state->activePrintState, std::shared_ptr<const PrintRenderState>{});
     _state->activeBuildCounter = 0;
     {
         const auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -3593,9 +3164,9 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const Spektrafilm::ScanRoute requestedRoute = Spektrafilm::scan_route_from_key_or(
         read_str_choice_param_or(_pScanRoute, Spektrafilm::scan_route_key(Spektrafilm::kDefaultScanRoute)),
         Spektrafilm::kDefaultScanRoute);
-    const bool directCudaRoute =
-        args.isEnabledCudaRender && !Spektrafilm::scan_route_is_print(requestedRoute);
-    if (!directCudaRoute) {
+    const bool cudaRoute = args.isEnabledCudaRender;
+    const bool directCudaRoute = cudaRoute && !Spektrafilm::scan_route_is_print(requestedRoute);
+    if (!cudaRoute) {
         throw_spektrafilm_phase1a_render_cutoff(args);
     }
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -3701,20 +3272,38 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     if (has_loaded_base_state(_state.get())) {
         rebuild_pending_state_if_needed(*this, *_state);
     }
-    const std::shared_ptr<const DirectRenderState> directState = load_active_direct_state_if(_state.get());
-    if (!directState || directState->buildCounter == 0 || !directState->recipe.directStructuralReady) {
-        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: direct render state not ready; aborting render"});
+    const bool printRoute = Spektrafilm::scan_route_is_print(requestedRoute);
+    const std::shared_ptr<const DirectRenderState> directState =
+        printRoute ? nullptr : load_active_direct_state_if(_state.get());
+    const std::shared_ptr<const PrintRenderState> printState =
+        printRoute ? load_active_print_state_if(_state.get()) : nullptr;
+    if ((!printRoute &&
+         (!directState || directState->buildCounter == 0 || !directState->recipe.directStructuralReady)) ||
+        (printRoute &&
+         (!printState || printState->buildCounter == 0 || !printState->recipe.printStructuralReady))) {
+        trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: focused render state not ready; aborting render"});
     }
-    const double filmFormatMm = directState->recipe.filmRaw.filmFormatLongEdgeMm;
+    const RenderRecipe& focusedRecipe = printRoute ? printState->recipe : directState->recipe;
+    if (printRoute && focusedRecipe.scannerOutput.glareActive) {
+        trace_and_throw_render_fatal(
+            RenderFatalTrace{"SPEKTRAFILM", Spektrafilm::kGlareNotImplementedForPhase4});
+    }
+    if (printRoute &&
+        focusedRecipe.scannerOutput.postEffectsDisposition !=
+            Spektrafilm::ScannerPostEffectDisposition::Identity) {
+        trace_and_throw_render_fatal(
+            RenderFatalTrace{"SPEKTRAFILM", Spektrafilm::kScannerPostEffectsNotImplementedForPhase4});
+    }
+    const double filmFormatMm = focusedRecipe.filmRaw.filmFormatLongEdgeMm;
     const float pixelSizeUm =
         (filmFormatMm > 0.0 && longEdgePx > 0.0)
             ? static_cast<float>((filmFormatMm * 1000.0) / longEdgePx)
             : 0.0f;
     if (traceVerbose) {
-        std::string msg = "render direct state build=";
-        msg += std::to_string(directState->buildCounter);
+        std::string msg = printRoute ? "render print state build=" : "render direct state build=";
+        msg += std::to_string(printRoute ? printState->buildCounter : directState->buildCounter);
         msg += " recipe_hash=";
-        msg += std::to_string(directState->recipe.hash);
+        msg += std::to_string(focusedRecipe.hash);
         JTRACE_VERBOSE("PHASE3D", msg);
     }
 
@@ -3728,17 +3317,31 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
     const SessionTokenSnapshot sessionTokens = snapshot_session_tokens(_state.get());
     const std::uintptr_t renderClipToken = reinterpret_cast<std::uintptr_t>(_src);
 
-    JuicerProcessor::DirectFrameRequest frameRequest{};
-    frameRequest.state = directState;
-    frameRequest.components = nComponents;
-    frameRequest.renderWindow = roi;
-    frameRequest.sessionSeed = sessionTokens.sessionSeed;
-    frameRequest.instanceToken = sessionTokens.instanceToken;
-    frameRequest.clipToken = renderClipToken;
-    frameRequest.frameTime = args.time;
-    frameRequest.frameRate = getFrameRate();
-    frameRequest.pixelSizeUm = pixelSizeUm;
-    proc.setDirectFrameRequest(frameRequest);
+    if (printRoute) {
+        JuicerProcessor::PrintFrameRequest frameRequest{};
+        frameRequest.state = printState;
+        frameRequest.components = nComponents;
+        frameRequest.renderWindow = roi;
+        frameRequest.sessionSeed = sessionTokens.sessionSeed;
+        frameRequest.instanceToken = sessionTokens.instanceToken;
+        frameRequest.clipToken = renderClipToken;
+        frameRequest.frameTime = args.time;
+        frameRequest.frameRate = getFrameRate();
+        frameRequest.pixelSizeUm = pixelSizeUm;
+        proc.setPrintFrameRequest(frameRequest);
+    } else {
+        JuicerProcessor::DirectFrameRequest frameRequest{};
+        frameRequest.state = directState;
+        frameRequest.components = nComponents;
+        frameRequest.renderWindow = roi;
+        frameRequest.sessionSeed = sessionTokens.sessionSeed;
+        frameRequest.instanceToken = sessionTokens.instanceToken;
+        frameRequest.clipToken = renderClipToken;
+        frameRequest.frameTime = args.time;
+        frameRequest.frameRate = getFrameRate();
+        frameRequest.pixelSizeUm = pixelSizeUm;
+        proc.setDirectFrameRequest(frameRequest);
+    }
     proc.setGPURenderArgs(args);
 
     // Dispatch to support library's threaded/tiled CPU path
@@ -4246,6 +3849,11 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.glareCompRemovalFactor = compensation.factor;
     P.glareCompRemovalDensity = compensation.density;
     P.glareCompRemovalTransition = compensation.transition;
+    const Profiles::ProfileGlare glare = gatherGlareUi();
+    P.glareActive = glare.active;
+    P.glarePercent = glare.percent;
+    P.glareRoughness = glare.roughness;
+    P.glareBlurSigmaPx = glare.blur;
     P.printDminFactor =
         read_sanitized_unit_double(_pPrintDminFactor, P.printDminFactor);
     read_input_snapshot_values(_pInputColorSpace, _pInputCctfDecoding, P);
@@ -4286,64 +3894,44 @@ void JuicerEffect::bootstrap_after_attach() {
     // Initialize Spectral globals exactly once per process.
     JuicerProcess::root().ensure_bootstrap();
     JTRACE("BUILD", "spectral globals ensured once; proceeding to profile and film stock load");
-    // Suppress re-entrant param events during bootstrap
-    _state->inBootstrap = true;
-    _state->suppressParamEvents = true;
-
-    Print::Runtime nextPrintRuntime{};
+    const ScopedBootstrapState bootstrapState(_state.get());
     ParamSnapshot P = snapshotParams();
-
     const bool printRoute = Spektrafilm::scan_route_is_print(P.scanRoute);
-    if (printRoute) {
-        // Load selected print paper profile only for routes that consume print state.
-        (void)load_print_profile_for_snapshot(P, nextPrintRuntime);
-    }
+    store_pending_hashes_for_snapshot(*_state, P);
 
-    // Direct product bootstrap consumes the selected validated Spektrafilm payload.
-    if (printRoute) {
-        load_film_profile_into_base_locked(P.filmProfileKey, *_state);
-    } else {
-        load_direct_film_profile_into_base_locked(P, *_state);
-    }
+    // Both accepted routes consume the selected validated Spektrafilm film payload.
+    load_direct_film_profile_into_base_locked(P, *_state);
     if (has_loaded_base_state(_state.get())) {
         applyHalationProfileDefaults();
     }
 
     if (printRoute) {
-        // Apply metadata-driven illuminant defaults and rebuild runtime illuminants.
-        applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-        update_print_illuminant_runtime(P, nextPrintRuntime);
-
-        // Load dichroic filters (set selection controls which vendor curves are used).
-        // Identity fallback is already handled in loader via 1.0 curves.
-        (void)try_load_dichroic_filters(
-            P.enlDichroicSet,
-            nextPrintRuntime,
-            "dichroic load failed",
-            "using identity filters");
-
-        applyNeutralFilters(P, nextPrintRuntime);
+        JTRACE_VERBOSE(
+            "SPEKTRAFILM",
+            "phase=4C print bootstrap excludes legacy Print::Runtime, dichroic reload, and neutral-filter bootstrap");
     } else {
         JTRACE_VERBOSE(
             "SPEKTRAFILM",
             "phase=3A direct route excludes print profile, dichroic, and neutral-calibration bootstrap");
     }
-    publish_print_runtime_locked(*_state, std::move(nextPrintRuntime));
 
     if (has_loaded_base_state(_state.get())) {
 #ifdef JUICER_ENABLE_COUPLERS
         initializeCouplerParamsFromProfileIfNeeded(P);
 #endif
-        rebuild_working_state(this->getHandle(), *_state, P);
+        store_pending_hashes_for_snapshot(*_state, P);
+        if (printRoute) {
+            (void)rebuild_print_render_state(*_state, P);
+        } else {
+            rebuild_working_state(this->getHandle(), *_state, P);
+        }
     } else {
         JTRACE("STOCK", "bootstrap: failed to load film stock; deferring rebuild");
     }
-
-    // Re-enable changedParam handling now that bootstrap is complete
-    _state->suppressParamEvents = false;
-    _state->inBootstrap = false;
 }
 
+#if 0
+// Phase 4C hard block: accepted print bootstrap/publication owns neutral policy in RenderRecipe.
 void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& runtime) {
     if (!_state) {
         return;
@@ -4486,6 +4074,7 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print
 
     return changed;
 }
+#endif
 
 #ifdef JUICER_ENABLE_COUPLERS
 void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) {
@@ -4760,20 +4349,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         return;
     }
 
-    const ParamSnapshot phaseGateSnapshot = snapshotParams();
-    if (spektrafilm_phase1a_blocks_old_working_state_rebuild(phaseGateSnapshot.scanRoute)) {
-        const ProfileKeyLabels labels = resolve_profile_key_labels(phaseGateSnapshot);
-        std::string msg;
-        msg.reserve(160);
-        msg = "SpektrafilmPixelPipelineNotImplementedForPhase1A blocks parameter-triggered old WorkingState rebuild";
-        msg += " filmProfileKey=";
-        msg += labels.filmLabel;
-        msg += " printProfileKey=";
-        msg += labels.paperLabel;
-        JTRACE("SPEKTRAFILM", msg);
-        return;
-    }
-
     // If bootstrap hasn’t run yet, run it once now
     if (should_bootstrap_for_param_change(_state.get())) {
         bootstrap_after_attach();
@@ -4782,62 +4357,23 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     ParamSnapshot P = snapshotParams();
     const ChangedParamFlags changed = classify_changed_param(changedNameOrNull);
     trace_param_change_verbose_if(traceVerbose, P, *_state, changedNameOrNull);
-    Print::Runtime nextPrintRuntime = snapshot_print_runtime_locked(*_state);
 
     // Track user overrides for illuminant choices.
     mark_illuminant_override_if_changed(*_state, changed);
 
-    bool neutralApplied = false;
-    auto apply_neutral_filters_with_trace = [&](const char* reloadSource) {
-        apply_neutral_filters_with_optional_trace(
-            [&]() {
-                applyNeutralFilters(P, nextPrintRuntime);
-            },
-            traceVerbose,
-            P,
-            nextPrintRuntime,
-            reloadSource,
-            neutralApplied);
-    };
-
-    const OnParamsReloadStatus reloadStatus =
-        evaluate_on_params_reload_status(changed, P, *_state, nextPrintRuntime, traceVerbose);
-
-    bool printRuntimeDirty =
-        reloadStatus.printReloaded ||
-        reloadStatus.dichroicReloaded ||
-        reloadStatus.filmReloaded;
-
-    apply_when_film_reloaded(reloadStatus.filmReloaded, [&]() {
+    const bool filmReloaded =
+        reload_film_stock_if_requested(changed.filmProfile, P, *_state);
+    apply_when_film_reloaded(filmReloaded, [&]() {
         applyHalationProfileDefaults();
 #ifdef JUICER_ENABLE_COUPLERS
         syncCouplerParamsFromProfileFollowMask(P);
 #endif
     });
 
-    apply_when_reload_requires_illuminant_refresh(reloadStatus, [&]() {
-        applyMetadataIlluminantDefaults(P, nextPrintRuntime);
-        update_print_illuminant_runtime(P, nextPrintRuntime);
-        printRuntimeDirty = true;
-    });
-
-    apply_when_reload_requires_neutral_filters(reloadStatus, [&]() {
-        apply_neutral_filters_with_trace("print/dichroic");
-        printRuntimeDirty = true;
-    });
-
-    apply_when_film_neutral_filters_needed(reloadStatus, neutralApplied, [&]() {
-        apply_neutral_filters_with_trace("film");
-        printRuntimeDirty = true;
-    });
-
-    apply_when_enlarger_illuminant_changed(changed, reloadStatus, [&]() {
-        applyNeutralFilters(P, nextPrintRuntime);
-        printRuntimeDirty = true;
-    });
-
-    if (printRuntimeDirty) {
-        publish_print_runtime_locked(*_state, std::move(nextPrintRuntime));
+    if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
+        JTRACE_VERBOSE(
+            "SPEKTRAFILM",
+            "phase=4C parameter change queued focused print recipe publication without legacy Print::Runtime");
     }
 
     store_pending_hashes_for_snapshot(*_state, P);

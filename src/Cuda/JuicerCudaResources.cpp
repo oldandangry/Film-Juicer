@@ -45,497 +45,499 @@
 #include <vector>
 
 namespace JuicerCuda {
-namespace Precompute {
+    namespace Precompute {
 
-    struct CanonicalScanLutCpu {
-        std::vector<double> log10XYZ;
-        std::vector<double> slopeC;
-        std::vector<double> slopeM;
-        std::vector<double> slopeY;
-        std::vector<double> cellMin;
-        std::vector<double> cellMax;
-    };
+        struct CanonicalScanLutCpu {
+            std::vector<double> log10XYZ;
+            std::vector<double> slopeC;
+            std::vector<double> slopeM;
+            std::vector<double> slopeY;
+            std::vector<double> cellMin;
+            std::vector<double> cellMax;
+        };
 
-    namespace {
+        namespace {
 
-        size_t scan_lut_index(std::uint32_t res, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
-            return (((static_cast<size_t>(c) * res + m) * res + y) * 3u) + out;
-        }
-
-        size_t scan_lut_cell_index(std::uint32_t cellRes, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
-            return (((static_cast<size_t>(c) * cellRes + m) * cellRes + y) * 3u) + out;
-        }
-
-        void fill_monotone_slopes_1d(const std::vector<double>& values, std::vector<double>& slopes) {
-            const size_t size = values.size();
-            slopes.assign(size, 0.0);
-            if (size <= 1u) {
-                return;
+            size_t scan_lut_index(std::uint32_t res, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
+                return (((static_cast<size_t>(c) * res + m) * res + y) * 3u) + out;
             }
 
-            std::vector<double> deltas(size - 1u);
-            for (size_t index = 0; index + 1u < size; ++index) {
-                deltas[index] = values[index + 1u] - values[index];
-            }
-            if (size == 2u) {
-                slopes[0] = deltas[0];
-                slopes[1] = deltas[0];
-                return;
+            size_t scan_lut_cell_index(std::uint32_t cellRes, std::uint32_t c, std::uint32_t m, std::uint32_t y, std::uint32_t out) {
+                return (((static_cast<size_t>(c) * cellRes + m) * cellRes + y) * 3u) + out;
             }
 
-            double left = 0.5 * (3.0 * deltas[0] - deltas[1]);
-            if (left * deltas[0] <= 0.0) {
-                left = 0.0;
-            } else if (deltas[0] * deltas[1] < 0.0 && std::abs(left) > std::abs(3.0 * deltas[0])) {
-                left = 3.0 * deltas[0];
-            }
-            slopes[0] = left;
+            void fill_monotone_slopes_1d(const std::vector<double>& values, std::vector<double>& slopes) {
+                const size_t size = values.size();
+                slopes.assign(size, 0.0);
+                if (size <= 1u) {
+                    return;
+                }
 
-            for (size_t index = 1u; index + 1u < size; ++index) {
-                const double previous = deltas[index - 1u];
-                const double next = deltas[index];
-                slopes[index] =
-                    previous == 0.0 || next == 0.0 || previous * next <= 0.0
-                        ? 0.0
-                        : 2.0 * previous * next / (previous + next);
+                std::vector<double> deltas(size - 1u);
+                for (size_t index = 0; index + 1u < size; ++index) {
+                    deltas[index] = values[index + 1u] - values[index];
+                }
+                if (size == 2u) {
+                    slopes[0] = deltas[0];
+                    slopes[1] = deltas[0];
+                    return;
+                }
+
+                double left = 0.5 * (3.0 * deltas[0] - deltas[1]);
+                if (left * deltas[0] <= 0.0) {
+                    left = 0.0;
+                } else if (deltas[0] * deltas[1] < 0.0 && std::abs(left) > std::abs(3.0 * deltas[0])) {
+                    left = 3.0 * deltas[0];
+                }
+                slopes[0] = left;
+
+                for (size_t index = 1u; index + 1u < size; ++index) {
+                    const double previous = deltas[index - 1u];
+                    const double next = deltas[index];
+                    slopes[index] =
+                        previous == 0.0 || next == 0.0 || previous * next <= 0.0
+                            ? 0.0
+                            : 2.0 * previous * next / (previous + next);
+                }
+
+                double right = 0.5 * (3.0 * deltas[size - 2u] - deltas[size - 3u]);
+                if (right * deltas[size - 2u] <= 0.0) {
+                    right = 0.0;
+                } else if (deltas[size - 2u] * deltas[size - 3u] < 0.0 &&
+                           std::abs(right) > std::abs(3.0 * deltas[size - 2u])) {
+                    right = 3.0 * deltas[size - 2u];
+                }
+                slopes[size - 1u] = right;
             }
 
-            double right = 0.5 * (3.0 * deltas[size - 2u] - deltas[size - 3u]);
-            if (right * deltas[size - 2u] <= 0.0) {
-                right = 0.0;
-            } else if (deltas[size - 2u] * deltas[size - 3u] < 0.0 &&
-                       std::abs(right) > std::abs(3.0 * deltas[size - 2u])) {
-                right = 3.0 * deltas[size - 2u];
+            int scipy_reflect_index(int index, int size) {
+                if (size <= 1) {
+                    return 0;
+                }
+                while (index < 0 || index >= size) {
+                    index = index < 0 ? -index - 1 : 2 * size - index - 1;
+                }
+                return index;
             }
-            slopes[size - 1u] = right;
-        }
 
-        int scipy_reflect_index(int index, int size) {
-            if (size <= 1) {
-                return 0;
-            }
-            while (index < 0 || index >= size) {
-                index = index < 0 ? -index - 1 : 2 * size - index - 1;
-            }
-            return index;
-        }
+            bool build_blurred_hanatos_spectra(
+                const NpySpectraLUT& source,
+                float sigma,
+                std::vector<float>& out,
+                std::string& outError) {
+                if (!(sigma > 0.0f)) {
+                    out = source.data;
+                    return true;
+                }
+                const int n = source.size;
+                const int k = source.numSamples;
+                const int radius = JuicerGaussian::scipy_gaussian_radius(sigma);
+                if (n <= 0 || k <= 0 || radius <= 0 || source.data.size() != static_cast<size_t>(n) * n * k) {
+                    outError = "direct Hanatos spectral blur source is invalid";
+                    return false;
+                }
 
-        bool build_blurred_hanatos_spectra(
-            const NpySpectraLUT& source,
-            float sigma,
-            std::vector<float>& out,
-            std::string& outError) {
-            if (!(sigma > 0.0f)) {
-                out = source.data;
+                std::vector<double> kernel(static_cast<size_t>(radius * 2 + 1));
+                double kernelSum = 0.0;
+                const double sigmaSquared = static_cast<double>(sigma) * static_cast<double>(sigma);
+                for (int offset = -radius; offset <= radius; ++offset) {
+                    const double weight = std::exp(-0.5 * static_cast<double>(offset * offset) / sigmaSquared);
+                    const int kernelOffset = offset + radius;
+                    const size_t kernelIndex = static_cast<size_t>(kernelOffset);
+                    kernel[kernelIndex] = weight;
+                    kernelSum += weight;
+                }
+                if (!(std::isfinite(kernelSum) && kernelSum > 0.0)) {
+                    outError = "direct Hanatos spectral blur kernel is invalid";
+                    return false;
+                }
+                for (double& weight : kernel) {
+                    weight /= kernelSum;
+                }
+
+                out.assign(source.data.size(), 0.0f);
+                for (int c = 0; c < n; ++c) {
+                    for (int m = 0; m < n; ++m) {
+                        const size_t base =
+                            (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) *
+                            static_cast<size_t>(k);
+                        for (int sample = 0; sample < k; ++sample) {
+                            double value = 0.0;
+                            for (int offset = -radius; offset <= radius; ++offset) {
+                                const int reflected = scipy_reflect_index(sample + offset, k);
+                                const int kernelOffset = offset + radius;
+                                const size_t kernelIndex = static_cast<size_t>(kernelOffset);
+                                value += kernel[kernelIndex] *
+                                         static_cast<double>(source.data[base + static_cast<size_t>(reflected)]);
+                            }
+                            if (!std::isfinite(value)) {
+                                outError = "direct Hanatos spectral blur produced non-finite data";
+                                return false;
+                            }
+                            out[base + static_cast<size_t>(sample)] = static_cast<float>(value);
+                        }
+                    }
+                }
                 return true;
             }
-            const int n = source.size;
-            const int k = source.numSamples;
-            const int radius = JuicerGaussian::scipy_gaussian_radius(sigma);
-            if (n <= 0 || k <= 0 || radius <= 0 || source.data.size() != static_cast<size_t>(n) * n * k) {
-                outError = "direct Hanatos spectral blur source is invalid";
-                return false;
-            }
 
-            std::vector<double> kernel(static_cast<size_t>(radius * 2 + 1));
-            double kernelSum = 0.0;
-            const double sigmaSquared = static_cast<double>(sigma) * static_cast<double>(sigma);
-            for (int offset = -radius; offset <= radius; ++offset) {
-                const double weight = std::exp(-0.5 * static_cast<double>(offset * offset) / sigmaSquared);
-                const int kernelOffset = offset + radius;
-                const size_t kernelIndex = static_cast<size_t>(kernelOffset);
-                kernel[kernelIndex] = weight;
-                kernelSum += weight;
+            // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+            double eval_hanatos_surface(
+                const std::array<float, 15>& params,
+                double tcC,
+                double tcM,
+                double centerC,
+                double centerM) {
+                const double x = tcC - centerC;
+                const double y = tcM - centerM;
+                const double x2 = x * x;
+                const double y2 = y * y;
+                const double x3 = x2 * x;
+                const double y3 = y2 * y;
+                const double raw =
+                    params[1] * x + params[2] * y + params[3] * x2 + params[4] * y2 + params[5] * x * y +
+                    params[6] * x3 + params[7] * y3 + params[8] * x2 * y + params[9] * x * y2 +
+                    params[10] * x2 * x2 + params[11] * y2 * y2 + params[12] * x3 * y +
+                    params[13] * x2 * y2 + params[14] * x * y3;
+                constexpr double kMaxCorrectionStops = 2.0;
+                return raw / std::sqrt(1.0 + (raw / kMaxCorrectionStops) * (raw / kMaxCorrectionStops));
             }
-            if (!(std::isfinite(kernelSum) && kernelSum > 0.0)) {
-                outError = "direct Hanatos spectral blur kernel is invalid";
-                return false;
-            }
-            for (double& weight : kernel) {
-                weight /= kernelSum;
-            }
+            // NOLINTEND(bugprone-easily-swappable-parameters)
 
-            out.assign(source.data.size(), 0.0f);
-            for (int c = 0; c < n; ++c) {
-                for (int m = 0; m < n; ++m) {
-                    const size_t base =
-                        (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) *
-                        static_cast<size_t>(k);
-                    for (int sample = 0; sample < k; ++sample) {
-                        double value = 0.0;
-                        for (int offset = -radius; offset <= radius; ++offset) {
-                            const int reflected = scipy_reflect_index(sample + offset, k);
-                            const int kernelOffset = offset + radius;
-                            const size_t kernelIndex = static_cast<size_t>(kernelOffset);
-                            value += kernel[kernelIndex] *
-                                     static_cast<double>(source.data[base + static_cast<size_t>(reflected)]);
-                        }
-                        if (!std::isfinite(value)) {
-                            outError = "direct Hanatos spectral blur produced non-finite data";
+        } // namespace
+
+        bool build_scan_lut_cpu(const Scanner::ScannerMediumRuntime& medium, std::uint32_t res, std::vector<double>& out, std::string& outError) {
+            // Match the GPU hot path: store log2(XYZ) so device code can use exp2() instead of pow(10, ...).
+            // Note: Scanner::spectral_to_log_xyz returns log10(XYZ) (with epsilon).
+            constexpr double kLog2_10 = 3.32192809488736234787;
+
+            const size_t sRes = static_cast<size_t>(res);
+            const size_t voxels = sRes * sRes * sRes;
+            const size_t count = voxels * 3u;
+            out.clear();
+            out.resize(count);
+
+            for (std::uint32_t z = 0; z < res; ++z) {
+                const double nz = (res > 1u) ? static_cast<double>(z) / static_cast<double>(res - 1u) : 0.0;
+                for (std::uint32_t y = 0; y < res; ++y) {
+                    const double ny = (res > 1u) ? static_cast<double>(y) / static_cast<double>(res - 1u) : 0.0;
+                    for (std::uint32_t x = 0; x < res; ++x) {
+                        const double nx = (res > 1u) ? static_cast<double>(x) / static_cast<double>(res - 1u) : 0.0;
+                        const size_t idx = (static_cast<size_t>(z) * sRes + static_cast<size_t>(y)) * sRes + static_cast<size_t>(x);
+                        const size_t base = idx * 3u;
+                        const double D_norm[3] = {nx, ny, nz};
+                        double logXYZ[3] = {0.0, 0.0, 0.0};
+                        Scanner::spectral_to_log_xyz(medium, D_norm, logXYZ);
+                        if (!std::isfinite(logXYZ[0]) || !std::isfinite(logXYZ[1]) || !std::isfinite(logXYZ[2])) {
+                            outError = "scan LUT build produced non-finite logXYZ";
                             return false;
                         }
-                        out[base + static_cast<size_t>(sample)] = static_cast<float>(value);
+                        out[base + 0] = logXYZ[0];
+                        out[base + 1] = logXYZ[1];
+                        out[base + 2] = logXYZ[2];
+
+                        out[base + 0] *= kLog2_10;
+                        out[base + 1] *= kLog2_10;
+                        out[base + 2] *= kLog2_10;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        bool build_canonical_scan_lut_cpu(
+            const Scanner::ScannerMediumRuntime& medium,
+            std::uint32_t res,
+            CanonicalScanLutCpu& out,
+            std::string& outError) {
+            if (res < 2u) {
+                outError = "canonical scan LUT resolution must be at least two";
+                return false;
+            }
+
+            const size_t voxelValues = static_cast<size_t>(res) * res * res * 3u;
+            const std::uint32_t cellRes = res - 1u;
+            const size_t cellValues = static_cast<size_t>(cellRes) * cellRes * cellRes * 3u;
+            out.log10XYZ.assign(voxelValues, 0.0);
+            out.slopeC.assign(voxelValues, 0.0);
+            out.slopeM.assign(voxelValues, 0.0);
+            out.slopeY.assign(voxelValues, 0.0);
+            out.cellMin.assign(cellValues, 0.0);
+            out.cellMax.assign(cellValues, 0.0);
+
+            for (std::uint32_t c = 0; c < res; ++c) {
+                const double nc = static_cast<double>(c) / static_cast<double>(res - 1u);
+                for (std::uint32_t m = 0; m < res; ++m) {
+                    const double nm = static_cast<double>(m) / static_cast<double>(res - 1u);
+                    for (std::uint32_t y = 0; y < res; ++y) {
+                        const double ny = static_cast<double>(y) / static_cast<double>(res - 1u);
+                        const double normalizedCmy[3] = {nc, nm, ny};
+                        double logXYZ[3] = {0.0, 0.0, 0.0};
+                        Scanner::spectral_to_log_xyz(medium, normalizedCmy, logXYZ);
+                        for (std::uint32_t output = 0; output < 3u; ++output) {
+                            if (!std::isfinite(logXYZ[output])) {
+                                outError = "canonical scan LUT build produced non-finite log10 XYZ";
+                                return false;
+                            }
+                            out.log10XYZ[scan_lut_index(res, c, m, y, output)] = logXYZ[output];
+                        }
+                    }
+                }
+            }
+
+            std::vector<double> line(res);
+            std::vector<double> slopes;
+            for (std::uint32_t m = 0; m < res; ++m) {
+                for (std::uint32_t y = 0; y < res; ++y) {
+                    for (std::uint32_t output = 0; output < 3u; ++output) {
+                        for (std::uint32_t c = 0; c < res; ++c) {
+                            line[c] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                        }
+                        fill_monotone_slopes_1d(line, slopes);
+                        for (std::uint32_t c = 0; c < res; ++c) {
+                            out.slopeC[scan_lut_index(res, c, m, y, output)] = slopes[c];
+                        }
+                    }
+                }
+            }
+            for (std::uint32_t c = 0; c < res; ++c) {
+                for (std::uint32_t y = 0; y < res; ++y) {
+                    for (std::uint32_t output = 0; output < 3u; ++output) {
+                        for (std::uint32_t m = 0; m < res; ++m) {
+                            line[m] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                        }
+                        fill_monotone_slopes_1d(line, slopes);
+                        for (std::uint32_t m = 0; m < res; ++m) {
+                            out.slopeM[scan_lut_index(res, c, m, y, output)] = slopes[m];
+                        }
+                    }
+                }
+            }
+            for (std::uint32_t c = 0; c < res; ++c) {
+                for (std::uint32_t m = 0; m < res; ++m) {
+                    for (std::uint32_t output = 0; output < 3u; ++output) {
+                        for (std::uint32_t y = 0; y < res; ++y) {
+                            line[y] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                        }
+                        fill_monotone_slopes_1d(line, slopes);
+                        for (std::uint32_t y = 0; y < res; ++y) {
+                            out.slopeY[scan_lut_index(res, c, m, y, output)] = slopes[y];
+                        }
+                    }
+                }
+            }
+
+            for (std::uint32_t c = 0; c < cellRes; ++c) {
+                for (std::uint32_t m = 0; m < cellRes; ++m) {
+                    for (std::uint32_t y = 0; y < cellRes; ++y) {
+                        for (std::uint32_t output = 0; output < 3u; ++output) {
+                            double minimum = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
+                            double maximum = minimum;
+                            for (std::uint32_t dc = 0; dc < 2u; ++dc) {
+                                for (std::uint32_t dm = 0; dm < 2u; ++dm) {
+                                    for (std::uint32_t dy = 0; dy < 2u; ++dy) {
+                                        const double sample =
+                                            out.log10XYZ[scan_lut_index(res, c + dc, m + dm, y + dy, output)];
+                                        minimum = std::min(minimum, sample);
+                                        maximum = std::max(maximum, sample);
+                                    }
+                                }
+                            }
+                            const size_t cellIndex = scan_lut_cell_index(cellRes, c, m, y, output);
+                            out.cellMin[cellIndex] = minimum;
+                            out.cellMax[cellIndex] = maximum;
+                        }
                     }
                 }
             }
             return true;
         }
 
-        // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-        double eval_hanatos_surface(
-            const std::array<float, 15>& params,
-            double tcC,
-            double tcM,
-            double centerC,
-            double centerM) {
-            const double x = tcC - centerC;
-            const double y = tcM - centerM;
-            const double x2 = x * x;
-            const double y2 = y * y;
-            const double x3 = x2 * x;
-            const double y3 = y2 * y;
-            const double raw =
-                params[1] * x + params[2] * y + params[3] * x2 + params[4] * y2 + params[5] * x * y +
-                params[6] * x3 + params[7] * y3 + params[8] * x2 * y + params[9] * x * y2 +
-                params[10] * x2 * x2 + params[11] * y2 * y2 + params[12] * x3 * y +
-                params[13] * x2 * y2 + params[14] * x * y3;
-            constexpr double kMaxCorrectionStops = 2.0;
-            return raw / std::sqrt(1.0 + (raw / kMaxCorrectionStops) * (raw / kMaxCorrectionStops));
-        }
-        // NOLINTEND(bugprone-easily-swappable-parameters)
+        bool build_direct_hanatos_integrated_lut_cpu(
+            const Spectral::SpectralContext& context,
+            const FilmRawRecipe& filmRaw,
+            const float referenceWhiteXYZ[3],
+            std::vector<float>& out,
+            std::string& outError) {
+            const int n = context.hanSpectra.size;
+            const int k = context.hanSpectra.numSamples;
+            if (n <= 0 || k != Spectral::kNumSamples || filmRaw.hanatosLutHash == 0) {
+                outError = "direct Hanatos integrated LUT input is invalid";
+                return false;
+            }
 
-    } // namespace
+            std::vector<float> spectra;
+            if (!build_blurred_hanatos_spectra(
+                    context.hanSpectra,
+                    filmRaw.hanatos.spectralGaussianBlur,
+                    spectra,
+                    outError)) {
+                return false;
+            }
 
-bool build_scan_lut_cpu(const Scanner::ScannerMediumRuntime& medium, std::uint32_t res, std::vector<double>& out, std::string& outError) {
-    // Match the GPU hot path: store log2(XYZ) so device code can use exp2() instead of pow(10, ...).
-    // Note: Scanner::spectral_to_log_xyz returns log10(XYZ) (with epsilon).
-    constexpr double kLog2_10 = 3.32192809488736234787;
-
-    const size_t sRes = static_cast<size_t>(res);
-    const size_t voxels = sRes * sRes * sRes;
-    const size_t count = voxels * 3u;
-    out.clear();
-    out.resize(count);
-
-    for (std::uint32_t z = 0; z < res; ++z) {
-        const double nz = (res > 1u) ? static_cast<double>(z) / static_cast<double>(res - 1u) : 0.0;
-        for (std::uint32_t y = 0; y < res; ++y) {
-            const double ny = (res > 1u) ? static_cast<double>(y) / static_cast<double>(res - 1u) : 0.0;
-            for (std::uint32_t x = 0; x < res; ++x) {
-                const double nx = (res > 1u) ? static_cast<double>(x) / static_cast<double>(res - 1u) : 0.0;
-                const size_t idx = (static_cast<size_t>(z) * sRes + static_cast<size_t>(y)) * sRes + static_cast<size_t>(x);
-                const size_t base = idx * 3u;
-                const double D_norm[3] = { nx, ny, nz };
-                double logXYZ[3] = { 0.0, 0.0, 0.0 };
-                Scanner::spectral_to_log_xyz(medium, D_norm, logXYZ);
-                if (!std::isfinite(logXYZ[0]) || !std::isfinite(logXYZ[1]) || !std::isfinite(logXYZ[2])) {
-                    outError = "scan LUT build produced non-finite logXYZ";
+            double centerC = 0.0;
+            double centerM = 0.0;
+            if (filmRaw.hanatos.applySurface) {
+                const double sum =
+                    static_cast<double>(referenceWhiteXYZ[0]) +
+                    static_cast<double>(referenceWhiteXYZ[1]) +
+                    static_cast<double>(referenceWhiteXYZ[2]);
+                if (!(std::isfinite(sum) && sum > 0.0)) {
+                    outError = "direct Hanatos adaptation surface reference illuminant is invalid";
                     return false;
                 }
-                out[base + 0] = logXYZ[0];
-                out[base + 1] = logXYZ[1];
-                out[base + 2] = logXYZ[2];
-
-                out[base + 0] *= kLog2_10;
-                out[base + 1] *= kLog2_10;
-                out[base + 2] *= kLog2_10;
+                const double x = std::clamp(static_cast<double>(referenceWhiteXYZ[0]) / sum, 0.0, 1.0);
+                const double y = std::clamp(static_cast<double>(referenceWhiteXYZ[1]) / sum, 0.0, 1.0);
+                centerC = (1.0 - x) * (1.0 - x);
+                centerM = std::clamp(y / std::max(1.0 - x, 1e-10), 0.0, 1.0);
             }
-        }
-    }
 
-    return true;
-}
-
-bool build_canonical_scan_lut_cpu(
-    const Scanner::ScannerMediumRuntime& medium,
-    std::uint32_t res,
-    CanonicalScanLutCpu& out,
-    std::string& outError) {
-    if (res < 2u) {
-        outError = "canonical scan LUT resolution must be at least two";
-        return false;
-    }
-
-    const size_t voxelValues = static_cast<size_t>(res) * res * res * 3u;
-    const std::uint32_t cellRes = res - 1u;
-    const size_t cellValues = static_cast<size_t>(cellRes) * cellRes * cellRes * 3u;
-    out.log10XYZ.assign(voxelValues, 0.0);
-    out.slopeC.assign(voxelValues, 0.0);
-    out.slopeM.assign(voxelValues, 0.0);
-    out.slopeY.assign(voxelValues, 0.0);
-    out.cellMin.assign(cellValues, 0.0);
-    out.cellMax.assign(cellValues, 0.0);
-
-    for (std::uint32_t c = 0; c < res; ++c) {
-        const double nc = static_cast<double>(c) / static_cast<double>(res - 1u);
-        for (std::uint32_t m = 0; m < res; ++m) {
-            const double nm = static_cast<double>(m) / static_cast<double>(res - 1u);
-            for (std::uint32_t y = 0; y < res; ++y) {
-                const double ny = static_cast<double>(y) / static_cast<double>(res - 1u);
-                const double normalizedCmy[3] = {nc, nm, ny};
-                double logXYZ[3] = {0.0, 0.0, 0.0};
-                Scanner::spectral_to_log_xyz(medium, normalizedCmy, logXYZ);
-                for (std::uint32_t output = 0; output < 3u; ++output) {
-                    if (!std::isfinite(logXYZ[output])) {
-                        outError = "canonical scan LUT build produced non-finite log10 XYZ";
-                        return false;
+            out.assign(static_cast<size_t>(n) * static_cast<size_t>(n) * 4u, 0.0f);
+            for (int c = 0; c < n; ++c) {
+                const double tcC = static_cast<double>(c) / static_cast<double>(n - 1);
+                for (int m = 0; m < n; ++m) {
+                    const double tcM = static_cast<double>(m) / static_cast<double>(n - 1);
+                    double raw[3] = {0.0, 0.0, 0.0};
+                    const size_t base =
+                        (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) *
+                        static_cast<size_t>(k);
+                    for (int sample = 0; sample < k; ++sample) {
+                        const double energy = static_cast<double>(spectra[base + static_cast<size_t>(sample)]);
+                        const auto& sensitivity = filmRaw.finalSensitivity[static_cast<size_t>(sample)];
+                        raw[0] += energy * static_cast<double>(sensitivity[0]);
+                        raw[1] += energy * static_cast<double>(sensitivity[1]);
+                        raw[2] += energy * static_cast<double>(sensitivity[2]);
                     }
-                    out.log10XYZ[scan_lut_index(res, c, m, y, output)] = logXYZ[output];
-                }
-            }
-        }
-    }
-
-    std::vector<double> line(res);
-    std::vector<double> slopes;
-    for (std::uint32_t m = 0; m < res; ++m) {
-        for (std::uint32_t y = 0; y < res; ++y) {
-            for (std::uint32_t output = 0; output < 3u; ++output) {
-                for (std::uint32_t c = 0; c < res; ++c) {
-                    line[c] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
-                }
-                fill_monotone_slopes_1d(line, slopes);
-                for (std::uint32_t c = 0; c < res; ++c) {
-                    out.slopeC[scan_lut_index(res, c, m, y, output)] = slopes[c];
-                }
-            }
-        }
-    }
-    for (std::uint32_t c = 0; c < res; ++c) {
-        for (std::uint32_t y = 0; y < res; ++y) {
-            for (std::uint32_t output = 0; output < 3u; ++output) {
-                for (std::uint32_t m = 0; m < res; ++m) {
-                    line[m] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
-                }
-                fill_monotone_slopes_1d(line, slopes);
-                for (std::uint32_t m = 0; m < res; ++m) {
-                    out.slopeM[scan_lut_index(res, c, m, y, output)] = slopes[m];
-                }
-            }
-        }
-    }
-    for (std::uint32_t c = 0; c < res; ++c) {
-        for (std::uint32_t m = 0; m < res; ++m) {
-            for (std::uint32_t output = 0; output < 3u; ++output) {
-                for (std::uint32_t y = 0; y < res; ++y) {
-                    line[y] = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
-                }
-                fill_monotone_slopes_1d(line, slopes);
-                for (std::uint32_t y = 0; y < res; ++y) {
-                    out.slopeY[scan_lut_index(res, c, m, y, output)] = slopes[y];
-                }
-            }
-        }
-    }
-
-    for (std::uint32_t c = 0; c < cellRes; ++c) {
-        for (std::uint32_t m = 0; m < cellRes; ++m) {
-            for (std::uint32_t y = 0; y < cellRes; ++y) {
-                for (std::uint32_t output = 0; output < 3u; ++output) {
-                    double minimum = out.log10XYZ[scan_lut_index(res, c, m, y, output)];
-                    double maximum = minimum;
-                    for (std::uint32_t dc = 0; dc < 2u; ++dc) {
-                        for (std::uint32_t dm = 0; dm < 2u; ++dm) {
-                            for (std::uint32_t dy = 0; dy < 2u; ++dy) {
-                                const double sample =
-                                    out.log10XYZ[scan_lut_index(res, c + dc, m + dm, y + dy, output)];
-                                minimum = std::min(minimum, sample);
-                                maximum = std::max(maximum, sample);
-                            }
+                    if (filmRaw.hanatos.applySurface) {
+                        for (size_t channel = 0; channel < 3u; ++channel) {
+                            const double correction = eval_hanatos_surface(
+                                filmRaw.hanatos.surfaceParams[channel],
+                                tcC,
+                                tcM,
+                                centerC,
+                                centerM);
+                            raw[channel] *= std::exp2(correction);
                         }
                     }
-                    const size_t cellIndex = scan_lut_cell_index(cellRes, c, m, y, output);
-                    out.cellMin[cellIndex] = minimum;
-                    out.cellMax[cellIndex] = maximum;
+                    const size_t outBase =
+                        (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) * 4u;
+                    for (size_t channel = 0; channel < 3u; ++channel) {
+                        if (!std::isfinite(raw[channel])) {
+                            outError = "direct Hanatos integrated LUT produced non-finite data";
+                            return false;
+                        }
+                        out[outBase + channel] = static_cast<float>(raw[channel]);
+                    }
+                }
+            }
+            return true;
+        }
+
+        void build_hanatos_integrated_lut_cpu(const Spectral::SpectralContext& ctx, const WorkingState& ws, std::vector<float>& out) {
+            const int N = ctx.hanSpectra.size;
+            const int K = ctx.hanSpectra.numSamples;
+            out.clear();
+            out.resize(static_cast<size_t>(N) * static_cast<size_t>(N) * 4u, 0.0f);
+
+            const float* lut = ctx.hanSpectra.data.data();
+            const float* sB = ws.sensB.linear.data();
+            const float* sG = ws.sensG.linear.data();
+            const float* sR = ws.sensR.linear.data();
+            const size_t stride = static_cast<size_t>(K);
+            for (int x = 0; x < N; ++x) {
+                for (int y = 0; y < N; ++y) {
+                    double accB = 0.0;
+                    double accG = 0.0;
+                    double accR = 0.0;
+                    const size_t base = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * stride;
+                    for (int k = 0; k < K; ++k) {
+                        const float raw = lut[base + static_cast<size_t>(k)];
+                        if (!std::isfinite(raw)) {
+                            continue;
+                        }
+                        const float e = (raw > 0.0f) ? raw : 0.0f;
+                        if (!std::isfinite(e)) {
+                            continue;
+                        }
+                        const double e64 = static_cast<double>(e);
+                        const float sb = sB[k];
+                        const float sg = sG[k];
+                        const float sr = sR[k];
+                        if (std::isfinite(sb))
+                            accB += e64 * static_cast<double>(sb);
+                        if (std::isfinite(sg))
+                            accG += e64 * static_cast<double>(sg);
+                        if (std::isfinite(sr))
+                            accR += e64 * static_cast<double>(sr);
+                    }
+
+                    const size_t outBase = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * 4u;
+                    out[outBase + 0] = static_cast<float>(accR);
+                    out[outBase + 1] = static_cast<float>(accG);
+                    out[outBase + 2] = static_cast<float>(accB);
+                    out[outBase + 3] = 0.0f;
                 }
             }
         }
-    }
-    return true;
-}
 
-bool build_direct_hanatos_integrated_lut_cpu(
-    const Spectral::SpectralContext& context,
-    const FilmRawRecipe& filmRaw,
-    const float referenceWhiteXYZ[3],
-    std::vector<float>& out,
-    std::string& outError) {
-    const int n = context.hanSpectra.size;
-    const int k = context.hanSpectra.numSamples;
-    if (n <= 0 || k != Spectral::kNumSamples || filmRaw.hanatosLutHash == 0) {
-        outError = "direct Hanatos integrated LUT input is invalid";
-        return false;
-    }
-
-    std::vector<float> spectra;
-    if (!build_blurred_hanatos_spectra(
-            context.hanSpectra,
-            filmRaw.hanatos.spectralGaussianBlur,
-            spectra,
-            outError)) {
-        return false;
-    }
-
-    double centerC = 0.0;
-    double centerM = 0.0;
-    if (filmRaw.hanatos.applySurface) {
-        const double sum =
-            static_cast<double>(referenceWhiteXYZ[0]) +
-            static_cast<double>(referenceWhiteXYZ[1]) +
-            static_cast<double>(referenceWhiteXYZ[2]);
-        if (!(std::isfinite(sum) && sum > 0.0)) {
-            outError = "direct Hanatos adaptation surface reference illuminant is invalid";
-            return false;
+        bool build_print_preflash_raw(const WorkingState& ws, const Print::Runtime& prt, float outRaw[3], int& outShapeK) {
+            return Pipeline::compute_preflash_raw(ws, prt, outRaw, outShapeK);
         }
-        const double x = std::clamp(static_cast<double>(referenceWhiteXYZ[0]) / sum, 0.0, 1.0);
-        const double y = std::clamp(static_cast<double>(referenceWhiteXYZ[1]) / sum, 0.0, 1.0);
-        centerC = (1.0 - x) * (1.0 - x);
-        centerM = std::clamp(y / std::max(1.0 - x, 1e-10), 0.0, 1.0);
-    }
-
-    out.assign(static_cast<size_t>(n) * static_cast<size_t>(n) * 4u, 0.0f);
-    for (int c = 0; c < n; ++c) {
-        const double tcC = static_cast<double>(c) / static_cast<double>(n - 1);
-        for (int m = 0; m < n; ++m) {
-            const double tcM = static_cast<double>(m) / static_cast<double>(n - 1);
-            double raw[3] = {0.0, 0.0, 0.0};
-            const size_t base =
-                (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) *
-                static_cast<size_t>(k);
-            for (int sample = 0; sample < k; ++sample) {
-                const double energy = static_cast<double>(spectra[base + static_cast<size_t>(sample)]);
-                const auto& sensitivity = filmRaw.finalSensitivity[static_cast<size_t>(sample)];
-                raw[0] += energy * static_cast<double>(sensitivity[0]);
-                raw[1] += energy * static_cast<double>(sensitivity[1]);
-                raw[2] += energy * static_cast<double>(sensitivity[2]);
-            }
-            if (filmRaw.hanatos.applySurface) {
-                for (size_t channel = 0; channel < 3u; ++channel) {
-                    const double correction = eval_hanatos_surface(
-                        filmRaw.hanatos.surfaceParams[channel],
-                        tcC,
-                        tcM,
-                        centerC,
-                        centerM);
-                    raw[channel] *= std::exp2(correction);
-                }
-            }
-            const size_t outBase =
-                (static_cast<size_t>(c) * static_cast<size_t>(n) + static_cast<size_t>(m)) * 4u;
-            for (size_t channel = 0; channel < 3u; ++channel) {
-                if (!std::isfinite(raw[channel])) {
-                    outError = "direct Hanatos integrated LUT produced non-finite data";
-                    return false;
-                }
-                out[outBase + channel] = static_cast<float>(raw[channel]);
-            }
-        }
-    }
-    return true;
-}
-
-void build_hanatos_integrated_lut_cpu(const Spectral::SpectralContext& ctx, const WorkingState& ws, std::vector<float>& out) {
-    const int N = ctx.hanSpectra.size;
-    const int K = ctx.hanSpectra.numSamples;
-    out.clear();
-    out.resize(static_cast<size_t>(N) * static_cast<size_t>(N) * 4u, 0.0f);
-
-    const float* lut = ctx.hanSpectra.data.data();
-    const float* sB = ws.sensB.linear.data();
-    const float* sG = ws.sensG.linear.data();
-    const float* sR = ws.sensR.linear.data();
-    const size_t stride = static_cast<size_t>(K);
-    for (int x = 0; x < N; ++x) {
-        for (int y = 0; y < N; ++y) {
-            double accB = 0.0;
-            double accG = 0.0;
-            double accR = 0.0;
-            const size_t base = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * stride;
-            for (int k = 0; k < K; ++k) {
-                const float raw = lut[base + static_cast<size_t>(k)];
-                if (!std::isfinite(raw)) {
-                    continue;
-                }
-                const float e = (raw > 0.0f) ? raw : 0.0f;
-                if (!std::isfinite(e)) {
-                    continue;
-                }
-                const double e64 = static_cast<double>(e);
-                const float sb = sB[k];
-                const float sg = sG[k];
-                const float sr = sR[k];
-                if (std::isfinite(sb)) accB += e64 * static_cast<double>(sb);
-                if (std::isfinite(sg)) accG += e64 * static_cast<double>(sg);
-                if (std::isfinite(sr)) accR += e64 * static_cast<double>(sr);
-            }
-
-            const size_t outBase = (static_cast<size_t>(x) * static_cast<size_t>(N) + static_cast<size_t>(y)) * 4u;
-            out[outBase + 0] = static_cast<float>(accR);
-            out[outBase + 1] = static_cast<float>(accG);
-            out[outBase + 2] = static_cast<float>(accB);
-            out[outBase + 3] = 0.0f;
-        }
-    }
-}
-
-bool build_print_preflash_raw(const WorkingState& ws, const Print::Runtime& prt, float outRaw[3], int& outShapeK) {
-    return Pipeline::compute_preflash_raw(ws, prt, outRaw, outShapeK);
-}
-}
-}
+    } // namespace Precompute
+} // namespace JuicerCuda
 
 namespace JuicerCuda {
 
-bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset) {
+    bool validate_resource_owner_locked(Resources& resources, std::string& outError, bool bindIfUnset) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
-    (void)resources;
-    (void)bindIfUnset;
-    outError = "CUDA is not enabled";
-    return false;
+        (void)resources;
+        (void)bindIfUnset;
+        outError = "CUDA is not enabled";
+        return false;
 #else
-    int cur = -1;
-    const cudaError_t devErr = cudaGetDevice(&cur);
-    if (devErr != cudaSuccess || cur < 0) {
-        outError = std::string("cudaGetDevice failed: ")
-            + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
-        return false;
-    }
-    if (bindIfUnset && resources.deviceId < 0) {
-        resources.deviceId = cur;
-    }
-    if (resources.deviceId != cur) {
-        outError = "CUDA device mismatch for cached resources";
-        return false;
-    }
-    return true;
+        int cur = -1;
+        const cudaError_t devErr = cudaGetDevice(&cur);
+        if (devErr != cudaSuccess || cur < 0) {
+            outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(devErr) ? cudaGetErrorString(devErr) : "(unknown)");
+            return false;
+        }
+        if (bindIfUnset && resources.deviceId < 0) {
+            resources.deviceId = cur;
+        }
+        if (resources.deviceId != cur) {
+            outError = "CUDA device mismatch for cached resources";
+            return false;
+        }
+        return true;
 #endif
-}
+    }
 
-static bool enqueue_host_to_device_copy(
-    const char* stage,
-    const char* label,
-    void* dst,
-    const void* src,
-    std::size_t bytes,
-    void* cudaStreamOpaque,
-    std::string& outError);
+    static bool enqueue_host_to_device_copy(
+        const char* stage,
+        const char* label,
+        void* dst,
+        const void* src,
+        std::size_t bytes,
+        void* cudaStreamOpaque,
+        std::string& outError);
 
-static void free_stbn(Resources& resources) noexcept;
-static void free_wang(Resources& resources) noexcept;
-static void free_scan_error_readbacks(Resources& resources) noexcept;
-static void free_tables(Resources& resources) noexcept;
-static bool retire_tables_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError);
-static void free_scan_medium(Resources::DeviceScanMedium& m) noexcept;
-static bool retire_scan_medium_locked(Resources& resources, Resources::DeviceScanMedium& m, void* cudaStreamOpaque, const char* label, std::string& outError);
-static void free_scan_lut(Resources::DeviceSpectralLut& lut) noexcept;
-static void free_gaussian_kernel(Resources::DeviceGaussianKernel& k) noexcept;
-static bool is_async_device_ptr_tracked_locked(const Resources& resources, const void* ptr) noexcept;
-static void untrack_async_device_ptr_locked(Resources& resources, void* ptr) noexcept;
-static cudaError_t device_free_async_compat(void* ptr, void* cudaStreamOpaque) noexcept;
-static void free_auto_exposure(Resources& resources) noexcept;
-static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
-static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
-static void free_shared_tmp_plane(Resources& resources) noexcept;
+    static void free_stbn(Resources& resources) noexcept;
+    static void free_wang(Resources& resources) noexcept;
+    static void free_scan_error_readbacks(Resources& resources) noexcept;
+    static void free_tables(Resources& resources) noexcept;
+    static bool retire_tables_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError);
+    static void free_scan_medium(Resources::DeviceScanMedium& m) noexcept;
+    static bool retire_scan_medium_locked(Resources& resources, Resources::DeviceScanMedium& m, void* cudaStreamOpaque, const char* label, std::string& outError);
+    static void free_scan_lut(Resources::DeviceSpectralLut& lut) noexcept;
+    static void free_gaussian_kernel(Resources::DeviceGaussianKernel& k) noexcept;
+    static bool is_async_device_ptr_tracked_locked(const Resources& resources, const void* ptr) noexcept;
+    static void untrack_async_device_ptr_locked(Resources& resources, void* ptr) noexcept;
+    static cudaError_t device_free_async_compat(void* ptr, void* cudaStreamOpaque) noexcept;
+    static void free_auto_exposure(Resources& resources) noexcept;
+    static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
+    static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
+    static void free_shared_tmp_plane(Resources& resources) noexcept;
 
 } // namespace JuicerCuda
 
@@ -699,8 +701,7 @@ namespace JuicerCuda {
         CUcontext currentContext = nullptr;
         const CUresult result = dispatch.cuCtxGetCurrent(&currentContext);
         if (result != CUDA_SUCCESS) {
-            outError = std::string("cuCtxGetCurrent failed (code=")
-                + std::to_string(static_cast<int>(result)) + ")";
+            outError = std::string("cuCtxGetCurrent failed (code=") + std::to_string(static_cast<int>(result)) + ")";
             return false;
         }
         if (!currentContext) {
@@ -720,8 +721,7 @@ namespace JuicerCuda {
         outError.clear();
         const cudaError_t err = cudaGetDevice(&outDeviceId);
         if (err != cudaSuccess || outDeviceId < 0) {
-            outError = std::string("cudaGetDevice failed: ")
-                + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            outError = std::string("cudaGetDevice failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             outDeviceId = -1;
             return false;
         }
@@ -738,9 +738,9 @@ namespace JuicerCuda {
         bool& outDeviceMatch,
         bool& outContextMatch) {
         outDeviceMatch = (ownerDeviceId < 0) ||
-            (currentDeviceValid && currentDeviceId == ownerDeviceId);
+                         (currentDeviceValid && currentDeviceId == ownerDeviceId);
         outContextMatch = (ownerContextOpaque == nullptr) ||
-            (currentContextValid && currentContextOpaque == ownerContextOpaque);
+                          (currentContextValid && currentContextOpaque == ownerContextOpaque);
         return outDeviceMatch && outContextMatch;
     }
 
@@ -785,8 +785,7 @@ namespace JuicerCuda {
                 oss << " detail=" << detail;
             }
             JTRACE("MSTDN", oss.str());
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
@@ -1034,8 +1033,8 @@ namespace JuicerCuda {
         if (changed) {
             next.retainedGeneration =
                 (resources.scratchResidency.retainedGeneration == std::numeric_limits<std::uint64_t>::max())
-                ? std::numeric_limits<std::uint64_t>::max()
-                : std::max<std::uint64_t>(1ull, resources.scratchResidency.retainedGeneration + 1ull);
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : std::max<std::uint64_t>(1ull, resources.scratchResidency.retainedGeneration + 1ull);
         }
 
         resources.scratchResidency = next;
@@ -1050,8 +1049,7 @@ namespace JuicerCuda {
                 // No fence: best-effort free immediately.
                 if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
                     cudaFree(e.ptr);
-                }
-                else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
+                } else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
                     const cudaError_t asyncErr = cudaFreeAsync(e.ptr, nullptr);
                     if (asyncErr != cudaSuccess) {
@@ -1060,11 +1058,9 @@ namespace JuicerCuda {
 #else
                     cudaFree(e.ptr);
 #endif
-                }
-                else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
+                } else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
                     cudaFreeHost(e.ptr);
-                }
-                else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
+                } else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
                     cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
                 }
                 if (resources.retireBytes >= e.bytes) {
@@ -1082,8 +1078,7 @@ namespace JuicerCuda {
             if (q == cudaSuccess) {
                 if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
                     cudaFree(e.ptr);
-                }
-                else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
+                } else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
                     const cudaError_t asyncErr = cudaFreeAsync(e.ptr, nullptr);
                     if (asyncErr != cudaSuccess) {
@@ -1092,19 +1087,16 @@ namespace JuicerCuda {
 #else
                     cudaFree(e.ptr);
 #endif
-                }
-                else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
+                } else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
                     cudaFreeHost(e.ptr);
-                }
-                else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
+                } else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
                     cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
                 }
 
                 // Return the fence to the pool; destroy it if the pool cannot grow.
                 try {
                     resources.retireEventPoolOpaque.push_back(e.doneEventOpaque);
-                }
-                catch (...) {
+                } catch (...) {
                     JuicerLogging::discard_current_exception();
                     cudaEventDestroy(ev);
                     e.doneEventOpaque = nullptr;
@@ -1141,24 +1133,20 @@ namespace JuicerCuda {
             }
             if (e.kind == Resources::RetireKind::DeviceFree && e.ptr) {
                 cudaFree(e.ptr);
-            }
-            else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
+            } else if (e.kind == Resources::RetireKind::DeviceFreeAsync && e.ptr) {
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
                 const cudaError_t asyncErr = cudaFreeAsync(e.ptr, nullptr);
                 if (asyncErr == cudaSuccess) {
                     (void)cudaStreamSynchronize(nullptr);
-                }
-                else {
+                } else {
                     cudaFree(e.ptr);
                 }
 #else
                 cudaFree(e.ptr);
 #endif
-            }
-            else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
+            } else if (e.kind == Resources::RetireKind::HostPinnedFree && e.ptr) {
                 cudaFreeHost(e.ptr);
-            }
-            else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
+            } else if (e.kind == Resources::RetireKind::EventDestroy && e.ptr) {
                 cudaEventDestroy(reinterpret_cast<cudaEvent_t>(e.ptr));
             }
             if (ev) {
@@ -1223,8 +1211,8 @@ namespace JuicerCuda {
         for (std::size_t i = 0; i < pending.size();) {
             Resources::PendingFrameUseEvent& entry = pending[i];
             cudaEvent_t ev = entry.eventOpaque
-                ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
-                : nullptr;
+                                 ? reinterpret_cast<cudaEvent_t>(entry.eventOpaque)
+                                 : nullptr;
             if (!ev) {
                 release_frame_use_event_entry(entry);
                 pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(i));
@@ -1261,8 +1249,8 @@ namespace JuicerCuda {
         }
 
         const cudaStream_t stream = cudaStreamOpaque
-            ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
-            : nullptr;
+                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                                        : nullptr;
         for (const Resources::PendingFrameUseEvent& entry : resources.pendingFrameUseEvents) {
             if (!entry.eventOpaque) {
                 continue;
@@ -1270,10 +1258,7 @@ namespace JuicerCuda {
             const cudaEvent_t ev = reinterpret_cast<cudaEvent_t>(entry.eventOpaque);
             const cudaError_t waitErr = cudaStreamWaitEvent(stream, ev, 0);
             if (waitErr != cudaSuccess) {
-                outError = std::string("cudaStreamWaitEvent before ")
-                    + (label ? label : "resource")
-                    + " update failed: "
-                    + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
+                outError = std::string("cudaStreamWaitEvent before ") + (label ? label : "resource") + " update failed: " + (cudaGetErrorString(waitErr) ? cudaGetErrorString(waitErr) : "(unknown)");
                 return false;
             }
         }
@@ -1303,17 +1288,14 @@ namespace JuicerCuda {
             return false;
         }
         const cudaStream_t stream = record.cudaStreamOpaque
-            ? reinterpret_cast<cudaStream_t>(record.cudaStreamOpaque)
-            : nullptr;
+                                        ? reinterpret_cast<cudaStream_t>(record.cudaStreamOpaque)
+                                        : nullptr;
         if (!wait_for_frame_use_events_locked(resources, record.cudaStreamOpaque, record.label, outError)) {
             return false;
         }
         const cudaError_t recErr = cudaEventRecord(retireEv, stream);
         if (recErr != cudaSuccess) {
-            outError = std::string("cudaEventRecord for ")
-                + (record.label ? record.label : "resource")
-                + " retire failed: "
-                + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
+            outError = std::string("cudaEventRecord for ") + (record.label ? record.label : "resource") + " retire failed: " + (cudaGetErrorString(recErr) ? cudaGetErrorString(recErr) : "(unknown)");
             return false;
         }
         return true;
@@ -1506,6 +1488,14 @@ namespace JuicerCuda {
     }
 
 
+    static void free_spectral_tables(Resources::DeviceSpectralTables& t) noexcept;
+    static bool retire_spectral_tables_locked(
+        Resources& resources,
+        Resources::DeviceSpectralTables& t,
+        void* cudaStreamOpaque,
+        const char* label,
+        std::string& outError);
+
     static void free_print_payloads(Resources& resources) noexcept {
         free_curve(resources.printDcC);
         free_curve(resources.printDcM);
@@ -1513,6 +1503,7 @@ namespace JuicerCuda {
         free_curve(resources.printSensC);
         free_curve(resources.printSensM);
         free_curve(resources.printSensY);
+        free_spectral_tables(resources.printFilmDensityTables);
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
         if (resources.printIllumFiltered) {
@@ -1547,6 +1538,7 @@ namespace JuicerCuda {
         resources.printBalanceFactorMidgray = 1.0f;
         resources.printBalanceFactorMidgrayComp = 1.0f;
         resources.printBalanceNormalizer = 1.0f;
+        resources.printFilmDensityTablesDescriptorHash = 0;
         resources.printProfileTablesDescriptorHash = 0;
         resources.printMainIlluminantDescriptorHash = 0;
         resources.printPreflashIlluminantDescriptorHash = 0;
@@ -1564,12 +1556,25 @@ namespace JuicerCuda {
         outError = "CUDA is not enabled";
         return false;
 #else
-        if (!retire_curve_locked(resources, resources.printDcC, cudaStreamOpaque, label, outError)) return false;
-        if (!retire_curve_locked(resources, resources.printDcM, cudaStreamOpaque, label, outError)) return false;
-        if (!retire_curve_locked(resources, resources.printDcY, cudaStreamOpaque, label, outError)) return false;
-        if (!retire_curve_locked(resources, resources.printSensC, cudaStreamOpaque, label, outError)) return false;
-        if (!retire_curve_locked(resources, resources.printSensM, cudaStreamOpaque, label, outError)) return false;
-        if (!retire_curve_locked(resources, resources.printSensY, cudaStreamOpaque, label, outError)) return false;
+        if (!retire_curve_locked(resources, resources.printDcC, cudaStreamOpaque, label, outError))
+            return false;
+        if (!retire_curve_locked(resources, resources.printDcM, cudaStreamOpaque, label, outError))
+            return false;
+        if (!retire_curve_locked(resources, resources.printDcY, cudaStreamOpaque, label, outError))
+            return false;
+        if (!retire_curve_locked(resources, resources.printSensC, cudaStreamOpaque, label, outError))
+            return false;
+        if (!retire_curve_locked(resources, resources.printSensM, cudaStreamOpaque, label, outError))
+            return false;
+        if (!retire_curve_locked(resources, resources.printSensY, cudaStreamOpaque, label, outError))
+            return false;
+        if (!retire_spectral_tables_locked(
+                resources,
+                resources.printFilmDensityTables,
+                cudaStreamOpaque,
+                label,
+                outError))
+            return false;
 
         if (resources.printIllumFiltered) {
             const size_t bytes = static_cast<size_t>(std::max(0, resources.printIllumK)) * sizeof(float);
@@ -1609,6 +1614,7 @@ namespace JuicerCuda {
         resources.printBalanceFactorMidgray = 1.0f;
         resources.printBalanceFactorMidgrayComp = 1.0f;
         resources.printBalanceNormalizer = 1.0f;
+        resources.printFilmDensityTablesDescriptorHash = 0;
         resources.printProfileTablesDescriptorHash = 0;
         resources.printMainIlluminantDescriptorHash = 0;
         resources.printPreflashIlluminantDescriptorHash = 0;
@@ -1691,10 +1697,7 @@ namespace JuicerCuda {
 
         const cudaError_t err = cudaMalloc(&dst, bytes);
         if (err != cudaSuccess) {
-            outError = std::string("cudaMalloc(")
-                + (label ? label : "buffer")
-                + ") failed: "
-                + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            outError = std::string("cudaMalloc(") + (label ? label : "buffer") + ") failed: " + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
         }
 
@@ -1786,13 +1789,13 @@ namespace JuicerCuda {
                 label,
                 outError);
             const bool copyOk = waitOk && enqueue_host_to_device_copy(
-                "upload_array_locked",
-                label,
-                    dst,
-                    src,
-                    bytes,
-                    cudaStreamOpaque,
-                    outError);
+                                              "upload_array_locked",
+                                              label,
+                                              dst,
+                                              src,
+                                              bytes,
+                                              cudaStreamOpaque,
+                                              outError);
             return copyOk;
         }
 
@@ -1948,22 +1951,22 @@ namespace JuicerCuda {
                 baseLabel,
                 outError);
             const bool copyXOk = waitOk && enqueue_host_to_device_copy(
-                    "upload_curve_locked",
-                    labelX.c_str(),
-                    dst.x,
-                    src.lambda_nm.data(),
-                    bytes,
-                    cudaStreamOpaque,
-                    outError);
+                                               "upload_curve_locked",
+                                               labelX.c_str(),
+                                               dst.x,
+                                               src.lambda_nm.data(),
+                                               bytes,
+                                               cudaStreamOpaque,
+                                               outError);
             const std::string labelY = std::string(baseLabel) + ".y";
             const bool copyYOk = copyXOk && enqueue_host_to_device_copy(
-                    "upload_curve_locked",
-                    labelY.c_str(),
-                    dst.y,
-                    src.linear.data(),
-                    bytes,
-                    cudaStreamOpaque,
-                    outError);
+                                                "upload_curve_locked",
+                                                labelY.c_str(),
+                                                dst.y,
+                                                src.linear.data(),
+                                                bytes,
+                                                cudaStreamOpaque,
+                                                outError);
             if (!copyXOk) {
                 outError = std::string(baseLabel) + ".x upload failed: " + outError;
                 return false;
@@ -2095,13 +2098,13 @@ namespace JuicerCuda {
                 label,
                 outError);
             const bool copyOk = waitOk && enqueue_host_to_device_copy(
-                    "upload_spectral_samples_locked",
-                    label,
-                    dst.y,
-                    src.data(),
-                    bytes,
-                    cudaStreamOpaque,
-                    outError);
+                                              "upload_spectral_samples_locked",
+                                              label,
+                                              dst.y,
+                                              src.data(),
+                                              bytes,
+                                              cudaStreamOpaque,
+                                              outError);
             if (!copyOk) {
                 return false;
             }
@@ -2187,8 +2190,7 @@ namespace JuicerCuda {
             }
             pendingFrameUseEvents.clear();
             asyncDeviceAllocPointers.clear();
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
@@ -2211,8 +2213,7 @@ namespace JuicerCuda {
             }
 #endif
             return r;
-        }
-        catch (...) {
+        } catch (...) {
             return nullptr;
         }
     }
@@ -2221,8 +2222,7 @@ namespace JuicerCuda {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         try {
             delete resources;
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
 #else
@@ -2233,84 +2233,141 @@ namespace JuicerCuda {
 
             reap_deferred_destroy_queue("destroy_pre");
 
-        const int ownerDeviceId = resources->deviceId;
-        void* ownerContextOpaque = resources->ownerContextOpaque;
-        int currentDeviceId = -1;
-        std::string currentDeviceError;
-        const bool currentDeviceValid = query_current_cuda_device(currentDeviceId, currentDeviceError);
-        void* currentContextOpaque = nullptr;
-        std::string currentContextError;
-        const bool currentContextValid = query_current_cuda_context(currentContextOpaque, currentContextError);
+            const int ownerDeviceId = resources->deviceId;
+            void* ownerContextOpaque = resources->ownerContextOpaque;
+            int currentDeviceId = -1;
+            std::string currentDeviceError;
+            const bool currentDeviceValid = query_current_cuda_device(currentDeviceId, currentDeviceError);
+            void* currentContextOpaque = nullptr;
+            std::string currentContextError;
+            const bool currentContextValid = query_current_cuda_context(currentContextOpaque, currentContextError);
 
-        bool deviceMatch = false;
-        bool contextMatch = false;
-        bool ownerMatch = owner_matches_current(
-            ownerDeviceId,
-            ownerContextOpaque,
-            currentDeviceId,
-            currentDeviceValid,
-            currentContextOpaque,
-            currentContextValid,
-            deviceMatch,
-            contextMatch);
+            bool deviceMatch = false;
+            bool contextMatch = false;
+            bool ownerMatch = owner_matches_current(
+                ownerDeviceId,
+                ownerContextOpaque,
+                currentDeviceId,
+                currentDeviceValid,
+                currentContextOpaque,
+                currentContextValid,
+                deviceMatch,
+                contextMatch);
 
-        bool switchAttempted = false;
-        bool switchSucceeded = false;
-        int restoreDeviceId = currentDeviceId;
-        bool restoreDevice = false;
+            bool switchAttempted = false;
+            bool switchSucceeded = false;
+            int restoreDeviceId = currentDeviceId;
+            bool restoreDevice = false;
 
-        if (!ownerMatch && ownerDeviceId >= 0 &&
-            (!currentDeviceValid || currentDeviceId != ownerDeviceId)) {
-            switchAttempted = true;
-            const cudaError_t setErr = cudaSetDevice(ownerDeviceId);
-            if (setErr == cudaSuccess) {
-                switchSucceeded = true;
-                restoreDevice = currentDeviceValid && currentDeviceId != ownerDeviceId;
+            if (!ownerMatch && ownerDeviceId >= 0 &&
+                (!currentDeviceValid || currentDeviceId != ownerDeviceId)) {
+                switchAttempted = true;
+                const cudaError_t setErr = cudaSetDevice(ownerDeviceId);
+                if (setErr == cudaSuccess) {
+                    switchSucceeded = true;
+                    restoreDevice = currentDeviceValid && currentDeviceId != ownerDeviceId;
 
-                int switchedDeviceId = -1;
-                std::string switchedDeviceError;
-                const bool switchedDeviceValid = query_current_cuda_device(switchedDeviceId, switchedDeviceError);
+                    int switchedDeviceId = -1;
+                    std::string switchedDeviceError;
+                    const bool switchedDeviceValid = query_current_cuda_device(switchedDeviceId, switchedDeviceError);
 
-                void* switchedContextOpaque = nullptr;
-                std::string switchedContextError;
-                const bool switchedContextValid =
-                    query_current_cuda_context(switchedContextOpaque, switchedContextError);
+                    void* switchedContextOpaque = nullptr;
+                    std::string switchedContextError;
+                    const bool switchedContextValid =
+                        query_current_cuda_context(switchedContextOpaque, switchedContextError);
 
-                ownerMatch = owner_matches_current(
+                    ownerMatch = owner_matches_current(
+                        ownerDeviceId,
+                        ownerContextOpaque,
+                        switchedDeviceId,
+                        switchedDeviceValid,
+                        switchedContextOpaque,
+                        switchedContextValid,
+                        deviceMatch,
+                        contextMatch);
+
+                    if (switchedDeviceValid) {
+                        currentDeviceId = switchedDeviceId;
+                    }
+                    if (switchedContextValid) {
+                        currentContextOpaque = switchedContextOpaque;
+                    }
+                    if (!switchedDeviceError.empty()) {
+                        currentDeviceError = switchedDeviceError;
+                    }
+                    if (!switchedContextError.empty()) {
+                        currentContextError = switchedContextError;
+                    }
+                } else {
+                    currentContextError = std::string("cudaSetDevice failed: ") + (cudaGetErrorString(setErr) ? cudaGetErrorString(setErr) : "(unknown)");
+                }
+            }
+
+            if (ownerMatch) {
+                std::size_t deferredQueueDepth = 0;
+                {
+                    std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
+                    deferredQueueDepth = deferred_destroy_queue().size();
+                }
+                std::string detail;
+                if (!currentDeviceError.empty()) {
+                    detail = currentDeviceError;
+                }
+                if (!currentContextError.empty()) {
+                    if (!detail.empty()) {
+                        detail += "; ";
+                    }
+                    detail += currentContextError;
+                }
+                trace_teardown_event(
+                    "destroy",
+                    "direct_free",
                     ownerDeviceId,
                     ownerContextOpaque,
-                    switchedDeviceId,
-                    switchedDeviceValid,
-                    switchedContextOpaque,
-                    switchedContextValid,
+                    currentDeviceId,
+                    currentContextOpaque,
                     deviceMatch,
-                    contextMatch);
+                    contextMatch,
+                    switchAttempted,
+                    switchSucceeded,
+                    false,
+                    false,
+                    deferredQueueDepth,
+                    detail);
+                delete resources;
 
-                if (switchedDeviceValid) {
-                    currentDeviceId = switchedDeviceId;
+                if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
+                    (void)cudaSetDevice(restoreDeviceId);
                 }
-                if (switchedContextValid) {
-                    currentContextOpaque = switchedContextOpaque;
-                }
-                if (!switchedDeviceError.empty()) {
-                    currentDeviceError = switchedDeviceError;
-                }
-                if (!switchedContextError.empty()) {
-                    currentContextError = switchedContextError;
-                }
+                reap_deferred_destroy_queue("destroy_post");
+                return;
             }
-            else {
-                currentContextError = std::string("cudaSetDevice failed: ")
-                    + (cudaGetErrorString(setErr) ? cudaGetErrorString(setErr) : "(unknown)");
-            }
-        }
 
-        if (ownerMatch) {
+            if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
+                (void)cudaSetDevice(restoreDeviceId);
+            }
+
+            bool managerRetireAttempted = false;
+            bool managerRetireAccepted = false;
+            std::string managerRetireError;
+            if (ownerDeviceId >= 0 && ownerContextOpaque) {
+                managerRetireAttempted = true;
+                managerRetireAccepted =
+                    JuicerProcess::root().retire_idle_context(ownerDeviceId, ownerContextOpaque, managerRetireError);
+            }
+
             std::size_t deferredQueueDepth = 0;
             {
                 std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-                deferredQueueDepth = deferred_destroy_queue().size();
+                auto& queue = deferred_destroy_queue();
+                DeferredDestroyEntry entry{};
+                entry.resources = resources;
+                entry.ownerDeviceId = ownerDeviceId;
+                entry.ownerContextOpaque = ownerContextOpaque;
+                queue.push_back(entry);
+                deferredQueueDepth = queue.size();
             }
+
             std::string detail;
             if (!currentDeviceError.empty()) {
                 detail = currentDeviceError;
@@ -2321,71 +2378,12 @@ namespace JuicerCuda {
                 }
                 detail += currentContextError;
             }
-            trace_teardown_event(
-                "destroy",
-                "direct_free",
-                ownerDeviceId,
-                ownerContextOpaque,
-                currentDeviceId,
-                currentContextOpaque,
-                deviceMatch,
-                contextMatch,
-                switchAttempted,
-                switchSucceeded,
-                false,
-                false,
-                deferredQueueDepth,
-                detail);
-            delete resources;
-
-            if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
-                (void)cudaSetDevice(restoreDeviceId);
+            if (!managerRetireError.empty()) {
+                if (!detail.empty()) {
+                    detail += "; ";
+                }
+                detail += managerRetireError;
             }
-            reap_deferred_destroy_queue("destroy_post");
-            return;
-        }
-
-        if (restoreDevice && restoreDeviceId >= 0 && restoreDeviceId != ownerDeviceId) {
-            (void)cudaSetDevice(restoreDeviceId);
-        }
-
-        bool managerRetireAttempted = false;
-        bool managerRetireAccepted = false;
-        std::string managerRetireError;
-        if (ownerDeviceId >= 0 && ownerContextOpaque) {
-            managerRetireAttempted = true;
-            managerRetireAccepted =
-                JuicerProcess::root().retire_idle_context(ownerDeviceId, ownerContextOpaque, managerRetireError);
-        }
-
-        std::size_t deferredQueueDepth = 0;
-        {
-            std::lock_guard<std::mutex> lock(deferred_destroy_mutex());
-            auto& queue = deferred_destroy_queue();
-            DeferredDestroyEntry entry{};
-            entry.resources = resources;
-            entry.ownerDeviceId = ownerDeviceId;
-            entry.ownerContextOpaque = ownerContextOpaque;
-            queue.push_back(entry);
-            deferredQueueDepth = queue.size();
-        }
-
-        std::string detail;
-        if (!currentDeviceError.empty()) {
-            detail = currentDeviceError;
-        }
-        if (!currentContextError.empty()) {
-            if (!detail.empty()) {
-                detail += "; ";
-            }
-            detail += currentContextError;
-        }
-        if (!managerRetireError.empty()) {
-            if (!detail.empty()) {
-                detail += "; ";
-            }
-            detail += managerRetireError;
-        }
             trace_teardown_event(
                 "destroy",
                 "deferred_enqueue",
@@ -2401,8 +2399,7 @@ namespace JuicerCuda {
                 managerRetireAccepted,
                 deferredQueueDepth,
                 detail);
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
 #endif
@@ -2506,13 +2503,13 @@ namespace JuicerCuda {
     }
 
 
-
-    // Split implementation sections (single-TU include model to preserve exact behavior while
-    // reducing monolithic file size and keeping ownership boundaries explicit).
-    #include "Cuda/JuicerCudaResourcesServing.inc"
-    bool prepare_direct_resources(
+// Split implementation sections (single-TU include model to preserve exact behavior while
+// reducing monolithic file size and keeping ownership boundaries explicit).
+#include "Cuda/JuicerCudaResourcesServing.inc"
+    static bool prepare_focused_route_resources(
         Resources& resources,
         const DirectResourcePreparation& request,
+        bool printRoute,
         void* cudaStreamOpaque,
         std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
@@ -2537,7 +2534,9 @@ namespace JuicerCuda {
         const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
             *request.scannerLutDescriptor;
-        if (!recipe.directStructuralReady || recipe.hash == 0 ||
+        if ((printRoute ? !recipe.printStructuralReady : !recipe.directStructuralReady) ||
+            Spektrafilm::scan_route_is_print(recipe.profileRoute.scanRoute) != printRoute ||
+            recipe.hash == 0 ||
             filmRaw.finalSensitivityHash == 0 ||
             filmDevelop.normalizedDensityCurvesHash == 0 ||
             densityBounds.hash == 0 ||
@@ -2573,8 +2572,9 @@ namespace JuicerCuda {
             (!dirCouplers.active ||
              (resources.dirDensB.x && resources.dirDensG.x && resources.dirDensR.x)) &&
             resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesIllum &&
-            resources.scanNegative.tables.epsC && resources.scanNegativeLut.canonical_ready() &&
-            resources.scanNegativeLut.hash == scannerDescriptor.hash &&
+            (printRoute ? resources.scanPrint.tables.epsC : resources.scanNegative.tables.epsC) &&
+            (printRoute ? resources.scanPrintLut.canonical_ready() : resources.scanNegativeLut.canonical_ready()) &&
+            (printRoute ? resources.scanPrintLut.hash : resources.scanNegativeLut.hash) == scannerDescriptor.hash &&
             ((filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025 &&
               resources.hanatosLut && resources.hanatosLutIntegrated &&
               resources.hanatosIntegratedKeyHash == filmRaw.hanatosLutHash &&
@@ -2739,7 +2739,7 @@ namespace JuicerCuda {
         }
 
         const Spectral::SpectralTables& scannerTables = *request.scannerTables;
-        Resources::DeviceScanMedium& scan = resources.scanNegative;
+        Resources::DeviceScanMedium& scan = printRoute ? resources.scanPrint : resources.scanNegative;
         const int scanK = scannerTables.K;
         if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, scannerTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsC", outError) ||
             !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, scannerTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsM", outError) ||
@@ -2763,14 +2763,16 @@ namespace JuicerCuda {
         scan.tables.K = scanK;
         scan.tables.hasBaseline = scannerTables.hasBaseline ? 1 : 0;
         scan.tables.invYn = scannerTables.invYn;
-        scan.mediumIsNegative = 1;
+        scan.mediumIsNegative = printRoute ? 0 : 1;
         for (int channel = 0; channel < 3; ++channel) {
-            scan.min_cmy[channel] = -densityBounds.dataMinCmy[static_cast<std::size_t>(channel)];
+            scan.min_cmy[channel] = printRoute
+                                        ? densityBounds.dataMinCmy[static_cast<std::size_t>(channel)]
+                                        : -densityBounds.dataMinCmy[static_cast<std::size_t>(channel)];
             scan.inv_max_cmy[channel] = densityBounds.invSpanCmy[static_cast<std::size_t>(channel)];
         }
 
         Scanner::ScannerMediumRuntime medium{};
-        medium.medium = Scanner::ScannerMedium::Negative;
+        medium.medium = printRoute ? Scanner::ScannerMedium::Print : Scanner::ScannerMedium::Negative;
         medium.tables = request.scannerTables;
         medium.color = request.scannerColor;
         for (int channel = 0; channel < 3; ++channel) {
@@ -2791,7 +2793,7 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, false) || !lutBuilt) {
             return false;
         }
-        Resources::DeviceSpectralLut& lut = resources.scanNegativeLut;
+        Resources::DeviceSpectralLut& lut = printRoute ? resources.scanPrintLut : resources.scanNegativeLut;
         struct NextCanonicalScanLut {
             double* log10XYZ = nullptr;
             double* slopeC = nullptr;
@@ -2894,6 +2896,32 @@ namespace JuicerCuda {
         return true;
 #endif
     }
+
+    bool prepare_direct_resources(
+        Resources& resources,
+        const DirectResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        return prepare_focused_route_resources(
+            resources,
+            request,
+            false,
+            cudaStreamOpaque,
+            outError);
+    }
+
+    bool prepare_print_route_resources(
+        Resources& resources,
+        const PrintRouteResourcePreparation& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        return prepare_focused_route_resources(
+            resources,
+            request,
+            true,
+            cudaStreamOpaque,
+            outError);
+    }
     namespace {
 
         template <typename T>
@@ -2928,6 +2956,20 @@ namespace JuicerCuda {
                                              sensitivities.nanMaskHash});
         }
 
+        std::uint64_t hash_profile_film_density_tables(const Profiles::SpektrafilmFilmData& data) {
+            const Hash::FloatSpanHash channelDensity = Hash::hash_float_span_with_nan_mask(
+                &data.channelDensity[0][0],
+                data.channelDensity.size() * 3u);
+            const Hash::FloatSpanHash baseDensity = Hash::hash_float_span_with_nan_mask(
+                data.baseDensity.data(),
+                data.baseDensity.size());
+            return Hash::hash_uint64_values({Hash::hash_float_span(data.wavelengths.data(), data.wavelengths.size()),
+                                             channelDensity.valueHash,
+                                             channelDensity.nanMaskHash,
+                                             baseDensity.valueHash,
+                                             baseDensity.nanMaskHash});
+        }
+
         bool print_curve_ready(const DeviceCurveView& curve, int expectedSamples, bool requireX) {
             return curve.y && (!requireX || curve.x) && curve.n == expectedSamples &&
                    curve.domainBegin >= 0 && curve.domainEnd >= curve.domainBegin &&
@@ -2957,14 +2999,25 @@ namespace JuicerCuda {
         bool copy_source_illuminant(
             JuicerAssets::Library& assets,
             const std::string& key,
+            std::uint64_t expectedAssetVersion,
             std::array<float, Spectral::kNumSamples>& out,
             std::string& diagnostic) {
+            if (expectedAssetVersion != JuicerAssets::Library::kProcessAssetVersion) {
+                diagnostic =
+                    "ResourceDescriptorMismatch phase=4B field=source_illuminant_asset_version";
+                return false;
+            }
             if (key == "EQUAL") {
                 out.fill(1.0f);
                 return true;
             }
             const JuicerAssets::IlluminantFilterCurveSet& curves =
                 assets.illuminant_filter_curves();
+            if (curves.version != expectedAssetVersion) {
+                diagnostic =
+                    "ResourceDescriptorMismatch phase=4B field=source_illuminant_asset_version";
+                return false;
+            }
             const Spectral::Curve* selected = select_print_illuminant(curves, key);
             if (!selected ||
                 selected->linear.size() != out.size() ||
@@ -3005,7 +3058,7 @@ namespace JuicerCuda {
 
             for (int sample = 0; sample < Spectral::kNumSamples; ++sample) {
                 const float wavelength = Spectral::gShape.wavelengths[sample];
-                const float c =
+                const float y =
                     0.5f * std::erf((wavelength - identity.customEdgesNm[0]) /
                                     identity.customTransitionsNm[0]) +
                     0.5f;
@@ -3015,7 +3068,7 @@ namespace JuicerCuda {
                                     identity.customTransitionsNm[1])
                         : std::erf((wavelength - identity.customEdgesNm[2]) /
                                    identity.customTransitionsNm[2]);
-                const float y =
+                const float c =
                     -0.5f * std::erf((wavelength - identity.customEdgesNm[3]) /
                                      identity.customTransitionsNm[3]) +
                     0.5f;
@@ -3029,12 +3082,18 @@ namespace JuicerCuda {
         bool derive_filtered_print_illuminant(
             JuicerAssets::Library& assets,
             const PrintRecipe& recipe,
+            std::uint64_t sourceIlluminantAssetVersion,
             const CmyCcTriplet& cc,
             std::array<float, Spectral::kNumSamples>& out,
             std::string& diagnostic) {
             std::array<float, Spectral::kNumSamples> source{};
             std::array<std::array<float, Spectral::kNumSamples>, 3> filters{};
-            if (!copy_source_illuminant(assets, recipe.illuminant.key, source, diagnostic) ||
+            if (!copy_source_illuminant(
+                    assets,
+                    recipe.illuminant.key,
+                    sourceIlluminantAssetVersion,
+                    source,
+                    diagnostic) ||
                 !build_dichroic_curves(assets, recipe.filters.dichroic, filters, diagnostic)) {
                 return false;
             }
@@ -3060,31 +3119,257 @@ namespace JuicerCuda {
 
         float sample_profile_density_curve(
             float logExposure,
-            const Profiles::SpektrafilmProfileSamples& profile,
+            const std::vector<float>& logExposureAxis,
+            const std::vector<std::array<float, 3>>& densityCurves,
             std::size_t channel) {
-            if (profile.logExposure.empty() || profile.densityCurves.empty()) {
+            if (logExposureAxis.empty() || densityCurves.empty()) {
                 return 0.0f;
             }
-            if (logExposure <= profile.logExposure.front()) {
-                return profile.densityCurves.front()[channel];
+            if (logExposure <= logExposureAxis.front()) {
+                return densityCurves.front()[channel];
             }
-            if (logExposure >= profile.logExposure.back()) {
-                return profile.densityCurves.back()[channel];
+            if (logExposure >= logExposureAxis.back()) {
+                return densityCurves.back()[channel];
             }
             const auto upper =
-                std::upper_bound(profile.logExposure.begin(), profile.logExposure.end(), logExposure);
-            const std::size_t hi = static_cast<std::size_t>(upper - profile.logExposure.begin());
+                std::upper_bound(logExposureAxis.begin(), logExposureAxis.end(), logExposure);
+            const std::size_t hi = static_cast<std::size_t>(upper - logExposureAxis.begin());
             const std::size_t lo = hi - 1u;
-            const float span = profile.logExposure[hi] - profile.logExposure[lo];
-            const float t = span > 0.0f ? (logExposure - profile.logExposure[lo]) / span : 0.0f;
-            const float a = profile.densityCurves[lo][channel];
-            const float b = profile.densityCurves[hi][channel];
-            return std::isfinite(a) && std::isfinite(b) ? a + t * (b - a) : 0.0f;
+            const float span = logExposureAxis[hi] - logExposureAxis[lo];
+            const float t = span > 0.0f ? (logExposure - logExposureAxis[lo]) / span : 0.0f;
+            const float a = densityCurves[lo][channel];
+            const float b = densityCurves[hi][channel];
+            return a + t * (b - a);
+        }
+
+        double density_to_light_sample_spektrafilm(double density, double illuminant) {
+            const double transmitted = std::pow(10.0, -density) * illuminant;
+            return std::isnan(transmitted) ? 0.0 : transmitted;
+        }
+
+        bool derive_reference_white_xyz(
+            const std::array<float, Spectral::kNumSamples>& illuminant,
+            float out[3]) {
+            const Spectral::SpectralContext& context = Spectral::context();
+            if (context.xBar.linear.size() != illuminant.size() ||
+                context.yBar.linear.size() != illuminant.size() ||
+                context.zBar.linear.size() != illuminant.size()) {
+                return false;
+            }
+            double xyz[3] = {0.0, 0.0, 0.0};
+            for (std::size_t sample = 0; sample < illuminant.size(); ++sample) {
+                const double source = static_cast<double>(illuminant[sample]);
+                xyz[0] += source * static_cast<double>(context.xBar.linear[sample]);
+                xyz[1] += source * static_cast<double>(context.yBar.linear[sample]);
+                xyz[2] += source * static_cast<double>(context.zBar.linear[sample]);
+            }
+            if (!(std::isfinite(xyz[0]) &&
+                  std::isfinite(xyz[1]) &&
+                  std::isfinite(xyz[2]) &&
+                  xyz[1] > 0.0)) {
+                return false;
+            }
+            out[0] = static_cast<float>(xyz[0] / xyz[1]);
+            out[1] = 1.0f;
+            out[2] = static_cast<float>(xyz[2] / xyz[1]);
+            return true;
+        }
+
+        int spektrafilm_reflect_index(int index, int size) {
+            if (size <= 1) {
+                return 0;
+            }
+            if (index < 0) {
+                return -index;
+            }
+            if (index >= size) {
+                return 2 * (size - 1) - index;
+            }
+            return index;
+        }
+
+        double spektrafilm_mitchell_weight(double t) {
+            constexpr double kB = 1.0 / 3.0;
+            constexpr double kC = 1.0 / 3.0;
+            const double x = std::abs(t);
+            if (x < 1.0) {
+                return (1.0 / 6.0) *
+                       ((12.0 - 9.0 * kB - 6.0 * kC) * x * x * x +
+                        (-18.0 + 12.0 * kB + 6.0 * kC) * x * x +
+                        (6.0 - 2.0 * kB));
+            }
+            if (x < 2.0) {
+                return (1.0 / 6.0) *
+                       ((-kB - 6.0 * kC) * x * x * x +
+                        (6.0 * kB + 30.0 * kC) * x * x +
+                        (-12.0 * kB - 48.0 * kC) * x +
+                        (8.0 * kB + 24.0 * kC));
+            }
+            return 0.0;
+        }
+
+        // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+        float sample_hanatos_integrated_cubic_host(
+            const std::vector<float>& lut,
+            int size,
+            int channel,
+            float tcC,
+            float tcM) {
+            auto coordinate = [size](float normalized, int& base, double& fraction) {
+                const double value =
+                    static_cast<double>(std::clamp(normalized, 0.0f, 1.0f)) *
+                    static_cast<double>(size - 1);
+                if (value >= static_cast<double>(size - 1)) {
+                    base = size - 2;
+                    fraction = 1.0;
+                    return;
+                }
+                base = static_cast<int>(std::floor(value));
+                fraction = value - static_cast<double>(base);
+            };
+
+            int cBase = 0;
+            int mBase = 0;
+            double cFraction = 0.0;
+            double mFraction = 0.0;
+            coordinate(tcC, cBase, cFraction);
+            coordinate(tcM, mBase, mFraction);
+            const double wc[4] = {
+                spektrafilm_mitchell_weight(cFraction + 1.0),
+                spektrafilm_mitchell_weight(cFraction),
+                spektrafilm_mitchell_weight(cFraction - 1.0),
+                spektrafilm_mitchell_weight(cFraction - 2.0)};
+            const double wm[4] = {
+                spektrafilm_mitchell_weight(mFraction + 1.0),
+                spektrafilm_mitchell_weight(mFraction),
+                spektrafilm_mitchell_weight(mFraction - 1.0),
+                spektrafilm_mitchell_weight(mFraction - 2.0)};
+
+            double value = 0.0;
+            double weightSum = 0.0;
+            for (int dc = 0; dc < 4; ++dc) {
+                const int c = spektrafilm_reflect_index(cBase - 1 + dc, size);
+                for (int dm = 0; dm < 4; ++dm) {
+                    const int m = spektrafilm_reflect_index(mBase - 1 + dm, size);
+                    const double weight = wc[dc] * wm[dm];
+                    const std::size_t index =
+                        (static_cast<std::size_t>(c) * static_cast<std::size_t>(size) +
+                         static_cast<std::size_t>(m)) *
+                            4u +
+                        static_cast<std::size_t>(channel);
+                    weightSum += weight;
+                    value += weight * static_cast<double>(lut[index]);
+                }
+            }
+            return static_cast<float>(weightSum != 0.0 ? value / weightSum : 0.0);
+        }
+        // NOLINTEND(bugprone-easily-swappable-parameters)
+
+        bool derive_film_raw_for_midgray(
+            const RenderRecipe& recipe,
+            const std::array<float, Spectral::kNumSamples>& filmIlluminant,
+            float exposureEv,
+            std::array<double, 3>& out,
+            std::string& diagnostic) {
+            out = {};
+            const double source = 0.184 * std::exp2(static_cast<double>(exposureEv));
+            if (!(std::isfinite(source) && source >= 0.0)) {
+                diagnostic = "MalformedRequiredResource phase=4B field=print_balance_midgray_source";
+                return false;
+            }
+
+            if (recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019) {
+                const NpyFloat2D& basis = Spectral::context().mallettBasis;
+                if (basis.rows != Spectral::kNumSamples ||
+                    basis.cols != 3 ||
+                    basis.data.size() !=
+                        static_cast<std::size_t>(Spectral::kNumSamples) * 3u) {
+                    diagnostic = "MissingRequiredResource phase=4B field=mallett_basis";
+                    return false;
+                }
+                for (std::size_t sample = 0; sample < filmIlluminant.size(); ++sample) {
+                    const std::size_t basisOffset = sample * 3u;
+                    const double spectrum =
+                        source *
+                        static_cast<double>(
+                            basis.data[basisOffset] +
+                            basis.data[basisOffset + 1u] +
+                            basis.data[basisOffset + 2u]) *
+                        static_cast<double>(filmIlluminant[sample]);
+                    for (std::size_t channel = 0; channel < out.size(); ++channel) {
+                        out[channel] += spectrum *
+                                        static_cast<double>(
+                                            recipe.filmRaw.finalSensitivity[sample][channel]);
+                    }
+                }
+                for (double& raw : out) {
+                    raw *= static_cast<double>(recipe.filmRaw.mallettGreenMidgrayScale);
+                }
+            } else if (recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Hanatos2025) {
+                float referenceWhiteXYZ[3] = {};
+                if (!derive_reference_white_xyz(filmIlluminant, referenceWhiteXYZ)) {
+                    diagnostic =
+                        "MalformedRequiredResource phase=4B field=film_reference_illuminant_white";
+                    return false;
+                }
+                std::vector<float> integratedLut;
+                if (!Precompute::build_direct_hanatos_integrated_lut_cpu(
+                        Spectral::context(),
+                        recipe.filmRaw,
+                        referenceWhiteXYZ,
+                        integratedLut,
+                        diagnostic)) {
+                    return false;
+                }
+
+                const float sourceRgb[3] = {
+                    static_cast<float>(source),
+                    static_cast<float>(source),
+                    static_cast<float>(source)};
+                float sourceXYZ[3] = {};
+                Spectral::kRGB_to_XYZ_sRGB_Rec709.mul(sourceRgb, sourceXYZ);
+                float adaptedXYZ[3] = {};
+                Spectral::chromatic_adapt_XYZ_CAT02(
+                    sourceXYZ,
+                    Spectral::gDWG_WhitePoint_XYZ,
+                    referenceWhiteXYZ,
+                    adaptedXYZ);
+                const float brightness = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
+                const float denominator = std::max(brightness, 1e-10f);
+                const float x = std::clamp(adaptedXYZ[0] / denominator, 0.0f, 1.0f);
+                const float y = std::clamp(adaptedXYZ[1] / denominator, 0.0f, 1.0f);
+                float tcC = 0.0f;
+                float tcM = 0.0f;
+                Spectral::tri2quad(x, y, tcC, tcM);
+                const int size = Spectral::context().hanSpectra.size;
+                for (std::size_t channel = 0; channel < out.size(); ++channel) {
+                    out[channel] =
+                        static_cast<double>(brightness) *
+                        static_cast<double>(sample_hanatos_integrated_cubic_host(
+                            integratedLut,
+                            size,
+                            static_cast<int>(channel),
+                            tcC,
+                            tcM));
+                }
+            } else {
+                diagnostic = "ResourceDescriptorMismatch phase=4B field=rgb_to_raw_method";
+                return false;
+            }
+
+            const bool valid = std::all_of(out.begin(), out.end(), [](double raw) {
+                return std::isfinite(raw) && raw >= 0.0;
+            });
+            if (!valid) {
+                diagnostic = "MalformedRequiredResource phase=4B field=print_balance_film_raw";
+            }
+            return valid;
         }
 
         bool derive_print_raw_for_midgray(
             JuicerAssets::Library& assets,
             const RenderRecipe& recipe,
+            std::uint64_t filmReferenceIlluminantAssetVersion,
             const std::array<float, Spectral::kNumSamples>& mainIlluminant,
             float exposureEv,
             float& outFactor,
@@ -3095,30 +3380,29 @@ namespace JuicerCuda {
             if (!copy_source_illuminant(
                     assets,
                     film.info.referenceIlluminant.value,
+                    filmReferenceIlluminantAssetVersion,
                     filmIlluminant,
                     diagnostic)) {
                 return false;
             }
-            const float exposureScale = std::exp2(exposureEv);
+            std::array<double, 3> filmRaw{};
+            if (!derive_film_raw_for_midgray(
+                    recipe,
+                    filmIlluminant,
+                    exposureEv,
+                    filmRaw,
+                    diagnostic)) {
+                return false;
+            }
             std::array<float, 3> densityCmy{};
             for (std::size_t channel = 0; channel < densityCmy.size(); ++channel) {
-                double raw = 0.0;
-                for (std::size_t sample = 0; sample < filmIlluminant.size(); ++sample) {
-                    raw += 0.184 * static_cast<double>(exposureScale) *
-                           static_cast<double>(filmIlluminant[sample]) *
-                           static_cast<double>(film.data.linearSensitivity[sample][channel]);
-                }
-                const float logRaw =
-                    static_cast<float>(std::log10(std::max(1e-10, raw)));
-                const float rawScale =
-                    recipe.filmRaw.rgbToRawMethod == Spektrafilm::RgbToRawMethod::Mallett2019
-                        ? recipe.filmRaw.mallettGreenMidgrayScale
-                        : 1.0f;
+                const float logRaw = static_cast<float>(std::log10(filmRaw[channel] + 1e-10));
                 const float gamma = recipe.filmDevelop.densityCurveGamma[channel];
                 const float gammaSafe = std::isfinite(gamma) && gamma > 0.0f ? gamma : 1.0f;
                 densityCmy[channel] = sample_profile_density_curve(
-                    (logRaw + std::log10(std::max(1e-10f, rawScale))) * gammaSafe,
-                    film.data,
+                    logRaw * gammaSafe,
+                    recipe.filmDevelop.logExposure,
+                    recipe.filmDevelop.authoredDensityCurves,
                     channel);
             }
 
@@ -3129,8 +3413,9 @@ namespace JuicerCuda {
                     density += static_cast<double>(densityCmy[channel]) *
                                static_cast<double>(film.data.channelDensity[sample][channel]);
                 }
-                const double light =
-                    static_cast<double>(mainIlluminant[sample]) * std::pow(10.0, -density);
+                const double light = density_to_light_sample_spektrafilm(
+                    density,
+                    static_cast<double>(mainIlluminant[sample]));
                 for (std::size_t channel = 0; channel < printRaw.size(); ++channel) {
                     const float sensitivity = print.data.linearSensitivity[sample][channel];
                     if (std::isfinite(sensitivity)) {
@@ -3159,9 +3444,9 @@ namespace JuicerCuda {
             std::string& diagnostic) {
             std::array<double, 3> raw{};
             for (std::size_t sample = 0; sample < preflashIlluminant.size(); ++sample) {
-                const double light =
-                    static_cast<double>(preflashIlluminant[sample]) *
-                    std::pow(10.0, -static_cast<double>(film.data.baseDensity[sample]));
+                const double light = density_to_light_sample_spektrafilm(
+                    static_cast<double>(film.data.baseDensity[sample]),
+                    static_cast<double>(preflashIlluminant[sample]));
                 for (std::size_t channel = 0; channel < raw.size(); ++channel) {
                     const float sensitivity = print.data.linearSensitivity[sample][channel];
                     if (std::isfinite(sensitivity)) {
@@ -3199,6 +3484,7 @@ namespace JuicerCuda {
             return false;
         }
 
+        const Profiles::ValidatedFilmProfile& film = *recipe.profileRoute.filmProfile;
         const Profiles::ValidatedPrintProfile& print = *recipe.profileRoute.printProfile;
         PrintProfileTablesDescriptor& profile = out.profileTables;
         profile.printProfileAssetVersionToken = recipe.profileRoute.printProfileAssetVersionToken;
@@ -3214,9 +3500,21 @@ namespace JuicerCuda {
         hash_print_descriptor_value(profile.hash, profile.densitySampleCount);
         hash_print_descriptor_value(profile.hash, profile.spectralSampleCount);
 
+        PrintFilmDensityTablesDescriptor& filmDensity = out.filmDensityTables;
+        filmDensity.filmProfileAssetVersionToken = recipe.profileRoute.filmProfileAssetVersionToken;
+        filmDensity.densityTablesHash = hash_profile_film_density_tables(film.data);
+        filmDensity.spectralSampleCount = static_cast<std::uint32_t>(film.data.channelDensity.size());
+        filmDensity.hash = Hash::kFnvOffset;
+        hash_print_descriptor_value(filmDensity.hash, PrintFilmDensityTablesDescriptor::kSchemaVersion);
+        hash_print_descriptor_value(filmDensity.hash, filmDensity.filmProfileAssetVersionToken);
+        hash_print_descriptor_value(filmDensity.hash, filmDensity.densityTablesHash);
+        hash_print_descriptor_value(filmDensity.hash, filmDensity.spectralSampleCount);
+
         auto build_illuminant = [&](FilteredPrintIlluminantDescriptor& descriptor,
                                     const CmyCcTriplet& cc,
                                     bool preflash) {
+            descriptor.sourceIlluminantAssetVersionToken =
+                JuicerAssets::Library::kProcessAssetVersion;
             descriptor.printIlluminantHash = recipe.print.illuminant.hash;
             descriptor.dichroicResourceHash = recipe.print.filters.dichroic.hash;
             descriptor.cmyCc = cc;
@@ -3225,6 +3523,9 @@ namespace JuicerCuda {
             hash_print_descriptor_value(
                 descriptor.hash,
                 FilteredPrintIlluminantDescriptor::kSchemaVersion);
+            hash_print_descriptor_value(
+                descriptor.hash,
+                descriptor.sourceIlluminantAssetVersionToken);
             hash_print_descriptor_value(descriptor.hash, descriptor.printIlluminantHash);
             hash_print_descriptor_value(descriptor.hash, descriptor.dichroicResourceHash);
             hash_print_descriptor_cmy(descriptor.hash, descriptor.cmyCc);
@@ -3247,6 +3548,8 @@ namespace JuicerCuda {
         }
 
         out.balance.filmProfileAssetVersionToken = recipe.profileRoute.filmProfileAssetVersionToken;
+        out.balance.filmReferenceIlluminantAssetVersionToken =
+            JuicerAssets::Library::kProcessAssetVersion;
         out.balance.filmRawRecipeHash = recipe.filmRaw.hash;
         out.balance.filmDevelopRecipeHash = recipe.filmDevelop.hash;
         out.balance.printProfileTablesHash = profile.hash;
@@ -3259,6 +3562,9 @@ namespace JuicerCuda {
         out.balance.hash = Hash::kFnvOffset;
         hash_print_descriptor_value(out.balance.hash, PrintBalanceDescriptor::kSchemaVersion);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmProfileAssetVersionToken);
+        hash_print_descriptor_value(
+            out.balance.hash,
+            out.balance.filmReferenceIlluminantAssetVersionToken);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmRawRecipeHash);
         hash_print_descriptor_value(out.balance.hash, out.balance.filmDevelopRecipeHash);
         hash_print_descriptor_value(out.balance.hash, out.balance.printProfileTablesHash);
@@ -3267,6 +3573,7 @@ namespace JuicerCuda {
         hash_print_descriptor_value(out.balance.hash, out.balance.cameraExposureCompensationEv);
 
         out.hash = Hash::hash_uint64_values({profile.hash,
+                                             filmDensity.hash,
                                              out.mainIlluminant.hash,
                                              out.preflashIlluminant.hash,
                                              out.preflashRaw.hash,
@@ -3276,7 +3583,13 @@ namespace JuicerCuda {
             profile.densitySampleCount == 0 ||
             profile.spectralSampleCount != Spectral::kNumSamples ||
             profile.hash == 0 ||
+            filmDensity.filmProfileAssetVersionToken == 0 ||
+            filmDensity.densityTablesHash == 0 ||
+            filmDensity.spectralSampleCount != Spectral::kNumSamples ||
+            filmDensity.hash == 0 ||
+            out.mainIlluminant.sourceIlluminantAssetVersionToken == 0 ||
             out.mainIlluminant.hash == 0 ||
+            out.balance.filmReferenceIlluminantAssetVersionToken == 0 ||
             out.balance.hash == 0 ||
             out.balance.filmRawRecipeHash == 0 ||
             out.balance.filmDevelopRecipeHash == 0 ||
@@ -3319,6 +3632,14 @@ namespace JuicerCuda {
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
+        const bool filmDensityHit =
+            resources.printFilmDensityTablesDescriptorHash == descriptors.filmDensityTables.hash &&
+            resources.printFilmDensityTables.K == Spectral::kNumSamples &&
+            resources.printFilmDensityTables.epsC &&
+            resources.printFilmDensityTables.epsM &&
+            resources.printFilmDensityTables.epsY &&
+            resources.printFilmDensityTables.hasBaseline &&
+            resources.printFilmDensityTables.baseMin;
         const bool profileHit =
             resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
             resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
@@ -3343,7 +3664,48 @@ namespace JuicerCuda {
             std::isfinite(resources.printBalanceFactorMidgray) &&
             std::isfinite(resources.printBalanceFactorMidgrayComp) &&
             std::isfinite(resources.printBalanceNormalizer);
-        if (profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
+        auto trace_main_illuminant = [&](const char* cacheOutcome,
+                                         const char* mainIlluminantOutcome) {
+            if (!JTRACE_ENABLED(3)) {
+                return;
+            }
+            const std::uint64_t hostIlluminantChecksum =
+                resources.printIllumFilteredHostValid
+                    ? Hash::hash_float_span(resources.printIllumFilteredHost)
+                    : 0;
+            std::string msg;
+            msg.reserve(512);
+            msg = "event=print_resource_preparation cacheOutcome=";
+            msg += cacheOutcome;
+            msg += " mainIlluminantOutcome=";
+            msg += mainIlluminantOutcome;
+            msg += " filteredMainIlluminantDescriptorHash=";
+            msg += std::to_string(descriptors.mainIlluminant.hash);
+            msg += " preparedMainIlluminantDescriptorHash=";
+            msg += std::to_string(resources.printMainIlluminantDescriptorHash);
+            msg += " descriptorCmyCc(C/M/Y)=";
+            msg += std::to_string(descriptors.mainIlluminant.cmyCc.c);
+            msg += "/";
+            msg += std::to_string(descriptors.mainIlluminant.cmyCc.m);
+            msg += "/";
+            msg += std::to_string(descriptors.mainIlluminant.cmyCc.y);
+            msg += " sourceIlluminantAssetVersionToken=";
+            msg += std::to_string(
+                descriptors.mainIlluminant.sourceIlluminantAssetVersionToken);
+            msg += " sourceIlluminantDescriptorHash=";
+            msg += std::to_string(descriptors.mainIlluminant.printIlluminantHash);
+            msg += " dichroicResourceHash=";
+            msg += std::to_string(descriptors.mainIlluminant.dichroicResourceHash);
+            msg += " hostIlluminantChecksum=";
+            msg += std::to_string(hostIlluminantChecksum);
+            JTRACE_VERBOSE("PHASE4C_BALANCE", msg);
+        };
+        if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
+            balanceHit &&
+            resources.printPreparationDescriptorHash == descriptors.hash) {
+            trace_main_illuminant("hit", "hit");
+        }
+        if (filmDensityHit && profileHit && mainHit && preflashIlluminantHit && preflashRawHit &&
             balanceHit &&
             resources.printPreparationDescriptorHash == descriptors.hash) {
             return true;
@@ -3367,6 +3729,7 @@ namespace JuicerCuda {
             !derive_filtered_print_illuminant(
                 *request.assets,
                 request.recipe->print,
+                descriptors.mainIlluminant.sourceIlluminantAssetVersionToken,
                 request.recipe->print.filters.mainCmyCc,
                 mainIlluminant,
                 outError)) {
@@ -3376,6 +3739,7 @@ namespace JuicerCuda {
             !derive_filtered_print_illuminant(
                 *request.assets,
                 request.recipe->print,
+                descriptors.preflashIlluminant.sourceIlluminantAssetVersionToken,
                 request.recipe->print.filters.preflashCmyCc,
                 preflashIlluminant,
                 outError)) {
@@ -3385,6 +3749,7 @@ namespace JuicerCuda {
             if (!derive_print_raw_for_midgray(
                     *request.assets,
                     *request.recipe,
+                    descriptors.balance.filmReferenceIlluminantAssetVersionToken,
                     mainIlluminant,
                     0.0f,
                     factorMidgray,
@@ -3392,6 +3757,7 @@ namespace JuicerCuda {
                 !derive_print_raw_for_midgray(
                     *request.assets,
                     *request.recipe,
+                    descriptors.balance.filmReferenceIlluminantAssetVersionToken,
                     mainIlluminant,
                     descriptors.balance.cameraExposureCompensationEv,
                     factorMidgrayComp,
@@ -3416,6 +3782,28 @@ namespace JuicerCuda {
             return false;
         }
 
+        if (!filmDensityHit) {
+            std::array<float, Spectral::kNumSamples> epsC{};
+            std::array<float, Spectral::kNumSamples> epsM{};
+            std::array<float, Spectral::kNumSamples> epsY{};
+            for (std::size_t sample = 0; sample < film.data.channelDensity.size(); ++sample) {
+                epsC[sample] = film.data.channelDensity[sample][0];
+                epsM[sample] = film.data.channelDensity[sample][1];
+                epsY[sample] = film.data.channelDensity[sample][2];
+            }
+            Resources::DeviceSpectralTables& tables = resources.printFilmDensityTables;
+            const int currentK = tables.K;
+            if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsC", outError) ||
+                !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsM", outError) ||
+                !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsY", outError) ||
+                !upload_array_locked(resources, tables.baseMin, currentK, film.data.baseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
+                return false;
+            }
+            tables.K = Spectral::kNumSamples;
+            tables.hasBaseline = 1;
+            tables.invYn = 1.0f;
+            resources.printFilmDensityTablesDescriptorHash = descriptors.filmDensityTables.hash;
+        }
         if (!profileHit) {
             Spectral::Curve dcC;
             Spectral::Curve dcM;
@@ -3525,6 +3913,7 @@ namespace JuicerCuda {
         }
         resources.printPreparationDescriptorHash = descriptors.hash;
         ++resources.printPreparationCounter;
+        trace_main_illuminant("rebuilt", mainHit ? "retained" : "rebuilt");
         return true;
 #endif
     }
@@ -3538,6 +3927,13 @@ namespace JuicerCuda {
         out = PrintCudaPayloadPack{};
         if (!prepared.active ||
             prepared.preparationHash == 0 ||
+            prepared.filmDensityTablesHash == 0 ||
+            prepared.filmDensityTables.K != Spectral::kNumSamples ||
+            !prepared.filmDensityTables.epsC ||
+            !prepared.filmDensityTables.epsM ||
+            !prepared.filmDensityTables.epsY ||
+            !prepared.filmDensityTables.hasBaseline ||
+            !prepared.filmDensityTables.baseMin ||
             prepared.profileTablesHash == 0 ||
             prepared.mainIlluminantHash == 0 ||
             prepared.balanceHash == 0 ||
@@ -3561,6 +3957,7 @@ namespace JuicerCuda {
         }
 
         out.expose.active = 1;
+        out.expose.negTables = prepared.filmDensityTables;
         out.expose.printIllumFiltered = prepared.mainIlluminant;
         out.expose.printIllumK = prepared.spectralSampleCount;
         out.expose.printSensC = prepared.printSensC;
@@ -3606,10 +4003,10 @@ namespace JuicerCuda {
 
         bool operator==(const SharedGaussianKey& other) const noexcept {
             return deviceId == other.deviceId &&
-                contextOpaque == other.contextOpaque &&
-                kind == other.kind &&
-                radius == other.radius &&
-                sigmaBits == other.sigmaBits;
+                   contextOpaque == other.contextOpaque &&
+                   kind == other.kind &&
+                   radius == other.radius &&
+                   sigmaBits == other.sigmaBits;
         }
     };
 
@@ -3733,8 +4130,7 @@ namespace JuicerCuda {
         const std::size_t bytes = cpuWeights.size() * sizeof(float);
         const cudaError_t allocErr = cudaMalloc(reinterpret_cast<void**>(&dWeights), bytes);
         if (allocErr != cudaSuccess || !dWeights) {
-            outError = std::string("cudaMalloc(shared gaussian kernel) failed: ")
-                + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+            outError = std::string("cudaMalloc(shared gaussian kernel) failed: ") + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
             dWeights = nullptr;
             return false;
         }
@@ -3744,8 +4140,7 @@ namespace JuicerCuda {
             bytes,
             cudaMemcpyHostToDevice);
         if (copyErr != cudaSuccess) {
-            outError = std::string("cudaMemcpy(shared gaussian kernel) failed: ")
-                + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
+            outError = std::string("cudaMemcpy(shared gaussian kernel) failed: ") + (cudaGetErrorString(copyErr) ? cudaGetErrorString(copyErr) : "(unknown)");
             cudaFree(dWeights);
             return false;
         }
@@ -3782,19 +4177,19 @@ namespace JuicerCuda {
             return false;
         }
         return it->second.id == kernel.sharedKernelId &&
-            it->second.weights == kernel.weights;
+               it->second.weights == kernel.weights;
     }
 
     static const char* to_cstr(ResourceManager::AllocatorBackendMode mode) noexcept {
         switch (mode) {
-        case ResourceManager::AllocatorBackendMode::Legacy:
-            return "legacy";
-        case ResourceManager::AllocatorBackendMode::AsyncPool:
-            return "async_pool";
-        case ResourceManager::AllocatorBackendMode::Slab:
-            return "slab";
-        default:
-            return "unknown";
+            case ResourceManager::AllocatorBackendMode::Legacy:
+                return "legacy";
+            case ResourceManager::AllocatorBackendMode::AsyncPool:
+                return "async_pool";
+            case ResourceManager::AllocatorBackendMode::Slab:
+                return "slab";
+            default:
+                return "unknown";
         }
     }
 
@@ -3808,8 +4203,8 @@ namespace JuicerCuda {
 
     static bool is_async_device_ptr_tracked_locked(const Resources& resources, const void* ptr) noexcept {
         return ptr &&
-            resources.asyncDeviceAllocPointers.find(const_cast<void*>(ptr)) !=
-                resources.asyncDeviceAllocPointers.end();
+               resources.asyncDeviceAllocPointers.find(const_cast<void*>(ptr)) !=
+                   resources.asyncDeviceAllocPointers.end();
     }
 
     static bool track_async_device_ptr_locked(Resources& resources, void* ptr, bool asyncAllocated) noexcept {
@@ -3819,20 +4214,17 @@ namespace JuicerCuda {
         try {
             if (asyncAllocated) {
                 resources.asyncDeviceAllocPointers.insert(ptr);
-            }
-            else {
+            } else {
                 resources.asyncDeviceAllocPointers.erase(ptr);
             }
             return true;
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
             if (asyncAllocated) {
                 const cudaError_t freeErr = device_free_async_compat(ptr, nullptr);
                 if (freeErr == cudaSuccess) {
                     (void)cudaStreamSynchronize(nullptr);
-                }
-                else {
+                } else {
                     (void)cudaFree(ptr);
                 }
             }
@@ -3869,12 +4261,10 @@ namespace JuicerCuda {
             const cudaError_t asyncErr = device_free_async_compat(ptr, cudaStreamOpaque);
             if (asyncErr != cudaSuccess) {
                 (void)cudaFree(ptr);
-            }
-            else if (!cudaStreamOpaque) {
+            } else if (!cudaStreamOpaque) {
                 (void)cudaStreamSynchronize(nullptr);
             }
-        }
-        else {
+        } else {
             (void)cudaFree(ptr);
         }
         untrack_async_device_ptr_locked(resources, ptr);
@@ -3948,16 +4338,9 @@ namespace JuicerCuda {
         }
 
         if (preferAsync) {
-            outError = std::string("scratch alloc failed (async+legacy) [")
-                + (label ? label : "scratch")
-                + "]: async="
-                + (cudaGetErrorString(asyncErr) ? cudaGetErrorString(asyncErr) : "(unknown)")
-                + ", legacy="
-                + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
-        }
-        else {
-            outError = std::string("cudaMalloc(") + (label ? label : "scratch") + ") failed: "
-                + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+            outError = std::string("scratch alloc failed (async+legacy) [") + (label ? label : "scratch") + "]: async=" + (cudaGetErrorString(asyncErr) ? cudaGetErrorString(asyncErr) : "(unknown)") + ", legacy=" + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+        } else {
+            outError = std::string("cudaMalloc(") + (label ? label : "scratch") + ") failed: " + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
         }
         outPtr = nullptr;
         return false;
@@ -4094,13 +4477,34 @@ namespace JuicerCuda {
 
     static void free_spectral_tables(Resources::DeviceSpectralTables& t) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        if (t.epsC) { cudaFree(t.epsC); t.epsC = nullptr; }
-        if (t.epsM) { cudaFree(t.epsM); t.epsM = nullptr; }
-        if (t.epsY) { cudaFree(t.epsY); t.epsY = nullptr; }
-        if (t.Ax) { cudaFree(t.Ax); t.Ax = nullptr; }
-        if (t.Ay) { cudaFree(t.Ay); t.Ay = nullptr; }
-        if (t.Az) { cudaFree(t.Az); t.Az = nullptr; }
-        if (t.baseMin) { cudaFree(t.baseMin); t.baseMin = nullptr; }
+        if (t.epsC) {
+            cudaFree(t.epsC);
+            t.epsC = nullptr;
+        }
+        if (t.epsM) {
+            cudaFree(t.epsM);
+            t.epsM = nullptr;
+        }
+        if (t.epsY) {
+            cudaFree(t.epsY);
+            t.epsY = nullptr;
+        }
+        if (t.Ax) {
+            cudaFree(t.Ax);
+            t.Ax = nullptr;
+        }
+        if (t.Ay) {
+            cudaFree(t.Ay);
+            t.Ay = nullptr;
+        }
+        if (t.Az) {
+            cudaFree(t.Az);
+            t.Az = nullptr;
+        }
+        if (t.baseMin) {
+            cudaFree(t.baseMin);
+            t.baseMin = nullptr;
+        }
 #endif
         t.K = 0;
         t.hasBaseline = 0;
@@ -4118,31 +4522,38 @@ namespace JuicerCuda {
 #else
         const size_t bytes = static_cast<size_t>(std::max(0, t.K)) * sizeof(float);
         if (t.epsC) {
-            if (!retire_ptr_locked(resources, t.epsC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, t.epsC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+                return false;
             t.epsC = nullptr;
         }
         if (t.epsM) {
-            if (!retire_ptr_locked(resources, t.epsM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, t.epsM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+                return false;
             t.epsM = nullptr;
         }
         if (t.epsY) {
-            if (!retire_ptr_locked(resources, t.epsY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, t.epsY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+                return false;
             t.epsY = nullptr;
         }
         if (t.Ax) {
-            if (!retire_ptr_locked(resources, t.Ax, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, t.Ax, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+                return false;
             t.Ax = nullptr;
         }
         if (t.Ay) {
-            if (!retire_ptr_locked(resources, t.Ay, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, t.Ay, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+                return false;
             t.Ay = nullptr;
         }
         if (t.Az) {
-            if (!retire_ptr_locked(resources, t.Az, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, t.Az, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+                return false;
             t.Az = nullptr;
         }
         if (t.baseMin) {
-            if (!retire_ptr_locked(resources, t.baseMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError)) return false;
+            if (!retire_ptr_locked(resources, t.baseMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+                return false;
             t.baseMin = nullptr;
         }
         t.K = 0;
@@ -4262,45 +4673,55 @@ namespace JuicerCuda {
 #else
         const size_t planeBytes = s.capacityElements * sizeof(float);
         if (s.rgbR) {
-            if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.rgbR, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.rgbR = nullptr;
         }
         if (s.rgbG) {
-            if (!retire_ptr_locked(resources, s.rgbG, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.rgbG, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.rgbG = nullptr;
         }
         if (s.rgbB) {
-            if (!retire_ptr_locked(resources, s.rgbB, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.rgbB, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.rgbB = nullptr;
         }
         if (s.blurred) {
-            if (!retire_ptr_locked(resources, s.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.blurred = nullptr;
         }
         if (s.aux) {
-            if (!retire_ptr_locked(resources, s.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.aux = nullptr;
         }
         if (s.grainTmp) {
-            if (!retire_ptr_locked(resources, s.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.grainTmp = nullptr;
         }
         if (s.grainTmpShared) {
-            if (!retire_ptr_locked(resources, s.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.grainTmpShared = nullptr;
         }
         if (s.grainTmpMid) {
-            if (!retire_ptr_locked(resources, s.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmpMid, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.grainTmpMid = nullptr;
         }
         if (s.grainTmpCoarse) {
-            if (!retire_ptr_locked(resources, s.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.grainTmpCoarse, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.grainTmpCoarse = nullptr;
         }
 
         const size_t gateBytes = s.gateMaskCapacityElements * sizeof(float);
         if (s.gateMask) {
-            if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.gateMask, gateBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.gateMask = nullptr;
         }
 
@@ -4342,15 +4763,18 @@ namespace JuicerCuda {
 #else
         const size_t bytes = s.capacityElements * sizeof(float);
         if (s.corrY) {
-            if (!retire_ptr_locked(resources, s.corrY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.corrY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.corrY = nullptr;
         }
         if (s.corrM) {
-            if (!retire_ptr_locked(resources, s.corrM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.corrM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.corrM = nullptr;
         }
         if (s.corrC) {
-            if (!retire_ptr_locked(resources, s.corrC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true)) return false;
+            if (!retire_ptr_locked(resources, s.corrC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
             s.corrC = nullptr;
         }
         if (s.mixY) {
@@ -4396,10 +4820,10 @@ namespace JuicerCuda {
 
     static bool optics_any_live_locked(const Resources::DeviceOpticsScratch& scratch) noexcept {
         return scratch.rgbR || scratch.rgbG || scratch.rgbB ||
-            scratch.blurred || scratch.aux ||
-            scratch.grainTmp || scratch.grainTmpShared ||
-            scratch.grainTmpMid || scratch.grainTmpCoarse ||
-            scratch.gateMask;
+               scratch.blurred || scratch.aux ||
+               scratch.grainTmp || scratch.grainTmpShared ||
+               scratch.grainTmpMid || scratch.grainTmpCoarse ||
+               scratch.gateMask;
     }
 
     static bool spatial_dir_base_live_locked(const Resources& resources) noexcept {
@@ -4840,23 +5264,23 @@ namespace JuicerCuda {
         }
 
         switch (candidate) {
-        case ResourceManager::ScratchPolicyCandidate::OpticsGateMask:
-            return retire_optics_gate_mask_candidate_locked(resources, cudaStreamOpaque, outError);
-        case ResourceManager::ScratchPolicyCandidate::OpticsGrainShared:
-            return retire_optics_grain_shared_candidate_locked(resources, cudaStreamOpaque, outError);
-        case ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet:
-            return retire_optics_grain_triplet_candidate_locked(resources, cudaStreamOpaque, outError);
-        case ResourceManager::ScratchPolicyCandidate::OpticsAux:
-            return retire_optics_aux_candidate_locked(resources, cudaStreamOpaque, outError);
-        case ResourceManager::ScratchPolicyCandidate::OpticsBlurred:
-            return retire_optics_blurred_candidate_locked(resources, cudaStreamOpaque, outError);
-        case ResourceManager::ScratchPolicyCandidate::SpatialDirBase:
-            return retire_spatial_dir_base_candidate_locked(resources, cudaStreamOpaque, outError);
-        case ResourceManager::ScratchPolicyCandidate::OpticsBase:
-            return retire_optics_base_candidate_locked(resources, cudaStreamOpaque, outError);
-        default:
-            outError = "scratch normalization candidate is invalid";
-            return false;
+            case ResourceManager::ScratchPolicyCandidate::OpticsGateMask:
+                return retire_optics_gate_mask_candidate_locked(resources, cudaStreamOpaque, outError);
+            case ResourceManager::ScratchPolicyCandidate::OpticsGrainShared:
+                return retire_optics_grain_shared_candidate_locked(resources, cudaStreamOpaque, outError);
+            case ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet:
+                return retire_optics_grain_triplet_candidate_locked(resources, cudaStreamOpaque, outError);
+            case ResourceManager::ScratchPolicyCandidate::OpticsAux:
+                return retire_optics_aux_candidate_locked(resources, cudaStreamOpaque, outError);
+            case ResourceManager::ScratchPolicyCandidate::OpticsBlurred:
+                return retire_optics_blurred_candidate_locked(resources, cudaStreamOpaque, outError);
+            case ResourceManager::ScratchPolicyCandidate::SpatialDirBase:
+                return retire_spatial_dir_base_candidate_locked(resources, cudaStreamOpaque, outError);
+            case ResourceManager::ScratchPolicyCandidate::OpticsBase:
+                return retire_optics_base_candidate_locked(resources, cudaStreamOpaque, outError);
+            default:
+                outError = "scratch normalization candidate is invalid";
+                return false;
         }
 #endif
     }
@@ -5243,8 +5667,7 @@ namespace JuicerCuda {
                 if (!retire_optics_scratch_locked(resources, resources.scannerScratch, cudaStreamOpaque, "optics scratch", outError)) {
                     return false;
                 }
-            }
-            else {
+            } else {
                 free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
             }
 
@@ -5307,8 +5730,7 @@ namespace JuicerCuda {
                     return false;
                 }
             }
-        }
-        else {
+        } else {
             if (resources.scannerScratch.blurred) {
                 if (!retire_ptr_locked(resources, resources.scannerScratch.blurred, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "unsharp scratch", outError, true)) {
                     return false;
@@ -5329,8 +5751,7 @@ namespace JuicerCuda {
                     return false;
                 }
             }
-        }
-        else {
+        } else {
             if (resources.scannerScratch.aux) {
                 if (!retire_ptr_locked(resources, resources.scannerScratch.aux, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain scratch", outError, true)) {
                     return false;
@@ -5373,8 +5794,7 @@ namespace JuicerCuda {
                     return false;
                 }
             }
-        }
-        else {
+        } else {
             if (resources.scannerScratch.grainTmp) {
                 if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmp, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain mix scratch", outError, true)) {
                     return false;
@@ -5407,8 +5827,7 @@ namespace JuicerCuda {
                     return false;
                 }
             }
-        }
-        else {
+        } else {
             if (resources.scannerScratch.grainTmpShared) {
                 if (!retire_ptr_locked(resources, resources.scannerScratch.grainTmpShared, planeBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "grain shared scratch", outError, true)) {
                     return false;
@@ -5422,7 +5841,7 @@ namespace JuicerCuda {
         if (needGateMask) {
             const size_t requiredGateElements = static_cast<size_t>(gateWidth) * static_cast<size_t>(gateHeight);
             const bool gateDimsMatch = (resources.scannerScratch.gateWidth == gateWidth &&
-                resources.scannerScratch.gateHeight == gateHeight);
+                                        resources.scannerScratch.gateHeight == gateHeight);
             const bool gateCapacityMatch =
                 resources.scannerScratch.gateMaskCapacityElements >= requiredGateElements;
             if (!resources.scannerScratch.gateMask || !gateCapacityMatch) {
@@ -5451,8 +5870,7 @@ namespace JuicerCuda {
             }
             resources.scannerScratch.gateWidth = gateWidth;
             resources.scannerScratch.gateHeight = gateHeight;
-        }
-        else if (resources.scannerScratch.gateMask) {
+        } else if (resources.scannerScratch.gateMask) {
             const size_t oldBytes =
                 resources.scannerScratch.gateMaskCapacityElements * sizeof(float);
             if (!retire_ptr_locked(resources, resources.scannerScratch.gateMask, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "gate defect mask", outError, true)) {
@@ -5687,8 +6105,7 @@ namespace JuicerCuda {
         std::vector<float> cpuWeights;
         build_gaussian_weights_cpu(radius, sigma, cpuWeights);
         if (cpuWeights.empty()) {
-            outError = std::string(label ? label : "gaussian kernel")
-                + " weights build failed";
+            outError = std::string(label ? label : "gaussian kernel") + " weights build failed";
             return false;
         }
 
@@ -5756,8 +6173,8 @@ namespace JuicerCuda {
         constexpr int kMaxRadius = 2048;
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         const int radiusRaw = sigmaOk
-            ? std::max(1, static_cast<int>(std::ceil(3.0f * sigma)))
-            : 0;
+                                  ? std::max(1, static_cast<int>(std::ceil(3.0f * sigma)))
+                                  : 0;
         if (radiusRaw > kMaxRadius) {
             outError = "spatial DIR kernel radius exceeds prepared-frame limit";
             return false;
@@ -5778,8 +6195,8 @@ namespace JuicerCuda {
         constexpr int kMaxRadius = 75;
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         const int radiusRaw = sigmaOk
-            ? JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f)
-            : 0;
+                                  ? JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f)
+                                  : 0;
         const int radius = std::min(radiusRaw, kMaxRadius);
         return ensure_shared_gaussian_kernel(
             resources,
@@ -5796,8 +6213,8 @@ namespace JuicerCuda {
         constexpr int kMaxRadius = 75;
         const bool sigmaOk = std::isfinite(sigma) && sigma > 0.0f;
         const int radiusRaw = sigmaOk
-            ? JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f)
-            : 0;
+                                  ? JuicerGaussian::scipy_gaussian_radius(sigma, 7.0f)
+                                  : 0;
         const int radius = std::min(radiusRaw, kMaxRadius);
         return ensure_shared_gaussian_kernel(
             resources,
@@ -5858,14 +6275,13 @@ namespace JuicerCuda {
             (void)deviceId;
             (void)contextOpaque;
 #endif
-        }
-        catch (...) {
+        } catch (...) {
             JuicerLogging::discard_current_exception();
         }
     }
-// Cuda/JuicerCudaResourcesValidation.cpp
-//
-// Included by JuicerCudaResources.cpp (single-TU split).
+    // Cuda/JuicerCudaResourcesValidation.cpp
+    //
+    // Included by JuicerCudaResources.cpp (single-TU split).
     bool validate_density_primitives(Resources& resources, const WorkingState& ws, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
@@ -5883,25 +6299,22 @@ namespace JuicerCuda {
         // Lightweight parity probe: sample density curves at a few canonical logE values and compare
         // against the CPU implementation (FilmProcessing.h). This is a development-only check and is
         // expected to be compiled out in shipping builds.
-        static constexpr float kLogE[5] = { -3.0f, -1.0f, 0.0f, 2.0f, 4.0f };
+        static constexpr float kLogE[5] = {-3.0f, -1.0f, 0.0f, 2.0f, 4.0f};
         float outB[5] = {};
         float outG[5] = {};
         float outR[5] = {};
 
-        cudaError_t err = ::juicer_cuda_probe_density_curve(resources.densB.x, resources.densB.y, resources.densB.n,
-            ws.gammaFactorB, kLogE, 5, outB, cudaStreamOpaque);
+        cudaError_t err = ::juicer_cuda_probe_density_curve(resources.densB.x, resources.densB.y, resources.densB.n, ws.gammaFactorB, kLogE, 5, outB, cudaStreamOpaque);
         if (err != cudaSuccess) {
             outError = std::string("probe densB failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
         }
-        err = ::juicer_cuda_probe_density_curve(resources.densG.x, resources.densG.y, resources.densG.n,
-            ws.gammaFactorG, kLogE, 5, outG, cudaStreamOpaque);
+        err = ::juicer_cuda_probe_density_curve(resources.densG.x, resources.densG.y, resources.densG.n, ws.gammaFactorG, kLogE, 5, outG, cudaStreamOpaque);
         if (err != cudaSuccess) {
             outError = std::string("probe densG failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
         }
-        err = ::juicer_cuda_probe_density_curve(resources.densR.x, resources.densR.y, resources.densR.n,
-            ws.gammaFactorR, kLogE, 5, outR, cudaStreamOpaque);
+        err = ::juicer_cuda_probe_density_curve(resources.densR.x, resources.densR.y, resources.densR.n, ws.gammaFactorR, kLogE, 5, outR, cudaStreamOpaque);
         if (err != cudaSuccess) {
             outError = std::string("probe densR failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
             return false;
@@ -5935,8 +6348,7 @@ namespace JuicerCuda {
             const float kLogEInf[3] = {
                 -std::numeric_limits<float>::infinity(),
                 std::numeric_limits<float>::infinity(),
-                0.0f
-            };
+                0.0f};
             float outBInf[3] = {};
             float outGInf[3] = {};
             float outRInf[3] = {};
@@ -5969,20 +6381,17 @@ namespace JuicerCuda {
                 return (logE > 0.0f) ? xmax : xmin;
             };
 
-            cudaError_t err = ::juicer_cuda_probe_density_curve_sanitize_inf(resources.densB.x, resources.densB.y, resources.densB.n,
-                ws.gammaFactorB, kLogEInf, 3, outBInf, cudaStreamOpaque);
+            cudaError_t err = ::juicer_cuda_probe_density_curve_sanitize_inf(resources.densB.x, resources.densB.y, resources.densB.n, ws.gammaFactorB, kLogEInf, 3, outBInf, cudaStreamOpaque);
             if (err != cudaSuccess) {
                 outError = std::string("probe densB sanitize_inf failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
                 return false;
             }
-            err = ::juicer_cuda_probe_density_curve_sanitize_inf(resources.densG.x, resources.densG.y, resources.densG.n,
-                ws.gammaFactorG, kLogEInf, 3, outGInf, cudaStreamOpaque);
+            err = ::juicer_cuda_probe_density_curve_sanitize_inf(resources.densG.x, resources.densG.y, resources.densG.n, ws.gammaFactorG, kLogEInf, 3, outGInf, cudaStreamOpaque);
             if (err != cudaSuccess) {
                 outError = std::string("probe densG sanitize_inf failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
                 return false;
             }
-            err = ::juicer_cuda_probe_density_curve_sanitize_inf(resources.densR.x, resources.densR.y, resources.densR.n,
-                ws.gammaFactorR, kLogEInf, 3, outRInf, cudaStreamOpaque);
+            err = ::juicer_cuda_probe_density_curve_sanitize_inf(resources.densR.x, resources.densR.y, resources.densR.n, ws.gammaFactorR, kLogEInf, 3, outRInf, cudaStreamOpaque);
             if (err != cudaSuccess) {
                 outError = std::string("probe densR sanitize_inf failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
                 return false;
@@ -6006,13 +6415,12 @@ namespace JuicerCuda {
         // Validate film log-raw computation parity (DevelopFilmStage::compute_log_raw).
         {
             const float samples[][3] = {
-                { 0.184f, 0.184f, 0.184f },
-                { -0.5f, 0.0f, 2.0f },
-                { std::numeric_limits<float>::quiet_NaN(), 1.0f, std::numeric_limits<float>::infinity() }
-            };
+                {0.184f, 0.184f, 0.184f},
+                {-0.5f, 0.0f, 2.0f},
+                {std::numeric_limits<float>::quiet_NaN(), 1.0f, std::numeric_limits<float>::infinity()}};
 
             for (const auto& filmRaw : samples) {
-                float gpuLogRaw[3] = { 0.0f, 0.0f, 0.0f };
+                float gpuLogRaw[3] = {0.0f, 0.0f, 0.0f};
                 const cudaError_t err = ::juicer_cuda_probe_film_log_raw(filmRaw, gpuLogRaw, cudaStreamOpaque);
                 if (err != cudaSuccess) {
                     outError = std::string("film log-raw probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
@@ -6023,19 +6431,16 @@ namespace JuicerCuda {
                 float cpuLogRaw[3] = {
                     std::log10(std::fmax(filmRaw[0], 0.0f) + kEps),
                     std::log10(std::fmax(filmRaw[1], 0.0f) + kEps),
-                    std::log10(std::fmax(filmRaw[2], 0.0f) + kEps)
-                };
+                    std::log10(std::fmax(filmRaw[2], 0.0f) + kEps)};
 
                 float maxDiff = 0.0f;
                 for (int c = 0; c < 3; ++c) {
                     if (std::isfinite(cpuLogRaw[c]) && std::isfinite(gpuLogRaw[c])) {
                         maxDiff = std::max(maxDiff, std::fabs(cpuLogRaw[c] - gpuLogRaw[c]));
-                    }
-                    else if (std::isnan(cpuLogRaw[c]) != std::isnan(gpuLogRaw[c])) {
+                    } else if (std::isnan(cpuLogRaw[c]) != std::isnan(gpuLogRaw[c])) {
                         outError = "film log-raw NaN mismatch";
                         return false;
-                    }
-                    else if (std::isinf(cpuLogRaw[c]) != std::isinf(gpuLogRaw[c])) {
+                    } else if (std::isinf(cpuLogRaw[c]) != std::isinf(gpuLogRaw[c])) {
                         outError = "film log-raw inf mismatch";
                         return false;
                     }
@@ -6054,13 +6459,12 @@ namespace JuicerCuda {
             const int applyAdapt = ws.filmRaw.applyInputChromaticAdapt ? 1 : 0;
 
             const float samplesIn[][3] = {
-                { 0.184f, 0.184f, 0.184f },
-                { 1.2f, -0.1f, 0.5f },   // includes negative input channel (must match CPU sanitize-only behavior)
-                { 0.0f, 0.5f, 2.0f }
-            };
+                {0.184f, 0.184f, 0.184f},
+                {1.2f, -0.1f, 0.5f}, // includes negative input channel (must match CPU sanitize-only behavior)
+                {0.0f, 0.5f, 2.0f}};
 
             for (const auto& rgbIn : samplesIn) {
-                float gpuDWG[3] = { 0.0f, 0.0f, 0.0f };
+                float gpuDWG[3] = {0.0f, 0.0f, 0.0f};
                 const cudaError_t err = ::juicer_cuda_probe_convert_input_to_DWG(
                     rgbIn,
                     inputColorSpaceIndex,
@@ -6075,7 +6479,7 @@ namespace JuicerCuda {
                     return false;
                 }
 
-                float cpuDWG[3] = { 0.0f, 0.0f, 0.0f };
+                float cpuDWG[3] = {0.0f, 0.0f, 0.0f};
                 Spectral::convert_input_rgb_to_DWG(ws.filmRaw, rgbIn, cpuDWG);
 
                 float maxDiff = 0.0f;
@@ -6092,10 +6496,12 @@ namespace JuicerCuda {
         // Validate DIR "clamp corrected logE to curve domain" behavior (Couplers::apply_runtime_logE_with_curves clamp_to).
         {
             auto cpu_clamp_to = [](float le, const Spectral::Curve& c) -> float {
-                if (c.lambda_nm.empty()) return le;
+                if (c.lambda_nm.empty())
+                    return le;
                 const float xmin = c.lambda_nm.front();
                 const float xmax = c.lambda_nm.back();
-                if (!std::isfinite(le)) return xmin;
+                if (!std::isfinite(le))
+                    return xmin;
                 return std::min(std::max(le, xmin), xmax);
             };
 
@@ -6105,24 +6511,33 @@ namespace JuicerCuda {
                 -std::numeric_limits<float>::infinity(),
                 std::numeric_limits<float>::infinity(),
                 std::numeric_limits<float>::quiet_NaN(),
-                0.0f
-            };
+                0.0f};
 
             for (float le : samples) {
                 float outB = 0.0f, outG = 0.0f, outR = 0.0f;
                 cudaError_t err = ::juicer_cuda_probe_clamp_logE_to_curve_domain(resources.densB.x, resources.densB.n, le, &outB, cudaStreamOpaque);
-                if (err != cudaSuccess) { outError = std::string("clamp_to densB probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)"); return false; }
+                if (err != cudaSuccess) {
+                    outError = std::string("clamp_to densB probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
                 err = ::juicer_cuda_probe_clamp_logE_to_curve_domain(resources.densG.x, resources.densG.n, le, &outG, cudaStreamOpaque);
-                if (err != cudaSuccess) { outError = std::string("clamp_to densG probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)"); return false; }
+                if (err != cudaSuccess) {
+                    outError = std::string("clamp_to densG probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
                 err = ::juicer_cuda_probe_clamp_logE_to_curve_domain(resources.densR.x, resources.densR.n, le, &outR, cudaStreamOpaque);
-                if (err != cudaSuccess) { outError = std::string("clamp_to densR probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)"); return false; }
+                if (err != cudaSuccess) {
+                    outError = std::string("clamp_to densR probe failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+                    return false;
+                }
 
                 const float cpuB = cpu_clamp_to(le, ws.densB);
                 const float cpuG = cpu_clamp_to(le, ws.densG);
                 const float cpuR = cpu_clamp_to(le, ws.densR);
 
                 auto eq = [](float a, float b) -> bool {
-                    if (std::isnan(a) && std::isnan(b)) return true;
+                    if (std::isnan(a) && std::isnan(b))
+                        return true;
                     return a == b;
                 };
 
@@ -6136,17 +6551,15 @@ namespace JuicerCuda {
         // Validate scan-stage spectral_to_log_xyz primitive (negative medium) against CPU.
         if (resources.scanNegative.tables.K == Spectral::gShape.K &&
             resources.scanNegative.tables.epsC &&
-            resources.scanNegative.tables.Ax)
-        {
+            resources.scanNegative.tables.Ax) {
             const double samples[][3] = {
-                { 0.0, 0.0, 0.0 },
-                { 0.5, 0.5, 0.5 },
-                { 1.0, 1.0, 1.0 },
-                { 0.1, 0.7, 0.3 }
-            };
+                {0.0, 0.0, 0.0},
+                {0.5, 0.5, 0.5},
+                {1.0, 1.0, 1.0},
+                {0.1, 0.7, 0.3}};
 
             for (const auto& D_norm : samples) {
-                double gpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                double gpuLogXYZ[3] = {0.0, 0.0, 0.0};
                 const cudaError_t err = ::juicer_cuda_probe_scan_spectral_to_log_xyz(
                     D_norm,
                     resources.scanNegative.mediumIsNegative,
@@ -6169,7 +6582,7 @@ namespace JuicerCuda {
                     return false;
                 }
 
-                double cpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                double cpuLogXYZ[3] = {0.0, 0.0, 0.0};
                 Scanner::spectral_to_log_xyz(ws.negativeMediumRuntime, D_norm, cpuLogXYZ);
 
                 double maxDiff = 0.0;
@@ -6191,17 +6604,15 @@ namespace JuicerCuda {
         if (ws.printMediumRuntime.tables &&
             resources.scanPrint.tables.K == Spectral::gShape.K &&
             resources.scanPrint.tables.epsC &&
-            resources.scanPrint.tables.Ax)
-        {
+            resources.scanPrint.tables.Ax) {
             const double samples[][3] = {
-                { 0.0, 0.0, 0.0 },
-                { 0.5, 0.5, 0.5 },
-                { 1.0, 1.0, 1.0 },
-                { 0.1, 0.7, 0.3 }
-            };
+                {0.0, 0.0, 0.0},
+                {0.5, 0.5, 0.5},
+                {1.0, 1.0, 1.0},
+                {0.1, 0.7, 0.3}};
 
             for (const auto& D_norm : samples) {
-                double gpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                double gpuLogXYZ[3] = {0.0, 0.0, 0.0};
                 const cudaError_t err = ::juicer_cuda_probe_scan_spectral_to_log_xyz(
                     D_norm,
                     resources.scanPrint.mediumIsNegative,
@@ -6224,7 +6635,7 @@ namespace JuicerCuda {
                     return false;
                 }
 
-                double cpuLogXYZ[3] = { 0.0, 0.0, 0.0 };
+                double cpuLogXYZ[3] = {0.0, 0.0, 0.0};
                 Scanner::spectral_to_log_xyz(ws.printMediumRuntime, D_norm, cpuLogXYZ);
 
                 double maxDiff = 0.0;
@@ -6245,13 +6656,13 @@ namespace JuicerCuda {
         // Validate table-based (S_inv) exposure primitive against CPU (forced non-Hanatos path).
         if (ws.spdReady && resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesK == Spectral::gShape.K) {
             const float samples[][3] = {
-                { 0.184f, 0.184f, 0.184f }, // mid-gray
-                { 0.9f, 0.1f, 0.1f },       // red-ish
-                { 0.05f, 0.2f, 0.9f }       // blue-ish
+                {0.184f, 0.184f, 0.184f}, // mid-gray
+                {0.9f, 0.1f, 0.1f},       // red-ish
+                {0.05f, 0.2f, 0.9f}       // blue-ish
             };
 
             for (const auto& rgbDWG : samples) {
-                float gpuE[3] = { 0.0f, 0.0f, 0.0f };
+                float gpuE[3] = {0.0f, 0.0f, 0.0f};
                 const cudaError_t err = ::juicer_cuda_probe_tables_layer_exposures(
                     rgbDWG,
                     resources.spdSInv,
@@ -6274,7 +6685,7 @@ namespace JuicerCuda {
 
                 std::vector<float> Ee;
                 Spectral::reconstruct_Ee_from_DWG_RGB_with_tables(rgbDWG, ws.tablesRef, ws.spdSInv, Ee);
-                float cpuE[3] = { 0.0f, 0.0f, 0.0f };
+                float cpuE[3] = {0.0f, 0.0f, 0.0f};
                 Spectral::layerExposures_from_sceneSPD_with_curves(Ee, ws.sensB, ws.sensG, ws.sensR, cpuE, 1.0f, true);
 
                 float maxDiff = 0.0f;
@@ -6294,16 +6705,15 @@ namespace JuicerCuda {
             const float refWhite[3] = {
                 ws.tablesRef.refIllumWhiteXYZ[0],
                 ws.tablesRef.refIllumWhiteXYZ[1],
-                ws.tablesRef.refIllumWhiteXYZ[2]
-            };
+                ws.tablesRef.refIllumWhiteXYZ[2]};
             const float samples[][3] = {
-                { 0.184f, 0.184f, 0.184f }, // mid-gray
-                { 0.9f, 0.1f, 0.1f },       // red-ish
-                { 0.05f, 0.2f, 0.9f }       // blue-ish
+                {0.184f, 0.184f, 0.184f}, // mid-gray
+                {0.9f, 0.1f, 0.1f},       // red-ish
+                {0.05f, 0.2f, 0.9f}       // blue-ish
             };
 
             for (const auto& rgbDWG : samples) {
-                float gpuE[3] = { 0.0f, 0.0f, 0.0f };
+                float gpuE[3] = {0.0f, 0.0f, 0.0f};
                 const cudaError_t err = ::juicer_cuda_probe_hanatos_layer_exposures(
                     rgbDWG,
                     resources.hanatosLut,
@@ -6326,7 +6736,7 @@ namespace JuicerCuda {
                 // semantics for Hanatos path (applyDeltaLambda = false).
                 std::vector<float> Ee;
                 Spectral::reconstruct_Ee_from_DWG_RGB_hanatos(rgbDWG, Ee, refWhite);
-                float cpuE[3] = { 0.0f, 0.0f, 0.0f };
+                float cpuE[3] = {0.0f, 0.0f, 0.0f};
                 Spectral::layerExposures_from_sceneSPD_with_curves(Ee, ws.sensB, ws.sensG, ws.sensR, cpuE, 1.0f, false);
 
                 float maxDiff = 0.0f;
@@ -6359,8 +6769,7 @@ namespace JuicerCuda {
         const Print::Params& prm,
         float midgrayFactor,
         void* cudaStreamOpaque,
-        std::string& outError)
-    {
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)ws;
@@ -6425,13 +6834,12 @@ namespace JuicerCuda {
         }
 
         static constexpr float kNegCmySamples[][3] = {
-            { 0.0f, 0.0f, 0.0f },
-            { 0.2f, 0.3f, 0.4f },
-            { 0.5f, 0.5f, 0.5f },
-            { 1.0f, 0.8f, 0.6f },
-            { 2.0f, 1.5f, 1.0f },
-            { 3.0f, 3.0f, 3.0f }
-        };
+            {0.0f, 0.0f, 0.0f},
+            {0.2f, 0.3f, 0.4f},
+            {0.5f, 0.5f, 0.5f},
+            {1.0f, 0.8f, 0.6f},
+            {2.0f, 1.5f, 1.0f},
+            {3.0f, 3.0f, 3.0f}};
         constexpr int kCount = static_cast<int>(sizeof(kNegCmySamples) / sizeof(kNegCmySamples[0]));
 
         const float kMid = (std::isfinite(midgrayFactor) && midgrayFactor > 0.0f) ? midgrayFactor : 1.0f;
@@ -6501,12 +6909,12 @@ namespace JuicerCuda {
 
             run.printExpose.printIllumFiltered = resources.printIllumFiltered;
             run.printExpose.printIllumK = resources.printIllumK;
-            run.printExpose.printSensC = { resources.printSensC.x, resources.printSensC.y, resources.printSensC.n, resources.printSensC.domainBegin, resources.printSensC.domainEnd };
-            run.printExpose.printSensM = { resources.printSensM.x, resources.printSensM.y, resources.printSensM.n, resources.printSensM.domainBegin, resources.printSensM.domainEnd };
-            run.printExpose.printSensY = { resources.printSensY.x, resources.printSensY.y, resources.printSensY.n, resources.printSensY.domainBegin, resources.printSensY.domainEnd };
-            run.printDevelop.printDcC = { resources.printDcC.x, resources.printDcC.y, resources.printDcC.n, resources.printDcC.domainBegin, resources.printDcC.domainEnd };
-            run.printDevelop.printDcM = { resources.printDcM.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd };
-            run.printDevelop.printDcY = { resources.printDcY.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd };
+            run.printExpose.printSensC = {resources.printSensC.x, resources.printSensC.y, resources.printSensC.n, resources.printSensC.domainBegin, resources.printSensC.domainEnd};
+            run.printExpose.printSensM = {resources.printSensM.x, resources.printSensM.y, resources.printSensM.n, resources.printSensM.domainBegin, resources.printSensM.domainEnd};
+            run.printExpose.printSensY = {resources.printSensY.x, resources.printSensY.y, resources.printSensY.n, resources.printSensY.domainBegin, resources.printSensY.domainEnd};
+            run.printDevelop.printDcC = {resources.printDcC.x, resources.printDcC.y, resources.printDcC.n, resources.printDcC.domainBegin, resources.printDcC.domainEnd};
+            run.printDevelop.printDcM = {resources.printDcM.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd};
+            run.printDevelop.printDcY = {resources.printDcY.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd};
             run.printDevelop.printGammaC = resources.printGammaC;
             run.printDevelop.printGammaM = resources.printGammaM;
             run.printDevelop.printGammaY = resources.printGammaY;

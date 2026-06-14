@@ -19,6 +19,7 @@
 struct DensityBoundsRecipe;
 struct ProfileRoute;
 struct ScannerOutputRecipe;
+struct PrintMediumHandoffRecipe;
 
 namespace Scanner {
 
@@ -56,15 +57,15 @@ namespace Scanner {
     struct ScannerIlluminant {
         Spectral::Curve curve;
         float normalization = 0.0f;
-        float whiteXYZ[3]{ 0.0f, 0.0f, 0.0f };
-        float whiteXY[2]{ 0.0f, 0.0f };
+        float whiteXYZ[3]{0.0f, 0.0f, 0.0f};
+        float whiteXY[2]{0.0f, 0.0f};
         std::uint64_t hash = 0;
     };
 
     struct ScannerDensityRange {
-        float min_cmy[3]{ 0.0f, 0.0f, 0.0f };
-        float max_cmy[3]{ 0.0f, 0.0f, 0.0f };
-        float inv_max_cmy[3]{ 0.0f, 0.0f, 0.0f };
+        float min_cmy[3]{0.0f, 0.0f, 0.0f};
+        float max_cmy[3]{0.0f, 0.0f, 0.0f};
+        float inv_max_cmy[3]{0.0f, 0.0f, 0.0f};
         std::uint64_t digest = 0;
     };
 
@@ -98,9 +99,9 @@ namespace Scanner {
     };
 
     struct ColorRuntime {
-        float cat02[9]{ 0.0f };
-        float xyzToRgb[9]{ 0.0f };
-        float illuminantXYZ[3]{ 0.0f, 0.0f, 0.0f };
+        float cat02[9]{0.0f};
+        float xyzToRgb[9]{0.0f};
+        float illuminantXYZ[3]{0.0f, 0.0f, 0.0f};
         OutputEncoding::Params encoding{};
         std::uint64_t hash = 0;
     };
@@ -149,9 +150,9 @@ namespace Scanner {
     };
 
     // ScannerSpectralLutDescriptor family contract:
-    // Producer: direct scanner descriptor builder from RenderRecipe/ProfileRoute selected payload.
-    // Consumer: Phase 3B/3C scanner LUT preparation; Phase 3A structural validation only.
-    // Identity: route, film medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
+    // Producer: focused direct or print-medium builder from selected recipe payloads.
+    // Consumer: focused scanner LUT preparation behind PreparedCudaFrame.
+    // Identity: route, medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
     // viewing illuminant, observer/Y normalization, LUT resolution, interpolation, axes, stored
     // value domain/log base/format/output order, and schema version. Scanner correction, output
     // color/CCTF, glare, blur, unsharp, frame bounds, auto exposure, and other post-LUT identity
@@ -186,11 +187,24 @@ namespace Scanner {
         std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
     };
 
+    struct PrintScannerSpectralLutDescriptorInput {
+        const ::ProfileRoute* profileRoute = nullptr;
+        const ::DensityBoundsRecipe* densityBounds = nullptr;
+        const ::ScannerOutputRecipe* scannerOutput = nullptr;
+        const ::PrintMediumHandoffRecipe* mediumHandoff = nullptr;
+        std::string_view observerIdentity = "CIE1931_2deg_380_780_5nm";
+    };
+
     std::uint64_t hash_scanner_spectral_lut_descriptor(
         const ScannerSpectralLutDescriptor& descriptor);
 
     bool build_direct_scanner_spectral_lut_descriptor(
         const DirectScannerSpectralLutDescriptorInput& input,
+        ScannerSpectralLutDescriptor& outDescriptor,
+        std::string& outDiagnostic);
+
+    bool build_print_scanner_spectral_lut_descriptor(
+        const PrintScannerSpectralLutDescriptorInput& input,
         ScannerSpectralLutDescriptor& outDescriptor,
         std::string& outDiagnostic);
 
@@ -210,8 +224,7 @@ namespace Scanner {
             glare.blur,
             glare.compensationRemovalFactor,
             glare.compensationRemovalDensity,
-            glare.compensationRemovalTransition
-        };
+            glare.compensationRemovalTransition};
         for (float v : floats) {
             if (!std::isfinite(v)) {
                 return 0;
@@ -220,18 +233,16 @@ namespace Scanner {
         const std::uint64_t activeHash = Hash::hash_bytes(&glare.active, sizeof(glare.active));
         const std::uint64_t paramsHash = Hash::hash_float_span(
             floats, sizeof(floats) / sizeof(floats[0]));
-        return Hash::hash_uint64_values({ activeHash, paramsHash });
+        return Hash::hash_uint64_values({activeHash, paramsHash});
     }
 
     inline std::uint64_t compute_static_key_hash(const ScannerStaticKey& key) {
-        return Hash::hash_uint64_values({
-            static_cast<std::uint64_t>(key.medium),
-            key.tablesHash,
-            key.densityRangeHash,
-            key.glareHash,
-            key.colorRuntimeHash,
-            static_cast<std::uint64_t>(key.lutResolution)
-        });
+        return Hash::hash_uint64_values({static_cast<std::uint64_t>(key.medium),
+                                         key.tablesHash,
+                                         key.densityRangeHash,
+                                         key.glareHash,
+                                         key.colorRuntimeHash,
+                                         static_cast<std::uint64_t>(key.lutResolution)});
     }
 
     inline void finalize_static_key(ScannerStaticKey& key) {
@@ -245,16 +256,14 @@ namespace Scanner {
     }
 
     inline void finalize_runtime_key(ScannerRuntimeKey& key) {
-        key.hash = Hash::hash_uint64_values({
-            key.settingsHash,
-            static_cast<std::uint64_t>(key.frameBoundsVersion)
-        });
+        key.hash = Hash::hash_uint64_values({key.settingsHash,
+                                             static_cast<std::uint64_t>(key.frameBoundsVersion)});
     }
 
     inline void finalize_scanner_key(ScannerKey& key) {
         finalize_static_key(key.staticKey);
         finalize_runtime_key(key.runtimeKey);
-        key.hash = Hash::hash_uint64_values({ key.staticKey.hash, key.runtimeKey.hash });
+        key.hash = Hash::hash_uint64_values({key.staticKey.hash, key.runtimeKey.hash});
     }
 
 } // namespace Scanner

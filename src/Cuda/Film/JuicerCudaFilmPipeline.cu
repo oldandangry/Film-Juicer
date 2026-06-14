@@ -696,6 +696,63 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
         cudaStreamOpaque);
 }
 
+extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dCorrY,
+    float* dCorrM,
+    float* dCorrC,
+    float* dMixY,
+    float* dMixM,
+    float* dMixC,
+    float* dTmp,
+    const float* dGaussianKernel,
+    int gaussianRadius,
+    float gaussianSigma,
+    float gaussianWeight,
+    const float* dTailKernel0,
+    int tailRadius0,
+    float tailSigma0,
+    float tailWeight0,
+    const float* dTailKernel1,
+    int tailRadius1,
+    float tailSigma1,
+    float tailWeight1,
+    const float* dTailKernel2,
+    int tailRadius2,
+    float tailSigma2,
+    float tailWeight2,
+    void* cudaStreamOpaque) {
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+    return build_spatial_dir_impl(
+        *hParams,
+        dCorrY,
+        dCorrM,
+        dCorrC,
+        dMixY,
+        dMixM,
+        dMixC,
+        dTmp,
+        dGaussianKernel,
+        gaussianRadius,
+        gaussianSigma,
+        gaussianWeight,
+        dTailKernel0,
+        tailRadius0,
+        tailSigma0,
+        tailWeight0,
+        dTailKernel1,
+        tailRadius1,
+        tailSigma1,
+        tailWeight1,
+        dTailKernel2,
+        tailRadius2,
+        tailSigma2,
+        tailWeight2,
+        cudaStreamOpaque);
+}
+
 namespace {
 
     __device__ __forceinline__ float lognormal_from_mean_std_device(float mean, float stddev, float normalSample) {
