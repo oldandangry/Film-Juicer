@@ -353,6 +353,13 @@ struct ParamSnapshot {
     int refIll = 0;
     int enlIll = 3;
     int enlDichroicSet = 0;
+    double printExposure = 1.0;
+    double printPreflashExposure = 0.0;
+    int normalizePrintExposure = 1;
+    int printExposureCompensation = 1;
+    std::array<double, 3> printUiYmcCc{};
+    double preflashMFilterCc = 0.0;
+    double preflashYFilterCc = 0.0;
     double glareCompRemovalFactor = 0.0;
     double glareCompRemovalDensity = 1.2;
     double glareCompRemovalTransition = 0.3;

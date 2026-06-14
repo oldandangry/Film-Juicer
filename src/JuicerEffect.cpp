@@ -1703,6 +1703,29 @@ namespace {
         snapshot.enlDichroicSet = read_choice_param_or(enlargerDichroicSetParam, snapshot.enlDichroicSet);
     }
 
+    inline void read_print_recipe_snapshot_values(
+        OFX::DoubleParam* printExposureParam,
+        OFX::DoubleParam* printPreflashParam,
+        OFX::BooleanParam* printExposureCompensationParam,
+        OFX::DoubleParam* enlargerYParam,
+        OFX::DoubleParam* enlargerMParam,
+        OFX::DoubleParam* enlargerCParam,
+        ParamSnapshot& snapshot) {
+        snapshot.printExposure = sanitize_finite_or(
+            read_double_param_or(printExposureParam, snapshot.printExposure),
+            snapshot.printExposure);
+        snapshot.printPreflashExposure = sanitize_finite_or(
+            read_double_param_or(printPreflashParam, snapshot.printPreflashExposure),
+            snapshot.printPreflashExposure);
+        snapshot.printExposureCompensation =
+            read_bool_param_as_i32(printExposureCompensationParam, true);
+        snapshot.normalizePrintExposure = 1;
+        snapshot.printUiYmcCc = {
+            sanitize_finite_or(read_double_param_or(enlargerYParam, 0.0), 0.0),
+            sanitize_finite_or(read_double_param_or(enlargerMParam, 0.0), 0.0),
+            sanitize_finite_or(read_double_param_or(enlargerCParam, 0.0), 0.0)};
+    }
+
     inline void read_input_snapshot_values(
         OFX::ChoiceParam* inputColorSpaceParam,
         OFX::BooleanParam* inputCctfDecodingParam,
@@ -4190,6 +4213,14 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
         _pRefIll,
         _pEnlIll,
         _pEnlDichroicSet,
+        P);
+    read_print_recipe_snapshot_values(
+        _pPrintExposure,
+        _pPrintPreflash,
+        _pPrintExposureComp,
+        _pEnlargerY,
+        _pEnlargerM,
+        _pEnlargerC,
         P);
     const JuicerAssets::SelectedProfileResult selectedProfiles =
         JuicerProcess::root().assets().selected_profiles_for_route(

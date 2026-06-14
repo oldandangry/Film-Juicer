@@ -17,7 +17,8 @@
 // - FilmDevelopRecipe owns direct-route authored/normalized film density development inputs.
 // - DirCouplersRecipe owns development-inhibitor release behavior.
 // - DensityBoundsRecipe owns final route/media scanner and enlarger density bounds.
-// - PrintRecipe owns print exposure, filters, development, and print-route policy when Phase 4 introduces it.
+// - PrintRecipe owns print filters, neutral calibration, exposure ordering, illuminant identity,
+//   and print-medium handoff identity. Print preparation and launch remain downstream owners.
 // - ScannerOutputRecipe owns scanner/output policy; scanner LUT resources own their descriptor.
 // - OpticsRecipe owns lens, halation, scattering, and diffusion behavior when Phase 6 introduces it.
 // - GrainContract/GrainRecipe own density_min and visual-grain behavior; density_min is not profile digest data.
@@ -63,6 +64,42 @@ namespace Spektrafilm {
         Identity,
         Implemented,
         BlockedNotImplementedForPhase3
+    };
+
+    enum class DichroicFilterSet : std::uint8_t {
+        Custom,
+        DurstDigitalLight,
+        Thorlabs,
+        EdmundOptics
+    };
+
+    enum class DichroicResourceKind : std::uint8_t {
+        CustomAnalyticModel,
+        MeasuredCsv
+    };
+
+    enum class NeutralCalibrationStatus : std::uint8_t {
+        MissingFile,
+        MissingEntry,
+        Calibrated
+    };
+
+    enum class PrintNormalizationMode : std::uint8_t {
+        None,
+        CompensationOnly,
+        NormalizeOnly,
+        NormalizeAndCompensate
+    };
+
+    enum class PrintNormalizerExpression : std::uint8_t {
+        One,
+        FactorMidgrayCompOverFactorMidgray,
+        FactorMidgray,
+        FactorMidgrayComp
+    };
+
+    enum class PrintExposureScalingOrder : std::uint8_t {
+        NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection
     };
 
 } // namespace Spektrafilm
@@ -221,6 +258,83 @@ struct ScannerOutputRecipe {
     std::uint64_t hash = 0;
 };
 
+struct CmyCcTriplet {
+    float c = 0.0f;
+    float m = 0.0f;
+    float y = 0.0f;
+};
+
+struct DichroicResourceIdentity {
+    Spektrafilm::DichroicFilterSet set = Spektrafilm::DichroicFilterSet::Custom;
+    Spektrafilm::DichroicResourceKind kind = Spektrafilm::DichroicResourceKind::CustomAnalyticModel;
+    std::string setKey = "custom";
+    std::array<std::string, 3> resourcePathsCmy;
+    std::array<std::uint64_t, 3> resourceHashesCmy{};
+    std::array<float, 4> customEdgesNm{{516.0f, 500.0f, 610.0f, 607.0f}};
+    std::array<float, 4> customTransitionsNm{{12.0f, 8.0f, 8.0f, 8.0f}};
+    bool percentTransmittanceDividedBy100 = false;
+    bool duplicateWavelengthsKeepFirst = false;
+    bool akimaResampledToReferenceAxis = false;
+    std::uint64_t hash = 0;
+};
+
+struct NeutralCalibrationRecipe {
+    Spektrafilm::NeutralCalibrationStatus status = Spektrafilm::NeutralCalibrationStatus::MissingEntry;
+    std::string resourcePath = "Resources/filters/neutral_print_filters.json";
+    std::string printProfileKey;
+    std::string printIlluminantKey;
+    std::string filmProfileKey;
+    std::uint64_t resourceHash = 0;
+    std::uint64_t hash = 0;
+};
+
+struct PrintFilterRecipe {
+    CmyCcTriplet neutralCmyCc{0.0f, 65.0f, 55.0f};
+    CmyCcTriplet userCmyCc;
+    float filmJuicerMainCFilterShiftCc = 0.0f;
+    CmyCcTriplet mainCmyCc;
+    CmyCcTriplet preflashUserCmyCc;
+    CmyCcTriplet preflashCmyCc;
+    DichroicResourceIdentity dichroic;
+    NeutralCalibrationRecipe neutralCalibration;
+    std::uint64_t hash = 0;
+};
+
+struct PrintExposureRecipe {
+    float printExposure = 1.0f;
+    float preflashExposure = 0.0f;
+    bool normalizePrintExposure = true;
+    bool printExposureCompensation = true;
+    Spektrafilm::PrintNormalizationMode normalizationMode =
+        Spektrafilm::PrintNormalizationMode::NormalizeAndCompensate;
+    Spektrafilm::PrintNormalizerExpression normalizerExpression =
+        Spektrafilm::PrintNormalizerExpression::FactorMidgrayComp;
+    Spektrafilm::PrintExposureScalingOrder scalingOrder =
+        Spektrafilm::PrintExposureScalingOrder::NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection;
+    std::uint64_t hash = 0;
+};
+
+struct PrintIlluminantRecipe {
+    std::string key = "TH-KG3";
+    std::uint64_t hash = 0;
+};
+
+struct PrintMediumHandoffRecipe {
+    Spektrafilm::DensityMedium medium = Spektrafilm::DensityMedium::Print;
+    std::string printProfileKey;
+    std::uint64_t printProfileAssetVersionToken = 0;
+    std::string viewingIlluminant;
+    std::uint64_t hash = 0;
+};
+
+struct PrintRecipe {
+    PrintFilterRecipe filters;
+    PrintExposureRecipe exposure;
+    PrintIlluminantRecipe illuminant;
+    PrintMediumHandoffRecipe mediumHandoff;
+    std::uint64_t hash = 0;
+};
+
 struct RenderRecipe {
     ProfileRoute profileRoute;
     FilmRawRecipe filmRaw;
@@ -228,8 +342,10 @@ struct RenderRecipe {
     DirCouplersRecipe dirCouplers;
     DensityBoundsRecipe densityBounds;
     ScannerOutputRecipe scannerOutput;
+    PrintRecipe print;
     bool directStructuralReady = false;
     bool directPixelAcceptance = false;
+    bool printStructuralReady = false;
     std::uint64_t hash = 0;
 };
 
@@ -241,6 +357,7 @@ namespace Spektrafilm {
     using ::FilmDevelopRecipe;
     using ::FilmRawRecipe;
     using ::GrainContract;
+    using ::PrintRecipe;
     using ::ProfileRoute;
     using ::RenderRecipe;
     using ::ScannerOutputRecipe;
@@ -282,6 +399,35 @@ namespace Spektrafilm {
         bool valid = false;
     };
 
+    struct PrintRecipeBuildInput {
+        std::string filmProfileKey;
+        std::string printProfileKey;
+        ScanRoute scanRoute = kDefaultScanRoute;
+        std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
+        std::shared_ptr<const Profiles::ValidatedPrintProfile> printProfile;
+        DichroicResourceIdentity dichroic;
+        NeutralCalibrationStatus neutralCalibrationStatus = NeutralCalibrationStatus::MissingEntry;
+        std::uint64_t neutralCalibrationResourceHash = 0;
+        std::uint64_t neutralCalibrationHash = 0;
+        CmyCcTriplet currentNeutralCmyCc{0.0f, 65.0f, 55.0f};
+        CmyCcTriplet calibratedNeutralCmyCc{0.0f, 65.0f, 55.0f};
+        // UI remains Y/M/C. These values are converted once to internal C/M/Y here.
+        std::array<float, 3> uiYmcCc{};
+        float preflashMFilterCc = 0.0f;
+        float preflashYFilterCc = 0.0f;
+        float printExposure = 1.0f;
+        float preflashExposure = 0.0f;
+        bool normalizePrintExposure = true;
+        bool printExposureCompensation = true;
+        std::string printIlluminantKey = "TH-KG3";
+    };
+
+    struct PrintRecipeBuildResult {
+        RenderRecipe recipe;
+        std::string diagnostic;
+        bool valid = false;
+    };
+
     inline RenderRecipe make_render_recipe(ProfileRoute profileRoute) {
         RenderRecipe recipe{};
         recipe.profileRoute = std::move(profileRoute);
@@ -300,6 +446,11 @@ namespace Spektrafilm {
     }
 
     DirectRecipeBuildResult build_direct_render_recipe(const DirectRecipeBuildInput& input);
+    PrintRecipeBuildResult build_print_render_recipe(const PrintRecipeBuildInput& input);
+    float print_exposure_normalizer(
+        PrintNormalizationMode mode,
+        float factorMidgray,
+        float factorMidgrayComp);
     bool build_spatial_dir_descriptor(
         const DirCouplersRecipe& recipe,
         float pixelSizeUm,

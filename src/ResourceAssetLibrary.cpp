@@ -157,6 +157,36 @@ namespace JuicerAssets {
             return oss.str();
         }
 
+        void hash_string(std::uint64_t& hash, const std::string& value) {
+            hash = fnv1a_append(hash, value.data(), value.size());
+        }
+
+        template <typename T>
+        void hash_value(std::uint64_t& hash, const T& value) {
+            hash = fnv1a_append(hash, &value, sizeof(value));
+        }
+
+        bool read_file_bytes(const std::string& path, std::string& out, std::uint64_t& outHash) {
+            out.clear();
+            outHash = 0;
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            if (!file) {
+                return false;
+            }
+            const std::streamsize size = file.tellg();
+            if (size < 0) {
+                return false;
+            }
+            out.resize(static_cast<std::size_t>(size));
+            file.seekg(0, std::ios::beg);
+            if (size > 0 && !file.read(out.data(), size)) {
+                out.clear();
+                return false;
+            }
+            outHash = fnv1a_append(kFnvOffsetBasis64, out.data(), out.size());
+            return true;
+        }
+
         std::string make_lookup_key(const std::string& paperKey, const std::string& illuminantKey, const std::string& negativeKey) {
             std::string key;
             key.reserve(paperKey.size() + illuminantKey.size() + negativeKey.size() + 2);
@@ -546,8 +576,94 @@ namespace JuicerAssets {
             return data_path_string(dataDir, {"profiles", fileName});
         }
 
-        std::string phase2b_neutral_filter_inventory_path(const std::string& dataDir) {
+        std::string neutral_print_calibration_path(const std::string& dataDir) {
             return data_path_string(dataDir, {"filters", "neutral_print_filters.json"});
+        }
+
+        std::string measured_dichroic_relative_path(const std::string& setKey, const char* channel) {
+            return "Resources/filters/dichroics/" + setKey + "/filter_" + channel + ".csv";
+        }
+
+        struct MeasuredDichroicChannelRequest {
+            const std::string& path;
+            const std::string& relativePath;
+        };
+
+        bool parse_measured_dichroic_channel(
+            const MeasuredDichroicChannelRequest& request,
+            std::uint64_t& outHash,
+            std::string& diagnostic) {
+            std::string bytes;
+            std::uint64_t fileHash = 0;
+            if (!read_file_bytes(request.path, bytes, fileHash)) {
+                diagnostic = "SelectedDichroicResourceMissing phase=4A resource=" + request.relativePath;
+                return false;
+            }
+
+            std::vector<std::pair<float, float>> pairs;
+            std::istringstream input(bytes);
+            std::string line;
+            std::size_t lineNumber = 0;
+            while (std::getline(input, line)) {
+                ++lineNumber;
+                const std::size_t comment = line.find('#');
+                if (comment != std::string::npos) {
+                    line.erase(comment);
+                }
+                const std::size_t first = line.find_first_not_of(" \t\r\n");
+                if (first == std::string::npos) {
+                    continue;
+                }
+
+                std::istringstream row(line.substr(first));
+                float wavelength = 0.0f;
+                float percentTransmittance = 0.0f;
+                if (!(row >> wavelength)) {
+                    diagnostic = "MalformedSelectedDichroicResource phase=4A line=" + std::to_string(lineNumber);
+                    return false;
+                }
+                while (row.peek() == ',' || row.peek() == ';') {
+                    row.get();
+                }
+                if (!(row >> percentTransmittance) ||
+                    !std::isfinite(wavelength) ||
+                    !std::isfinite(percentTransmittance)) {
+                    diagnostic = "MalformedSelectedDichroicResource phase=4A line=" + std::to_string(lineNumber);
+                    return false;
+                }
+                row >> std::ws;
+                if (!row.eof()) {
+                    diagnostic = "MalformedSelectedDichroicResource phase=4A line=" + std::to_string(lineNumber);
+                    return false;
+                }
+                pairs.emplace_back(wavelength, percentTransmittance);
+            }
+
+            const std::vector<std::pair<float, float>> resampled =
+                Spectral::resample_pairs_akima_to_reference_axis(pairs);
+            if (resampled.size() != 81u) {
+                diagnostic = "MalformedSelectedDichroicResource phase=4A field=akima_reference_axis";
+                return false;
+            }
+
+            std::array<float, 81> transmittance{};
+            for (std::size_t i = 0; i < resampled.size(); ++i) {
+                const float value = resampled[i].second * 0.01f;
+                if (!std::isfinite(value)) {
+                    diagnostic = "MalformedSelectedDichroicResource phase=4A field=canonical_axis_coverage";
+                    return false;
+                }
+                transmittance[i] = value;
+            }
+
+            std::uint64_t hash = kFnvOffsetBasis64;
+            constexpr std::uint32_t kSchemaVersion = 1u;
+            hash_value(hash, kSchemaVersion);
+            hash_string(hash, request.relativePath);
+            hash_value(hash, fileHash);
+            hash = fnv1a_append(hash, transmittance.data(), sizeof(transmittance));
+            outHash = hash;
+            return outHash != 0;
         }
 
         std::string noise_asset_path(const std::string& dataDir, std::initializer_list<const char*> segments) {
@@ -1105,7 +1221,7 @@ namespace JuicerAssets {
         // reason=legacy neutral-filter database; allowed=JuicerEffect::applyNeutralFilters only;
         // output_impact=blocked print route; hash_impact=none on direct route;
         // resource_impact=legacy neutral DB load; removal=Phase4.
-        const std::string phase2bNeutralInventoryPath = phase2b_neutral_filter_inventory_path(_dataDir);
+        const std::string phase2bNeutralInventoryPath = neutral_print_calibration_path(_dataDir);
         (void)phase2bNeutralInventoryPath;
         auto makePaths = [this](const char* selectedFileName) {
             NeutralFilterDatabasePathSet paths;
@@ -1325,6 +1441,117 @@ namespace JuicerAssets {
             entry.ready = illuminant_filter_curves_complete(entry.curves);
         }
         return entry.curves;
+    }
+
+    MeasuredDichroicResourceIdentity Library::measured_dichroic_resource_identity(const std::string& setKey) {
+        MeasuredDichroicResourceIdentity result;
+        result.setKey = setKey;
+        constexpr std::array<const char*, 3> kChannelsCmy{{"c", "m", "y"}};
+        for (std::size_t channel = 0; channel < kChannelsCmy.size(); ++channel) {
+            const char* channelKey = kChannelsCmy[channel];
+            result.resourcePathsCmy[channel] = measured_dichroic_relative_path(setKey, channelKey);
+            const std::string fileName = std::string("filter_") + channelKey + ".csv";
+            const std::string path =
+                data_path_string(_dataDir, {"filters", "dichroics", setKey.c_str(), fileName.c_str()});
+            if (!parse_measured_dichroic_channel(
+                    MeasuredDichroicChannelRequest{path, result.resourcePathsCmy[channel]},
+                    result.resourceHashesCmy[channel],
+                    result.diagnostic)) {
+                return result;
+            }
+        }
+
+        std::uint64_t hash = kFnvOffsetBasis64;
+        constexpr std::uint32_t kSchemaVersion = 1u;
+        hash_value(hash, kSchemaVersion);
+        hash_string(hash, result.setKey);
+        for (std::size_t channel = 0; channel < result.resourcePathsCmy.size(); ++channel) {
+            hash_string(hash, result.resourcePathsCmy[channel]);
+            hash_value(hash, result.resourceHashesCmy[channel]);
+        }
+        result.hash = hash;
+        result.valid = result.hash != 0;
+        return result;
+    }
+
+    NeutralPrintCalibrationResult Library::neutral_print_calibration(
+        const std::string& printProfileKey,
+        const std::string& printIlluminantKey,
+        const std::string& filmProfileKey) {
+        NeutralPrintCalibrationResult result;
+        const std::string path = neutral_print_calibration_path(_dataDir);
+        std::string bytes;
+        if (!read_file_bytes(path, bytes, result.resourceHash)) {
+            std::error_code ec;
+            if (fs::exists(path, ec) && !ec) {
+                result.status = NeutralPrintCalibrationStatus::Malformed;
+                result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=resource_read";
+            } else {
+                result.status = NeutralPrintCalibrationStatus::MissingFile;
+            }
+        } else {
+            const Json root = Json::parse(bytes, nullptr, false);
+            if (root.is_discarded() || !root.is_object()) {
+                result.status = NeutralPrintCalibrationStatus::Malformed;
+                result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=root";
+            } else {
+                const auto printIt = root.find(printProfileKey);
+                if (printIt == root.end()) {
+                    result.status = NeutralPrintCalibrationStatus::MissingEntry;
+                } else if (!printIt->is_object()) {
+                    result.status = NeutralPrintCalibrationStatus::Malformed;
+                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_profile";
+                } else {
+                    const auto illuminantIt = printIt->find(printIlluminantKey);
+                    if (illuminantIt == printIt->end()) {
+                        result.status = NeutralPrintCalibrationStatus::MissingEntry;
+                    } else if (!illuminantIt->is_object()) {
+                        result.status = NeutralPrintCalibrationStatus::Malformed;
+                        result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=print_illuminant";
+                    } else {
+                        const auto filmIt = illuminantIt->find(filmProfileKey);
+                        if (filmIt == illuminantIt->end()) {
+                            result.status = NeutralPrintCalibrationStatus::MissingEntry;
+                        } else if (!filmIt->is_array() || filmIt->size() != result.cmyCc.size()) {
+                            result.status = NeutralPrintCalibrationStatus::Malformed;
+                            result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
+                        } else {
+                            result.status = NeutralPrintCalibrationStatus::Found;
+                            for (std::size_t channel = 0; channel < result.cmyCc.size(); ++channel) {
+                                const Json& value = (*filmIt)[channel];
+                                if (!value.is_number()) {
+                                    result.status = NeutralPrintCalibrationStatus::Malformed;
+                                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
+                                    break;
+                                }
+                                const double cc = value.get<double>();
+                                if (!std::isfinite(cc)) {
+                                    result.status = NeutralPrintCalibrationStatus::Malformed;
+                                    result.diagnostic = "MalformedNeutralPrintCalibration phase=4A field=cmy_cc";
+                                    break;
+                                }
+                                result.cmyCc[channel] = static_cast<float>(cc);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        std::uint64_t hash = kFnvOffsetBasis64;
+        constexpr std::uint32_t kSchemaVersion = 1u;
+        hash_value(hash, kSchemaVersion);
+        hash_string(hash, result.resourcePath);
+        hash_string(hash, printProfileKey);
+        hash_string(hash, printIlluminantKey);
+        hash_string(hash, filmProfileKey);
+        hash_value(hash, result.status);
+        hash_value(hash, result.resourceHash);
+        if (result.status == NeutralPrintCalibrationStatus::Found) {
+            hash = fnv1a_append(hash, result.cmyCc.data(), sizeof(result.cmyCc));
+        }
+        result.hash = hash;
+        return result;
     }
 
     PrintRuntimeAssetSet Library::print_runtime_assets_for_profile_keys(const PrintRuntimeProfileKeyChoices& choices) {

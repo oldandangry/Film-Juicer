@@ -525,6 +525,126 @@ namespace {
         return out.hash != 0;
     }
 
+    bool finite_cmy(const CmyCcTriplet& values) {
+        return std::isfinite(values.c) && std::isfinite(values.m) && std::isfinite(values.y);
+    }
+
+    void hash_cmy(std::uint64_t& hash, const CmyCcTriplet& values) {
+        hash_value(hash, values.c);
+        hash_value(hash, values.m);
+        hash_value(hash, values.y);
+    }
+
+    Spektrafilm::PrintNormalizationMode print_normalization_mode(bool normalize, bool compensate) {
+        if (normalize) {
+            return compensate
+                       ? Spektrafilm::PrintNormalizationMode::NormalizeAndCompensate
+                       : Spektrafilm::PrintNormalizationMode::NormalizeOnly;
+        }
+        return compensate
+                   ? Spektrafilm::PrintNormalizationMode::CompensationOnly
+                   : Spektrafilm::PrintNormalizationMode::None;
+    }
+
+    Spektrafilm::PrintNormalizerExpression print_normalizer_expression(
+        Spektrafilm::PrintNormalizationMode mode) {
+        switch (mode) {
+            case Spektrafilm::PrintNormalizationMode::None:
+                return Spektrafilm::PrintNormalizerExpression::One;
+            case Spektrafilm::PrintNormalizationMode::CompensationOnly:
+                return Spektrafilm::PrintNormalizerExpression::FactorMidgrayCompOverFactorMidgray;
+            case Spektrafilm::PrintNormalizationMode::NormalizeOnly:
+                return Spektrafilm::PrintNormalizerExpression::FactorMidgray;
+            case Spektrafilm::PrintNormalizationMode::NormalizeAndCompensate:
+                return Spektrafilm::PrintNormalizerExpression::FactorMidgrayComp;
+            default:
+                return Spektrafilm::PrintNormalizerExpression::One;
+        }
+    }
+
+    std::uint64_t hash_dichroic_resource_identity(const DichroicResourceIdentity& identity) {
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, identity.set);
+        hash_value(hash, identity.kind);
+        hash_string(hash, identity.setKey);
+        hash_value(hash, identity.percentTransmittanceDividedBy100);
+        hash_value(hash, identity.duplicateWavelengthsKeepFirst);
+        hash_value(hash, identity.akimaResampledToReferenceAxis);
+        if (identity.kind == Spektrafilm::DichroicResourceKind::CustomAnalyticModel) {
+            Hash::hash_bytes_update(hash, identity.customEdgesNm.data(), sizeof(identity.customEdgesNm));
+            Hash::hash_bytes_update(hash, identity.customTransitionsNm.data(), sizeof(identity.customTransitionsNm));
+        } else {
+            for (std::size_t channel = 0; channel < identity.resourcePathsCmy.size(); ++channel) {
+                hash_string(hash, identity.resourcePathsCmy[channel]);
+                hash_value(hash, identity.resourceHashesCmy[channel]);
+            }
+        }
+        return hash;
+    }
+
+    bool dichroic_resource_identity_valid(const DichroicResourceIdentity& identity) {
+        if (identity.kind == Spektrafilm::DichroicResourceKind::CustomAnalyticModel) {
+            return identity.set == Spektrafilm::DichroicFilterSet::Custom &&
+                   identity.setKey == "custom" &&
+                   std::all_of(identity.customEdgesNm.begin(), identity.customEdgesNm.end(), [](float value) {
+                       return std::isfinite(value);
+                   }) &&
+                   std::all_of(identity.customTransitionsNm.begin(), identity.customTransitionsNm.end(), [](float value) {
+                       return std::isfinite(value) && value > 0.0f;
+                   });
+        }
+
+        if (identity.set == Spektrafilm::DichroicFilterSet::Custom ||
+            identity.setKey.empty() ||
+            !identity.percentTransmittanceDividedBy100 ||
+            !identity.duplicateWavelengthsKeepFirst ||
+            !identity.akimaResampledToReferenceAxis) {
+            return false;
+        }
+        for (std::size_t channel = 0; channel < identity.resourcePathsCmy.size(); ++channel) {
+            if (identity.resourcePathsCmy[channel].empty() || identity.resourceHashesCmy[channel] == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::uint64_t hash_neutral_calibration(const NeutralCalibrationRecipe& calibration) {
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, calibration.status);
+        hash_string(hash, calibration.resourcePath);
+        hash_string(hash, calibration.printProfileKey);
+        hash_string(hash, calibration.printIlluminantKey);
+        hash_string(hash, calibration.filmProfileKey);
+        hash_value(hash, calibration.resourceHash);
+        return hash;
+    }
+
+    std::uint64_t hash_print_filter_recipe(const PrintFilterRecipe& recipe) {
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_cmy(hash, recipe.neutralCmyCc);
+        hash_cmy(hash, recipe.userCmyCc);
+        hash_value(hash, recipe.filmJuicerMainCFilterShiftCc);
+        hash_cmy(hash, recipe.mainCmyCc);
+        hash_cmy(hash, recipe.preflashUserCmyCc);
+        hash_cmy(hash, recipe.preflashCmyCc);
+        hash_value(hash, recipe.dichroic.hash);
+        hash_value(hash, recipe.neutralCalibration.hash);
+        return hash;
+    }
+
+    std::uint64_t hash_print_exposure_recipe(const PrintExposureRecipe& recipe) {
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, recipe.printExposure);
+        hash_value(hash, recipe.preflashExposure);
+        hash_value(hash, recipe.normalizePrintExposure);
+        hash_value(hash, recipe.printExposureCompensation);
+        hash_value(hash, recipe.normalizationMode);
+        hash_value(hash, recipe.normalizerExpression);
+        hash_value(hash, recipe.scalingOrder);
+        return hash;
+    }
+
 } // namespace
 
 namespace Spektrafilm {
@@ -725,6 +845,148 @@ namespace Spektrafilm {
             result.diagnostic = "ResourceDescriptorMismatch phase=3A field=render_recipe_hash";
         }
         return result;
+    }
+
+    PrintRecipeBuildResult build_print_render_recipe(const PrintRecipeBuildInput& input) {
+        PrintRecipeBuildResult result{};
+        result.recipe = make_render_recipe(input.filmProfileKey, input.printProfileKey, input.scanRoute);
+        if (!scan_route_is_print(input.scanRoute)) {
+            result.diagnostic = "UnsupportedMode phase=4A field=scan_route expected=print";
+            return result;
+        }
+        if (!input.filmProfile || !input.printProfile) {
+            result.diagnostic = "MissingRequiredResource phase=4A field=selected_profile";
+            return result;
+        }
+        if (resolve_scan_route(input.filmProfile->info.type, input.scanRoute) != input.scanRoute ||
+            input.filmProfile->info.stage != ProfileStage::Filming ||
+            input.printProfile->digest.profileRole != Profiles::ProfileRole::Print ||
+            input.printProfile->info.stage != ProfileStage::Printing) {
+            result.diagnostic = "UnsupportedMode phase=4A selected profile route mismatch";
+            return result;
+        }
+        if (input.neutralCalibrationHash == 0 ||
+            input.printIlluminantKey.empty() ||
+            !finite_cmy(input.currentNeutralCmyCc) ||
+            !finite_cmy(input.calibratedNeutralCmyCc) ||
+            !std::all_of(input.uiYmcCc.begin(), input.uiYmcCc.end(), [](float value) {
+                return std::isfinite(value);
+            }) ||
+            !std::isfinite(input.preflashMFilterCc) || !std::isfinite(input.preflashYFilterCc) || !std::isfinite(input.printExposure) || !std::isfinite(input.preflashExposure)) {
+            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=print_recipe_input";
+            return result;
+        }
+
+        ProfileRoute& route = result.recipe.profileRoute;
+        route.captureSupport = input.filmProfile->info.support;
+        route.captureStage = input.filmProfile->info.stage;
+        route.capturePolarity = input.filmProfile->info.type;
+        route.captureUse = input.filmProfile->info.use;
+        route.captureAntihalation = input.filmProfile->info.antihalation;
+        route.captureChannelModel = input.filmProfile->info.channelModel;
+        route.filmProfileAssetVersionToken = input.filmProfile->assetVersionToken;
+        route.printProfileAssetVersionToken = input.printProfile->assetVersionToken;
+        route.filmProfile = input.filmProfile;
+        route.printProfile = input.printProfile;
+        route.hash = hash_profile_route(route);
+
+        PrintRecipe& print = result.recipe.print;
+        print.filters.dichroic = input.dichroic;
+        if (!dichroic_resource_identity_valid(print.filters.dichroic)) {
+            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
+            return result;
+        }
+        print.filters.dichroic.hash =
+            hash_dichroic_resource_identity(print.filters.dichroic);
+        if (print.filters.dichroic.hash == 0) {
+            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=dichroic_resource_identity";
+            return result;
+        }
+        print.filters.neutralCalibration.status = input.neutralCalibrationStatus;
+        print.filters.neutralCalibration.printProfileKey = input.printProfileKey;
+        print.filters.neutralCalibration.printIlluminantKey = input.printIlluminantKey;
+        print.filters.neutralCalibration.filmProfileKey = input.filmProfileKey;
+        print.filters.neutralCalibration.resourceHash = input.neutralCalibrationResourceHash;
+        print.filters.neutralCalibration.hash =
+            Hash::hash_uint64_values({input.neutralCalibrationHash,
+                                      hash_neutral_calibration(print.filters.neutralCalibration)});
+        print.filters.neutralCmyCc =
+            input.neutralCalibrationStatus == NeutralCalibrationStatus::Calibrated
+                ? input.calibratedNeutralCmyCc
+                : input.currentNeutralCmyCc;
+        print.filters.userCmyCc =
+            CmyCcTriplet{input.uiYmcCc[2], input.uiYmcCc[1], input.uiYmcCc[0]};
+        print.filters.filmJuicerMainCFilterShiftCc = print.filters.userCmyCc.c;
+        print.filters.mainCmyCc = CmyCcTriplet{
+            print.filters.neutralCmyCc.c + print.filters.filmJuicerMainCFilterShiftCc,
+            print.filters.neutralCmyCc.m + print.filters.userCmyCc.m,
+            print.filters.neutralCmyCc.y + print.filters.userCmyCc.y};
+        print.filters.preflashUserCmyCc =
+            CmyCcTriplet{0.0f, input.preflashMFilterCc, input.preflashYFilterCc};
+        print.filters.preflashCmyCc = CmyCcTriplet{
+            print.filters.neutralCmyCc.c,
+            print.filters.neutralCmyCc.m + input.preflashMFilterCc,
+            print.filters.neutralCmyCc.y + input.preflashYFilterCc};
+        print.filters.hash = hash_print_filter_recipe(print.filters);
+
+        print.exposure.printExposure = input.printExposure;
+        print.exposure.preflashExposure = input.preflashExposure;
+        print.exposure.normalizePrintExposure = input.normalizePrintExposure;
+        print.exposure.printExposureCompensation = input.printExposureCompensation;
+        print.exposure.normalizationMode =
+            print_normalization_mode(input.normalizePrintExposure, input.printExposureCompensation);
+        print.exposure.normalizerExpression =
+            print_normalizer_expression(print.exposure.normalizationMode);
+        print.exposure.hash = hash_print_exposure_recipe(print.exposure);
+
+        print.illuminant.key = input.printIlluminantKey;
+        print.illuminant.hash = Hash::kFnvOffset;
+        hash_string(print.illuminant.hash, print.illuminant.key);
+
+        print.mediumHandoff.printProfileKey = input.printProfileKey;
+        print.mediumHandoff.printProfileAssetVersionToken = input.printProfile->assetVersionToken;
+        print.mediumHandoff.viewingIlluminant = input.printProfile->info.viewingIlluminant.value;
+        {
+            std::uint64_t hash = Hash::kFnvOffset;
+            hash_value(hash, print.mediumHandoff.medium);
+            hash_string(hash, print.mediumHandoff.printProfileKey);
+            hash_value(hash, print.mediumHandoff.printProfileAssetVersionToken);
+            hash_string(hash, print.mediumHandoff.viewingIlluminant);
+            print.mediumHandoff.hash = hash;
+        }
+
+        print.hash = Hash::hash_uint64_values({print.filters.hash,
+                                               print.exposure.hash,
+                                               print.illuminant.hash,
+                                               print.mediumHandoff.hash});
+        result.recipe.printStructuralReady = true;
+        result.recipe.hash = Hash::hash_uint64_values({route.hash, print.hash});
+        result.valid = route.hash != 0 && print.filters.hash != 0 &&
+                       print.exposure.hash != 0 && print.illuminant.hash != 0 &&
+                       print.mediumHandoff.hash != 0 && print.hash != 0 &&
+                       result.recipe.hash != 0;
+        if (!result.valid) {
+            result.diagnostic = "ResourceDescriptorMismatch phase=4A field=print_recipe_hash";
+        }
+        return result;
+    }
+
+    float print_exposure_normalizer(
+        PrintNormalizationMode mode,
+        float factorMidgray,
+        float factorMidgrayComp) {
+        switch (mode) {
+            case PrintNormalizationMode::None:
+                return 1.0f;
+            case PrintNormalizationMode::CompensationOnly:
+                return factorMidgrayComp / factorMidgray;
+            case PrintNormalizationMode::NormalizeOnly:
+                return factorMidgray;
+            case PrintNormalizationMode::NormalizeAndCompensate:
+                return factorMidgrayComp;
+            default:
+                return std::numeric_limits<float>::quiet_NaN();
+        }
     }
 
     bool build_spatial_dir_descriptor(

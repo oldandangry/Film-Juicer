@@ -829,6 +829,15 @@ namespace {
             mix_hash_field(h, p.printProfileAssetVersionToken, mix);
             mix_hash_field(h, p.enlIll, mix);
             mix_hash_field(h, p.enlDichroicSet, mix);
+            mix_hash_field_scaled_rounded_if_finite(h, p.printExposure, 10000.0, mix);
+            mix_hash_field_scaled_rounded_if_finite(h, p.printPreflashExposure, 10000.0, mix);
+            mix_hash_field(h, p.normalizePrintExposure, mix);
+            mix_hash_field(h, p.printExposureCompensation, mix);
+            for (double value : p.printUiYmcCc) {
+                mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+            }
+            mix_hash_field_scaled_rounded_if_finite(h, p.preflashMFilterCc, 10000.0, mix);
+            mix_hash_field_scaled_rounded_if_finite(h, p.preflashYFilterCc, 10000.0, mix);
         }
         mix_hash_field(h, p.spectralUpsamplingMode, mix);
         mix_hash_field(h, p.refIll, mix);
@@ -1506,6 +1515,55 @@ namespace {
             "FATAL: failed to hash print density range");
     }
 
+    Spektrafilm::DichroicFilterSet dichroic_filter_set_from_choice(int choice) {
+        switch (choice) {
+            case 1:
+                return Spektrafilm::DichroicFilterSet::DurstDigitalLight;
+            case 2:
+                return Spektrafilm::DichroicFilterSet::Thorlabs;
+            case 3:
+                return Spektrafilm::DichroicFilterSet::EdmundOptics;
+            default:
+                return Spektrafilm::DichroicFilterSet::Custom;
+        }
+    }
+
+    std::string dichroic_filter_set_key(Spektrafilm::DichroicFilterSet set) {
+        switch (set) {
+            case Spektrafilm::DichroicFilterSet::DurstDigitalLight:
+                return "durst_digital_light";
+            case Spektrafilm::DichroicFilterSet::Thorlabs:
+                return "thorlabs";
+            case Spektrafilm::DichroicFilterSet::EdmundOptics:
+                return "edmund_optics";
+            case Spektrafilm::DichroicFilterSet::Custom:
+            default:
+                return "custom";
+        }
+    }
+
+    std::string print_illuminant_key_from_choice(int choice) {
+        switch (choice) {
+            case 0:
+                return "D65";
+            case 1:
+                return "D55";
+            case 2:
+                return "D50";
+            case 4:
+                return "TH-KG3-L";
+            case 5:
+                return "T";
+            case 6:
+                return "K75P";
+            case 7:
+                return "EQUAL";
+            case 3:
+            default:
+                return "TH-KG3";
+        }
+    }
+
     bool publish_direct_recipe_if_selected(const ParamSnapshot& params, RenderRecipe& outRecipe) {
         if (Spektrafilm::scan_route_is_print(params.scanRoute)) {
             return true;
@@ -1603,6 +1661,113 @@ namespace {
             return false;
         }
 
+        outRecipe = std::move(built.recipe);
+        return true;
+    }
+
+    bool publish_print_recipe_if_selected(const ParamSnapshot& params, RenderRecipe& outRecipe) {
+        if (!Spektrafilm::scan_route_is_print(params.scanRoute)) {
+            return true;
+        }
+
+        JuicerAssets::Library& assets = JuicerProcess::root().assets();
+        const JuicerAssets::SelectedProfileResult selected =
+            assets.selected_profiles_for_route(
+                JuicerAssets::SelectedProfileRequest{
+                    params.filmProfileKey,
+                    params.printProfileKey,
+                    params.scanRoute});
+        if (!selected.valid || !selected.filmProfile || !selected.printProfile) {
+            JTRACE(
+                "SPEKTRAFILM",
+                selected.diagnostic.empty()
+                    ? "MissingRequiredResource phase=4A field=selected_profile"
+                    : selected.diagnostic);
+            return false;
+        }
+
+        Spektrafilm::PrintRecipeBuildInput input{};
+        input.filmProfileKey = params.filmProfileKey;
+        input.printProfileKey = params.printProfileKey;
+        input.scanRoute = params.scanRoute;
+        input.filmProfile = selected.filmProfile;
+        input.printProfile = selected.printProfile;
+        input.dichroic.set = dichroic_filter_set_from_choice(params.enlDichroicSet);
+        input.dichroic.setKey = dichroic_filter_set_key(input.dichroic.set);
+        if (input.dichroic.set != Spektrafilm::DichroicFilterSet::Custom) {
+            input.dichroic.kind = Spektrafilm::DichroicResourceKind::MeasuredCsv;
+            input.dichroic.percentTransmittanceDividedBy100 = true;
+            input.dichroic.duplicateWavelengthsKeepFirst = true;
+            input.dichroic.akimaResampledToReferenceAxis = true;
+            const JuicerAssets::MeasuredDichroicResourceIdentity measured =
+                assets.measured_dichroic_resource_identity(input.dichroic.setKey);
+            if (!measured.valid) {
+                JTRACE(
+                    "SPEKTRAFILM",
+                    measured.diagnostic.empty()
+                        ? "MalformedSelectedDichroicResource phase=4A"
+                        : measured.diagnostic);
+                return false;
+            }
+            input.dichroic.resourcePathsCmy = measured.resourcePathsCmy;
+            input.dichroic.resourceHashesCmy = measured.resourceHashesCmy;
+            input.dichroic.hash = measured.hash;
+        }
+
+        input.printIlluminantKey = print_illuminant_key_from_choice(params.enlIll);
+        const JuicerAssets::NeutralPrintCalibrationResult neutral =
+            assets.neutral_print_calibration(
+                selected.printProfile->info.stock,
+                input.printIlluminantKey,
+                selected.filmProfile->info.stock);
+        if (neutral.status == JuicerAssets::NeutralPrintCalibrationStatus::Malformed) {
+            JTRACE(
+                "SPEKTRAFILM",
+                neutral.diagnostic.empty()
+                    ? "MalformedNeutralPrintCalibration phase=4A"
+                    : neutral.diagnostic);
+            return false;
+        }
+        switch (neutral.status) {
+            case JuicerAssets::NeutralPrintCalibrationStatus::MissingFile:
+                input.neutralCalibrationStatus =
+                    Spektrafilm::NeutralCalibrationStatus::MissingFile;
+                break;
+            case JuicerAssets::NeutralPrintCalibrationStatus::Found:
+                input.neutralCalibrationStatus =
+                    Spektrafilm::NeutralCalibrationStatus::Calibrated;
+                input.calibratedNeutralCmyCc =
+                    CmyCcTriplet{neutral.cmyCc[0], neutral.cmyCc[1], neutral.cmyCc[2]};
+                break;
+            case JuicerAssets::NeutralPrintCalibrationStatus::MissingEntry:
+            default:
+                input.neutralCalibrationStatus =
+                    Spektrafilm::NeutralCalibrationStatus::MissingEntry;
+                break;
+        }
+        input.neutralCalibrationResourceHash = neutral.resourceHash;
+        input.neutralCalibrationHash = neutral.hash;
+        input.uiYmcCc = {
+            static_cast<float>(params.printUiYmcCc[0]),
+            static_cast<float>(params.printUiYmcCc[1]),
+            static_cast<float>(params.printUiYmcCc[2])};
+        input.preflashMFilterCc = static_cast<float>(params.preflashMFilterCc);
+        input.preflashYFilterCc = static_cast<float>(params.preflashYFilterCc);
+        input.printExposure = static_cast<float>(params.printExposure);
+        input.preflashExposure = static_cast<float>(params.printPreflashExposure);
+        input.normalizePrintExposure = params.normalizePrintExposure != 0;
+        input.printExposureCompensation = params.printExposureCompensation != 0;
+
+        Spektrafilm::PrintRecipeBuildResult built =
+            Spektrafilm::build_print_render_recipe(input);
+        if (!built.valid) {
+            JTRACE(
+                "SPEKTRAFILM",
+                built.diagnostic.empty()
+                    ? "ResourceDescriptorMismatch phase=4A print recipe build failed"
+                    : built.diagnostic);
+            return false;
+        }
         outRecipe = std::move(built.recipe);
         return true;
     }
@@ -2194,6 +2359,9 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     WorkingState* target = next.get();
     target->recipe = Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
     if (!publish_direct_recipe_if_selected(P, target->recipe)) {
+        return;
+    }
+    if (!publish_print_recipe_if_selected(P, target->recipe)) {
         return;
     }
     const bool buildTraceEnabled = JTRACE_ENABLED(1);
@@ -3228,6 +3396,9 @@ void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, Instance
     WorkingState* target = next.get();
     target->recipe = Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
     if (!publish_direct_recipe_if_selected(P, target->recipe)) {
+        return;
+    }
+    if (!publish_print_recipe_if_selected(P, target->recipe)) {
         return;
     }
     RebuildStateSnapshot snapshot{};

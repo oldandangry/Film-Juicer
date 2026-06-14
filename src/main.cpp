@@ -417,7 +417,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamEnlargerDichroicSet);
             p->setLabel("Enlarger dichroics");
-            p->setHint("Select the dichroic filter set used by the enlarger Y/M/C wheels. This also selects the corresponding neutral Y/M/C baseline database.");
+            p->setHint("Select the spektrafilm custom/reference dichroic model or a measured C/M/Y resource set.");
+            p->appendOption("Spektrafilm Custom");
             p->appendOption("Durst Digital Light");
             p->appendOption("Thorlabs");
             p->appendOption("Edmund Optics");
@@ -428,27 +429,28 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerY");
-            p->setLabel("Enlarger Y");
+            p->setLabel("Enlarger Y offset (Kodak CC)");
             p->setDefault(0.0);
-            p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
+            p->setDisplayRange(-200.0, 200.0);
             p->setIncrement(1.0);
             if (grpPrint)
                 p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerM");
-            p->setLabel("Enlarger M");
+            p->setLabel("Enlarger M offset (Kodak CC)");
             p->setDefault(0.0);
-            p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
+            p->setDisplayRange(-200.0, 200.0);
             p->setIncrement(1.0);
             if (grpPrint)
                 p->setParent(*grpPrint);
         }
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam("EnlargerC");
-            p->setLabel("Enlarger C");
+            p->setLabel("Enlarger C offset (Kodak CC)");
+            p->setHint("User cyan offset carried as FilmJuicerMainCFilterShift at the print recipe boundary.");
             p->setDefault(0.0);
-            p->setDisplayRange(-Print::kEnlargerSteps, Print::kEnlargerSteps);
+            p->setDisplayRange(-200.0, 200.0);
             p->setIncrement(1.0);
             if (grpPrint)
                 p->setParent(*grpPrint);
@@ -1092,6 +1094,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->appendOption("D65");
         p->appendOption("D55");
         p->appendOption("D50");
+        p->appendOption("TH-KG3");
         p->appendOption("TH-KG3-L");
         p->appendOption("T");
         p->appendOption("K75P");

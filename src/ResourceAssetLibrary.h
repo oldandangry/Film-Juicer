@@ -130,6 +130,31 @@ namespace JuicerAssets {
         int dichroicSetChoice = 0;
     };
 
+    struct MeasuredDichroicResourceIdentity {
+        std::string setKey;
+        std::array<std::string, 3> resourcePathsCmy;
+        std::array<std::uint64_t, 3> resourceHashesCmy{};
+        std::uint64_t hash = 0;
+        bool valid = false;
+        std::string diagnostic;
+    };
+
+    enum class NeutralPrintCalibrationStatus : unsigned char {
+        MissingFile,
+        MissingEntry,
+        Found,
+        Malformed
+    };
+
+    struct NeutralPrintCalibrationResult {
+        NeutralPrintCalibrationStatus status = NeutralPrintCalibrationStatus::MissingEntry;
+        std::array<float, 3> cmyCc{};
+        std::string resourcePath = "Resources/filters/neutral_print_filters.json";
+        std::uint64_t resourceHash = 0;
+        std::uint64_t hash = 0;
+        std::string diagnostic;
+    };
+
     using SelectedProfileRequest = Profiles::SelectedProfileRequest;
     using SelectedProfileResult = Profiles::SelectedProfileResult;
 
@@ -162,6 +187,11 @@ namespace JuicerAssets {
         std::shared_ptr<const StaticNoisePayloadSet> static_noise_payloads();
         const DichroicFilterCurveSet& dichroic_filter_curves_for_choice(int dichroicSetChoice);
         const IlluminantFilterCurveSet& illuminant_filter_curves();
+        MeasuredDichroicResourceIdentity measured_dichroic_resource_identity(const std::string& setKey);
+        NeutralPrintCalibrationResult neutral_print_calibration(
+            const std::string& printProfileKey,
+            const std::string& printIlluminantKey,
+            const std::string& filmProfileKey);
         PrintRuntimeAssetSet print_runtime_assets_for_profile_keys(const PrintRuntimeProfileKeyChoices& choices);
         bool load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile);
         bool load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile);
