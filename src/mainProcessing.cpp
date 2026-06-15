@@ -1951,8 +1951,6 @@ void JuicerProcessor::setFrameRequest(const FrameRequest& request) {
         clear_glare_compensation_fields(_printGlareOverride);
     }
     _hasPrintGlareOverride = request.hasPrintGlareOverride;
-    _dirRT = request.dirRuntime;
-
     _recipeHold = request.recipe;
     _wsHold = request.workingState;
     setWorkingState(_wsHold.get(), request.workingStateReady);
@@ -2009,9 +2007,6 @@ void JuicerProcessor::setPrintGlareOverride(const Profiles::ProfileGlare& glare)
     _printGlareOverride = glare;
     clear_glare_compensation_fields(_printGlareOverride);
     _hasPrintGlareOverride = true;
-}
-void JuicerProcessor::setDirRuntime(const Couplers::Runtime& rt) {
-    _dirRT = rt;
 }
 void JuicerProcessor::setWorkingState(const WorkingState* ws, bool wsReady) {
     if (_wsHold.get() != ws) {
@@ -4700,64 +4695,10 @@ void JuicerProcessor::processImagesCUDA() {
             return false;
         }
 
-        std::string dirError;
-        if (!preparedFrame.prepare_spatial_dir_scratch(
-                workspace,
-                _pCudaStream,
-                dirError)) {
-            throw_prepared_frame_failure(dirError);
-        }
-        if (!preparedFrame.prepare_spatial_dir_kernel(
-                _dirRT.spatialSigmaPixels,
-                _pCudaStream,
-                dirError)) {
-            throw_prepared_frame_failure(dirError);
-        }
-
-        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView spatialDirScratch =
-            preparedFrame.spatial_dir_scratch(workspace);
-        if (!spatialDirScratch.active) {
-            trace_and_throw_cuda_policy_fatal(
-                "CUDA spatial DIR scratch missing",
-                "spatial DIR scratch missing after allocation");
-        }
-
-        run.filmDevelop.spatialDir.corrY = spatialDirScratch.corrY;
-        run.filmDevelop.spatialDir.corrM = spatialDirScratch.corrM;
-        run.filmDevelop.spatialDir.corrC = spatialDirScratch.corrC;
-
-        const JuicerProcess::Root::PreparedCudaFrame::OpticsKernelView opticsKernels =
-            preparedFrame.optics_kernels();
-        const cudaError_t dirErr = juicer_cuda_build_spatial_dir(
-            &run,
-            spatialDirScratch.corrY,
-            spatialDirScratch.corrM,
-            spatialDirScratch.corrC,
-            spatialDirScratch.mixY,
-            spatialDirScratch.mixM,
-            spatialDirScratch.mixC,
-            spatialDirScratch.tmp,
-            opticsKernels.spatialDir.weights,
-            opticsKernels.spatialDir.radius,
-            opticsKernels.spatialDir.sigma,
-            1.0f,
-            nullptr,
-            0,
-            0.0f,
-            0.0f,
-            nullptr,
-            0,
-            0.0f,
-            0.0f,
-            nullptr,
-            0,
-            0.0f,
-            0.0f,
-            _pCudaStream);
-        if (dirErr != cudaSuccess) {
-            throw_cuda_stage_fatal("build_spatial_dir", "spatial DIR build failed", dirErr);
-        }
-        return true;
+        trace_and_throw_cuda_policy_fatal(
+            "CUDA legacy broad spatial DIR blocked",
+            "LegacyBroadSpatialDirNotAcceptedAfterPhase5");
+        return false;
     };
 
     auto validate_cuda_scanner_preflight_or_throw = [&](bool scannerRuntimeValid,
@@ -5381,7 +5322,6 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmDevelop.dirPrecorrected = bool_to_i32(_ws->dirPrecorrected);
 
         run.filmDevelop.dir.active = bool_to_i32(_dirRT.active);
-        run.filmDevelop.dir.highShift = _dirRT.highShift;
         copy_float9(run.filmDevelop.dir.M, &_dirRT.M[0][0]);
         copy_float3(run.filmDevelop.dir.dMax, _dirRT.dMax);
 

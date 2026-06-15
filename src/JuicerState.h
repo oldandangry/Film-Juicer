@@ -261,6 +261,10 @@ struct WorkingState {
     float gammaFactorG = 1.0f;
     float gammaFactorR = 1.0f;
 
+    // SF_PHASE5_BLOCKED_LegacyWorkingStateDirRuntime owner=legacy broad/CPU renderer;
+    // allowed_call_sites=hard-blocked WorkingState/PipelineStages source;
+    // output_hash_resource_impact=none on typed focused routes;
+    // cleanup_symbol=SF_PHASE5_BLOCKED_LegacyWorkingStateDirRuntime; disposition=delete_with_legacy renderer.
     Couplers::Runtime dirRT;
 
     Spectral::Curve dirDensB;
@@ -332,11 +336,7 @@ inline void sample_negative_densities(
         D_out_local[2] = layerD[0];
     };
 
-    const Spectral::Curve& precorrectedB = ws.dirPrecorrected ? ws.dirDensB : ws.densB;
-    const Spectral::Curve& precorrectedG = ws.dirPrecorrected ? ws.dirDensG : ws.densG;
-    const Spectral::Curve& precorrectedR = ws.dirPrecorrected ? ws.dirDensR : ws.densR;
-
-#ifdef JUICER_ENABLE_COUPLERS
+#if 0
     if (mode == DirSampleMode::ApplyRuntime && dirRT.active) {
         float layerPre[3];
         sample_layers(ws.densB, ws.densG, ws.densR, logE, layerPre);

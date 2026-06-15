@@ -134,7 +134,6 @@ public:
     void setHalationOverride(const Profiles::HalationMetadata& halation);
     void setGrainOverride(const Profiles::GrainMetadata& grain);
     void setPrintGlareOverride(const Profiles::ProfileGlare& glare);
-    void setDirRuntime(const Couplers::Runtime& rt);
     void setWorkingState(const WorkingState* ws, bool wsReady);
     void setPrintRuntime(const Print::Runtime* prt, bool printReady);
     void setExposure(float exposureScale);
@@ -186,6 +185,10 @@ private:
     bool _hasGrainOverride = false;
     Profiles::ProfileGlare _printGlareOverride{};
     bool _hasPrintGlareOverride = false;
+    // SF_PHASE5_BLOCKED_LegacyBroadDirRuntime owner=legacy broad/CPU renderer;
+    // allowed_call_sites=hard-blocked processImpl/processImagesCUDA source;
+    // output_hash_resource_impact=none on typed focused routes;
+    // cleanup_symbol=SF_PHASE5_BLOCKED_LegacyBroadDirRuntime; disposition=delete_with_legacy renderer.
     Couplers::Runtime _dirRT;
 
     const Print::Runtime* _prt;

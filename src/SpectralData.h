@@ -37,12 +37,12 @@ namespace Spectral {
         (kLogExposureMax - kLogExposureMin) / static_cast<float>(kLogExposureSamples - 1);
 
     struct PrecomputeStatus {
-        std::atomic<uint64_t> illumVersion{ 0 };
-        std::atomic<uint64_t> lastPrecomputeIllumVersion{ ~uint64_t{ 0 } };
-        std::atomic<bool> dirty{ true };
-        std::atomic<uint64_t> shapeVersion{ 0 };
-        std::atomic<uint64_t> lastPrecomputeShapeVersion{ ~uint64_t{ 0 } };
-        std::atomic<uint64_t> mixVersion{ 0 };
+        std::atomic<uint64_t> illumVersion{0};
+        std::atomic<uint64_t> lastPrecomputeIllumVersion{~uint64_t{0}};
+        std::atomic<bool> dirty{true};
+        std::atomic<uint64_t> shapeVersion{0};
+        std::atomic<uint64_t> lastPrecomputeShapeVersion{~uint64_t{0}};
+        std::atomic<uint64_t> mixVersion{0};
     };
 
     struct BaselineCtx {
@@ -69,20 +69,25 @@ namespace Spectral {
                     lin = 0.0f;
                 }
                 linear.push_back(lin);
-                if (lin > peak) peak = lin;
+                if (lin > peak)
+                    peak = lin;
             }
             if (peak > 0.0f) {
-                for (auto& v : linear) v /= peak;
+                for (auto& v : linear)
+                    v /= peak;
             }
         }
 
         void build_from_linear_pairs(const std::vector<std::pair<float, float>>& samples) {
             lambda_nm.clear();
             linear.clear();
-            if (samples.empty()) return;
+            if (samples.empty())
+                return;
 
             std::vector<std::pair<float, float>> s = samples;
-            std::sort(s.begin(), s.end(), [](auto& a, auto& b) { return a.first < b.first; });
+            std::sort(s.begin(), s.end(), [](auto& a, auto& b) {
+                return a.first < b.first;
+            });
 
             lambda_nm.reserve(s.size());
             linear.reserve(s.size());
@@ -94,11 +99,15 @@ namespace Spectral {
 
         float sample(float lambda) const {
             const size_t n = lambda_nm.size();
-            if (n == 0) return 0.0f;
-            if (lambda <= lambda_nm.front()) return linear.front();
-            if (lambda >= lambda_nm.back()) return linear.back();
+            if (n == 0)
+                return 0.0f;
+            if (lambda <= lambda_nm.front())
+                return linear.front();
+            if (lambda >= lambda_nm.back())
+                return linear.back();
             size_t i1 = 1;
-            while (i1 < n && lambda_nm[i1] < lambda) ++i1;
+            while (i1 < n && lambda_nm[i1] < lambda)
+                ++i1;
             size_t i0 = i1 - 1;
             float x0 = lambda_nm[i0], x1 = lambda_nm[i1];
             float y0 = linear[i0], y1 = linear[i1];
@@ -114,13 +123,6 @@ namespace Spectral {
             float t = (lambda - x0) / (x1 - x0);
             return y0 + t * (y1 - y0);
         }
-    };
-
-    struct DirRuntimeSnapshot {
-        bool active = false;
-        float M[3][3] = { {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f} };
-        float highShift = 0.0f;
-        float dMax[3] = { 1.0f, 1.0f, 1.0f };
     };
 
     struct SpectralShape {
@@ -146,13 +148,13 @@ namespace Spectral {
 
     inline const char* to_cstr(SpectralMutationStage stage) noexcept {
         switch (stage) {
-        case SpectralMutationStage::Bootstrap:
-            return "bootstrap";
-        case SpectralMutationStage::Rebuild:
-            return "rebuild";
-        case SpectralMutationStage::None:
-        default:
-            return "none";
+            case SpectralMutationStage::Bootstrap:
+                return "bootstrap";
+            case SpectralMutationStage::Rebuild:
+                return "rebuild";
+            case SpectralMutationStage::None:
+            default:
+                return "none";
         }
     }
 
@@ -161,7 +163,9 @@ namespace Spectral {
         SpectralMutationScope(SpectralMutationStage stage, const char* owner = nullptr) noexcept;
         ~SpectralMutationScope() noexcept;
 
-        bool active() const noexcept { return _active; }
+        bool active() const noexcept {
+            return _active;
+        }
 
     private:
         SpectralMutationStage _stage = SpectralMutationStage::None;
@@ -205,13 +209,13 @@ namespace Spectral {
         Curve baseMin, baseMid;
         bool hasBaseline = false;
 
-        std::atomic<bool> hanatosAvailable{ false };
+        std::atomic<bool> hanatosAvailable{false};
         NpySpectraLUT hanSpectra;
-        std::atomic<bool> mallettAvailable{ false };
+        std::atomic<bool> mallettAvailable{false};
         NpyFloat2D mallettBasis;
 
-        std::atomic<bool> spdInit{ false };
-        float sInv[9] = { 1.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,1.0f };
+        std::atomic<bool> spdInit{false};
+        float sInv[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
     };
 
     namespace detail {
@@ -228,15 +232,12 @@ namespace Spectral {
             SpectralMutationStage stage,
             const char* owner,
             const char* action = nullptr) noexcept {
-
             try {
                 if (!JTRACE_ENABLED(2)) {
                     return;
                 }
 
-                std::string msg = std::string("event=") + (event ? event : "unknown")
-                    + " stage=" + to_cstr(stage)
-                    + " depth=" + std::to_string(gSpectralMutationTlsState.depth);
+                std::string msg = std::string("event=") + (event ? event : "unknown") + " stage=" + to_cstr(stage) + " depth=" + std::to_string(gSpectralMutationTlsState.depth);
                 if (owner && owner[0] != '\0') {
                     msg += " owner=";
                     msg += owner;
@@ -247,8 +248,7 @@ namespace Spectral {
                 }
 
                 JTRACE_LEVEL(2, "MSPEC", msg);
-            }
-            catch (...) {
+            } catch (...) {
                 JuicerLogging::discard_current_exception();
             }
         }
@@ -257,9 +257,7 @@ namespace Spectral {
     inline SpectralMutationScope::SpectralMutationScope(
         SpectralMutationStage stage,
         const char* owner) noexcept
-        : _stage(stage)
-        , _owner(owner) {
-
+        : _stage(stage), _owner(owner) {
         if (stage == SpectralMutationStage::None) {
             return;
         }
@@ -307,7 +305,7 @@ namespace Spectral {
 
     inline bool spectral_mutation_scope_active() noexcept {
         return detail::gSpectralMutationTlsState.depth > 0 &&
-            detail::gSpectralMutationTlsState.stage != SpectralMutationStage::None;
+               detail::gSpectralMutationTlsState.stage != SpectralMutationStage::None;
     }
 
     inline SpectralMutationStage spectral_mutation_stage() noexcept {
@@ -367,8 +365,7 @@ namespace Spectral {
 
 // AGX-compatible numeric helpers shared by the CPU spectral and print pipeline code.
 template <typename T>
-inline T nan_to_num_agx(T v)
-{
+inline T nan_to_num_agx(T v) {
     if (std::isnan(v)) {
         return static_cast<T>(0);
     }
@@ -382,21 +379,18 @@ inline T nan_to_num_agx(T v)
 }
 
 template <typename T>
-inline T fmax_agx(T a, T b)
-{
+inline T fmax_agx(T a, T b) {
     // Match NumPy np.fmax: prefer the non-NaN operand when only one side is NaN.
     return std::fmax(a, b);
 }
 
-inline float density_to_light_sample_agx(float density, float illuminant)
-{
+inline float density_to_light_sample_agx(float density, float illuminant) {
     const double transmitted = std::pow(10.0, -static_cast<double>(density)) * static_cast<double>(illuminant);
     const float out = static_cast<float>(transmitted);
     return std::isnan(out) ? 0.0f : out;
 }
 
-inline double density_to_light_sample_agx(double density, double illuminant)
-{
+inline double density_to_light_sample_agx(double density, double illuminant) {
     const double out = std::pow(10.0, -density) * illuminant;
     return std::isnan(out) ? 0.0 : out;
 }
@@ -404,8 +398,7 @@ inline double density_to_light_sample_agx(double density, double illuminant)
 inline void density_to_light_agx(
     const std::vector<float>& density_spectral,
     const std::vector<float>& illuminant,
-    std::vector<float>& out_light)
-{
+    std::vector<float>& out_light) {
     const size_t n = std::min(density_spectral.size(), illuminant.size());
     out_light.resize(n);
     for (size_t i = 0; i < n; ++i) {
@@ -424,8 +417,7 @@ namespace AgxNanInternal {
     inline void dedup_pairs_keep_first_by_wavelength(
         const std::vector<std::pair<float, float>>& inPairs,
         std::vector<float>& outX,
-        std::vector<float>& outY)
-    {
+        std::vector<float>& outY) {
         outX.clear();
         outY.clear();
 
@@ -437,17 +429,17 @@ namespace AgxNanInternal {
             if (!std::isfinite(lambda) || !std::isfinite(value)) {
                 continue;
             }
-            temp.push_back({ lambda, value, i });
+            temp.push_back({lambda, value, i});
         }
         if (temp.empty()) {
             return;
         }
 
-        std::sort(temp.begin(), temp.end(),
-            [](const IndexedPair& a, const IndexedPair& b) {
-                if (a.lambda != b.lambda) return a.lambda < b.lambda;
-                return a.originalIndex < b.originalIndex;
-            });
+        std::sort(temp.begin(), temp.end(), [](const IndexedPair& a, const IndexedPair& b) {
+            if (a.lambda != b.lambda)
+                return a.lambda < b.lambda;
+            return a.originalIndex < b.originalIndex;
+        });
 
         float currentLambda = temp[0].lambda;
         float currentValue = temp[0].value;
@@ -484,8 +476,7 @@ namespace AgxNanInternal {
 inline std::vector<std::pair<float, float>> akima_resample_agx(
     const std::vector<std::pair<float, float>>& pairs,
     const float* axis_nm,
-    size_t axis_count)
-{
+    size_t axis_count) {
     std::vector<std::pair<float, float>> out;
     if (!axis_nm || axis_count == 0) {
         return out;
@@ -634,8 +625,7 @@ namespace Spectral {
 
     // DWG working space white point (D65)
     inline constexpr float gDWG_WhitePoint_XYZ[3] = {
-        0.950455f, 1.0f, 1.089058f
-    };
+        0.950455f, 1.0f, 1.089058f};
 
     // Spectral upsampling / SPD reconstruction selection.
     // Note: "Mallett" refers to the Mallett 2019 sRGB basis reconstruction (when Hanatos LUT is not selected/available).
@@ -646,8 +636,8 @@ namespace Spectral {
 
     inline SpectralUpsamplingMode spectral_upsampling_mode_from_index(int index) {
         return (index == static_cast<int>(SpectralUpsamplingMode::ForceMallett))
-            ? SpectralUpsamplingMode::ForceMallett
-            : SpectralUpsamplingMode::PreferHanatos;
+                   ? SpectralUpsamplingMode::ForceMallett
+                   : SpectralUpsamplingMode::PreferHanatos;
     }
 
     // ============================================================================
@@ -657,13 +647,13 @@ namespace Spectral {
     struct SpectralTables {
         // Wavelength axis
         std::vector<float> lambda;
-        int   K = 0;
+        int K = 0;
         float deltaLambda = 5.0f;
         float invYn = 1.0f;
-        float whiteXYZ[3] = { 0.0f, 0.0f, 0.0f };
+        float whiteXYZ[3] = {0.0f, 0.0f, 0.0f};
 
         // Reference illuminant white point (for chromatic adaptation in SPD reconstruction)
-        float refIllumWhiteXYZ[3] = { 0.95047f, 1.0f, 1.08883f };  // D65 default
+        float refIllumWhiteXYZ[3] = {0.95047f, 1.0f, 1.08883f}; // D65 default
 
         // Illuminant-weighted CMFs (Ax, Ay, Az) and raw CMFs
         std::vector<float> Ax, Ay, Az;
@@ -706,7 +696,7 @@ namespace Spectral {
     }
 
     inline void log_resample_failure(const char* context,
-        std::initializer_list<std::pair<const char*, bool>> states) {
+                                     std::initializer_list<std::pair<const char*, bool>> states) {
         std::ostringstream oss;
         oss << context;
         if (!states.size()) {
@@ -716,7 +706,8 @@ namespace Spectral {
         oss << " (";
         bool first = true;
         for (const auto& state : states) {
-            if (!first) oss << ", ";
+            if (!first)
+                oss << ", ";
             first = false;
             oss << state.first << '=' << (state.second ? "ok" : "empty");
         }
@@ -725,12 +716,15 @@ namespace Spectral {
     }
 
     inline void mean_power_normalize(std::vector<float>& spd) {
-        if (spd.empty()) return;
+        if (spd.empty())
+            return;
         double sum = 0.0;
-        for (float v : spd) sum += static_cast<double>(v);
+        for (float v : spd)
+            sum += static_cast<double>(v);
         double mean = sum / static_cast<double>(spd.size());
         if (mean > 0.0) {
-            for (float& v : spd) v = static_cast<float>(v / mean);
+            for (float& v : spd)
+                v = static_cast<float>(v / mean);
         }
     }
 
@@ -742,13 +736,18 @@ namespace Spectral {
     // Mirrors NumPy np.interp semantics: values are not "repaired" if non-finite.
     inline float sample_linear_pairs(const std::vector<std::pair<float, float>>& pairs, float lambda) {
         const size_t n = pairs.size();
-        if (n == 0) return 0.0f;
-        if (n == 1) return pairs.front().second;
-        if (lambda <= pairs.front().first) return pairs.front().second;
-        if (lambda >= pairs.back().first)  return pairs.back().second;
+        if (n == 0)
+            return 0.0f;
+        if (n == 1)
+            return pairs.front().second;
+        if (lambda <= pairs.front().first)
+            return pairs.front().second;
+        if (lambda >= pairs.back().first)
+            return pairs.back().second;
 
         size_t i1 = 1;
-        while (i1 < n && pairs[i1].first < lambda) ++i1;
+        while (i1 < n && pairs[i1].first < lambda)
+            ++i1;
         const size_t i0 = i1 > 0 ? (i1 - 1) : 0;
 
         const float x0 = pairs[i0].first;
@@ -770,12 +769,12 @@ namespace Spectral {
 
     inline void sanitize_pairs_for_resample_linear(
         const std::vector<std::pair<float, float>>& inPairs,
-        std::vector<std::pair<float, float>>& sanitized)
-    {
+        std::vector<std::pair<float, float>>& sanitized) {
         // agx-emulsion sorts by wavelength and removes duplicates with "first occurrence wins"
         // semantics (np.unique(..., return_index=True) after sorting).
         sanitized.clear();
-        if (inPairs.empty()) return;
+        if (inPairs.empty())
+            return;
 
         struct IndexedPair {
             float lambda = 0.0f;
@@ -790,15 +789,16 @@ namespace Spectral {
             if (!std::isfinite(lambda)) {
                 continue;
             }
-            temp.push_back({ lambda, inPairs[i].second, i });
+            temp.push_back({lambda, inPairs[i].second, i});
         }
-        if (temp.empty()) return;
+        if (temp.empty())
+            return;
 
-        std::sort(temp.begin(), temp.end(),
-            [](const IndexedPair& a, const IndexedPair& b) {
-                if (a.lambda != b.lambda) return a.lambda < b.lambda;
-                return a.originalIndex < b.originalIndex;
-            });
+        std::sort(temp.begin(), temp.end(), [](const IndexedPair& a, const IndexedPair& b) {
+            if (a.lambda != b.lambda)
+                return a.lambda < b.lambda;
+            return a.originalIndex < b.originalIndex;
+        });
 
         sanitized.reserve(temp.size());
         float lastLambda = temp.front().lambda;
@@ -874,13 +874,12 @@ namespace Spectral {
     inline bool build_curve_on_reference_axis_from_linear_pairs(
         Curve& curve,
         const std::vector<std::pair<float, float>>& pairs,
-        ReferenceResampleKernel kernel = ReferenceResampleKernel::Linear)
-    {
+        ReferenceResampleKernel kernel = ReferenceResampleKernel::Linear) {
         const bool useAkima = (kernel == ReferenceResampleKernel::Akima);
         std::vector<std::pair<float, float>> resampled =
             useAkima
-            ? resample_pairs_akima_to_reference_axis(pairs)
-            : resample_pairs_linear_to_reference_axis(pairs);
+                ? resample_pairs_akima_to_reference_axis(pairs)
+                : resample_pairs_linear_to_reference_axis(pairs);
 
         curve.lambda_nm.clear();
         curve.linear.clear();
@@ -908,8 +907,7 @@ namespace Spectral {
     inline bool build_curve_on_reference_axis_from_log10_pairs(
         Curve& curve,
         const std::vector<std::pair<float, float>>& log10pairs,
-        ReferenceResampleKernel kernel = ReferenceResampleKernel::Linear)
-    {
+        ReferenceResampleKernel kernel = ReferenceResampleKernel::Linear) {
         curve.lambda_nm.clear();
         curve.linear.clear();
 
@@ -951,8 +949,7 @@ namespace Spectral {
     inline bool build_curve_on_reference_axis_from_aligned_pairs(
         Curve& curve,
         const std::vector<std::pair<float, float>>& pairs,
-        bool clampNegative = false)
-    {
+        bool clampNegative = false) {
         if (pairs.size() != static_cast<size_t>(SpectralShape::K)) {
             return false;
         }
@@ -975,8 +972,7 @@ namespace Spectral {
 
     inline bool build_curve_on_reference_axis_from_log10_aligned_pairs(
         Curve& curve,
-        const std::vector<std::pair<float, float>>& logPairs)
-    {
+        const std::vector<std::pair<float, float>>& logPairs) {
         if (logPairs.size() != static_cast<size_t>(SpectralShape::K)) {
             return false;
         }
@@ -1008,8 +1004,9 @@ namespace Spectral {
             return;
         }
         std::vector<std::pair<float, float>> sorted = pairs;
-        std::sort(sorted.begin(), sorted.end(),
-            [](auto& a, auto& b) { return a.first < b.first; });
+        std::sort(sorted.begin(), sorted.end(), [](auto& a, auto& b) {
+            return a.first < b.first;
+        });
 
         std::vector<std::pair<float, float>> filtered;
         filtered.reserve(sorted.size());
@@ -1047,20 +1044,25 @@ namespace Spectral {
         }
         std::string line;
         while (std::getline(file, line)) {
-            if (line.empty()) continue;
+            if (line.empty())
+                continue;
             // Strip comments starting at # or ;
             auto strip_comment = [&](char c) {
                 size_t p = line.find(c);
-                if (p != std::string::npos) line.erase(p);
-                };
+                if (p != std::string::npos)
+                    line.erase(p);
+            };
             strip_comment('#');
             strip_comment(';');
             std::istringstream ss(line);
             float x = 0.0f, y = 0.0f;
-            if (!(ss >> x)) continue;
+            if (!(ss >> x))
+                continue;
             // Skip optional comma/semicolon
-            while (ss.peek() == ',' || ss.peek() == ';') ss.get();
-            if (!(ss >> y)) continue;
+            while (ss.peek() == ',' || ss.peek() == ';')
+                ss.get();
+            if (!(ss >> y))
+                continue;
             data.emplace_back(x, y);
         }
         return data;
@@ -1074,27 +1076,36 @@ namespace Spectral {
         }
         std::string line;
         while (std::getline(file, line)) {
-            if (line.empty()) continue;
+            if (line.empty())
+                continue;
             auto strip_comment = [&](char c) {
                 size_t p = line.find(c);
-                if (p != std::string::npos) line.erase(p);
-                };
+                if (p != std::string::npos)
+                    line.erase(p);
+            };
             strip_comment('#');
             strip_comment(';');
 
             std::istringstream ss(line);
             float l = 0.0f, xv = 0.0f, yv = 0.0f, zv = 0.0f;
 
-            if (!(ss >> l)) continue;
-            while (ss.peek() == ',' || ss.peek() == ';') ss.get();
+            if (!(ss >> l))
+                continue;
+            while (ss.peek() == ',' || ss.peek() == ';')
+                ss.get();
 
-            if (!(ss >> xv)) continue;
-            while (ss.peek() == ',' || ss.peek() == ';') ss.get();
+            if (!(ss >> xv))
+                continue;
+            while (ss.peek() == ',' || ss.peek() == ';')
+                ss.get();
 
-            if (!(ss >> yv)) continue;
-            while (ss.peek() == ',' || ss.peek() == ';') ss.get();
+            if (!(ss >> yv))
+                continue;
+            while (ss.peek() == ',' || ss.peek() == ';')
+                ss.get();
 
-            if (!(ss >> zv)) continue;
+            if (!(ss >> zv))
+                continue;
 
             out.xbar.emplace_back(l, xv);
             out.ybar.emplace_back(l, yv);
@@ -1113,17 +1124,20 @@ namespace Spectral {
         }
         std::string line;
         while (std::getline(file, line)) {
-            if (line.empty()) continue;
+            if (line.empty())
+                continue;
             // Strip comments
             auto strip_comment = [&](char c) {
                 size_t p = line.find(c);
-                if (p != std::string::npos) line.erase(p);
-                };
+                if (p != std::string::npos)
+                    line.erase(p);
+            };
             strip_comment('#');
             strip_comment(';');
             std::istringstream ss(line);
             float v = 0.0f;
-            if (!(ss >> v)) continue;
+            if (!(ss >> v))
+                continue;
             data.push_back(v);
         }
         return data;
@@ -1179,8 +1193,7 @@ namespace Spectral {
     inline bool build_curve_on_log_exposure_axis(
         Curve& curve,
         const std::vector<std::pair<float, float>>& pairs,
-        bool clampNegative = false)
-    {
+        bool clampNegative = false) {
         if (pairs.size() != static_cast<size_t>(kLogExposureSamples)) {
             return false;
         }
@@ -1223,11 +1236,11 @@ namespace Spectral {
                 }
             }
             return true;
-            };
+        };
 
         return matches_reference(cmf.xbar) &&
-            matches_reference(cmf.ybar) &&
-            matches_reference(cmf.zbar);
+               matches_reference(cmf.ybar) &&
+               matches_reference(cmf.zbar);
     }
 
     // ============================================================================
@@ -1254,7 +1267,8 @@ namespace Spectral {
             // Compare lambda axis first (shapes should match)
             for (size_t i = 0; i < newCurve.lambda_nm.size(); ++i) {
                 if (newCurve.lambda_nm[i] != gIlluminantCurve.lambda_nm[i]) {
-                    identical = false; break;
+                    identical = false;
+                    break;
                 }
             }
             // Compare spectrum with a tight epsilon (mean‑power normalization should make this exact or very close)
@@ -1262,7 +1276,8 @@ namespace Spectral {
                 constexpr float eps = 1e-6f;
                 for (size_t i = 0; i < newCurve.linear.size(); ++i) {
                     if (std::fabs(newCurve.linear[i] - gIlluminantCurve.linear[i]) > eps) {
-                        identical = false; break;
+                        identical = false;
+                        break;
                     }
                 }
             }
@@ -1280,14 +1295,13 @@ namespace Spectral {
     inline void set_layer_sensitivities(
         const std::vector<std::pair<float, float>>& blue_log10,
         const std::vector<std::pair<float, float>>& green_log10,
-        const std::vector<std::pair<float, float>>& red_log10)
-    {
+        const std::vector<std::pair<float, float>>& red_log10) {
         const bool bOk = build_curve_on_reference_axis_from_log10_pairs(gSensBlue, blue_log10);
         const bool gOk = build_curve_on_reference_axis_from_log10_pairs(gSensGreen, green_log10);
         const bool rOk = build_curve_on_reference_axis_from_log10_pairs(gSensRed, red_log10);
         if (!(bOk && gOk && rOk)) {
             log_resample_failure("Layer sensitivity resample failed",
-                { {"B", bOk}, {"G", gOk}, {"R", rOk} });
+                                 {{"B", bOk}, {"G", gOk}, {"R", rOk}});
         }
     }
 
@@ -1301,7 +1315,7 @@ namespace Spectral {
         const bool cOk = build_curve_on_reference_axis_from_linear_pairs(gEpsC, c_linear);
         if (!(yOk && mOk && cOk)) {
             log_resample_failure("Dye extinction resample failed",
-                { {"Y", yOk}, {"M", mOk}, {"C", cOk} });
+                                 {{"Y", yOk}, {"M", mOk}, {"C", cOk}});
         }
     }
 
@@ -1316,7 +1330,7 @@ namespace Spectral {
         const bool cOk = build_curve_on_reference_axis_from_log10_pairs(gEpsC, c_log10);
         if (!(yOk && mOk && cOk)) {
             log_resample_failure("Dye extinction log10 resample failed",
-                { {"Y", yOk}, {"M", mOk}, {"C", cOk} });
+                                 {{"Y", yOk}, {"M", mOk}, {"C", cOk}});
         }
     }
 
@@ -1326,40 +1340,37 @@ namespace Spectral {
     inline void set_cie_1931_2deg_cmf(
         const std::vector<std::pair<float, float>>& xbar,
         const std::vector<std::pair<float, float>>& ybar,
-        const std::vector<std::pair<float, float>>& zbar)
-    {
+        const std::vector<std::pair<float, float>>& zbar) {
         const bool xOk = build_curve_on_reference_axis_from_linear_pairs(gXBar, xbar);
         const bool yOk = build_curve_on_reference_axis_from_linear_pairs(gYBar, ybar);
         const bool zOk = build_curve_on_reference_axis_from_linear_pairs(gZBar, zbar);
         if (!(xOk && yOk && zOk)) {
             log_resample_failure("CIE 1931 CMF resample failed",
-                { {"x", xOk}, {"y", yOk}, {"z", zOk} });
+                                 {{"x", xOk}, {"y", yOk}, {"z", zOk}});
         }
     }
 
     // --- Baseline spectral densities (global, not per-dye) ---
     inline void set_negative_baseline_linear(
         const std::vector<std::pair<float, float>>& min_linear,
-        const std::vector<std::pair<float, float>>& mid_linear)
-    {
+        const std::vector<std::pair<float, float>>& mid_linear) {
         const bool minOk = build_curve_on_reference_axis_from_linear_pairs(gBaseMin, min_linear);
         const bool midOk = build_curve_on_reference_axis_from_linear_pairs(gBaseMid, mid_linear);
         if (!(minOk && midOk)) {
             log_resample_failure("Baseline resample failed",
-                { {"min", minOk}, {"mid", midOk} });
+                                 {{"min", minOk}, {"mid", midOk}});
         }
         gHasBaseline = !gBaseMin.lambda_nm.empty() && !gBaseMid.lambda_nm.empty();
     }
 
     inline void set_negative_baseline_log10(
         const std::vector<std::pair<float, float>>& min_log10,
-        const std::vector<std::pair<float, float>>& mid_log10)
-    {
+        const std::vector<std::pair<float, float>>& mid_log10) {
         const bool minOk = build_curve_on_reference_axis_from_log10_pairs(gBaseMin, min_log10);
         const bool midOk = build_curve_on_reference_axis_from_log10_pairs(gBaseMid, mid_log10);
         if (!(minOk && midOk)) {
             log_resample_failure("Baseline log10 resample failed",
-                { {"min", minOk}, {"mid", midOk} });
+                                 {{"min", minOk}, {"mid", midOk}});
         }
         gHasBaseline = !gBaseMin.lambda_nm.empty() && !gBaseMid.lambda_nm.empty();
     }

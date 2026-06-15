@@ -883,17 +883,6 @@ namespace {
         return (magnitude > minMagnitude) ? magnitude : std::numeric_limits<float>::quiet_NaN();
     }
 
-    inline bool curve_has_nonfinite_samples(const Spectral::Curve& curve) {
-        const float* valueIt = curve.linear.data();
-        const float* const valueEnd = valueIt + curve.linear.size();
-        for (; valueIt < valueEnd; ++valueIt) {
-            if (!is_finite(*valueIt)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     inline float curve_max_clamped_or_default(
         const Spectral::Curve& curve,
         float fallback = 1.0f,
@@ -1081,12 +1070,6 @@ namespace {
     inline void mix_coupler_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         mix_hash_field(h, p.couplersActive, mix);
         mix_hash_field_scaled(h, p.couplersAmount, 10000.0, mix);
-        mix_hash_field_scaled(h, p.ratioR, 10000.0, mix);
-        mix_hash_field_scaled(h, p.ratioG, 10000.0, mix);
-        mix_hash_field_scaled(h, p.ratioB, 10000.0, mix);
-        mix_hash_field_scaled(h, p.sigma, 10000.0, mix);
-        mix_hash_field_scaled(h, p.high, 10000.0, mix);
-        mix_hash_field_scaled(h, p.spatialSigmaMicrometers, 10000.0, mix);
     }
 
     inline void sanitize_dir_matrix(float matrix[3][3]) {
@@ -1119,7 +1102,6 @@ namespace {
         }
     }
 
-#ifndef JUICER_ENABLE_COUPLERS
     inline void build_dir_matrix_fallback(float matrix[3][3], const float amountValues[3], float layerSigma) {
         const float sigma = sanitize_nonnegative_or(layerSigma, 0.0f);
         float amount[3] = {amountValues[0], amountValues[1], amountValues[2]};
@@ -1160,7 +1142,6 @@ namespace {
 
         sanitize_dir_matrix(matrix);
     }
-#endif
 
     void recompute_working_state_dir_overlay(const RebuildStateSnapshot& snapshot, const ParamSnapshot& P, WorkingState& target) {
         (void)snapshot;
@@ -1188,7 +1169,7 @@ namespace {
                 amountScale * clamp_coupler_ratio(effectiveRatioB),
                 amountScale * clamp_coupler_ratio(effectiveRatioG),
                 amountScale * clamp_coupler_ratio(effectiveRatioR)};
-#ifdef JUICER_ENABLE_COUPLERS
+#if 0
             Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #else
             build_dir_matrix_fallback(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
@@ -1197,7 +1178,7 @@ namespace {
             dirRT.spatialSigmaMicrometers = static_cast<float>(effectiveSpatialSigma);
             dirRT.spatialSigmaPixels = 0.0f;
 
-#ifdef JUICER_ENABLE_COUPLERS
+#if 0
             if (dirRT.active) {
                 if (curve_has_nonfinite_samples(target.densB) ||
                     curve_has_nonfinite_samples(target.densG) ||
@@ -2211,18 +2192,11 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
     S.base.referenceIlluminant = profile.referenceIlluminant;
     S.base.viewingIlluminant = profile.viewingIlluminant;
     S.filmReferenceIlluminant = S.base.referenceIlluminant;
-    S.base.dirCouplers = profile.dirCouplers;
     S.base.cameraFilterUV = profile.cameraFilterUV;
     S.base.cameraFilterIR = profile.cameraFilterIR;
     S.base.cameraFilterDefined = profile.hasCameraFilterUV || profile.hasCameraFilterIR;
-    if (profile.dirCouplers.hasData && is_finite(profile.dirCouplers.diffusionSizeUm)) {
-        const float spatialSigmaUm = std::clamp(profile.dirCouplers.diffusionSizeUm, 0.0f, 50.0f);
-        S.couplerProfileSpatialSigmaMicrometers = static_cast<double>(spatialSigmaUm);
-        S.couplerProfileSpatialSigmaValid = true;
-    } else {
-        S.couplerProfileSpatialSigmaMicrometers = 0.0;
-        S.couplerProfileSpatialSigmaValid = false;
-    }
+    S.couplerProfileSpatialSigmaMicrometers = 0.0;
+    S.couplerProfileSpatialSigmaValid = false;
     S.base.maskingCouplers = profile.maskingCouplers;
     S.base.grain = profile.grain;
     S.base.halation = profile.halation;
@@ -2940,7 +2914,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             amountScale * clamp_coupler_ratio(effectiveRatioB),
             amountScale * clamp_coupler_ratio(effectiveRatioG),
             amountScale * clamp_coupler_ratio(effectiveRatioR)};
-#ifdef JUICER_ENABLE_COUPLERS
+#if 0
         Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
 #else
         build_dir_matrix_fallback(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
@@ -2949,7 +2923,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         dirRT.spatialSigmaMicrometers = static_cast<float>(effectiveSpatialSigma);
         dirRT.spatialSigmaPixels = 0.0f;
 
-#ifdef JUICER_ENABLE_COUPLERS
+#if 0
         if (dirRT.active) {
             // agx-emulsion parity: density curves may contain intentional toe NaNs. DIR pre-correction
             // must not "heal" them into 0 densities; if authored NaNs exist, skip pre-correction and
@@ -3040,7 +3014,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         }
 
         float dirMatrix[3][3] = {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
-#ifdef JUICER_ENABLE_COUPLERS
+#if 0
         Couplers::build_dir_matrix(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
 #else
         build_dir_matrix_fallback(dirMatrix, amountRGB, dirCfg.hasData ? dirCfg.diffusionInterlayer : 0.0f);
@@ -3693,7 +3667,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P) {
     (void)instance;
 
-#ifndef JUICER_ENABLE_COUPLERS
+#if 1
     rebuild_working_state(instance, S, P);
     return;
 #else

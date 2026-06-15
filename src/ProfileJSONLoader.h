@@ -63,6 +63,9 @@ namespace Profiles {
         std::array<float, 3> scatteringSizeUm{{0.0f, 0.0f, 0.0f}};
     };
 
+    // SF_PHASE5_BLOCKED_LegacyDirProfile owner=legacy broad renderer;
+    // allowed_call_sites=hard-blocked WorkingState source only; output_hash_resource_impact=none;
+    // cleanup_symbol=SF_PHASE5_BLOCKED_LegacyDirProfile; disposition=delete_with_legacy_renderer.
     struct DirCouplersProfile {
         bool hasData = false;
         bool active = false;

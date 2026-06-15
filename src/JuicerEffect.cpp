@@ -17,7 +17,6 @@
 
 #include "JuicerState.h"
 #include "ColorTransforms.h"
-#include "Couplers.h"
 #include "Illuminants.h"
 #include "OutputColor.h"
 #include "Print.h"
@@ -380,96 +379,10 @@ namespace {
         return HalationMasterSelector::None;
     }
 
-#ifdef JUICER_ENABLE_COUPLERS
-    constexpr int kDirCouplersInitVersionCurrent = 2;
-
-    enum class CouplerParamKind {
-        None = 0,
-        Active,
-        Amount,
-        RatioB,
-        RatioG,
-        RatioR,
-        Sigma,
-        High,
-        SpatialSigma
-    };
-
-    inline CouplerParamKind coupler_param_kind(const char* changedName) {
-        using namespace Couplers;
-        if (param_name_is(changedName, kParamCouplersActive)) {
-            return CouplerParamKind::Active;
-        }
-        if (param_name_is(changedName, kParamCouplersAmount)) {
-            return CouplerParamKind::Amount;
-        }
-        if (param_name_is(changedName, kParamCouplersAmountB)) {
-            return CouplerParamKind::RatioB;
-        }
-        if (param_name_is(changedName, kParamCouplersAmountG)) {
-            return CouplerParamKind::RatioG;
-        }
-        if (param_name_is(changedName, kParamCouplersAmountR)) {
-            return CouplerParamKind::RatioR;
-        }
-        if (param_name_is(changedName, kParamCouplersLayerSigma)) {
-            return CouplerParamKind::Sigma;
-        }
-        if (param_name_is(changedName, kParamCouplersHighExpShift)) {
-            return CouplerParamKind::High;
-        }
-        if (param_name_is(changedName, kParamCouplersSpatialSigma)) {
-            return CouplerParamKind::SpatialSigma;
-        }
-        return CouplerParamKind::None;
-    }
-
-    constexpr int kCouplerFollowStockActive = 1 << 0;
-    constexpr int kCouplerFollowStockAmount = 1 << 1;
-    constexpr int kCouplerFollowStockRatioB = 1 << 2;
-    constexpr int kCouplerFollowStockRatioG = 1 << 3;
-    constexpr int kCouplerFollowStockRatioR = 1 << 4;
-    constexpr int kCouplerFollowStockSigma = 1 << 5;
-    constexpr int kCouplerFollowStockHigh = 1 << 6;
-    constexpr int kCouplerFollowStockSpatialSigma = 1 << 7;
-    constexpr int kCouplerFollowStockAllMask =
-        kCouplerFollowStockActive |
-        kCouplerFollowStockAmount |
-        kCouplerFollowStockRatioB |
-        kCouplerFollowStockRatioG |
-        kCouplerFollowStockRatioR |
-        kCouplerFollowStockSigma |
-        kCouplerFollowStockHigh |
-        kCouplerFollowStockSpatialSigma;
-
-    inline int coupler_follow_stock_bit(CouplerParamKind kind) {
-        switch (kind) {
-            case CouplerParamKind::Active:
-                return kCouplerFollowStockActive;
-            case CouplerParamKind::Amount:
-                return kCouplerFollowStockAmount;
-            case CouplerParamKind::RatioB:
-                return kCouplerFollowStockRatioB;
-            case CouplerParamKind::RatioG:
-                return kCouplerFollowStockRatioG;
-            case CouplerParamKind::RatioR:
-                return kCouplerFollowStockRatioR;
-            case CouplerParamKind::Sigma:
-                return kCouplerFollowStockSigma;
-            case CouplerParamKind::High:
-                return kCouplerFollowStockHigh;
-            case CouplerParamKind::SpatialSigma:
-                return kCouplerFollowStockSpatialSigma;
-            case CouplerParamKind::None:
-            default:
-                return 0;
-        }
-    }
-
     inline bool is_coupler_param_name(const char* changedName) {
-        return coupler_param_kind(changedName) != CouplerParamKind::None;
+        return param_name_is(changedName, JuicerParams::kDirCouplersActive) ||
+               param_name_is(changedName, JuicerParams::kDirCouplersAmount);
     }
-#endif
 
     inline bool auto_exposure_cache_param_changed(const std::string& paramName) {
         return param_name_is(paramName, kParamCameraAutoExposure) ||
@@ -591,9 +504,7 @@ namespace {
         flags.printProfile = param_name_is(changedName, JuicerParams::kPrintProfileKey);
         flags.enlargerDichroicSet = param_name_is(changedName, kParamEnlargerDichroicSet);
         flags.filmProfile = param_name_is(changedName, JuicerParams::kFilmProfileKey);
-#ifdef JUICER_ENABLE_COUPLERS
         flags.couplerParam = is_coupler_param_name(changedName);
-#endif
         return flags;
     }
 
@@ -604,17 +515,6 @@ namespace {
             state.illuminantOverride.enlarger = true;
         }
     }
-
-#ifdef JUICER_ENABLE_COUPLERS
-    inline void maybe_notify_coupler_param_change(
-        const ChangedParamFlags& changed,
-        const char* changedNameOrNull) {
-        if (!changed.couplerParam) {
-            return;
-        }
-        Couplers::on_param_changed(changedNameOrNull);
-    }
-#endif
 
     inline void trace_param_change_verbose_if(
         bool traceVerbose,
@@ -723,10 +623,6 @@ namespace {
 
     inline bool is_positive_finite(double value) {
         return is_finite(value) && value > 0.0;
-    }
-
-    inline float sanitize_nonnegative_finite_or(float value, float fallback) {
-        return (is_finite(value) && value >= 0.0f) ? value : fallback;
     }
 
     inline double read_sanitized_double(
@@ -1015,114 +911,6 @@ namespace {
         }
     }
 
-    inline void set_int_param_if(OFX::IntParam* param, int value) {
-        if (param) {
-            param->setValue(value);
-        }
-    }
-
-#ifdef JUICER_ENABLE_COUPLERS
-    struct CouplerProfileDefaults {
-        bool active = true;
-        double amount = kFactoryCouplersAmount;
-        double ratioB = kFactoryCouplersRatioB;
-        double ratioG = kFactoryCouplersRatioG;
-        double ratioR = kFactoryCouplersRatioR;
-        double sigma = kFactoryCouplersSigma;
-        double high = kFactoryCouplersHigh;
-        double spatialSigmaMicrometers = kFactoryCouplersSpatialSigma;
-    };
-
-    inline CouplerProfileDefaults build_coupler_profile_defaults(
-        const Profiles::DirCouplersProfile& dirCfg,
-        bool spatialSigmaValid,
-        double spatialSigmaMicrometers,
-        const ParamSnapshot& fallback) {
-        CouplerProfileDefaults defaults{};
-        defaults.active = dirCfg.active;
-        defaults.amount = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.amount),
-            fallback.couplersAmount,
-            0.0,
-            2.0);
-        defaults.ratioB = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.ratioRGB[0]),
-            fallback.ratioB,
-            0.0,
-            1.0);
-        defaults.ratioG = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.ratioRGB[1]),
-            fallback.ratioG,
-            0.0,
-            1.0);
-        defaults.ratioR = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.ratioRGB[2]),
-            fallback.ratioR,
-            0.0,
-            1.0);
-        defaults.sigma = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.diffusionInterlayer),
-            fallback.sigma,
-            0.0,
-            4.0);
-        defaults.high = sanitize_finite_clamped(
-            static_cast<double>(dirCfg.highExposureShift),
-            fallback.high,
-            0.0,
-            1.0);
-        defaults.spatialSigmaMicrometers = sanitize_finite_clamped(
-            spatialSigmaValid ? spatialSigmaMicrometers : static_cast<double>(dirCfg.diffusionSizeUm),
-            fallback.spatialSigmaMicrometers,
-            0.0,
-            50.0);
-        return defaults;
-    }
-
-    inline int sanitize_coupler_follow_stock_mask(int mask) {
-        return mask & kCouplerFollowStockAllMask;
-    }
-
-    inline bool coupler_follow_stock_enabled(int mask, CouplerParamKind kind) {
-        const int bit = coupler_follow_stock_bit(kind);
-        return bit != 0 && ((mask & bit) != 0);
-    }
-
-    inline int infer_coupler_follow_stock_mask(
-        const ParamSnapshot& current,
-        const CouplerProfileDefaults& defaults) {
-        auto approx_equal_double = [](double a, double b, double eps = 1e-6) {
-            return std::fabs(a - b) <= eps;
-        };
-
-        int followMask = 0;
-        if (current.couplersActive == bool_to_i32(defaults.active)) {
-            followMask |= kCouplerFollowStockActive;
-        }
-        if (approx_equal_double(current.couplersAmount, defaults.amount)) {
-            followMask |= kCouplerFollowStockAmount;
-        }
-        if (approx_equal_double(current.ratioB, defaults.ratioB)) {
-            followMask |= kCouplerFollowStockRatioB;
-        }
-        if (approx_equal_double(current.ratioG, defaults.ratioG)) {
-            followMask |= kCouplerFollowStockRatioG;
-        }
-        if (approx_equal_double(current.ratioR, defaults.ratioR)) {
-            followMask |= kCouplerFollowStockRatioR;
-        }
-        if (approx_equal_double(current.sigma, defaults.sigma)) {
-            followMask |= kCouplerFollowStockSigma;
-        }
-        if (approx_equal_double(current.high, defaults.high)) {
-            followMask |= kCouplerFollowStockHigh;
-        }
-        if (approx_equal_double(current.spatialSigmaMicrometers, defaults.spatialSigmaMicrometers)) {
-            followMask |= kCouplerFollowStockSpatialSigma;
-        }
-        return followMask;
-    }
-#endif
-
     inline void set_double2_param_if(
         OFX::Double2DParam* param,
         double x,
@@ -1320,51 +1108,13 @@ namespace {
         snapshot.inputCctfDecoding = read_bool_param_as_i32(inputCctfDecodingParam, false);
     }
 
-#ifdef JUICER_ENABLE_COUPLERS
-    struct CouplerSnapshotValues {
-        int active = 1;
-        double amount = 0.0;
-        double ratioR = 0.0;
-        double ratioG = 0.0;
-        double ratioB = 0.0;
-        double sigma = 0.0;
-        double high = 0.0;
-        double spatialSigmaMicrometers = 0.0;
-    };
-
-    inline CouplerSnapshotValues read_coupler_snapshot_values(
+    inline void read_coupler_snapshot_values(
         OFX::BooleanParam* couplersActiveParam,
         OFX::DoubleParam* couplersAmountParam,
-        OFX::DoubleParam* couplersAmountRParam,
-        OFX::DoubleParam* couplersAmountGParam,
-        OFX::DoubleParam* couplersAmountBParam,
-        OFX::DoubleParam* couplersSigmaParam,
-        OFX::DoubleParam* couplersHighParam,
-        OFX::DoubleParam* couplersSpatialSigmaParam,
-        const ParamSnapshot& fallback) {
-        CouplerSnapshotValues values{};
-        values.active = read_bool_param_as_i32(couplersActiveParam, true);
-        values.amount = read_double_param_or(couplersAmountParam, fallback.couplersAmount);
-        values.ratioR = read_double_param_or(couplersAmountRParam, fallback.ratioR);
-        values.ratioG = read_double_param_or(couplersAmountGParam, fallback.ratioG);
-        values.ratioB = read_double_param_or(couplersAmountBParam, fallback.ratioB);
-        values.sigma = read_double_param_or(couplersSigmaParam, fallback.sigma);
-        values.high = read_double_param_or(couplersHighParam, fallback.high);
-        values.spatialSigmaMicrometers = read_double_param_or(couplersSpatialSigmaParam, 0.0);
-        return values;
+        ParamSnapshot& snapshot) {
+        snapshot.couplersActive = read_bool_param_as_i32(couplersActiveParam, true);
+        snapshot.couplersAmount = read_double_param_or(couplersAmountParam, snapshot.couplersAmount);
     }
-
-    inline void apply_coupler_snapshot_values(ParamSnapshot& snapshot, const CouplerSnapshotValues& values) {
-        snapshot.couplersActive = values.active;
-        snapshot.couplersAmount = values.amount;
-        snapshot.ratioR = values.ratioR;
-        snapshot.ratioG = values.ratioG;
-        snapshot.ratioB = values.ratioB;
-        snapshot.sigma = values.sigma;
-        snapshot.high = values.high;
-        snapshot.spatialSigmaMicrometers = values.spatialSigmaMicrometers;
-    }
-#endif
 
     template <size_t N>
     inline double mean_array(const std::array<double, N>& values) {
@@ -1495,33 +1245,6 @@ namespace {
     inline float finite_exp2_scale(double ev) {
         const float scale = static_cast<float>(std::exp2(ev));
         return is_finite(scale) ? scale : 1.0f;
-    }
-
-    inline void sanitize_dir_matrix(float matrix[3][3]) {
-        float* valueIt = &matrix[0][0];
-        const float* const valueEnd = valueIt + 9;
-        for (; valueIt < valueEnd; ++valueIt) {
-            float value = *valueIt;
-            if (!is_finite(value))
-                value = 0.0f;
-            if (value < -10.0f)
-                value = -10.0f;
-            if (value > 10.0f)
-                value = 10.0f;
-            *valueIt = value;
-        }
-    }
-
-    inline bool has_nonzero_finite_dir_matrix(const float matrix[3][3]) {
-        const float* valueIt = &matrix[0][0];
-        const float* const valueEnd = valueIt + 9;
-        for (; valueIt < valueEnd; ++valueIt) {
-            const float value = *valueIt;
-            if (is_finite(value) && value != 0.0f) {
-                return true;
-            }
-        }
-        return false;
     }
 
     constexpr std::uint64_t kAutoExposureMaskCacheMaxBytes = 96ull * 1024ull * 1024ull;
@@ -2853,72 +2576,6 @@ JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
     return result;
 }
 
-#ifdef JUICER_ENABLE_COUPLERS
-Couplers::Runtime JuicerEffect::prepareCouplers(
-    const OFX::RenderArguments& args,
-    int fullWidth,
-    int fullHeight,
-    float pixelSizeUm) const {
-    Couplers::Runtime dirRT{};
-    if (!has_loaded_base_state(_state.get())) {
-        return dirRT;
-    }
-
-    const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(_state.get());
-    if (wsCur && wsCur->buildCounter > 0) {
-        dirRT = wsCur->dirRT;
-        float* dMaxIt = dirRT.dMax;
-        for (int i = 0; i < 3; ++i, ++dMaxIt) {
-            float v = static_cast<float>(sanitize_positive_finite_or(*dMaxIt, 1.0));
-            if (v > 1000.0f)
-                v = 1000.0f;
-            *dMaxIt = v;
-        }
-        sanitize_dir_matrix(dirRT.M);
-    }
-
-    float sigmaPixels = 0.0f;
-    const float sigmaMicrometers = dirRT.spatialSigmaMicrometers;
-    const bool hasPixelSize = sanitize_positive_finite_or(pixelSizeUm, 0.0) > 0.0;
-    if (sigmaMicrometers > 0.0f && hasPixelSize) {
-        sigmaPixels = sigmaMicrometers / pixelSizeUm;
-        sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
-    } else {
-        // Fallback to cached geometry if pixelSizeUm was not available
-        const double filmLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
-
-        const double widthPx = static_cast<double>(fullWidth);
-        const double heightPx = static_cast<double>(fullHeight);
-        const double longEdgePx = std::max(widthPx, heightPx);
-
-        if (sigmaMicrometers > 0.0f && longEdgePx > 0.0 && filmLongEdgeMm > 0.0) {
-            sigmaPixels = Couplers::spatial_sigma_pixels_from_micrometers(
-                sigmaMicrometers,
-                filmLongEdgeMm,
-                widthPx,
-                heightPx);
-            sigmaPixels = sanitize_nonnegative_finite_or(sigmaPixels, 0.0f);
-        }
-    }
-    dirRT.spatialSigmaPixels = sigmaPixels;
-
-    auto dir_has_effect = [](const Couplers::Runtime& rt) -> bool {
-        if (!rt.active) {
-            return false;
-        }
-        return has_nonzero_finite_dir_matrix(rt.M);
-    };
-
-    if (!dir_has_effect(dirRT)) {
-        // Provably zero-effect DIR (e.g. amount==0). Treat as inactive so we can skip the
-        // extra DIR sampling path and any spatial-DIR build work without changing results.
-        dirRT.active = false;
-    }
-
-    return dirRT;
-}
-#endif
-
 JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
     WorkingStateInfo info{};
     if (!has_loaded_base_state(_state.get())) {
@@ -2971,18 +2628,8 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pOutputLinearPassThrough = fetchBooleanParam(kParamOutputLinearPassThrough);
 
 
-#ifdef JUICER_ENABLE_COUPLERS
-        _pCouplersActive = fetchBooleanParam(Couplers::kParamCouplersActive);
-        _pCouplersAmount = fetchDoubleParam(Couplers::kParamCouplersAmount);
-        _pCouplersAmountR = fetchDoubleParam(Couplers::kParamCouplersAmountR);
-        _pCouplersAmountG = fetchDoubleParam(Couplers::kParamCouplersAmountG);
-        _pCouplersAmountB = fetchDoubleParam(Couplers::kParamCouplersAmountB);
-        _pCouplersSigma = fetchDoubleParam(Couplers::kParamCouplersLayerSigma);
-        _pCouplersHigh = fetchDoubleParam(Couplers::kParamCouplersHighExpShift);
-        _pCouplersSpatialSigma = fetchDoubleParam(Couplers::kParamCouplersSpatialSigma);
-        _pCouplersInitVersion = fetchIntParam(JuicerParams::kDirCouplersInitVersion);
-        _pCouplersFollowMask = fetchIntParam(JuicerParams::kDirCouplersFollowStockMask);
-#endif
+        _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
+        _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
 
         _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
@@ -3377,12 +3024,6 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         const ScopedParamEventSuppression suppressEvents(_state.get());
         set_str_choice_param_if(_pScanRoute, Spektrafilm::scan_route_key(defaultRoute));
     }
-
-#ifdef JUICER_ENABLE_COUPLERS
-    if (userEdit && is_coupler_param_name(paramName.c_str())) {
-        clearCouplerFollowStockForParam(paramName.c_str());
-    }
-#endif
 
     auto should_apply_halation_revert_defaults = [&]() {
         return halation_revert_param_changed(paramName);
@@ -3862,20 +3503,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraMeteringMethod = exposure.meteringMethod;
     P.cameraExposureCompensationEv = exposure.sliderEV;
     P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
-#ifdef JUICER_ENABLE_COUPLERS
-    apply_coupler_snapshot_values(
-        P,
-        read_coupler_snapshot_values(
-            _pCouplersActive,
-            _pCouplersAmount,
-            _pCouplersAmountR,
-            _pCouplersAmountG,
-            _pCouplersAmountB,
-            _pCouplersSigma,
-            _pCouplersHigh,
-            _pCouplersSpatialSigma,
-            P));
-#endif
+    read_coupler_snapshot_values(_pCouplersActive, _pCouplersAmount, P);
     read_scanner_snapshot_values(
         _pScannerLensBlur,
         _pScannerUnsharp,
@@ -3916,9 +3544,6 @@ void JuicerEffect::bootstrap_after_attach() {
     }
 
     if (has_loaded_base_state(_state.get())) {
-#ifdef JUICER_ENABLE_COUPLERS
-        initializeCouplerParamsFromProfileIfNeeded(P);
-#endif
         store_pending_hashes_for_snapshot(*_state, P);
         if (printRoute) {
             (void)rebuild_print_render_state(*_state, P);
@@ -4076,7 +3701,10 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print
 }
 #endif
 
-#ifdef JUICER_ENABLE_COUPLERS
+// SF_PHASE5_BLOCKED_LiveOfxDirProfileFollow owner=Phase5;
+// allowed_call_sites=none; output_hash_resource_impact=none;
+// cleanup_symbol=SF_PHASE5_BLOCKED_LiveOfxDirProfileFollow; disposition=delete_with_legacy_renderer.
+#if 0
 void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) {
     if (!_state) {
         return;
@@ -4365,9 +3993,6 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
         reload_film_stock_if_requested(changed.filmProfile, P, *_state);
     apply_when_film_reloaded(filmReloaded, [&]() {
         applyHalationProfileDefaults();
-#ifdef JUICER_ENABLE_COUPLERS
-        syncCouplerParamsFromProfileFollowMask(P);
-#endif
     });
 
     if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
@@ -4377,8 +4002,4 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     }
 
     store_pending_hashes_for_snapshot(*_state, P);
-
-#ifdef JUICER_ENABLE_COUPLERS
-    maybe_notify_coupler_param_change(changed, changedNameOrNull);
-#endif
 }

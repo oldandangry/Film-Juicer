@@ -1273,43 +1273,6 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_spatial_dir_scratch(
-        const WorkspaceLeaseMarker& workspace,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        if (!validate_workspace_lease_marker(workspace, outError)) {
-            return false;
-        }
-        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
-            _state->set_failure(
-                "acquire_frame_scratch_workspace",
-                "CUDA frame scratch workspace acquisition failed");
-            return false;
-        }
-        if (_state->scratchWorkspace.overflowActive) {
-            return true;
-        }
-
-        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
-        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
-                _state->transaction,
-                *_state->resources,
-                scratchRequest,
-                cudaStreamOpaque,
-                outError)) {
-            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
-            _state->set_failure(
-                "command_ensure_spatial_dir_scratch",
-                marksContextLoss
-                    ? "CUDA spatial DIR scratch allocation failed"
-                    : "CUDA spatial DIR scratch deferred by contention policy",
-                marksContextLoss);
-            return false;
-        }
-        return true;
-    }
-
     bool Root::PreparedCudaFrame::prepare_spatial_dir_resources(
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         const WorkspaceLeaseMarker& workspace,
@@ -1326,8 +1289,31 @@ namespace JuicerProcess {
             outError = "spatial DIR descriptor is invalid";
             return false;
         }
-        if (!prepare_spatial_dir_scratch(workspace, cudaStreamOpaque, outError)) {
+        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+            _state->set_failure(
+                "acquire_frame_scratch_workspace",
+                "CUDA frame scratch workspace acquisition failed");
             return false;
+        }
+        if (!_state->scratchWorkspace.overflowActive) {
+            const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+                make_scratch_request_descriptor(workspace);
+            if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
+                    _state->transaction,
+                    *_state->resources,
+                    scratchRequest,
+                    cudaStreamOpaque,
+                    outError)) {
+                const bool marksContextLoss =
+                    !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
+                _state->set_failure(
+                    "command_ensure_spatial_dir_scratch",
+                    marksContextLoss
+                        ? "CUDA spatial DIR scratch allocation failed"
+                        : "CUDA spatial DIR scratch deferred by contention policy",
+                    marksContextLoss);
+                return false;
+            }
         }
         const float sigmas[4] = {
             descriptor.gaussianSigmaPixels,
@@ -1527,31 +1513,6 @@ namespace JuicerProcess {
             _state->set_failure(
                 failureStageTag,
                 "CUDA scratch phase checkpoint failed");
-            return false;
-        }
-        return true;
-    }
-
-    bool Root::PreparedCudaFrame::prepare_spatial_dir_kernel(
-        float sigma,
-        void* cudaStreamOpaque,
-        std::string& outError) {
-        outError.clear();
-        if (!_state || !_state->resources || !_state->transaction.active || _state->transaction.committed) {
-            outError = "prepared frame is not active";
-            return false;
-        }
-
-        if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
-                _state->transaction,
-                *_state->resources,
-                _state->resources->spatialDirKernels[0],
-                sigma,
-                cudaStreamOpaque,
-                outError)) {
-            _state->set_failure(
-                "command_ensure_spatial_dir_kernel",
-                "CUDA spatial DIR kernel upload failed");
             return false;
         }
         return true;

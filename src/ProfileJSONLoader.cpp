@@ -507,47 +507,6 @@ namespace Profiles {
             return true;
         }
 
-        void parse_dir_couplers(const Json& node, DirCouplersProfile& outProfile) {
-            outProfile = DirCouplersProfile{};
-            if (!node.is_object()) {
-                return;
-            }
-
-            bool any = false;
-
-            if (node.contains("active") && node["active"].is_boolean()) {
-                outProfile.active = node["active"].get<bool>();
-                any = true;
-            }
-            if (auto amount = parse_optional_float(node.value("amount", Json{}))) {
-                outProfile.amount = *amount;
-                any = true;
-            }
-            if (node.contains("ratio_rgb") && node["ratio_rgb"].is_array()) {
-                const Json& arr = node["ratio_rgb"];
-                for (size_t i = 0; i < std::min<size_t>(3, arr.size()); ++i) {
-                    if (auto val = parse_optional_float(arr[i])) {
-                        outProfile.ratioRGB[i] = *val;
-                        any = true;
-                    }
-                }
-            }
-            if (auto diff = parse_optional_float(node.value("diffusion_interlayer", Json{}))) {
-                outProfile.diffusionInterlayer = *diff;
-                any = true;
-            }
-            if (auto diffSize = parse_optional_float(node.value("diffusion_size_um", Json{}))) {
-                outProfile.diffusionSizeUm = *diffSize;
-                any = true;
-            }
-            if (auto high = parse_optional_float(node.value("high_exposure_shift", Json{}))) {
-                outProfile.highExposureShift = *high;
-                any = true;
-            }
-
-            outProfile.hasData = any;
-        }
-
         void parse_masking_couplers(const Json& node, MaskingCouplersProfile& outProfile) {
             outProfile = MaskingCouplersProfile{};
             if (!node.is_object()) {
@@ -1675,10 +1634,6 @@ namespace Profiles {
         const bool isPaper = outProfile.type == "paper" ||
                              outProfile.type == "print" || outProfile.type == "print_paper";
         const bool isNegative = !isPaper;
-
-        if (root.contains("dir_couplers")) {
-            parse_dir_couplers(root["dir_couplers"], outProfile.dirCouplers);
-        }
 
         if (root.contains("masking_couplers")) {
             parse_masking_couplers(root["masking_couplers"], outProfile.maskingCouplers);

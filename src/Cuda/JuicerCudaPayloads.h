@@ -73,12 +73,6 @@ namespace JuicerCuda {
         int positive = 0;
         float M[9] = {
             0, 0, 0, 0, 0, 0, 0, 0, 0};
-        // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=Phase4-print-route:
-        // reason=legacy broad DIR high-shift field; allowed=processImagesCUDA post-direct
-        // FilmDevelopPayload pack only;
-        // output_impact=blocked print route; hash_impact=none on direct route;
-        // resource_impact=none; removal=Phase4.
-        float highShift = 0.0f;
         float dMax[3] = {1.0f, 1.0f, 1.0f};
     };
 

@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <memory>
 
-#include "Couplers.h"
 #include "OutputColor.h"
 #include "Print.h"
 #include "ProfileJSONLoader.h"
@@ -42,12 +41,6 @@ struct FrameRequest {
     bool hasGrainOverride = false;
     Profiles::ProfileGlare printGlareOverride{};
     bool hasPrintGlareOverride = false;
-    // SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=Phase4-print-route:
-    // reason=legacy broad DIR request field; allowed=FrameRequest::dirRuntime declaration and
-    // JuicerProcessor::setFrameRequest only;
-    // output_impact=blocked print route;
-    // hash_impact=none on direct route; resource_impact=legacy print DIR runtime; removal=Phase4.
-    Couplers::Runtime dirRuntime;
     float exposureScale = 1.0f;
     bool cameraAutoEnabled = false;
     int cameraMeteringMethod = 0;

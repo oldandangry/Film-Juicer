@@ -5,86 +5,12 @@
 #include <numeric>
 #include "FilmProcessing.h"
 #include "SpectralData.h"
-#include "ParamNames.h"
-#include "ofxImageEffect.h"
-#include "ofxProperty.h"
-#include "ofxParam.h"
 
-// SF_TEMP_BRIDGE_CouplersLiveOfxRuntime owner=Phase4-print-route:
-// reason=legacy print/CPU DIR ABI; allowed=Couplers compile-time ABI stubs, prepareCouplers, and
-// processImagesCUDA post-direct branch only; output_impact=blocked print route; hash_impact=none;
-// resource_impact=legacy broad DIR fields; removal=Phase4 print-route recipe cutover.
-#ifndef JUICER_ENABLE_COUPLERS
-// Stubs: compiled out safely
+// SF_PHASE5_BLOCKED_LegacyCouplersRuntime owner=legacy broad/CPU renderer;
+// allowed_call_sites=hard-blocked WorkingState, PipelineStages, and broad mainProcessing source;
+// output_hash_resource_impact=none on typed focused routes;
+// cleanup_symbol=SF_PHASE5_BLOCKED_LegacyCouplersRuntime; disposition=delete_with_legacy_renderer.
 namespace Couplers {
-    // Keep identical signatures so call sites compile either way
-    struct ApplyInput { float E[3]; float D[3]; };
-    struct Runtime {
-        bool  active = false;
-        float M[3][3] = { {0,0,0},{0,0,0},{0,0,0} };
-        float highShift = 0.0f;
-        float dMax[3] = { 1.0f, 1.0f, 1.0f };
-        float spatialSigmaMicrometers = 0.0f;
-        float spatialSigmaPixels = 0.0f; // ABI parity with enabled build
-    };
-
-    inline void define_params(OfxImageEffectHandle, OfxImageEffectSuiteV1*, OfxPropertySuiteV1*, OfxParameterSuiteV1*) {}
-    inline void on_param_changed(const char*) {}
-
-    // IMPORTANT: keep the exact same signature as enabled build
-    inline void maybe_precorrect_curves(OfxImageEffectHandle, OfxImageEffectSuiteV1*, OfxParameterSuiteV1*) {}
-
-    inline void fetch_runtime(const OfxImageEffectHandle, OfxImageEffectSuiteV1*, OfxPropertySuiteV1*, OfxParameterSuiteV1*, Runtime&) {}
-    inline void apply_runtime(ApplyInput&, const Runtime&) {}
-
-    // Optional parity helpers used by the print/scanner paths
-    struct ApplyInputLogE { float logE[3]; float D[3]; };
-    inline void apply_runtime_logE(ApplyInputLogE&, const Runtime&) {}
-    inline void apply_runtime_logE_with_curves(
-        ApplyInputLogE&, const Runtime&,
-        const Spectral::Curve&, const Spectral::Curve&, const Spectral::Curve&) {
-    }
-
-} // namespace Couplers
-
-#else
-
-namespace Couplers {
-
-    // ------------------------------
-    // OFX parameter names
-    // ------------------------------
-    static constexpr const char* kParamCouplersActive = "CouplersActive";
-    static constexpr const char* kParamCouplersGroup = "Couplers";
-    static constexpr const char* kParamCouplersAmount = "CouplersAmount";
-    static constexpr const char* kParamCouplersAmountB = "CouplersAmountB";
-    static constexpr const char* kParamCouplersAmountG = "CouplersAmountG";
-    static constexpr const char* kParamCouplersAmountR = "CouplersAmountR";
-    static constexpr const char* kParamCouplersLayerSigma = "CouplersLayerDiffusion";
-    static constexpr const char* kParamCouplersHighExpShift = "CouplersHighExposureShift";
-    static constexpr const char* kParamCouplersSpatialSigma = "CouplersSpatialDiffusion"; // micrometers
-
-    inline float spatial_sigma_pixels_from_micrometers(float sigmaUm, double filmLongEdgeMm,
-        double widthPixels, double heightPixels)
-    {
-        if (!(std::isfinite(sigmaUm)) || sigmaUm <= 0.0f) return 0.0f;
-        if (!(std::isfinite(filmLongEdgeMm)) || filmLongEdgeMm <= 0.0) return 0.0f;
-
-        const double longEdgePixels = std::max(widthPixels, heightPixels);
-        if (!(std::isfinite(longEdgePixels)) || longEdgePixels <= 0.0) return 0.0f;
-
-        const double filmLongEdgeUm = filmLongEdgeMm * 1000.0;
-        if (!(std::isfinite(filmLongEdgeUm)) || filmLongEdgeUm <= 0.0) return 0.0f;
-
-        const double pixelPitchUm = filmLongEdgeUm / longEdgePixels;
-        if (!(std::isfinite(pixelPitchUm)) || pixelPitchUm <= 0.0) return 0.0f;
-
-        double sigmaPixels = static_cast<double>(sigmaUm) / pixelPitchUm;
-        if (!(std::isfinite(sigmaPixels)) || sigmaPixels <= 0.0) return 0.0f;
-        if (sigmaPixels > 25.0) sigmaPixels = 25.0;
-        return static_cast<float>(sigmaPixels);
-    }
-
 
     // Orientation: M[inputLayer][outputLayer]. Input layers are ordered [B,G,R],
     // output axes correspond to [Y,M,C] corrections applied to Blue, Green, Red layer logE respectively.
@@ -93,39 +19,47 @@ namespace Couplers {
     inline void build_dir_matrix(float M[3][3], const float amountRGB[3], float layerSigma) {
         // Sanitize inputs
         const float sigma = std::isfinite(layerSigma) ? std::max(0.0f, layerSigma) : 0.0f;
-        float amt[3] = { amountRGB[0], amountRGB[1], amountRGB[2] };
+        float amt[3] = {amountRGB[0], amountRGB[1], amountRGB[2]};
         for (int i = 0; i < 3; ++i) {
-            if (!std::isfinite(amt[i])) amt[i] = 0.0f;
-            if (amt[i] < 0.0f) amt[i] = 0.0f;
+            if (!std::isfinite(amt[i]))
+                amt[i] = 0.0f;
+            if (amt[i] < 0.0f)
+                amt[i] = 0.0f;
         }
 
-        auto gauss = [&](int dx)->float {
-            if (sigma <= 0.0f) return (dx == 0) ? 1.0f : 0.0f;
+        auto gauss = [&](int dx) -> float {
+            if (sigma <= 0.0f)
+                return (dx == 0) ? 1.0f : 0.0f;
             const float s2 = sigma * sigma;
             const float dxFloat = static_cast<float>(dx);
             return std::exp(-0.5f * (dxFloat * dxFloat) / s2);
-            };
+        };
         for (int r = 0; r < 3; ++r) {
-            float row[3]; float wsum = 0.0f;
-            for (int c = 0; c < 3; ++c) { row[c] = gauss(c - r); wsum += row[c]; }
-            if (wsum > 0.0f) for (int c = 0; c < 3; ++c) row[c] /= wsum;
-            for (int c = 0; c < 3; ++c) M[r][c] = amt[r] * row[c];
+            float row[3];
+            float wsum = 0.0f;
+            for (int c = 0; c < 3; ++c) {
+                row[c] = gauss(c - r);
+                wsum += row[c];
+            }
+            if (wsum > 0.0f)
+                for (int c = 0; c < 3; ++c)
+                    row[c] /= wsum;
+            for (int c = 0; c < 3; ++c)
+                M[r][c] = amt[r] * row[c];
         }
 
         // Scrub non-finite entries to ensure runtime stability
         for (int r = 0; r < 3; ++r) {
             for (int c = 0; c < 3; ++c) {
-                if (!std::isfinite(M[r][c])) M[r][c] = 0.0f;
+                if (!std::isfinite(M[r][c]))
+                    M[r][c] = 0.0f;
             }
         }
     }
 
     // Pre-correct 1D density curves (before DIR) — agx parity
     inline void precorrect_density_curves_before_DIR_into(
-        const float M[3][3], float highExpShift,
-        const Spectral::Curve& inB, const Spectral::Curve& inG, const Spectral::Curve& inR,
-        Spectral::Curve& outB, Spectral::Curve& outG, Spectral::Curve& outR)
-    {
+        const float M[3][3], float highExpShift, const Spectral::Curve& inB, const Spectral::Curve& inG, const Spectral::Curve& inR, Spectral::Curve& outB, Spectral::Curve& outG, Spectral::Curve& outR) {
         using Spectral::Curve;
 
         // Copy-through by default
@@ -133,57 +67,75 @@ namespace Couplers {
         outG = inG;
         outR = inR;
 
-        const size_t N = std::min({ inB.lambda_nm.size(), inG.lambda_nm.size(), inR.lambda_nm.size() });
-        if (N == 0) return;
+        const size_t N = std::min({inB.lambda_nm.size(), inG.lambda_nm.size(), inR.lambda_nm.size()});
+        if (N == 0)
+            return;
 
         // Identity early-out if DIR matrix is exactly zero (agx parity; fixes ZeroMatrix test)
         bool zeroM = true;
         for (int r = 0; r < 3; ++r)
             for (int c = 0; c < 3; ++c)
-                if (M[r][c] != 0.0f) { zeroM = false; break; }
-        if (zeroM) return;
+                if (M[r][c] != 0.0f) {
+                    zeroM = false;
+                    break;
+                }
+        if (zeroM)
+            return;
 
         // Original grids + densities
         std::vector<float> xB(N), xG(N), xR(N);
         std::vector<float> dY(N), dM(N), dC(N);
         for (size_t i = 0; i < N; ++i) {
-            xB[i] = inB.lambda_nm[i]; dY[i] = inB.linear[i];
-            xG[i] = inG.lambda_nm[i]; dM[i] = inG.linear[i];
-            xR[i] = inR.lambda_nm[i]; dC[i] = inR.linear[i];
+            xB[i] = inB.lambda_nm[i];
+            dY[i] = inB.linear[i];
+            xG[i] = inG.lambda_nm[i];
+            dM[i] = inG.linear[i];
+            xR[i] = inR.lambda_nm[i];
+            dC[i] = inR.linear[i];
         }
 
         // Keep immutable query copies to prevent OOB after dedup (fixes crash)
         const std::vector<float> qB = xB, qG = xG, qR = xR;
 
         // Monotonicity guard (non-decreasing)
-        auto mono = [](const std::vector<float>& X)->bool {
-            if (X.empty() || !std::isfinite(X.front()) || !std::isfinite(X.back())) return false;
+        auto mono = [](const std::vector<float>& X) -> bool {
+            if (X.empty() || !std::isfinite(X.front()) || !std::isfinite(X.back()))
+                return false;
             for (size_t i = 1; i < X.size(); ++i) {
-                if (!std::isfinite(X[i]) || X[i] < X[i - 1]) return false;
+                if (!std::isfinite(X[i]) || X[i] < X[i - 1])
+                    return false;
             }
             return true;
-            };
-        if (!(mono(qB) && mono(qG) && mono(qR))) return; // leave untouched
+        };
+        if (!(mono(qB) && mono(qG) && mono(qR)))
+            return; // leave untouched
 
         // Normalize per-channel with optional high exposure quadratic boost
-        auto vmax = [](const std::vector<float>& v)->float {
-            float m = 0.0f; for (float t : v) if (std::isfinite(t)) m = std::max(m, t);
+        auto vmax = [](const std::vector<float>& v) -> float {
+            float m = 0.0f;
+            for (float t : v)
+                if (std::isfinite(t))
+                    m = std::max(m, t);
             return (m > 0.0f) ? m : 1.0f;
-            };
+        };
         const float yMax = vmax(dY), mMax = vmax(dM), cMax = vmax(dC);
-        auto safe_div = [](float a, float b)->float {
-            if (!std::isfinite(a)) a = 0.0f;
-            if (!(b > 1e-4f) || !std::isfinite(b)) b = 1.0f;
+        auto safe_div = [](float a, float b) -> float {
+            if (!std::isfinite(a))
+                a = 0.0f;
+            if (!(b > 1e-4f) || !std::isfinite(b))
+                b = 1.0f;
             return a / b;
-            };
-        auto boost = [highExpShift](float t)->float {
+        };
+        auto boost = [highExpShift](float t) -> float {
             // keep non-negative; agx-style quadratic shift
             t = std::clamp(t, 0.0f, 1.0f);
             float tb = t + highExpShift * t * t;
-            if (!std::isfinite(tb)) tb = t;
-            if (tb < 0.0f) tb = 0.0f;
+            if (!std::isfinite(tb))
+                tb = t;
+            if (tb < 0.0f)
+                tb = 0.0f;
             return tb;
-            };
+        };
 
         std::vector<float> nB(N), nG(N), nR(N);
         for (size_t i = 0; i < N; ++i) {
@@ -203,32 +155,42 @@ namespace Couplers {
             xShiftR[i] = qR[i] - aC;
         }
 
-        auto sanitize_shifted_axis = [](std::vector<float>& X, std::vector<float>& Y)->bool {
-            if (X.size() != Y.size() || X.empty()) return false;
-            if (!std::isfinite(X.front()) || !std::isfinite(X.back())) return false;
+        auto sanitize_shifted_axis = [](std::vector<float>& X, std::vector<float>& Y) -> bool {
+            if (X.size() != Y.size() || X.empty())
+                return false;
+            if (!std::isfinite(X.front()) || !std::isfinite(X.back()))
+                return false;
             bool monotonic = true;
             for (size_t i = 1; i < X.size(); ++i) {
-                if (!std::isfinite(X[i])) return false;
-                if (X[i] < X[i - 1]) { monotonic = false; break; }
+                if (!std::isfinite(X[i]))
+                    return false;
+                if (X[i] < X[i - 1]) {
+                    monotonic = false;
+                    break;
+                }
             }
-            if (monotonic) return true; // already non-decreasing
+            if (monotonic)
+                return true; // already non-decreasing
 
             std::vector<size_t> order(X.size());
-            std::iota(order.begin(), order.end(), size_t{ 0 });
+            std::iota(order.begin(), order.end(), size_t{0});
             std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
                 return X[a] < X[b];
-                });
+            });
 
             std::vector<float> Xsorted(X.size());
             std::vector<float> Ysorted(Y.size());
             float prev = X[order[0]];
-            if (!std::isfinite(prev)) return false;
+            if (!std::isfinite(prev))
+                return false;
             Xsorted[0] = prev;
             Ysorted[0] = Y[order[0]];
             for (size_t k = 1; k < order.size(); ++k) {
                 float xv = X[order[k]];
-                if (!std::isfinite(xv)) return false;
-                if (xv < prev) xv = prev; // enforce non-decreasing order
+                if (!std::isfinite(xv))
+                    return false;
+                if (xv < prev)
+                    xv = prev; // enforce non-decreasing order
                 Xsorted[k] = xv;
                 Ysorted[k] = Y[order[k]];
                 prev = xv;
@@ -236,60 +198,74 @@ namespace Couplers {
             X.swap(Xsorted);
             Y.swap(Ysorted);
             return true;
-            };
-        if (!sanitize_shifted_axis(xShiftB, dY)) return;
-        if (!sanitize_shifted_axis(xShiftG, dM)) return;
-        if (!sanitize_shifted_axis(xShiftR, dC)) return;
+        };
+        if (!sanitize_shifted_axis(xShiftB, dY))
+            return;
+        if (!sanitize_shifted_axis(xShiftG, dM))
+            return;
+        if (!sanitize_shifted_axis(xShiftR, dC))
+            return;
 
         // Dedup STRICT on interpolation data ONLY (not on the query grids)
-        auto dedup_strict = [](const std::vector<float>& X, const std::vector<float>& Y,
-            std::vector<float>& Xo, std::vector<float>& Yo) {
-                Xo.clear(); Yo.clear();
-                if (X.size() != Y.size() || X.empty()) return;
-                Xo.reserve(X.size()); Yo.reserve(Y.size());
-                float lastX = X[0];
-                float lastY = std::isfinite(Y[0]) ? std::max(0.0f, Y[0]) : 0.0f;
-                Xo.push_back(lastX); Yo.push_back(lastY);
-                const float eps = 1e-6f;
-                for (size_t i = 1; i < X.size(); ++i) {
-                    float xi = X[i];
-                    float yi = std::isfinite(Y[i]) ? std::max(0.0f, Y[i]) : 0.0f;
-                    if (!std::isfinite(xi)) continue;
-                    if (xi <= lastX + eps) {
-                        // merge duplicates by keeping max density (monotone)
-                        Yo.back() = std::max(Yo.back(), yi);
-                    }
-                    else {
-                        Xo.push_back(xi);
-                        Yo.push_back(yi);
-                        lastX = xi;
-                    }
+        auto dedup_strict = [](const std::vector<float>& X, const std::vector<float>& Y, std::vector<float>& Xo, std::vector<float>& Yo) {
+            Xo.clear();
+            Yo.clear();
+            if (X.size() != Y.size() || X.empty())
+                return;
+            Xo.reserve(X.size());
+            Yo.reserve(Y.size());
+            float lastX = X[0];
+            float lastY = std::isfinite(Y[0]) ? std::max(0.0f, Y[0]) : 0.0f;
+            Xo.push_back(lastX);
+            Yo.push_back(lastY);
+            const float eps = 1e-6f;
+            for (size_t i = 1; i < X.size(); ++i) {
+                float xi = X[i];
+                float yi = std::isfinite(Y[i]) ? std::max(0.0f, Y[i]) : 0.0f;
+                if (!std::isfinite(xi))
+                    continue;
+                if (xi <= lastX + eps) {
+                    // merge duplicates by keeping max density (monotone)
+                    Yo.back() = std::max(Yo.back(), yi);
+                } else {
+                    Xo.push_back(xi);
+                    Yo.push_back(yi);
+                    lastX = xi;
                 }
-            };
+            }
+        };
 
         std::vector<float> XB, YB, XG, YG, XR, YR;
         dedup_strict(xShiftB, dY, XB, YB);
         dedup_strict(xShiftG, dM, XG, YG);
         dedup_strict(xShiftR, dC, XR, YR);
-        if (XB.size() < 2 || XG.size() < 2 || XR.size() < 2) return; // nothing reliable to do
+        if (XB.size() < 2 || XG.size() < 2 || XR.size() < 2)
+            return; // nothing reliable to do
 
         // Inclusive clamp (NO inward bias; agx parity; fixes identity expectations)
-        auto clamp_warp = [](float xq, float xmin, float xmax)->float {
-            if (!std::isfinite(xq)) return xmin;
+        auto clamp_warp = [](float xq, float xmin, float xmax) -> float {
+            if (!std::isfinite(xq))
+                return xmin;
             return std::min(std::max(xq, xmin), xmax);
-            };
+        };
 
         // Interpolator on dedup'ed data
-        auto interp = [](const std::vector<float>& X, const std::vector<float>& Y, float xq)->float {
+        auto interp = [](const std::vector<float>& X, const std::vector<float>& Y, float xq) -> float {
             const size_t N = X.size();
-            if (N == 0 || Y.size() != N) return 0.0f;
+            if (N == 0 || Y.size() != N)
+                return 0.0f;
             const float xmin = X.front(), xmax = X.back();
-            if (!std::isfinite(xq)) xq = xmin;
-            if (xq <= xmin) return Y.front();
-            if (xq >= xmax) return Y.back();
+            if (!std::isfinite(xq))
+                xq = xmin;
+            if (xq <= xmin)
+                return Y.front();
+            if (xq >= xmax)
+                return Y.back();
             size_t i1 = size_t(std::lower_bound(X.begin(), X.end(), xq) - X.begin());
-            if (i1 == 0) return Y.front();
-            if (i1 >= N) return Y.back();
+            if (i1 == 0)
+                return Y.front();
+            if (i1 >= N)
+                return Y.back();
             size_t i0 = i1 - 1;
             float x0 = X[i0], x1 = X[i1];
             float y0 = Y[i0], y1 = Y[i1];
@@ -297,10 +273,11 @@ namespace Couplers {
                 return std::isfinite(y0) ? y0 : 0.0f;
             }
             const float denom = (x1 - x0);
-            if (!(denom > 0.0f) || !std::isfinite(denom)) return y0;
+            if (!(denom > 0.0f) || !std::isfinite(denom))
+                return y0;
             const float t = (xq - x0) / denom;
             return y0 + t * (y1 - y0);
-            };
+        };
 
         // Apply inverse warp: interpolate post-DIR densities over shifted axes at original grids
         std::vector<float> dYcorr(N), dMcorr(N), dCcorr(N);
@@ -315,16 +292,18 @@ namespace Couplers {
         }
         // Enforce non-negative, monotone (non-decreasing) outputs to match agx behavior and tests
         auto sanitize_monotone_nonneg = [](std::vector<float>& v) {
-            if (v.empty()) return;
+            if (v.empty())
+                return;
             float prev = std::isfinite(v[0]) ? std::max(0.0f, v[0]) : 0.0f;
             v[0] = prev;
             for (size_t i = 1; i < v.size(); ++i) {
                 float cur = std::isfinite(v[i]) ? std::max(0.0f, v[i]) : 0.0f;
-                if (cur < prev) cur = prev;      // enforce monotone
+                if (cur < prev)
+                    cur = prev; // enforce monotone
                 v[i] = cur;
                 prev = cur;
             }
-            };
+        };
         sanitize_monotone_nonneg(dYcorr);
         sanitize_monotone_nonneg(dMcorr);
         sanitize_monotone_nonneg(dCcorr);
@@ -337,6 +316,10 @@ namespace Couplers {
         }
     }
 
+    // SF_PHASE5_BLOCKED_CouplersLiveOfx owner=legacy broad renderer;
+    // allowed_call_sites=none; output_hash_resource_impact=none;
+    // cleanup_symbol=SF_PHASE5_BLOCKED_CouplersLiveOfx; disposition=delete_with_legacy_renderer.
+#if 0
     // Define OFX params (no globals)
     inline void define_params(OfxImageEffectHandle effect,
         OfxImageEffectSuiteV1* effectSuite,
@@ -417,18 +400,20 @@ namespace Couplers {
         // Coupler changes are consumed by WorkingState rebuild from ParamSnapshot.
         // Do not mutate process-global spectral precompute state from runtime param changes.
     }
+#endif
 
 
     struct Runtime {
-        bool  active = true;
-        float M[3][3] = { {0,0,0},{0,0,0},{0,0,0} };
+        bool active = true;
+        float M[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
         float highShift = 0.0f;
-        float dMax[3] = { 1.0f, 1.0f, 1.0f };
+        float dMax[3] = {1.0f, 1.0f, 1.0f};
         float spatialSigmaMicrometers = 0.0f;
         float spatialSigmaPixels = 0.0f; // 0 = disabled, later used for optional xy Gaussian
     };
 
 
+#if 0
     inline void fetch_runtime(const OfxImageEffectHandle instance,
         OfxImageEffectSuiteV1* effectSuite,
         OfxPropertySuiteV1* propSuite,
@@ -557,22 +542,25 @@ namespace Couplers {
         rt.dMax[2] = 1.0f;
 
     }
+#endif
 
     struct ApplyInput {
-        float E[3];   // layer exposures (B,G,R)
-        float D[3];   // dye densities over B+F (Y,M,C)
+        float E[3]; // layer exposures (B,G,R)
+        float D[3]; // dye densities over B+F (Y,M,C)
     };
 
     inline void apply_runtime(ApplyInput& io, const Runtime& rt) {
-        if (!rt.active) return;
+        if (!rt.active)
+            return;
 
-        auto safe_norm = [](float D, float dmax)->float {
+        auto safe_norm = [](float D, float dmax) -> float {
             float Din = (!std::isfinite(D) || D < 0.0f) ? 0.0f : D;
             float m = (std::isfinite(dmax) && dmax > 1e-6f) ? dmax : 1.0f;
             float n = Din / m;
-            if (!std::isfinite(n) || n < 0.0f) n = 0.0f;
+            if (!std::isfinite(n) || n < 0.0f)
+                n = 0.0f;
             return n;
-            };
+        };
 
         float nB = safe_norm(io.D[0], rt.dMax[0]);
         float nG = safe_norm(io.D[1], rt.dMax[1]);
@@ -588,7 +576,9 @@ namespace Couplers {
         const float sB = std::pow(10.0f, -aY);
         const float sG = std::pow(10.0f, -aM);
         const float sR = std::pow(10.0f, -aC);
-        io.E[0] *= sB; io.E[1] *= sG; io.E[2] *= sR;
+        io.E[0] *= sB;
+        io.E[1] *= sG;
+        io.E[2] *= sR;
     }
 
     // LogE-domain couplers runtime (agx parity)
@@ -610,14 +600,15 @@ namespace Couplers {
             a_out[2] = 0.0f;
             return;
         }
-        auto safe_norm = [](float D, float dmax)->float {
+        auto safe_norm = [](float D, float dmax) -> float {
             // Enforce non-negative inputs and robust maxima
             float Din = (!std::isfinite(D) || D < 0.0f) ? 0.0f : D;
             float m = (std::isfinite(dmax) && dmax > 1e-4f) ? dmax : 1.0f; // slightly higher floor
             float n = Din / m;
-            if (!std::isfinite(n) || n < 0.0f) n = 0.0f;
+            if (!std::isfinite(n) || n < 0.0f)
+                n = 0.0f;
             return n;
-            };
+        };
 
 
         float nB = safe_norm(in.D[0], rt.dMax[0]);
@@ -625,14 +616,15 @@ namespace Couplers {
         float nR = safe_norm(in.D[2], rt.dMax[2]);
 
         // high-exposure quadratic boost (agx: n += k * n^2)
-        auto high_boost = [&](float n)->float {
+        auto high_boost = [&](float n) -> float {
             float nb = n + rt.highShift * n * n;
             if (!std::isfinite(nb)) {
                 return (n >= 0.0f && std::isfinite(n)) ? n : 0.0f;
             }
-            if (nb < 0.0f) nb = 0.0f;
+            if (nb < 0.0f)
+                nb = 0.0f;
             return nb;
-            };
+        };
         nB = high_boost(nB);
         nG = high_boost(nG);
         nR = high_boost(nR);
@@ -643,17 +635,23 @@ namespace Couplers {
         float aC = rt.M[0][2] * nB + rt.M[1][2] * nG + rt.M[2][2] * nR; // affects Red layer logE
 
         // Scrub non-finite corrections before bounding
-        if (!std::isfinite(aY)) aY = 0.0f;
-        if (!std::isfinite(aM)) aM = 0.0f;
-        if (!std::isfinite(aC)) aC = 0.0f;
+        if (!std::isfinite(aY))
+            aY = 0.0f;
+        if (!std::isfinite(aM))
+            aM = 0.0f;
+        if (!std::isfinite(aC))
+            aC = 0.0f;
 
         // Bound corrections early to stabilize downstream interpolation and sampling.
-        auto clamp_corr = [](float v)->float {
-            if (!std::isfinite(v)) return 0.0f;
-            if (v < -10.0f) return -10.0f;
-            if (v > 10.0f)  return 10.0f;
+        auto clamp_corr = [](float v) -> float {
+            if (!std::isfinite(v))
+                return 0.0f;
+            if (v < -10.0f)
+                return -10.0f;
+            if (v > 10.0f)
+                return 10.0f;
             return v;
-            };
+        };
         aY = clamp_corr(aY);
         aM = clamp_corr(aM);
         aC = clamp_corr(aC);
@@ -670,31 +668,32 @@ namespace Couplers {
         const Runtime& rt,
         const Spectral::Curve& densB,
         const Spectral::Curve& densG,
-        const Spectral::Curve& densR)
-    {
-        if (!rt.active) return;
-        float a[3]; compute_logE_corrections(io, rt, a);
+        const Spectral::Curve& densR) {
+        if (!rt.active)
+            return;
+        float a[3];
+        compute_logE_corrections(io, rt, a);
         for (float& v : a) {
-            if (!std::isfinite(v)) v = 0.0f;
+            if (!std::isfinite(v))
+                v = 0.0f;
         }
         io.logE[0] -= a[0];
         io.logE[1] -= a[1];
         io.logE[2] -= a[2];
 
-        auto clamp_to = [](float le, const Spectral::Curve& c)->float {
-            if (c.lambda_nm.empty()) return le;
+        auto clamp_to = [](float le, const Spectral::Curve& c) -> float {
+            if (c.lambda_nm.empty())
+                return le;
             const float xmin = c.lambda_nm.front();
             const float xmax = c.lambda_nm.back();
-            if (!std::isfinite(le)) return xmin;
+            if (!std::isfinite(le))
+                return xmin;
             return std::min(std::max(le, xmin), xmax);
-            };
+        };
         io.logE[0] = clamp_to(io.logE[0], densB);
         io.logE[1] = clamp_to(io.logE[1], densG);
         io.logE[2] = clamp_to(io.logE[2], densR);
     }
 
 
-
 } // namespace Couplers
-
-#endif // JUICER_ENABLE_COUPLERS

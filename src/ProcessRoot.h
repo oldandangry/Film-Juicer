@@ -379,10 +379,6 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_spatial_dir_scratch(
-                const WorkspaceLeaseMarker& workspace,
-                void* cudaStreamOpaque,
-                std::string& outError);
             bool prepare_spatial_dir_resources(
                 const Spektrafilm::SpatialDirDescriptor& descriptor,
                 const WorkspaceLeaseMarker& workspace,
@@ -410,10 +406,6 @@ namespace JuicerProcess {
             bool checkpoint_scratch_phase(
                 const WorkspaceLeaseMarker& workspace,
                 const char* stageTag,
-                std::string& outError);
-            bool prepare_spatial_dir_kernel(
-                float sigma,
-                void* cudaStreamOpaque,
                 std::string& outError);
             bool prepare_scanner_lens_blur_kernel(
                 float sigma,

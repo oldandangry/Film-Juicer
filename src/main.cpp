@@ -33,7 +33,6 @@
 #error "Missing kOfxTypeParameter in ofxParam.h (OpenFX 1.4)."
 #endif
 
-#include "Couplers.h"
 #include "JuicerEffect.h"
 #include "JuicerState.h"
 #include "Logging.h"
@@ -203,15 +202,14 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setEvaluateOnChange(true);
     }
 
-#ifdef JUICER_ENABLE_COUPLERS
-    // Couplers (DIR) parameters — wrapper descriptors matching Couplers::define_params
+    // Recipe-owned DIR controls. Gamma and spatial policy come from the selected profile digest.
     {
-        OFX::GroupParamDescriptor* grpCouplers = desc.defineGroupParam(Couplers::kParamCouplersGroup);
+        OFX::GroupParamDescriptor* grpCouplers = desc.defineGroupParam(JuicerParams::kDirCouplersGroup);
         if (grpCouplers)
             grpCouplers->setLabel("DIR couplers");
 
         {
-            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(Couplers::kParamCouplersActive);
+            OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kDirCouplersActive);
             p->setLabel("Active");
             p->setDefault(true);
             if (grpCouplers)
@@ -219,7 +217,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmount);
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kDirCouplersAmount);
             p->setLabel("Couplers amount");
             p->setDefault(1.0);
             p->setRange(0.0, 2.0);
@@ -228,86 +226,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountR);
-            p->setLabel("Couplers ratio R");
-            p->setDefault(1.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers)
-                p->setParent(*grpCouplers);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountG);
-            p->setLabel("Couplers ratio G");
-            p->setDefault(1.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers)
-                p->setParent(*grpCouplers);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersAmountB);
-            p->setLabel("Couplers ratio B");
-            p->setDefault(1.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers)
-                p->setParent(*grpCouplers);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersLayerSigma);
-            p->setLabel("Layer diffusion");
-            p->setDefault(2.0);
-            p->setRange(0.0, 4.0);
-            p->setDisplayRange(0.0, 4.0);
-            if (grpCouplers)
-                p->setParent(*grpCouplers);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersHighExpShift);
-            p->setLabel("High exposure shift");
-            p->setDefault(0.0);
-            p->setRange(0.0, 1.0);
-            p->setDisplayRange(0.0, 1.0);
-            if (grpCouplers)
-                p->setParent(*grpCouplers);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(Couplers::kParamCouplersSpatialSigma);
-            p->setLabel("Couplers spatial diffusion (\xC2\xB5m)");
-            p->setDefault(10.0);
-            p->setRange(0.0, 50.0);
-            p->setDisplayRange(0.0, 50.0);
-            p->setHint("Micrometers of DIR spatial diffusion; scaled by the Camera film format parameter.");
-            if (grpCouplers)
-                p->setParent(*grpCouplers);
-            p->setEvaluateOnChange(true);
-        }
-        {
-            OFX::IntParamDescriptor* p = desc.defineIntParam(JuicerParams::kDirCouplersInitVersion);
-            p->setLabel("DIR couplers init version");
-            p->setDefault(0);
-            p->setRange(0, 1024);
-            p->setDisplayRange(0, 1024);
-            p->setIsSecret(true);
-        }
-        {
-            OFX::IntParamDescriptor* p = desc.defineIntParam(JuicerParams::kDirCouplersFollowStockMask);
-            p->setLabel("DIR couplers follow stock mask");
-            p->setDefault(0);
-            p->setRange(0, 255);
-            p->setDisplayRange(0, 255);
-            p->setIsSecret(true);
-        }
     }
-
-#endif
 
     // Scanner optics and math
     OFX::GroupParamDescriptor* grpScannerOptics = desc.defineGroupParam("ScannerOptics");

@@ -29,12 +29,6 @@ namespace OutputEncoding {
     struct Params;
 }
 
-#ifdef JUICER_ENABLE_COUPLERS
-namespace Couplers {
-    struct Runtime;
-}
-#endif
-
 namespace OFX {
     class Clip;
     class Image;
@@ -117,24 +111,11 @@ private:
         OFX::Image* srcImg,
         const OfxRectI& fullBounds,
         const ExposureParams& exposureParams) const;
-#ifdef JUICER_ENABLE_COUPLERS
-    Couplers::Runtime prepareCouplers(
-        const OFX::RenderArguments& args,
-        int fullWidth,
-        int fullHeight,
-        float pixelSizeUm) const;
-#endif
     WorkingStateInfo prepareWorkingState() const;
 
     ParamSnapshot snapshotParams() const;
     void onParamsPossiblyChanged(const char* changedNameOrNull);
     void bootstrap_after_attach();
-#ifdef JUICER_ENABLE_COUPLERS
-    void initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P);
-    void syncCouplerParamsFromProfileFollowMask(ParamSnapshot& P);
-    void clearCouplerFollowStockForParam(const char* changedNameOrNull);
-    void applyCouplerProfileDefaults(ParamSnapshot& P);
-#endif
 
     OFX::Clip* _src = nullptr;
     OFX::Clip* _dst = nullptr;
@@ -158,18 +139,8 @@ private:
     OFX::BooleanParam* _pOutputLinearPassThrough = nullptr;
 
 
-#ifdef JUICER_ENABLE_COUPLERS
     OFX::BooleanParam* _pCouplersActive = nullptr;
     OFX::DoubleParam* _pCouplersAmount = nullptr;
-    OFX::DoubleParam* _pCouplersAmountR = nullptr;
-    OFX::DoubleParam* _pCouplersAmountG = nullptr;
-    OFX::DoubleParam* _pCouplersAmountB = nullptr;
-    OFX::DoubleParam* _pCouplersSigma = nullptr;
-    OFX::DoubleParam* _pCouplersHigh = nullptr;
-    OFX::DoubleParam* _pCouplersSpatialSigma = nullptr;
-    OFX::IntParam* _pCouplersInitVersion = nullptr;
-    OFX::IntParam* _pCouplersFollowMask = nullptr;
-#endif
 
     // Scanner and print params
     OFX::DoubleParam* _pScannerLensBlur = nullptr;
