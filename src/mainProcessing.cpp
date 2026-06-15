@@ -1895,6 +1895,7 @@ void JuicerProcessor::setSrcDst(const SourceDestinationImages& images) {
 
 void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
     setRenderWindowRect(request.renderWindow);
+    _fullFrameExtent = request.fullFrameExtent;
     setComponents(request.components);
     _directStateHold = request.state;
     _recipeHold = _directStateHold
@@ -1914,6 +1915,7 @@ void JuicerProcessor::setDirectFrameRequest(const DirectFrameRequest& request) {
 
 void JuicerProcessor::setPrintFrameRequest(const PrintFrameRequest& request) {
     setRenderWindowRect(request.renderWindow);
+    _fullFrameExtent = request.fullFrameExtent;
     setComponents(request.components);
     _printStateHold = request.state;
     _recipeHold = _printStateHold
@@ -2879,6 +2881,27 @@ void JuicerProcessor::processImagesCUDA() {
         JTRACE("CUDA", "FATAL: instance state missing; cannot serve CUDA render");
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
+
+    // Highlight boost remains film-exposure owned. Any adjacent Exact optics request is
+    // descriptor-resolved and blocked before CUDA context/resource preparation.
+    Spektrafilm::ExactOpticsExecutionPlan exactOpticsPlan{};
+    const Spektrafilm::ExactOpticsFrameExtent exactFullFrameExtent{
+        _fullFrameExtent.x2 - _fullFrameExtent.x1,
+        _fullFrameExtent.y2 - _fullFrameExtent.y1};
+    if (!Spektrafilm::build_exact_optics_execution_plan(
+            focusedRecipe->spatialOptics,
+            focusedRecipe->profileRoute.scanRoute,
+            _pixelSizeUm,
+            exactFullFrameExtent,
+            exactOpticsPlan)) {
+        JTRACE("SPEKTRAFILM", "ResourceDescriptorMismatch phase=6A field=exact_optics_execution_plan");
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+    if (!exactOpticsPlan.blockingDiagnostic.empty()) {
+        JTRACE("SPEKTRAFILM", exactOpticsPlan.blockingDiagnostic);
+        throw OFX::Exception::Suite(kOfxStatErrFatal);
+    }
+
     JuicerCuda::ResourceManager::DeviceContextKey deviceContextKey{};
     deviceContextKey.deviceId = deviceId;
     deviceContextKey.contextOpaque = contextOpaque;
@@ -4018,6 +4041,10 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmExpose.exposureScaleDevice = autoExposureBuffers.deviceState.exposureScale;
     };
 
+    // SF_PHASE6_BLOCKED_LegacyBroadOpticsSetup owner=legacy broad renderer;
+    // allowed_call_sites=source after all accepted focused-route returns only;
+    // output_hash_resource_impact=none on typed focused routes;
+    // cleanup_symbol=SF_PHASE6_BLOCKED_LegacyBroadOpticsSetup; disposition=delete_with_legacy renderer.
     struct GrainSetupResult {
         bool wantGrain = false;
         bool wantGrainSublayers = false;

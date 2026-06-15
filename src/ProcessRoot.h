@@ -111,6 +111,10 @@ namespace JuicerProcess {
             PreparedCudaFrame(const PreparedCudaFrame&) = delete;
             PreparedCudaFrame& operator=(const PreparedCudaFrame&) = delete;
 
+            // SF_TEMP_BRIDGE_Phase6BroadOpticsWorkspace owner=Phase8-scanner/Phase9-grain/legacy broad renderer;
+            // allowed_call_sites=accepted spatial-DIR lease plus hard-blocked broad scanner/grain/halation source;
+            // output_hash_resource_impact=no Exact policy/hash/resource ownership;
+            // cleanup_symbol=SF_TEMP_BRIDGE_Phase6BroadOpticsWorkspace; disposition=split_by_owning_future_phase.
             struct WorkspaceRequest {
                 bool needOptics = false;
                 bool needSpatialDir = false;
@@ -222,6 +226,10 @@ namespace JuicerProcess {
                 float sigma = 0.0f;
             };
 
+            // SF_TEMP_BRIDGE_Phase6BroadOpticsKernelView owner=Phase8-scanner/Phase9-grain/legacy broad renderer;
+            // allowed_call_sites=hard-blocked broad launch source only;
+            // output_hash_resource_impact=no Exact descriptor/prepared-view ownership;
+            // cleanup_symbol=SF_TEMP_BRIDGE_Phase6BroadOpticsKernelView; disposition=split_by_owning_future_phase.
             struct OpticsKernelView {
                 KernelView spatialDir{};
                 KernelView scannerLensBlur{};
@@ -375,6 +383,9 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            // SF_TEMP_BRIDGE_Phase6PublicOpticsPreparation owner=Phase8-scanner/Phase9-grain/legacy broad renderer;
+            // allowed_call_sites=hard-blocked broad launch source only; output_hash_resource_impact=none for Exact;
+            // cleanup_symbol=SF_TEMP_BRIDGE_Phase6PublicOpticsPreparation; disposition=remove_or_narrow_by_owning_phase.
             bool prepare_optics_scratch(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,

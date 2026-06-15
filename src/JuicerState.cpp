@@ -1061,6 +1061,7 @@ namespace {
             p.cameraFilmFormatLongEdgeMm,
             10000.0,
             mix);
+        mix_hash_field(h, p.exactScatterHalationActive, mix);
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerLensBlurSigmaPx, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[0], 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[1], 10000.0, mix);
@@ -1764,6 +1765,7 @@ namespace {
         // layer-diffusion, high-shift, and runtime Couplers::Runtime fields remain legacy-only.
         input.dirCouplers.active = params.couplersActive != 0;
         input.dirCouplers.amount = static_cast<float>(params.couplersAmount);
+        input.spatialOptics.scatterHalationActive = params.exactScatterHalationActive != 0;
         input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
         input.directRouteNeutralCalibrationExcluded =
             selected.directRouteNeutralCalibrationExcluded;
@@ -1887,6 +1889,8 @@ namespace {
         input.filmFoundation.cameraFilterIR = params.cameraFilterIR;
         input.filmFoundation.dirCouplers.active = params.couplersActive != 0;
         input.filmFoundation.dirCouplers.amount = static_cast<float>(params.couplersAmount);
+        input.filmFoundation.spatialOptics.scatterHalationActive =
+            params.exactScatterHalationActive != 0;
         if (selected.filmProfile) {
             const std::string illuminantKey =
                 IlluminantKeys::normalize(selected.filmProfile->info.referenceIlluminant.value);

@@ -37,6 +37,8 @@ namespace Spektrafilm {
         "GlareNotImplementedForPhase4";
     inline constexpr const char kScannerPostEffectsNotImplementedForPhase4[] =
         "ScannerPostEffectsNotImplementedForPhase4";
+    inline constexpr const char kExactOpticsNotImplementedForPhase6[] =
+        "ExactOpticsNotImplementedForPhase6";
 
     enum class RgbToRawMethod : std::uint8_t {
         Hanatos2025,
@@ -107,6 +109,65 @@ namespace Spektrafilm {
         NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection
     };
 
+    enum class SpatialOpticsDomain : std::uint8_t {
+        FilmLinearExposure,
+        PrintLinearExposure
+    };
+
+    enum class SpatialOpticsComponent : std::uint8_t {
+        CameraDiffusion,
+        CameraLensBlur,
+        InEmulsionScatterHalation,
+        EnlargerDiffusion
+    };
+
+    enum class SpatialOpticsBackend : std::uint8_t {
+        Off,
+        Exact,
+        BlockedNotImplementedForPhase6
+    };
+
+    enum class SpatialOpticsBackendSource : std::uint8_t {
+        ProductDefault,
+        LegacyHalationActiveBridge
+    };
+
+    enum class SpatialOpticsExactnessPolicy : std::uint8_t {
+        RequireExactOrFail
+    };
+
+    enum class DiffusionFilterFamily : std::uint8_t {
+        Glimmerglass,
+        BlackProMist,
+        ProMist,
+        Cinebloom
+    };
+
+    enum class ExactOpticsConvolution : std::uint8_t {
+        ReflectFft,
+        ReflectFastGaussian,
+        ReflectScatterHalation
+    };
+
+    enum class ExactOpticsNormalization : std::uint8_t {
+        PerChannelUnitSumEnergyConserving,
+        PerChannelUnitSum,
+        EnergyConservingScatterAndBounceRenormalized
+    };
+
+    enum class ExactOpticsPrecision : std::uint8_t {
+        Float32
+    };
+
+    enum class ExactOpticsChannelGrouping : std::uint8_t {
+        SequentialRgb
+    };
+
+    enum class ExactOpticsUnavailableResourceClass : std::uint8_t {
+        None,
+        BackendNotImplementedForPhase6
+    };
+
 } // namespace Spektrafilm
 
 struct ProfileRoute {
@@ -147,6 +208,103 @@ struct HighlightBoostRecipe {
     float boostEv = 0.0f;
     float boostRange = 0.3f;
     float protectEv = 4.0f;
+};
+
+struct SpatialOpticsComponentPolicy {
+    Spektrafilm::SpatialOpticsDomain domain = Spektrafilm::SpatialOpticsDomain::FilmLinearExposure;
+    Spektrafilm::SpatialOpticsBackend requestedBackend = Spektrafilm::SpatialOpticsBackend::Off;
+    Spektrafilm::SpatialOpticsBackend resolvedBackend = Spektrafilm::SpatialOpticsBackend::Off;
+    Spektrafilm::SpatialOpticsBackendSource backendSource =
+        Spektrafilm::SpatialOpticsBackendSource::ProductDefault;
+    Spektrafilm::SpatialOpticsExactnessPolicy exactnessPolicy =
+        Spektrafilm::SpatialOpticsExactnessPolicy::RequireExactOrFail;
+};
+
+struct DiffusionFilterOpticsRecipe {
+    SpatialOpticsComponentPolicy policy;
+    Spektrafilm::DiffusionFilterFamily family = Spektrafilm::DiffusionFilterFamily::BlackProMist;
+    bool active = false;
+    float strength = 0.5f;
+    float spatialScale = 1.0f;
+    float haloWarmth = 0.0f;
+    float coreIntensity = 1.0f;
+    float coreSize = 1.0f;
+    float haloIntensity = 1.0f;
+    float haloSize = 1.0f;
+    float bloomIntensity = 1.0f;
+    float bloomSize = 1.0f;
+    std::uint64_t hash = 0;
+};
+
+struct CameraLensBlurOpticsRecipe {
+    SpatialOpticsComponentPolicy policy;
+    float sigmaUm = 0.0f;
+    std::uint64_t hash = 0;
+};
+
+struct ScatterHalationOpticsRecipe {
+    SpatialOpticsComponentPolicy policy;
+    bool active = false;
+    float scatterAmount = 1.0f;
+    float scatterSpatialScale = 1.0f;
+    float halationAmount = 1.0f;
+    float halationSpatialScale = 1.0f;
+    std::array<float, 3> scatterCoreUm{{2.2f, 2.0f, 1.6f}};
+    std::array<float, 3> scatterTailUm{{9.3f, 9.7f, 9.1f}};
+    std::array<float, 3> scatterTailWeight{{0.78f, 0.65f, 0.67f}};
+    std::array<float, 3> halationStrength{};
+    std::array<float, 3> halationFirstSigmaUm{};
+    std::uint32_t halationBounceCount = 3;
+    float halationBounceDecay = 0.5f;
+    bool halationRenormalize = true;
+    std::uint64_t hash = 0;
+};
+
+struct SpatialOptics {
+    DiffusionFilterOpticsRecipe cameraDiffusion;
+    CameraLensBlurOpticsRecipe cameraLensBlur;
+    ScatterHalationOpticsRecipe scatterHalation;
+    DiffusionFilterOpticsRecipe enlargerDiffusion;
+    std::uint64_t hash = 0;
+};
+
+struct ExactOpticsFrameExtent {
+    int width = 0;
+    int height = 0;
+};
+
+struct ExactOpticsExecutionDescriptor {
+    Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+    Spektrafilm::SpatialOpticsDomain domain = Spektrafilm::SpatialOpticsDomain::FilmLinearExposure;
+    Spektrafilm::SpatialOpticsComponent component = Spektrafilm::SpatialOpticsComponent::CameraDiffusion;
+    Spektrafilm::SpatialOpticsBackend requestedBackend = Spektrafilm::SpatialOpticsBackend::Off;
+    Spektrafilm::SpatialOpticsBackend resolvedBackend = Spektrafilm::SpatialOpticsBackend::Off;
+    Spektrafilm::ExactOpticsConvolution convolution = Spektrafilm::ExactOpticsConvolution::ReflectFft;
+    Spektrafilm::ExactOpticsNormalization normalization =
+        Spektrafilm::ExactOpticsNormalization::PerChannelUnitSumEnergyConserving;
+    Spektrafilm::ExactOpticsPrecision precision = Spektrafilm::ExactOpticsPrecision::Float32;
+    Spektrafilm::ExactOpticsChannelGrouping channelGrouping =
+        Spektrafilm::ExactOpticsChannelGrouping::SequentialRgb;
+    Spektrafilm::ExactOpticsUnavailableResourceClass unavailableResourceClass =
+        Spektrafilm::ExactOpticsUnavailableResourceClass::None;
+    std::uint64_t recipeComponentHash = 0;
+    std::uint64_t sampledPsfHash = 0;
+    float pixelSizeUm = 0.0f;
+    ExactOpticsFrameExtent fullFrameExtent;
+    int reflectedPaddingRadiusPixels = 0;
+    ExactOpticsFrameExtent paddedImageExtent;
+    ExactOpticsFrameExtent paddedFftExtent;
+    std::uint64_t requestedScratchBytes = 0;
+    std::uint64_t requestedDurableBytes = 0;
+    std::uint64_t requestedCufftWorkBytes = 0;
+    std::uint64_t hash = 0;
+};
+
+struct ExactOpticsExecutionPlan {
+    std::array<ExactOpticsExecutionDescriptor, 4> descriptors{};
+    std::size_t descriptorCount = 0;
+    std::uint64_t hash = 0;
+    std::string blockingDiagnostic;
 };
 
 struct FilmRawRecipe {
@@ -348,6 +506,7 @@ struct PrintRecipe {
 struct RenderRecipe {
     ProfileRoute profileRoute;
     FilmRawRecipe filmRaw;
+    SpatialOptics spatialOptics;
     FilmDevelopRecipe filmDevelop;
     DirCouplersRecipe dirCouplers;
     DensityBoundsRecipe enlargerFilmBounds;
@@ -365,6 +524,9 @@ namespace Spektrafilm {
     using ::DensityBoundsRecipe;
     using ::DirCouplersControls;
     using ::DirCouplersRecipe;
+    using ::ExactOpticsExecutionDescriptor;
+    using ::ExactOpticsExecutionPlan;
+    using ::ExactOpticsFrameExtent;
     using ::FilmDevelopRecipe;
     using ::FilmRawRecipe;
     using ::GrainContract;
@@ -373,6 +535,21 @@ namespace Spektrafilm {
     using ::RenderRecipe;
     using ::ScannerOutputRecipe;
     using ::SpatialDirDescriptor;
+    using ::SpatialOptics;
+    using ::SpatialOpticsComponentPolicy;
+
+    struct SpatialOpticsControls {
+        bool cameraDiffusionActive = false;
+        DiffusionFilterFamily cameraDiffusionFamily = DiffusionFilterFamily::BlackProMist;
+        float cameraDiffusionStrength = 0.5f;
+        float cameraDiffusionSpatialScale = 1.0f;
+        float cameraLensBlurUm = 0.0f;
+        bool scatterHalationActive = false;
+        bool enlargerDiffusionActive = false;
+        DiffusionFilterFamily enlargerDiffusionFamily = DiffusionFilterFamily::BlackProMist;
+        float enlargerDiffusionStrength = 0.5f;
+        float enlargerDiffusionSpatialScale = 1.0f;
+    };
 
     struct DirectRecipeBuildInput {
         std::string filmProfileKey;
@@ -381,6 +558,7 @@ namespace Spektrafilm {
         std::shared_ptr<const Profiles::ValidatedFilmProfile> filmProfile;
         GrainContract grainContract;
         DirCouplersControls dirCouplers;
+        SpatialOpticsControls spatialOptics;
         bool directRoutePrintProfileExcluded = false;
         bool directRouteNeutralCalibrationExcluded = false;
         int spectralUpsamplingMode = 0;
@@ -479,5 +657,11 @@ namespace Spektrafilm {
         const DirCouplersRecipe& recipe,
         float pixelSizeUm,
         SpatialDirDescriptor& out);
+    bool build_exact_optics_execution_plan(
+        const SpatialOptics& recipe,
+        ScanRoute route,
+        float pixelSizeUm,
+        ExactOpticsFrameExtent fullFrameExtent,
+        ExactOpticsExecutionPlan& out);
 
 } // namespace Spektrafilm

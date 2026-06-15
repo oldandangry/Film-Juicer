@@ -2969,6 +2969,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.state = printState;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
+        frameRequest.fullFrameExtent = fullBounds;
         frameRequest.sessionSeed = sessionTokens.sessionSeed;
         frameRequest.instanceToken = sessionTokens.instanceToken;
         frameRequest.clipToken = renderClipToken;
@@ -2981,6 +2982,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         frameRequest.state = directState;
         frameRequest.components = nComponents;
         frameRequest.renderWindow = roi;
+        frameRequest.fullFrameExtent = fullBounds;
         frameRequest.sessionSeed = sessionTokens.sessionSeed;
         frameRequest.instanceToken = sessionTokens.instanceToken;
         frameRequest.clipToken = renderClipToken;
@@ -3503,6 +3505,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraMeteringMethod = exposure.meteringMethod;
     P.cameraExposureCompensationEv = exposure.sliderEV;
     P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
+    P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
     read_coupler_snapshot_values(_pCouplersActive, _pCouplersAmount, P);
     read_scanner_snapshot_values(
         _pScannerLensBlur,

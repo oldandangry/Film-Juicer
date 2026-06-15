@@ -55,6 +55,10 @@ namespace Profiles {
         float gateScratchAmount = 0.0f;
     };
 
+    // SF_PHASE6_BLOCKED_LegacyHalationRuntime owner=legacy broad renderer;
+    // allowed_call_sites=hard-blocked broad UI/profile/WorkingState source only;
+    // output_hash_resource_impact=none on typed focused routes;
+    // cleanup_symbol=SF_PHASE6_BLOCKED_LegacyHalationRuntime; disposition=delete_with_legacy_renderer.
     struct HalationMetadata {
         bool active = false;
         std::array<float, 3> strength{{0.0f, 0.0f, 0.0f}};

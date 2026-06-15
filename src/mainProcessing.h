@@ -223,6 +223,7 @@ private:
     JuicerProc::StageScratch _scratch;
     JuicerProc::DensityBuffer _density;
     std::uint32_t _frameBoundsVersion = 0;
+    OfxRectI _fullFrameExtent{0, 0, 0, 0};
     float _pixelSizeUm = 0.0f;
 };
 // Test-facing wrappers to access internal spatial utilities without changing production behavior.

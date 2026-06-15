@@ -394,6 +394,7 @@ struct ParamSnapshot {
     int cameraMeteringMethod = 0;
     double cameraExposureCompensationEv = 0.0;
     double cameraFilmFormatLongEdgeMm = 36.0;
+    int exactScatterHalationActive = 0;
     double scannerLensBlurSigmaPx = 0.55;
     std::array<double, 2> scannerUnsharpMask{{0.7, 1.0}};
     int scannerUseLut = 1;

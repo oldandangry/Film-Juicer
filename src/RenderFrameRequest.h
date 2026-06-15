@@ -65,6 +65,7 @@ struct DirectFrameRequest {
     std::shared_ptr<const DirectRenderState> state;
     int components = 0;
     OfxRectI renderWindow{0, 0, 0, 0};
+    OfxRectI fullFrameExtent{0, 0, 0, 0};
     std::uint64_t sessionSeed = 1;
     std::uint64_t instanceToken = 1;
     std::uintptr_t clipToken = 0;
@@ -77,6 +78,7 @@ struct PrintFrameRequest {
     std::shared_ptr<const PrintRenderState> state;
     int components = 0;
     OfxRectI renderWindow{0, 0, 0, 0};
+    OfxRectI fullFrameExtent{0, 0, 0, 0};
     std::uint64_t sessionSeed = 1;
     std::uint64_t instanceToken = 1;
     std::uintptr_t clipToken = 0;

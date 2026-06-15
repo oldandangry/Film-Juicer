@@ -382,6 +382,11 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         if (grpHalation) {
             grpHalation->setLabel("Halation");
             grpHalation->setOpen(false);
+            // SF_PHASE6_BLOCKED_LegacyHalationUi owner=Phase6 Exact optics;
+            // allowed_call_sites=restored-instance active-toggle preflight only;
+            // output_hash_resource_impact=active toggle requests blocked typed SpatialOptics, low-level fields none;
+            // cleanup_symbol=SF_PHASE6_BLOCKED_LegacyHalationUi; disposition=replace_when_Exact_is_exposed.
+            grpHalation->setIsSecret(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kHalationActive);
