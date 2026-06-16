@@ -3514,6 +3514,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraExposureCompensationEv = exposure.sliderEV;
     P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
     P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
+    P.grainControls = gatherGrainUi();
     read_coupler_snapshot_values(_pCouplersActive, _pCouplersAmount, P);
     read_scanner_snapshot_values(
         _pScannerLensBlur,

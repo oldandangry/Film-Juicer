@@ -1071,9 +1071,69 @@ namespace {
     }
 
     template <typename MixFn>
+    inline void mix_focused_grain_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        const Profiles::GrainMetadata& grain = p.grainControls;
+        if (!grain.active) {
+            return;
+        }
+        mix_hash_field(h, 1, mix);
+        mix_hash_field(h, grain.sublayersActive ? 1 : 0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.agxParticleAreaUm2, 10000.0, mix);
+        for (float value : grain.agxParticleScale) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
+        for (float value : grain.agxParticleScaleLayers) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
+        for (float value : grain.uniformity) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
+        mix_hash_field_scaled_rounded_if_finite(h, grain.blur, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.blurDyeCloudsUm, 10000.0, mix);
+        for (float value : grain.microStructure) {
+            mix_hash_field_scaled_rounded_if_finite(h, value, 10000.0, mix);
+        }
+        mix_hash_field(h, grain.nSubLayers, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.amplitude, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.chroma, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixWeight, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixWeightMid, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.sizeMixScale, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.clumpTemporalMix, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, grain.clumpMorphPeriodSec, 10000.0, mix);
+        mix_hash_field(h, grain.breathingDebug ? 1 : 0, mix);
+        mix_hash_field(h, grain.debugView, mix);
+    }
+
+    template <typename MixFn>
     inline void mix_coupler_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         mix_hash_field(h, p.couplersActive, mix);
         mix_hash_field_scaled(h, p.couplersAmount, 10000.0, mix);
+    }
+
+    Spektrafilm::GrainContract focused_grain_contract_from_snapshot(const ParamSnapshot& p) {
+        Spektrafilm::GrainContract contract{};
+        const Profiles::GrainMetadata& grain = p.grainControls;
+        contract.visualActive = grain.active;
+        contract.sublayersActive = grain.sublayersActive;
+        contract.agxParticleAreaUm2 = grain.agxParticleAreaUm2;
+        contract.agxParticleScale = grain.agxParticleScale;
+        contract.agxParticleScaleLayers = grain.agxParticleScaleLayers;
+        contract.uniformity = grain.uniformity;
+        contract.blur = grain.blur;
+        contract.blurDyeCloudsUm = grain.blurDyeCloudsUm;
+        contract.microStructure = grain.microStructure;
+        contract.nSubLayers = grain.nSubLayers;
+        contract.visualAmplitude = grain.amplitude;
+        contract.visualChroma = grain.chroma;
+        contract.visualSizeMixWeight = grain.sizeMixWeight;
+        contract.visualSizeMixWeightMid = grain.sizeMixWeightMid;
+        contract.visualSizeMixScale = grain.sizeMixScale;
+        contract.visualClumpTemporalMix = grain.clumpTemporalMix;
+        contract.visualClumpMorphPeriodSec = grain.clumpMorphPeriodSec;
+        contract.visualBreathingDebug = grain.breathingDebug;
+        contract.visualDebugView = grain.debugView;
+        return contract;
     }
 
     inline void sanitize_dir_matrix(float matrix[3][3]) {
@@ -1770,6 +1830,7 @@ namespace {
         input.printProfileKey = params.printProfileKey;
         input.scanRoute = params.scanRoute;
         input.filmProfile = selected.filmProfile;
+        input.grainContract = focused_grain_contract_from_snapshot(params);
         // Phase 3D-3 direct production consumes only typed recipe controls. The old ratio,
         // layer-diffusion, high-shift, and runtime Couplers::Runtime fields remain legacy-only.
         input.dirCouplers.active = params.couplersActive != 0;
@@ -1888,6 +1949,7 @@ namespace {
         input.filmProfile = selected.filmProfile;
         input.printProfile = selected.printProfile;
         input.filmFoundation.filmProfile = selected.filmProfile;
+        input.filmFoundation.grainContract = focused_grain_contract_from_snapshot(params);
         input.filmFoundation.spectralUpsamplingMode = params.spectralUpsamplingMode;
         input.filmFoundation.inputColorSpace = params.inputColorSpace;
         input.filmFoundation.inputCctfDecoding = params.inputCctfDecoding != 0;
@@ -2037,6 +2099,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     mix_output_encoding_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
+    mix_focused_grain_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -2047,6 +2110,7 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     mix_output_encoding_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
+    mix_focused_grain_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -2055,6 +2119,7 @@ static uint64_t hash_params_upload_core(const ParamSnapshot& p) {
     mix_profile_selection_hash_fields(h, p, hash_mix);
     mix_glare_print_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
+    mix_focused_grain_hash_fields(h, p, hash_mix);
     return h;
 }
 
@@ -3160,7 +3225,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->grain = base.grain;
     target->halation = base.halation;
     target->negativeGlare = base.glare;
-    target->hasDensityCurvesLayers = base.hasDensityCurvesLayers;
+    target->hasDensityCurvesLayers =
+        base.hasDensityCurvesLayers && P.grainControls.active && P.grainControls.sublayersActive;
     const size_t layerCount = target->densityCurvesLayers.size();
     for (size_t layer = 0; layer < layerCount; ++layer) {
         auto& dstLayer = target->densityCurvesLayers[layer];

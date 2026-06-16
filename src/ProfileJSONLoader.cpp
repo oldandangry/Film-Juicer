@@ -879,6 +879,88 @@ namespace Profiles {
             return true;
         }
 
+        bool parse_selected_density_curves_layers_required(
+            const Json& node,
+            std::size_t expectedRows,
+            const SelectedProfileContext& ctx,
+            std::array<std::array<std::vector<float>, 3>, 3>& out,
+            std::string& error) {
+            if (!require_array_size(node, expectedRows, ctx, "data.density_curves_layers", error)) {
+                return false;
+            }
+            for (std::size_t layer = 0; layer < 3u; ++layer) {
+                for (std::size_t ch = 0; ch < 3u; ++ch) {
+                    out[layer][ch].assign(expectedRows, std::numeric_limits<float>::quiet_NaN());
+                }
+            }
+            for (std::size_t row = 0; row < expectedRows; ++row) {
+                const Json& rowNode = node[row];
+                const std::string rowField =
+                    "data.density_curves_layers[" + std::to_string(row) + "]";
+                if (!require_array_size(rowNode, 3u, ctx, rowField, error)) {
+                    return false;
+                }
+                for (std::size_t layer = 0; layer < 3u; ++layer) {
+                    const Json& layerNode = rowNode[layer];
+                    const std::string layerField =
+                        rowField + "[" + std::to_string(layer) + "]";
+                    if (!require_array_size(layerNode, 3u, ctx, layerField, error)) {
+                        return false;
+                    }
+                    for (std::size_t ch = 0; ch < 3u; ++ch) {
+                        if (!parse_selected_number(
+                                layerNode[ch],
+                                SelectedNumericPolicy::NullableNan,
+                                ctx,
+                                layerField + "[" + std::to_string(ch) + "]",
+                                out[layer][ch][row],
+                                error)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        void record_selected_density_curves_layers(
+            const Json& data,
+            SpektrafilmProfileSamples& out,
+            const SelectedProfileContext& ctx) {
+            out.hasDensityCurvesLayers = false;
+            out.densityCurvesLayersMalformed = false;
+            out.densityCurvesLayersDiagnostic.clear();
+            for (auto& layer : out.densityCurvesLayers) {
+                for (auto& channel : layer) {
+                    channel.clear();
+                }
+            }
+
+            const auto it = data.find("density_curves_layers");
+            if (it == data.end() || (it->is_array() && it->empty())) {
+                return;
+            }
+
+            std::array<std::array<std::vector<float>, 3>, 3> layers{};
+            std::string layerError;
+            if (!parse_selected_density_curves_layers_required(
+                    *it,
+                    out.logExposure.size(),
+                    ctx,
+                    layers,
+                    layerError)) {
+                out.densityCurvesLayersMalformed = true;
+                out.densityCurvesLayersDiagnostic =
+                    layerError.empty()
+                        ? "MalformedRequiredProfileData phase=9B field=data.density_curves_layers"
+                        : layerError;
+                return;
+            }
+
+            out.densityCurvesLayers = std::move(layers);
+            out.hasDensityCurvesLayers = true;
+        }
+
         template <std::size_t N>
         void copy_vector_to_array(const std::vector<float>& src, std::array<float, N>& dst) {
             for (std::size_t i = 0; i < N; ++i) {
@@ -1255,6 +1337,7 @@ namespace Profiles {
                     error)) {
                 return false;
             }
+            record_selected_density_curves_layers(data, out, ctx);
 
             const auto windowIt = data.find("hanatos2025_adaptation_window_params");
             out.hasHanatos2025AdaptationWindowParams = false;

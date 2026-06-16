@@ -68,6 +68,10 @@ namespace Profiles {
         std::array<float, 81> baseDensity{};
         std::vector<float> logExposure;
         std::vector<std::array<float, 3>> densityCurves;
+        std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{}; // [sublayer][channel]
+        bool hasDensityCurvesLayers = false;
+        bool densityCurvesLayersMalformed = false;
+        std::string densityCurvesLayersDiagnostic;
         std::array<float, 4> hanatos2025AdaptationWindowParams{};
         std::array<std::array<float, 15>, 3> hanatos2025AdaptationSurfaceParams{};
         bool hasHanatos2025AdaptationWindowParams = false;

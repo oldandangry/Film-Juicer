@@ -495,8 +495,131 @@ namespace {
         hash_value(hash, recipe.polarity);
         hash_value(hash, recipe.authoredDensityCurvesHash);
         hash_value(hash, recipe.normalizedDensityCurvesHash);
+        hash_value(hash, recipe.densityCurvesLayersRequired);
+        if (recipe.densityCurvesLayersRequired) {
+            hash_value(hash, recipe.densityCurvesLayersHash);
+        }
         Hash::hash_bytes_update(hash, recipe.densityCurveGamma.data(), sizeof(recipe.densityCurveGamma));
         return hash;
+    }
+
+    bool finite_nonnegative_grain_triplet(const std::array<float, 3>& values) {
+        for (float value : values) {
+            if (!std::isfinite(value) || value < 0.0f) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool finite_positive_triplet(const std::array<float, 3>& values) {
+        for (float value : values) {
+            if (!std::isfinite(value) || value <= 0.0f) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool finite_nonnegative_pair(const std::array<float, 2>& values) {
+        for (float value : values) {
+            if (!std::isfinite(value) || value < 0.0f) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    std::uint64_t hash_grain_contract(const GrainContract& contract) {
+        if (!contract.visualActive) {
+            return 0;
+        }
+        std::uint64_t hash = Hash::kFnvOffset;
+        hash_value(hash, contract.visualActive);
+        hash_value(hash, contract.sublayersActive);
+        hash_value(hash, contract.agxParticleAreaUm2);
+        Hash::hash_bytes_update(hash, contract.agxParticleScale.data(), sizeof(contract.agxParticleScale));
+        Hash::hash_bytes_update(hash, contract.agxParticleScaleLayers.data(), sizeof(contract.agxParticleScaleLayers));
+        Hash::hash_bytes_update(hash, contract.densityMinCmy.data(), sizeof(contract.densityMinCmy));
+        Hash::hash_bytes_update(hash, contract.uniformity.data(), sizeof(contract.uniformity));
+        hash_value(hash, contract.blur);
+        hash_value(hash, contract.blurDyeCloudsUm);
+        Hash::hash_bytes_update(hash, contract.microStructure.data(), sizeof(contract.microStructure));
+        hash_value(hash, contract.nSubLayers);
+        hash_value(hash, contract.visualAmplitude);
+        hash_value(hash, contract.visualChroma);
+        hash_value(hash, contract.visualSizeMixWeight);
+        hash_value(hash, contract.visualSizeMixWeightMid);
+        hash_value(hash, contract.visualSizeMixScale);
+        hash_value(hash, contract.visualClumpTemporalMix);
+        hash_value(hash, contract.visualClumpMorphPeriodSec);
+        hash_value(hash, contract.visualBreathingDebug);
+        hash_value(hash, contract.visualDebugView);
+        return hash;
+    }
+
+    bool build_grain_contract(const GrainContract& input, GrainContract& out) {
+        out = input;
+        if (!finite_nonnegative_grain_triplet(out.densityMinCmy)) {
+            return false;
+        }
+        if (!out.visualActive) {
+            out.hash = 0;
+            return true;
+        }
+        if (!std::isfinite(out.agxParticleAreaUm2) || out.agxParticleAreaUm2 <= 0.0f ||
+            !finite_positive_triplet(out.agxParticleScale) ||
+            !finite_positive_triplet(out.agxParticleScaleLayers) ||
+            !finite_nonnegative_grain_triplet(out.uniformity) ||
+            !std::isfinite(out.blur) || out.blur < 0.0f ||
+            !std::isfinite(out.blurDyeCloudsUm) || out.blurDyeCloudsUm < 0.0f ||
+            !finite_nonnegative_pair(out.microStructure) ||
+            out.nSubLayers <= 0 ||
+            !std::isfinite(out.visualAmplitude) || out.visualAmplitude < 0.0f ||
+            !std::isfinite(out.visualChroma) || out.visualChroma < 0.0f ||
+            !std::isfinite(out.visualSizeMixWeight) || out.visualSizeMixWeight < 0.0f ||
+            !std::isfinite(out.visualSizeMixWeightMid) || out.visualSizeMixWeightMid < 0.0f ||
+            !std::isfinite(out.visualSizeMixScale) || out.visualSizeMixScale < 1.0f ||
+            !std::isfinite(out.visualClumpTemporalMix) || out.visualClumpTemporalMix < 0.0f ||
+            !std::isfinite(out.visualClumpMorphPeriodSec) || out.visualClumpMorphPeriodSec < 0.0f) {
+            return false;
+        }
+        out.hash = hash_grain_contract(out);
+        return out.hash != 0;
+    }
+
+    bool grain_contract_requires_density_layers(const GrainContract& contract) {
+        return contract.visualActive && contract.sublayersActive;
+    }
+
+    std::uint64_t hash_density_curves_layers(
+        const std::array<std::array<std::vector<float>, 3>, 3>& layers) {
+        std::uint64_t hash = Hash::kFnvOffset;
+        for (const auto& layer : layers) {
+            for (const auto& channel : layer) {
+                if (channel.empty()) {
+                    return 0;
+                }
+                hash_value(hash, hash_nan_preserving_floats(channel.data(), channel.size()));
+            }
+        }
+        return hash;
+    }
+
+    bool validate_density_curves_layers_shape(
+        const std::array<std::array<std::vector<float>, 3>, 3>& layers,
+        std::size_t expectedRows) {
+        if (expectedRows == 0u) {
+            return false;
+        }
+        for (const auto& layer : layers) {
+            for (const auto& channel : layer) {
+                if (channel.size() != expectedRows) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     bool finite_nonnegative(float value) {
@@ -998,6 +1121,11 @@ namespace Spektrafilm {
             return result;
         }
 
+        if (!build_grain_contract(input.grainContract, result.recipe.grainContract)) {
+            result.diagnostic = "MalformedRequiredProfileData phase=9A field=grain_contract";
+            return result;
+        }
+
         FilmDevelopRecipe& filmDevelop = result.recipe.filmDevelop;
         filmDevelop.polarity = profile.info.type;
         filmDevelop.logExposure = profile.data.logExposure;
@@ -1021,6 +1149,34 @@ namespace Spektrafilm {
         filmDevelop.normalizedDensityCurvesHash = hash_nan_preserving_floats(
             &filmDevelop.normalizedDensityCurves[0][0],
             filmDevelop.normalizedDensityCurves.size() * 3u);
+        filmDevelop.densityCurvesLayersRequired =
+            grain_contract_requires_density_layers(result.recipe.grainContract);
+        if (filmDevelop.densityCurvesLayersRequired) {
+            if (profile.data.densityCurvesLayersMalformed) {
+                result.diagnostic =
+                    profile.data.densityCurvesLayersDiagnostic.empty()
+                        ? "MalformedRequiredProfileData phase=9B field=data.density_curves_layers"
+                        : profile.data.densityCurvesLayersDiagnostic;
+                return result;
+            }
+            if (!profile.data.hasDensityCurvesLayers) {
+                result.diagnostic = "MissingRequiredResource phase=9B field=data.density_curves_layers";
+                return result;
+            }
+            if (!validate_density_curves_layers_shape(
+                    profile.data.densityCurvesLayers,
+                    filmDevelop.logExposure.size())) {
+                result.diagnostic = "MalformedRequiredProfileData phase=9B field=data.density_curves_layers shape";
+                return result;
+            }
+            filmDevelop.densityCurvesLayers = profile.data.densityCurvesLayers;
+            filmDevelop.densityCurvesLayersHash =
+                hash_density_curves_layers(filmDevelop.densityCurvesLayers);
+            if (filmDevelop.densityCurvesLayersHash == 0) {
+                result.diagnostic = "MalformedRequiredProfileData phase=9B field=data.density_curves_layers hash";
+                return result;
+            }
+        }
         filmDevelop.hash = hash_film_develop_recipe(filmDevelop);
         if (filmDevelop.authoredDensityCurvesHash == 0 ||
             filmDevelop.normalizedDensityCurvesHash == 0 ||
@@ -1041,7 +1197,7 @@ namespace Spektrafilm {
         if (!build_direct_density_bounds(
                 profile,
                 filmDevelop,
-                input.grainContract,
+                result.recipe.grainContract,
                 input.scanRoute,
                 result.recipe.densityBounds)) {
             result.diagnostic = "MalformedRequiredProfileData phase=3A field=density_bounds";
@@ -1093,6 +1249,10 @@ namespace Spektrafilm {
         if (result.recipe.spatialOptics.hash != 0) {
             result.recipe.hash =
                 Hash::hash_uint64_values({result.recipe.hash, result.recipe.spatialOptics.hash});
+        }
+        if (result.recipe.grainContract.hash != 0) {
+            result.recipe.hash =
+                Hash::hash_uint64_values({result.recipe.hash, result.recipe.grainContract.hash});
         }
         result.valid = result.recipe.hash != 0;
         if (!result.valid) {
@@ -1173,6 +1333,7 @@ namespace Spektrafilm {
         }
         result.recipe.filmDevelop = foundation.recipe.filmDevelop;
         result.recipe.dirCouplers = foundation.recipe.dirCouplers;
+        result.recipe.grainContract = foundation.recipe.grainContract;
         result.recipe.enlargerFilmBounds = foundation.recipe.densityBounds;
         result.recipe.enlargerFilmBounds.route = input.scanRoute;
         result.recipe.enlargerFilmBounds.source =
@@ -1310,6 +1471,10 @@ namespace Spektrafilm {
         if (result.recipe.spatialOptics.hash != 0) {
             result.recipe.hash =
                 Hash::hash_uint64_values({result.recipe.hash, result.recipe.spatialOptics.hash});
+        }
+        if (result.recipe.grainContract.hash != 0) {
+            result.recipe.hash =
+                Hash::hash_uint64_values({result.recipe.hash, result.recipe.grainContract.hash});
         }
         result.valid = route.hash != 0 && print.filters.hash != 0 &&
                        print.exposure.hash != 0 && print.illuminant.hash != 0 &&

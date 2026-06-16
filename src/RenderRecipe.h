@@ -21,7 +21,7 @@
 //   and print-medium handoff identity. Print preparation and launch remain downstream owners.
 // - ScannerOutputRecipe owns scanner/output policy; scanner LUT resources own their descriptor.
 // - OpticsRecipe owns lens, halation, scattering, and diffusion behavior when Phase 6 introduces it.
-// - GrainContract/GrainRecipe own density_min and visual-grain behavior; density_min is not profile digest data.
+// - GrainContract owns density_min and focused renderer behavior; density_min is not profile digest data.
 // - FrameRequest owns frame-local extent, pixel size, temporal tokens, and metering request facts.
 // - PreparedCudaFrame/context resource internals own durable GPU handles, scratch, staging, and views.
 // This is source-adjacent orientation, not a runtime registry.
@@ -326,11 +326,14 @@ struct FilmDevelopRecipe {
     std::vector<float> logExposure;
     std::vector<std::array<float, 3>> authoredDensityCurves;
     std::vector<std::array<float, 3>> normalizedDensityCurves;
+    std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{};
+    bool densityCurvesLayersRequired = false;
     std::array<float, 3> densityCurveGamma{{1.0f, 1.0f, 1.0f}};
     std::array<float, 3> authoredMinCmy{};
     std::array<float, 3> authoredMaxCmy{};
     std::uint64_t authoredDensityCurvesHash = 0;
     std::uint64_t normalizedDensityCurvesHash = 0;
+    std::uint64_t densityCurvesLayersHash = 0;
     std::uint64_t hash = 0;
 };
 
@@ -377,7 +380,27 @@ struct SpatialDirDescriptor {
 };
 
 struct GrainContract {
+    bool visualActive = false;
+    bool sublayersActive = true;
+    float agxParticleAreaUm2 = 0.2f;
+    std::array<float, 3> agxParticleScale{{0.8f, 1.0f, 2.0f}};
+    std::array<float, 3> agxParticleScaleLayers{{2.5f, 1.0f, 0.5f}};
     std::array<float, 3> densityMinCmy{{0.07f, 0.08f, 0.12f}};
+    std::array<float, 3> uniformity{{0.97f, 0.97f, 0.99f}};
+    float blur = 0.65f;
+    float blurDyeCloudsUm = 1.0f;
+    std::array<float, 2> microStructure{{0.2f, 30.0f}};
+    int nSubLayers = 1;
+    float visualAmplitude = 1.0f;
+    float visualChroma = 0.0f;
+    float visualSizeMixWeight = 0.0f;
+    float visualSizeMixWeightMid = 0.0f;
+    float visualSizeMixScale = 1.0f;
+    float visualClumpTemporalMix = 0.0f;
+    float visualClumpMorphPeriodSec = 0.0f;
+    bool visualBreathingDebug = false;
+    int visualDebugView = 0;
+    std::uint64_t hash = 0;
 };
 
 struct DensityBoundsRecipe {
@@ -505,6 +528,7 @@ struct RenderRecipe {
     SpatialOptics spatialOptics;
     FilmDevelopRecipe filmDevelop;
     DirCouplersRecipe dirCouplers;
+    GrainContract grainContract;
     DensityBoundsRecipe enlargerFilmBounds;
     DensityBoundsRecipe densityBounds;
     ScannerOutputRecipe scannerOutput;

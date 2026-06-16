@@ -304,6 +304,7 @@ namespace JuicerCuda {
         std::uint64_t validatedPrintParamsHash = 0;
         std::uint64_t directFinalSensitivityHash = 0;
         std::uint64_t directDensityCurvesHash = 0;
+        std::uint64_t directDensityLayersHash = 0;
         std::uint64_t directDirHash = 0;
         std::uint64_t directDensityBoundsHash = 0;
         std::uint64_t directScannerDescriptorHash = 0;

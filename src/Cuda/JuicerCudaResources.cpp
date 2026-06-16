@@ -1428,6 +1428,7 @@ namespace JuicerCuda {
             resources.densityCurvesLayersChannelN[ch] = 0;
         }
         resources.hasDensityCurvesLayers = 0;
+        resources.directDensityLayersHash = 0;
     }
 
     static bool retire_density_layers_locked(Resources& resources, void* cudaStreamOpaque, const char* label, std::string& outError) {
@@ -1453,6 +1454,7 @@ namespace JuicerCuda {
             resources.densityCurvesLayersChannelN[ch] = 0;
         }
         resources.hasDensityCurvesLayers = 0;
+        resources.directDensityLayersHash = 0;
         return true;
 #endif
     }
@@ -2533,6 +2535,8 @@ namespace JuicerCuda {
         const FilmDevelopRecipe& filmDevelop = recipe.filmDevelop;
         const DirCouplersRecipe& dirCouplers = recipe.dirCouplers;
         const DensityBoundsRecipe& densityBounds = recipe.densityBounds;
+        const bool wantDensityLayers =
+            recipe.grainContract.visualActive && recipe.grainContract.sublayersActive;
         const Scanner::ScannerSpectralLutDescriptor& scannerDescriptor =
             *request.scannerLutDescriptor;
         if ((printRoute ? !recipe.printStructuralReady : !recipe.directStructuralReady) ||
@@ -2564,12 +2568,21 @@ namespace JuicerCuda {
         const bool alreadyPrepared =
             resources.directFinalSensitivityHash == filmRaw.finalSensitivityHash &&
             resources.directDensityCurvesHash == filmDevelop.normalizedDensityCurvesHash &&
+            resources.directDensityLayersHash == (wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0) &&
             resources.directDirHash == (dirCouplers.active ? dirCouplers.hash : 0) &&
             resources.directDensityBoundsHash == densityBounds.hash &&
             resources.directScannerDescriptorHash == scannerDescriptor.hash &&
             resources.directSelectedMethod == filmRaw.rgbToRawMethod &&
             resources.sensB.x && resources.sensG.x && resources.sensR.x &&
             resources.densB.x && resources.densG.x && resources.densR.x &&
+            (!wantDensityLayers ||
+             (resources.hasDensityCurvesLayers &&
+              resources.densityCurvesLayers[0][0] && resources.densityCurvesLayers[0][1] &&
+              resources.densityCurvesLayers[0][2] && resources.densityCurvesLayers[1][0] &&
+              resources.densityCurvesLayers[1][1] && resources.densityCurvesLayers[1][2] &&
+              resources.densityCurvesLayers[2][0] && resources.densityCurvesLayers[2][1] &&
+              resources.densityCurvesLayers[2][2])) &&
+            (wantDensityLayers || !resources.hasDensityCurvesLayers) &&
             (!dirCouplers.active ||
              (resources.dirDensB.x && resources.dirDensG.x && resources.dirDensR.x)) &&
             resources.tablesAx && resources.tablesAy && resources.tablesAz && resources.tablesIllum &&
@@ -2626,6 +2639,75 @@ namespace JuicerCuda {
             !upload_curve_locked(resources, resources.densR, densR, cudaStreamOpaque, &lock, "direct normalizedDensR", outError)) {
             return false;
         }
+
+        if (wantDensityLayers) {
+            const int densitySamples = static_cast<int>(filmDevelop.logExposure.size());
+            if (!filmDevelop.densityCurvesLayersRequired ||
+                filmDevelop.densityCurvesLayersHash == 0 ||
+                densitySamples <= 0) {
+                outError = "MissingRequiredResource phase=9B field=density_curves_layers";
+                return false;
+            }
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    if (static_cast<int>(filmDevelop.densityCurvesLayers[layer][ch].size()) !=
+                        densitySamples) {
+                        outError = "MalformedRequiredProfileData phase=9B field=density_curves_layers shape";
+                        return false;
+                    }
+                }
+            }
+            bool canReuse =
+                resources.hasDensityCurvesLayers &&
+                resources.directDensityLayersHash == filmDevelop.densityCurvesLayersHash &&
+                resources.densityCurvesLayersChannelN[0] == densitySamples &&
+                resources.densityCurvesLayersChannelN[1] == densitySamples &&
+                resources.densityCurvesLayersChannelN[2] == densitySamples;
+            for (int layer = 0; layer < 3 && canReuse; ++layer) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    canReuse = canReuse && resources.densityCurvesLayers[layer][ch] != nullptr;
+                }
+            }
+            if (!canReuse) {
+                if (!retire_density_layers_locked(
+                        resources,
+                        cudaStreamOpaque,
+                        "focused density_curves_layers",
+                        outError)) {
+                    return false;
+                }
+            }
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    if (!upload_array_locked(
+                            resources,
+                            resources.densityCurvesLayers[layer][ch],
+                            canReuse ? resources.densityCurvesLayersChannelN[ch] : 0,
+                            filmDevelop.densityCurvesLayers[layer][ch].data(),
+                            densitySamples,
+                            cudaStreamOpaque,
+                            &lock,
+                            "focused density_curves_layers",
+                            outError)) {
+                        return false;
+                    }
+                }
+            }
+            for (int ch = 0; ch < 3; ++ch) {
+                resources.densityCurvesLayersChannelN[ch] = densitySamples;
+            }
+            resources.hasDensityCurvesLayers = 1;
+            resources.directDensityLayersHash = filmDevelop.densityCurvesLayersHash;
+        } else if (resources.hasDensityCurvesLayers || resources.directDensityLayersHash != 0) {
+            if (!retire_density_layers_locked(
+                    resources,
+                    cudaStreamOpaque,
+                    "inactive focused density_curves_layers",
+                    outError)) {
+                return false;
+            }
+        }
+
         if (dirCouplers.active) {
             if (dirCouplers.hash == 0 ||
                 dirCouplers.precorrectedDensityCurvesHash == 0 ||
@@ -2885,6 +2967,7 @@ namespace JuicerCuda {
 
         resources.directFinalSensitivityHash = filmRaw.finalSensitivityHash;
         resources.directDensityCurvesHash = filmDevelop.normalizedDensityCurvesHash;
+        resources.directDensityLayersHash = wantDensityLayers ? filmDevelop.densityCurvesLayersHash : 0;
         resources.directDirHash = dirCouplers.active ? dirCouplers.hash : 0;
         resources.directDensityBoundsHash = densityBounds.hash;
         resources.directScannerDescriptorHash = scannerDescriptor.hash;

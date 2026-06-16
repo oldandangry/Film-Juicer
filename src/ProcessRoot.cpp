@@ -2046,6 +2046,15 @@ namespace JuicerProcess {
         view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
         view.film.mallettBasis = resources.mallettBasis;
         view.film.mallettBasisK = resources.mallettBasisK;
+        if (resources.hasDensityCurvesLayers && resources.directDensityLayersHash != 0) {
+            view.film.hasDensityCurvesLayers = true;
+            view.film.densityCurvesLayersHash = resources.directDensityLayersHash;
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    view.film.densityCurvesLayers[layer][ch] = resources.densityCurvesLayers[layer][ch];
+                }
+            }
+        }
         std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
         std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
         view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
@@ -2094,6 +2103,15 @@ namespace JuicerProcess {
         view.film.hanatosNIntegrated = resources.hanatosNIntegrated;
         view.film.mallettBasis = resources.mallettBasis;
         view.film.mallettBasisK = resources.mallettBasisK;
+        if (resources.hasDensityCurvesLayers && resources.directDensityLayersHash != 0) {
+            view.film.hasDensityCurvesLayers = true;
+            view.film.densityCurvesLayersHash = resources.directDensityLayersHash;
+            for (int layer = 0; layer < 3; ++layer) {
+                for (int ch = 0; ch < 3; ++ch) {
+                    view.film.densityCurvesLayers[layer][ch] = resources.densityCurvesLayers[layer][ch];
+                }
+            }
+        }
         std::copy_n(_state->focusedFilmRawConfig->inputRGBToXYZ.m, 9, view.film.inputRGBToXYZ);
         std::copy_n(_state->focusedFilmRawConfig->inputXYZAdapt.m, 9, view.film.inputXYZAdapt);
         view.film.applyInputChromaticAdapt = _state->focusedFilmRawConfig->applyInputChromaticAdapt ? 1 : 0;
