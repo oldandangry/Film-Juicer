@@ -295,6 +295,7 @@ namespace JuicerProcess {
         AutoExposureFrameWorkspace autoExposureWorkspace{};
         FrameScratchWorkspace scratchWorkspace{};
         Spektrafilm::SpatialDirDescriptor spatialDirDescriptor{};
+        Scanner::ScannerPostEffectsDescriptor scannerPostEffectsDescriptor{};
         void* lastCudaStreamOpaque = nullptr;
         bool frameUseEventSubmitted = false;
         const char* failureStageTag = "prepare_frame";
@@ -1344,6 +1345,47 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::admit_scanner_post_effects(
+        const Scanner::ScannerPostEffectsDescriptor& descriptor,
+        const WorkspaceRequest& request,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!descriptor.active()) {
+            return true;
+        }
+        const WorkspaceLeaseMarker workspace = bind_workspace_request(request);
+        if (!prepare_optics_scratch(workspace, cudaStreamOpaque, outError)) {
+            return false;
+        }
+        if (descriptor.lensBlurSigmaPx > 0.0f &&
+            !prepare_gaussian_kernel_slot(
+                _state->resources->scannerLensBlurKernel,
+                descriptor.lensBlurSigmaPx,
+                cudaStreamOpaque,
+                outError)) {
+            return false;
+        }
+        if (descriptor.unsharpSigmaPx > 0.0f &&
+            !prepare_gaussian_kernel_slot(
+                _state->resources->scannerUnsharpKernel,
+                descriptor.unsharpSigmaPx,
+                cudaStreamOpaque,
+                outError)) {
+            return false;
+        }
+        if (descriptor.glareActive && descriptor.glareBlurSigmaPx > 0.0f &&
+            !prepare_gaussian_kernel_slot(
+                _state->resources->scannerGlareKernel,
+                descriptor.glareBlurSigmaPx,
+                cudaStreamOpaque,
+                outError)) {
+            return false;
+        }
+        _state->scannerPostEffectsDescriptor = descriptor;
+        return true;
+    }
+
     bool Root::PreparedCudaFrame::prepare_print_illuminant_filtered(
         const WorkingState& workingState,
         const Print::Runtime& printRuntime,
@@ -2093,6 +2135,8 @@ namespace JuicerProcess {
         view.printDcM = {resources.printDcM.x, resources.printDcM.y, resources.printDcM.n, resources.printDcM.domainBegin, resources.printDcM.domainEnd};
         view.printDcY = {resources.printDcY.x, resources.printDcY.y, resources.printDcY.n, resources.printDcY.domainBegin, resources.printDcY.domainEnd};
         view.mainIlluminant = resources.printIllumFiltered;
+        view.mainIlluminantHost =
+            resources.printIllumFilteredHostValid ? resources.printIllumFilteredHost.data() : nullptr;
         view.preflashIlluminant = resources.printPreflashIllumFiltered;
         view.spectralSampleCount = resources.printIllumK;
         std::copy_n(resources.printPreflashRaw, 3, view.preflashRawCmy);
@@ -2229,6 +2273,51 @@ namespace JuicerProcess {
         view.gateMaskHash = scratch.gateMaskHash;
         view.active = view.rgbR && view.rgbG && view.rgbB && view.tmp;
         view.hasGateMask = view.gateMask && view.gateMaskWidth > 0 && view.gateMaskHeight > 0;
+        return view;
+    }
+
+    Root::PreparedCudaFrame::ScannerPostEffectsPreparedView
+    Root::PreparedCudaFrame::scanner_post_effects_resources(
+        const WorkspaceLeaseMarker& workspace,
+        std::uint64_t descriptorHash) const noexcept {
+        ScannerPostEffectsPreparedView view{};
+        if (!_state || descriptorHash == 0 ||
+            _state->scannerPostEffectsDescriptor.hash != descriptorHash) {
+            return view;
+        }
+        view.scratch = scanner_optics_scratch(workspace);
+        if (!view.scratch.active) {
+            return view;
+        }
+        const Scanner::ScannerPostEffectsDescriptor& descriptor =
+            _state->scannerPostEffectsDescriptor;
+        const JuicerCuda::Resources& resources = *_state->resources;
+        if (descriptor.lensBlurSigmaPx > 0.0f) {
+            view.lensBlur = {
+                resources.scannerLensBlurKernel.weights,
+                resources.scannerLensBlurKernel.radius,
+                resources.scannerLensBlurKernel.sigma};
+        }
+        if (descriptor.unsharpSigmaPx > 0.0f) {
+            view.unsharp = {
+                resources.scannerUnsharpKernel.weights,
+                resources.scannerUnsharpKernel.radius,
+                resources.scannerUnsharpKernel.sigma};
+        }
+        if (descriptor.glareActive && descriptor.glareBlurSigmaPx > 0.0f) {
+            view.glare = {
+                resources.scannerGlareKernel.weights,
+                resources.scannerGlareKernel.radius,
+                resources.scannerGlareKernel.sigma};
+        }
+        view.descriptorHash = descriptor.hash;
+        view.active =
+            (descriptor.lensBlurSigmaPx <= 0.0f ||
+             (view.lensBlur.weights && view.lensBlur.radius > 0)) &&
+            (descriptor.unsharpSigmaPx <= 0.0f ||
+             (view.unsharp.weights && view.unsharp.radius > 0)) &&
+            (descriptor.glareBlurSigmaPx <= 0.0f ||
+             (view.glare.weights && view.glare.radius > 0));
         return view;
     }
 
@@ -2669,6 +2758,29 @@ namespace JuicerProcess {
         frame._state->printRecipe = &request.recipe->print;
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
+        if (request.scannerPostEffects) {
+            PreparedCudaFrame::WorkspaceRequest scannerWorkspace{};
+            scannerWorkspace.needOptics = request.scannerPostEffects->active();
+            scannerWorkspace.needSpatialDir = request.scannerWorkspaceNeedsSpatialDir;
+            scannerWorkspace.requestedWidth = request.frameWidth;
+            scannerWorkspace.requestedHeight = request.frameHeight;
+            scannerWorkspace.needBlurred =
+                request.scannerPostEffects->glareActive &&
+                request.scannerPostEffects->glareBlurSigmaPx > 0.0f;
+            if (
+                !frame.admit_scanner_post_effects(
+                    *request.scannerPostEffects,
+                    scannerWorkspace,
+                    cudaStreamOpaque,
+                    outError)) {
+                frame._state->set_failure(
+                    "admit_print_scanner_post_effects_phase8",
+                    "CUDA print scanner post-effect admission failed",
+                    false);
+                frame.abort("print_phase8_scanner_post_effect_admission_failed");
+                return frame;
+            }
+        }
         if (!frame._state->allocate_scan_error_stage(outError)) {
             frame._state->set_failure(
                 "allocate_print_scan_error_stage_phase4C",
@@ -2748,6 +2860,29 @@ namespace JuicerProcess {
         }
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
+        if (request.scannerPostEffects) {
+            PreparedCudaFrame::WorkspaceRequest scannerWorkspace{};
+            scannerWorkspace.needOptics = request.scannerPostEffects->active();
+            scannerWorkspace.needSpatialDir = request.scannerWorkspaceNeedsSpatialDir;
+            scannerWorkspace.requestedWidth = request.frameWidth;
+            scannerWorkspace.requestedHeight = request.frameHeight;
+            scannerWorkspace.needBlurred =
+                request.scannerPostEffects->glareActive &&
+                request.scannerPostEffects->glareBlurSigmaPx > 0.0f;
+            if (
+                !frame.admit_scanner_post_effects(
+                    *request.scannerPostEffects,
+                    scannerWorkspace,
+                    cudaStreamOpaque,
+                    outError)) {
+                frame._state->set_failure(
+                    "admit_direct_scanner_post_effects_phase8",
+                    "CUDA direct scanner post-effect admission failed",
+                    false);
+                frame.abort("direct_phase8_scanner_post_effect_admission_failed");
+                return frame;
+            }
+        }
         if (!frame._state->allocate_scan_error_stage(outError)) {
             frame._state->set_failure("allocate_direct_scan_error_stage", "CUDA direct scan error staging allocation failed");
             frame.abort("direct_prepared_frame_scan_error_flag_failed");

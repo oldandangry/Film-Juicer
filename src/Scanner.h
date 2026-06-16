@@ -20,6 +20,7 @@ struct DensityBoundsRecipe;
 struct ProfileRoute;
 struct ScannerOutputRecipe;
 struct PrintMediumHandoffRecipe;
+struct RenderRecipe;
 
 namespace Scanner {
 
@@ -29,9 +30,9 @@ namespace Scanner {
     };
 
     struct Options {
-        float lensBlurSigmaPx = 0.55f;
+        float lensBlurSigmaPx = 0.0f;
         float unsharpSigmaPx = 0.7f;
-        float unsharpAmount = 1.0f;
+        float unsharpAmount = 0.7f;
     };
 
     struct Settings {
@@ -73,9 +74,13 @@ namespace Scanner {
         ScannerMedium medium = ScannerMedium::Negative;
         std::uint64_t tablesHash = 0;
         std::uint64_t densityRangeHash = 0;
+        std::uint32_t lutResolution = 0;
+        std::uint64_t hash = 0;
+    };
+
+    struct ScannerRuntimeEffectsKey {
         std::uint64_t glareHash = 0;
         std::uint64_t colorRuntimeHash = 0;
-        std::uint32_t lutResolution = 0;
         std::uint64_t hash = 0;
     };
 
@@ -87,6 +92,7 @@ namespace Scanner {
 
     struct ScannerKey {
         ScannerStaticKey staticKey;
+        ScannerRuntimeEffectsKey effectsKey;
         ScannerRuntimeKey runtimeKey;
         std::uint64_t hash = 0;
     };
@@ -114,6 +120,7 @@ namespace Scanner {
         Profiles::ProfileGlare glare;
         const ColorRuntime* color = nullptr;
         ScannerStaticKey staticKey;
+        ScannerRuntimeEffectsKey effectsKey;
     };
 
     enum class ScannedMediumKind : std::uint8_t {
@@ -208,6 +215,64 @@ namespace Scanner {
         ScannerSpectralLutDescriptor& outDescriptor,
         std::string& outDiagnostic);
 
+    struct ScannerColorCorrectionDescriptor {
+        Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+        bool active = false;
+        bool blackCorrection = false;
+        bool whiteCorrection = false;
+        float targetBlackLinear = 0.0f;
+        float targetWhiteLinear = 1.0f;
+        float referenceBlackY = 0.0f;
+        float referenceWhiteY = 1.0f;
+        float xyzSlope = 1.0f;
+        float xyzOffset = 0.0f;
+        float exposureScale = 1.0f;
+        std::uint32_t schemaVersion = 1;
+        std::uint64_t hash = 0;
+    };
+
+    struct PrintCorrectionDerivationInput {
+        const ::RenderRecipe* recipe = nullptr;
+        const Spectral::SpectralTables* scannerTables = nullptr;
+        const float* mainIlluminant = nullptr;
+        int spectralSampleCount = 0;
+        const float* preflashRawCmy = nullptr;
+        float normalizer = 1.0f;
+    };
+
+    struct ScannerPostEffectsDescriptor {
+        Spektrafilm::ScanRoute route = Spektrafilm::kDefaultScanRoute;
+        bool glareActive = false;
+        float glarePercent = 0.0f;
+        float glareRoughness = 0.0f;
+        float glareBlurSigmaPx = 0.0f;
+        float lensBlurSigmaPx = 0.0f;
+        float unsharpSigmaPx = 0.0f;
+        float unsharpAmount = 0.0f;
+        std::uint32_t schemaVersion = 1;
+        std::uint64_t hash = 0;
+
+        bool active() const noexcept {
+            return hash != 0;
+        }
+    };
+
+    bool build_direct_scanner_color_correction_descriptor(
+        const ::RenderRecipe& recipe,
+        const Spectral::SpectralTables& scannerTables,
+        ScannerColorCorrectionDescriptor& outDescriptor,
+        std::string& outDiagnostic);
+
+    bool build_print_scanner_color_correction_descriptor(
+        const PrintCorrectionDerivationInput& input,
+        ScannerColorCorrectionDescriptor& outDescriptor,
+        std::string& outDiagnostic);
+
+    bool build_scanner_post_effects_descriptor(
+        const ::ScannerOutputRecipe& recipe,
+        ScannerPostEffectsDescriptor& outDescriptor,
+        std::string& outDiagnostic);
+
     // Canonical scanner spectral core (agx-emulsion parity):
     // - Accepts normalized density (0..1), denormalizes per medium range
     // - Converts dyes -> XYZ under the medium's spectral tables
@@ -240,8 +305,6 @@ namespace Scanner {
         return Hash::hash_uint64_values({static_cast<std::uint64_t>(key.medium),
                                          key.tablesHash,
                                          key.densityRangeHash,
-                                         key.glareHash,
-                                         key.colorRuntimeHash,
                                          static_cast<std::uint64_t>(key.lutResolution)});
     }
 
@@ -255,6 +318,10 @@ namespace Scanner {
         return h;
     }
 
+    inline void finalize_runtime_effects_key(ScannerRuntimeEffectsKey& key) {
+        key.hash = Hash::hash_uint64_values({key.glareHash, key.colorRuntimeHash});
+    }
+
     inline void finalize_runtime_key(ScannerRuntimeKey& key) {
         key.hash = Hash::hash_uint64_values({key.settingsHash,
                                              static_cast<std::uint64_t>(key.frameBoundsVersion)});
@@ -262,8 +329,10 @@ namespace Scanner {
 
     inline void finalize_scanner_key(ScannerKey& key) {
         finalize_static_key(key.staticKey);
+        finalize_runtime_effects_key(key.effectsKey);
         finalize_runtime_key(key.runtimeKey);
-        key.hash = Hash::hash_uint64_values({key.staticKey.hash, key.runtimeKey.hash});
+        key.hash =
+            Hash::hash_uint64_values({key.staticKey.hash, key.effectsKey.hash, key.runtimeKey.hash});
     }
 
 } // namespace Scanner

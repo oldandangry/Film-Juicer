@@ -145,6 +145,10 @@ private:
     // Scanner and print params
     OFX::DoubleParam* _pScannerLensBlur = nullptr;
     OFX::Double2DParam* _pScannerUnsharp = nullptr;
+    OFX::BooleanParam* _pScannerBlackCorrection = nullptr;
+    OFX::BooleanParam* _pScannerWhiteCorrection = nullptr;
+    OFX::DoubleParam* _pScannerBlackLevel = nullptr;
+    OFX::DoubleParam* _pScannerWhiteLevel = nullptr;
     OFX::BooleanParam* _pScannerUseLut = nullptr;
     OFX::IntParam* _pScannerLutResolution = nullptr;
 

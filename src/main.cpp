@@ -239,7 +239,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         p->setLabel("Scanner lens blur (px)");
         p->setHint("Gaussian blur sigma in pixels for scanner optics.");
-        p->setDefault(0.55);
+        p->setDefault(0.0);
         p->setRange(0.0, 10.0);
         p->setDisplayRange(0.0, 3.0);
         if (grpScannerOptics)
@@ -250,7 +250,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         OFX::Double2DParamDescriptor* p = desc.defineDouble2DParam(JuicerParams::kScannerUnsharpMask);
         p->setLabel("Scanner unsharp mask");
         p->setHint("Unsharp sigma (px) and amount applied after scanner blur.");
-        p->setDefault(0.7, 1.0);
+        p->setDefault(0.7, 0.7);
         p->setRange(0.0, 0.0, 5.0, 3.0);
         p->setDisplayRange(0.0, 0.0, 5.0, 3.0);
         p->setDimensionLabels("Sigma (px)", "Amount");
@@ -265,6 +265,46 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         if (grpScannerMath)
             p->setParent(*grpScannerMath);
         p->setHint("Enable precomputed scanner spectral LUTs.");
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kScannerBlackCorrection);
+        p->setLabel("Scanner black correction");
+        p->setDefault(false);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kScannerWhiteCorrection);
+        p->setLabel("Scanner white correction");
+        p->setDefault(false);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::DoubleParamDescriptor* p =
+            desc.defineDoubleParam(JuicerParams::kScannerBlackLevel);
+        p->setLabel("Scanner black level");
+        p->setDefault(0.01);
+        p->setRange(0.0, 1.0);
+        p->setDisplayRange(0.0, 0.1);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::DoubleParamDescriptor* p =
+            desc.defineDoubleParam(JuicerParams::kScannerWhiteLevel);
+        p->setLabel("Scanner white level");
+        p->setDefault(0.98);
+        p->setRange(0.0, 1.0);
+        p->setDisplayRange(0.8, 1.0);
+        if (grpScannerMath)
+            p->setParent(*grpScannerMath);
         p->setEvaluateOnChange(true);
     }
     {
@@ -910,7 +950,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlarePercent);
             p->setLabel("Glare percent");
-            p->setDefault(0.10);
+            p->setDefault(0.03);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 0.5);
             p->setIncrement(0.05);
@@ -922,7 +962,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         {
             OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareRoughness);
             p->setLabel("Glare roughness");
-            p->setDefault(0.4);
+            p->setDefault(0.7);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 1.0);
             p->setHint("Glare roughness (0-1). Stddev = roughness * percent.");

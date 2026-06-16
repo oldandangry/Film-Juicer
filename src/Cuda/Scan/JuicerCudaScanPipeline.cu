@@ -970,8 +970,8 @@ namespace {
     __global__ void pipeline_direct_kernel(Params params) {
         const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
-        const int x = blockIdx.x * blockDim.x + threadIdx.x;
-        const int y = blockIdx.y * blockDim.y + threadIdx.y;
+        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
         if (x >= params.width || y >= params.height) {
             return;
         }
@@ -1080,10 +1080,31 @@ namespace {
             scan.scanLutLog2XYZ &&
             scan.scanLutRes > 0 &&
             D_norm_finite;
-        const double xyz[3] = {
+        double xyz[3] = {
             useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
             useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
             useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])};
+
+        if (scan.correctionActive) {
+            const double correctedY = fmin(fmax(
+                                               static_cast<double>(scan.correctionSlope) * xyz[1] +
+                                                   static_cast<double>(scan.correctionOffset),
+                                               0.0),
+                                           1.0);
+            const double scale = correctedY / (xyz[1] + 1e-10);
+            xyz[0] *= scale;
+            xyz[1] *= scale;
+            xyz[2] *= scale;
+        }
+        const std::size_t idx =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(params.width) +
+            static_cast<std::size_t>(x);
+        if (scan.glarePercent) {
+            const double glare = static_cast<double>(scan.glarePercent[idx]) * 0.01;
+            xyz[0] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[0]);
+            xyz[1] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[1]);
+            xyz[2] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[2]);
+        }
 
         double adapted[3];
         mat3_mul_vec_double_device(scan.scanColor.cat02, xyz, adapted);
@@ -1092,6 +1113,12 @@ namespace {
 
         if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
             signal_scan_error_device(scan.scanErrorFlag);
+            if (scan.linearRgbR && scan.linearRgbG && scan.linearRgbB) {
+                scan.linearRgbR[idx] = 0.0f;
+                scan.linearRgbG[idx] = 0.0f;
+                scan.linearRgbB[idx] = 0.0f;
+                return;
+            }
             const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
             char* dstRow = reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
             float* dstPix = reinterpret_cast<float*>(dstRow + static_cast<std::size_t>(x) * pixelBytes);
@@ -1105,6 +1132,13 @@ namespace {
                     dstPix[3] = srcPix ? srcPix[3] : 1.0f;
                 }
             }
+            return;
+        }
+
+        if (scan.linearRgbR && scan.linearRgbG && scan.linearRgbB) {
+            scan.linearRgbR[idx] = static_cast<float>(rgbOut[0]);
+            scan.linearRgbG[idx] = static_cast<float>(rgbOut[1]);
+            scan.linearRgbB[idx] = static_cast<float>(rgbOut[2]);
             return;
         }
 
@@ -1413,6 +1447,53 @@ namespace {
         }
     }
 
+    template <typename Params>
+    __global__ void focused_scan_output_encode_kernel(
+        Params params,
+        const float* rgbR,
+        const float* rgbG,
+        const float* rgbB) {
+        if (!params.src || !params.dst || !rgbR || !rgbG || !rgbB ||
+            params.srcRowBytes == 0 || params.dstRowBytes == 0) {
+            return;
+        }
+        const int nC = params.nComponents;
+        if (!(nC == 3 || nC == 4)) {
+            return;
+        }
+        const unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
+        const unsigned int y = blockIdx.y * blockDim.y + threadIdx.y;
+        if (x >= static_cast<unsigned int>(params.width) ||
+            y >= static_cast<unsigned int>(params.height)) {
+            return;
+        }
+        const std::size_t idx =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(params.width) +
+            static_cast<std::size_t>(x);
+        double rgbOut[3] = {
+            static_cast<double>(rgbR[idx]),
+            static_cast<double>(rgbG[idx]),
+            static_cast<double>(rgbB[idx])};
+        apply_output_encoding_device(params.scanStage.scanColor.encoding, rgbOut);
+
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+        char* dstRow =
+            reinterpret_cast<char*>(params.dst) + static_cast<std::size_t>(y) * params.dstRowBytes;
+        float* dstPix =
+            reinterpret_cast<float*>(dstRow + static_cast<std::size_t>(x) * pixelBytes);
+        dstPix[0] = static_cast<float>(rgbOut[0]);
+        dstPix[1] = static_cast<float>(rgbOut[1]);
+        dstPix[2] = static_cast<float>(rgbOut[2]);
+        if (nC == 4) {
+            const char* srcRow =
+                reinterpret_cast<const char*>(params.src) +
+                static_cast<std::size_t>(y) * params.srcRowBytes;
+            const float* srcPix =
+                reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+            dstPix[3] = srcPix[3];
+        }
+    }
+
 } // namespace
 
 extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
@@ -1500,6 +1581,265 @@ extern "C" cudaError_t juicer_cuda_negative_direct_pipeline(
         (params.height + threads.y - 1) / threads.y);
     pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
     return cudaGetLastError();
+}
+
+struct FocusedScannerPostEffectOptions {
+    float unsharpAmount = 0.0f;
+    int glareOriginX = 0;
+    int glareOriginY = 0;
+    std::uint64_t glareSeed = 0;
+    float glarePercent = 0.0f;
+    float glareRoughness = 0.0f;
+    const float* glareKernel = nullptr;
+    int glareRadius = 0;
+};
+
+template <typename Params>
+cudaError_t launch_focused_scanner_post_effects(
+    const Params* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    const FocusedScannerPostEffectOptions& options,
+    void* cudaStreamOpaque) {
+    if (!hParams || !hParams->src || !hParams->dst || !dRgbR || !dRgbG || !dRgbB || !dTmp) {
+        return cudaErrorInvalidValue;
+    }
+    Params params = *hParams;
+    if (params.width <= 0 || params.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(params.nComponents == 3 || params.nComponents == 4) ||
+        params.srcRowBytes == 0 || params.dstRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+    cudaStream_t stream =
+        cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    dim3 threads(32, 8);
+    dim3 blocks(
+        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
+        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+    auto blur_plane_in_place = [&](float* plane, float* tmp, const float* kernel, int radius) {
+        if (!plane || !tmp || !kernel || radius <= 0) {
+            return cudaSuccess;
+        }
+        const int kernelLength = 2 * radius + 1;
+        const size_t horizontalShared =
+            (static_cast<size_t>(kernelLength) +
+             static_cast<size_t>(threads.y) * static_cast<size_t>(threads.x + 2 * radius)) *
+            sizeof(float);
+        const size_t verticalShared =
+            (static_cast<size_t>(kernelLength) +
+             static_cast<size_t>(threads.x) * static_cast<size_t>(threads.y + 2 * radius)) *
+            sizeof(float);
+        optics_blur_horizontal_kernel<<<blocks, threads, horizontalShared, stream>>>(
+            plane,
+            tmp,
+            params.width,
+            params.height,
+            kernel,
+            radius);
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            return error;
+        }
+        optics_blur_vertical_kernel<<<blocks, threads, verticalShared, stream>>>(
+            tmp,
+            plane,
+            params.width,
+            params.height,
+            kernel,
+            radius);
+        return cudaGetLastError();
+    };
+
+    const bool doGlare =
+        std::isfinite(static_cast<double>(options.glarePercent)) &&
+        options.glarePercent > 0.0f &&
+        std::isfinite(static_cast<double>(options.glareRoughness));
+    if (doGlare) {
+        if (options.glareRadius > 0 && options.glareKernel && !dScratchBlurred) {
+            return cudaErrorInvalidValue;
+        }
+        const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
+        optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(
+            dTmp,
+            params.width,
+            params.height,
+            options.glareSeed,
+            mediumId,
+            options.glareOriginX,
+            options.glareOriginY,
+            options.glarePercent,
+            options.glareRoughness);
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            return error;
+        }
+        if (options.glareRadius > 0 && options.glareKernel) {
+            error = blur_plane_in_place(
+                dTmp,
+                dScratchBlurred,
+                options.glareKernel,
+                options.glareRadius);
+            if (error != cudaSuccess) {
+                return error;
+            }
+        }
+        params.scanStage.glarePercent = dTmp;
+    }
+    params.scanStage.linearRgbR = dRgbR;
+    params.scanStage.linearRgbG = dRgbG;
+    params.scanStage.linearRgbB = dRgbB;
+    pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        return error;
+    }
+
+    if (lensBlurRadius > 0 && dLensBlurKernel) {
+        error = blur_plane_in_place(dRgbR, dTmp, dLensBlurKernel, lensBlurRadius);
+        if (error != cudaSuccess) {
+            return error;
+        }
+        error = blur_plane_in_place(dRgbG, dTmp, dLensBlurKernel, lensBlurRadius);
+        if (error != cudaSuccess) {
+            return error;
+        }
+        error = blur_plane_in_place(dRgbB, dTmp, dLensBlurKernel, lensBlurRadius);
+        if (error != cudaSuccess) {
+            return error;
+        }
+    }
+
+    if (unsharpRadius > 0 && dUnsharpKernel &&
+        std::isfinite(static_cast<double>(options.unsharpAmount)) &&
+        options.unsharpAmount > 0.0f) {
+        auto unsharp_plane_in_place = [&](float* plane) {
+            const int kernelLength = 2 * unsharpRadius + 1;
+            const size_t horizontalShared =
+                (static_cast<size_t>(kernelLength) +
+                 static_cast<size_t>(threads.y) *
+                     static_cast<size_t>(threads.x + 2 * unsharpRadius)) *
+                sizeof(float);
+            const size_t verticalShared =
+                (static_cast<size_t>(kernelLength) +
+                 static_cast<size_t>(threads.x) *
+                     static_cast<size_t>(threads.y + 2 * unsharpRadius)) *
+                sizeof(float);
+            optics_blur_horizontal_kernel<<<blocks, threads, horizontalShared, stream>>>(
+                plane,
+                dTmp,
+                params.width,
+                params.height,
+                dUnsharpKernel,
+                unsharpRadius);
+            cudaError_t localError = cudaGetLastError();
+            if (localError != cudaSuccess) {
+                return localError;
+            }
+            optics_unsharp_vertical_combine_kernel<<<blocks, threads, verticalShared, stream>>>(
+                plane,
+                dTmp,
+                params.width,
+                params.height,
+                dUnsharpKernel,
+                unsharpRadius,
+                options.unsharpAmount);
+            return cudaGetLastError();
+        };
+        error = unsharp_plane_in_place(dRgbR);
+        if (error != cudaSuccess) {
+            return error;
+        }
+        error = unsharp_plane_in_place(dRgbG);
+        if (error != cudaSuccess) {
+            return error;
+        }
+        error = unsharp_plane_in_place(dRgbB);
+        if (error != cudaSuccess) {
+            return error;
+        }
+    }
+    focused_scan_output_encode_kernel<<<blocks, threads, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+    return cudaGetLastError();
+}
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_effects(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    void* cudaStreamOpaque) {
+    return launch_focused_scanner_post_effects(
+        hParams,
+        dRgbR,
+        dRgbG,
+        dRgbB,
+        dTmp,
+        dScratchBlurred,
+        dLensBlurKernel,
+        lensBlurRadius,
+        dUnsharpKernel,
+        unsharpRadius,
+        FocusedScannerPostEffectOptions{unsharpAmount},
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_effects(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque) {
+    return launch_focused_scanner_post_effects(
+        hParams,
+        dRgbR,
+        dRgbG,
+        dRgbB,
+        dTmp,
+        dScratchBlurred,
+        dLensBlurKernel,
+        lensBlurRadius,
+        dUnsharpKernel,
+        unsharpRadius,
+        FocusedScannerPostEffectOptions{
+            unsharpAmount,
+            glareOriginX,
+            glareOriginY,
+            glareSeed,
+            glarePercent,
+            glareRoughness,
+            dGlareKernel,
+            glareRadius},
+        cudaStreamOpaque);
 }
 
 extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(

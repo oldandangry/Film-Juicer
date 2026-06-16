@@ -27,16 +27,8 @@
 // This is source-adjacent orientation, not a runtime registry.
 namespace Spektrafilm {
 
-    inline constexpr const char kScannerPostEffectsNotImplementedForPhase3[] =
-        "ScannerPostEffectsNotImplementedForPhase3";
-    inline constexpr const char kPositiveCorrectionNotImplementedForPhase3[] =
-        "PositiveCorrectionNotImplementedForPhase3";
     inline constexpr const char kQuantizedMedianNotAcceptedForPhase3[] =
         "QuantizedMedianNotAcceptedForPhase3";
-    inline constexpr const char kGlareNotImplementedForPhase4[] =
-        "GlareNotImplementedForPhase4";
-    inline constexpr const char kScannerPostEffectsNotImplementedForPhase4[] =
-        "ScannerPostEffectsNotImplementedForPhase4";
     inline constexpr const char kExactOpticsNotImplementedForPhase6[] =
         "ExactOpticsNotImplementedForPhase6";
 
@@ -411,17 +403,21 @@ struct ScannerOutputRecipe {
     int outputColorSpace = 0;
     bool outputCctfEncoding = true;
     bool outputLinearPassThrough = false;
+    bool blackCorrection = false;
+    bool whiteCorrection = false;
+    float blackLevel = 0.01f;
+    float whiteLevel = 0.98f;
     bool directGlareDisabled = true;
     bool glareActive = false;
     float glarePercent = 0.0f;
     float glareRoughness = 0.0f;
     float glareBlurSigmaPx = 0.0f;
-    float lensBlurSigmaPx = 0.55f;
+    float lensBlurSigmaPx = 0.0f;
     float unsharpSigmaPx = 0.7f;
-    float unsharpAmount = 1.0f;
+    float unsharpAmount = 0.7f;
     Spektrafilm::ScannerPostEffectDisposition postEffectsDisposition =
-        Spektrafilm::ScannerPostEffectDisposition::BlockedNotImplementedForPhase3;
-    std::string blockingDiagnostic = Spektrafilm::kScannerPostEffectsNotImplementedForPhase3;
+        Spektrafilm::ScannerPostEffectDisposition::Identity;
+    std::string blockingDiagnostic;
     std::uint64_t hash = 0;
 };
 
@@ -577,9 +573,13 @@ namespace Spektrafilm {
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
         bool outputLinearPassThrough = false;
-        float scannerLensBlurSigmaPx = 0.55f;
+        bool scannerBlackCorrection = false;
+        bool scannerWhiteCorrection = false;
+        float scannerBlackLevel = 0.01f;
+        float scannerWhiteLevel = 0.98f;
+        float scannerLensBlurSigmaPx = 0.0f;
         float scannerUnsharpSigmaPx = 0.7f;
-        float scannerUnsharpAmount = 1.0f;
+        float scannerUnsharpAmount = 0.7f;
     };
 
     struct DirectRecipeBuildResult {
@@ -615,13 +615,17 @@ namespace Spektrafilm {
         int outputColorSpace = 0;
         bool outputCctfEncoding = true;
         bool outputLinearPassThrough = false;
+        bool scannerBlackCorrection = false;
+        bool scannerWhiteCorrection = false;
+        float scannerBlackLevel = 0.01f;
+        float scannerWhiteLevel = 0.98f;
         bool glareActive = true;
-        float glarePercent = 0.10f;
-        float glareRoughness = 0.4f;
+        float glarePercent = 0.03f;
+        float glareRoughness = 0.7f;
         float glareBlurSigmaPx = 0.5f;
-        float scannerLensBlurSigmaPx = 0.55f;
+        float scannerLensBlurSigmaPx = 0.0f;
         float scannerUnsharpSigmaPx = 0.7f;
-        float scannerUnsharpAmount = 1.0f;
+        float scannerUnsharpAmount = 0.7f;
     };
 
     struct PrintRecipeBuildResult {

@@ -595,9 +595,8 @@ namespace {
         direct->payload.uploadCoreHash = source.recipe.hash;
         const std::uint64_t scannerFields[] = {
             source.recipe.densityBounds.hash,
-            source.recipe.scannerOutput.hash,
-            source.negativeColorRuntime.hash,
-            source.tablesScan.tablesHash};
+            source.tablesScan.tablesHash,
+            static_cast<std::uint64_t>(source.recipe.scannerOutput.lutResolution)};
         direct->payload.scannerHash = Hash::hash_bytes(scannerFields, sizeof(scannerFields));
         direct->buildCounter = source.buildCounter;
         if (direct->payload.uploadCoreHash == 0 || direct->payload.scannerHash == 0) {
@@ -791,10 +790,10 @@ namespace {
         encoding.inputIsOutputSpace = true;
         print->payload.scannerColor = ScannerOptics::build_color_runtime(medium, encoding);
         print->payload.uploadCoreHash = recipe.hash;
-        print->payload.scannerHash = Hash::hash_uint64_values({recipe.densityBounds.hash,
-                                                               recipe.scannerOutput.hash,
-                                                               print->payload.scannerColor.hash,
-                                                               print->payload.scannerTables.tablesHash});
+        print->payload.scannerHash = Hash::hash_uint64_values(
+            {recipe.densityBounds.hash,
+             print->payload.scannerTables.tablesHash,
+             static_cast<std::uint64_t>(recipe.scannerOutput.lutResolution)});
         if (print->payload.scannerColor.hash == 0 ||
             print->payload.uploadCoreHash == 0 ||
             print->payload.scannerHash == 0) {
@@ -1065,6 +1064,10 @@ namespace {
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerLensBlurSigmaPx, 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[0], 10000.0, mix);
         mix_hash_field_scaled_rounded_if_finite(h, p.scannerUnsharpMask[1], 10000.0, mix);
+        mix_hash_field(h, p.scannerBlackCorrection, mix);
+        mix_hash_field(h, p.scannerWhiteCorrection, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.scannerBlackLevel, 10000.0, mix);
+        mix_hash_field_scaled_rounded_if_finite(h, p.scannerWhiteLevel, 10000.0, mix);
     }
 
     template <typename MixFn>
@@ -1286,23 +1289,29 @@ namespace {
         target.negativeStaticKey.medium = Scanner::ScannerMedium::Negative;
         target.negativeStaticKey.tablesHash = target.tablesScan.tablesHash;
         target.negativeStaticKey.densityRangeHash = target.negativeDensityRange.digest;
-        target.negativeStaticKey.glareHash = negGlareHash;
-        target.negativeStaticKey.colorRuntimeHash = target.negativeColorRuntime.hash;
         target.negativeStaticKey.lutResolution = lutRes;
         Scanner::finalize_static_key(target.negativeStaticKey);
+        target.negativeEffectsKey = Scanner::ScannerRuntimeEffectsKey{};
+        target.negativeEffectsKey.glareHash = negGlareHash;
+        target.negativeEffectsKey.colorRuntimeHash = target.negativeColorRuntime.hash;
+        Scanner::finalize_runtime_effects_key(target.negativeEffectsKey);
 
         target.printStaticKey = Scanner::ScannerStaticKey{};
+        target.printEffectsKey = Scanner::ScannerRuntimeEffectsKey{};
         if (printRuntimeOk) {
             target.printStaticKey.medium = Scanner::ScannerMedium::Print;
             target.printStaticKey.tablesHash = target.tablesPrint.tablesHash;
             target.printStaticKey.densityRangeHash = target.printDensityRange.digest;
-            target.printStaticKey.glareHash = printGlareHash;
-            target.printStaticKey.colorRuntimeHash = target.printColorRuntime.hash;
             target.printStaticKey.lutResolution = lutRes;
             Scanner::finalize_static_key(target.printStaticKey);
+            target.printEffectsKey.glareHash = printGlareHash;
+            target.printEffectsKey.colorRuntimeHash = target.printColorRuntime.hash;
+            Scanner::finalize_runtime_effects_key(target.printEffectsKey);
         }
 
+        target.negativeMediumRuntime.effectsKey = target.negativeEffectsKey;
         target.negativeMediumRuntime.color = &target.negativeColorRuntime;
+        target.printMediumRuntime.effectsKey = target.printEffectsKey;
         target.negativeMediumRuntime.staticKey = target.negativeStaticKey;
 
         target.printMediumRuntime.color = printRuntimeOk ? &target.printColorRuntime : nullptr;
@@ -1811,6 +1820,10 @@ namespace {
         input.outputColorSpace = params.outputColorSpace;
         input.outputCctfEncoding = params.outputCctfEncoding != 0;
         input.outputLinearPassThrough = params.outputLinearPassThrough != 0;
+        input.scannerBlackCorrection = params.scannerBlackCorrection != 0;
+        input.scannerWhiteCorrection = params.scannerWhiteCorrection != 0;
+        input.scannerBlackLevel = static_cast<float>(params.scannerBlackLevel);
+        input.scannerWhiteLevel = static_cast<float>(params.scannerWhiteLevel);
         input.scannerLensBlurSigmaPx = static_cast<float>(params.scannerLensBlurSigmaPx);
         input.scannerUnsharpSigmaPx = static_cast<float>(params.scannerUnsharpMask[0]);
         input.scannerUnsharpAmount = static_cast<float>(params.scannerUnsharpMask[1]);
@@ -1989,6 +2002,10 @@ namespace {
         input.outputColorSpace = params.outputColorSpace;
         input.outputCctfEncoding = params.outputCctfEncoding != 0;
         input.outputLinearPassThrough = params.outputLinearPassThrough != 0;
+        input.scannerBlackCorrection = params.scannerBlackCorrection != 0;
+        input.scannerWhiteCorrection = params.scannerWhiteCorrection != 0;
+        input.scannerBlackLevel = static_cast<float>(params.scannerBlackLevel);
+        input.scannerWhiteLevel = static_cast<float>(params.scannerWhiteLevel);
         input.glareActive = params.glareActive;
         input.glarePercent = static_cast<float>(params.glarePercent);
         input.glareRoughness = static_cast<float>(params.glareRoughness);

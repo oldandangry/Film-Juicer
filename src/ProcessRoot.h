@@ -21,6 +21,9 @@ namespace Print {
     struct Params;
     struct Runtime;
 } // namespace Print
+namespace Scanner {
+    struct ScannerPostEffectsDescriptor;
+} // namespace Scanner
 
 namespace WorkingStateSharing {
     struct AcquireCoreSharedResult;
@@ -91,6 +94,10 @@ namespace JuicerProcess {
             const Spectral::SpectralTables* scannerTables = nullptr;
             const Scanner::ColorRuntime* scannerColor = nullptr;
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
+            const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
+            bool scannerWorkspaceNeedsSpatialDir = false;
+            int frameWidth = 0;
+            int frameHeight = 0;
         };
 
         struct PrintCudaPreparationRequest {
@@ -101,6 +108,10 @@ namespace JuicerProcess {
             const Spectral::SpectralTables* scannerTables = nullptr;
             const Scanner::ColorRuntime* scannerColor = nullptr;
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
+            const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
+            bool scannerWorkspaceNeedsSpatialDir = false;
+            int frameWidth = 0;
+            int frameHeight = 0;
         };
 
         class PreparedCudaFrame final {
@@ -333,6 +344,15 @@ namespace JuicerProcess {
                 bool hasGateMask = false;
             };
 
+            struct ScannerPostEffectsPreparedView {
+                ScannerOpticsScratchView scratch{};
+                KernelView lensBlur{};
+                KernelView unsharp{};
+                KernelView glare{};
+                std::uint64_t descriptorHash = 0;
+                bool active = false;
+            };
+
             PreparedCudaFrame(PreparedCudaFrame&& other) noexcept;
             PreparedCudaFrame& operator=(PreparedCudaFrame&& other) noexcept;
 
@@ -351,6 +371,9 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 std::uint64_t descriptorHash) const noexcept;
             ScannerOpticsScratchView scanner_optics_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
+            ScannerPostEffectsPreparedView scanner_post_effects_resources(
+                const WorkspaceLeaseMarker& workspace,
+                std::uint64_t descriptorHash) const noexcept;
             struct AutoExposureWeightsExtent {
                 int width = 0;
                 int height = 0;
@@ -505,6 +528,11 @@ namespace JuicerProcess {
             bool prepare_halation_kernel_slot(
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
                 float sigma,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool admit_scanner_post_effects(
+                const Scanner::ScannerPostEffectsDescriptor& descriptor,
+                const WorkspaceRequest& request,
                 void* cudaStreamOpaque,
                 std::string& outError);
 

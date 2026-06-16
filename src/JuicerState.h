@@ -281,12 +281,14 @@ struct WorkingState {
     Scanner::ScannerIlluminant negativeScannerIlluminant;
     Scanner::ScannerDensityRange negativeDensityRange;
     Scanner::ScannerStaticKey negativeStaticKey;
+    Scanner::ScannerRuntimeEffectsKey negativeEffectsKey;
     Scanner::ColorRuntime negativeColorRuntime;
     Scanner::ScannerMediumRuntime negativeMediumRuntime;
 
     Scanner::ScannerIlluminant printScannerIlluminant;
     Scanner::ScannerDensityRange printDensityRange;
     Scanner::ScannerStaticKey printStaticKey;
+    Scanner::ScannerRuntimeEffectsKey printEffectsKey;
     Scanner::ColorRuntime printColorRuntime;
     Scanner::ScannerMediumRuntime printMediumRuntime;
 
@@ -380,8 +382,8 @@ struct ParamSnapshot {
     double glareCompRemovalDensity = 1.2;
     double glareCompRemovalTransition = 0.3;
     bool glareActive = true;
-    double glarePercent = 0.10;
-    double glareRoughness = 0.4;
+    double glarePercent = 0.03;
+    double glareRoughness = 0.7;
     double glareBlurSigmaPx = 0.5;
     double printDminFactor = 0.4;
     int couplersActive = 1;
@@ -395,8 +397,12 @@ struct ParamSnapshot {
     double cameraExposureCompensationEv = 0.0;
     double cameraFilmFormatLongEdgeMm = 36.0;
     int exactScatterHalationActive = 0;
-    double scannerLensBlurSigmaPx = 0.55;
-    std::array<double, 2> scannerUnsharpMask{{0.7, 1.0}};
+    double scannerLensBlurSigmaPx = 0.0;
+    std::array<double, 2> scannerUnsharpMask{{0.7, 0.7}};
+    int scannerBlackCorrection = 0;
+    int scannerWhiteCorrection = 0;
+    double scannerBlackLevel = 0.01;
+    double scannerWhiteLevel = 0.98;
     int scannerUseLut = 1;
     int scannerLutResolution = 17;
     double spatialSigmaMicrometers = 10.0;

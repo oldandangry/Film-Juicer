@@ -156,6 +156,7 @@ namespace JuicerCuda {
         DeviceCurveView printDcM{};
         DeviceCurveView printDcY{};
         const float* mainIlluminant = nullptr;
+        const float* mainIlluminantHost = nullptr;
         const float* preflashIlluminant = nullptr;
         int spectralSampleCount = 0;
         float preflashRawCmy[3] = {0.0f, 0.0f, 0.0f};

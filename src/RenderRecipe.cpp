@@ -682,6 +682,10 @@ namespace {
         hash_value(hash, recipe.outputColorSpace);
         hash_value(hash, recipe.outputCctfEncoding);
         hash_value(hash, recipe.outputLinearPassThrough);
+        hash_value(hash, recipe.blackCorrection);
+        hash_value(hash, recipe.whiteCorrection);
+        hash_value(hash, recipe.blackLevel);
+        hash_value(hash, recipe.whiteLevel);
         hash_value(hash, recipe.directGlareDisabled);
         hash_value(hash, recipe.glareActive);
         hash_value(hash, recipe.glarePercent);
@@ -899,6 +903,14 @@ namespace Spektrafilm {
             result.diagnostic = "UnsupportedMode phase=3B field=auto_exposure_method";
             return result;
         }
+        if (!std::isfinite(input.scannerBlackLevel) ||
+            !std::isfinite(input.scannerWhiteLevel) ||
+            !std::isfinite(input.scannerLensBlurSigmaPx) ||
+            !std::isfinite(input.scannerUnsharpSigmaPx) ||
+            !std::isfinite(input.scannerUnsharpAmount)) {
+            result.diagnostic = "ResourceDescriptorMismatch phase=8 field=scanner_output";
+            return result;
+        }
 
         const Profiles::ValidatedFilmProfile& profile = *input.filmProfile;
         const ScanRoute resolvedRoute = resolve_scan_route(profile.info.type, input.scanRoute);
@@ -1044,7 +1056,11 @@ namespace Spektrafilm {
         scanner.lutResolution = std::clamp(input.scannerLutResolution, 17u, 128u);
         scanner.outputColorSpace = input.outputColorSpace;
         scanner.outputCctfEncoding = input.outputCctfEncoding;
-        scanner.outputLinearPassThrough = input.outputLinearPassThrough;
+        scanner.outputLinearPassThrough = false;
+        scanner.blackCorrection = input.scannerBlackCorrection;
+        scanner.whiteCorrection = input.scannerWhiteCorrection;
+        scanner.blackLevel = input.scannerBlackLevel;
+        scanner.whiteLevel = input.scannerWhiteLevel;
         scanner.directGlareDisabled = true;
         scanner.lensBlurSigmaPx = input.scannerLensBlurSigmaPx;
         scanner.unsharpSigmaPx = input.scannerUnsharpSigmaPx;
@@ -1054,10 +1070,8 @@ namespace Spektrafilm {
             (scanner.unsharpSigmaPx <= 0.0f || scanner.unsharpAmount <= 0.0f);
         scanner.postEffectsDisposition = scannerPostEffectsIdentity
                                              ? ScannerPostEffectDisposition::Identity
-                                             : ScannerPostEffectDisposition::BlockedNotImplementedForPhase3;
-        scanner.blockingDiagnostic = scannerPostEffectsIdentity
-                                         ? std::string()
-                                         : kScannerPostEffectsNotImplementedForPhase3;
+                                             : ScannerPostEffectDisposition::Implemented;
+        scanner.blockingDiagnostic.clear();
         scanner.hash = hash_scanner_output_recipe(scanner);
 
         result.recipe.directStructuralReady = true;
@@ -1112,7 +1126,7 @@ namespace Spektrafilm {
             !std::all_of(input.uiYmcCc.begin(), input.uiYmcCc.end(), [](float value) {
                 return std::isfinite(value);
             }) ||
-            !std::isfinite(input.preflashMFilterCc) || !std::isfinite(input.preflashYFilterCc) || !std::isfinite(input.printExposure) || !std::isfinite(input.preflashExposure) || !std::isfinite(input.cameraExposureCompensationEv)) {
+            !std::isfinite(input.preflashMFilterCc) || !std::isfinite(input.preflashYFilterCc) || !std::isfinite(input.printExposure) || !std::isfinite(input.preflashExposure) || !std::isfinite(input.cameraExposureCompensationEv) || !std::isfinite(input.scannerBlackLevel) || !std::isfinite(input.scannerWhiteLevel) || !std::isfinite(input.glarePercent) || !std::isfinite(input.glareRoughness) || !std::isfinite(input.glareBlurSigmaPx) || !std::isfinite(input.scannerLensBlurSigmaPx) || !std::isfinite(input.scannerUnsharpSigmaPx) || !std::isfinite(input.scannerUnsharpAmount)) {
             result.diagnostic = "ResourceDescriptorMismatch phase=4A field=print_recipe_input";
             return result;
         }
@@ -1182,7 +1196,11 @@ namespace Spektrafilm {
         scanner.lutResolution = std::clamp(input.scannerLutResolution, 17u, 128u);
         scanner.outputColorSpace = input.outputColorSpace;
         scanner.outputCctfEncoding = input.outputCctfEncoding;
-        scanner.outputLinearPassThrough = input.outputLinearPassThrough;
+        scanner.outputLinearPassThrough = false;
+        scanner.blackCorrection = input.scannerBlackCorrection;
+        scanner.whiteCorrection = input.scannerWhiteCorrection;
+        scanner.blackLevel = input.scannerBlackLevel;
+        scanner.whiteLevel = input.scannerWhiteLevel;
         scanner.directGlareDisabled = false;
         scanner.glareActive = input.glareActive;
         scanner.glarePercent = input.glarePercent;
@@ -1194,12 +1212,10 @@ namespace Spektrafilm {
         const bool scannerPostEffectsIdentity =
             scanner.lensBlurSigmaPx <= 0.0f &&
             (scanner.unsharpSigmaPx <= 0.0f || scanner.unsharpAmount <= 0.0f);
-        scanner.postEffectsDisposition = scannerPostEffectsIdentity
+        scanner.postEffectsDisposition = scannerPostEffectsIdentity && !scanner.glareActive
                                              ? ScannerPostEffectDisposition::Identity
-                                             : ScannerPostEffectDisposition::BlockedNotImplementedForPhase4;
-        scanner.blockingDiagnostic = scannerPostEffectsIdentity
-                                         ? std::string()
-                                         : kScannerPostEffectsNotImplementedForPhase4;
+                                             : ScannerPostEffectDisposition::Implemented;
+        scanner.blockingDiagnostic.clear();
         scanner.hash = hash_scanner_output_recipe(scanner);
 
         PrintRecipe& print = result.recipe.print;

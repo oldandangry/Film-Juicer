@@ -64,6 +64,10 @@ namespace JuicerParams {
     inline constexpr const char kPrintDminFactor[] = "PrintDminFactor";
     inline constexpr const char kScannerLensBlurSigmaPx[] = "ScannerLensBlurSigmaPx";
     inline constexpr const char kScannerUnsharpMask[] = "ScannerUnsharpMask";
+    inline constexpr const char kScannerBlackCorrection[] = "ScannerBlackCorrection";
+    inline constexpr const char kScannerWhiteCorrection[] = "ScannerWhiteCorrection";
+    inline constexpr const char kScannerBlackLevel[] = "ScannerBlackLevel";
+    inline constexpr const char kScannerWhiteLevel[] = "ScannerWhiteLevel";
     inline constexpr const char kScannerUseLut[] = "ScannerUseLUT";
     inline constexpr const char kScannerLutResolution[] = "ScannerLutResolution";
 } // namespace JuicerParams

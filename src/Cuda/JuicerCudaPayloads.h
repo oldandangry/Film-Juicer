@@ -115,6 +115,7 @@ namespace JuicerCuda {
 
     struct FilmExposurePayload {
         float manualExposureScale = 1.0f;
+        float routeCorrectionScale = 1.0f;
         const float* JUICER_RESTRICT exposureScaleDevice = nullptr;
         HighlightBoostPayload highlightBoost{};
         DeviceCurveView sensB{};
@@ -276,6 +277,7 @@ namespace JuicerCuda {
         DeviceCurveView printSensM{};
         DeviceCurveView printSensY{};
         float printExposure = 1.0f;
+        float routeCorrectionScale = 1.0f;
         float printPreflashExposure = 0.0f;
         float printMidgrayFactor = 1.0f;
         float printPreflashRaw[3] = {0.0f, 0.0f, 0.0f};
@@ -302,6 +304,13 @@ namespace JuicerCuda {
         int scanLutRes = 0;
         ScanTablesPayload scanTables{};
         ScanColorPayload scanColor{};
+        int correctionActive = 0;
+        float correctionSlope = 1.0f;
+        float correctionOffset = 0.0f;
+        const float* JUICER_RESTRICT glarePercent = nullptr;
+        float* JUICER_RESTRICT linearRgbR = nullptr;
+        float* JUICER_RESTRICT linearRgbG = nullptr;
+        float* JUICER_RESTRICT linearRgbB = nullptr;
         int* scanErrorFlag = nullptr;
     };
 

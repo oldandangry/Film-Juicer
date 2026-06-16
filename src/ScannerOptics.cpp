@@ -355,8 +355,8 @@ namespace {
             << " static=" << key.staticKey.hash
             << " tablesHash=" << key.staticKey.tablesHash
             << " densityRangeHash=" << key.staticKey.densityRangeHash
-            << " glareHash=" << key.staticKey.glareHash
-            << " colorHash=" << key.staticKey.colorRuntimeHash
+            << " glareHash=" << key.effectsKey.glareHash
+            << " colorHash=" << key.effectsKey.colorRuntimeHash
             << " lutRes=" << key.staticKey.lutResolution
             << " useLut=" << (settings.useLut ? 1 : 0)
             << " settingsHash=" << key.runtimeKey.settingsHash
@@ -514,7 +514,7 @@ namespace ScannerOptics {
 
         Runtime& runtime = *ctx.runtime;
         const std::uint64_t prevStatic = runtime.key.staticKey.hash;
-        const std::uint64_t prevGlareHash = runtime.key.staticKey.glareHash;
+        const std::uint64_t prevGlareHash = runtime.key.effectsKey.glareHash;
         const Scanner::ScannerRuntimeKey prevRuntimeKey = runtime.key.runtimeKey;
         runtime.key = ctx.scannerKey;
         const bool staticKeyChanged = (prevStatic != ctx.scannerKey.staticKey.hash);
@@ -567,7 +567,7 @@ namespace ScannerOptics {
             JTRACE("SCAN", "FATAL: scanner glare hash missing or invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        if (medium.staticKey.glareHash != expectedGlareHash) {
+        if (medium.effectsKey.glareHash != expectedGlareHash) {
             JTRACE("SCAN", "FATAL: scanner glare hash mismatch");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
@@ -576,6 +576,13 @@ namespace ScannerOptics {
         Scanner::finalize_static_key(expectedStaticKey);
         if (expectedStaticKey.hash == 0 || storedStaticHash != expectedStaticKey.hash) {
             JTRACE("SCAN", "FATAL: scanner static key hash mismatch");
+            throw OFX::Exception::Suite(kOfxStatErrFatal);
+        }
+        Scanner::ScannerRuntimeEffectsKey expectedEffectsKey = medium.effectsKey;
+        const std::uint64_t storedEffectsHash = expectedEffectsKey.hash;
+        Scanner::finalize_runtime_effects_key(expectedEffectsKey);
+        if (expectedEffectsKey.hash == 0 || storedEffectsHash != expectedEffectsKey.hash) {
+            JTRACE("SCAN", "FATAL: scanner runtime-effects key hash mismatch");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
         const double tablesInvYn = static_cast<double>(tables->invYn);
@@ -659,10 +666,10 @@ namespace ScannerOptics {
                 oss << "build LUT res=" << res
                     << " lutKey=" << lutDigest
                     << " staticKey=" << ctx.scannerKey.staticKey.hash
-                    << " colorHash=" << ctx.scannerKey.staticKey.colorRuntimeHash
+                    << " colorHash=" << ctx.scannerKey.effectsKey.colorRuntimeHash
                     << " tablesHash=" << ctx.scannerKey.staticKey.tablesHash
                     << " densityRangeHash=" << ctx.scannerKey.staticKey.densityRangeHash
-                    << " glareHash=" << ctx.scannerKey.staticKey.glareHash;
+                    << " glareHash=" << ctx.scannerKey.effectsKey.glareHash;
                 JTRACE("SCAN", oss.str());
             }
             for (std::uint32_t z = 0; z < res; ++z) {
@@ -708,12 +715,12 @@ namespace ScannerOptics {
             const std::uint64_t seedFields[4] = {
                 ctx.seedBase,
                 static_cast<std::uint64_t>(ctx.runtimeKey.frameBoundsVersion),
-                medium.staticKey.glareHash,
+                medium.effectsKey.glareHash,
                 static_cast<std::uint64_t>(medium.medium)};
             const std::uint64_t glareSeed = Hash::hash_bytes(seedFields, sizeof(seedFields));
             const bool dimsChanged = runtime.glare.width != width || runtime.glare.height != height;
             const bool seedChanged = runtime.glare.seedHash != glareSeed;
-            const bool glareParamsChanged = prevGlareHash != ctx.scannerKey.staticKey.glareHash;
+            const bool glareParamsChanged = prevGlareHash != ctx.scannerKey.effectsKey.glareHash;
             if (!runtime.glare.valid || dimsChanged || seedChanged || glareParamsChanged || frameBoundsChanged) {
                 const size_t channelSize = total;
                 if (runtime.glare.amount.size() != channelSize) {

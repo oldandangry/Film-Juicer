@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <atomic>
 #include <sstream>
 #include <unordered_map>
@@ -3026,9 +3027,15 @@ namespace JuicerCuda {
                 return false;
             }
             std::copy(selected->linear.begin(), selected->linear.end(), out.begin());
-            const bool valid = std::all_of(out.begin(), out.end(), [](float value) {
-                return std::isfinite(value) && value >= 0.0f;
-            });
+            float energy = 0.0f;
+            const bool valid = std::all_of(out.begin(), out.end(), [&energy](float value) {
+                                   if (std::isfinite(value) && value >= 0.0f) {
+                                       energy += value;
+                                       return true;
+                                   }
+                                   return false;
+                               }) &&
+                               energy > 0.0f;
             if (!valid) {
                 diagnostic =
                     "MalformedRequiredResource phase=4B field=print_illuminant key=" + key;
@@ -3113,6 +3120,11 @@ namespace JuicerCuda {
                     return false;
                 }
                 out[sample] = total;
+            }
+            const float energy = std::accumulate(out.begin(), out.end(), 0.0f);
+            if (!(std::isfinite(energy) && energy > 0.0f)) {
+                diagnostic = "MalformedRequiredResource phase=4B field=filtered_print_illuminant";
+                return false;
             }
             return true;
         }
@@ -3644,17 +3656,30 @@ namespace JuicerCuda {
             resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
             resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
             resources.printSensC.y && resources.printSensM.y && resources.printSensY.y;
+        const auto positive_finite_energy =
+            [](const std::array<float, Spectral::kNumSamples>& values) {
+                float energy = 0.0f;
+                for (float value : values) {
+                    if (!(std::isfinite(value) && value >= 0.0f)) {
+                        return false;
+                    }
+                    energy += value;
+                }
+                return std::isfinite(energy) && energy > 0.0f;
+            };
         const bool mainHit =
             resources.printMainIlluminantDescriptorHash == descriptors.mainIlluminant.hash &&
             resources.printIllumFiltered &&
             resources.printIllumK == Spectral::kNumSamples &&
-            resources.printIllumFilteredHostValid;
+            resources.printIllumFilteredHostValid &&
+            positive_finite_energy(resources.printIllumFilteredHost);
         const bool preflashIlluminantHit =
             !descriptors.preflashActive ||
             (resources.printPreflashIlluminantDescriptorHash == descriptors.preflashIlluminant.hash &&
              resources.printPreflashIllumFiltered &&
              resources.printPreflashIllumK == Spectral::kNumSamples &&
-             resources.printPreflashIllumFilteredHostValid);
+             resources.printPreflashIllumFilteredHostValid &&
+             positive_finite_energy(resources.printPreflashIllumFilteredHost));
         const bool preflashRawHit =
             !descriptors.preflashActive ||
             (resources.printPreflashRawDescriptorHash == descriptors.preflashRaw.hash &&
@@ -3663,7 +3688,8 @@ namespace JuicerCuda {
             resources.printBalanceDescriptorHash == descriptors.balance.hash &&
             std::isfinite(resources.printBalanceFactorMidgray) &&
             std::isfinite(resources.printBalanceFactorMidgrayComp) &&
-            std::isfinite(resources.printBalanceNormalizer);
+            std::isfinite(resources.printBalanceNormalizer) &&
+            resources.printBalanceNormalizer > 0.0f;
         auto trace_main_illuminant = [&](const char* cacheOutcome,
                                          const char* mainIlluminantOutcome) {
             if (!JTRACE_ENABLED(3)) {

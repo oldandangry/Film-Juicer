@@ -1218,6 +1218,10 @@ static __device__ __forceinline__ void compute_film_raw_device(
     if (!isfinite(manualExposureScale) || !(manualExposureScale > 0.0f)) {
         manualExposureScale = 1.0f;
     }
+    float routeCorrectionScale = expose.routeCorrectionScale;
+    if (!isfinite(routeCorrectionScale) || !(routeCorrectionScale > 0.0f)) {
+        routeCorrectionScale = 1.0f;
+    }
     for (int i = 0; i < 3; ++i) {
         float v = E_raw[i];
         if (!isfinite(v) || v < 0.0f)
@@ -1225,7 +1229,7 @@ static __device__ __forceinline__ void compute_film_raw_device(
         if (useMallett) {
             v = fmaxf(0.0f, v * mallettGreenMidgrayScale);
         }
-        v = fmaxf(0.0f, v * manualExposureScale);
+        v = fmaxf(0.0f, v * manualExposureScale * routeCorrectionScale);
         filmRaw[i] = v;
     }
 }
@@ -1388,6 +1392,14 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
     rawC *= expPrint;
     rawM *= expPrint;
     rawY *= expPrint;
+
+    float routeCorrectionScale = expose.routeCorrectionScale;
+    if (!isfinite(routeCorrectionScale) || !(routeCorrectionScale > 0.0f)) {
+        routeCorrectionScale = 1.0f;
+    }
+    rawC *= routeCorrectionScale;
+    rawM *= routeCorrectionScale;
+    rawY *= routeCorrectionScale;
 
     // RAW -> log10(raw + eps) -> print density curves.
     constexpr float kLogEps = 1e-10f;

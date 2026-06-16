@@ -858,13 +858,13 @@ namespace {
 
     struct ScannerUnsharpPair {
         float sigmaPx = 0.7f;
-        float amount = 1.0f;
+        float amount = 0.7f;
     };
 
     inline float read_scanner_blur_sigma_px_or_default(OFX::DoubleParam* param, float fallback) {
         const double blur = sanitize_finite_clamped(
             read_double_param_or(param, static_cast<double>(fallback)),
-            0.55,
+            0.0,
             0.0,
             10.0);
         return static_cast<float>(blur);
@@ -878,7 +878,7 @@ namespace {
             param,
             {{static_cast<double>(sigmaFallback), static_cast<double>(amountFallback)}});
         const double sigma = sanitize_finite_clamped(unsharp[0], 0.7, 0.0, 5.0);
-        const double amount = sanitize_finite_clamped(unsharp[1], 1.0, 0.0, 3.0);
+        const double amount = sanitize_finite_clamped(unsharp[1], 0.7, 0.0, 3.0);
         ScannerUnsharpPair out{};
         out.sigmaPx = static_cast<float>(sigma);
         out.amount = static_cast<float>(amount);
@@ -1034,6 +1034,10 @@ namespace {
     inline void read_scanner_snapshot_values(
         OFX::DoubleParam* scannerLensBlurParam,
         OFX::Double2DParam* scannerUnsharpParam,
+        OFX::BooleanParam* scannerBlackCorrectionParam,
+        OFX::BooleanParam* scannerWhiteCorrectionParam,
+        OFX::DoubleParam* scannerBlackLevelParam,
+        OFX::DoubleParam* scannerWhiteLevelParam,
         OFX::BooleanParam* scannerUseLutParam,
         OFX::IntParam* scannerLutResolutionParam,
         ParamSnapshot& snapshot) {
@@ -1043,6 +1047,14 @@ namespace {
         snapshot.scannerUnsharpMask = read_double2_param_or(
             scannerUnsharpParam,
             snapshot.scannerUnsharpMask);
+        snapshot.scannerBlackCorrection =
+            read_bool_param_as_i32(scannerBlackCorrectionParam, false);
+        snapshot.scannerWhiteCorrection =
+            read_bool_param_as_i32(scannerWhiteCorrectionParam, false);
+        snapshot.scannerBlackLevel =
+            read_sanitized_unit_double(scannerBlackLevelParam, snapshot.scannerBlackLevel);
+        snapshot.scannerWhiteLevel =
+            read_sanitized_unit_double(scannerWhiteLevelParam, snapshot.scannerWhiteLevel);
         snapshot.scannerUseLut = read_bool_param_as_i32(scannerUseLutParam, true);
         snapshot.scannerLutResolution = read_int_param_or(
             scannerLutResolutionParam,
@@ -2380,9 +2392,9 @@ Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
 
     glare.active = read_bool_param_or(_pGlareActive, true);
 
-    glare.percent = read_sanitized_unit_float(_pGlarePercent, 0.10f);
+    glare.percent = read_sanitized_unit_float(_pGlarePercent, 0.03f);
 
-    glare.roughness = read_sanitized_unit_float(_pGlareRoughness, 0.4f);
+    glare.roughness = read_sanitized_unit_float(_pGlareRoughness, 0.7f);
 
     glare.blur = read_sanitized_0_to_10_float(_pGlareBlurSigmaPx, 0.5f);
 
@@ -2633,6 +2645,12 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 
         _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
+        _pScannerBlackCorrection =
+            fetchBooleanParam(JuicerParams::kScannerBlackCorrection);
+        _pScannerWhiteCorrection =
+            fetchBooleanParam(JuicerParams::kScannerWhiteCorrection);
+        _pScannerBlackLevel = fetchDoubleParam(JuicerParams::kScannerBlackLevel);
+        _pScannerWhiteLevel = fetchDoubleParam(JuicerParams::kScannerWhiteLevel);
         _pScannerUseLut = fetchBooleanParam(JuicerParams::kScannerUseLut);
         _pScannerLutResolution = fetchIntParam(JuicerParams::kScannerLutResolution);
 
@@ -2931,16 +2949,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         trace_and_throw_render_fatal(RenderFatalTrace{"BUILD", "FATAL: focused render state not ready; aborting render"});
     }
     const RenderRecipe& focusedRecipe = printRoute ? printState->recipe : directState->recipe;
-    if (printRoute && focusedRecipe.scannerOutput.glareActive) {
-        trace_and_throw_render_fatal(
-            RenderFatalTrace{"SPEKTRAFILM", Spektrafilm::kGlareNotImplementedForPhase4});
-    }
-    if (printRoute &&
-        focusedRecipe.scannerOutput.postEffectsDisposition !=
-            Spektrafilm::ScannerPostEffectDisposition::Identity) {
-        trace_and_throw_render_fatal(
-            RenderFatalTrace{"SPEKTRAFILM", Spektrafilm::kScannerPostEffectsNotImplementedForPhase4});
-    }
     const double filmFormatMm = focusedRecipe.filmRaw.filmFormatLongEdgeMm;
     const float pixelSizeUm =
         (filmFormatMm > 0.0 && longEdgePx > 0.0)
@@ -3510,6 +3518,10 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     read_scanner_snapshot_values(
         _pScannerLensBlur,
         _pScannerUnsharp,
+        _pScannerBlackCorrection,
+        _pScannerWhiteCorrection,
+        _pScannerBlackLevel,
+        _pScannerWhiteLevel,
         _pScannerUseLut,
         _pScannerLutResolution,
         P);
