@@ -14,21 +14,14 @@ struct WorkingState;
 struct DirectRenderState;
 struct PrintRenderState;
 
-// Phase 1C request bridge ledger:
-// - SF_TEMP_BRIDGE_FrameRequestSideChannelCopy owner=Phase4-print-route:
-//   reason=retained Phase 4-only broad adapter; allowed=FrameRequest declaration and
-//   JuicerProcessor::setFrameRequest only; output_impact=blocked print route; hash_impact=none;
-//   resource_impact=broad legacy preparation; removal=Phase4 print cutover.
-// - SF_TEMP_BRIDGE_CPUAutoExposureBlocked owner=Phase4-print-route:
-//   reason=legacy non-direct request facts; allowed=JuicerProcessor::setFrameRequest only;
-//   output_impact=blocked non-direct route; hash_impact=none; resource_impact=none;
-//   removal=Phase4 print-route request cutover.
+// Broad frame request data is retained only for non-focused host plumbing; product
+// rendering consumes typed direct/print requests.
 struct FrameRequest {
     std::shared_ptr<const RenderRecipe> recipe;
     std::shared_ptr<const ::WorkingState> workingState;
-    const Print::Runtime* printRuntime = nullptr;
+    const Print::Runtime* printRt = nullptr;
     bool workingStateReady = false;
-    bool printRuntimeReady = false;
+    bool printRtReady = false;
 
     int components = 0;
     OfxRectI renderWindow{0, 0, 0, 0};

@@ -35,29 +35,33 @@ namespace Spectral {
     inline NegativeCouplerParams make_default_neg_params() {
         return {
             // Dmax per dye (kept conservative for now)
-            1.10f, 1.00f, 1.30f,
+            1.10f,
+            1.00f,
+            1.30f,
             // Base mask densities (preserve your current baseline look)
-            0.04f, 0.02f, 0.06f,
+            0.04f,
+            0.02f,
+            0.06f,
             // H-D curve steepness (larger = quicker rise toward Dmax)
-            6.0f, 6.0f, 6.0f,
+            6.0f,
+            6.0f,
+            6.0f,
             // Masking (small off-diagonals; close to your current values)
             {
-                 0.98f, -0.06f, -0.02f,
-                -0.03f,  0.98f, -0.05f,
-                -0.02f, -0.04f,  0.98f
-            },
+                0.98f, -0.06f, -0.02f, -0.03f, 0.98f, -0.05f, -0.02f, -0.04f, 0.98f},
             // Spectral masking defaults
-            { 1.0f, 1.0f, 1.0f },
-            { 0.0f, 0.0f, 0.0f }
-        };
+            {1.0f, 1.0f, 1.0f},
+            {0.0f, 0.0f, 0.0f}};
     }
 
     // Simple H-D-like curve: monotonic, saturating, smooth
     inline float hd_curve(float E, float Dmax, float k) {
         E = std::max(0.0f, E);
-        if (k <= 0.0f) return std::min(Dmax, E);
+        if (k <= 0.0f)
+            return std::min(Dmax, E);
         const float denom = std::log1p(k);
-        if (denom <= 0.0f) return 0.0f;
+        if (denom <= 0.0f)
+            return 0.0f;
         const float t = std::log1p(k * E) / denom; // 0..1 for E in 0..1 (approx), saturates smoothly
         return Dmax * std::max(0.0f, t);
     }
@@ -74,10 +78,7 @@ namespace Spectral {
         const float g = std::max(0.0f, rgbDWG[1]);
         const float b = std::max(0.0f, rgbDWG[2]);
         const float M[9] = {
-            0.05f, 0.09f, 0.75f,
-            0.10f, 0.80f, 0.15f,
-            0.85f, 0.12f, 0.05f
-        };
+            0.05f, 0.09f, 0.75f, 0.10f, 0.80f, 0.15f, 0.85f, 0.12f, 0.05f};
         E[0] = exposureScale * (M[0] * r + M[1] * g + M[2] * b);
         E[1] = exposureScale * (M[3] * r + M[4] * g + M[5] * b);
         E[2] = exposureScale * (M[6] * r + M[7] * g + M[8] * b);
@@ -96,8 +97,7 @@ namespace Spectral {
         const std::vector<float>& Ee,
         float E[3],
         float exposureScale,
-        bool applyDeltaLambda)
-    {
+        bool applyDeltaLambda) {
         const int K = gShape.K;
         double Eb = 0.0, Eg = 0.0, Er = 0.0;
         spd_probe_record_delta_lambda(applyDeltaLambda);
@@ -140,8 +140,7 @@ namespace Spectral {
         const Spectral::Curve& sR,
         float E[3],
         float exposureScale,
-        bool applyDeltaLambda)
-    {
+        bool applyDeltaLambda) {
         const int K = gShape.K;
         double Eb = 0.0, Eg = 0.0, Er = 0.0;
         spd_probe_record_delta_lambda(applyDeltaLambda);
@@ -194,10 +193,9 @@ namespace Spectral {
         // SPD path: reconstruct the scene SPD per pixel then integrate with sensitivities
         const bool useHanatos = hanatos_available() && hanatos_matches_reference_shape();
         if (useHanatos) {
-            // Global path: use D65 white point (no chromatic adaptation) for backward compatibility
+            // Global path: use the D65 white point without chromatic adaptation.
             reconstruct_Ee_from_DWG_RGB_hanatos(rgbDWG, Ee_scene, gDWG_WhitePoint_XYZ);
-        }
-        else {
+        } else {
             reconstruct_Ee_from_DWG_RGB(rgbDWG, Ee_scene);
         }
         layerExposures_from_sceneSPD(Ee_scene, E, exposureScale, !useHanatos);
@@ -211,28 +209,48 @@ namespace Spectral {
     // so that at logE = 0 their densities match the green curve's density.
     // Inputs: sensB/G/R_in and densB/G/R_in; Output: sensB/G/R_out and densB/G/R_out.
     // illumRef must be pinned to current gShape.
+    struct NegativeReferenceBalanceOutputs {
+        Curve& sensB;
+        Curve& sensG;
+        Curve& sensR;
+        Curve& densB;
+        Curve& densG;
+        Curve& densR;
+    };
+
     inline void balance_negative_under_reference_non_global(
         const Curve& illumRef,
-        const Curve& sensB_in, const Curve& sensG_in, const Curve& sensR_in,
-        const Curve& densB_in, const Curve& densG_in, const Curve& densR_in,
-        Curve& sensB_out, Curve& sensG_out, Curve& sensR_out,
-        Curve& densB_out, Curve& densG_out, Curve& densR_out)
-    {
+        const Curve& sensB_in,
+        const Curve& sensG_in,
+        const Curve& sensR_in,
+        const Curve& densB_in,
+        const Curve& densG_in,
+        const Curve& densR_in,
+        const NegativeReferenceBalanceOutputs& out) {
         const int K = gShape.K;
         if (K <= 0 || illumRef.linear.size() != static_cast<size_t>(K)) {
             // Fallback: shallow copies
-            sensB_out = sensB_in; sensG_out = sensG_in; sensR_out = sensR_in;
-            densB_out = densB_in; densG_out = densG_in; densR_out = densR_in;
+            out.sensB = sensB_in;
+            out.sensG = sensG_in;
+            out.sensR = sensR_in;
+            out.densB = densB_in;
+            out.densG = densG_in;
+            out.densR = densR_in;
             return;
         }
 
         // Copy inputs
-        sensB_out = sensB_in; sensG_out = sensG_in; sensR_out = sensR_in;
-        densB_out = densB_in; densG_out = densG_in; densR_out = densR_in;
+        out.sensB = sensB_in;
+        out.sensG = sensG_in;
+        out.sensR = sensR_in;
+        out.densB = densB_in;
+        out.densG = densG_in;
+        out.densR = densR_in;
 
         // 1) Neutral exposures under reference illuminant
-        auto neutral_exposure = [&](const Curve& s)->double {
-            if (s.linear.size() != static_cast<size_t>(K)) return 1.0;
+        auto neutral_exposure = [&](const Curve& s) -> double {
+            if (s.linear.size() != static_cast<size_t>(K))
+                return 1.0;
             double n = 0.0, d = 0.0;
             for (int i = 0; i < K; ++i) {
                 const double Ee = (double)illumRef.linear[i];
@@ -241,38 +259,47 @@ namespace Spectral {
                 d += Ee;
             }
             return (d > 0.0) ? n / d : 1.0;
-            };
+        };
         const double nB = neutral_exposure(sensB_in);
         const double nG = neutral_exposure(sensG_in);
         const double nR = neutral_exposure(sensR_in);
 
-        if (nB <= 1e-20 || nG <= 1e-20 || nR <= 1e-20) return;
+        if (nB <= 1e-20 || nG <= 1e-20 || nR <= 1e-20)
+            return;
 
         const float corrB = (float)(nG / nB);
         const float corrR = (float)(nG / nR);
 
         // 2) Apply sensitivity scaling (in-place on copies)
-        if (sensB_out.linear.size() == static_cast<size_t>(K))
-            for (int i = 0; i < K; ++i) sensB_out.linear[i] *= corrB;
-        if (sensR_out.linear.size() == static_cast<size_t>(K))
-            for (int i = 0; i < K; ++i) sensR_out.linear[i] *= corrR;
+        if (out.sensB.linear.size() == static_cast<size_t>(K))
+            for (int i = 0; i < K; ++i)
+                out.sensB.linear[i] *= corrB;
+        if (out.sensR.linear.size() == static_cast<size_t>(K))
+            for (int i = 0; i < K; ++i)
+                out.sensR.linear[i] *= corrR;
 
         // 3) Shift B/R density domains to align with G at logE=0
-        auto interp_density_at = [](const Curve& c, float x)->float {
+        auto interp_density_at = [](const Curve& c, float x) -> float {
             const size_t n = c.lambda_nm.size();
-            if (n == 0) return 0.0f;
-            if (x <= c.lambda_nm.front()) return c.linear.front();
-            if (x >= c.lambda_nm.back())  return c.linear.back();
-            size_t i1 = 1; while (i1 < n && c.lambda_nm[i1] < x) ++i1;
+            if (n == 0)
+                return 0.0f;
+            if (x <= c.lambda_nm.front())
+                return c.linear.front();
+            if (x >= c.lambda_nm.back())
+                return c.linear.back();
+            size_t i1 = 1;
+            while (i1 < n && c.lambda_nm[i1] < x)
+                ++i1;
             const size_t i0 = i1 - 1;
             const float x0 = c.lambda_nm[i0], x1 = c.lambda_nm[i1];
             const float y0 = c.linear[i0], y1 = c.linear[i1];
             const float t = (x - x0) / (x1 - x0);
             return y0 + t * (y1 - y0);
-            };
-        auto find_logE_for_density_local = [&](const Curve& c, float targetY)->float {
+        };
+        auto find_logE_for_density_local = [&](const Curve& c, float targetY) -> float {
             const size_t n = c.lambda_nm.size();
-            if (n < 2) return 0.0f;
+            if (n < 2)
+                return 0.0f;
             for (size_t i = 1; i < n; ++i) {
                 const float x0 = c.lambda_nm[i - 1], x1 = c.lambda_nm[i];
                 const float y0 = c.linear[i - 1], y1 = c.linear[i];
@@ -284,16 +311,18 @@ namespace Spectral {
             const float d0 = std::abs(targetY - (c.linear.empty() ? 0.0f : c.linear.front()));
             const float d1 = std::abs(targetY - (c.linear.empty() ? 0.0f : c.linear.back()));
             return (d0 < d1) ? (c.lambda_nm.empty() ? 0.0f : c.lambda_nm.front())
-                : (c.lambda_nm.empty() ? 0.0f : c.lambda_nm.back());
-            };
+                             : (c.lambda_nm.empty() ? 0.0f : c.lambda_nm.back());
+        };
 
-        const float targetG = interp_density_at(densG_out, 0.0f);
+        const float targetG = interp_density_at(out.densG, 0.0f);
 
-        const float shiftB = -find_logE_for_density_local(densB_out, targetG);
-        const float shiftR = -find_logE_for_density_local(densR_out, targetG);
+        const float shiftB = -find_logE_for_density_local(out.densB, targetG);
+        const float shiftR = -find_logE_for_density_local(out.densR, targetG);
 
-        for (float& x : densB_out.lambda_nm) x += shiftB;
-        for (float& x : densR_out.lambda_nm) x += shiftR;
+        for (float& x : out.densB.lambda_nm)
+            x += shiftB;
+        for (float& x : out.densR.lambda_nm)
+            x += shiftR;
     }
 
     // =========================================================================
@@ -316,8 +345,8 @@ namespace Spectral {
         }
 
         const float gammaSafe = (std::isfinite(gammaFactor) && gammaFactor > 0.0f)
-            ? gammaFactor
-            : 1.0f;
+                                    ? gammaFactor
+                                    : 1.0f;
 
         // agx scales the curve axis by dividing xa by gamma_factor; with fixed xa, scale query instead.
         const float xq = logE * gammaSafe;
@@ -390,7 +419,8 @@ namespace Spectral {
     // =========================================================================
 
     inline float baseline_density(float lambda, float w) {
-        if (!gHasBaseline) return 0.0f;
+        if (!gHasBaseline)
+            return 0.0f;
         const float d0 = gBaseMin.sample(lambda);
         const float d1 = gBaseMid.sample(lambda);
         const float t = std::clamp(w, 0.0f, 1.0f);
@@ -405,7 +435,7 @@ namespace Spectral {
     // Masking coupler matrix
     // -------------------------------------------------------------------------
     inline void apply_masking_adjustments_with_params(const NegativeCouplerParams& negParams, float D[3]) {
-        float masked[3] = { 0.0f, 0.0f, 0.0f };
+        float masked[3] = {0.0f, 0.0f, 0.0f};
         for (int i = 0; i < 3; ++i) {
             float scale = (i < 3) ? negParams.maskScale[i] : 1.0f;
             if (!std::isfinite(scale) || scale <= 0.0f) {
@@ -431,14 +461,14 @@ namespace Spectral {
                 return fallback;
             }
             return coeff;
-            };
+        };
 
         auto safe_base = [](float base) {
             if (!std::isfinite(base) || base < 0.0f) {
                 return 0.0f;
             }
             return base;
-            };
+        };
 
         const float m00 = safe_coeff(0, 1.0f);
         const float m01 = safe_coeff(1, 0.0f);
@@ -463,7 +493,7 @@ namespace Spectral {
                 return 0.0f;
             }
             return v;
-            };
+        };
 
         D[0] = clamp_density(y);
         D[1] = clamp_density(m);

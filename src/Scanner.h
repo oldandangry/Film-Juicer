@@ -79,7 +79,7 @@ namespace Scanner {
     };
 
     struct ScannerRuntimeEffectsKey {
-        std::uint64_t glareHash = 0;
+        std::uint64_t glareRuntimeHash = 0;
         std::uint64_t colorRuntimeHash = 0;
         std::uint64_t hash = 0;
     };
@@ -162,7 +162,7 @@ namespace Scanner {
     // Identity: route, medium/polarity, DensityBoundsRecipe hash, selected channel/base density,
     // viewing illuminant, observer/Y normalization, LUT resolution, interpolation, axes, stored
     // value domain/log base/format/output order, and schema version. Scanner correction, output
-    // color/CCTF, glare, blur, unsharp, frame bounds, auto exposure, and other post-LUT identity
+    // color/CCTF, glare, blur, unsharp, frame bounds, auto exposure, and downstream scanner effects
     // are excluded.
     // Lifetime: plain host descriptor; no upload/admission/allocation occurs in Phase 3A.
     struct ScannerSpectralLutDescriptor {
@@ -287,9 +287,9 @@ namespace Scanner {
             glare.percent,
             glare.roughness,
             glare.blur,
-            glare.compensationRemovalFactor,
-            glare.compensationRemovalDensity,
-            glare.compensationRemovalTransition};
+            glare.printShadowCompensationFactor,
+            glare.printShadowCompensationDensity,
+            glare.printShadowCompensationTransition};
         for (float v : floats) {
             if (!std::isfinite(v)) {
                 return 0;
@@ -319,7 +319,7 @@ namespace Scanner {
     }
 
     inline void finalize_runtime_effects_key(ScannerRuntimeEffectsKey& key) {
-        key.hash = Hash::hash_uint64_values({key.glareHash, key.colorRuntimeHash});
+        key.hash = Hash::hash_uint64_values({key.glareRuntimeHash, key.colorRuntimeHash});
     }
 
     inline void finalize_runtime_key(ScannerRuntimeKey& key) {

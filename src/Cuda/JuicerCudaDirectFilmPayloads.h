@@ -117,7 +117,7 @@ namespace JuicerCuda {
             if (dirCouplers.hash == 0 ||
                 dirCouplers.precorrectedDensityCurvesHash == 0 ||
                 prepared.dirCouplersHash != dirCouplers.hash) {
-                diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=dir_couplers";
+                diagnostic = "ResourceDescriptorMismatch phase=3D-3 field=dirCouplers";
                 return false;
             }
             if (!direct_film_curve_ready(prepared.dirDensB, densitySamples) ||

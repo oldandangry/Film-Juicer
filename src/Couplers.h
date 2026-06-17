@@ -6,10 +6,6 @@
 #include "FilmProcessing.h"
 #include "SpectralData.h"
 
-// SF_PHASE5_BLOCKED_LegacyCouplersRuntime owner=legacy broad/CPU renderer;
-// allowed_call_sites=hard-blocked WorkingState, PipelineStages, and broad mainProcessing source;
-// output_hash_resource_impact=none on typed focused routes;
-// cleanup_symbol=SF_PHASE5_BLOCKED_LegacyCouplersRuntime; disposition=delete_with_legacy_renderer.
 namespace Couplers {
 
     // Orientation: M[inputLayer][outputLayer]. Input layers are ordered [B,G,R],
@@ -316,9 +312,6 @@ namespace Couplers {
         }
     }
 
-    // SF_PHASE5_BLOCKED_CouplersLiveOfx owner=legacy broad renderer;
-    // allowed_call_sites=none; output_hash_resource_impact=none;
-    // cleanup_symbol=SF_PHASE5_BLOCKED_CouplersLiveOfx; disposition=delete_with_legacy_renderer.
 #if 0
     // Define OFX params (no globals)
     inline void define_params(OfxImageEffectHandle effect,

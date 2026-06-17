@@ -92,7 +92,7 @@ namespace Profiles {
         std::array<float, 2> gammaInterlayerBToRg{{0.168f, 0.226f}};
         std::string dirGammaSource = "negative-default";
         std::array<float, 3> halationFirstSigmaUm{{65.0f, 65.0f, 65.0f}};
-        std::array<float, 3> halationStrength{{0.08f, 0.02f, 0.0f}};
+        std::array<float, 3> halationPrimaryAmount{{0.08f, 0.02f, 0.0f}};
         bool halationPresetApplied = true;
         bool hanatosWindowAuthored = false;
         bool hanatosSurfaceAuthored = false;

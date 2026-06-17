@@ -1316,7 +1316,7 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
         return;
     }
 
-    const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseMin;
+    const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseDensityMin;
 
     if (!expose.printSensC.y || !expose.printSensM.y || !expose.printSensY.y) {
         D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
@@ -1343,7 +1343,7 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
             continue;
         }
 
-        const float baseD = haveBaseline ? ldg_f(expose.negTables.baseMin + i) : 0.0f;
+        const float baseD = haveBaseline ? ldg_f(expose.negTables.baseDensityMin + i) : 0.0f;
         const float densitySpectral =
             D_cmy[0] * ldg_f(expose.negTables.epsC + i) +
             D_cmy[1] * ldg_f(expose.negTables.epsM + i) +

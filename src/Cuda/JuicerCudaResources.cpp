@@ -514,9 +514,13 @@ namespace JuicerCuda {
 #endif
     }
 
+    struct HostToDeviceCopyRequest {
+        const char* stage = nullptr;
+        const char* label = nullptr;
+    };
+
     static bool enqueue_host_to_device_copy(
-        const char* stage,
-        const char* label,
+        const HostToDeviceCopyRequest& request,
         void* dst,
         const void* src,
         std::size_t bytes,
@@ -1650,8 +1654,7 @@ namespace JuicerCuda {
             return false;
         }
         if (!enqueue_host_to_device_copy(
-                "alloc_and_upload_array",
-                label,
+                HostToDeviceCopyRequest{"alloc_and_upload_array", label},
                 dst,
                 src,
                 bytes,
@@ -1705,8 +1708,7 @@ namespace JuicerCuda {
         }
 
         if (!enqueue_host_to_device_copy(
-                "alloc_and_upload_bytes",
-                label,
+                HostToDeviceCopyRequest{"alloc_and_upload_bytes", label},
                 dst,
                 src,
                 bytes,
@@ -1792,8 +1794,7 @@ namespace JuicerCuda {
                 label,
                 outError);
             const bool copyOk = waitOk && enqueue_host_to_device_copy(
-                                              "upload_array_locked",
-                                              label,
+                                              HostToDeviceCopyRequest{"upload_array_locked", label},
                                               dst,
                                               src,
                                               bytes,
@@ -1876,8 +1877,7 @@ namespace JuicerCuda {
         }
 
         if (!enqueue_host_to_device_copy(
-                "alloc_and_upload_curve",
-                "curve.x",
+                HostToDeviceCopyRequest{"alloc_and_upload_curve", "curve.x"},
                 dst.x,
                 src.lambda_nm.data(),
                 bytes,
@@ -1888,8 +1888,7 @@ namespace JuicerCuda {
             return false;
         }
         if (!enqueue_host_to_device_copy(
-                "alloc_and_upload_curve",
-                "curve.y",
+                HostToDeviceCopyRequest{"alloc_and_upload_curve", "curve.y"},
                 dst.y,
                 src.linear.data(),
                 bytes,
@@ -1954,8 +1953,7 @@ namespace JuicerCuda {
                 baseLabel,
                 outError);
             const bool copyXOk = waitOk && enqueue_host_to_device_copy(
-                                               "upload_curve_locked",
-                                               labelX.c_str(),
+                                               HostToDeviceCopyRequest{"upload_curve_locked", labelX.c_str()},
                                                dst.x,
                                                src.lambda_nm.data(),
                                                bytes,
@@ -1963,8 +1961,7 @@ namespace JuicerCuda {
                                                outError);
             const std::string labelY = std::string(baseLabel) + ".y";
             const bool copyYOk = copyXOk && enqueue_host_to_device_copy(
-                                                "upload_curve_locked",
-                                                labelY.c_str(),
+                                                HostToDeviceCopyRequest{"upload_curve_locked", labelY.c_str()},
                                                 dst.y,
                                                 src.linear.data(),
                                                 bytes,
@@ -2047,8 +2044,7 @@ namespace JuicerCuda {
             return false;
         }
         if (!enqueue_host_to_device_copy(
-                "alloc_and_upload_spectral_samples",
-                label,
+                HostToDeviceCopyRequest{"alloc_and_upload_spectral_samples", label},
                 dst.y,
                 src.data(),
                 bytes,
@@ -2101,8 +2097,7 @@ namespace JuicerCuda {
                 label,
                 outError);
             const bool copyOk = waitOk && enqueue_host_to_device_copy(
-                                              "upload_spectral_samples_locked",
-                                              label,
+                                              HostToDeviceCopyRequest{"upload_spectral_samples_locked", label},
                                               dst.y,
                                               src.data(),
                                               bytes,
@@ -2821,31 +2816,31 @@ namespace JuicerCuda {
             }
         }
 
-        const Spectral::SpectralTables& scannerTables = *request.scannerTables;
+        const Spectral::SpectralTables& mediumTables = *request.scannerTables;
         Resources::DeviceScanMedium& scan = printRoute ? resources.scanPrint : resources.scanNegative;
-        const int scanK = scannerTables.K;
-        if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, scannerTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsC", outError) ||
-            !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, scannerTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsM", outError) ||
-            !upload_array_locked(resources, scan.tables.epsY, scan.tables.K, scannerTables.epsY.data(), scanK, cudaStreamOpaque, &lock, "direct scan epsY", outError) ||
-            !upload_array_locked(resources, scan.tables.Ax, scan.tables.K, scannerTables.Ax.data(), scanK, cudaStreamOpaque, &lock, "direct scan Ax", outError) ||
-            !upload_array_locked(resources, scan.tables.Ay, scan.tables.K, scannerTables.Ay.data(), scanK, cudaStreamOpaque, &lock, "direct scan Ay", outError) ||
-            !upload_array_locked(resources, scan.tables.Az, scan.tables.K, scannerTables.Az.data(), scanK, cudaStreamOpaque, &lock, "direct scan Az", outError)) {
+        const int scanK = mediumTables.K;
+        if (!upload_array_locked(resources, scan.tables.epsC, scan.tables.K, mediumTables.epsC.data(), scanK, cudaStreamOpaque, &lock, "direct medium epsC", outError) ||
+            !upload_array_locked(resources, scan.tables.epsM, scan.tables.K, mediumTables.epsM.data(), scanK, cudaStreamOpaque, &lock, "direct medium epsM", outError) ||
+            !upload_array_locked(resources, scan.tables.epsY, scan.tables.K, mediumTables.epsY.data(), scanK, cudaStreamOpaque, &lock, "direct medium epsY", outError) ||
+            !upload_array_locked(resources, scan.tables.Ax, scan.tables.K, mediumTables.Ax.data(), scanK, cudaStreamOpaque, &lock, "direct medium Ax", outError) ||
+            !upload_array_locked(resources, scan.tables.Ay, scan.tables.K, mediumTables.Ay.data(), scanK, cudaStreamOpaque, &lock, "direct medium Ay", outError) ||
+            !upload_array_locked(resources, scan.tables.Az, scan.tables.K, mediumTables.Az.data(), scanK, cudaStreamOpaque, &lock, "direct medium Az", outError)) {
             return false;
         }
-        if (scannerTables.hasBaseline) {
-            if (!upload_array_locked(resources, scan.tables.baseMin, scan.tables.K, scannerTables.baseMin.data(), scanK, cudaStreamOpaque, &lock, "direct scan baseMin", outError)) {
+        if (mediumTables.hasBaseline) {
+            if (!upload_array_locked(resources, scan.tables.baseDensityMin, scan.tables.K, mediumTables.baseDensityMin.data(), scanK, cudaStreamOpaque, &lock, "direct medium baseDensityMin", outError)) {
                 return false;
             }
-        } else if (scan.tables.baseMin) {
+        } else if (scan.tables.baseDensityMin) {
             const std::size_t bytes = static_cast<std::size_t>(scan.tables.K) * sizeof(float);
-            if (!retire_ptr_locked(resources, scan.tables.baseMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "direct scan baseMin", outError)) {
+            if (!retire_ptr_locked(resources, scan.tables.baseDensityMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "direct medium baseDensityMin", outError)) {
                 return false;
             }
-            scan.tables.baseMin = nullptr;
+            scan.tables.baseDensityMin = nullptr;
         }
         scan.tables.K = scanK;
-        scan.tables.hasBaseline = scannerTables.hasBaseline ? 1 : 0;
-        scan.tables.invYn = scannerTables.invYn;
+        scan.tables.hasBaseline = mediumTables.hasBaseline ? 1 : 0;
+        scan.tables.invYn = mediumTables.invYn;
         scan.mediumIsNegative = printRoute ? 0 : 1;
         for (int channel = 0; channel < 3; ++channel) {
             scan.min_cmy[channel] = printRoute
@@ -2945,7 +2940,7 @@ namespace JuicerCuda {
             return true;
         };
         lut.hash = 0;
-        if (!retire_old(lut.log2XYZ, oldVoxelBytes, "legacy direct scan log2 LUT") ||
+        if (!retire_old(lut.log2XYZ, oldVoxelBytes, "retired direct scan log2 LUT") ||
             !retire_old(lut.log10XYZ, oldVoxelBytes, "direct canonical scan log10 LUT") ||
             !retire_old(lut.slopeC, oldVoxelBytes, "direct canonical scan C slopes") ||
             !retire_old(lut.slopeM, oldVoxelBytes, "direct canonical scan M slopes") ||
@@ -3734,7 +3729,7 @@ namespace JuicerCuda {
             resources.printFilmDensityTables.epsM &&
             resources.printFilmDensityTables.epsY &&
             resources.printFilmDensityTables.hasBaseline &&
-            resources.printFilmDensityTables.baseMin;
+            resources.printFilmDensityTables.baseDensityMin;
         const bool profileHit =
             resources.printProfileTablesDescriptorHash == descriptors.profileTables.hash &&
             resources.printDcC.x && resources.printDcM.x && resources.printDcY.x &&
@@ -3905,7 +3900,7 @@ namespace JuicerCuda {
             if (!upload_array_locked(resources, tables.epsC, currentK, epsC.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsC", outError) ||
                 !upload_array_locked(resources, tables.epsM, currentK, epsM.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsM", outError) ||
                 !upload_array_locked(resources, tables.epsY, currentK, epsY.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density epsY", outError) ||
-                !upload_array_locked(resources, tables.baseMin, currentK, film.data.baseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
+                !upload_array_locked(resources, tables.baseDensityMin, currentK, film.data.baseDensity.data(), Spectral::kNumSamples, cudaStreamOpaque, &lock, "phase4B print film density base", outError)) {
                 return false;
             }
             tables.K = Spectral::kNumSamples;
@@ -4042,7 +4037,7 @@ namespace JuicerCuda {
             !prepared.filmDensityTables.epsM ||
             !prepared.filmDensityTables.epsY ||
             !prepared.filmDensityTables.hasBaseline ||
-            !prepared.filmDensityTables.baseMin ||
+            !prepared.filmDensityTables.baseDensityMin ||
             prepared.profileTablesHash == 0 ||
             prepared.mainIlluminantHash == 0 ||
             prepared.balanceHash == 0 ||
@@ -4291,8 +4286,8 @@ namespace JuicerCuda {
 
     static const char* to_cstr(ResourceManager::AllocatorBackendMode mode) noexcept {
         switch (mode) {
-            case ResourceManager::AllocatorBackendMode::Legacy:
-                return "legacy";
+            case ResourceManager::AllocatorBackendMode::CudaMalloc:
+                return "cuda_malloc";
             case ResourceManager::AllocatorBackendMode::AsyncPool:
                 return "async_pool";
             case ResourceManager::AllocatorBackendMode::Slab:
@@ -4447,7 +4442,7 @@ namespace JuicerCuda {
         }
 
         if (preferAsync) {
-            outError = std::string("scratch alloc failed (async+legacy) [") + (label ? label : "scratch") + "]: async=" + (cudaGetErrorString(asyncErr) ? cudaGetErrorString(asyncErr) : "(unknown)") + ", legacy=" + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
+            outError = std::string("scratch alloc failed (async+cuda_malloc) [") + (label ? label : "scratch") + "]: async=" + (cudaGetErrorString(asyncErr) ? cudaGetErrorString(asyncErr) : "(unknown)") + ", cuda_malloc=" + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
         } else {
             outError = std::string("cudaMalloc(") + (label ? label : "scratch") + ") failed: " + (cudaGetErrorString(allocErr) ? cudaGetErrorString(allocErr) : "(unknown)");
         }
@@ -4610,9 +4605,9 @@ namespace JuicerCuda {
             cudaFree(t.Az);
             t.Az = nullptr;
         }
-        if (t.baseMin) {
-            cudaFree(t.baseMin);
-            t.baseMin = nullptr;
+        if (t.baseDensityMin) {
+            cudaFree(t.baseDensityMin);
+            t.baseDensityMin = nullptr;
         }
 #endif
         t.K = 0;
@@ -4660,10 +4655,10 @@ namespace JuicerCuda {
                 return false;
             t.Az = nullptr;
         }
-        if (t.baseMin) {
-            if (!retire_ptr_locked(resources, t.baseMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
+        if (t.baseDensityMin) {
+            if (!retire_ptr_locked(resources, t.baseDensityMin, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError))
                 return false;
-            t.baseMin = nullptr;
+            t.baseDensityMin = nullptr;
         }
         t.K = 0;
         t.hasBaseline = 0;
@@ -6452,7 +6447,7 @@ namespace JuicerCuda {
             return false;
         }
 
-        // Validate +/-inf sanitization before sampling (DevelopFilmStage parity).
+        // Validate +/-inf sanitization before density sampling.
         {
             const float kLogEInf[3] = {
                 -std::numeric_limits<float>::infinity(),
@@ -6521,7 +6516,7 @@ namespace JuicerCuda {
             }
         }
 
-        // Validate film log-raw computation parity (DevelopFilmStage::compute_log_raw).
+        // Validate film log-raw computation parity.
         {
             const float samples[][3] = {
                 {0.184f, 0.184f, 0.184f},
@@ -6680,7 +6675,7 @@ namespace JuicerCuda {
                     resources.scanNegative.tables.Ax,
                     resources.scanNegative.tables.Ay,
                     resources.scanNegative.tables.Az,
-                    resources.scanNegative.tables.baseMin,
+                    resources.scanNegative.tables.baseDensityMin,
                     resources.scanNegative.tables.K,
                     resources.scanNegative.tables.hasBaseline,
                     resources.scanNegative.tables.invYn,
@@ -6733,7 +6728,7 @@ namespace JuicerCuda {
                     resources.scanPrint.tables.Ax,
                     resources.scanPrint.tables.Ay,
                     resources.scanPrint.tables.Az,
-                    resources.scanPrint.tables.baseMin,
+                    resources.scanPrint.tables.baseDensityMin,
                     resources.scanPrint.tables.K,
                     resources.scanPrint.tables.hasBaseline,
                     resources.scanPrint.tables.invYn,
@@ -6919,7 +6914,7 @@ namespace JuicerCuda {
         hash_f32(prm.yFilter);
         hash_f32(prm.mFilter);
         hash_f32(prm.cFilter);
-        hash_u64((prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kDefaultNeutralFilterHash);
+        hash_u64((prt.neutralFilterHash != 0) ? prt.neutralFilterHash : Print::kNeutralCalibrationHashSeed);
         hash_bool(prm.exposureCompensationEnabled);
         hash_f32(prm.exposureCompensationScale);
         hash_f32(midgrayFactor);
@@ -6957,7 +6952,7 @@ namespace JuicerCuda {
         Pipeline::PrintPipelineScratch scratch{};
         for (int i = 0; i < kCount; ++i) {
             Pipeline::ExposePrintInputs in{};
-            in.printRuntime = &prt;
+            in.printRt = &prt;
             in.printParams = &prm;
             in.negativeDensity.v[0] = kNegCmySamples[i][0];
             in.negativeDensity.v[1] = kNegCmySamples[i][1];
@@ -6971,7 +6966,7 @@ namespace JuicerCuda {
             }
 
             Pipeline::DevelopPrintInputs din{};
-            din.printRuntime = &prt;
+            din.printRt = &prt;
             din.printLogRaw = ex.printLogRaw;
             Pipeline::DevelopPrintOutputs dout{};
             if (!Pipeline::DevelopPrintStage::run(din, dout)) {
@@ -7006,7 +7001,7 @@ namespace JuicerCuda {
             run.printExpose.negTables.Ax = resources.scanNegative.tables.Ax;
             run.printExpose.negTables.Ay = resources.scanNegative.tables.Ay;
             run.printExpose.negTables.Az = resources.scanNegative.tables.Az;
-            run.printExpose.negTables.baseMin = resources.scanNegative.tables.baseMin;
+            run.printExpose.negTables.baseDensityMin = resources.scanNegative.tables.baseDensityMin;
             run.printExpose.negTables.K = resources.scanNegative.tables.K;
             run.printExpose.negTables.hasBaseline = resources.scanNegative.tables.hasBaseline;
             run.printExpose.negTables.invYn = resources.scanNegative.tables.invYn;

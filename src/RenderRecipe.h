@@ -121,7 +121,7 @@ namespace Spektrafilm {
 
     enum class SpatialOpticsBackendSource : std::uint8_t {
         ProductDefault,
-        LegacyHalationActiveBridge
+        ProfileAntihalationPreset
     };
 
     enum class SpatialOpticsExactnessPolicy : std::uint8_t {
@@ -244,7 +244,7 @@ struct ScatterHalationOpticsRecipe {
     std::array<float, 3> scatterCoreUm{{2.2f, 2.0f, 1.6f}};
     std::array<float, 3> scatterTailUm{{9.3f, 9.7f, 9.1f}};
     std::array<float, 3> scatterTailWeight{{0.78f, 0.65f, 0.67f}};
-    std::array<float, 3> halationStrength{};
+    std::array<float, 3> halationPrimaryAmount{};
     std::array<float, 3> halationFirstSigmaUm{};
     std::uint32_t halationBounceCount = 3;
     float halationBounceDecay = 0.5f;

@@ -47,8 +47,8 @@ namespace Spectral {
 
     struct BaselineCtx {
         bool hasBaseline;
-        const float* baseMin;
-        const float* baseMid;
+        const float* baseDensityMin;
+        const float* baseDensityMid;
         float mix;
     };
 
@@ -206,7 +206,7 @@ namespace Spectral {
         Curve densityCurveB, densityCurveG, densityCurveR;
         Curve epsY, epsM, epsC;
         Curve xBar, yBar, zBar;
-        Curve baseMin, baseMid;
+        Curve baseDensityMin, baseDensityMid;
         bool hasBaseline = false;
 
         std::atomic<bool> hanatosAvailable{false};
@@ -520,8 +520,8 @@ namespace Spectral {
     inline Curve& gXBar = context().xBar;
     inline Curve& gYBar = context().yBar;
     inline Curve& gZBar = context().zBar;
-    inline Curve& gBaseMin = context().baseMin;
-    inline Curve& gBaseMid = context().baseMid;
+    inline Curve& gBaseMin = context().baseDensityMin;
+    inline Curve& gBaseMid = context().baseDensityMid;
     inline bool& gHasBaseline = context().hasBaseline;
 
     inline bool spectral_shape_matches_reference(const SpectralShape& s);
@@ -664,11 +664,11 @@ namespace Spectral {
         std::vector<float> epsY, epsM, epsC;
 
         // Baseline (optional) and flag
-        std::vector<float> baseMin, baseMid;
+        std::vector<float> baseDensityMin, baseDensityMid;
         bool hasBaseline = false;
 
-        // Reference density used to compute baseline interpolation mix (0 => use baseMin).
-        float baselineMixReference = 0.0f;
+        // Reference density used to compute baseline interpolation mix (0 => use baseDensityMin).
+        float densityBaselineMixReference = 0.0f;
 
         // Hashes used for scanner caches
         std::uint64_t illuminantHash = 0;

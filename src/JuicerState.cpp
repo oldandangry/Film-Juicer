@@ -87,327 +87,6 @@ namespace RebuildWorkingState {
 
 #include "Illuminants.h"
 
-namespace WorkingStateSharing {
-
-    // SF_TEMP_BRIDGE_WorkingStateCorePayload owner=Phase4-print-route:
-    // reason=retain legacy print rebuild sharing; allowed=rebuild_working_state print branch and
-    // rebuild_working_state_couplers_only print branch only; output_impact=blocked print route;
-    // hash_impact=legacy print core-share hash; resource_impact=none on accepted direct route;
-    // removal=Phase4 print recipe/publication cutover.
-    struct WorkingStateCorePayload {
-        Spectral::Curve densB;
-        Spectral::Curve densG;
-        Spectral::Curve densR;
-        std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{};
-        bool hasDensityCurvesLayers = false;
-
-        Profiles::GrainMetadata grain;
-        Profiles::HalationMetadata halation;
-        Profiles::ProfileGlare negativeGlare;
-        Profiles::ProfileGlare printGlare;
-
-        Spectral::Curve sensB;
-        Spectral::Curve sensG;
-        Spectral::Curve sensR;
-        Spectral::Curve negSensB;
-        Spectral::Curve negSensG;
-        Spectral::Curve negSensR;
-
-        Spectral::Curve baseMin;
-        Spectral::Curve baseMid;
-        bool hasBaseline = false;
-        float baselineMixReference = 0.0f;
-        float printBaselineMixReference = 0.0f;
-        float gammaFactorB = 1.0f;
-        float gammaFactorG = 1.0f;
-        float gammaFactorR = 1.0f;
-
-        Spectral::SpectralTables tablesView;
-        Spectral::SpectralTables tablesPrint;
-        Spectral::SpectralTables tablesRef;
-        Spectral::SpectralTables tablesScan;
-
-        Scanner::ScannerIlluminant negativeScannerIlluminant;
-        Scanner::ScannerDensityRange negativeDensityRange;
-
-        Scanner::ScannerIlluminant printScannerIlluminant;
-        Scanner::ScannerDensityRange printDensityRange;
-
-        bool negativeScannerValid = false;
-        bool printScannerValid = false;
-        bool printGlareCompensated = false;
-
-        float spdSInv[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        bool spdReady = false;
-        Spectral::FilmRawConfig filmRaw;
-        std::shared_ptr<const Print::Runtime> printRT;
-        Spectral::NegativeCouplerParams negParams{};
-        std::uint64_t coreShareHash = 0;
-    };
-
-    inline void capture_working_state_core_payload(const WorkingState& in, WorkingStateCorePayload& out) {
-        out.densB = in.densB;
-        out.densG = in.densG;
-        out.densR = in.densR;
-        out.densityCurvesLayers = in.densityCurvesLayers;
-        out.hasDensityCurvesLayers = in.hasDensityCurvesLayers;
-
-        out.grain = in.grain;
-        out.halation = in.halation;
-        out.negativeGlare = in.negativeGlare;
-        out.printGlare = in.printGlare;
-
-        out.sensB = in.sensB;
-        out.sensG = in.sensG;
-        out.sensR = in.sensR;
-        out.negSensB = in.negSensB;
-        out.negSensG = in.negSensG;
-        out.negSensR = in.negSensR;
-
-        out.baseMin = in.baseMin;
-        out.baseMid = in.baseMid;
-        out.hasBaseline = in.hasBaseline;
-        out.baselineMixReference = in.baselineMixReference;
-        out.printBaselineMixReference = in.printBaselineMixReference;
-        out.gammaFactorB = in.gammaFactorB;
-        out.gammaFactorG = in.gammaFactorG;
-        out.gammaFactorR = in.gammaFactorR;
-
-        out.tablesView = in.tablesView;
-        out.tablesPrint = in.tablesPrint;
-        out.tablesRef = in.tablesRef;
-        out.tablesScan = in.tablesScan;
-
-        out.negativeScannerIlluminant = in.negativeScannerIlluminant;
-        out.negativeDensityRange = in.negativeDensityRange;
-
-        out.printScannerIlluminant = in.printScannerIlluminant;
-        out.printDensityRange = in.printDensityRange;
-
-        out.negativeScannerValid = in.negativeScannerValid;
-        out.printScannerValid = in.printScannerValid;
-        out.printGlareCompensated = in.printGlareCompensated;
-
-        for (int i = 0; i < 9; ++i) {
-            out.spdSInv[i] = in.spdSInv[i];
-        }
-        out.spdReady = in.spdReady;
-        out.filmRaw = in.filmRaw;
-        out.printRT = in.printRT;
-        out.negParams = in.negParams;
-        out.coreShareHash = in.coreShareHash;
-    }
-
-    inline void apply_working_state_core_payload(const WorkingStateCorePayload& in, WorkingState& out) {
-        out.densB = in.densB;
-        out.densG = in.densG;
-        out.densR = in.densR;
-        out.densityCurvesLayers = in.densityCurvesLayers;
-        out.hasDensityCurvesLayers = in.hasDensityCurvesLayers;
-
-        out.grain = in.grain;
-        out.halation = in.halation;
-        out.negativeGlare = in.negativeGlare;
-        out.printGlare = in.printGlare;
-
-        out.sensB = in.sensB;
-        out.sensG = in.sensG;
-        out.sensR = in.sensR;
-        out.negSensB = in.negSensB;
-        out.negSensG = in.negSensG;
-        out.negSensR = in.negSensR;
-
-        out.baseMin = in.baseMin;
-        out.baseMid = in.baseMid;
-        out.hasBaseline = in.hasBaseline;
-        out.baselineMixReference = in.baselineMixReference;
-        out.printBaselineMixReference = in.printBaselineMixReference;
-        out.gammaFactorB = in.gammaFactorB;
-        out.gammaFactorG = in.gammaFactorG;
-        out.gammaFactorR = in.gammaFactorR;
-
-        out.tablesView = in.tablesView;
-        out.tablesPrint = in.tablesPrint;
-        out.tablesRef = in.tablesRef;
-        out.tablesScan = in.tablesScan;
-
-        out.negativeScannerIlluminant = in.negativeScannerIlluminant;
-        out.negativeDensityRange = in.negativeDensityRange;
-
-        out.printScannerIlluminant = in.printScannerIlluminant;
-        out.printDensityRange = in.printDensityRange;
-
-        out.negativeScannerValid = in.negativeScannerValid;
-        out.printScannerValid = in.printScannerValid;
-        out.printGlareCompensated = in.printGlareCompensated;
-
-        for (int i = 0; i < 9; ++i) {
-            out.spdSInv[i] = in.spdSInv[i];
-        }
-        out.spdReady = in.spdReady;
-        out.filmRaw = in.filmRaw;
-        out.printRT = in.printRT;
-        out.negParams = in.negParams;
-        out.coreShareHash = in.coreShareHash;
-    }
-
-    struct WorkingStateCoreShared {
-        WorkingStateCoreShared(
-            std::uint64_t keyHash_,
-            std::uint64_t identity_,
-            std::shared_ptr<const WorkingStateCorePayload> payload_)
-            : keyHash(keyHash_), identity(identity_), payload(std::move(payload_)) {
-        }
-
-        const std::uint64_t keyHash = 0;
-        const std::uint64_t identity = 0;
-        const std::shared_ptr<const WorkingStateCorePayload> payload;
-    };
-
-    struct AcquireCoreSharedResult {
-        std::shared_ptr<const WorkingStateCoreShared> sharedCore;
-        std::uint64_t keyHash = 0;
-        std::uint64_t identity = 0;
-        std::uint32_t cacheEntries = 0;
-        bool hit = false;
-        bool inserted = false;
-        bool payloadPresent = false;
-    };
-
-    class WorkingStateCoreSharedCache final {
-    public:
-        static WorkingStateCoreSharedCache& instance() {
-            static WorkingStateCoreSharedCache cache;
-            return cache;
-        }
-
-        AcquireCoreSharedResult acquire_or_create(
-            std::uint64_t keyHash,
-            std::shared_ptr<const WorkingStateCorePayload> insertPayload = nullptr) {
-            AcquireCoreSharedResult out{};
-            out.keyHash = keyHash;
-            if (keyHash == 0) {
-                return out;
-            }
-
-            std::lock_guard<std::mutex> lock(mutex_);
-            ++touchSequence_;
-            prune_expired_locked();
-
-            auto it = entries_.find(keyHash);
-            if (it != entries_.end()) {
-                std::shared_ptr<const WorkingStateCoreShared> shared = it->second.shared.lock();
-                if (shared) {
-                    it->second.lastTouchSequence = touchSequence_;
-                    out.sharedCore = std::move(shared);
-                    out.identity = out.sharedCore->identity;
-                    out.hit = true;
-                    out.payloadPresent = (out.sharedCore->payload != nullptr);
-                    out.cacheEntries = static_cast<std::uint32_t>(entries_.size());
-                    return out;
-                }
-                entries_.erase(it);
-            }
-
-            if (!insertPayload) {
-                out.cacheEntries = static_cast<std::uint32_t>(entries_.size());
-                return out;
-            }
-
-            auto created = std::make_shared<const WorkingStateCoreShared>(
-                keyHash,
-                ++identitySequence_,
-                std::move(insertPayload));
-
-            CacheEntry entry{};
-            entry.shared = created;
-            entry.lastTouchSequence = touchSequence_;
-            entries_[keyHash] = std::move(entry);
-            trim_to_cap_locked();
-
-            out.sharedCore = std::move(created);
-            out.identity = out.sharedCore->identity;
-            out.inserted = true;
-            out.payloadPresent = (out.sharedCore->payload != nullptr);
-            out.cacheEntries = static_cast<std::uint32_t>(entries_.size());
-            return out;
-        }
-
-        void release_entries() noexcept {
-            try {
-                std::lock_guard<std::mutex> lock(mutex_);
-                entries_.clear();
-            } catch (...) {
-                JuicerLogging::discard_current_exception();
-            }
-        }
-
-    private:
-        struct CacheEntry {
-            std::weak_ptr<const WorkingStateCoreShared> shared;
-            std::uint64_t lastTouchSequence = 0;
-        };
-
-        static constexpr std::size_t kMaxEntries = 256;
-
-        // Shared cores are immutable once visible from the cache; live WorkingState
-        // references keep payloads alive even after their lookup entries expire.
-        void prune_expired_locked() {
-            for (auto it = entries_.begin(); it != entries_.end();) {
-                if (it->second.shared.expired()) {
-                    it = entries_.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-
-        void trim_to_cap_locked() {
-            if (entries_.size() <= kMaxEntries) {
-                return;
-            }
-            while (entries_.size() > kMaxEntries) {
-                auto victim = std::min_element(
-                    entries_.begin(),
-                    entries_.end(),
-                    [](const auto& a, const auto& b) {
-                        return a.second.lastTouchSequence < b.second.lastTouchSequence;
-                    });
-                if (victim == entries_.end()) {
-                    break;
-                }
-                entries_.erase(victim);
-            }
-        }
-
-        std::mutex mutex_;
-        std::unordered_map<std::uint64_t, CacheEntry> entries_;
-        std::uint64_t touchSequence_ = 0;
-        std::uint64_t identitySequence_ = 0;
-    };
-
-} // namespace WorkingStateSharing
-
-namespace JuicerProcess {
-
-    WorkingStateSharing::AcquireCoreSharedResult Root::acquire_working_state_core(
-        std::uint64_t keyHash,
-        std::shared_ptr<const WorkingStateSharing::WorkingStateCorePayload> insertPayload) {
-        return WorkingStateSharing::WorkingStateCoreSharedCache::instance().acquire_or_create(
-            keyHash,
-            std::move(insertPayload));
-    }
-
-    void Root::release_working_state_cores() noexcept {
-        try {
-            WorkingStateSharing::WorkingStateCoreSharedCache::instance().release_entries();
-        } catch (...) {
-            JuicerLogging::discard_current_exception();
-        }
-    }
-
-} // namespace JuicerProcess
-
 namespace RebuildWorkingState {
     namespace curve_inversion {
 
@@ -515,37 +194,6 @@ namespace RebuildWorkingState {
 } // namespace RebuildWorkingState
 
 namespace {
-    void trace_working_state_core_share(
-        const WorkingStateSharing::AcquireCoreSharedResult& result,
-        std::uint64_t buildCounter,
-        const char* path) {
-        const bool traceLevel2 = JTRACE_ENABLED(2);
-        if (!traceLevel2 || result.keyHash == 0) {
-            return;
-        }
-        const char* pathLabel = path ? path : "unknown";
-        std::string msg;
-        msg.reserve(256);
-        msg = "event=core_share_shell";
-        msg += " path=";
-        msg += pathLabel;
-        msg += " build=";
-        msg += std::to_string(buildCounter);
-        msg += " core_share_hash=";
-        msg += std::to_string(result.keyHash);
-        msg += " core_share_identity=";
-        msg += std::to_string(result.identity);
-        msg += " cache_hit=";
-        msg += std::to_string(result.hit ? 1 : 0);
-        msg += " cache_inserted=";
-        msg += std::to_string(result.inserted ? 1 : 0);
-        msg += " payload_present=";
-        msg += std::to_string(result.payloadPresent ? 1 : 0);
-        msg += " cache_entries=";
-        msg += std::to_string(static_cast<unsigned long long>(result.cacheEntries));
-        JTRACE("MSWSC", msg);
-    }
-
     inline void copy_float3(float dst[3], const float src[3]) {
         std::memcpy(dst, src, 3u * sizeof(float));
     }
@@ -628,13 +276,13 @@ namespace {
         Spectral::Curve epsC;
         Spectral::Curve epsM;
         Spectral::Curve epsY;
-        Spectral::Curve baseMin;
-        Spectral::Curve baseMid;
+        Spectral::Curve baseDensityMin;
+        Spectral::Curve baseDensityMid;
         assign_channel(epsC, 0u);
         assign_channel(epsM, 1u);
         assign_channel(epsY, 2u);
-        baseMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
-        baseMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
+        baseDensityMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant referenceIlluminant;
         if (!build_scanner_illuminant(
@@ -651,8 +299,8 @@ namespace {
             Spectral::gYBar,
             Spectral::gZBar,
             referenceIlluminant.curve,
-            baseMin,
-            baseMid,
+            baseDensityMin,
+            baseDensityMid,
             true,
             0.0f,
             payload.exposureTables,
@@ -738,13 +386,13 @@ namespace {
         Spectral::Curve epsC;
         Spectral::Curve epsM;
         Spectral::Curve epsY;
-        Spectral::Curve baseMin;
-        Spectral::Curve baseMid;
+        Spectral::Curve baseDensityMin;
+        Spectral::Curve baseDensityMid;
         assign_channel(epsC, 0u);
         assign_channel(epsM, 1u);
         assign_channel(epsY, 2u);
-        baseMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
-        baseMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
+        baseDensityMin.lambda_nm.assign(profile.data.wavelengths.begin(), profile.data.wavelengths.end());
+        baseDensityMin.linear.assign(profile.data.baseDensity.begin(), profile.data.baseDensity.end());
 
         Scanner::ScannerIlluminant scannerIlluminant;
         if (!build_scanner_illuminant(
@@ -761,8 +409,8 @@ namespace {
             Spectral::gYBar,
             Spectral::gZBar,
             scannerIlluminant.curve,
-            baseMin,
-            baseMid,
+            baseDensityMin,
+            baseDensityMid,
             true,
             0.0f,
             print->payload.scannerTables,
@@ -974,9 +622,9 @@ namespace {
 
     template <typename MixFn>
     inline void mix_glare_print_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
-        mix_hash_field_scaled(h, p.glareCompRemovalFactor, 10000.0, mix);
-        mix_hash_field_scaled(h, p.glareCompRemovalDensity, 10000.0, mix);
-        mix_hash_field_scaled(h, p.glareCompRemovalTransition, 10000.0, mix);
+        mix_hash_field_scaled(h, p.printShadowCompensationFactor, 10000.0, mix);
+        mix_hash_field_scaled(h, p.printShadowCompensationDensity, 10000.0, mix);
+        mix_hash_field_scaled(h, p.printShadowCompensationTransition, 10000.0, mix);
         mix_hash_field_scaled(h, p.printDminFactor, 10000.0, mix);
         mix_hash_field(h, p.glareActive ? 1 : 0, mix);
         mix_hash_field_scaled(h, p.glarePercent, 10000.0, mix);
@@ -1207,79 +855,8 @@ namespace {
         sanitize_dir_matrix(matrix);
     }
 
-    void recompute_working_state_dir_overlay(const RebuildStateSnapshot& snapshot, const ParamSnapshot& P, WorkingState& target) {
-        (void)snapshot;
-        const int effectiveCouplersActive = (P.couplersActive != 0) ? 1 : 0;
-        const double effectiveCouplersAmount = clamp_finite_or(P.couplersAmount, kFactoryCouplersAmount, 0.0, 2.0);
-        const double effectiveRatioB = clamp_finite_or(P.ratioB, kFactoryCouplersRatioB, 0.0, 1.0);
-        const double effectiveRatioG = clamp_finite_or(P.ratioG, kFactoryCouplersRatioG, 0.0, 1.0);
-        const double effectiveRatioR = clamp_finite_or(P.ratioR, kFactoryCouplersRatioR, 0.0, 1.0);
-        const double effectiveCouplersSigma = clamp_finite_or(P.sigma, kFactoryCouplersSigma, 0.0, 4.0);
-        const double effectiveCouplersHigh = clamp_finite_or(P.high, kFactoryCouplersHigh, 0.0, 1.0);
-        const double effectiveSpatialSigma =
-            clamp_finite_or(P.spatialSigmaMicrometers, kFactoryCouplersSpatialSigma, 0.0, 50.0);
-
-        const std::array<float, 3> densityMaxPostDir{
-            curve_max_clamped_or_default(target.densB),
-            curve_max_clamped_or_default(target.densG),
-            curve_max_clamped_or_default(target.densR)};
-
-        bool precorrectApplied = false;
-        Couplers::Runtime dirRT{};
-        dirRT.active = (effectiveCouplersActive != 0);
-        {
-            const float amountScale = clamp_coupler_amount(effectiveCouplersAmount);
-            const float amount[3] = {
-                amountScale * clamp_coupler_ratio(effectiveRatioB),
-                amountScale * clamp_coupler_ratio(effectiveRatioG),
-                amountScale * clamp_coupler_ratio(effectiveRatioR)};
-#if 0
-            Couplers::build_dir_matrix(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
-#else
-            build_dir_matrix_fallback(dirRT.M, amount, static_cast<float>(effectiveCouplersSigma));
-#endif
-            dirRT.highShift = static_cast<float>(effectiveCouplersHigh);
-            dirRT.spatialSigmaMicrometers = static_cast<float>(effectiveSpatialSigma);
-            dirRT.spatialSigmaPixels = 0.0f;
-
-#if 0
-            if (dirRT.active) {
-                if (curve_has_nonfinite_samples(target.densB) ||
-                    curve_has_nonfinite_samples(target.densG) ||
-                    curve_has_nonfinite_samples(target.densR)) {
-                    precorrectApplied = false;
-                } else {
-                    Spectral::Curve densB_corr, densG_corr, densR_corr;
-                    Couplers::precorrect_density_curves_before_DIR_into(
-                        dirRT.M, dirRT.highShift, target.densB, target.densG, target.densR, densB_corr, densG_corr, densR_corr);
-                    target.dirDensB = std::move(densB_corr);
-                    target.dirDensG = std::move(densG_corr);
-                    target.dirDensR = std::move(densR_corr);
-                    precorrectApplied = true;
-                }
-            }
-#endif
-        }
-
-        copy_float3(dirRT.dMax, densityMaxPostDir.data());
-        target.dirRT = dirRT;
-        target.dirPrecorrected = precorrectApplied;
-        if (!precorrectApplied) {
-            target.dirDensB = target.densB;
-            target.dirDensG = target.densG;
-            target.dirDensR = target.densR;
-        }
-        copy_float3(target.dMax, dirRT.dMax);
-        target.negParams.DmaxY = target.dMax[0];
-        target.negParams.DmaxM = target.dMax[1];
-        target.negParams.DmaxC = target.dMax[2];
-
-        sanitize_dir_matrix(target.dirRT.M);
-        sanitize_dir_dmax(target.dMax, target.dirRT.dMax);
-    }
-
     bool rebuild_working_state_scanner_output_runtime(const ParamSnapshot& P, WorkingState& target) {
-        const bool printRuntimeOk = target.printScannerValid;
+        const bool printRtOk = target.printScannerValid;
         if (!target.negativeScannerValid) {
             JTRACE("HASH", "FATAL: negative scanner runtime marked invalid");
             return false;
@@ -1294,12 +871,12 @@ namespace {
         const std::uint32_t lutRes =
             static_cast<std::uint32_t>(std::clamp(P.scannerLutResolution, 17, 128));
         const std::uint64_t negGlareHash = Scanner::hash_glare(target.negativeGlare);
-        const std::uint64_t printGlareHash = printRuntimeOk ? Scanner::hash_glare(target.printGlare) : 0;
+        const std::uint64_t printGlareHash = printRtOk ? Scanner::hash_glare(target.printGlare) : 0;
         if (negGlareHash == 0) {
             JTRACE("HASH", "FATAL: failed to hash negative glare parameters");
             return false;
         }
-        if (printRuntimeOk && printGlareHash == 0) {
+        if (printRtOk && printGlareHash == 0) {
             JTRACE("HASH", "FATAL: failed to hash print glare parameters");
             return false;
         }
@@ -1307,7 +884,7 @@ namespace {
             JTRACE("HASH", "FATAL: scanner table hash invalid for negative medium");
             return false;
         }
-        if (printRuntimeOk && target.tablesPrint.tablesHash == 0) {
+        if (printRtOk && target.tablesPrint.tablesHash == 0) {
             JTRACE("HASH", "FATAL: scanner table hash invalid for print medium");
             return false;
         }
@@ -1333,7 +910,7 @@ namespace {
             JTRACE("HASH", "FATAL: scanner color runtime hash invalid for negative medium");
             return false;
         }
-        if (printRuntimeOk) {
+        if (printRtOk) {
             target.printColorRuntime = ScannerOptics::build_color_runtime(
                 target.printMediumRuntime,
                 scannerEncoding);
@@ -1352,19 +929,19 @@ namespace {
         target.negativeStaticKey.lutResolution = lutRes;
         Scanner::finalize_static_key(target.negativeStaticKey);
         target.negativeEffectsKey = Scanner::ScannerRuntimeEffectsKey{};
-        target.negativeEffectsKey.glareHash = negGlareHash;
+        target.negativeEffectsKey.glareRuntimeHash = negGlareHash;
         target.negativeEffectsKey.colorRuntimeHash = target.negativeColorRuntime.hash;
         Scanner::finalize_runtime_effects_key(target.negativeEffectsKey);
 
         target.printStaticKey = Scanner::ScannerStaticKey{};
         target.printEffectsKey = Scanner::ScannerRuntimeEffectsKey{};
-        if (printRuntimeOk) {
+        if (printRtOk) {
             target.printStaticKey.medium = Scanner::ScannerMedium::Print;
             target.printStaticKey.tablesHash = target.tablesPrint.tablesHash;
             target.printStaticKey.densityRangeHash = target.printDensityRange.digest;
             target.printStaticKey.lutResolution = lutRes;
             Scanner::finalize_static_key(target.printStaticKey);
-            target.printEffectsKey.glareHash = printGlareHash;
+            target.printEffectsKey.glareRuntimeHash = printGlareHash;
             target.printEffectsKey.colorRuntimeHash = target.printColorRuntime.hash;
             Scanner::finalize_runtime_effects_key(target.printEffectsKey);
         }
@@ -1374,13 +951,13 @@ namespace {
         target.printMediumRuntime.effectsKey = target.printEffectsKey;
         target.negativeMediumRuntime.staticKey = target.negativeStaticKey;
 
-        target.printMediumRuntime.color = printRuntimeOk ? &target.printColorRuntime : nullptr;
+        target.printMediumRuntime.color = printRtOk ? &target.printColorRuntime : nullptr;
         target.printMediumRuntime.staticKey = target.printStaticKey;
 
         const float glareCompensationFactor = target.printRT
-                                                  ? target.printRT->profile.glare.compensationRemovalFactor
-                                                  : target.printGlare.compensationRemovalFactor;
-        target.printGlareCompensated = (printRuntimeOk && glareCompensationFactor > 0.0f);
+                                                  ? target.printRT->profile.glare.printShadowCompensationFactor
+                                                  : target.printGlare.printShadowCompensationFactor;
+        target.printGlareCompensated = (printRtOk && glareCompensationFactor > 0.0f);
         return true;
     }
 
@@ -1831,8 +1408,7 @@ namespace {
         input.scanRoute = params.scanRoute;
         input.filmProfile = selected.filmProfile;
         input.grainContract = focused_grain_contract_from_snapshot(params);
-        // Phase 3D-3 direct production consumes only typed recipe controls. The old ratio,
-        // layer-diffusion, high-shift, and runtime Couplers::Runtime fields remain legacy-only.
+        // Phase 3D-3 direct production consumes only typed recipe controls.
         input.dirCouplers.active = params.couplersActive != 0;
         input.dirCouplers.amount = static_cast<float>(params.couplersAmount);
         input.spatialOptics.scatterHalationActive = params.exactScatterHalationActive != 0;
@@ -2189,11 +1765,7 @@ const char* print_profile_option_label(int index) {
 }
 
 bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceState& S) {
-    // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
-    // reason=legacy broad renderer only; allowed=unreachable legacy broad rebuild helpers only;
-    // output_impact=none on accepted focused routes; hash_impact=none on accepted focused routes;
-    // resource_impact=legacy Agx profile load; removal=Phase4 legacy broad renderer deletion.
-    const JuicerAssets::FilmStockAsset& stock =
+    const JuicerAssets::SelectedFilmProfileAsset& stock =
         JuicerProcess::root().assets().film_profile_for_key(filmProfileKey);
     const bool stockTraceEnabled = JTRACE_ENABLED(1);
     JTRACE_SCOPE("STOCK", "load_film_profile_into_base");
@@ -2249,8 +1821,8 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
         JTRACE("STOCK", "film stock missing JSON key; cannot load profile");
         return false;
     }
-    Profiles::AgxFilmProfile profile;
-    if (!JuicerProcess::root().assets().load_agx_film_profile(stock, profile)) {
+    Profiles::SpektrafilmProfileJson profile;
+    if (!JuicerProcess::root().assets().load_spektrafilm_film_profile(stock, profile)) {
         trace_stock_key("failed to load agx profile json: ");
         return false;
     }
@@ -2264,8 +1836,8 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
     dc_r = std::move(profile.densityCurveR);
     dc_g = std::move(profile.densityCurveG);
     dc_b = std::move(profile.densityCurveB);
-    dmin = std::move(profile.baseMin);
-    dmid = std::move(profile.baseMid);
+    dmin = std::move(profile.baseDensityMin);
+    dmid = std::move(profile.baseDensityMid);
     dc_layers = std::move(profile.densityCurvesLayers);
     if (is_finite(profile.dyeDensityMinFactor) && profile.dyeDensityMinFactor >= 0.0f) {
         S.base.dyeDensityMinFactor = profile.dyeDensityMinFactor;
@@ -2442,38 +2014,38 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
     subtract_baseline_floor(S.base.densG);
     subtract_baseline_floor(S.base.densR);
 
-    bool baseMinOk = false;
+    bool baseDensityMinOk = false;
     if (!dmin.empty()) {
-        baseMinOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMin, dmin);
-        if (!baseMinOk) {
-            S.base.baseMin.lambda_nm.clear();
-            S.base.baseMin.linear.clear();
+        baseDensityMinOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseDensityMin, dmin);
+        if (!baseDensityMinOk) {
+            S.base.baseDensityMin.lambda_nm.clear();
+            S.base.baseDensityMin.linear.clear();
         }
     } else {
-        S.base.baseMin.lambda_nm.clear();
-        S.base.baseMin.linear.clear();
+        S.base.baseDensityMin.lambda_nm.clear();
+        S.base.baseDensityMin.linear.clear();
     }
 
-    bool baseMidOk = true;
+    bool baseDensityMidOk = true;
     if (!dmid.empty()) {
-        baseMidOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseMid, dmid);
-        if (!baseMidOk) {
-            S.base.baseMid.lambda_nm.clear();
-            S.base.baseMid.linear.clear();
+        baseDensityMidOk = Spectral::build_curve_on_reference_axis_from_aligned_pairs(S.base.baseDensityMid, dmid);
+        if (!baseDensityMidOk) {
+            S.base.baseDensityMid.lambda_nm.clear();
+            S.base.baseDensityMid.linear.clear();
         }
     } else {
-        S.base.baseMid.lambda_nm.clear();
-        S.base.baseMid.linear.clear();
+        S.base.baseDensityMid.lambda_nm.clear();
+        S.base.baseDensityMid.linear.clear();
     }
 
-    S.base.hasBaseline = baseMinOk && !S.base.baseMin.linear.empty();
-    if (!baseMinOk && stockTraceEnabled) {
+    S.base.hasBaseline = baseDensityMinOk && !S.base.baseDensityMin.linear.empty();
+    if (!baseDensityMinOk && stockTraceEnabled) {
         std::ostringstream oss;
-        oss << "baseline resample failure (min=" << (baseMinOk ? "ok" : "empty") << ")";
+        oss << "baseline resample failure (min=" << (baseDensityMinOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
-    } else if (!baseMidOk && !dmid.empty() && stockTraceEnabled) {
+    } else if (!baseDensityMidOk && !dmid.empty() && stockTraceEnabled) {
         std::ostringstream oss;
-        oss << "baseline resample warning (mid=" << (baseMidOk ? "ok" : "empty") << ")";
+        oss << "baseline resample warning (mid=" << (baseDensityMidOk ? "ok" : "empty") << ")";
         JTRACE("STOCK", oss.str());
     }
 
@@ -2488,8 +2060,8 @@ bool load_film_profile_into_base(const std::string& filmProfileKey, InstanceStat
             << " densB/G/R K=" << static_cast<int>(S.base.densB.linear.size())
             << "/" << static_cast<int>(S.base.densG.linear.size())
             << "/" << static_cast<int>(S.base.densR.linear.size())
-            << " baseMin/baseMid K=" << static_cast<int>(S.base.baseMin.linear.size())
-            << "/" << static_cast<int>(S.base.baseMid.linear.size())
+            << " baseDensityMin/baseDensityMid K=" << static_cast<int>(S.base.baseDensityMin.linear.size())
+            << "/" << static_cast<int>(S.base.baseDensityMid.linear.size())
             << " hasBaseline=" << (S.base.hasBaseline ? 1 : 0);
         JTRACE("STOCK", oss.str());
         JTRACE("STOCK", S.base.hasBaseline ? "loaded OK; baseline=1" : "loaded OK; baseline=0");
@@ -2543,7 +2115,7 @@ bool load_selected_spektrafilm_film_profile_into_base(
     assign_normalized_density_channel(next.densR, 0u);
     assign_normalized_density_channel(next.densG, 1u);
     assign_normalized_density_channel(next.densB, 2u);
-    assign_reference_scalar(next.baseMin, data.baseDensity);
+    assign_reference_scalar(next.baseDensityMin, data.baseDensity);
     next.hasBaseline = true;
     next.referenceIlluminant = profile.info.referenceIlluminant.value;
     next.viewingIlluminant = profile.info.viewingIlluminant.value;
@@ -2559,7 +2131,7 @@ bool load_selected_spektrafilm_film_profile_into_base(
         next.densR.linear.size() == data.logExposure.size() &&
         next.densG.linear.size() == data.logExposure.size() &&
         next.densB.linear.size() == data.logExposure.size() &&
-        next.baseMin.linear.size() == data.wavelengths.size();
+        next.baseDensityMin.linear.size() == data.wavelengths.size();
     if (!ready) {
         JTRACE("SPEKTRAFILM", "MalformedRequiredProfileData phase=3A field=direct_publication_envelope");
         return false;
@@ -2756,13 +2328,13 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         if (!printTraceEnabled) {
             return;
         }
-        const char* paperKey = P.printProfileKey.empty() ? nullptr : P.printProfileKey.c_str();
+        const char* printProfileKey = P.printProfileKey.empty() ? nullptr : P.printProfileKey.c_str();
         const char* filmKey = P.filmProfileKey.empty() ? nullptr : P.filmProfileKey.c_str();
         const std::uintptr_t prtPtr = reinterpret_cast<std::uintptr_t>(target->printRT.get());
         const float neutralY = target->printRT ? target->printRT->neutralY : 0.0f;
         const float neutralM = target->printRT ? target->printRT->neutralM : 0.0f;
         const float neutralC = target->printRT ? target->printRT->neutralC : 0.0f;
-        const char* paperLabel = paperKey ? paperKey : "<null>";
+        const char* paperLabel = printProfileKey ? printProfileKey : "<null>";
         const char* filmLabel = filmKey ? filmKey : "<null>";
         const char* printRef = target->printRT ? target->printRT->referenceIlluminant.c_str() : "<null>";
         const char* printView = target->printRT ? target->printRT->viewingIlluminant.c_str() : "<null>";
@@ -2791,44 +2363,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
     const bool directRoute = !Spektrafilm::scan_route_is_print(P.scanRoute);
     const std::uint64_t coreShareHash = directRoute ? 0 : hash_params_core(P);
-    WorkingStateSharing::AcquireCoreSharedResult coreShare{};
-    if (!directRoute) {
-        coreShare = JuicerProcess::root().acquire_working_state_core(coreShareHash);
-    }
-    const WorkingStateSharing::AcquireCoreSharedResult& coreShareInitial = coreShare;
-    if (!directRoute && coreShare.sharedCore && coreShare.sharedCore->payload) {
-        WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
-        target->coreShareHash = coreShareHash;
-        target->sharedCore = coreShare.sharedCore;
-
-        recompute_working_state_dir_overlay(snapshot, P, *target);
-        if (rebuild_working_state_scanner_output_runtime(P, *target)) {
-            target->fullHash = hash_params(P);
-            target->uploadCoreHash = hash_params_upload_core(P);
-            target->coreHash = coreShareHash;
-            target->coreShareHash = coreShareHash;
-            target->dirHash = hash_params_dir(P);
-            target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-            trace_working_state_core_share(coreShare, target->buildCounter, "full_rebuild_payload_fast");
-
-            trace_print_working_state_commit();
-
-            if (buildTraceEnabled) {
-                std::ostringstream oss;
-                oss << "WorkingState build #" << target->buildCounter;
-                JTRACE("BUILD", oss.str());
-            }
-
-            publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/ true);
-            if (buildTraceEnabled) {
-                std::ostringstream oss;
-                oss << "activeWorkingState swapped; buildCounter=" << static_cast<long long>(target->buildCounter);
-                JTRACE("BUILD", oss.str());
-            }
-            return;
-        }
-        JTRACE("MSWSC", "event=core_share_fastpath_fallback reason=scanner_runtime_rebuild_failed");
-    }
 
     Scanner::ScannerIlluminant negativeScannerIlluminant;
     if (!build_scanner_illuminant(base.viewingIlluminant, "negative viewing", negativeScannerIlluminant)) {
@@ -2863,8 +2397,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     Spectral::Curve dirDensB = densB;
     Spectral::Curve dirDensG = densG;
     Spectral::Curve dirDensR = densR;
-    Spectral::Curve baseMin = base.baseMin;
-    Spectral::Curve baseMid = base.baseMid;
+    Spectral::Curve baseDensityMin = base.baseDensityMin;
+    Spectral::Curve baseDensityMid = base.baseDensityMid;
     Spectral::Curve illumRef;
     bool hasRefIlluminant = false;
     const bool hasBaseline = base.hasBaseline;
@@ -2873,11 +2407,11 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             ? base.dyeDensityMinFactor
             : 1.0f;
     if (hasBaseline && !approx_equal(dyeDensityMinScale, 1.0f)) {
-        scale_finite_curve_samples(baseMin, dyeDensityMinScale, true);
+        scale_finite_curve_samples(baseDensityMin, dyeDensityMinScale, true);
     }
     if (hasBaseline) {
-        clamp_negative_finite_curve_samples(baseMin);
-        clamp_negative_finite_curve_samples(baseMid);
+        clamp_negative_finite_curve_samples(baseDensityMin);
+        clamp_negative_finite_curve_samples(baseDensityMid);
     }
     // agx-emulsion parity: baseline NaNs are preserved in working-state curves and handled as
     // "0 contribution" during integration via SpectralTables baseline validity masks.
@@ -2944,7 +2478,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         const float ampUV = std::clamp(filterUV[0], 0.0f, 1.0f);
         const float ampIR = std::clamp(filterIR[0], 0.0f, 1.0f);
         if (ampUV > 0.0f || ampIR > 0.0f) {
-            const std::vector<float> bandPass = Spectral::compute_band_pass_filter(filterUV, filterIR);
+            const std::vector<float> bandPass = Spectral::compute_band_pass_filter(
+                Spectral::BandPassFilterTriplets{filterUV, filterIR});
             if (bandPass.size() == static_cast<size_t>(Spectral::gShape.K)) {
                 const size_t bandPassCount = bandPass.size();
                 const float* bandPassData = bandPass.data();
@@ -2979,7 +2514,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         curve_max_clamped_or_default(densGForCalibration),
         curve_max_clamped_or_default(densRForCalibration)};
 
-    const Profiles::DirCouplersProfile& dirCfg = base.dirCouplers;
+    const Profiles::DirProfile& dirCfg = base.dirCouplers;
 
     const int effectiveCouplersActive = (P.couplersActive != 0) ? 1 : 0;
     const double effectiveCouplersAmount = clamp_finite_or(P.couplersAmount, kFactoryCouplersAmount, 0.0, 2.0);
@@ -3062,7 +2597,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     }
 
     if (base.hasBaseline) {
-        const auto baseCoeffs = estimate_base_dyes(baseMin, epsY, epsM, epsC);
+        const auto baseCoeffs = estimate_base_dyes(baseDensityMin, epsY, epsM, epsC);
         negParams.baseY = baseCoeffs[0];
         negParams.baseM = baseCoeffs[1];
         negParams.baseC = baseCoeffs[2];
@@ -3258,30 +2793,30 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         return (count > 0) ? (sum / static_cast<float>(count)) : 0.0f;
     };
 
-    const float baselineMixReference = !base.densityMidNeutral.empty()
-                                           ? average_positive(base.densityMidNeutral)
-                                           : 0.0f;
+    const float densityBaselineMixReference = !base.densityMidNeutral.empty()
+                                                  ? average_positive(base.densityMidNeutral)
+                                                  : 0.0f;
     const float printBaselineMixReference =
         (printRT.profile.hasBaseline && printRT.hasMidNeutralDensity)
             ? average_positive(printRT.midNeutralDensity)
             : 0.0f;
 
-    const Spectral::Curve& compatibilityViewIlluminant =
+    const Spectral::Curve& selectedViewIlluminant =
         directRoute ? negativeScannerIlluminant.curve : printRT.illumView;
-    const std::uint64_t compatibilityViewIlluminantHash =
+    const std::uint64_t selectedViewIlluminantHash =
         directRoute ? negativeScannerIlluminant.hash : printScannerIlluminant.hash;
     Spectral::build_tables_from_curves_non_global(
         /*epsY*/ epsY, /*epsM*/ epsM, /*epsC*/ epsC,
         /*xbar*/ Spectral::gXBar,
         /*ybar*/ Spectral::gYBar,
         /*zbar*/ Spectral::gZBar,
-        /*illumView*/ compatibilityViewIlluminant,
-        /*baseMin*/ baseMin,
-        /*baseMid*/ baseMid,
+        /*illumView*/ selectedViewIlluminant,
+        /*baseDensityMin*/ baseDensityMin,
+        /*baseDensityMid*/ baseDensityMid,
         /*hasBaseline*/ hasBaseline,
-        baselineMixReference,
+        densityBaselineMixReference,
         target->tablesView,
-        compatibilityViewIlluminantHash);
+        selectedViewIlluminantHash);
 
     if (hasRefIlluminant) {
         Spectral::build_tables_from_curves_non_global(
@@ -3290,10 +2825,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             /*ybar*/ Spectral::gYBar,
             /*zbar*/ Spectral::gZBar,
             /*illumView*/ illumRef,
-            /*baseMin*/ baseMin,
-            /*baseMid*/ baseMid,
+            /*baseDensityMin*/ baseDensityMin,
+            /*baseDensityMid*/ baseDensityMid,
             /*hasBaseline*/ hasBaseline,
-            baselineMixReference,
+            densityBaselineMixReference,
             target->tablesRef);
 
         const bool validWhite =
@@ -3308,32 +2843,32 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         target->tablesRef = Spectral::SpectralTables{};
     }
 
-    std::shared_ptr<Print::Runtime> printRuntimeCopy = std::make_shared<Print::Runtime>(printRT);
-    Print::Profile printProfile = printRuntimeCopy->profile;
-    Print::DensityCurves printCurves = printRuntimeCopy->densityCurvesRaw;
+    std::shared_ptr<Print::Runtime> printRtCopy = std::make_shared<Print::Runtime>(printRT);
+    Print::Profile printProfile = printRtCopy->profile;
+    Print::DensityCurves printCurves = printRtCopy->densityCurvesRaw;
     Scanner::ScannerDensityRange printDensityRange;
     bool printRangeOk = false;
     bool printDensityOk = !printCurves.cyan.empty() &&
                           !printCurves.magenta.empty() &&
                           !printCurves.yellow.empty();
-    bool printRuntimeOk = false;
+    bool printRtOk = false;
     if (printDensityOk) {
-        const float factor = static_cast<float>(clamp_finite_or(P.glareCompRemovalFactor, 0.0, 0.0, 1.0));
-        const float density = static_cast<float>(clamp_finite_or(P.glareCompRemovalDensity, 1.2, 0.0, 3.0));
-        const float transition = static_cast<float>(clamp_finite_or(P.glareCompRemovalTransition, 0.3, 0.0, 2.0));
+        const float factor = static_cast<float>(clamp_finite_or(P.printShadowCompensationFactor, 0.0, 0.0, 1.0));
+        const float density = static_cast<float>(clamp_finite_or(P.printShadowCompensationDensity, 1.2, 0.0, 3.0));
+        const float transition = static_cast<float>(clamp_finite_or(P.printShadowCompensationTransition, 0.3, 0.0, 2.0));
 
-        printProfile.glare.compensationRemovalFactor = factor;
-        printProfile.glare.compensationRemovalDensity = density;
-        printProfile.glare.compensationRemovalTransition = transition;
+        printProfile.glare.printShadowCompensationFactor = factor;
+        printProfile.glare.printShadowCompensationDensity = density;
+        printProfile.glare.printShadowCompensationTransition = transition;
         printProfile.glareCompensationFactor = factor;
         printProfile.glareCompensationDensity = density;
         printProfile.glareCompensationTransition = transition;
         printProfile.hasGlareCompensation = (factor > 0.0f);
 
         if (factor > 0.0f) {
-            const bool removed = Print::remove_glare_compensation_from_curves(printProfile, printCurves);
+            const bool removed = Print::apply_print_shadow_compensation_to_curves(printProfile, printCurves);
             if (!removed) {
-                JTRACE("PRINT", "FATAL: failed to remove viewing glare compensation from print curves");
+                JTRACE("PRINT", "FATAL: failed to apply print shadow compensation to print curves");
                 printDensityOk = false;
             }
         }
@@ -3345,22 +2880,22 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             printDensityOk = printRangeOk;
         }
     }
-    Print::recompute_mid_neutral(printProfile, printRuntimeCopy.get());
-    printRuntimeCopy->profile = printProfile;
-    printRuntimeCopy->glare = printProfile.glare;
+    Print::recompute_mid_neutral(printProfile, printRtCopy.get());
+    printRtCopy->profile = printProfile;
+    printRtCopy->glare = printProfile.glare;
 
     if (printDensityOk &&
         Print::profile_is_valid(printProfile) &&
-        printRuntimeCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K)) {
+        printRtCopy->illumView.linear.size() == static_cast<size_t>(Spectral::gShape.K)) {
         const float printDminFactor = static_cast<float>(clamp_finite_or(P.printDminFactor, 0.4, 0.0, 1.0));
         if (printProfile.hasBaseline && !approx_equal(printDminFactor, 1.0f)) {
-            scale_finite_curve_samples(printProfile.baseMin, printDminFactor);
+            scale_finite_curve_samples(printProfile.baseDensityMin, printDminFactor);
         }
         if (printProfile.hasBaseline) {
-            clamp_negative_finite_curve_samples(printProfile.baseMin);
-            clamp_negative_finite_curve_samples(printProfile.baseMid);
+            clamp_negative_finite_curve_samples(printProfile.baseDensityMin);
+            clamp_negative_finite_curve_samples(printProfile.baseDensityMid);
         }
-        printRuntimeCopy->profile = printProfile;
+        printRtCopy->profile = printProfile;
         Spectral::build_tables_from_curves_non_global(
             /*epsY*/ printProfile.epsY,
             /*epsM*/ printProfile.epsM,
@@ -3368,14 +2903,14 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
             /*xbar*/ Spectral::gXBar,
             /*ybar*/ Spectral::gYBar,
             /*zbar*/ Spectral::gZBar,
-            /*illumView*/ printRuntimeCopy->illumView,
-            /*baseMin*/ printProfile.baseMin,
-            /*baseMid*/ printProfile.baseMid,
+            /*illumView*/ printRtCopy->illumView,
+            /*baseDensityMin*/ printProfile.baseDensityMin,
+            /*baseDensityMid*/ printProfile.baseDensityMid,
             /*hasBaseline*/ printProfile.hasBaseline,
             printBaselineMixReference,
             target->tablesPrint,
             printScannerIlluminant.hash);
-        printRuntimeOk = true;
+        printRtOk = true;
     } else {
 #if JUICER_DIAGNOSTICS_COMPILED
         if (!printDensityOk) {
@@ -3398,10 +2933,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         /*ybar*/ Spectral::gYBar,
         /*zbar*/ Spectral::gZBar,
         /*illumView*/ illumScan,
-        /*baseMin*/ baseMin,
-        /*baseMid*/ baseMid,
+        /*baseDensityMin*/ baseDensityMin,
+        /*baseDensityMid*/ baseDensityMid,
         /*hasBaseline*/ hasBaseline,
-        baselineMixReference,
+        densityBaselineMixReference,
         target->tablesScan,
         negativeScannerIlluminant.hash);
 
@@ -3466,10 +3001,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 
         const bool ok_dens = density_curve_ok(densB) && density_curve_ok(densG) && density_curve_ok(densR);
         const bool ok_sens = all_finite_curve(sensB) && all_finite_curve(sensG) && all_finite_curve(sensR);
-        const bool baseMidOk = baseMid.linear.empty() ||
-                               static_cast<int>(baseMid.linear.size()) == Spectral::gShape.K;
+        const bool baseDensityMidOk = baseDensityMid.linear.empty() ||
+                                      static_cast<int>(baseDensityMid.linear.size()) == Spectral::gShape.K;
         const bool ok_base = !hasBaseline ||
-                             (static_cast<int>(baseMin.linear.size()) == Spectral::gShape.K && baseMidOk);
+                             (static_cast<int>(baseDensityMin.linear.size()) == Spectral::gShape.K && baseDensityMidOk);
         const bool ok_tables =
             (target->tablesView.K == Spectral::gShape.K) &&
             (target->tablesScan.K == Spectral::gShape.K) &&
@@ -3620,10 +3155,10 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->negSensB.linear.clear();
     target->negSensG.linear.clear();
     target->negSensR.linear.clear();
-    target->baseMin = std::move(baseMin);
-    target->baseMid = std::move(baseMid);
+    target->baseDensityMin = std::move(baseDensityMin);
+    target->baseDensityMid = std::move(baseDensityMid);
     target->hasBaseline = hasBaseline;
-    target->baselineMixReference = baselineMixReference;
+    target->densityBaselineMixReference = densityBaselineMixReference;
     target->printBaselineMixReference = printBaselineMixReference;
 
     // Copy per-channel gamma factors for density curve interpolation (agx-emulsion parity)
@@ -3706,7 +3241,7 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
         JTRACE("BUILD", oss.str());
     }
 
-    target->printRT = std::move(printRuntimeCopy);
+    target->printRT = std::move(printRtCopy);
     target->printGlare = target->printRT ? target->printRT->glare : Profiles::ProfileGlare{};
     target->negativeScannerIlluminant = negativeScannerIlluminant;
     target->printScannerIlluminant = printScannerIlluminant;
@@ -3714,8 +3249,8 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->printDensityRange = printDensityRange;
 
     target->negativeScannerValid = true;
-    target->printScannerValid = printRuntimeOk;
-    target->printGlareCompensated = (printRuntimeOk && printProfile.glare.compensationRemovalFactor > 0.0f);
+    target->printScannerValid = printRtOk;
+    target->printGlareCompensated = (printRtOk && printProfile.glare.printShadowCompensationFactor > 0.0f);
     if (!rebuild_working_state_scanner_output_runtime(P, *target)) {
         return;
     }
@@ -3726,15 +3261,6 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
     target->coreShareHash = coreShareHash;
     target->dirHash = hash_params_dir(P);
     target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (!directRoute) {
-        auto corePayload = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
-        WorkingStateSharing::capture_working_state_core_payload(*target, *corePayload);
-        const WorkingStateSharing::AcquireCoreSharedResult coreShareSeed =
-            JuicerProcess::root().acquire_working_state_core(target->coreShareHash, std::move(corePayload));
-        target->sharedCore = coreShareSeed.sharedCore;
-        trace_working_state_core_share(coreShareInitial, target->buildCounter, "full_rebuild_shell_acquire");
-        trace_working_state_core_share(coreShareSeed, target->buildCounter, "full_rebuild");
-    }
     trace_print_working_state_commit();
 
     if (buildTraceEnabled) {
@@ -3752,81 +3278,5 @@ void rebuild_working_state(OfxImageEffectHandle instance, InstanceState& S, cons
 }
 
 void rebuild_working_state_couplers_only(OfxImageEffectHandle instance, InstanceState& S, const ParamSnapshot& P) {
-    (void)instance;
-
-#if 1
     rebuild_working_state(instance, S, P);
-    return;
-#else
-    Spectral::SpectralMutationScope mutationScope(
-        Spectral::SpectralMutationStage::Rebuild,
-        "rebuild_working_state_couplers_only");
-    (void)mutationScope;
-
-    JTRACE_SCOPE("BUILD", "rebuild_working_state_couplers_only");
-
-    std::unique_lock<std::mutex> rebuildLock(S.rebuildMutex);
-    std::shared_ptr<WorkingState> next = std::make_shared<WorkingState>();
-    WorkingState* target = next.get();
-    target->recipe = Spektrafilm::make_render_recipe(P.filmProfileKey, P.printProfileKey, P.scanRoute);
-    if (!publish_direct_recipe_if_selected(P, target->recipe)) {
-        return;
-    }
-    if (!publish_print_recipe_if_selected(P, target->recipe)) {
-        return;
-    }
-    RebuildStateSnapshot snapshot{};
-    {
-        std::lock_guard<std::mutex> stateLock(S.m);
-        snapshot = snapshot_rebuild_state_locked(S);
-    }
-    if (!Spektrafilm::scan_route_is_print(P.scanRoute)) {
-        rebuildLock.unlock();
-        rebuild_working_state(instance, S, P);
-        return;
-    }
-    const std::uint64_t coreShareHash = hash_params_core(P);
-    WorkingStateSharing::AcquireCoreSharedResult coreShare =
-        JuicerProcess::root().acquire_working_state_core(coreShareHash);
-    const WorkingStateSharing::AcquireCoreSharedResult coreShareInitial = coreShare;
-    std::shared_ptr<const WorkingState> src;
-    if (!(coreShare.sharedCore && coreShare.sharedCore->payload)) {
-        src = snapshot.activeWorkingState;
-        if (!src || src->buildCounter == 0) {
-            rebuildLock.unlock();
-            rebuild_working_state(instance, S, P);
-            return;
-        }
-        auto payloadSeed = std::make_shared<WorkingStateSharing::WorkingStateCorePayload>();
-        WorkingStateSharing::capture_working_state_core_payload(*src, *payloadSeed);
-        coreShare = JuicerProcess::root().acquire_working_state_core(coreShareHash, std::move(payloadSeed));
-    }
-    if (coreShare.sharedCore && coreShare.sharedCore->payload) {
-        WorkingStateSharing::apply_working_state_core_payload(*coreShare.sharedCore->payload, *target);
-    } else {
-        WorkingStateSharing::WorkingStateCorePayload fallbackPayload{};
-        WorkingStateSharing::capture_working_state_core_payload(*src, fallbackPayload);
-        WorkingStateSharing::apply_working_state_core_payload(fallbackPayload, *target);
-    }
-    target->coreShareHash = coreShareHash;
-    target->sharedCore = coreShare.sharedCore;
-    recompute_working_state_dir_overlay(snapshot, P, *target);
-    if (!rebuild_working_state_scanner_output_runtime(P, *target)) {
-        rebuildLock.unlock();
-        rebuild_working_state(instance, S, P);
-        return;
-    }
-
-    target->fullHash = hash_params(P);
-    target->uploadCoreHash = hash_params_upload_core(P);
-    target->coreHash = coreShareHash;
-    target->coreShareHash = coreShareHash;
-    target->dirHash = hash_params_dir(P);
-    target->buildCounter = S.buildCounterNext.fetch_add(1, std::memory_order_relaxed) + 1;
-    target->sharedCore = coreShare.sharedCore;
-    trace_working_state_core_share(coreShareInitial, target->buildCounter, "couplers_only_shell_acquire");
-    trace_working_state_core_share(coreShare, target->buildCounter, "couplers_only");
-
-    publish_rebuilt_working_state(S, P, next, /*invalidateSpatialSigmaCache*/ true);
-#endif
 }

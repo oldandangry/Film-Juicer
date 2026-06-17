@@ -9,7 +9,6 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
-#include <atomic>
 #include <limits>
 #include <tuple>
 #include <utility>
@@ -49,12 +48,6 @@ namespace {
     [[noreturn]] inline void trace_and_throw_render_fatal(const RenderFatalTrace& fatal) {
         JTRACE(fatal.tag, cstr_or_default_if_null(fatal.message, "fatal render error"));
         throw OFX::Exception::Suite(kOfxStatErrFatal);
-    }
-
-    inline bool nearly_equal_double(double a, double b) {
-        const double diff = std::fabs(a - b);
-        const double scale = std::max({1.0, std::fabs(a), std::fabs(b)});
-        return diff <= scale * 1e-9;
     }
 
     inline bool is_finite(float value) {
@@ -132,10 +125,6 @@ namespace {
         return userEdit && param_name_is(paramName, expected);
     }
 
-    inline std::uint64_t instance_token_or_zero(const InstanceState* state) {
-        return state ? state->instanceToken : 0ull;
-    }
-
     struct SessionTokenSnapshot {
         std::uint64_t sessionSeed = 1;
         std::uint64_t instanceToken = 1;
@@ -183,7 +172,7 @@ namespace {
     }
 
     struct ProfileKeyLabels {
-        const char* paperKey = nullptr;
+        const char* printProfileKey = nullptr;
         const char* filmKey = nullptr;
         const char* paperLabel = "<null>";
         const char* filmLabel = "<null>";
@@ -191,9 +180,9 @@ namespace {
 
     inline ProfileKeyLabels resolve_profile_key_labels(const ParamSnapshot& snapshot) {
         ProfileKeyLabels labels{};
-        labels.paperKey = snapshot.printProfileKey.empty() ? nullptr : snapshot.printProfileKey.c_str();
+        labels.printProfileKey = snapshot.printProfileKey.empty() ? nullptr : snapshot.printProfileKey.c_str();
         labels.filmKey = snapshot.filmProfileKey.empty() ? nullptr : snapshot.filmProfileKey.c_str();
-        labels.paperLabel = cstr_or_default_if_null(labels.paperKey, "<null>");
+        labels.paperLabel = cstr_or_default_if_null(labels.printProfileKey, "<null>");
         labels.filmLabel = cstr_or_default_if_null(labels.filmKey, "<null>");
         return labels;
     }
@@ -359,8 +348,8 @@ namespace {
         None = 0,
         Strength,
         SizeUm,
-        ScatteringStrength,
-        ScatteringSizeUm
+        SecondaryAmount,
+        SecondarySizeUm
     };
 
     inline HalationMasterSelector halation_master_selector(const std::string& paramName) {
@@ -370,11 +359,11 @@ namespace {
         if (param_name_is(paramName, JuicerParams::kHalationSizeUmMaster)) {
             return HalationMasterSelector::SizeUm;
         }
-        if (param_name_is(paramName, JuicerParams::kHalationScatteringStrengthMaster)) {
-            return HalationMasterSelector::ScatteringStrength;
+        if (param_name_is(paramName, JuicerParams::kHalationSecondaryAmountMaster)) {
+            return HalationMasterSelector::SecondaryAmount;
         }
-        if (param_name_is(paramName, JuicerParams::kHalationScatteringSizeUmMaster)) {
-            return HalationMasterSelector::ScatteringSizeUm;
+        if (param_name_is(paramName, JuicerParams::kHalationSecondarySizeUmMaster)) {
+            return HalationMasterSelector::SecondarySizeUm;
         }
         return HalationMasterSelector::None;
     }
@@ -382,21 +371,6 @@ namespace {
     inline bool is_coupler_param_name(const char* changedName) {
         return param_name_is(changedName, JuicerParams::kDirCouplersActive) ||
                param_name_is(changedName, JuicerParams::kDirCouplersAmount);
-    }
-
-    inline bool auto_exposure_cache_param_changed(const std::string& paramName) {
-        return param_name_is(paramName, kParamCameraAutoExposure) ||
-               param_name_is(paramName, JuicerParams::kCameraMeteringMethod);
-    }
-
-    inline void invalidate_auto_exposure_cache_if_needed(
-        InstanceState* state,
-        const std::string& paramName) {
-        if (!state || !auto_exposure_cache_param_changed(paramName)) {
-            return;
-        }
-        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-        state->autoExposureCacheValid = false;
     }
 
     inline bool halation_revert_param_changed(const std::string& paramName) {
@@ -453,7 +427,7 @@ namespace {
 
     inline bool working_baseline_ready(const WorkingState& ws) {
         return !ws.hasBaseline ||
-               ws.baseMin.linear.size() == static_cast<size_t>(Spectral::gShape.K);
+               ws.baseDensityMin.linear.size() == static_cast<size_t>(Spectral::gShape.K);
     }
 
     inline bool print_runtime_illuminants_ready(const Print::Runtime& runtime) {
@@ -502,7 +476,7 @@ namespace {
         flags.referenceIlluminant = param_name_is(changedName, kParamReferenceIlluminant);
         flags.enlargerIlluminant = param_name_is(changedName, kParamEnlargerIlluminant);
         flags.printProfile = param_name_is(changedName, JuicerParams::kPrintProfileKey);
-        flags.enlargerDichroicSet = param_name_is(changedName, kParamEnlargerDichroicSet);
+        flags.enlargerDichroicSet = param_name_is(changedName, kParamDichroicFilterSet);
         flags.filmProfile = param_name_is(changedName, JuicerParams::kFilmProfileKey);
         flags.couplerParam = is_coupler_param_name(changedName);
         return flags;
@@ -885,11 +859,11 @@ namespace {
         return out;
     }
 
-    inline double sanitize_enlarger_filter_shift_or_zero(double value) {
+    inline double sanitize_print_filter_cc_shift_or_zero(double value) {
         if (!is_finite(value)) {
             return 0.0;
         }
-        const double limit = static_cast<double>(Print::kEnlargerSteps);
+        const double limit = static_cast<double>(Print::kPrintFilterCCLimit);
         return std::clamp(value, -limit, limit);
     }
 
@@ -1171,609 +1145,9 @@ namespace {
         }
     }
 
-    inline bool span_x_within_bounds(int xStart, int xEnd, const OfxRectI& bounds) {
-        return xStart >= bounds.x1 && xEnd <= bounds.x2;
-    }
-
-    inline bool row_has_full_coverage(const OfxRectI& bounds, int xStart, int xEnd, int y) {
-        return span_x_within_bounds(xStart, xEnd, bounds) &&
-               y >= bounds.y1 && y < bounds.y2;
-    }
-
-    template <typename T>
-    inline T* row_ptr_if_fully_covered(
-        OFX::Image* image,
-        const OfxRectI& bounds,
-        int xStart,
-        int xEnd,
-        int y) {
-        if (!row_has_full_coverage(bounds, xStart, xEnd, y)) {
-            return nullptr;
-        }
-        return reinterpret_cast<T*>(image->getPixelAddress(xStart, y));
-    }
-
-    inline const float* row_start_if_covered(
-        OFX::Image* image,
-        const OfxRectI& srcBounds,
-        const OfxRectI& meterBounds,
-        int y) {
-        return row_ptr_if_fully_covered<const float>(
-            image,
-            srcBounds,
-            meterBounds.x1,
-            meterBounds.x2,
-            y);
-    }
-
-    inline double gaussian_weight(double normX, double normY, double invSigmaDenom) {
-        const double r2 = normX * normX + normY * normY;
-        return std::exp(-r2 * invSigmaDenom);
-    }
-
-    struct CenterWeightGeometry {
-        double invWidth = 0.0;
-        double invHeight = 0.0;
-        double scaleX = 0.0;
-        double scaleY = 0.0;
-        double invSigmaDenom = 0.0;
-    };
-
-    inline bool build_center_weight_geometry(
-        int width,
-        int height,
-        double sigma,
-        CenterWeightGeometry& out) {
-        if (width <= 0 || height <= 0 || !is_finite(sigma) || sigma <= 0.0) {
-            return false;
-        }
-        const double maxDim = static_cast<double>(std::max(width, height));
-        const double invMax = (maxDim > 0.0) ? (1.0 / maxDim) : 0.0;
-        const double sigmaDenom = 2.0 * sigma * sigma;
-        if (!is_finite(sigmaDenom) || sigmaDenom <= 0.0) {
-            return false;
-        }
-        out.invWidth = 1.0 / static_cast<double>(width);
-        out.invHeight = 1.0 / static_cast<double>(height);
-        out.scaleX = static_cast<double>(width) * invMax;
-        out.scaleY = static_cast<double>(height) * invMax;
-        out.invSigmaDenom = 1.0 / sigmaDenom;
-        return true;
-    }
-
-    inline double centered_norm_coordinate(int offset, double invExtent) {
-        return static_cast<double>(offset) * invExtent - 0.5;
-    }
-
-    inline double gaussian_weight_from_nx(
-        double nx,
-        double scaleX,
-        double normY,
-        double invSigmaDenom) {
-        const double normX = nx * scaleX;
-        return gaussian_weight(normX, normY, invSigmaDenom);
-    }
-
     inline float finite_exp2_scale(double ev) {
         const float scale = static_cast<float>(std::exp2(ev));
         return is_finite(scale) ? scale : 1.0f;
-    }
-
-    constexpr std::uint64_t kAutoExposureMaskCacheMaxBytes = 96ull * 1024ull * 1024ull;
-    constexpr std::size_t kAutoExposureMedianScratchMaxSamples =
-        static_cast<std::size_t>(kAutoExposureMaskCacheMaxBytes / sizeof(float));
-    static std::atomic<std::uint64_t> gAutoExposureMaskCacheResidentBytes{0};
-
-    inline bool auto_exposure_mask_cache_eligible(std::uint64_t requestedMaskBytes) {
-        return (requestedMaskBytes > 0) && (requestedMaskBytes <= kAutoExposureMaskCacheMaxBytes);
-    }
-
-    std::vector<float>& auto_exposure_median_scratch() {
-        thread_local std::vector<float> scratch;
-        return scratch;
-    }
-
-    inline std::uint64_t mask_bytes_for_dimensions(int width, int height) {
-        if (width <= 0 || height <= 0) {
-            return 0;
-        }
-        const std::uint64_t w = static_cast<std::uint64_t>(width);
-        const std::uint64_t h = static_cast<std::uint64_t>(height);
-        if (w > (std::numeric_limits<std::uint64_t>::max() / h)) {
-            return 0;
-        }
-        const std::uint64_t samples = w * h;
-        const std::uint64_t sampleBytes = static_cast<std::uint64_t>(sizeof(double));
-        if (samples > (std::numeric_limits<std::uint64_t>::max() / sampleBytes)) {
-            return 0;
-        }
-        return samples * sampleBytes;
-    }
-
-    inline void update_auto_exposure_mask_resident_bytes(
-        std::uint64_t previousBytes,
-        std::uint64_t nextBytes) {
-        if (nextBytes > previousBytes) {
-            gAutoExposureMaskCacheResidentBytes.fetch_add(nextBytes - previousBytes, std::memory_order_relaxed);
-        } else if (previousBytes > nextBytes) {
-            const std::uint64_t delta = previousBytes - nextBytes;
-            std::uint64_t observed = gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed);
-            while (true) {
-                const std::uint64_t updated = (observed > delta) ? (observed - delta) : 0;
-                if (gAutoExposureMaskCacheResidentBytes.compare_exchange_weak(
-                        observed,
-                        updated,
-                        std::memory_order_relaxed,
-                        std::memory_order_relaxed)) {
-                    break;
-                }
-            }
-        }
-    }
-
-    inline void trace_auto_exposure_mask_cache_event(
-        const InstanceState* state,
-        const char* event,
-        int width,
-        int height,
-        std::uint64_t requestedBytes,
-        std::uint64_t cachedBytes,
-        std::uint64_t previousCachedBytes,
-        const char* reason) {
-        if (!JTRACE_ENABLED(2)) {
-            return;
-        }
-        const std::uint64_t residentBytes =
-            gAutoExposureMaskCacheResidentBytes.load(std::memory_order_relaxed);
-        std::string msg;
-        msg.reserve(256);
-        msg = "event=";
-        msg += cstr_or_default_if_null(event, "unknown");
-        msg += " instance_token=";
-        msg += std::to_string(instance_token_or_zero(state));
-        msg += " width=";
-        msg += std::to_string(width);
-        msg += " height=";
-        msg += std::to_string(height);
-        msg += " requested_bytes=";
-        msg += std::to_string(requestedBytes);
-        msg += " previous_cached_bytes=";
-        msg += std::to_string(previousCachedBytes);
-        msg += " cached_bytes=";
-        msg += std::to_string(cachedBytes);
-        msg += " resident_bytes=";
-        msg += std::to_string(residentBytes);
-        msg += " cap_bytes=";
-        msg += std::to_string(kAutoExposureMaskCacheMaxBytes);
-        if (reason && reason[0] != '\0') {
-            msg += " reason=";
-            msg += reason;
-        }
-        JTRACE_LEVEL(2, "MSAEM", msg);
-    }
-
-    static double build_center_weight_mask(int width, int height, double sigma, std::vector<double>& outMask) {
-        outMask.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
-        CenterWeightGeometry geometry{};
-        if (!build_center_weight_geometry(width, height, sigma, geometry)) {
-            std::fill(outMask.begin(), outMask.end(), 0.0);
-            return 0.0;
-        }
-
-        double sumMask = 0.0;
-        for (int y = 0; y < height; ++y) {
-            double* row = outMask.data() + static_cast<size_t>(y) * static_cast<size_t>(width);
-            double* rowIt = row;
-            const double ny = centered_norm_coordinate(y, geometry.invHeight);
-            const double normY = ny * geometry.scaleY;
-            for (int x = 0; x < width; ++x) {
-                const double nx = centered_norm_coordinate(x, geometry.invWidth);
-                const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                *rowIt++ = w;
-                sumMask += w;
-            }
-        }
-        return sumMask;
-    }
-
-    static double measure_center_weighted_Y_DWG_cached(
-        OFX::Image* img,
-        const OfxRectI& bounds,
-        double sigma,
-        InstanceState* state,
-        double renderScaleX,
-        double renderScaleY,
-        std::uintptr_t clipToken,
-        Spectral::InputColorSpace inputColorSpace,
-        const Spectral::Mat3& rgbToXYZ,
-        bool applyCctfDecoding) {
-        if (!img) {
-            return 0.0;
-        }
-
-        const int width = bounds.x2 - bounds.x1;
-        const int height = bounds.y2 - bounds.y1;
-        if (width <= 0 || height <= 0) {
-            return 0.0;
-        }
-        const OfxRectI srcBounds = img->getBounds();
-        const int nComponents = pixel_component_count(img->getPixelComponents());
-        if (nComponents <= 0) {
-            return 0.0;
-        }
-        const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
-        const bool singleComponent = (nComponents == 1);
-
-        auto accumulateYFromMask = [&](const std::vector<double>& mask, double* outSumMask) {
-            double sumY = 0.0;
-            double sumMask = 0.0;
-            for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-                const size_t rowOffset = static_cast<size_t>(yy - bounds.y1) * static_cast<size_t>(width);
-                const double* maskRow = mask.data() + rowOffset;
-                const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
-                const double* maskIt = maskRow;
-                if (rowPix) {
-                    const float* rowPixIt = rowPix;
-                    for (int xOff = 0; xOff < width; ++xOff) {
-                        const double w = *maskIt++;
-                        float linear[3];
-                        if (singleComponent) {
-                            const float gray = rowPixIt[0];
-                            const float grayRgb[3] = {gray, gray, gray};
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                        } else {
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
-                        }
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const float Y = XYZ[1];
-                        if (is_finite(Y)) {
-                            sumY += static_cast<double>(Y) * w;
-                            sumMask += w;
-                        }
-                        rowPixIt += pixelStride;
-                    }
-                    continue;
-                }
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    const int xx = bounds.x1 + xOff;
-                    const double w = *maskIt++;
-                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
-                    if (!pix) {
-                        continue;
-                    }
-                    float linear[3];
-                    if (singleComponent) {
-                        const float gray = pix[0];
-                        const float grayRgb[3] = {gray, gray, gray};
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                    } else {
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-                    }
-                    float XYZ[3];
-                    rgbToXYZ.mul(linear, XYZ);
-                    const float Y = XYZ[1];
-                    if (!is_finite(Y)) {
-                        continue;
-                    }
-                    sumY += static_cast<double>(Y) * w;
-                    sumMask += w;
-                }
-            }
-            if (outSumMask) {
-                *outSumMask = sumMask;
-            }
-            return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
-        };
-
-        auto accumulateYUncached = [&](double* outSumMask) {
-            CenterWeightGeometry geometry{};
-            if (!build_center_weight_geometry(width, height, sigma, geometry)) {
-                if (outSumMask) {
-                    *outSumMask = 0.0;
-                }
-                return 0.0;
-            }
-
-            double sumY = 0.0;
-            double sumMask = 0.0;
-            for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-                const int localY = yy - bounds.y1;
-                const double ny = centered_norm_coordinate(localY, geometry.invHeight);
-                const double normY = ny * geometry.scaleY;
-                const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
-                double nx = -0.5;
-                if (rowPix) {
-                    const float* rowPixIt = rowPix;
-                    for (int xOff = 0; xOff < width; ++xOff) {
-                        const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                        float linear[3];
-                        if (singleComponent) {
-                            const float gray = rowPixIt[0];
-                            const float grayRgb[3] = {gray, gray, gray};
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                        } else {
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
-                        }
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const float Y = XYZ[1];
-                        if (is_finite(Y)) {
-                            sumY += static_cast<double>(Y) * w;
-                            sumMask += w;
-                        }
-                        rowPixIt += pixelStride;
-                        nx += geometry.invWidth;
-                    }
-                    continue;
-                }
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    const int xx = bounds.x1 + xOff;
-                    const double w = gaussian_weight_from_nx(nx, geometry.scaleX, normY, geometry.invSigmaDenom);
-                    const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(xx, yy));
-                    if (pix) {
-                        float linear[3];
-                        if (singleComponent) {
-                            const float gray = pix[0];
-                            const float grayRgb[3] = {gray, gray, gray};
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                        } else {
-                            Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-                        }
-                        float XYZ[3];
-                        rgbToXYZ.mul(linear, XYZ);
-                        const float Y = XYZ[1];
-                        if (is_finite(Y)) {
-                            sumY += static_cast<double>(Y) * w;
-                            sumMask += w;
-                        }
-                    }
-                    nx += geometry.invWidth;
-                }
-            }
-            if (outSumMask) {
-                *outSumMask = sumMask;
-            }
-            return (sumMask > 0.0) ? (sumY / sumMask) : 0.0;
-        };
-
-        if (!state) {
-            return accumulateYUncached(nullptr);
-        }
-
-        const std::uint64_t requestedMaskBytes = mask_bytes_for_dimensions(width, height);
-        const bool cacheEligible = auto_exposure_mask_cache_eligible(requestedMaskBytes);
-
-        if (!cacheEligible) {
-            bool emitBypassTrace = false;
-            std::uint64_t previousCachedBytes = 0;
-            {
-                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-                previousCachedBytes = state->autoExposureMaskCachedBytes;
-                const bool wasBypass = state->autoExposureMaskPolicyBypass;
-                const std::uint64_t previousRequestedBytes = state->autoExposureMaskLastRequestedBytes;
-
-                if (previousCachedBytes > 0) {
-                    update_auto_exposure_mask_resident_bytes(previousCachedBytes, 0);
-                }
-                state->autoExposureMaskWeights.reset();
-                state->autoExposureMaskCachedBytes = 0;
-                state->autoExposureMaskValid = false;
-                state->autoExposureMaskWidth = width;
-                state->autoExposureMaskHeight = height;
-                state->autoExposureMaskSigma = sigma;
-                state->autoExposureMaskRenderScaleX = renderScaleX;
-                state->autoExposureMaskRenderScaleY = renderScaleY;
-                state->autoExposureMaskClipToken = clipToken;
-                state->autoExposureMaskSum = 0.0;
-                state->autoExposureMaskPolicyBypass = true;
-                state->autoExposureMaskLastRequestedBytes = requestedMaskBytes;
-
-                emitBypassTrace = (previousCachedBytes > 0) || !wasBypass || (previousRequestedBytes != requestedMaskBytes);
-            }
-
-            if (emitBypassTrace) {
-                trace_auto_exposure_mask_cache_event(
-                    state,
-                    "cache_bypass",
-                    width,
-                    height,
-                    requestedMaskBytes,
-                    0,
-                    previousCachedBytes,
-                    (requestedMaskBytes == 0) ? "overflow_or_invalid" : "over_cap");
-            }
-
-            double effectiveSumMask = 0.0;
-            const double measuredY = accumulateYUncached(&effectiveSumMask);
-            {
-                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-                if (state->autoExposureMaskPolicyBypass &&
-                    state->autoExposureMaskLastRequestedBytes == requestedMaskBytes) {
-                    state->autoExposureMaskSum = effectiveSumMask;
-                }
-            }
-            return measuredY;
-        }
-
-        const size_t expectedMaskSize = static_cast<size_t>(width) * static_cast<size_t>(height);
-        auto needsMaskRebuild = [&](const InstanceState& s) -> bool {
-            const std::shared_ptr<const std::vector<double>>& weights = s.autoExposureMaskWeights;
-            return !s.autoExposureMaskValid || s.autoExposureMaskWidth != width || s.autoExposureMaskHeight != height || !nearly_equal_double(s.autoExposureMaskSigma, sigma) || !nearly_equal_double(s.autoExposureMaskRenderScaleX, renderScaleX) || !nearly_equal_double(s.autoExposureMaskRenderScaleY, renderScaleY) || s.autoExposureMaskClipToken != clipToken || !weights || weights->size() != expectedMaskSize;
-        };
-
-        std::shared_ptr<const std::vector<double>> maskSnapshot;
-        bool maskValid = false;
-        bool rebuildMask = false;
-        {
-            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-            rebuildMask = needsMaskRebuild(*state);
-            if (!rebuildMask) {
-                maskSnapshot = state->autoExposureMaskWeights;
-                maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
-                if (!maskValid) {
-                    state->autoExposureMaskSum = 0.0;
-                }
-            }
-        }
-
-        if (rebuildMask) {
-            auto rebuiltMask = std::make_shared<std::vector<double>>();
-            const double sumMask = build_center_weight_mask(width, height, sigma, *rebuiltMask);
-            const bool rebuiltValid = sumMask > 0.0;
-            bool emitStoreTrace = false;
-            std::uint64_t previousCachedBytes = 0;
-            {
-                std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-                if (needsMaskRebuild(*state)) {
-                    previousCachedBytes = state->autoExposureMaskCachedBytes;
-                    update_auto_exposure_mask_resident_bytes(previousCachedBytes, requestedMaskBytes);
-                    state->autoExposureMaskWidth = width;
-                    state->autoExposureMaskHeight = height;
-                    state->autoExposureMaskSigma = sigma;
-                    state->autoExposureMaskRenderScaleX = renderScaleX;
-                    state->autoExposureMaskRenderScaleY = renderScaleY;
-                    state->autoExposureMaskClipToken = clipToken;
-                    state->autoExposureMaskWeights = rebuiltMask;
-                    state->autoExposureMaskCachedBytes = requestedMaskBytes;
-                    state->autoExposureMaskValid = rebuiltValid;
-                    state->autoExposureMaskSum = rebuiltValid ? sumMask : 0.0;
-                    emitStoreTrace = (previousCachedBytes != requestedMaskBytes) || state->autoExposureMaskPolicyBypass;
-                    state->autoExposureMaskPolicyBypass = false;
-                    state->autoExposureMaskLastRequestedBytes = requestedMaskBytes;
-                }
-                maskSnapshot = state->autoExposureMaskWeights;
-                maskValid = state->autoExposureMaskValid && static_cast<bool>(maskSnapshot);
-                if (!maskValid) {
-                    state->autoExposureMaskSum = 0.0;
-                }
-            }
-
-            if (emitStoreTrace) {
-                trace_auto_exposure_mask_cache_event(
-                    state,
-                    "cache_store",
-                    width,
-                    height,
-                    requestedMaskBytes,
-                    requestedMaskBytes,
-                    previousCachedBytes,
-                    rebuiltValid ? "rebuilt" : "rebuilt_invalid");
-            }
-        }
-
-        if (!maskValid || !maskSnapshot || maskSnapshot->size() != expectedMaskSize) {
-            return 0.0;
-        }
-
-        double effectiveSumMask = 0.0;
-        const double measuredY = accumulateYFromMask(*maskSnapshot, &effectiveSumMask);
-        {
-            std::lock_guard<std::mutex> lock(state->autoExposureMutex);
-            if (state->autoExposureMaskWeights == maskSnapshot) {
-                state->autoExposureMaskSum = effectiveSumMask;
-            }
-        }
-        return measuredY;
-    }
-
-    static double measure_median_Y_DWG(
-        OFX::Image* img,
-        const OfxRectI& bounds,
-        Spectral::InputColorSpace inputColorSpace,
-        const Spectral::Mat3& rgbToXYZ,
-        bool applyCctfDecoding) {
-        if (!img) {
-            return 0.0;
-        }
-
-        const int width = bounds.x2 - bounds.x1;
-        const int height = bounds.y2 - bounds.y1;
-        if (width <= 0 || height <= 0) {
-            return 0.0;
-        }
-        const OfxRectI srcBounds = img->getBounds();
-
-        const size_t total = static_cast<size_t>(width) * static_cast<size_t>(height);
-        const int nComponents = pixel_component_count(img->getPixelComponents());
-        if (nComponents <= 0) {
-            return 0.0;
-        }
-        const std::size_t pixelStride = static_cast<std::size_t>(nComponents);
-        const bool singleComponent = (nComponents == 1);
-        std::vector<float>* valuesPtr = nullptr;
-        std::vector<float> localValues;
-        if (total <= kAutoExposureMedianScratchMaxSamples) {
-            std::vector<float>& scratch = auto_exposure_median_scratch();
-            scratch.clear();
-            scratch.reserve(total);
-            valuesPtr = &scratch;
-        } else {
-            localValues.reserve(total);
-            valuesPtr = &localValues;
-        }
-        std::vector<float>& values = *valuesPtr;
-        for (int yy = bounds.y1; yy < bounds.y2; ++yy) {
-            const float* rowPix = row_start_if_covered(img, srcBounds, bounds, yy);
-            if (rowPix) {
-                const float* rowPixIt = rowPix;
-                for (int xOff = 0; xOff < width; ++xOff) {
-                    float linear[3];
-                    if (singleComponent) {
-                        const float gray = rowPixIt[0];
-                        const float grayRgb[3] = {gray, gray, gray};
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                    } else {
-                        Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, rowPixIt, linear);
-                    }
-                    float XYZ[3];
-                    rgbToXYZ.mul(linear, XYZ);
-                    float Y = XYZ[1];
-                    if (is_finite(Y)) {
-                        values.emplace_back((Y < 0.0f) ? 0.0f : Y);
-                    }
-                    rowPixIt += pixelStride;
-                }
-                continue;
-            }
-            for (int xOff = 0; xOff < width; ++xOff) {
-                const int x = bounds.x1 + xOff;
-                const float* pix = reinterpret_cast<const float*>(img->getPixelAddress(x, yy));
-                if (!pix) {
-                    continue;
-                }
-                float linear[3];
-                if (singleComponent) {
-                    const float gray = pix[0];
-                    const float grayRgb[3] = {gray, gray, gray};
-                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, grayRgb, linear);
-                } else {
-                    Spectral::apply_input_cctf_decoding(inputColorSpace, applyCctfDecoding, pix, linear);
-                }
-                float XYZ[3];
-                rgbToXYZ.mul(linear, XYZ);
-                float Y = XYZ[1];
-                if (is_finite(Y)) {
-                    values.emplace_back((Y < 0.0f) ? 0.0f : Y);
-                }
-            }
-        }
-
-        if (values.empty()) {
-            return 0.0;
-        }
-
-        const size_t n = values.size();
-        const size_t mid = n / 2;
-        auto midIt = values.begin() + static_cast<std::ptrdiff_t>(mid);
-        std::nth_element(values.begin(), midIt, values.end());
-        const float high = *midIt;
-        if ((n & 1U) != 0U) {
-            return static_cast<double>(high);
-        }
-
-        const float low = *std::max_element(values.begin(), midIt);
-        return static_cast<double>((low + high) * 0.5f);
     }
 
     class ScopedParamEventSuppression {
@@ -1873,9 +1247,9 @@ Print::Params JuicerEffect::gatherPrintParams() const {
     params.bypass = !Spektrafilm::scan_route_is_print(snapshot.scanRoute);
     params.exposure = static_cast<float>(pexp);
     params.preflashExposure = static_cast<float>(preflash);
-    params.yFilter = static_cast<float>(sanitize_enlarger_filter_shift_or_zero(y));
-    params.mFilter = static_cast<float>(sanitize_enlarger_filter_shift_or_zero(m));
-    params.cFilter = static_cast<float>(sanitize_enlarger_filter_shift_or_zero(c));
+    params.yFilter = static_cast<float>(sanitize_print_filter_cc_shift_or_zero(y));
+    params.mFilter = static_cast<float>(sanitize_print_filter_cc_shift_or_zero(m));
+    params.cFilter = static_cast<float>(sanitize_print_filter_cc_shift_or_zero(c));
     return params;
 }
 
@@ -1884,25 +1258,25 @@ Profiles::HalationMetadata JuicerEffect::gatherHalationUi() const {
 
     halation.active = read_bool_param_or(_pHalationActive, false);
 
-    const std::array<double, 3> strengthPercent =
+    const std::array<double, 3> primaryAmountPercent =
         read_sanitized_double3(_pHalationStrength, {{3.0, 0.30, 0.10}}, 0.0, 100.0);
     const std::array<double, 3> sizeUm =
         read_sanitized_double3(_pHalationSizeUm, {{200.0, 200.0, 200.0}}, 0.0, 1000.0);
-    const std::array<double, 3> scatterStrengthPercent =
-        read_sanitized_double3(_pHalationScatteringStrength, {{1.0, 2.0, 4.0}}, 0.0, 100.0);
-    const std::array<double, 3> scatterSizeUm =
-        read_sanitized_double3(_pHalationScatteringSizeUm, {{30.0, 20.0, 15.0}}, 0.0, 1000.0);
+    const std::array<double, 3> secondaryAmountPercent =
+        read_sanitized_double3(_pHalationSecondaryAmount, {{1.0, 2.0, 4.0}}, 0.0, 100.0);
+    const std::array<double, 3> secondarySizeUm =
+        read_sanitized_double3(_pHalationSecondarySizeUm, {{30.0, 20.0, 15.0}}, 0.0, 1000.0);
 
     cast_array(halation.sizeUm, sizeUm);
-    cast_array(halation.scatteringSizeUm, scatterSizeUm);
+    cast_array(halation.secondarySizeUm, secondarySizeUm);
     const float scale = 0.01f;
-    float* strengthIt = halation.strength.data();
-    float* scatterStrengthIt = halation.scatteringStrength.data();
-    const double* strengthSrc = strengthPercent.data();
-    const double* scatterStrengthSrc = scatterStrengthPercent.data();
-    for (int i = 0; i < 3; ++i, ++strengthIt, ++scatterStrengthIt, ++strengthSrc, ++scatterStrengthSrc) {
-        *strengthIt = static_cast<float>(*strengthSrc) * scale;
-        *scatterStrengthIt = static_cast<float>(*scatterStrengthSrc) * scale;
+    float* primaryAmountIt = halation.primaryAmount.data();
+    float* secondaryAmountIt = halation.secondaryAmount.data();
+    const double* primaryAmountSrc = primaryAmountPercent.data();
+    const double* secondaryAmountSrc = secondaryAmountPercent.data();
+    for (int i = 0; i < 3; ++i, ++primaryAmountIt, ++secondaryAmountIt, ++primaryAmountSrc, ++secondaryAmountSrc) {
+        *primaryAmountIt = static_cast<float>(*primaryAmountSrc) * scale;
+        *secondaryAmountIt = static_cast<float>(*secondaryAmountSrc) * scale;
     }
 
     return halation;
@@ -1918,18 +1292,18 @@ void JuicerEffect::applyHalationProfileDefaults() {
 
     const Profiles::HalationMetadata& halationCfg = _state->base.halation;
 
-    const std::array<double, 3> currentStrength =
+    const std::array<double, 3> currentPrimaryAmount =
         read_double3_param_or(_pHalationStrength, {{0.0, 0.0, 0.0}});
     const std::array<double, 3> currentSize =
         read_double3_param_or(_pHalationSizeUm, {{0.0, 0.0, 0.0}});
-    const std::array<double, 3> currentScatterStrength =
-        read_double3_param_or(_pHalationScatteringStrength, {{0.0, 0.0, 0.0}});
-    const std::array<double, 3> currentScatterSize =
-        read_double3_param_or(_pHalationScatteringSizeUm, {{0.0, 0.0, 0.0}});
+    const std::array<double, 3> currentSecondaryAmount =
+        read_double3_param_or(_pHalationSecondaryAmount, {{0.0, 0.0, 0.0}});
+    const std::array<double, 3> currentSecondarySize =
+        read_double3_param_or(_pHalationSecondarySizeUm, {{0.0, 0.0, 0.0}});
 
-    const std::array<double, 3> strengthPct = sanitize_scaled_float_array_to_double(
-        halationCfg.strength,
-        currentStrength,
+    const std::array<double, 3> primaryAmountPct = sanitize_scaled_float_array_to_double(
+        halationCfg.primaryAmount,
+        currentPrimaryAmount,
         100.0,
         0.0,
         100.0);
@@ -1939,43 +1313,43 @@ void JuicerEffect::applyHalationProfileDefaults() {
         1.0,
         0.0,
         1000.0);
-    const std::array<double, 3> scatterStrengthPct = sanitize_scaled_float_array_to_double(
-        halationCfg.scatteringStrength,
-        currentScatterStrength,
+    const std::array<double, 3> secondaryAmountPct = sanitize_scaled_float_array_to_double(
+        halationCfg.secondaryAmount,
+        currentSecondaryAmount,
         100.0,
         0.0,
         100.0);
-    const std::array<double, 3> scatterSizeUm = sanitize_scaled_float_array_to_double(
-        halationCfg.scatteringSizeUm,
-        currentScatterSize,
+    const std::array<double, 3> secondarySizeUm = sanitize_scaled_float_array_to_double(
+        halationCfg.secondarySizeUm,
+        currentSecondarySize,
         1.0,
         0.0,
         1000.0);
 
-    const double strengthMaster = mean_array(strengthPct);
+    const double primaryAmountMaster = mean_array(primaryAmountPct);
     const double sizeMaster = mean_array(sizeUm);
-    const double scatterStrengthMaster = mean_array(scatterStrengthPct);
-    const double scatterSizeMaster = mean_array(scatterSizeUm);
+    const double secondaryAmountMaster = mean_array(secondaryAmountPct);
+    const double secondarySizeMaster = mean_array(secondarySizeUm);
 
     const ScopedParamEventSuppression suppressEvents(_state.get());
 
-    set_double3_param_if(_pHalationStrength, strengthPct[0], strengthPct[1], strengthPct[2]);
+    set_double3_param_if(_pHalationStrength, primaryAmountPct[0], primaryAmountPct[1], primaryAmountPct[2]);
     set_double3_param_if(_pHalationSizeUm, sizeUm[0], sizeUm[1], sizeUm[2]);
     set_double3_param_if(
-        _pHalationScatteringStrength,
-        scatterStrengthPct[0],
-        scatterStrengthPct[1],
-        scatterStrengthPct[2]);
-    set_double3_param_if(_pHalationScatteringSizeUm, scatterSizeUm[0], scatterSizeUm[1], scatterSizeUm[2]);
-    set_double_param_if(_pHalationStrengthMaster, strengthMaster);
+        _pHalationSecondaryAmount,
+        secondaryAmountPct[0],
+        secondaryAmountPct[1],
+        secondaryAmountPct[2]);
+    set_double3_param_if(_pHalationSecondarySizeUm, secondarySizeUm[0], secondarySizeUm[1], secondarySizeUm[2]);
+    set_double_param_if(_pHalationStrengthMaster, primaryAmountMaster);
     set_double_param_if(_pHalationSizeUmMaster, sizeMaster);
-    set_double_param_if(_pHalationScatteringStrengthMaster, scatterStrengthMaster);
-    set_double_param_if(_pHalationScatteringSizeUmMaster, scatterSizeMaster);
+    set_double_param_if(_pHalationSecondaryAmountMaster, secondaryAmountMaster);
+    set_double_param_if(_pHalationSecondarySizeUmMaster, secondarySizeMaster);
 
-    _halationStrengthMasterLast = strengthMaster;
+    _halationPrimaryAmountMasterLast = primaryAmountMaster;
     _halationSizeUmMasterLast = sizeMaster;
-    _halationScatteringStrengthMasterLast = scatterStrengthMaster;
-    _halationScatteringSizeUmMasterLast = scatterSizeMaster;
+    _halationSecondaryAmountMasterLast = secondaryAmountMaster;
+    _halationSecondarySizeUmMasterLast = secondarySizeMaster;
 }
 
 namespace {
@@ -2402,9 +1776,9 @@ Profiles::ProfileGlare JuicerEffect::gatherGlareUi() const {
         _pGlareCompRemovalFactor,
         _pGlareCompRemovalDensity,
         _pGlareCompRemovalTransition);
-    glare.compensationRemovalFactor = compensation.factor;
-    glare.compensationRemovalDensity = compensation.density;
-    glare.compensationRemovalTransition = compensation.transition;
+    glare.printShadowCompensationFactor = compensation.factor;
+    glare.printShadowCompensationDensity = compensation.density;
+    glare.printShadowCompensationTransition = compensation.transition;
 
     return glare;
 }
@@ -2422,172 +1796,6 @@ OutputEncoding::Params JuicerEffect::gatherOutputEncodingParams() const {
     return params;
 }
 
-// SF_TEMP_BRIDGE_CPUAutoExposure owner=Phase4-print-route:
-// reason=legacy non-direct metering; allowed=no product call site while non-direct render is
-// blocked; output_impact=blocked print route; hash_impact=none; resource_impact=CPU source reads;
-// removal=Phase4 print-route metering cutover.
-JuicerEffect::AutoExposureResult JuicerEffect::computeAutoExposure(
-    const OFX::RenderArguments& args,
-    OFX::Image* srcImg,
-    const OfxRectI& fullBounds,
-    const ExposureParams& exposureParams) const {
-    AutoExposureResult result{};
-    result.exposureScale = 1.0f;
-    result.autoEV = 0.0;
-
-    if (!srcImg) {
-        result.exposureScale = finite_exp2_scale(exposureParams.sliderEV);
-        return result;
-    }
-    if (!exposureParams.cameraAutoEnabled) {
-        result.exposureScale = finite_exp2_scale(exposureParams.sliderEV);
-        return result;
-    }
-
-    InstanceState* state = _state.get();
-    const bool isCudaRender = args.isEnabledCudaRender;
-
-    auto rect_equal = [](const OfxRectI& a, const OfxRectI& b) {
-        return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
-    };
-
-    OfxRectI meterBounds = fullBounds;
-    if (_src) {
-        try {
-            const OfxRectD rod = _src->getRegionOfDefinition(args.time);
-            const double rodWidth = rod.x2 - rod.x1;
-            const double rodHeight = rod.y2 - rod.y1;
-            const bool hasRodDimensions =
-                sanitize_positive_finite_or(rodWidth, 0.0) > 0.0 &&
-                sanitize_positive_finite_or(rodHeight, 0.0) > 0.0;
-            if (hasRodDimensions) {
-                meterBounds.x1 = static_cast<int>(std::floor(rod.x1));
-                meterBounds.y1 = static_cast<int>(std::floor(rod.y1));
-                meterBounds.x2 = static_cast<int>(std::ceil(rod.x2));
-                meterBounds.y2 = static_cast<int>(std::ceil(rod.y2));
-            }
-        } catch (...) {
-            // Ignore failures; fall back to full bounds.
-            meterBounds = fullBounds;
-        }
-    }
-    result.meterBounds = meterBounds;
-    result.meterBoundsValid = true;
-
-#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-    // CUDA path: metering + exposure scale are computed and applied entirely on the GPU to avoid
-    // forcing a stream synchronization just to read back Y/EV on the CPU.
-    if (isCudaRender) {
-        result.autoEV = 0.0;
-        result.exposureScale = 1.0f;
-        return result;
-    }
-#endif
-
-    const std::shared_ptr<const WorkingState> wsCur = load_active_working_state_if(state);
-    const uint64_t wsBuildCounter = working_state_build_counter_or_zero(wsCur);
-
-    // Camera auto-exposure always meters against AgX's fixed 18.4% target (independent of scanner target tweaks).
-    constexpr double kCameraMeterTargetY = 0.184;
-    constexpr double kInvLn2 = 1.44269504088896340736;
-
-    const double sigma = 0.2;
-    const double renderScaleX = sanitize_positive_finite_or(args.renderScale.x, 1.0);
-    const double renderScaleY = sanitize_positive_finite_or(args.renderScale.y, 1.0);
-    const std::uintptr_t clipToken = reinterpret_cast<std::uintptr_t>(_src);
-
-    const int inputColorSpaceIndex = read_choice_param_or(
-        _pInputColorSpace,
-        Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut));
-    const bool applyInputCctfDecoding = read_bool_param_or(_pInputCctfDecoding, false);
-
-    double autoEV = 0.0;
-    bool haveCachedAutoEV = false;
-    const int meteringMethod = exposureParams.meteringMethod;
-    if (state) {
-        std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-        if (state->autoExposureCacheValid &&
-            state->autoExposureCacheIsCudaRender == isCudaRender &&
-            state->autoExposureCacheAutoEnabled &&
-            state->autoExposureCacheMeteringMethod == meteringMethod &&
-            nearly_equal_double(state->autoExposureCacheTime, args.time) &&
-            state->autoExposureCacheBuildCounter == wsBuildCounter &&
-            rect_equal(state->autoExposureCacheBounds, meterBounds) &&
-            nearly_equal_double(state->autoExposureCacheRenderScaleX, renderScaleX) &&
-            nearly_equal_double(state->autoExposureCacheRenderScaleY, renderScaleY) &&
-            state->autoExposureCacheClipToken == clipToken &&
-            state->autoExposureCacheInputColorSpaceIndex == inputColorSpaceIndex &&
-            state->autoExposureCacheApplyCctfDecoding == applyInputCctfDecoding) {
-            autoEV = state->autoExposureCacheEV;
-            haveCachedAutoEV = true;
-        }
-    }
-
-    if (!haveCachedAutoEV) {
-        bool measurementValid = false;
-        double evComp = 0.0;
-        double Yexp = 0.0;
-        const Spectral::InputColorSpace inputColorSpace =
-            Spectral::inputColorSpaceFromIndex(inputColorSpaceIndex);
-        const Spectral::Mat3 inputRgbToXYZ = Spectral::matrix_input_rgb_to_xyz(inputColorSpace);
-        if (meteringMethod == static_cast<int>(MeteringMethod::Median)) {
-            Yexp = measure_median_Y_DWG(
-                srcImg,
-                meterBounds,
-                inputColorSpace,
-                inputRgbToXYZ,
-                applyInputCctfDecoding);
-        } else {
-            Yexp = measure_center_weighted_Y_DWG_cached(
-                srcImg,
-                meterBounds,
-                sigma,
-                state,
-                renderScaleX,
-                renderScaleY,
-                clipToken,
-                inputColorSpace,
-                inputRgbToXYZ,
-                applyInputCctfDecoding);
-        }
-        const bool canComputeEv = (Yexp > 0.0 && kCameraMeterTargetY > 0.0);
-        if (canComputeEv) {
-            const double exposureRatio = Yexp / kCameraMeterTargetY;
-            evComp = -std::log(exposureRatio) * kInvLn2;
-        }
-        if (!is_finite(evComp)) {
-            evComp = 0.0;
-            measurementValid = false;
-        } else {
-            measurementValid = canComputeEv;
-        }
-        autoEV = evComp;
-
-        if (state) {
-            std::lock_guard<std::mutex> cacheLock(state->autoExposureMutex);
-            state->autoExposureCacheValid = measurementValid;
-            state->autoExposureCacheIsCudaRender = isCudaRender;
-            state->autoExposureCacheTime = args.time;
-            state->autoExposureCacheAutoEnabled = true;
-            state->autoExposureCacheMeteringMethod = meteringMethod;
-            state->autoExposureCacheBuildCounter = wsBuildCounter;
-            state->autoExposureCacheBounds = meterBounds;
-            state->autoExposureCacheEV = autoEV;
-            state->autoExposureCacheRenderScaleX = renderScaleX;
-            state->autoExposureCacheRenderScaleY = renderScaleY;
-            state->autoExposureCacheClipToken = clipToken;
-            state->autoExposureCacheInputColorSpaceIndex = inputColorSpaceIndex;
-            state->autoExposureCacheApplyCctfDecoding = applyInputCctfDecoding;
-        }
-    }
-
-    const double sliderEV = exposureParams.sliderEV;
-    const double totalEV = autoEV + sliderEV;
-    result.autoEV = autoEV;
-    result.exposureScale = finite_exp2_scale(totalEV);
-    return result;
-}
-
 JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
     WorkingStateInfo info{};
     if (!has_loaded_base_state(_state.get())) {
@@ -2598,13 +1806,13 @@ JuicerEffect::WorkingStateInfo JuicerEffect::prepareWorkingState() const {
 
     const WorkingState* ws = info.workingState.get();
     if (ws && ws->buildCounter > 0 && ws->printRT) {
-        info.printRuntime = ws->printRT.get();
+        info.printRt = ws->printRT.get();
     }
 
     info.workingStateReady = working_state_ready(ws);
 
-    const Print::Runtime* prt = info.printRuntime;
-    info.printRuntimeReady = print_runtime_ready(ws, prt, info.workingStateReady);
+    const Print::Runtime* prt = info.printRt;
+    info.printRtReady = print_runtime_ready(ws, prt, info.workingStateReady);
 
     return info;
 }
@@ -2631,7 +1839,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pPrintProfileKey = fetchStrChoiceParam(JuicerParams::kPrintProfileKey);
         _pRefIll = fetchChoiceParam("ReferenceIlluminant");
         _pEnlIll = fetchChoiceParam("EnlargerIlluminant");
-        _pEnlDichroicSet = fetchChoiceParam(kParamEnlargerDichroicSet);
+        _pEnlDichroicSet = fetchChoiceParam(kParamDichroicFilterSet);
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
         _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
@@ -2664,13 +1872,13 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pHalationActive = fetchBooleanParam(JuicerParams::kHalationActive);
         _pHalationStrengthMaster = fetchDoubleParam(JuicerParams::kHalationStrengthMaster);
         _pHalationSizeUmMaster = fetchDoubleParam(JuicerParams::kHalationSizeUmMaster);
-        _pHalationScatteringStrengthMaster = fetchDoubleParam(JuicerParams::kHalationScatteringStrengthMaster);
-        _pHalationScatteringSizeUmMaster = fetchDoubleParam(JuicerParams::kHalationScatteringSizeUmMaster);
+        _pHalationSecondaryAmountMaster = fetchDoubleParam(JuicerParams::kHalationSecondaryAmountMaster);
+        _pHalationSecondarySizeUmMaster = fetchDoubleParam(JuicerParams::kHalationSecondarySizeUmMaster);
         _pHalationRevertToStock = fetchPushButtonParam(JuicerParams::kHalationRevertToStock);
         _pHalationStrength = fetchDouble3DParam(JuicerParams::kHalationStrength);
         _pHalationSizeUm = fetchDouble3DParam(JuicerParams::kHalationSizeUm);
-        _pHalationScatteringStrength = fetchDouble3DParam(JuicerParams::kHalationScatteringStrength);
-        _pHalationScatteringSizeUm = fetchDouble3DParam(JuicerParams::kHalationScatteringSizeUm);
+        _pHalationSecondaryAmount = fetchDouble3DParam(JuicerParams::kHalationSecondaryAmount);
+        _pHalationSecondarySizeUm = fetchDouble3DParam(JuicerParams::kHalationSecondarySizeUm);
 
         _pGrainActive = fetchBooleanParam(JuicerParams::kGrainActive);
         _pGrainSublayersActive = fetchBooleanParam(JuicerParams::kGrainSublayersActive);
@@ -2709,9 +1917,9 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pGlarePercent = fetchDoubleParam(JuicerParams::kGlarePercent);
         _pGlareRoughness = fetchDoubleParam(JuicerParams::kGlareRoughness);
         _pGlareBlurSigmaPx = fetchDoubleParam(JuicerParams::kGlareBlurSigmaPx);
-        _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalFactor);
-        _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalDensity);
-        _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kGlareCompensationRemovalTransition);
+        _pGlareCompRemovalFactor = fetchDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
+        _pGlareCompRemovalDensity = fetchDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
+        _pGlareCompRemovalTransition = fetchDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
         _pPrintDminFactor = fetchDoubleParam(JuicerParams::kPrintDminFactor);
     } catch (...) {
         // Safe: any missing param will remain nullptr and defaults are used in snapshot/usage paths.
@@ -2741,10 +1949,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         param->getValue(v);
         outValue = v;
     };
-    initMasterCache(_pHalationStrengthMaster, _halationStrengthMasterLast);
+    initMasterCache(_pHalationStrengthMaster, _halationPrimaryAmountMasterLast);
     initMasterCache(_pHalationSizeUmMaster, _halationSizeUmMasterLast);
-    initMasterCache(_pHalationScatteringStrengthMaster, _halationScatteringStrengthMasterLast);
-    initMasterCache(_pHalationScatteringSizeUmMaster, _halationScatteringSizeUmMasterLast);
+    initMasterCache(_pHalationSecondaryAmountMaster, _halationSecondaryAmountMasterLast);
+    initMasterCache(_pHalationSecondarySizeUmMaster, _halationSecondarySizeUmMasterLast);
     initMasterCache(_pGrainParticleScaleMaster, _grainParticleScaleMasterLast);
     initMasterCache(_pGrainParticleScaleLayersMaster, _grainParticleScaleLayersMasterLast);
     initMasterCache(_pGrainDensityMinMaster, _grainDensityMinMasterLast);
@@ -2774,32 +1982,6 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 }
 
 JuicerEffect::~JuicerEffect() {
-    try {
-        std::uint64_t releasedMaskBytes = 0;
-        if (_state) {
-            std::lock_guard<std::mutex> lock(_state->autoExposureMutex);
-            releasedMaskBytes = _state->autoExposureMaskCachedBytes;
-            _state->autoExposureMaskWeights.reset();
-            _state->autoExposureMaskCachedBytes = 0;
-            _state->autoExposureMaskValid = false;
-            _state->autoExposureMaskSum = 0.0;
-        }
-        if (releasedMaskBytes > 0) {
-            update_auto_exposure_mask_resident_bytes(releasedMaskBytes, 0);
-            trace_auto_exposure_mask_cache_event(
-                _state.get(),
-                "cache_release",
-                0,
-                0,
-                0,
-                0,
-                releasedMaskBytes,
-                "instance_destroy");
-        }
-    } catch (...) {
-        JuicerLogging::discard_current_exception();
-    }
-
     try {
         _state.reset();
     } catch (...) {
@@ -2870,7 +2052,7 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
     if (args.isEnabledCudaRender) {
-        // CUDA renders use device pointers; avoid CPU pixel reads (auto-exposure, non-float copies, etc.).
+        // CUDA renders use device pointers; avoid host-side image reads for metering or copy paths.
         if (requires_nonfloat_copy(depth, nComponents)) {
             JTRACE("CUDA", "FATAL: CUDA render requested with unsupported non-float copy path");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
@@ -2882,11 +2064,6 @@ void JuicerEffect::render(const OFX::RenderArguments& args) {
         throw OFX::Exception::Suite(kOfxStatErrFatal);
     }
 #endif
-
-    if (requires_nonfloat_copy(depth, nComponents)) {
-        JuicerProc::copyNonFloatRect(srcImg.get(), dstImg.get());
-        return;
-    }
 
     const OfxRectI fullBounds = srcImg->getBounds();
     if (_state) {
@@ -3017,7 +2194,6 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
         trace_changed_param_gate(traceInfo, paramName, "changedParam ignored during bootstrap for '");
         return;
     }
-    invalidate_auto_exposure_cache_if_needed(_state.get(), paramName);
 
     auto apply_action_then_rebuild = [&](const auto& applyFn) {
         applyFn();
@@ -3226,13 +2402,13 @@ void JuicerEffect::changedParam(const OFX::InstanceChangedArgs& args, const std:
     auto resolve_halation_master_update = [&]() -> MasterTripletUpdateBinding {
         switch (halation_master_selector(paramName)) {
             case HalationMasterSelector::Strength:
-                return {_pHalationStrengthMaster, _pHalationStrength, &_halationStrengthMasterLast, 0.0, 100.0};
+                return {_pHalationStrengthMaster, _pHalationStrength, &_halationPrimaryAmountMasterLast, 0.0, 100.0};
             case HalationMasterSelector::SizeUm:
                 return {_pHalationSizeUmMaster, _pHalationSizeUm, &_halationSizeUmMasterLast, 0.0, 1000.0};
-            case HalationMasterSelector::ScatteringStrength:
-                return {_pHalationScatteringStrengthMaster, _pHalationScatteringStrength, &_halationScatteringStrengthMasterLast, 0.0, 100.0};
-            case HalationMasterSelector::ScatteringSizeUm:
-                return {_pHalationScatteringSizeUmMaster, _pHalationScatteringSizeUm, &_halationScatteringSizeUmMasterLast, 0.0, 1000.0};
+            case HalationMasterSelector::SecondaryAmount:
+                return {_pHalationSecondaryAmountMaster, _pHalationSecondaryAmount, &_halationSecondaryAmountMasterLast, 0.0, 100.0};
+            case HalationMasterSelector::SecondarySizeUm:
+                return {_pHalationSecondarySizeUmMaster, _pHalationSecondarySizeUm, &_halationSecondarySizeUmMasterLast, 0.0, 1000.0};
             case HalationMasterSelector::None:
             default:
                 return {};
@@ -3494,12 +2670,12 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
         _pGlareCompRemovalFactor,
         _pGlareCompRemovalDensity,
         _pGlareCompRemovalTransition,
-        P.glareCompRemovalFactor,
-        P.glareCompRemovalDensity,
-        P.glareCompRemovalTransition);
-    P.glareCompRemovalFactor = compensation.factor;
-    P.glareCompRemovalDensity = compensation.density;
-    P.glareCompRemovalTransition = compensation.transition;
+        P.printShadowCompensationFactor,
+        P.printShadowCompensationDensity,
+        P.printShadowCompensationTransition);
+    P.printShadowCompensationFactor = compensation.factor;
+    P.printShadowCompensationDensity = compensation.density;
+    P.printShadowCompensationTransition = compensation.transition;
     const Profiles::ProfileGlare glare = gatherGlareUi();
     P.glareActive = glare.active;
     P.glarePercent = glare.percent;
@@ -3552,7 +2728,7 @@ void JuicerEffect::bootstrap_after_attach() {
     if (printRoute) {
         JTRACE_VERBOSE(
             "SPEKTRAFILM",
-            "phase=4C print bootstrap excludes legacy Print::Runtime, dichroic reload, and neutral-filter bootstrap");
+            "phase=4C print bootstrap uses selected print recipe publication");
     } else {
         JTRACE_VERBOSE(
             "SPEKTRAFILM",
@@ -3587,32 +2763,32 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
                 P.filmProfileKey,
                 P.printProfileKey,
                 P.enlDichroicSet});
-    const char* paperKey = printAssets.printPaper.jsonKey.empty()
+    const char* printProfileKey = printAssets.printPaper.jsonKey.empty()
                                ? nullptr
                                : printAssets.printPaper.jsonKey.c_str();
-    const char* negativeKey = printAssets.filmStock.jsonKey.empty()
+    const char* filmProfileKey = printAssets.filmStock.jsonKey.empty()
                                   ? nullptr
                                   : printAssets.filmStock.jsonKey.c_str();
     const std::vector<std::string> illumKeys = enlarger_illuminant_keys_for_choice(P.enlIll);
 
-    if (!(paperKey && negativeKey && !illumKeys.empty())) {
+    if (!(printProfileKey && filmProfileKey && !illumKeys.empty())) {
 #if JUICER_DIAGNOSTICS_COMPILED
         if (traceInfo) {
             JTRACE(
                 "PRINT",
-                "Neutral filter lookup prerequisites missing: " + neutral_filter_prereq_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)));
+                "Neutral filter lookup prerequisites missing: " + neutral_filter_prereq_context(printProfileKey, filmProfileKey, join_keys_csv_or_none(illumKeys)));
         }
 #endif
         throw std::runtime_error("Neutral filter metadata incomplete for current selection");
     }
 
-    float neutralY = Print::kDefaultNeutralY;
-    float neutralM = Print::kDefaultNeutralM;
-    float neutralC = Print::kDefaultNeutralC;
+    float neutralY = Print::kSpektrafilmNeutralYCC;
+    float neutralM = Print::kSpektrafilmNeutralMCC;
+    float neutralC = Print::kSpektrafilmNeutralCCC;
     bool loaded = false;
 
     const JuicerAssets::NeutralFilterDatabaseAsset& neutralDb = printAssets.neutralFilters;
-    std::tuple<float, float, float> ymc{};
+    std::tuple<float, float, float> cmyCc{};
     std::string selectedDbVersionHash;
     const std::string* illumKeyData = illumKeys.data();
     const size_t illumKeyCount = illumKeys.size();
@@ -3630,11 +2806,11 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
                     printAssets.filmStock.jsonKey},
                 JuicerAssets::NeutralFilterLookupThread::Control);
         if (lookup.found) {
-            ymc = lookup.ymc;
+            cmyCc = lookup.cmyCc;
             selectedDbVersionHash = lookup.selectedDbVersionHash;
-            neutralY = std::clamp(std::get<0>(ymc), 0.0f, 1.0f);
-            neutralM = std::clamp(std::get<1>(ymc), 0.0f, 1.0f);
-            neutralC = std::clamp(std::get<2>(ymc), 0.0f, 1.0f);
+            neutralC = std::get<0>(cmyCc);
+            neutralM = std::get<1>(cmyCc);
+            neutralY = std::get<2>(cmyCc);
             loaded = true;
 #if JUICER_DIAGNOSTICS_COMPILED
             if (traceInfo) {
@@ -3642,8 +2818,12 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
                 msg.reserve(192);
                 msg = "Neutral filters loaded for ";
                 msg += illumKey;
-                msg += " Y/M/C=";
-                append_ymc_triplet(msg, neutralY, neutralM, neutralC);
+                msg += " C/M/Ycc=";
+                msg += std::to_string(neutralC);
+                msg += "/";
+                msg += std::to_string(neutralM);
+                msg += "/";
+                msg += std::to_string(neutralY);
                 msg += " db_version_hash=";
                 msg += cstr_or_default_if_empty(selectedDbVersionHash, "none");
                 JTRACE("PRINT", msg);
@@ -3658,17 +2838,17 @@ void JuicerEffect::applyNeutralFilters(const ParamSnapshot& P, Print::Runtime& r
         if (traceInfo) {
             JTRACE(
                 "PRINT",
-                "Neutral filters missing for " + neutral_filter_missing_context(paperKey, negativeKey, join_keys_csv_or_none(illumKeys)) + "; aborting print path");
+                "Neutral filters missing for " + neutral_filter_missing_context(printProfileKey, filmProfileKey, join_keys_csv_or_none(illumKeys)) + "; aborting print path");
         }
 #endif
         throw std::runtime_error("Neutral filter database entry not found");
     }
 
-    std::uint64_t neutralFilterHash = Print::kDefaultNeutralFilterHash;
+    std::uint64_t neutralFilterHash = Print::kNeutralCalibrationHashSeed;
     if (!selectedDbVersionHash.empty()) {
         neutralFilterHash = Hash::hash_bytes(selectedDbVersionHash.data(), selectedDbVersionHash.size());
         if (neutralFilterHash == 0) {
-            neutralFilterHash = Print::kDefaultNeutralFilterHash;
+            neutralFilterHash = Print::kNeutralCalibrationHashSeed;
         }
     }
 
@@ -3717,9 +2897,6 @@ bool JuicerEffect::applyMetadataIlluminantDefaults(ParamSnapshot& P, const Print
 }
 #endif
 
-// SF_PHASE5_BLOCKED_LiveOfxDirProfileFollow owner=Phase5;
-// allowed_call_sites=none; output_hash_resource_impact=none;
-// cleanup_symbol=SF_PHASE5_BLOCKED_LiveOfxDirProfileFollow; disposition=delete_with_legacy_renderer.
 #if 0
 void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) {
     if (!_state) {
@@ -3733,7 +2910,7 @@ void JuicerEffect::initializeCouplerParamsFromProfileIfNeeded(ParamSnapshot& P) 
 
     const ScopedParamEventSuppression suppressEvents(_state.get());
 
-    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
+    const Profiles::DirProfile& dirCfg = _state->base.dirCouplers;
     CouplerProfileDefaults factoryDefaults{};
     factoryDefaults.active = (kFactoryCouplersActive != 0);
     factoryDefaults.amount = kFactoryCouplersAmount;
@@ -3779,7 +2956,7 @@ void JuicerEffect::syncCouplerParamsFromProfileFollowMask(ParamSnapshot& P) {
         return;
     }
 
-    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
+    const Profiles::DirProfile& dirCfg = _state->base.dirCouplers;
     if (!dirCfg.hasData) {
         return;
     }
@@ -3900,7 +3077,7 @@ void JuicerEffect::applyCouplerProfileDefaults(ParamSnapshot& P) {
         return;
     }
 
-    const Profiles::DirCouplersProfile& dirCfg = _state->base.dirCouplers;
+    const Profiles::DirProfile& dirCfg = _state->base.dirCouplers;
     if (!dirCfg.hasData) {
         return;
     }
@@ -4014,7 +3191,7 @@ void JuicerEffect::onParamsPossiblyChanged(const char* changedNameOrNull) {
     if (Spektrafilm::scan_route_is_print(P.scanRoute)) {
         JTRACE_VERBOSE(
             "SPEKTRAFILM",
-            "phase=4C parameter change queued focused print recipe publication without legacy Print::Runtime");
+            "phase=4C parameter change queued focused print recipe publication");
     }
 
     store_pending_hashes_for_snapshot(*_state, P);

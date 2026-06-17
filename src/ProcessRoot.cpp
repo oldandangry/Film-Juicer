@@ -1191,8 +1191,8 @@ namespace JuicerProcess {
 
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
             make_scratch_request_descriptor(workspace);
-        const char* stageTag = negativeMedium ? "command_ensure_current_medium_uploaded_negative"
-                                              : "command_ensure_current_medium_uploaded_print";
+        const char* stageTag = negativeMedium ? "current_medium_upload_negative"
+                                              : "current_medium_upload_print";
         if (!JuicerCuda::ResourceManager::command_ensure_current_medium_uploaded(
                 _state->transaction,
                 *_state->resources,
@@ -1219,8 +1219,8 @@ namespace JuicerProcess {
 
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
             make_scratch_request_descriptor(workspace);
-        const char* stageTag = negativeMedium ? "command_ensure_scan_lut_negative"
-                                              : "command_ensure_scan_lut_print";
+        const char* stageTag = negativeMedium ? "scan_lut_negative"
+                                              : "scan_lut_print";
         const char* failurePrefix = negativeMedium ? "CUDA scan LUT upload failed"
                                                    : "CUDA print scan LUT upload failed";
         if (!JuicerCuda::ResourceManager::command_ensure_scan_lut(
@@ -1237,7 +1237,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_optics_scratch(
+    bool Root::PreparedCudaFrame::stage_optical_workspace(
         const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
         std::string& outError) {
@@ -1355,11 +1355,11 @@ namespace JuicerProcess {
             return true;
         }
         const WorkspaceLeaseMarker workspace = bind_workspace_request(request);
-        if (!prepare_optics_scratch(workspace, cudaStreamOpaque, outError)) {
+        if (!stage_optical_workspace(workspace, cudaStreamOpaque, outError)) {
             return false;
         }
         if (descriptor.lensBlurSigmaPx > 0.0f &&
-            !prepare_gaussian_kernel_slot(
+            !build_gaussian_kernel_slot(
                 _state->resources->scannerLensBlurKernel,
                 descriptor.lensBlurSigmaPx,
                 cudaStreamOpaque,
@@ -1367,7 +1367,7 @@ namespace JuicerProcess {
             return false;
         }
         if (descriptor.unsharpSigmaPx > 0.0f &&
-            !prepare_gaussian_kernel_slot(
+            !build_gaussian_kernel_slot(
                 _state->resources->scannerUnsharpKernel,
                 descriptor.unsharpSigmaPx,
                 cudaStreamOpaque,
@@ -1375,7 +1375,7 @@ namespace JuicerProcess {
             return false;
         }
         if (descriptor.glareActive && descriptor.glareBlurSigmaPx > 0.0f &&
-            !prepare_gaussian_kernel_slot(
+            !build_gaussian_kernel_slot(
                 _state->resources->scannerGlareKernel,
                 descriptor.glareBlurSigmaPx,
                 cudaStreamOpaque,
@@ -1386,9 +1386,9 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_print_illuminant_filtered(
+    bool Root::PreparedCudaFrame::build_print_illuminant_filter_curve(
         const WorkingState& workingState,
-        const Print::Runtime& printRuntime,
+        const Print::Runtime& printRt,
         const Print::Params& printParams,
         const WorkspaceLeaseMarker& workspace,
         void* cudaStreamOpaque,
@@ -1403,7 +1403,7 @@ namespace JuicerProcess {
                 _state->transaction,
                 *_state->resources,
                 workingState,
-                printRuntime,
+                printRt,
                 printParams,
                 scratchRequest,
                 cudaStreamOpaque,
@@ -1560,7 +1560,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_gaussian_kernel_slot(
+    bool Root::PreparedCudaFrame::build_gaussian_kernel_slot(
         JuicerCuda::Resources::DeviceGaussianKernel& kernel,
         float sigma,
         void* cudaStreamOpaque,
@@ -1586,7 +1586,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_halation_kernel_slot(
+    bool Root::PreparedCudaFrame::build_halation_kernel_slot(
         JuicerCuda::Resources::DeviceGaussianKernel& kernel,
         float sigma,
         void* cudaStreamOpaque,
@@ -1612,7 +1612,7 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::prepare_scanner_lens_blur_kernel(
+    bool Root::PreparedCudaFrame::build_lens_blur_kernel(
         float sigma,
         void* cudaStreamOpaque,
         std::string& outError) {
@@ -1620,14 +1620,14 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        return prepare_gaussian_kernel_slot(
+        return build_gaussian_kernel_slot(
             _state->resources->scannerLensBlurKernel,
             sigma,
             cudaStreamOpaque,
             outError);
     }
 
-    bool Root::PreparedCudaFrame::prepare_scanner_unsharp_kernel(
+    bool Root::PreparedCudaFrame::build_unsharp_kernel(
         float sigma,
         void* cudaStreamOpaque,
         std::string& outError) {
@@ -1635,14 +1635,14 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        return prepare_gaussian_kernel_slot(
+        return build_gaussian_kernel_slot(
             _state->resources->scannerUnsharpKernel,
             sigma,
             cudaStreamOpaque,
             outError);
     }
 
-    bool Root::PreparedCudaFrame::prepare_scanner_glare_kernel(
+    bool Root::PreparedCudaFrame::build_glare_kernel(
         float sigma,
         void* cudaStreamOpaque,
         std::string& outError) {
@@ -1650,7 +1650,7 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        return prepare_gaussian_kernel_slot(
+        return build_gaussian_kernel_slot(
             _state->resources->scannerGlareKernel,
             sigma,
             cudaStreamOpaque,
@@ -1665,7 +1665,7 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        return prepare_gaussian_kernel_slot(
+        return build_gaussian_kernel_slot(
             _state->resources->grainBlurKernel,
             sigma,
             cudaStreamOpaque,
@@ -1680,7 +1680,7 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        return prepare_gaussian_kernel_slot(
+        return build_gaussian_kernel_slot(
             _state->resources->grainBlurKernelMid,
             sigma,
             cudaStreamOpaque,
@@ -1695,7 +1695,7 @@ namespace JuicerProcess {
             outError = "prepared frame is not active";
             return false;
         }
-        return prepare_gaussian_kernel_slot(
+        return build_gaussian_kernel_slot(
             _state->resources->grainBlurKernelCoarse,
             sigma,
             cudaStreamOpaque,
@@ -1719,14 +1719,14 @@ namespace JuicerProcess {
                 "CUDA grain dye-cloud kernel upload failed");
             return false;
         }
-        return prepare_gaussian_kernel_slot(
+        return build_gaussian_kernel_slot(
             _state->resources->grainDyeKernel[layer][channel],
             sigma,
             cudaStreamOpaque,
             outError);
     }
 
-    bool Root::PreparedCudaFrame::prepare_halation_kernel(
+    bool Root::PreparedCudaFrame::build_halation_kernel(
         int channel,
         float sigma,
         void* cudaStreamOpaque,
@@ -1738,18 +1738,18 @@ namespace JuicerProcess {
         if (channel < 0 || channel >= 3) {
             outError = "invalid halation kernel slot";
             _state->set_failure(
-                "prepare_halation_kernel",
+                "build_halation_kernel",
                 "CUDA halation kernel upload failed");
             return false;
         }
-        return prepare_halation_kernel_slot(
+        return build_halation_kernel_slot(
             _state->resources->halationKernel[channel],
             sigma,
             cudaStreamOpaque,
             outError);
     }
 
-    bool Root::PreparedCudaFrame::prepare_halation_scatter_kernel(
+    bool Root::PreparedCudaFrame::build_halation_scatter_kernel(
         int channel,
         float sigma,
         void* cudaStreamOpaque,
@@ -1761,11 +1761,11 @@ namespace JuicerProcess {
         if (channel < 0 || channel >= 3) {
             outError = "invalid halation scatter kernel slot";
             _state->set_failure(
-                "prepare_halation_scatter_kernel",
+                "build_halation_scatter_kernel",
                 "CUDA halation scatter kernel upload failed");
             return false;
         }
-        return prepare_halation_kernel_slot(
+        return build_halation_kernel_slot(
             _state->resources->halationScatterKernel[channel],
             sigma,
             cudaStreamOpaque,
@@ -1817,7 +1817,7 @@ namespace JuicerProcess {
 
     bool Root::PreparedCudaFrame::validate_print_primitives(
         const WorkingState& workingState,
-        const Print::Runtime& printRuntime,
+        const Print::Runtime& printRt,
         const Print::Params& printParams,
         float midgrayFactor,
         void* cudaStreamOpaque,
@@ -1830,7 +1830,7 @@ namespace JuicerProcess {
         return JuicerCuda::validate_print_primitives(
             *_state->resources,
             workingState,
-            printRuntime,
+            printRt,
             printParams,
             midgrayFactor,
             cudaStreamOpaque,
@@ -2142,7 +2142,7 @@ namespace JuicerProcess {
         view.filmDensityTables.epsC = resources.printFilmDensityTables.epsC;
         view.filmDensityTables.epsM = resources.printFilmDensityTables.epsM;
         view.filmDensityTables.epsY = resources.printFilmDensityTables.epsY;
-        view.filmDensityTables.baseMin = resources.printFilmDensityTables.baseMin;
+        view.filmDensityTables.baseDensityMin = resources.printFilmDensityTables.baseDensityMin;
         view.filmDensityTables.K = resources.printFilmDensityTables.K;
         view.filmDensityTables.hasBaseline = resources.printFilmDensityTables.hasBaseline;
         view.filmDensityTables.invYn = resources.printFilmDensityTables.invYn;
@@ -2261,9 +2261,9 @@ namespace JuicerProcess {
         return view;
     }
 
-    Root::PreparedCudaFrame::ScannerOpticsScratchView Root::PreparedCudaFrame::scanner_optics_scratch(
+    Root::PreparedCudaFrame::ScannerWorkspaceView Root::PreparedCudaFrame::scanner_workspace(
         const WorkspaceLeaseMarker& workspace) const noexcept {
-        ScannerOpticsScratchView view{};
+        ScannerWorkspaceView view{};
         if (!workspace_marker_matches_current_frame(workspace) || !workspace._request.needOptics) {
             return view;
         }
@@ -2303,7 +2303,7 @@ namespace JuicerProcess {
             _state->scannerPostEffectsDescriptor.hash != descriptorHash) {
             return view;
         }
-        view.scratch = scanner_optics_scratch(workspace);
+        view.scratch = scanner_workspace(workspace);
         if (!view.scratch.active) {
             return view;
         }
@@ -2982,7 +2982,6 @@ namespace JuicerProcess {
     }
 
     void Root::release_process_host_services() noexcept {
-        release_working_state_cores();
         release_cuda_host_asset_caches();
         _assets.release_cached_payloads();
     }

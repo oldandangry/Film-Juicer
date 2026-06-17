@@ -91,7 +91,7 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT Ax = nullptr;
         const float* JUICER_RESTRICT Ay = nullptr;
         const float* JUICER_RESTRICT Az = nullptr;
-        const float* JUICER_RESTRICT baseMin = nullptr;
+        const float* JUICER_RESTRICT baseDensityMin = nullptr;
         int K = 0;
         int hasBaseline = 0;
         float invYn = 1.0f;
@@ -153,8 +153,8 @@ namespace JuicerCuda {
 
     struct HalationPayload {
         int active = 0;
-        float strength[3] = {0.0f, 0.0f, 0.0f};
-        float scatteringStrength[3] = {0.0f, 0.0f, 0.0f};
+        float primaryAmount[3] = {0.0f, 0.0f, 0.0f};
+        float secondaryAmount[3] = {0.0f, 0.0f, 0.0f};
     };
 
     struct HalationKernelPayload {
@@ -201,7 +201,7 @@ namespace JuicerCuda {
         float pixelSizeUm = 0.0f; // Pixel size in micrometers.
         int pitchPx = 0;
         float blurSigmaPx = 0.0f;               // Grain blur sigma in pixels.
-        float blurDyeCloudsUm = 0.0f;           // Dye-cloud blur sigma scale in pixels (legacy name).
+        float blurDyeCloudsUm = 0.0f;           // Dye-cloud blur sigma scale in pixels.
         float microStructure[2] = {0.0f, 0.0f}; // [cell_um, clump_sigma_x1e-3]
         float clumpTemporalMix = 0.0f;
         int clumpMorphPeriodFrames = 0;
@@ -359,12 +359,8 @@ namespace JuicerCuda {
         FilmRawPayload filmRaw{};
     };
 
-    // SF_TEMP_BRIDGE_PipelineRunParams owner=Phase4 print-route audit:
-    // reason=legacy broad print launch ABI; allowed=processImagesCUDA post-direct branch,
-    // ResourceManager commands, broad CUDA kernels, and JuicerCudaValidation only;
-    // output_impact=blocked print route; hash_impact=none on direct route;
-    // resource_impact=broad inactive-stage payload surface; removal=Phase4 print cutover.
-    // Accepted direct rendering uses DirectPipelineRunParams.
+    // Broad CUDA payload used by the monolithic launch path; focused direct rendering uses
+    // DirectPipelineRunParams.
     struct PipelineRunParams {
         const void* src = nullptr;
         std::size_t srcRowBytes = 0;

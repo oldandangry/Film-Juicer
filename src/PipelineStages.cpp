@@ -22,29 +22,18 @@ namespace Pipeline {
         FilmRaw filmRaw;
     };
 
-    class ExposeFilmStage {
-    public:
-        static bool run(const WorkingState& ws, const ExposeFilmInputs& in, ExposeFilmOutputs& out);
-    };
-
     struct DevelopFilmInputs {
         FilmRaw filmRaw;
         const Couplers::Runtime* dirRuntime = nullptr;
         bool applyDirRuntime = true;
 
         bool useSpatialDIR = false;
-        float spatialLogECorrectionsYMC[3] = { 0.0f, 0.0f, 0.0f };
+        float spatialLogELayerCorrections[3] = {0.0f, 0.0f, 0.0f};
     };
 
     struct DevelopFilmOutputs {
         FilmLogRaw filmLogRaw;
         NegativeDensityCMY negativeDensity;
-    };
-
-    class DevelopFilmStage {
-    public:
-        static bool run(const WorkingState& ws, const DevelopFilmInputs& in, DevelopFilmOutputs& out);
-        static FilmLogRaw compute_log_raw(const FilmRaw& filmRaw);
     };
 
     namespace {
@@ -96,8 +85,7 @@ namespace Pipeline {
         inline void sample_negative_densities_spatial_dir(
             const WorkingState& ws,
             const float logE_BGR[3],
-            float D_cmy_out[3])
-        {
+            float D_cmy_out[3]) {
             const Spectral::Curve& cB = ws.dirPrecorrected ? ws.dirDensB : ws.densB;
             const Spectral::Curve& cG = ws.dirPrecorrected ? ws.dirDensG : ws.densG;
             const Spectral::Curve& cR = ws.dirPrecorrected ? ws.dirDensR : ws.densR;
@@ -115,29 +103,31 @@ namespace Pipeline {
             D_cmy_out[2] = D_Y;
         }
 
-        inline float blend_dichroic_filter_linear(float curveVal, float normalizedAmount) {
+        struct DichroicFilterBlendSample {
+            float curveValue = 1.0f;
+            float blendAmount = 0.0f;
+        };
+
+        inline float blend_dichroic_filter_linear(const DichroicFilterBlendSample& sample) {
             // agx-emulsion parity: do not treat non-finite curve samples as identity.
             // NaNs must propagate even when amount is 0 (NumPy semantics: NaN * 0 = NaN).
-            const float a = std::isfinite(normalizedAmount) ? normalizedAmount : 0.0f;
-            return 1.0f - (1.0f - curveVal) * a;
+            const float a = std::isfinite(sample.blendAmount) ? sample.blendAmount : 0.0f;
+            return 1.0f - (1.0f - sample.curveValue) * a;
         }
 
-        inline float compose_dichroic_amount(float neutralAmount, float deltaAmount) {
-            const float neutral = std::isfinite(neutralAmount)
-                ? std::clamp(neutralAmount, 0.0f, 1.0f)
-                : 0.0f;
-            float deltaSteps = std::isfinite(deltaAmount) ? deltaAmount : 0.0f;
-            const float shiftLimit = Print::kEnlargerSteps;
-            deltaSteps = std::clamp(deltaSteps, -shiftLimit, shiftLimit);
-            const float totalSteps = neutral * Print::kEnlargerSteps + deltaSteps;
-            return totalSteps / Print::kEnlargerSteps;
+        inline float compose_dichroic_amount(float neutralCc, float deltaCc) {
+            const float neutral = std::isfinite(neutralCc) ? neutralCc : 0.0f;
+            const float delta = std::isfinite(deltaCc)
+                                    ? std::clamp(deltaCc, -Print::kPrintFilterCCLimit, Print::kPrintFilterCCLimit)
+                                    : 0.0f;
+            const float totalCc = neutral + delta;
+            return 1.0f - std::pow(10.0f, -totalCc / 100.0f);
         }
 
         void negative_density_spectral_from_dyes(
             const WorkingState& ws,
             const float D_neg[3],
-            std::vector<float>& density_out)
-        {
+            std::vector<float>& density_out) {
             const int K = ws.tablesView.K;
             if (K <= 0) {
                 density_out.clear();
@@ -145,29 +135,29 @@ namespace Pipeline {
             }
             density_out.resize(static_cast<size_t>(K));
 
-            // Preserve the legacy gate used by the current render bridge.
-            const bool hasBL = ws.hasBaseline && static_cast<int>(ws.baseMin.linear.size()) == K;
+            // Keep baseline application gated to the prepared spectral table shape.
+            const bool hasBL = ws.hasBaseline && static_cast<int>(ws.baseDensityMin.linear.size()) == K;
 
             auto epsY_at = [&](int i) {
                 return (i < static_cast<int>(ws.tablesView.epsY.size())) ? ws.tablesView.epsY[i] : 0.0f;
-                };
+            };
             auto epsM_at = [&](int i) {
                 return (i < static_cast<int>(ws.tablesView.epsM.size())) ? ws.tablesView.epsM[i] : 0.0f;
-                };
+            };
             auto epsC_at = [&](int i) {
                 return (i < static_cast<int>(ws.tablesView.epsC.size())) ? ws.tablesView.epsC[i] : 0.0f;
-                };
+            };
 
             for (int i = 0; i < K; ++i) {
                 const float baseSpectral = hasBL &&
-                        static_cast<size_t>(i) < ws.tablesView.baseMin.size()
-                    ? ws.tablesView.baseMin[static_cast<size_t>(i)]
-                    : 0.0f;
+                                                   static_cast<size_t>(i) < ws.tablesView.baseDensityMin.size()
+                                               ? ws.tablesView.baseDensityMin[static_cast<size_t>(i)]
+                                               : 0.0f;
 
-                density_out[i] = D_neg[0] * epsC_at(i) // C
-                    + D_neg[1] * epsM_at(i) // M
-                    + D_neg[2] * epsY_at(i) // Y
-                    + baseSpectral;
+                density_out[i] = D_neg[0] * epsC_at(i)   // C
+                                 + D_neg[1] * epsM_at(i) // M
+                                 + D_neg[2] * epsY_at(i) // Y
+                                 + baseSpectral;
             }
         }
 
@@ -176,8 +166,7 @@ namespace Pipeline {
             float yShiftSteps,
             float mShiftSteps,
             float cShiftSteps,
-            std::vector<float>& illuminant_out)
-        {
+            std::vector<float>& illuminant_out) {
             const int K = Spectral::gShape.K;
             if (K <= 0) {
                 illuminant_out.clear();
@@ -191,17 +180,20 @@ namespace Pipeline {
 
             for (int i = 0; i < K; ++i) {
                 const float Ee = (rt.illumEnlarger.linear.size() > static_cast<size_t>(i))
-                    ? rt.illumEnlarger.linear[static_cast<size_t>(i)]
-                    : 1.0f;
+                                     ? rt.illumEnlarger.linear[static_cast<size_t>(i)]
+                                     : 1.0f;
                 const float fY = blend_dichroic_filter_linear(
-                    (rt.filterY.linear.size() > static_cast<size_t>(i)) ? rt.filterY.linear[static_cast<size_t>(i)] : 1.0f,
-                    yAmount);
+                    DichroicFilterBlendSample{
+                        (rt.filterY.linear.size() > static_cast<size_t>(i)) ? rt.filterY.linear[static_cast<size_t>(i)] : 1.0f,
+                        yAmount});
                 const float fM = blend_dichroic_filter_linear(
-                    (rt.filterM.linear.size() > static_cast<size_t>(i)) ? rt.filterM.linear[static_cast<size_t>(i)] : 1.0f,
-                    mAmount);
+                    DichroicFilterBlendSample{
+                        (rt.filterM.linear.size() > static_cast<size_t>(i)) ? rt.filterM.linear[static_cast<size_t>(i)] : 1.0f,
+                        mAmount});
                 const float fC = blend_dichroic_filter_linear(
-                    (rt.filterC.linear.size() > static_cast<size_t>(i)) ? rt.filterC.linear[static_cast<size_t>(i)] : 1.0f,
-                    cAmount);
+                    DichroicFilterBlendSample{
+                        (rt.filterC.linear.size() > static_cast<size_t>(i)) ? rt.filterC.linear[static_cast<size_t>(i)] : 1.0f,
+                        cAmount});
                 illuminant_out[static_cast<size_t>(i)] = Ee * (fY * fM * fC);
             }
         }
@@ -212,8 +204,7 @@ namespace Pipeline {
             float yShiftSteps,
             float mShiftSteps,
             float cShiftSteps,
-            PrintPipelineScratch& scratch)
-        {
+            PrintPipelineScratch& scratch) {
             const int shapeK = Spectral::gShape.K;
             if (shapeK <= 0) {
                 scratch.enlargerIlluminantFilteredValid = false;
@@ -224,13 +215,13 @@ namespace Pipeline {
                 return;
             }
 
-            // Match compose_dichroic_amount behavior: treat non-finite delta steps as 0 so cache keys
+            // Match compose_dichroic_amount behavior: treat non-finite delta CC as 0 so cache keys
             // do not thrash on NaN inputs (NaN != NaN).
             const float yKey = std::isfinite(yShiftSteps) ? yShiftSteps : 0.0f;
             const float mKey = std::isfinite(mShiftSteps) ? mShiftSteps : 0.0f;
             const float cKey = std::isfinite(cShiftSteps) ? cShiftSteps : 0.0f;
             const std::uint64_t neutralFilterHash =
-                (rt.neutralFilterHash != 0) ? rt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+                (rt.neutralFilterHash != 0) ? rt.neutralFilterHash : Print::kNeutralCalibrationHashSeed;
 
             if (scratch.enlargerIlluminantFilteredValid &&
                 scratch.enlargerIlluminantWsBuildCounter == wsBuildCounter &&
@@ -261,8 +252,7 @@ namespace Pipeline {
             const float D_neg[3],
             std::vector<float>& tmp_density_spectral,
             std::vector<float>& tmp_illuminant_filtered,
-            std::vector<float>& out_light)
-        {
+            std::vector<float>& out_light) {
             negative_density_spectral_from_dyes(ws, D_neg, tmp_density_spectral);
             build_enlarger_illuminant_filtered(rt, yShiftSteps, mShiftSteps, cShiftSteps, tmp_illuminant_filtered);
             density_to_light_agx(tmp_density_spectral, tmp_illuminant_filtered, out_light);
@@ -271,11 +261,11 @@ namespace Pipeline {
         void raw_exposures_from_filtered_light(
             const Print::Profile& p,
             const std::vector<float>& Ee_filtered,
-            float raw[3])
-        {
+            float raw[3]) {
             raw[0] = raw[1] = raw[2] = 0.0f;
             const int K = Spectral::gShape.K;
-            if (K <= 0) return;
+            if (K <= 0)
+                return;
 
             // Spectral::build_curve_on_reference_axis_from_log10_pairs already exponentiates the
             // authored log10 sensitivities, so Curve::linear stores linear samples pinned
@@ -287,7 +277,7 @@ namespace Pipeline {
             const size_t sizeY = sensY.size();
             const size_t sizeM = sensM.size();
             const size_t sizeC = sensC.size();
-            const size_t n = std::min({ static_cast<size_t>(K), Ee_filtered.size(), sizeY, sizeM, sizeC });
+            const size_t n = std::min({static_cast<size_t>(K), Ee_filtered.size(), sizeY, sizeM, sizeC});
 
             double accumC = 0.0;
             double accumM = 0.0;
@@ -323,11 +313,10 @@ namespace Pipeline {
         void ensure_cached_preflash_raw(
             const WorkingState& ws,
             const Print::Runtime& rt,
-            PrintPipelineScratch& scratch)
-        {
+            PrintPipelineScratch& scratch) {
             const int shapeK = Spectral::gShape.K;
             const std::uint64_t neutralFilterHash =
-                (rt.neutralFilterHash != 0) ? rt.neutralFilterHash : Print::kDefaultNeutralFilterHash;
+                (rt.neutralFilterHash != 0) ? rt.neutralFilterHash : Print::kNeutralCalibrationHashSeed;
             if (shapeK <= 0 || ws.tablesView.K <= 0) {
                 scratch.preflashRawValid = false;
                 scratch.preflashWsBuildCounter = 0;
@@ -362,24 +351,19 @@ namespace Pipeline {
 
     } // namespace
 
-    bool ExposeFilmStage::run(const WorkingState& ws, const ExposeFilmInputs& in, ExposeFilmOutputs& out) {
-        float rgbIn[3] = { in.rgb.v[0], in.rgb.v[1], in.rgb.v[2] };
-        float E[3] = { 0.0f, 0.0f, 0.0f };
+    bool expose_film_raw(const WorkingState& ws, const ExposeFilmInputs& in, ExposeFilmOutputs& out) {
+        float rgbIn[3] = {in.rgb.v[0], in.rgb.v[1], in.rgb.v[2]};
+        float E[3] = {0.0f, 0.0f, 0.0f};
 
         const float exposureScaleSafe = (std::isfinite(in.exposureScale) && in.exposureScale > 0.0f)
-            ? in.exposureScale
-            : 1.0f;
+                                            ? in.exposureScale
+                                            : 1.0f;
 
         const Spectral::SpectralTables* tablesSPD =
             (ws.spdReady && ws.tablesRef.K > 0) ? &ws.tablesRef : nullptr;
 
         Spectral::rgb_input_to_film_raw(
-            rgbIn, E, exposureScaleSafe,
-            ws.filmRaw,
-            tablesSPD,
-            (ws.spdReady ? ws.spdSInv : nullptr),
-            ws.spdReady,
-            ws.sensB, ws.sensG, ws.sensR);
+            rgbIn, E, exposureScaleSafe, ws.filmRaw, tablesSPD, (ws.spdReady ? ws.spdSInv : nullptr), ws.spdReady, ws.sensB, ws.sensG, ws.sensR);
 
         out.filmRaw.v[0] = E[0];
         out.filmRaw.v[1] = E[1];
@@ -387,7 +371,7 @@ namespace Pipeline {
         return true;
     }
 
-    FilmLogRaw DevelopFilmStage::compute_log_raw(const FilmRaw& filmRaw) {
+    FilmLogRaw compute_film_log_raw(const FilmRaw& filmRaw) {
         FilmLogRaw out{};
 
         constexpr float kEps = 1e-10f;
@@ -398,18 +382,18 @@ namespace Pipeline {
         return out;
     }
 
-    bool DevelopFilmStage::run(const WorkingState& ws, const DevelopFilmInputs& in, DevelopFilmOutputs& out) {
-        out.filmLogRaw = compute_log_raw(in.filmRaw);
+    bool develop_film_density(const WorkingState& ws, const DevelopFilmInputs& in, DevelopFilmOutputs& out) {
+        out.filmLogRaw = compute_film_log_raw(in.filmRaw);
         out.negativeDensity = NegativeDensityCMY{};
 
-        float logE[3] = { out.filmLogRaw.v[0], out.filmLogRaw.v[1], out.filmLogRaw.v[2] };
+        float logE[3] = {out.filmLogRaw.v[0], out.filmLogRaw.v[1], out.filmLogRaw.v[2]};
 
         if (in.useSpatialDIR) {
-            logE[0] -= in.spatialLogECorrectionsYMC[0]; // Y -> Blue layer
-            logE[1] -= in.spatialLogECorrectionsYMC[1]; // M -> Green layer
-            logE[2] -= in.spatialLogECorrectionsYMC[2]; // C -> Red layer
+            logE[0] -= in.spatialLogELayerCorrections[0]; // Y -> Blue layer
+            logE[1] -= in.spatialLogELayerCorrections[1]; // M -> Green layer
+            logE[2] -= in.spatialLogELayerCorrections[2]; // C -> Red layer
 
-            float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+            float D_cmy[3] = {0.0f, 0.0f, 0.0f};
             sample_negative_densities_spatial_dir(ws, logE, D_cmy);
             out.negativeDensity.v[0] = D_cmy[0];
             out.negativeDensity.v[1] = D_cmy[1];
@@ -426,7 +410,7 @@ namespace Pipeline {
         logE[1] = sanitize_inf_logE_for_curve(logE[1], ws.densG);
         logE[2] = sanitize_inf_logE_for_curve(logE[2], ws.densR);
 
-        float D_cmy[3] = { 0.0f, 0.0f, 0.0f };
+        float D_cmy[3] = {0.0f, 0.0f, 0.0f};
         sample_negative_densities(
             ws,
             runtime,
@@ -444,8 +428,7 @@ namespace Pipeline {
         const WorkingState& ws,
         const Print::Runtime& prt,
         float outRaw[3],
-        int& outShapeK)
-    {
+        int& outShapeK) {
         outShapeK = Spectral::gShape.K;
         if (!outRaw || outShapeK <= 0) {
             return false;
@@ -468,7 +451,7 @@ namespace Pipeline {
 
         const bool hasBaseline =
             ws.hasBaseline &&
-            static_cast<int>(ws.tablesView.baseMin.size()) == outShapeK;
+            static_cast<int>(ws.tablesView.baseDensityMin.size()) == outShapeK;
 
         const float yAmount = compose_dichroic_amount(prt.neutralY, 0.0f);
         const float mAmount = compose_dichroic_amount(prt.neutralM, 0.0f);
@@ -481,20 +464,23 @@ namespace Pipeline {
         for (int i = 0; i < outShapeK; ++i) {
             const size_t idx = static_cast<size_t>(i);
             const float Ee = (prt.illumEnlarger.linear.size() > idx)
-                ? prt.illumEnlarger.linear[idx]
-                : 1.0f;
+                                 ? prt.illumEnlarger.linear[idx]
+                                 : 1.0f;
             const float fY = blend_dichroic_filter_linear(
-                (prt.filterY.linear.size() > idx) ? prt.filterY.linear[idx] : 1.0f,
-                yAmount);
+                DichroicFilterBlendSample{
+                    (prt.filterY.linear.size() > idx) ? prt.filterY.linear[idx] : 1.0f,
+                    yAmount});
             const float fM = blend_dichroic_filter_linear(
-                (prt.filterM.linear.size() > idx) ? prt.filterM.linear[idx] : 1.0f,
-                mAmount);
+                DichroicFilterBlendSample{
+                    (prt.filterM.linear.size() > idx) ? prt.filterM.linear[idx] : 1.0f,
+                    mAmount});
             const float fC = blend_dichroic_filter_linear(
-                (prt.filterC.linear.size() > idx) ? prt.filterC.linear[idx] : 1.0f,
-                cAmount);
+                DichroicFilterBlendSample{
+                    (prt.filterC.linear.size() > idx) ? prt.filterC.linear[idx] : 1.0f,
+                    cAmount});
             const float illumFiltered = Ee * (fY * fM * fC);
 
-            const float baseDensity = hasBaseline ? ws.tablesView.baseMin[idx] : 0.0f;
+            const float baseDensity = hasBaseline ? ws.tablesView.baseDensityMin[idx] : 0.0f;
             const double light = static_cast<double>(density_to_light_sample_agx(baseDensity, illumFiltered));
 
             const float sC = p.sensC_log.linear[idx];
@@ -521,16 +507,15 @@ namespace Pipeline {
         const WorkingState& ws,
         const ExposePrintInputs& in,
         ExposePrintOutputs& out,
-        PrintPipelineScratch& scratch)
-    {
+        PrintPipelineScratch& scratch) {
         out.printRaw = PrintRaw{};
         out.printLogRaw = PrintLogRaw{};
 
-        if (!in.printRuntime || !in.printParams) {
+        if (!in.printRt || !in.printParams) {
             return false;
         }
 
-        const Print::Runtime& prt = *in.printRuntime;
+        const Print::Runtime& prt = *in.printRt;
         const Print::Params& prm = *in.printParams;
 
         const int viewK = ws.tablesView.K;
@@ -543,8 +528,7 @@ namespace Pipeline {
         const float D_cmy[3] = {
             in.negativeDensity.v[0],
             in.negativeDensity.v[1],
-            in.negativeDensity.v[2]
-        };
+            in.negativeDensity.v[2]};
 
         ensure_cached_enlarger_illuminant_filtered(
             prt,
@@ -562,12 +546,12 @@ namespace Pipeline {
 
         // Apply print exposure scaling to raw (agx: raw *= print_exposure)
         const float expPrint = std::isfinite(prm.exposure)
-            ? std::max(0.0f, prm.exposure)
-            : 1.0f;
+                                   ? std::max(0.0f, prm.exposure)
+                                   : 1.0f;
 
         const float kMid = (std::isfinite(in.midgrayFactor) && in.midgrayFactor > 0.0f)
-            ? in.midgrayFactor
-            : 1.0f;
+                               ? in.midgrayFactor
+                               : 1.0f;
 
         const float rawScale = expPrint * kMid;
         raw[0] *= rawScale;
@@ -594,16 +578,16 @@ namespace Pipeline {
 
     float ExposePrintStage::compute_midgray_factor(
         const WorkingState& ws,
-        const Print::Runtime& printRuntime,
+        const Print::Runtime& printRt,
         const Print::Params& printParams,
         const Couplers::Runtime& dirRT,
-        float exposureCompScale)
-    {
+        float exposureCompScale) {
         // If slider EV scale is not meaningful, skip compensation.
-        if (!std::isfinite(exposureCompScale) || exposureCompScale <= 0.0f) return 1.0f;
+        if (!std::isfinite(exposureCompScale) || exposureCompScale <= 0.0f)
+            return 1.0f;
 
         // 1) Midgray DWG rgb at canonical brightness (AgX parity: constant 18.4% reflectance)
-        const float rgbMid[3] = { 0.184f, 0.184f, 0.184f };
+        const float rgbMid[3] = {0.184f, 0.184f, 0.184f};
 
         // 2) DWG -> per-layer exposures (negative leg); apply camera EV exactly once here.
         // NOTE: Do not pre-scale rgbMid by cameraExposureScale - avoids double-applying EV.
@@ -615,48 +599,40 @@ namespace Pipeline {
         exposeIn.exposureScale = printParams.exposureCompensationEnabled ? exposureCompScale : 1.0f;
 
         Pipeline::ExposeFilmOutputs exposeOut{};
-        if (!Pipeline::ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
+        if (!expose_film_raw(ws, exposeIn, exposeOut)) {
             return 1.0f;
         }
 
         Pipeline::DevelopFilmInputs devIn{};
         devIn.filmRaw = exposeOut.filmRaw;
         devIn.dirRuntime = &dirRT;
-        devIn.applyDirRuntime = false; // midgray factor uses pre-DIR densities (legacy behavior)
+        devIn.applyDirRuntime = false; // midgray factor uses pre-DIR densities.
 
         Pipeline::DevelopFilmOutputs devOut{};
-        if (!Pipeline::DevelopFilmStage::run(ws, devIn, devOut)) {
+        if (!develop_film_density(ws, devIn, devOut)) {
             return 1.0f;
         }
 
         const float D_neg[3] = {
             devOut.negativeDensity.v[0],
             devOut.negativeDensity.v[1],
-            devOut.negativeDensity.v[2]
-        };
+            devOut.negativeDensity.v[2]};
 
         // 4) Print illuminant + negative density -> transmitted light (agx parity: NaNs collapse to 0 here only).
         static thread_local std::vector<float> density_spectral;
         static thread_local std::vector<float> print_illuminant;
         static thread_local std::vector<float> light;
         density_to_filtered_light_agx(
-            ws, printRuntime,
-            printParams.yFilter,
-            printParams.mFilter,
-            printParams.cFilter,
-            D_neg,
-            density_spectral,
-            print_illuminant,
-            light);
+            ws, printRt, printParams.yFilter, printParams.mFilter, printParams.cFilter, D_neg, density_spectral, print_illuminant, light);
 
         // 5) RAW via print paper sensitivities (log domain -> linear sensitivity)
         float raw[3];
-        raw_exposures_from_filtered_light(printRuntime.profile, light, raw);
+        raw_exposures_from_filtered_light(printRt.profile, light, raw);
 
         const float safeRawMid = std::max(1e-12f, raw[1]);
         const float baseFactor = std::isfinite(safeRawMid) && safeRawMid > 0.0f
-            ? 1.0f / safeRawMid
-            : 1.0f;
+                                     ? 1.0f / safeRawMid
+                                     : 1.0f;
 
         if (std::fabs(baseFactor - 1.0f) > 0.05f) {
             std::ostringstream oss;
@@ -669,109 +645,28 @@ namespace Pipeline {
         return baseFactor;
     }
 
-    PipelineRunner::PipelineRunner(const PipelineRunnerConfig& cfg) : cfg_(cfg) {}
-
-    float PipelineRunner::compute_midgray_factor(
+    float compute_print_midgray_factor(
         const WorkingState& ws,
-        const Print::Runtime& printRuntime,
+        const Print::Runtime& printRt,
         const Print::Params& printParams,
         const Couplers::Runtime& dirRT,
-        float exposureCompScale)
-    {
+        float exposureCompScale) {
         return ExposePrintStage::compute_midgray_factor(
             ws,
-            printRuntime,
+            printRt,
             printParams,
             dirRT,
             exposureCompScale);
     }
 
-    bool PipelineRunner::run_density_pixel(
-        const WorkingState& ws,
-        const DensityPixelInputs& in,
-        DensityPixelOutputs& out) const
-    {
-        out = DensityPixelOutputs{};
-
-        FilmRaw filmRaw{};
-        if (in.useFilmRawOverride) {
-            filmRaw = in.filmRawOverride;
-        }
-        else {
-            ExposeFilmInputs exposeIn{};
-            exposeIn.rgb = in.rgb;
-            exposeIn.exposureScale = in.exposureScale;
-
-            ExposeFilmOutputs exposeOut{};
-            if (!ExposeFilmStage::run(ws, exposeIn, exposeOut)) {
-                return false;
-            }
-            filmRaw = exposeOut.filmRaw;
-        }
-
-        DevelopFilmInputs devIn{};
-        devIn.filmRaw = filmRaw;
-        devIn.dirRuntime = in.dirRuntime;
-        devIn.applyDirRuntime = in.applyDirRuntime;
-        devIn.useSpatialDIR = in.useSpatialDIR;
-        devIn.spatialLogECorrectionsYMC[0] = in.spatialLogECorrectionsYMC[0];
-        devIn.spatialLogECorrectionsYMC[1] = in.spatialLogECorrectionsYMC[1];
-        devIn.spatialLogECorrectionsYMC[2] = in.spatialLogECorrectionsYMC[2];
-
-        DevelopFilmOutputs devOut{};
-        if (!DevelopFilmStage::run(ws, devIn, devOut)) {
-            return false;
-        }
-
-        out.filmRaw = filmRaw;
-        out.filmLogRaw = devOut.filmLogRaw;
-        out.negativeDensity = devOut.negativeDensity;
-        out.medium = DensityMedium::Negative;
-
-        if (!cfg_.enablePrint) {
-            return true;
-        }
-
-        if (!in.printRuntime || !in.printParams || in.printParams->bypass) {
-            return true;
-        }
-        if (!in.printScratch) {
-            return false;
-        }
-
-        ExposePrintInputs exposePrintIn{};
-        exposePrintIn.printRuntime = in.printRuntime;
-        exposePrintIn.printParams = in.printParams;
-        exposePrintIn.negativeDensity = devOut.negativeDensity;
-        exposePrintIn.midgrayFactor = in.midgrayFactor;
-
-        ExposePrintOutputs exposePrintOut{};
-        if (!ExposePrintStage::run(ws, exposePrintIn, exposePrintOut, *in.printScratch)) {
-            return false;
-        }
-
-        DevelopPrintInputs developPrintIn{};
-        developPrintIn.printRuntime = in.printRuntime;
-        developPrintIn.printLogRaw = exposePrintOut.printLogRaw;
-
-        DevelopPrintOutputs developPrintOut{};
-        if (!DevelopPrintStage::run(developPrintIn, developPrintOut)) {
-            return false;
-        }
-
-        out.printDensity = developPrintOut.printDensity;
-        out.medium = DensityMedium::Print;
-        return true;
-    }
-
     bool DevelopPrintStage::run(const DevelopPrintInputs& in, DevelopPrintOutputs& out) {
         out.printDensity = PrintDensityCMY{};
 
-        if (!in.printRuntime) {
+        if (!in.printRt) {
             return false;
         }
 
-        const Print::Profile& p = in.printRuntime->profile;
+        const Print::Profile& p = in.printRt->profile;
 
         auto interpolate_density_gamma = [](const Spectral::Curve& dc, float logE, float gammaFactor) {
             if (dc.lambda_nm.empty()) {
@@ -779,8 +674,8 @@ namespace Pipeline {
             }
 
             const float gammaSafe = (std::isfinite(gammaFactor) && gammaFactor > 0.0f)
-                ? gammaFactor
-                : 1.0f;
+                                        ? gammaFactor
+                                        : 1.0f;
 
             return Spectral::sample_density_at_logE(dc, logE, gammaSafe);
         };
@@ -792,322 +687,3 @@ namespace Pipeline {
     }
 
 } // namespace Pipeline
-
-namespace SpatialDIR {
-
-    namespace {
-
-        inline void resize_noinit(std::vector<float>& v, size_t n) {
-            // Keep capacity stable and avoid redundant full clears; hot-path writes overwrite every used sample.
-            if (v.size() != n) {
-                v.resize(n);
-            }
-        }
-
-        void blurChannelSeparable(
-            const std::vector<float>& src,
-            std::vector<float>& tmp,
-            std::vector<float>& dst,
-            int width,
-            int height,
-            const std::vector<float>& k)
-        {
-            if (width <= 0 || height <= 0) {
-                tmp.clear();
-                dst.clear();
-                return;
-            }
-            const size_t widthSize = static_cast<size_t>(width);
-            const size_t heightSize = static_cast<size_t>(height);
-            const size_t total = widthSize * heightSize;
-
-            resize_noinit(tmp, total);
-            const int radius = int(k.size() / 2);
-            const auto reflectIndex = [](int idx, int size) -> int {
-                if (size <= 1) {
-                    return 0;
-                }
-                while (idx < 0 || idx >= size) {
-                    if (idx < 0) {
-                        idx = -idx;
-                    }
-                    else {
-                        idx = 2 * size - idx - 2;
-                    }
-                }
-                return idx;
-            };
-            for (int y = 0; y < height; ++y) {
-                const size_t rowOffset = static_cast<size_t>(y) * widthSize;
-                const float* srow = &src[rowOffset];
-                float* trow = &tmp[rowOffset];
-                for (int x = 0; x < width; ++x) {
-                    float acc = 0.0f;
-                    size_t kernelIndex = 0;
-                    for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
-                        const int xx = reflectIndex(x + j, width);
-                        acc += srow[xx] * k[kernelIndex];
-                    }
-                    trow[x] = acc;
-                }
-            }
-            resize_noinit(dst, total);
-            for (int x = 0; x < width; ++x) {
-                for (int y = 0; y < height; ++y) {
-                    float acc = 0.0f;
-                    size_t kernelIndex = 0;
-                    for (int j = -radius; j <= radius; ++j, ++kernelIndex) {
-                        const int yy = reflectIndex(y + j, height);
-                        const size_t sampleIndex = static_cast<size_t>(yy) * widthSize + static_cast<size_t>(x);
-                        acc += tmp[sampleIndex] * k[kernelIndex];
-                    }
-                    const size_t dstIndex = static_cast<size_t>(y) * widthSize + static_cast<size_t>(x);
-                    dst[dstIndex] = acc;
-                }
-            }
-        }
-
-    } // namespace
-
-    void buildSpatialDIRCorrections(
-        int width,
-        int height,
-        const WorkingState& ws,
-        const Couplers::Runtime& dirRT,
-        float exposureScale,
-        const Callbacks& callbacks,
-        JuicerProc::SpatialDIRWorkspace& work,
-        std::vector<float>& kernelCache)
-    {
-        const size_t total = size_t(width) * size_t(height);
-        resize_noinit(work.filmRaw_B, total);
-        resize_noinit(work.filmRaw_G, total);
-        resize_noinit(work.filmRaw_R, total);
-        resize_noinit(work.corrY, total);
-        resize_noinit(work.corrM, total);
-        resize_noinit(work.corrC, total);
-        resize_noinit(work.corrYBlur, total);
-        resize_noinit(work.corrMBlur, total);
-        resize_noinit(work.corrCBlur, total);
-        resize_noinit(work.tmp, total);
-
-        if (!dirRT.active) {
-            return;
-        }
-
-        if (!callbacks.fetchRGB || !callbacks.abortCheck) {
-            JTRACE("DIR", "FATAL: SpatialDIR callbacks not provided");
-            return;
-        }
-
-#if JUICER_DIAGNOSTICS_COMPILED
-        const bool verboseDiagnostics = JTRACE_ENABLED(3);
-#endif
-        auto should_abort = [&]() -> bool {
-            return callbacks.abortCheck(callbacks.user);
-        };
-        auto clear_workspace_on_abort = [&]() {
-            std::fill(work.filmRaw_B.begin(), work.filmRaw_B.end(), 0.0f);
-            std::fill(work.filmRaw_G.begin(), work.filmRaw_G.end(), 0.0f);
-            std::fill(work.filmRaw_R.begin(), work.filmRaw_R.end(), 0.0f);
-            std::fill(work.corrY.begin(), work.corrY.end(), 0.0f);
-            std::fill(work.corrM.begin(), work.corrM.end(), 0.0f);
-            std::fill(work.corrC.begin(), work.corrC.end(), 0.0f);
-            std::fill(work.corrYBlur.begin(), work.corrYBlur.end(), 0.0f);
-            std::fill(work.corrMBlur.begin(), work.corrMBlur.end(), 0.0f);
-            std::fill(work.corrCBlur.begin(), work.corrCBlur.end(), 0.0f);
-        };
-#if JUICER_DIAGNOSTICS_COMPILED
-        auto trace_abort_fast = [&](const char* stage) {
-            if (!verboseDiagnostics) {
-                return;
-            }
-            JTRACE_VERBOSE("MSCPU", std::string("path=spatial_dir event=abort_fast stage=") + stage);
-        };
-#else
-        auto trace_abort_fast = [](const char*) {};
-#endif
-
-#if JUICER_DIAGNOSTICS_COMPILED
-        // Per agx-emulsion parity: diagnostics use the same pre-balanced sensitivities as rendering.
-        const Spectral::Curve& sensB_forExposure = ws.sensB;
-        const Spectral::Curve& sensG_forExposure = ws.sensG;
-        const Spectral::Curve& sensR_forExposure = ws.sensR;
-
-        // DEBUG: Log WorkingState sensitivity curves before use
-        if (verboseDiagnostics) {
-            const int idx_450 = 14, idx_520 = 28, idx_650 = 54;
-            std::ostringstream oss;
-            oss << "WS_SENS_PREUSE: B[450nm]=" << (sensB_forExposure.linear.size() > idx_450 ? sensB_forExposure.linear[idx_450] : -999.0f)
-                << " G[450nm]=" << (sensG_forExposure.linear.size() > idx_450 ? sensG_forExposure.linear[idx_450] : -999.0f)
-                << " R[450nm]=" << (sensR_forExposure.linear.size() > idx_450 ? sensR_forExposure.linear[idx_450] : -999.0f)
-                << " | B[520nm]=" << (sensB_forExposure.linear.size() > idx_520 ? sensB_forExposure.linear[idx_520] : -999.0f)
-                << " G[520nm]=" << (sensG_forExposure.linear.size() > idx_520 ? sensG_forExposure.linear[idx_520] : -999.0f)
-                << " R[520nm]=" << (sensR_forExposure.linear.size() > idx_520 ? sensR_forExposure.linear[idx_520] : -999.0f)
-                << " | B[650nm]=" << (sensB_forExposure.linear.size() > idx_650 ? sensB_forExposure.linear[idx_650] : -999.0f)
-                << " G[650nm]=" << (sensG_forExposure.linear.size() > idx_650 ? sensG_forExposure.linear[idx_650] : -999.0f)
-                << " R[650nm]=" << (sensR_forExposure.linear.size() > idx_650 ? sensR_forExposure.linear[idx_650] : -999.0f);
-            JTRACE_VERBOSE("SPECTRAL", oss.str());
-        }
-#endif
-
-        // Pass A: sample exposures, convert to logE, compute DIR corrections per pixel.
-#if JUICER_DIAGNOSTICS_COMPILED
-        const int center_xx = width / 2;
-        const int center_yy = height / 2;
-#endif
-
-        Pipeline::PipelineRunnerConfig runnerCfg{};
-        runnerCfg.enablePrint = false;
-        const Pipeline::PipelineRunner runner(runnerCfg);
-
-        bool aborted = false;
-        for (int yy = 0; yy < height; ++yy) {
-            if (should_abort()) {
-                aborted = true;
-                break;
-            }
-            for (int xx = 0; xx < width; ++xx) {
-                if ((xx & 63) == 0 && should_abort()) {
-                    aborted = true;
-                    break;
-                }
-                const size_t idx = size_t(yy) * size_t(width) + size_t(xx);
-                float rgbIn[3] = { 0.0f, 0.0f, 0.0f };
-                if (!callbacks.fetchRGB(callbacks.user, xx, yy, rgbIn)) {
-                    work.filmRaw_B[idx] = work.filmRaw_G[idx] = work.filmRaw_R[idx] = 0.0f;
-                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
-                    continue;
-                }
-
-                // SPD DEBUG: Log input RGB for center pixel
-#if JUICER_DIAGNOSTICS_COMPILED
-                if (verboseDiagnostics && xx == center_xx && yy == center_yy) {
-                    std::ostringstream oss;
-                    oss << "INPUT_RGB tile_pixel(" << xx << "," << yy << "): R=" << rgbIn[0] << " G=" << rgbIn[1] << " B=" << rgbIn[2];
-                    JTRACE_VERBOSE("SPECTRAL", oss.str());
-                }
-#endif
-
-                Pipeline::DensityPixelInputs pxIn{};
-                pxIn.rgb.v[0] = rgbIn[0];
-                pxIn.rgb.v[1] = rgbIn[1];
-                pxIn.rgb.v[2] = rgbIn[2];
-                pxIn.exposureScale = exposureScale;
-                pxIn.dirRuntime = &dirRT;
-                pxIn.applyDirRuntime = false; // Pass A wants pre-DIR densities for correction computation.
-
-                Pipeline::DensityPixelOutputs pxOut{};
-                if (!runner.run_density_pixel(ws, pxIn, pxOut)) {
-                    work.filmRaw_B[idx] = work.filmRaw_G[idx] = work.filmRaw_R[idx] = 0.0f;
-                    work.corrY[idx] = work.corrM[idx] = work.corrC[idx] = 0.0f;
-                    continue;
-                }
-
-                work.filmRaw_B[idx] = pxOut.filmRaw.v[0];
-                work.filmRaw_G[idx] = pxOut.filmRaw.v[1];
-                work.filmRaw_R[idx] = pxOut.filmRaw.v[2];
-
-                // SPD DEBUG: Log film raw exposure (pre-log) for center pixel
-#if JUICER_DIAGNOSTICS_COMPILED
-                if (verboseDiagnostics && xx == center_xx && yy == center_yy) {
-                    std::ostringstream oss;
-                    oss << "FILM_RAW tile_pixel(" << xx << "," << yy << "): B=" << pxOut.filmRaw.v[0]
-                        << " G=" << pxOut.filmRaw.v[1]
-                        << " R=" << pxOut.filmRaw.v[2];
-                    JTRACE_VERBOSE("SPECTRAL", oss.str());
-
-                    // Log sensitivity curve values at key wavelengths
-                    const int idx_450 = 14;  // (450-380)/5 = 14
-                    const int idx_520 = 28;  // (520-380)/5 = 28
-                    const int idx_650 = 54;  // (650-380)/5 = 54
-                    if (!sensB_forExposure.linear.empty() && !sensG_forExposure.linear.empty() && !sensR_forExposure.linear.empty()) {
-                        std::ostringstream oss1, oss2, oss3;
-                        oss1 << "SENS_CURVES tile_pixel(" << xx << "," << yy << "): B[450nm]=" << sensB_forExposure.linear[idx_450]
-                            << " G[450nm]=" << sensG_forExposure.linear[idx_450] << " R[450nm]=" << sensR_forExposure.linear[idx_450];
-                        oss2 << "SENS_CURVES tile_pixel(" << xx << "," << yy << "): B[520nm]=" << sensB_forExposure.linear[idx_520]
-                            << " G[520nm]=" << sensG_forExposure.linear[idx_520] << " R[520nm]=" << sensR_forExposure.linear[idx_520];
-                        oss3 << "SENS_CURVES tile_pixel(" << xx << "," << yy << "): B[650nm]=" << sensB_forExposure.linear[idx_650]
-                            << " G[650nm]=" << sensG_forExposure.linear[idx_650] << " R[650nm]=" << sensR_forExposure.linear[idx_650];
-                        JTRACE_VERBOSE("SPECTRAL", oss1.str());
-                        JTRACE_VERBOSE("SPECTRAL", oss2.str());
-                        JTRACE_VERBOSE("SPECTRAL", oss3.str());
-                    }
-                }
-#endif
-
-                const float leB = pxOut.filmLogRaw.v[0];
-                const float leG = pxOut.filmLogRaw.v[1];
-                const float leR = pxOut.filmLogRaw.v[2];
-
-                // Convert CMY -> YMC to match Couplers::ApplyInputLogE contract.
-                const float D_Y = pxOut.negativeDensity.v[2];
-                const float D_M = pxOut.negativeDensity.v[1];
-                const float D_C = pxOut.negativeDensity.v[0];
-
-                float aCorr[3];
-                Couplers::ApplyInputLogE io{ { leB, leG, leR }, { D_Y, D_M, D_C } };
-                Couplers::compute_logE_corrections(io, dirRT, aCorr);
-                for (float& v : aCorr) {
-                    if (!std::isfinite(v)) v = 0.0f;
-                }
-                work.corrY[idx] = aCorr[0];
-                work.corrM[idx] = aCorr[1];
-                work.corrC[idx] = aCorr[2];
-            }
-            if (aborted) {
-                break;
-            }
-        }
-
-        if (aborted || should_abort()) {
-            trace_abort_fast("pre_blur");
-            clear_workspace_on_abort();
-            return;
-        }
-
-        // Blur corrections spatially (shared between preview + render path)
-        kernelCache.clear();
-        buildGaussianKernel(dirRT.spatialSigmaPixels, kernelCache);
-        if (should_abort()) {
-            trace_abort_fast("post_kernel");
-            clear_workspace_on_abort();
-            return;
-        }
-        blurChannelSeparable(work.corrY, work.tmp, work.corrYBlur, width, height, kernelCache);
-        if (should_abort()) {
-            trace_abort_fast("post_blur_y");
-            clear_workspace_on_abort();
-            return;
-        }
-        blurChannelSeparable(work.corrM, work.tmp, work.corrMBlur, width, height, kernelCache);
-        if (should_abort()) {
-            trace_abort_fast("post_blur_m");
-            clear_workspace_on_abort();
-            return;
-        }
-        blurChannelSeparable(work.corrC, work.tmp, work.corrCBlur, width, height, kernelCache);
-        if (should_abort()) {
-            trace_abort_fast("post_blur_c");
-            clear_workspace_on_abort();
-            return;
-        }
-        if (should_abort()) {
-            trace_abort_fast("pre_clamp");
-            clear_workspace_on_abort();
-            return;
-        }
-
-        auto scrubClamp = [](std::vector<float>& v) {
-            for (float& t : v) {
-                if (!std::isfinite(t)) t = 0.0f;
-                if (t < -10.0f) t = -10.0f;
-                if (t > 10.0f) t = 10.0f;
-            }
-        };
-        scrubClamp(work.corrYBlur);
-        scrubClamp(work.corrMBlur);
-        scrubClamp(work.corrCBlur);
-    }
-
-} // namespace SpatialDIR

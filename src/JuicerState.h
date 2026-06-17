@@ -172,7 +172,7 @@ struct BaseState {
     Spectral::Curve epsY, epsM, epsC;
     Spectral::Curve sensB, sensG, sensR;
     Spectral::Curve densB, densG, densR;
-    Spectral::Curve baseMin, baseMid;
+    Spectral::Curve baseDensityMin, baseDensityMid;
     std::array<std::array<std::vector<float>, 3>, 3> densityCurvesLayers{}; // [layer][channel] values on LOG_EXPOSURE axis
     bool hasDensityCurvesLayers = false;
     float dyeDensityMinFactor = 1.0f;
@@ -182,7 +182,7 @@ struct BaseState {
     std::string viewingIlluminant;
     std::vector<float> densityMidNeutral;
     std::vector<float> logExposureMidNeutral;
-    Profiles::DirCouplersProfile dirCouplers;
+    Profiles::DirProfile dirCouplers;
     Profiles::MaskingCouplersProfile maskingCouplers;
     std::array<float, 3> cameraFilterUV{{1.0f, 410.0f, 8.0f}};
     std::array<float, 3> cameraFilterIR{{1.0f, 675.0f, 15.0f}};
@@ -191,10 +191,6 @@ struct BaseState {
     Profiles::HalationMetadata halation;
     Profiles::ProfileGlare glare;
 };
-
-namespace WorkingStateSharing {
-    struct WorkingStateCoreShared;
-}
 
 struct DirectRenderPayload {
     Spectral::SpectralTables exposureTables;
@@ -251,20 +247,16 @@ struct WorkingState {
     Spectral::Curve negSensG;
     Spectral::Curve negSensR;
 
-    Spectral::Curve baseMin;
-    Spectral::Curve baseMid;
+    Spectral::Curve baseDensityMin;
+    Spectral::Curve baseDensityMid;
     bool hasBaseline = false;
-    float baselineMixReference = 0.0f;
+    float densityBaselineMixReference = 0.0f;
     float printBaselineMixReference = 0.0f;
 
     float gammaFactorB = 1.0f;
     float gammaFactorG = 1.0f;
     float gammaFactorR = 1.0f;
 
-    // SF_PHASE5_BLOCKED_LegacyWorkingStateDirRuntime owner=legacy broad/CPU renderer;
-    // allowed_call_sites=hard-blocked WorkingState/PipelineStages source;
-    // output_hash_resource_impact=none on typed focused routes;
-    // cleanup_symbol=SF_PHASE5_BLOCKED_LegacyWorkingStateDirRuntime; disposition=delete_with_legacy renderer.
     Couplers::Runtime dirRT;
 
     Spectral::Curve dirDensB;
@@ -308,7 +300,6 @@ struct WorkingState {
     std::uint64_t coreShareHash = 0;
     std::uint64_t dirHash = 0;
     std::uint64_t buildCounter = 0;
-    std::shared_ptr<const WorkingStateSharing::WorkingStateCoreShared> sharedCore;
 };
 
 enum class DirSampleMode {
@@ -378,9 +369,9 @@ struct ParamSnapshot {
     std::array<double, 3> printUiYmcCc{};
     double preflashMFilterCc = 0.0;
     double preflashYFilterCc = 0.0;
-    double glareCompRemovalFactor = 0.0;
-    double glareCompRemovalDensity = 1.2;
-    double glareCompRemovalTransition = 0.3;
+    double printShadowCompensationFactor = 0.0;
+    double printShadowCompensationDensity = 1.2;
+    double printShadowCompensationTransition = 0.3;
     bool glareActive = true;
     double glarePercent = 0.03;
     double glareRoughness = 0.7;
@@ -490,35 +481,6 @@ struct InstanceState {
     std::atomic<float> spatialSigmaPixelsCanonical{0.0f};
 
     std::string filmReferenceIlluminant;
-
-    // Auto-exposure cache (per frame / build)
-    std::mutex autoExposureMutex;
-    bool autoExposureCacheValid = false;
-    bool autoExposureCacheIsCudaRender = false;
-    double autoExposureCacheTime = std::numeric_limits<double>::quiet_NaN();
-    bool autoExposureCacheAutoEnabled = false; // Tracks camera auto-exposure toggle state
-    int autoExposureCacheMeteringMethod = 0;
-    uint64_t autoExposureCacheBuildCounter = 0;
-    OfxRectI autoExposureCacheBounds{0, 0, 0, 0};
-    double autoExposureCacheEV = 0.0;
-    double autoExposureCacheRenderScaleX = 0.0;
-    double autoExposureCacheRenderScaleY = 0.0;
-    std::uintptr_t autoExposureCacheClipToken = 0;
-    int autoExposureCacheInputColorSpaceIndex =
-        Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
-    bool autoExposureCacheApplyCctfDecoding = false;
-    bool autoExposureMaskValid = false;
-    int autoExposureMaskWidth = 0;
-    int autoExposureMaskHeight = 0;
-    double autoExposureMaskSigma = 0.0;
-    double autoExposureMaskSum = 0.0;
-    double autoExposureMaskRenderScaleX = 0.0;
-    double autoExposureMaskRenderScaleY = 0.0;
-    std::uintptr_t autoExposureMaskClipToken = 0;
-    std::shared_ptr<const std::vector<double>> autoExposureMaskWeights;
-    std::uint64_t autoExposureMaskCachedBytes = 0;
-    bool autoExposureMaskPolicyBypass = false;
-    std::uint64_t autoExposureMaskLastRequestedBytes = 0;
 
     ScannerOptics::Runtime scannerRuntimeA;
     ScannerOptics::Runtime scannerRuntimeB;

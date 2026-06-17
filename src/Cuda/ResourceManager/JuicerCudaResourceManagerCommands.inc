@@ -10,10 +10,12 @@ bool ensure_active_for_command(
     if (!validate_lifecycle_for_stage(transaction, stage, false, &outError)) {
         telemetry_record_module_boundary_violation();
         telemetry_trace_module_boundary_violation(
-            transaction.transactionId,
-            transaction.snapshot.snapshotId,
-            transaction.snapshot.traceSchemaVersion,
-            rejectionStage);
+            TelemetryModuleBoundaryViolationTrace{
+                .context = TelemetryTraceContext{
+                    .transactionId = transaction.transactionId,
+                    .snapshotId = transaction.snapshot.snapshotId,
+                    .traceSchemaVersion = transaction.snapshot.traceSchemaVersion},
+                .reason = rejectionStage});
         return false;
     }
 
@@ -76,8 +78,7 @@ bool resolve_optional_active_scratch_request(
             scratchRequest.needGrainTriplet ||
             scratchRequest.needGrainShared ||
             scratchRequest.needGateMask) {
-            outError = std::string(trace_or_non_empty(commandName, "scratch_request"))
-                + ": invalid scratch request descriptor";
+            outError = std::string(trace_or_non_empty(commandName, "scratch_request")) + ": invalid scratch request descriptor";
             return false;
         }
         return true;
@@ -107,13 +108,11 @@ bool validate_scratch_request_for_family(
     }
 
     if (workClass == ScratchWorkClass::Optics && !scratchRequest.needOptics) {
-        outError = std::string(trace_or_non_empty(commandName, "command"))
-            + ": optics scratch request missing needOptics";
+        outError = std::string(trace_or_non_empty(commandName, "command")) + ": optics scratch request missing needOptics";
         return false;
     }
     if (workClass == ScratchWorkClass::SpatialDir && !scratchRequest.needSpatialDir) {
-        outError = std::string(trace_or_non_empty(commandName, "command"))
-            + ": spatial DIR scratch request missing needSpatialDir";
+        outError = std::string(trace_or_non_empty(commandName, "command")) + ": spatial DIR scratch request missing needSpatialDir";
         return false;
     }
     return true;
@@ -176,17 +175,19 @@ void trace_auto_exposure_ownership_event(
     const char* action,
     const char* reason) {
     telemetry_trace_auto_exposure_ownership(
-        transaction.transactionId,
-        transaction.snapshot.snapshotId,
-        transaction.snapshot.traceSchemaVersion,
-        "ManagerOnly",
-        action,
-        observation.metadataHit,
-        metadata.normalizedKeyHash,
-        metadata.meter.width,
-        metadata.meter.height,
-        observation.hadPrevious,
-        reason);
+        TelemetryAutoExposureOwnershipTrace{
+            .context = TelemetryTraceContext{
+                .transactionId = transaction.transactionId,
+                .snapshotId = transaction.snapshot.snapshotId,
+                .traceSchemaVersion = transaction.snapshot.traceSchemaVersion},
+            .mode = "ManagerOnly",
+            .eventName = action,
+            .reason = reason,
+            .keyHash = metadata.normalizedKeyHash,
+            .meterWidth = metadata.meter.width,
+            .meterHeight = metadata.meter.height,
+            .hit = observation.metadataHit,
+            .hadPrevious = observation.hadPrevious});
 }
 
 void complete_tier_circuit_attempt(
@@ -495,14 +496,13 @@ bool execute_scratch_growth_command(
         }
         trace_fragmentation_recovery(
             transaction,
-            commandName,
-            attempts,
-            growthBytes,
-            0,
-            0,
-            success,
-            "outcome",
-            reason);
+            FragmentationRecoveryTrace{
+                .commandName = commandName,
+                .stage = "outcome",
+                .reason = reason,
+                .requestBytes = growthBytes,
+                .attempt = attempts,
+                .success = success});
         fragmentationRecoveryPendingOutcome = false;
     };
 
@@ -598,11 +598,11 @@ bool execute_scratch_growth_command(
                 commands_error_or_cstr(reclaimError, "reap_failed"));
             trace_budget_reclaim_retry(
                 transaction,
-                commandName,
-                attempts,
-                reclaimedBytes,
-                false,
-                commands_error_or_cstr(reclaimError, "reap_failed"));
+                BudgetReclaimRetryTrace{
+                    .commandName = commandName,
+                    .reason = commands_error_or_cstr(reclaimError, "reap_failed"),
+                    .reclaimedBytes = reclaimedBytes,
+                    .attempt = attempts});
             if (!reclaimError.empty()) {
                 outError += " | reclaim_retry_failed: " + reclaimError;
             }
@@ -623,11 +623,12 @@ bool execute_scratch_growth_command(
             reclaim_retry_reason(reclaimedBytes));
         trace_budget_reclaim_retry(
             transaction,
-            commandName,
-            attempts,
-            reclaimedBytes,
-            true,
-            reclaim_retry_reason(reclaimedBytes));
+            BudgetReclaimRetryTrace{
+                .commandName = commandName,
+                .reason = reclaim_retry_reason(reclaimedBytes),
+                .reclaimedBytes = reclaimedBytes,
+                .attempt = attempts,
+                .success = true});
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
 
         if (reclaimedBytes == 0) {
@@ -747,7 +748,7 @@ std::uint64_t commands_neutral_filter_hash_or_default(const Print::Runtime& prt)
     if (prt.neutralFilterHash != 0) {
         return prt.neutralFilterHash;
     }
-    return Print::kDefaultNeutralFilterHash;
+    return Print::kNeutralCalibrationHashSeed;
 }
 
 const Scanner::ScannerStaticKey& commands_select_scanner_static_key(
@@ -908,7 +909,7 @@ void add_scan_medium_upload_estimate_bytes(
     add_vector_upload_estimate_bytes(t->Ay, total, overflow);
     add_vector_upload_estimate_bytes(t->Az, total, overflow);
     if (t->hasBaseline) {
-        add_vector_upload_estimate_bytes(t->baseMin, total, overflow);
+        add_vector_upload_estimate_bytes(t->baseDensityMin, total, overflow);
     }
 }
 
@@ -1067,7 +1068,7 @@ void add_scan_medium_growth_estimate_bytes(
         static_cast<int>(t->Ax.size()) == K &&
         static_cast<int>(t->Ay.size()) == K &&
         static_cast<int>(t->Az.size()) == K &&
-        (!t->hasBaseline || static_cast<int>(t->baseMin.size()) == K);
+        (!t->hasBaseline || static_cast<int>(t->baseDensityMin.size()) == K);
     if (!arraysOk) {
         return;
     }
@@ -1086,7 +1087,7 @@ void add_scan_medium_growth_estimate_bytes(
         }
     }
 
-    if (t->hasBaseline && !(dst.tables.baseMin && dst.tables.K == K)) {
+    if (t->hasBaseline && !(dst.tables.baseDensityMin && dst.tables.K == K)) {
         add_count_upload_estimate_bytes(static_cast<std::uint64_t>(K), sizeof(float), total, overflow);
     }
 }
@@ -1531,13 +1532,13 @@ bool command_print_illuminant_filtered_is_cached(
 
     std::lock_guard<std::mutex> lock(resources.m);
     return resources.printIllumFiltered &&
-        resources.printIllumK == k &&
-        resources.printIllumShapeK == k &&
-        resources.printIllumCoreHash == wsCoreHash &&
-        resources.printIllumYShiftSteps == yKey &&
-        resources.printIllumMShiftSteps == mKey &&
-        resources.printIllumCShiftSteps == cKey &&
-        resources.printIllumNeutralFilterHash == neutralFilterHash;
+           resources.printIllumK == k &&
+           resources.printIllumShapeK == k &&
+           resources.printIllumCoreHash == wsCoreHash &&
+           resources.printIllumYShiftSteps == yKey &&
+           resources.printIllumMShiftSteps == mKey &&
+           resources.printIllumCShiftSteps == cKey &&
+           resources.printIllumNeutralFilterHash == neutralFilterHash;
 }
 
 bool command_auto_exposure_buffers_ready(
@@ -1565,17 +1566,17 @@ bool command_auto_exposure_buffers_ready(
     }
 
     return resources.autoExposureExposureScale &&
-        resources.autoExposureAutoEV &&
-        resources.autoExposureValid &&
-        resources.autoExposureScratch.maxYBits &&
-        resources.autoExposureScratch.histogram &&
-        resources.autoExposureScratch.weightsX &&
-        resources.autoExposureScratch.weightsY &&
-        resources.autoExposureScratch.partialsA &&
-        resources.autoExposureScratch.partialsB &&
-        resources.autoExposureScratch.weightsXCapacity >= meter.width &&
-        resources.autoExposureScratch.weightsYCapacity >= meter.height &&
-        resources.autoExposureScratch.partialCapacity >= neededPartials;
+           resources.autoExposureAutoEV &&
+           resources.autoExposureValid &&
+           resources.autoExposureScratch.maxYBits &&
+           resources.autoExposureScratch.histogram &&
+           resources.autoExposureScratch.weightsX &&
+           resources.autoExposureScratch.weightsY &&
+           resources.autoExposureScratch.partialsA &&
+           resources.autoExposureScratch.partialsB &&
+           resources.autoExposureScratch.weightsXCapacity >= meter.width &&
+           resources.autoExposureScratch.weightsYCapacity >= meter.height &&
+           resources.autoExposureScratch.partialCapacity >= neededPartials;
 }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -1629,24 +1630,24 @@ BaseGraphCacheState& base_graph_cache_state() {
     return state;
 }
 
-using BasePipelineLaunchFn = cudaError_t(*)(const JuicerCuda::PipelineRunParams*, void*);
+using BasePipelineLaunchFn = cudaError_t (*)(const JuicerCuda::PipelineRunParams*, void*);
 
 BasePipelineLaunchFn base_pipeline_launch_fn_for_mode(int renderModeKey) noexcept {
     switch (renderModeKey) {
-    case 0:
-        return juicer_cuda_negative_pipeline;
-    case 1:
-        return juicer_cuda_print_pipeline;
-    default:
-        return nullptr;
+        case 0:
+            return juicer_cuda_negative_pipeline;
+        case 1:
+            return juicer_cuda_print_pipeline;
+        default:
+            return nullptr;
     }
 }
 
 bool base_graph_key_equal(const BaseGraphKey& a, const BaseGraphKey& b) noexcept {
     return a.width == b.width &&
-        a.height == b.height &&
-        a.nComponents == b.nComponents &&
-        a.renderMode == b.renderMode;
+           a.height == b.height &&
+           a.nComponents == b.nComponents &&
+           a.renderMode == b.renderMode;
 }
 
 std::uint64_t base_graph_key_digest(const BaseGraphKey& key) noexcept {
@@ -1663,8 +1664,8 @@ std::uint64_t base_graph_key_digest(const BaseGraphKey& key) noexcept {
 
 inline bool base_graph_entry_live(const BaseGraphEntry& entry) noexcept {
     return entry.execOpaque != nullptr &&
-        entry.graphOpaque != nullptr &&
-        entry.kernelNodeOpaque != nullptr;
+           entry.graphOpaque != nullptr &&
+           entry.kernelNodeOpaque != nullptr;
 }
 
 void add_graph_large_entry_resident_bytes_global(std::uint64_t bytes) noexcept {
@@ -1684,8 +1685,7 @@ void publish_graph_large_entry_resident_snapshot_locked(
     std::uint32_t residentEntries) noexcept {
     if (residentBytes > bucket.largeEntryResidentBytes) {
         add_graph_large_entry_resident_bytes_global(residentBytes - bucket.largeEntryResidentBytes);
-    }
-    else if (bucket.largeEntryResidentBytes > residentBytes) {
+    } else if (bucket.largeEntryResidentBytes > residentBytes) {
         sub_graph_large_entry_resident_bytes_global(bucket.largeEntryResidentBytes - residentBytes);
     }
     bucket.largeEntryResidentBytes = residentBytes;
@@ -1781,8 +1781,7 @@ void note_large_entry_evicted_for_readmit_locked(
         GraphLargeEntryReadmitState& state = bucket.largeEntryReadmitByDigest[digest];
         state.lastEvictedMs = nowMs;
         state.ghostHits = 0;
-    }
-    catch (...) {
+    } catch (...) {
         JuicerLogging::discard_current_exception();
     }
 }
@@ -1821,8 +1820,7 @@ std::shared_ptr<BaseGraphBucketState> get_or_create_base_graph_bucket(
         auto bucket = std::make_shared<BaseGraphBucketState>();
         state.byContext[key] = bucket;
         return bucket;
-    }
-    catch (...) {
+    } catch (...) {
         JuicerLogging::discard_current_exception();
         return nullptr;
     }
@@ -1906,11 +1904,12 @@ bool evaluate_graph_large_entry_readmit(
 
     trace_large_entry_readmit_decision(
         transaction,
-        "command_launch_base_pipeline_graph",
-        keyDigest,
-        requestBytes,
-        graphLargeThresholdBytes,
-        readmitDecision);
+        LargeEntryReadmitTrace{
+            .commandName = "command_launch_base_pipeline_graph",
+            .decision = &readmitDecision,
+            .entryDigest = keyDigest,
+            .requestBytes = requestBytes,
+            .thresholdBytes = graphLargeThresholdBytes});
     if (readmitDecision.ghostBypass) {
         telemetry_counter_add(managerState.largeEntryReadmitGhostBypassEvents, 1);
     }
@@ -1943,8 +1942,9 @@ bool evaluate_graph_cache_admission(
     const AdmissionChurnSnapshot churnSnapshot = sample_admission_churn_state(
         transaction,
         cfg,
-        keyDigest,
-        observedProbationHits);
+        AdmissionChurnSampleInput{
+            .entryDigest = keyDigest,
+            .observedProbationHits = observedProbationHits});
     const std::uint32_t churnProbationHitsRequired = effective_probation_hits_required(
         admissionDecision.probationHitsRequired,
         churnSnapshot);
@@ -1954,14 +1954,15 @@ bool evaluate_graph_cache_admission(
 
     trace_cache_admission_decision(
         transaction,
-        "command_launch_base_pipeline_graph",
-        admissionDecision,
-        churnSnapshot,
-        criticalCurrentFrame,
-        requestBytes,
-        observedProbationHits,
-        keyDigest,
-        "graph_miss");
+        CacheAdmissionDecisionTrace{
+            .commandName = "command_launch_base_pipeline_graph",
+            .reason = "graph_miss",
+            .decision = &admissionDecision,
+            .churnSnapshot = &churnSnapshot,
+            .requestBytes = requestBytes,
+            .entryDigest = keyDigest,
+            .observedProbationHits = observedProbationHits,
+            .criticalCurrentFrame = criticalCurrentFrame});
     if (admissionDecision.admissionClass == CacheAdmissionClass::TooLargeToCache) {
         telemetry_counter_add(managerState.cacheAdmissionTooLargeEvents, 1);
     }
@@ -1969,12 +1970,13 @@ bool evaluate_graph_cache_admission(
         const std::uint32_t nextObservedHits = next_probation_hits(observedProbationHits);
         trace_probation_decision(
             transaction,
-            "command_launch_base_pipeline_graph",
-            keyDigest,
-            nextObservedHits,
-            churnProbationHitsRequired,
-            churnProbationAllowDurable,
-            admissionDecision.reason);
+            ProbationDecisionTrace{
+                .commandName = "command_launch_base_pipeline_graph",
+                .reason = admissionDecision.reason,
+                .entryDigest = keyDigest,
+                .observedProbationHits = nextObservedHits,
+                .requiredProbationHits = churnProbationHitsRequired,
+                .admitted = churnProbationAllowDurable});
         if (churnProbationAllowDurable) {
             telemetry_counter_add(managerState.cacheAdmissionProbationAdmitEvents, 1);
         } else {
@@ -2046,11 +2048,12 @@ BaseGraphEntry* build_admitted_graph_entry(
     if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
         trace_keep_hot_decision(
             transaction,
-            "command_launch_base_pipeline_graph",
-            keepHotMs,
-            keepHotBypassEvents,
-            keepHotForcedEvictEvents,
-            "base_graph_cap");
+            KeepHotDecisionTrace{
+                .commandName = "command_launch_base_pipeline_graph",
+                .reason = "base_graph_cap",
+                .keepHotMs = keepHotMs,
+                .bypassEvents = keepHotBypassEvents,
+                .forcedEvictEvents = keepHotForcedEvictEvents});
     }
     if (!found) {
         return nullptr;
@@ -2245,8 +2248,7 @@ std::uint64_t estimate_base_graph_bucket_large_entry_bytes_locked(
         std::uint64_t nextBytes = 0;
         if (!add_u64_checked(totalBytes, entryBytes, nextBytes)) {
             totalBytes = std::numeric_limits<std::uint64_t>::max();
-        }
-        else {
+        } else {
             totalBytes = nextBytes;
         }
         if (outEntries < std::numeric_limits<std::uint32_t>::max()) {
@@ -2340,8 +2342,7 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
             std::uint64_t nextBytes = 0;
             if (!add_u64_checked(residentBytes, entryBytes, nextBytes)) {
                 residentBytes = std::numeric_limits<std::uint64_t>::max();
-            }
-            else {
+            } else {
                 residentBytes = nextBytes;
             }
 
@@ -2355,7 +2356,7 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
             }
 
             const bool older = (entry.lastUseMs < oldestUseMs) ||
-                ((entry.lastUseMs == oldestUseMs) && (entry.lastUseTick < oldestUseTick));
+                               ((entry.lastUseMs == oldestUseMs) && (entry.lastUseTick < oldestUseTick));
             if (older) {
                 oldestUseMs = entry.lastUseMs;
                 oldestUseTick = entry.lastUseTick;
@@ -2366,7 +2367,7 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
 
             if (!inKeepHotWindow) {
                 const bool olderNonHot = (entry.lastUseMs < oldestNonHotUseMs) ||
-                    ((entry.lastUseMs == oldestNonHotUseMs) && (entry.lastUseTick < oldestNonHotUseTick));
+                                         ((entry.lastUseMs == oldestNonHotUseMs) && (entry.lastUseTick < oldestNonHotUseTick));
                 if (olderNonHot) {
                     oldestNonHotUseMs = entry.lastUseMs;
                     oldestNonHotUseTick = entry.lastUseTick;
@@ -2397,8 +2398,7 @@ std::uint64_t trim_graph_large_entry_decay_and_caps_locked(
                 if (victimIndex != oldestIndex) {
                     ++outKeepHotBypassEvents;
                 }
-            }
-            else {
+            } else {
                 ++outKeepHotForcedEvictEvents;
             }
         }
@@ -2467,25 +2467,27 @@ void replay_graph_large_entry_policy(
     if (keepHotBypassEvents > 0 || keepHotForcedEvictEvents > 0) {
         trace_keep_hot_decision(
             transaction,
-            "command_launch_base_pipeline_graph",
-            keepHotMs,
-            keepHotBypassEvents,
-            keepHotForcedEvictEvents,
-            trace_or(reason, "policy"));
+            KeepHotDecisionTrace{
+                .commandName = "command_launch_base_pipeline_graph",
+                .reason = trace_or(reason, "policy"),
+                .keepHotMs = keepHotMs,
+                .bypassEvents = keepHotBypassEvents,
+                .forcedEvictEvents = keepHotForcedEvictEvents});
     }
     if (decayEvictedEntries > 0 || capTrimEvictedEntries > 0 || capHit) {
         trace_graph_large_entry_quarantine(
             transaction,
-            "command_launch_base_pipeline_graph",
-            graphLargeThresholdBytes,
-            graphLargeCapBytes,
-            graphLargeCapEntries,
-            residentBytes,
-            residentEntries,
-            decayEvictedEntries,
-            capTrimEvictedEntries,
-            capHit,
-            trace_or(reason, "policy"));
+            GraphLargeEntryQuarantineTrace{
+                .commandName = "command_launch_base_pipeline_graph",
+                .reason = trace_or(reason, "policy"),
+                .thresholdBytes = graphLargeThresholdBytes,
+                .capBytes = graphLargeCapBytes,
+                .residentBytes = residentBytes,
+                .decayEvictedEntries = decayEvictedEntries,
+                .capTrimEvictedEntries = capTrimEvictedEntries,
+                .capEntries = graphLargeCapEntries,
+                .residentEntries = residentEntries,
+                .capHit = capHit});
     }
 }
 
@@ -2506,8 +2508,7 @@ std::uint64_t estimate_graph_cache_active_bytes_for_context(const DeviceContextK
         }
         std::lock_guard<std::mutex> lock(bucket->mutex);
         return estimate_base_graph_bucket_active_bytes_locked(*bucket);
-    }
-    catch (...) {
+    } catch (...) {
         JuicerLogging::discard_current_exception();
         return 0;
     }
@@ -2535,8 +2536,7 @@ std::uint64_t evict_noncritical_graph_entries_for_context(const DeviceContextKey
         }
         clear_base_graph_bucket(*bucket);
         return evictedEntries;
-    }
-    catch (...) {
+    } catch (...) {
         JuicerLogging::discard_current_exception();
         return 0;
     }
@@ -2559,8 +2559,7 @@ void retire_base_graph_cache_for_context(const DeviceContextKey& key) noexcept {
             std::lock_guard<std::mutex> lock(bucket->mutex);
             clear_base_graph_bucket(*bucket);
         }
-    }
-    catch (...) {
+    } catch (...) {
         JuicerLogging::discard_current_exception();
     }
 }
@@ -2629,8 +2628,7 @@ BaseGraphEntry* build_base_graph_entry_impl(
                     if (victim != oldestAny) {
                         ++outKeepHotBypassEvents;
                     }
-                }
-                else {
+                } else {
                     ++outKeepHotForcedEvictEvents;
                 }
             }
@@ -2693,8 +2691,7 @@ BaseGraphEntry* build_base_graph_entry_impl(
                     }
                 }
             }
-        }
-        catch (...) {
+        } catch (...) {
             cudaGraphExecDestroy(exec);
             cudaGraphDestroy(graph);
             throw;
@@ -2731,8 +2728,7 @@ BaseGraphEntry* build_base_graph_entry_impl(
     entry.lastUseMs = monotonic_time_ms();
     try {
         bucket.entries.push_back(entry);
-    }
-    catch (...) {
+    } catch (...) {
         cudaGraphExecDestroy(exec);
         cudaGraphDestroy(graph);
         throw;
@@ -2761,8 +2757,7 @@ BaseGraphEntry* build_base_graph_entry(
             keepHotMs,
             outKeepHotBypassEvents,
             outKeepHotForcedEvictEvents);
-    }
-    catch (...) {
+    } catch (...) {
         JuicerLogging::discard_current_exception();
         outKeepHotBypassEvents = 0;
         outKeepHotForcedEvictEvents = 0;
@@ -2902,172 +2897,174 @@ bool command_retire_all_contexts_idle(std::string& outError) {
 
 namespace {
 #if JUICER_DIAGNOSTICS_COMPILED
-const char* scan_lut_medium_name(bool negativeMedium) noexcept {
-    return bool_reason(negativeMedium, "negative", "print");
-}
+    const char* scan_lut_medium_name(bool negativeMedium) noexcept {
+        return bool_reason(negativeMedium, "negative", "print");
+    }
 #endif
 
-bool compute_expected_scan_lut_hash(
-    const WorkingState& ws,
-    bool negativeMedium,
-    std::uint64_t& outExpectedHash) noexcept {
-    outExpectedHash = 0;
-    const Scanner::ScannerMediumRuntime* medium = &ws.printMediumRuntime;
-    const Scanner::ScannerStaticKey* staticKey = &ws.printStaticKey;
-    Scanner::ScannerMedium expectedMedium = Scanner::ScannerMedium::Print;
-    if (negativeMedium) {
-        medium = &ws.negativeMediumRuntime;
-        staticKey = &ws.negativeStaticKey;
-        expectedMedium = Scanner::ScannerMedium::Negative;
+    bool compute_expected_scan_lut_hash(
+        const WorkingState& ws,
+        bool negativeMedium,
+        std::uint64_t& outExpectedHash) noexcept {
+        outExpectedHash = 0;
+        const Scanner::ScannerMediumRuntime* medium = &ws.printMediumRuntime;
+        const Scanner::ScannerStaticKey* staticKey = &ws.printStaticKey;
+        Scanner::ScannerMedium expectedMedium = Scanner::ScannerMedium::Print;
+        if (negativeMedium) {
+            medium = &ws.negativeMediumRuntime;
+            staticKey = &ws.negativeStaticKey;
+            expectedMedium = Scanner::ScannerMedium::Negative;
+        }
+
+        if (!medium->tables || medium->tables->K <= 0) {
+            return false;
+        }
+        if (medium->medium != expectedMedium || staticKey->medium != expectedMedium) {
+            return false;
+        }
+        if (medium->tables->tablesHash == 0 || medium->range.digest == 0) {
+            return false;
+        }
+        if (staticKey->tablesHash != medium->tables->tablesHash ||
+            staticKey->densityRangeHash != medium->range.digest) {
+            return false;
+        }
+        const std::uint32_t res =
+            ResourceManager::normalize_scan_lut_resolution(staticKey->lutResolution);
+        outExpectedHash = ResourceManager::make_scan_lut_key_digest(
+            static_cast<std::uint32_t>(medium->medium),
+            medium->tables->tablesHash,
+            medium->range.digest,
+            res);
+        return outExpectedHash != 0;
     }
 
-    if (!medium->tables || medium->tables->K <= 0) {
-        return false;
-    }
-    if (medium->medium != expectedMedium || staticKey->medium != expectedMedium) {
-        return false;
-    }
-    if (medium->tables->tablesHash == 0 || medium->range.digest == 0) {
-        return false;
-    }
-    if (staticKey->tablesHash != medium->tables->tablesHash ||
-        staticKey->densityRangeHash != medium->range.digest) {
-        return false;
-    }
-    const std::uint32_t res =
-        ResourceManager::normalize_scan_lut_resolution(staticKey->lutResolution);
-    outExpectedHash = ResourceManager::make_scan_lut_key_digest(
-        static_cast<std::uint32_t>(medium->medium),
-        medium->tables->tablesHash,
-        medium->range.digest,
-        res);
-    return outExpectedHash != 0;
-}
+    struct PrivateLutFallbackDecision {
+        bool allowed = false;
+        bool alreadyActive = false;
+        std::uint32_t activeCount = 0;
+        std::uint32_t perMediumCap = 0;
+        std::uint32_t perInstanceCap = 0;
+        const char* reason = "unspecified";
+    };
 
-struct PrivateLutFallbackDecision {
-    bool allowed = false;
-    bool alreadyActive = false;
-    std::uint32_t activeCount = 0;
-    std::uint32_t perMediumCap = 0;
-    std::uint32_t perInstanceCap = 0;
-    const char* reason = "unspecified";
-};
+    PrivateLutFallbackDecision evaluate_private_lut_fallback(
+        JuicerCuda::Resources& resources,
+        bool negativeMedium,
+        std::uint64_t expectedHash,
+        const ResourceManagerConfigEffective& cfg) {
+        PrivateLutFallbackDecision decision{};
+        decision.perMediumCap = cfg.privateLutFallbackPerMediumCap;
+        decision.perInstanceCap = cfg.privateLutFallbackPerInstanceCap;
 
-PrivateLutFallbackDecision evaluate_private_lut_fallback(
-    JuicerCuda::Resources& resources,
-    bool negativeMedium,
-    std::uint64_t expectedHash,
-    const ResourceManagerConfigEffective& cfg) {
-    PrivateLutFallbackDecision decision{};
-    decision.perMediumCap = cfg.privateLutFallbackPerMediumCap;
-    decision.perInstanceCap = cfg.privateLutFallbackPerInstanceCap;
+        if (expectedHash == 0) {
+            decision.reason = "invalid_expected_hash";
+            return decision;
+        }
 
-    if (expectedHash == 0) {
-        decision.reason = "invalid_expected_hash";
-        return decision;
-    }
+        std::lock_guard<std::mutex> lock(resources.m);
+        commands_sync_private_lut_fallback_locked(resources, true);
+        commands_sync_private_lut_fallback_locked(resources, false);
 
-    std::lock_guard<std::mutex> lock(resources.m);
-    commands_sync_private_lut_fallback_locked(resources, true);
-    commands_sync_private_lut_fallback_locked(resources, false);
+        decision.activeCount =
+            bool_u32(resources.privateLutFallbackNegativeActive) +
+            bool_u32(resources.privateLutFallbackPrintActive);
 
-    decision.activeCount =
-        bool_u32(resources.privateLutFallbackNegativeActive) +
-        bool_u32(resources.privateLutFallbackPrintActive);
+        bool* slotActive = &resources.privateLutFallbackPrintActive;
+        std::uint64_t* slotHash = &resources.privateLutFallbackPrintHash;
+        const JuicerCuda::Resources::DeviceSpectralLut* slotLut = &resources.scanPrintLut;
+        if (negativeMedium) {
+            slotActive = &resources.privateLutFallbackNegativeActive;
+            slotHash = &resources.privateLutFallbackNegativeHash;
+            slotLut = &resources.scanNegativeLut;
+        }
 
-    bool* slotActive = &resources.privateLutFallbackPrintActive;
-    std::uint64_t* slotHash = &resources.privateLutFallbackPrintHash;
-    const JuicerCuda::Resources::DeviceSpectralLut* slotLut = &resources.scanPrintLut;
-    if (negativeMedium) {
-        slotActive = &resources.privateLutFallbackNegativeActive;
-        slotHash = &resources.privateLutFallbackNegativeHash;
-        slotLut = &resources.scanNegativeLut;
-    }
+        if (*slotActive && slotLut->log2XYZ && slotLut->hash == expectedHash && *slotHash == expectedHash) {
+            decision.allowed = true;
+            decision.alreadyActive = true;
+            decision.reason = "already_active";
+            return decision;
+        }
 
-    if (*slotActive && slotLut->log2XYZ && slotLut->hash == expectedHash && *slotHash == expectedHash) {
+        if (decision.perMediumCap == 0 || decision.perInstanceCap == 0) {
+            decision.reason = "disabled";
+            return decision;
+        }
+        if (decision.perMediumCap < 1u) {
+            decision.reason = "per_medium_cap_zero";
+            return decision;
+        }
+        if (!*slotActive && decision.activeCount >= decision.perInstanceCap) {
+            decision.reason = "per_instance_cap_reached";
+            return decision;
+        }
+
         decision.allowed = true;
-        decision.alreadyActive = true;
-        decision.reason = "already_active";
+        if (*slotActive) {
+            decision.reason = "slot_reuse";
+        } else {
+            decision.reason = "admit_new";
+        }
         return decision;
     }
 
-    if (decision.perMediumCap == 0 || decision.perInstanceCap == 0) {
-        decision.reason = "disabled";
-        return decision;
-    }
-    if (decision.perMediumCap < 1u) {
-        decision.reason = "per_medium_cap_zero";
-        return decision;
-    }
-    if (!*slotActive && decision.activeCount >= decision.perInstanceCap) {
-        decision.reason = "per_instance_cap_reached";
-        return decision;
+    void mark_private_lut_fallback_active(
+        JuicerCuda::Resources& resources,
+        bool negativeMedium,
+        std::uint64_t expectedHash) {
+        if (expectedHash == 0) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (negativeMedium) {
+            resources.privateLutFallbackNegativeActive = true;
+            resources.privateLutFallbackNegativeHash = expectedHash;
+        } else {
+            resources.privateLutFallbackPrintActive = true;
+            resources.privateLutFallbackPrintHash = expectedHash;
+        }
     }
 
-    decision.allowed = true;
-    if (*slotActive) {
-        decision.reason = "slot_reuse";
-    }
-    else {
-        decision.reason = "admit_new";
-    }
-    return decision;
-}
+    struct PrivateLutFallbackTrace {
+        const char* stage = nullptr;
+        const char* eventName = nullptr;
+        const char* reason = nullptr;
+    };
 
-void mark_private_lut_fallback_active(
-    JuicerCuda::Resources& resources,
-    bool negativeMedium,
-    std::uint64_t expectedHash) {
-    if (expectedHash == 0) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(resources.m);
-    if (negativeMedium) {
-        resources.privateLutFallbackNegativeActive = true;
-        resources.privateLutFallbackNegativeHash = expectedHash;
-    }
-    else {
-        resources.privateLutFallbackPrintActive = true;
-        resources.privateLutFallbackPrintHash = expectedHash;
-    }
-}
-
-void trace_private_lut_fallback(
-    const char* stage,
-    const char* eventName,
-    bool negativeMedium,
-    const PrivateLutFallbackDecision& decision,
-    const char* reason) {
+    void trace_private_lut_fallback(
+        const PrivateLutFallbackTrace& trace,
+        bool negativeMedium,
+        const PrivateLutFallbackDecision& decision) {
 #if JUICER_DIAGNOSTICS_COMPILED
-    if (!JTRACE_ENABLED(2)) {
-        return;
-    }
-    std::string msg =
-        std::string("stage=") + trace_or_unknown(stage) +
-        " event=" + trace_or_unknown(eventName) +
-        " medium=" + scan_lut_medium_name(negativeMedium) +
-        " allowed=" + std::to_string(bool_u32(decision.allowed)) +
-        " already_active=" + std::to_string(bool_u32(decision.alreadyActive)) +
-        " active_count=" + std::to_string(decision.activeCount) +
-        " per_medium_cap=" + std::to_string(decision.perMediumCap) +
-        " per_instance_cap=" + std::to_string(decision.perInstanceCap) +
-        " reason=" + trace_or(reason, decision.reason) +
-        trace_reason_class_field_if_known("reason_class", trace_or(reason, decision.reason));
-    JTRACE("MSLUT", msg);
+        if (!JTRACE_ENABLED(2)) {
+            return;
+        }
+        std::string msg =
+            std::string("stage=") + trace_or_unknown(trace.stage) +
+            " event=" + trace_or_unknown(trace.eventName) +
+            " medium=" + scan_lut_medium_name(negativeMedium) +
+            " allowed=" + std::to_string(bool_u32(decision.allowed)) +
+            " already_active=" + std::to_string(bool_u32(decision.alreadyActive)) +
+            " active_count=" + std::to_string(decision.activeCount) +
+            " per_medium_cap=" + std::to_string(decision.perMediumCap) +
+            " per_instance_cap=" + std::to_string(decision.perInstanceCap) +
+            " reason=" + trace_or(trace.reason, decision.reason) +
+            trace_reason_class_field_if_known("reason_class", trace_or(trace.reason, decision.reason));
+        JTRACE("MSLUT", msg);
 #endif
-}
+    }
 
-bool command_ensure_scan_lut_internal(
-    SubmissionTransaction& transaction,
-    JuicerCuda::Resources& resources,
-    const WorkingState& ws,
-    bool negativeMedium,
-    bool criticalRequest,
-    const ScratchRequestDescriptor* scratchRequest,
-    const char* commandName,
-    void* cudaStreamOpaque,
-    std::string& outError);
-}
+    bool command_ensure_scan_lut_internal(
+        SubmissionTransaction& transaction,
+        JuicerCuda::Resources& resources,
+        const WorkingState& ws,
+        bool negativeMedium,
+        bool criticalRequest,
+        const ScratchRequestDescriptor* scratchRequest,
+        const char* commandName,
+        void* cudaStreamOpaque,
+        std::string& outError);
+} // namespace
 
 bool command_ensure_uploaded(
     SubmissionTransaction& transaction,
@@ -3113,8 +3110,8 @@ bool command_ensure_current_medium_uploaded(
     void* cudaStreamOpaque,
     std::string& outError) {
     const char* stageName = negativeMedium
-        ? "command_ensure_current_medium_uploaded_negative"
-        : "command_ensure_current_medium_uploaded_print";
+                                ? "command_ensure_current_medium_uploaded_negative"
+                                : "current_medium_upload_print";
     if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
@@ -3154,151 +3151,157 @@ bool command_ensure_current_medium_uploaded(
 }
 
 namespace {
-bool command_ensure_scan_lut_internal(
-    SubmissionTransaction& transaction,
-    JuicerCuda::Resources& resources,
-    const WorkingState& ws,
-    bool negativeMedium,
-    bool criticalRequest,
-    const ScratchRequestDescriptor* scratchRequest,
-    const char* commandName,
-    void* cudaStreamOpaque,
-    std::string& outError) {
-    const char* stageName = trace_or_non_empty(commandName, "command_ensure_scan_lut");
-    if (!ensure_active_for_command(transaction, outError, stageName)) {
-        return false;
-    }
-    const ScratchRequestDescriptor* activeScratchRequest = nullptr;
-    if (scratchRequest &&
-        !resolve_optional_active_scratch_request(
-            *scratchRequest,
-            stageName,
-            activeScratchRequest,
-            outError)) {
-        return false;
-    }
-    const UploadWorkEstimate uploadEstimate =
-        estimate_scan_lut_upload_bytes(resources, ws, negativeMedium);
-    if (uploadEstimate.growthBytes == std::numeric_limits<std::uint64_t>::max() ||
-        uploadEstimate.reservationBytes == std::numeric_limits<std::uint64_t>::max()) {
-        outError = "upload reservation request byte estimation overflow (scan LUT)";
-        return false;
-    }
-    const bool captureMemorySnapshots =
-        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
-    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-    if (command_scan_lut_is_cached(resources, ws, negativeMedium)) {
-        return true;
-    }
-    const ResourceManagerConfigEffective& cfg = manager_effective_config();
-    auto try_private_fallback = [&](const char* triggerReason) -> bool {
-        if (!criticalRequest) {
+    bool command_ensure_scan_lut_internal(
+        SubmissionTransaction& transaction,
+        JuicerCuda::Resources& resources,
+        const WorkingState& ws,
+        bool negativeMedium,
+        bool criticalRequest,
+        const ScratchRequestDescriptor* scratchRequest,
+        const char* commandName,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        const char* stageName = trace_or_non_empty(commandName, "command_ensure_scan_lut");
+        if (!ensure_active_for_command(transaction, outError, stageName)) {
             return false;
         }
-        trace_pressure_gate_reader(
-            transaction,
-            stageName,
-            PressureLane::Upload,
-            saturating_u64_to_size_t(uploadEstimate.growthBytes),
-            criticalRequest,
-            activeScratchRequest,
-            "private_fallback",
-            trace_or(triggerReason, "private_fallback"));
-
-        std::uint64_t expectedHash = 0;
-        if (!compute_expected_scan_lut_hash(ws, negativeMedium, expectedHash)) {
-            PrivateLutFallbackDecision invalidDecision{};
-            invalidDecision.reason = "invalid_scan_lut_key";
-            trace_private_lut_fallback(
+        const ScratchRequestDescriptor* activeScratchRequest = nullptr;
+        if (scratchRequest &&
+            !resolve_optional_active_scratch_request(
+                *scratchRequest,
                 stageName,
-                "private_fallback_denied",
-                negativeMedium,
-                invalidDecision,
-                trace_or(triggerReason, "invalid_scan_lut_key"));
+                activeScratchRequest,
+                outError)) {
             return false;
         }
-
-        const PrivateLutFallbackDecision decision =
-            evaluate_private_lut_fallback(resources, negativeMedium, expectedHash, cfg);
-        if (!decision.allowed) {
-            trace_private_lut_fallback(
-                stageName,
-                "private_fallback_denied",
-                negativeMedium,
-                decision,
-                trace_or(triggerReason, decision.reason));
+        const UploadWorkEstimate uploadEstimate =
+            estimate_scan_lut_upload_bytes(resources, ws, negativeMedium);
+        if (uploadEstimate.growthBytes == std::numeric_limits<std::uint64_t>::max() ||
+            uploadEstimate.reservationBytes == std::numeric_limits<std::uint64_t>::max()) {
+            outError = "upload reservation request byte estimation overflow (scan LUT)";
             return false;
         }
-
-        trace_private_lut_fallback(
-            stageName,
-            "private_fallback_admit",
-            negativeMedium,
-            decision,
-            trace_or(triggerReason, decision.reason));
-
-        std::string fallbackError;
-        const bool fallbackOk = JuicerCuda::ensure_scan_lut(
-            resources,
-            ws,
-            negativeMedium,
-            cudaStreamOpaque,
-            fallbackError);
-        if (!fallbackOk) {
-            trace_private_lut_fallback(
-                stageName,
-                "private_fallback_failed",
-                negativeMedium,
-                decision,
-                commands_error_or_cstr(fallbackError, "ensure_failed"));
-            if (!fallbackError.empty()) {
-                if (!outError.empty()) {
-                    outError += " | ";
-                }
-                outError += std::string(kPrivateLutFallbackFailedPrefix) + " " + fallbackError;
-            }
-            return false;
-        }
-
-        mark_private_lut_fallback_active(resources, negativeMedium, expectedHash);
-        trace_private_lut_fallback(
-            stageName,
-            "private_fallback_served",
-            negativeMedium,
-            decision,
-            trace_or(triggerReason, "served"));
+        const bool captureMemorySnapshots =
+            should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
         maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-        return true;
-    };
-    const bool ok = execute_upload_lut_command(
-        transaction,
-        resources,
-        stageName,
-        uploadEstimate.growthBytes,
-        uploadEstimate.reservationBytes,
-        criticalRequest,
-        activeScratchRequest,
-        "upload reservation request byte estimation overflow (scan LUT)",
-        captureMemorySnapshots,
-        false,
-        [&](std::string& actionError) {
-            return JuicerCuda::ensure_scan_lut(
+        if (command_scan_lut_is_cached(resources, ws, negativeMedium)) {
+            return true;
+        }
+        const ResourceManagerConfigEffective& cfg = manager_effective_config();
+        auto try_private_fallback = [&](const char* triggerReason) -> bool {
+            if (!criticalRequest) {
+                return false;
+            }
+            trace_pressure_gate_reader(
+                transaction,
+                PressureGateReaderTrace{
+                    .commandName = stageName,
+                    .path = "private_fallback",
+                    .reason = trace_or(triggerReason, "private_fallback"),
+                    .scratchRequest = activeScratchRequest,
+                    .lane = PressureLane::Upload,
+                    .requestBytes = saturating_u64_to_size_t(uploadEstimate.growthBytes),
+                    .criticalCurrentFrame = criticalRequest});
+
+            std::uint64_t expectedHash = 0;
+            if (!compute_expected_scan_lut_hash(ws, negativeMedium, expectedHash)) {
+                PrivateLutFallbackDecision invalidDecision{};
+                invalidDecision.reason = "invalid_scan_lut_key";
+                trace_private_lut_fallback(
+                    PrivateLutFallbackTrace{
+                        stageName,
+                        "private_fallback_denied",
+                        trace_or(triggerReason, "invalid_scan_lut_key")},
+                    negativeMedium,
+                    invalidDecision);
+                return false;
+            }
+
+            const PrivateLutFallbackDecision decision =
+                evaluate_private_lut_fallback(resources, negativeMedium, expectedHash, cfg);
+            if (!decision.allowed) {
+                trace_private_lut_fallback(
+                    PrivateLutFallbackTrace{
+                        stageName,
+                        "private_fallback_denied",
+                        trace_or(triggerReason, decision.reason)},
+                    negativeMedium,
+                    decision);
+                return false;
+            }
+
+            trace_private_lut_fallback(
+                PrivateLutFallbackTrace{
+                    stageName,
+                    "private_fallback_admit",
+                    trace_or(triggerReason, decision.reason)},
+                negativeMedium,
+                decision);
+
+            std::string fallbackError;
+            const bool fallbackOk = JuicerCuda::ensure_scan_lut(
                 resources,
                 ws,
                 negativeMedium,
                 cudaStreamOpaque,
-                actionError);
-        },
-        [&](const char* triggerReason) {
-            return try_private_fallback(triggerReason);
-        },
-        outError);
-    if (ok) {
-        std::lock_guard<std::mutex> lock(resources.m);
-        commands_clear_private_lut_fallback_locked(resources, negativeMedium);
+                fallbackError);
+            if (!fallbackOk) {
+                trace_private_lut_fallback(
+                    PrivateLutFallbackTrace{
+                        stageName,
+                        "private_fallback_failed",
+                        commands_error_or_cstr(fallbackError, "ensure_failed")},
+                    negativeMedium,
+                    decision);
+                if (!fallbackError.empty()) {
+                    if (!outError.empty()) {
+                        outError += " | ";
+                    }
+                    outError += std::string(kPrivateLutFallbackFailedPrefix) + " " + fallbackError;
+                }
+                return false;
+            }
+
+            mark_private_lut_fallback_active(resources, negativeMedium, expectedHash);
+            trace_private_lut_fallback(
+                PrivateLutFallbackTrace{
+                    stageName,
+                    "private_fallback_served",
+                    trace_or(triggerReason, "served")},
+                negativeMedium,
+                decision);
+            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+            return true;
+        };
+        const bool ok = execute_upload_lut_command(
+            transaction,
+            resources,
+            stageName,
+            uploadEstimate.growthBytes,
+            uploadEstimate.reservationBytes,
+            criticalRequest,
+            activeScratchRequest,
+            "upload reservation request byte estimation overflow (scan LUT)",
+            captureMemorySnapshots,
+            false,
+            [&](std::string& actionError) {
+                return JuicerCuda::ensure_scan_lut(
+                    resources,
+                    ws,
+                    negativeMedium,
+                    cudaStreamOpaque,
+                    actionError);
+            },
+            [&](const char* triggerReason) {
+                return try_private_fallback(triggerReason);
+            },
+            outError);
+        if (ok) {
+            std::lock_guard<std::mutex> lock(resources.m);
+            commands_clear_private_lut_fallback_locked(resources, negativeMedium);
+        }
+        return ok;
     }
-    return ok;
-}
 } // namespace
 
 bool command_ensure_scan_lut(
@@ -3771,5 +3774,5 @@ bool command_launch_base_pipeline_graph(
 
 bool error_is_scratch_exhausted(const std::string& error) noexcept {
     return error.rfind(kScratchExhaustedPrefix, 0) == 0 ||
-        error.rfind(kReservationDeferredPrefix, 0) == 0;
+           error.rfind(kReservationDeferredPrefix, 0) == 0;
 }

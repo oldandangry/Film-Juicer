@@ -76,10 +76,6 @@ namespace Profiles {
         }
 
         void sanitize_non_finite_literals(std::string& text) {
-            // SF_TEMP_BRIDGE_AgxProfileNonFiniteLiteralParser owner=Phase4-print-route:
-            // reason=legacy Agx non-finite compatibility; allowed=parse_agx_film_profile_json only;
-            // output_impact=blocked print route;
-            // hash_impact=none on direct route; resource_impact=legacy Agx parse; removal=Phase4.
             // Replace bare non-finite tokens with string sentinels that will be
             // accepted by the JSON parser and decoded later.
             static constexpr std::array<std::pair<std::string_view, std::string_view>, 33> kReplacements{{{"-infinity", "\"__-inf__\""},
@@ -273,10 +269,6 @@ namespace Profiles {
         }
 
         std::optional<float> parse_optional_float_allow_nan(const Json& node) {
-            // SF_TEMP_BRIDGE_AgxProfileAllowNanParser owner=Phase4-print-route:
-            // reason=legacy Agx NaN compatibility; allowed=parse_agx_film_profile_json only;
-            // output_impact=blocked print route;
-            // hash_impact=none on direct route; resource_impact=legacy Agx parse; removal=Phase4.
             if (auto special = decode_nonfinite_sentinel(node)) {
                 return special;
             }
@@ -1393,8 +1385,8 @@ namespace Profiles {
 
     } // namespace
 
-    static bool parse_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
-        outProfile = AgxFilmProfile{};
+    static bool parse_spektrafilm_profile_json(const std::string& jsonPath, SpektrafilmProfileJson& outProfile) {
+        outProfile = SpektrafilmProfileJson{};
 
         Json root;
         if (!parse_json_file(jsonPath, root)) {
@@ -1531,8 +1523,8 @@ namespace Profiles {
         outProfile.dyeC.reserve(Spectral::kNumSamples);
         outProfile.dyeM.reserve(Spectral::kNumSamples);
         outProfile.dyeY.reserve(Spectral::kNumSamples);
-        outProfile.baseMin.reserve(Spectral::kNumSamples);
-        outProfile.baseMid.reserve(Spectral::kNumSamples);
+        outProfile.baseDensityMin.reserve(Spectral::kNumSamples);
+        outProfile.baseDensityMid.reserve(Spectral::kNumSamples);
 
         for (size_t i = 0; i < Spectral::kNumSamples; ++i) {
             const float wl = Spectral::kLambdaMin + static_cast<float>(i) * Spectral::kDelta;
@@ -1543,16 +1535,12 @@ namespace Profiles {
             }
             const Json& row = dyeDensity[i];
             if (!row.is_array()) {
-                // SF_TEMP_BRIDGE_AgxProfileMalformedRowPlaceholder owner=Phase4-print-route:
-                // reason=legacy Agx malformed-row compatibility; allowed=parse_agx_film_profile_json
-                // dye-density rows only; output_impact=blocked print route; hash_impact=none;
-                // resource_impact=legacy Agx parse; removal=Phase4.
                 JTRACE("PROFILE", "dye_density row missing or not array; inserting NaNs");
                 outProfile.dyeC.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
                 outProfile.dyeM.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
                 outProfile.dyeY.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
-                outProfile.baseMin.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
-                outProfile.baseMid.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
+                outProfile.baseDensityMin.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
+                outProfile.baseDensityMid.emplace_back(wl, std::numeric_limits<float>::quiet_NaN());
                 continue;
             }
 
@@ -1564,14 +1552,14 @@ namespace Profiles {
             auto cVal = get(0);
             auto mVal = get(1);
             auto yVal = get(2);
-            auto baseMinVal = get(3);
-            auto baseMidVal = get(4);
+            auto baseDensityMinVal = get(3);
+            auto baseDensityMidVal = get(4);
 
             outProfile.dyeC.emplace_back(wl, cVal.value_or(std::numeric_limits<float>::quiet_NaN()));
             outProfile.dyeM.emplace_back(wl, mVal.value_or(std::numeric_limits<float>::quiet_NaN()));
             outProfile.dyeY.emplace_back(wl, yVal.value_or(std::numeric_limits<float>::quiet_NaN()));
-            outProfile.baseMin.emplace_back(wl, baseMinVal.value_or(std::numeric_limits<float>::quiet_NaN()));
-            outProfile.baseMid.emplace_back(wl, baseMidVal.value_or(std::numeric_limits<float>::quiet_NaN()));
+            outProfile.baseDensityMin.emplace_back(wl, baseDensityMinVal.value_or(std::numeric_limits<float>::quiet_NaN()));
+            outProfile.baseDensityMid.emplace_back(wl, baseDensityMidVal.value_or(std::numeric_limits<float>::quiet_NaN()));
         }
 
         // Log sensitivity curves (RGB order in the source profile).
@@ -1769,41 +1757,16 @@ namespace Profiles {
         if (!require_float("blur", glare.blur))
             return false;
 
-        if (isPaper) {
-            if (!require_float("compensation_removal_factor", glare.compensationRemovalFactor))
-                return false;
-            if (!require_float("compensation_removal_density", glare.compensationRemovalDensity))
-                return false;
-            if (!require_float("compensation_removal_transition", glare.compensationRemovalTransition))
-                return false;
-        } else {
-            if (auto val = parse_optional_float(glareNode.value("compensation_removal_factor", Json{}))) {
-                if (std::isfinite(*val))
-                    glare.compensationRemovalFactor = *val;
-            }
-            if (auto val = parse_optional_float(glareNode.value("compensation_removal_density", Json{}))) {
-                if (std::isfinite(*val))
-                    glare.compensationRemovalDensity = *val;
-            }
-            if (auto val = parse_optional_float(glareNode.value("compensation_removal_transition", Json{}))) {
-                if (std::isfinite(*val))
-                    glare.compensationRemovalTransition = *val;
-            }
-        }
-
         outProfile.glare = glare;
         outProfile.hasGlare = true;
-        outProfile.hasGlareCompensation = true;
-        outProfile.glareCompensationFactor = glare.compensationRemovalFactor;
-        outProfile.glareCompensationDensity = glare.compensationRemovalDensity;
-        outProfile.glareCompensationTransition = glare.compensationRemovalTransition;
+        outProfile.hasGlareCompensation = false;
+        outProfile.glareCompensationFactor = glare.printShadowCompensationFactor;
+        outProfile.glareCompensationDensity = glare.printShadowCompensationDensity;
+        outProfile.glareCompensationTransition = glare.printShadowCompensationTransition;
 
         if (isNegative) {
             auto log_grain_failure = [&](const std::string& field) {
                 log_profile_field_failure("grain", field);
-            };
-            auto log_halation_failure = [&](const std::string& field) {
-                log_profile_field_failure("halation", field);
             };
 
             if (!root.contains("grain") || !root["grain"].is_object()) {
@@ -1922,52 +1885,7 @@ namespace Profiles {
 
             outProfile.grain = grain;
             outProfile.hasGrain = true;
-
-            if (!root.contains("halation") || !root["halation"].is_object()) {
-                log_halation_failure("halation");
-                return false;
-            }
-            const Json& halationNode = root["halation"];
-            HalationMetadata halation{};
-
-            auto require_hal_bool = [&](const char* key, bool& dst) -> bool {
-                auto it = halationNode.find(key);
-                if (it != halationNode.end() && it->is_boolean()) {
-                    dst = it->get<bool>();
-                    return true;
-                }
-                log_halation_failure(key);
-                return false;
-            };
-            auto require_hal_array3 = [&](const char* key, std::array<float, 3>& dst) -> bool {
-                if (!halationNode.contains(key) || !halationNode[key].is_array() || halationNode[key].size() < 3) {
-                    log_halation_failure(key);
-                    return false;
-                }
-                for (size_t i = 0; i < 3; ++i) {
-                    auto val = parse_optional_float(halationNode[key][i]);
-                    if (!val || !std::isfinite(*val)) {
-                        log_halation_failure(key);
-                        return false;
-                    }
-                    dst[i] = *val;
-                }
-                return true;
-            };
-
-            if (!require_hal_bool("active", halation.active))
-                return false;
-            if (!require_hal_array3("strength", halation.strength))
-                return false;
-            if (!require_hal_array3("size_um", halation.sizeUm))
-                return false;
-            if (!require_hal_array3("scattering_strength", halation.scatteringStrength))
-                return false;
-            if (!require_hal_array3("scattering_size_um", halation.scatteringSizeUm))
-                return false;
-
-            outProfile.halation = halation;
-            outProfile.hasHalation = true;
+            outProfile.hasHalation = false;
         } else {
             outProfile.hasGrain = false;
             outProfile.hasHalation = false;
@@ -1976,8 +1894,8 @@ namespace Profiles {
         return true;
     }
 
-    bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile) {
-        return parse_agx_film_profile_json(jsonPath, outProfile);
+    bool load_spektrafilm_profile_json(const std::string& jsonPath, SpektrafilmProfileJson& outProfile) {
+        return parse_spektrafilm_profile_json(jsonPath, outProfile);
     }
 
     bool load_profile_info(const std::string& jsonPath, ProfileInfoSummary& outInfo) {

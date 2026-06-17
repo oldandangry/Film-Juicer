@@ -202,7 +202,7 @@ namespace {
         Hash::hash_bytes_update(hash, recipe.scatterCoreUm.data(), sizeof(recipe.scatterCoreUm));
         Hash::hash_bytes_update(hash, recipe.scatterTailUm.data(), sizeof(recipe.scatterTailUm));
         Hash::hash_bytes_update(hash, recipe.scatterTailWeight.data(), sizeof(recipe.scatterTailWeight));
-        Hash::hash_bytes_update(hash, recipe.halationStrength.data(), sizeof(recipe.halationStrength));
+        Hash::hash_bytes_update(hash, recipe.halationPrimaryAmount.data(), sizeof(recipe.halationPrimaryAmount));
         Hash::hash_bytes_update(hash, recipe.halationFirstSigmaUm.data(), sizeof(recipe.halationFirstSigmaUm));
         hash_value(hash, recipe.halationBounceCount);
         hash_value(hash, recipe.halationBounceDecay);
@@ -274,8 +274,8 @@ namespace {
             }
             scatterHalation.policy = active_exact_policy(
                 Spektrafilm::SpatialOpticsDomain::FilmLinearExposure,
-                Spektrafilm::SpatialOpticsBackendSource::LegacyHalationActiveBridge);
-            scatterHalation.halationStrength = profile.digest.halationStrength;
+                Spektrafilm::SpatialOpticsBackendSource::ProfileAntihalationPreset);
+            scatterHalation.halationPrimaryAmount = profile.digest.halationPrimaryAmount;
             scatterHalation.halationFirstSigmaUm = profile.digest.halationFirstSigmaUm;
             if (!finite_nonnegative_optics(scatterHalation.scatterAmount) ||
                 !finite_nonnegative_optics(scatterHalation.halationAmount) ||
@@ -284,7 +284,7 @@ namespace {
                 !finite_nonnegative_triplet(scatterHalation.scatterCoreUm) ||
                 !finite_nonnegative_triplet(scatterHalation.scatterTailUm) ||
                 !finite_unit_triplet(scatterHalation.scatterTailWeight) ||
-                !finite_nonnegative_triplet(scatterHalation.halationStrength) ||
+                !finite_nonnegative_triplet(scatterHalation.halationPrimaryAmount) ||
                 !finite_nonnegative_triplet(scatterHalation.halationFirstSigmaUm) ||
                 scatterHalation.halationBounceCount == 0 ||
                 !finite_nonnegative_optics(scatterHalation.halationBounceDecay)) {
@@ -1190,7 +1190,7 @@ namespace Spektrafilm {
                 filmDevelop,
                 input.dirCouplers,
                 result.recipe.dirCouplers)) {
-            result.diagnostic = "MalformedRequiredProfileData phase=3D-3 field=dir_couplers";
+            result.diagnostic = "MalformedRequiredProfileData phase=3D-3 field=dirCouplers";
             return result;
         }
 

@@ -10,7 +10,6 @@
 #include "Couplers.h"
 #include "OutputColor.h"
 #include "RenderFrameRequest.h"
-#include <algorithm>
 #include <vector>
 #include <cmath>
 #include <cstdint>
@@ -20,23 +19,6 @@ struct InstanceState;
 struct WorkingState;
 
 namespace JuicerProc {
-
-    struct SpatialDIRWorkspace {
-        std::vector<float> filmRaw_B, filmRaw_G, filmRaw_R;
-        std::vector<float> corrY, corrM, corrC;
-        std::vector<float> corrYBlur, corrMBlur, corrCBlur;
-        std::vector<float> tmp;
-    };
-
-} // namespace JuicerProc
-
-namespace SpatialDIR {
-
-    struct Callbacks {
-        void* user = nullptr;
-        bool (*fetchRGB)(void* user, int xx, int yy, float rgb[3]) = nullptr;
-        bool (*abortCheck)(void* user) = nullptr;
-    };
 
     // Separable Gaussian kernel builder, with radius cap for safety.
     // Kept inline so test wrappers can use it without linking a specific TU.
@@ -65,36 +47,6 @@ namespace SpatialDIR {
             w /= wsum;
     }
 
-    void buildSpatialDIRCorrections(
-        int width,
-        int height,
-        const WorkingState& ws,
-        const Couplers::Runtime& dirRT,
-        float exposureScale,
-        const Callbacks& callbacks,
-        JuicerProc::SpatialDIRWorkspace& work,
-        std::vector<float>& kernelCache);
-
-} // namespace SpatialDIR
-
-namespace JuicerProc {
-
-    void copyNonFloatRect(OFX::Image* src, OFX::Image* dst);
-    using DensityBuffer = Scanner::DensityBuffer;
-
-    // Separable Gaussian kernel builder, with radius cap for safety. Kept inline so
-    // tests can exercise it without linking the processing translation unit.
-    inline void buildGaussianKernel(float sigma, std::vector<float>& kernel) {
-        SpatialDIR::buildGaussianKernel(sigma, kernel);
-    }
-
-    using PrintPipelineScratch = Pipeline::PrintPipelineScratch;
-
-    struct StageScratch {
-        SpatialDIRWorkspace dirWorkspace;
-        std::vector<float> gaussianKernel;
-        std::vector<PrintPipelineScratch> printScratchPerWorker;
-    };
 } // namespace JuicerProc
 
 // Full class declaration
@@ -151,28 +103,9 @@ public:
     void setRenderHints(bool interactiveRenderStatus, bool renderQualityDraft, bool sequentialRenderStatus);
 
     void process() override;
-    void multiThreadProcessImages(OfxRectI procWindow) override;
     void processImagesCUDA() override;
 
 private:
-    struct RenderContext {
-        OfxRectI window{};
-        int width = 0;
-        int height = 0;
-        bool useSpatialDIR = false;
-        bool printActive = false;
-        float exposureScaleSafe = 1.0f;
-        float kMidSpectral = 1.0f;
-        float pixelSizeUm = 0.0f;
-    };
-
-    RenderContext prepareRenderContext() const;
-    bool ensureDensityCapacity(int width, int height);
-    void writeMediumDensities(const RenderContext& ctx, unsigned int threadCount);
-    void renderScannerFromDensity(const RenderContext& ctx, unsigned int threadCount);
-
-    void processImpl();
-
     OFX::Image* _srcImg;
     int _nComponents;
 
@@ -185,10 +118,6 @@ private:
     bool _hasGrainOverride = false;
     Profiles::ProfileGlare _printGlareOverride{};
     bool _hasPrintGlareOverride = false;
-    // SF_PHASE5_BLOCKED_LegacyBroadDirRuntime owner=legacy broad/CPU renderer;
-    // allowed_call_sites=hard-blocked processImpl/processImagesCUDA source;
-    // output_hash_resource_impact=none on typed focused routes;
-    // cleanup_symbol=SF_PHASE5_BLOCKED_LegacyBroadDirRuntime; disposition=delete_with_legacy renderer.
     Couplers::Runtime _dirRT;
 
     const Print::Runtime* _prt;
@@ -220,8 +149,6 @@ private:
     bool _renderQualityDraft = false;
     bool _renderSequentialStatus = false;
 
-    JuicerProc::StageScratch _scratch;
-    JuicerProc::DensityBuffer _density;
     std::uint32_t _frameBoundsVersion = 0;
     OfxRectI _fullFrameExtent{0, 0, 0, 0};
     float _pixelSizeUm = 0.0f;

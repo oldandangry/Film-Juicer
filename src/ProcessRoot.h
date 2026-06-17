@@ -25,11 +25,6 @@ namespace Scanner {
     struct ScannerPostEffectsDescriptor;
 } // namespace Scanner
 
-namespace WorkingStateSharing {
-    struct AcquireCoreSharedResult;
-    struct WorkingStateCorePayload;
-} // namespace WorkingStateSharing
-
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 namespace JuicerCuda {
     struct PipelineRunParams;
@@ -122,10 +117,7 @@ namespace JuicerProcess {
             PreparedCudaFrame(const PreparedCudaFrame&) = delete;
             PreparedCudaFrame& operator=(const PreparedCudaFrame&) = delete;
 
-            // SF_TEMP_BRIDGE_Phase6BroadOpticsWorkspace owner=Phase8-scanner/Phase9-grain/legacy broad renderer;
-            // allowed_call_sites=accepted spatial-DIR lease plus hard-blocked broad scanner/grain/halation source;
-            // output_hash_resource_impact=no Exact policy/hash/resource ownership;
-            // cleanup_symbol=SF_TEMP_BRIDGE_Phase6BroadOpticsWorkspace; disposition=split_by_owning_future_phase.
+            // Shared frame scratch admission covers scanner post effects, grain, halation, and spatial DIR.
             struct WorkspaceRequest {
                 bool needOptics = false;
                 bool needSpatialDir = false;
@@ -237,10 +229,7 @@ namespace JuicerProcess {
                 float sigma = 0.0f;
             };
 
-            // SF_TEMP_BRIDGE_Phase6BroadOpticsKernelView owner=Phase8-scanner/Phase9-grain/legacy broad renderer;
-            // allowed_call_sites=hard-blocked broad launch source only;
-            // output_hash_resource_impact=no Exact descriptor/prepared-view ownership;
-            // cleanup_symbol=SF_TEMP_BRIDGE_Phase6BroadOpticsKernelView; disposition=split_by_owning_future_phase.
+            // Kernel views expose only prepared-frame-owned device memory for the current launch.
             struct OpticsKernelView {
                 KernelView spatialDir{};
                 KernelView scannerLensBlur{};
@@ -325,7 +314,7 @@ namespace JuicerProcess {
                 bool active = false;
             };
 
-            struct ScannerOpticsScratchView {
+            struct ScannerWorkspaceView {
                 float* rgbR = nullptr;
                 float* rgbG = nullptr;
                 float* rgbB = nullptr;
@@ -345,7 +334,7 @@ namespace JuicerProcess {
             };
 
             struct ScannerPostEffectsPreparedView {
-                ScannerOpticsScratchView scratch{};
+                ScannerWorkspaceView scratch{};
                 KernelView lensBlur{};
                 KernelView unsharp{};
                 KernelView glare{};
@@ -370,7 +359,7 @@ namespace JuicerProcess {
             SpatialDirPreparedView spatial_dir_resources(
                 const WorkspaceLeaseMarker& workspace,
                 std::uint64_t descriptorHash) const noexcept;
-            ScannerOpticsScratchView scanner_optics_scratch(const WorkspaceLeaseMarker& workspace) const noexcept;
+            ScannerWorkspaceView scanner_workspace(const WorkspaceLeaseMarker& workspace) const noexcept;
             ScannerPostEffectsPreparedView scanner_post_effects_resources(
                 const WorkspaceLeaseMarker& workspace,
                 std::uint64_t descriptorHash) const noexcept;
@@ -389,11 +378,7 @@ namespace JuicerProcess {
             void record_use(void* cudaStreamOpaque) noexcept;
             bool finish(void* cudaStreamOpaque, std::string& outError);
             void abort(const char* reason) noexcept;
-            // SF_TEMP_BRIDGE_PreparedDirectScannerWorkingState owner=Phase4-print-route:
-            // reason=legacy broad medium/LUT preparation; allowed=prepare_current_medium and
-            // prepare_scan_lut calls in processImagesCUDA after the accepted direct return only;
-            // output_impact=blocked print route; hash_impact=legacy scanner key;
-            // resource_impact=broad WorkingState upload; removal=Phase4 print cutover.
+            // Broad medium/LUT preparation remains internal to prepared-frame ownership.
             bool prepare_current_medium(
                 const WorkingState& workingState,
                 bool negativeMedium,
@@ -406,10 +391,7 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            // SF_TEMP_BRIDGE_Phase6PublicOpticsPreparation owner=Phase8-scanner/Phase9-grain/legacy broad renderer;
-            // allowed_call_sites=hard-blocked broad launch source only; output_hash_resource_impact=none for Exact;
-            // cleanup_symbol=SF_TEMP_BRIDGE_Phase6PublicOpticsPreparation; disposition=remove_or_narrow_by_owning_phase.
-            bool prepare_optics_scratch(
+            bool stage_optical_workspace(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
@@ -418,13 +400,9 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            // SF_TEMP_BRIDGE_PreparePrintIlluminantFiltered owner=Phase4C-print-launch:
-            // reason=legacy old-filter-unit launch preparation; allowed=unreachable legacy print
-            // launch block only; output_impact=none in Phase4B; hash_impact=none in Phase4B;
-            // resource_impact=none in Phase4B; removal=Phase4C.
-            bool prepare_print_illuminant_filtered(
+            bool build_print_illuminant_filter_curve(
                 const WorkingState& workingState,
-                const Print::Runtime& printRuntime,
+                const Print::Runtime& printRt,
                 const Print::Params& printParams,
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
@@ -441,15 +419,15 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 const char* stageTag,
                 std::string& outError);
-            bool prepare_scanner_lens_blur_kernel(
+            bool build_lens_blur_kernel(
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_scanner_unsharp_kernel(
+            bool build_unsharp_kernel(
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_scanner_glare_kernel(
+            bool build_glare_kernel(
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
@@ -471,12 +449,12 @@ namespace JuicerProcess {
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_halation_kernel(
+            bool build_halation_kernel(
                 int channel,
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_halation_scatter_kernel(
+            bool build_halation_scatter_kernel(
                 int channel,
                 float sigma,
                 void* cudaStreamOpaque,
@@ -491,13 +469,9 @@ namespace JuicerProcess {
                 const WorkingState& workingState,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            // SF_TEMP_BRIDGE_ValidatePrintPrimitives owner=Phase4C-print-launch:
-            // reason=legacy broad launch validation; allowed=unreachable legacy print launch
-            // block only; output_impact=none in Phase4B; hash_impact=none in Phase4B;
-            // resource_impact=none in Phase4B; removal=Phase4C.
             bool validate_print_primitives(
                 const WorkingState& workingState,
-                const Print::Runtime& printRuntime,
+                const Print::Runtime& printRt,
                 const Print::Params& printParams,
                 float midgrayFactor,
                 void* cudaStreamOpaque,
@@ -520,12 +494,12 @@ namespace JuicerProcess {
             bool validate_workspace_lease_marker(
                 const WorkspaceLeaseMarker& workspace,
                 std::string& outError) const;
-            bool prepare_gaussian_kernel_slot(
+            bool build_gaussian_kernel_slot(
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool prepare_halation_kernel_slot(
+            bool build_halation_kernel_slot(
                 JuicerCuda::Resources::DeviceGaussianKernel& kernel,
                 float sigma,
                 void* cudaStreamOpaque,
@@ -539,11 +513,7 @@ namespace JuicerProcess {
             std::unique_ptr<State> _state;
         };
 
-        // SF_TEMP_BRIDGE_PrepareCudaFrameWorkingStateInput owner=Phase4C-print-launch:
-        // reason=legacy broad print launch source; allowed=unreachable processImagesCUDA legacy
-        // print launch block after the accepted Phase 4B hard stop only;
-        // output_impact=none in Phase4B; hash_impact=legacy print keys only;
-        // resource_impact=none in Phase4B; removal=Phase4C launch cutover.
+        // Prepared-frame construction receives immutable render inputs captured before CUDA launch.
         PreparedCudaFrame prepare_cuda_frame(
             const JuicerCuda::ResourceManager::DeviceContextKey& deviceContextKey,
             const JuicerCuda::ResourceManager::SubmissionSnapshot& snapshot,
@@ -581,9 +551,6 @@ namespace JuicerProcess {
             const char* reason) noexcept;
 #endif
         JuicerAssets::Library& assets() noexcept;
-        WorkingStateSharing::AcquireCoreSharedResult acquire_working_state_core(
-            std::uint64_t keyHash,
-            std::shared_ptr<const WorkingStateSharing::WorkingStateCorePayload> insertPayload = nullptr);
 
     private:
         class ShutdownToken final {
@@ -613,7 +580,6 @@ namespace JuicerProcess {
         void release_cuda_context_resource_owners() noexcept;
         void release_cuda_host_asset_caches() noexcept;
         void release_process_host_services() noexcept;
-        void release_working_state_cores() noexcept;
         void finish_shutdown() noexcept;
         void finish_frame_preparation() noexcept;
         void resume_frame_preparation() noexcept;

@@ -51,7 +51,7 @@ namespace OFX {
 #define kParamSpectralMode "SpectralUpsampling"
 #define kParamReferenceIlluminant "ReferenceIlluminant"
 #define kParamEnlargerIlluminant "EnlargerIlluminant"
-#define kParamEnlargerDichroicSet "EnlargerDichroicSet"
+#define kParamDichroicFilterSet "DichroicFilterSet"
 
 // Output encoding parameters
 #define kParamOutputColorSpace "OutputColorSpace"
@@ -74,18 +74,11 @@ private:
         int meteringMethod = 0;
     };
 
-    struct AutoExposureResult {
-        float exposureScale = 1.0f;
-        double autoEV = 0.0;
-        OfxRectI meterBounds{0, 0, 0, 0};
-        bool meterBoundsValid = false;
-    };
-
     struct WorkingStateInfo {
         std::shared_ptr<const WorkingState> workingState;
-        const Print::Runtime* printRuntime = nullptr;
+        const Print::Runtime* printRt = nullptr;
         bool workingStateReady = false;
-        bool printRuntimeReady = false;
+        bool printRtReady = false;
     };
 
     ExposureParams gatherExposureParams() const;
@@ -102,15 +95,6 @@ private:
     void updateGrainPresetLabel(bool custom);
     void updateGrainChromaEnabled();
     [[noreturn]] void throw_spektrafilm_phase1a_render_cutoff(const OFX::RenderArguments& args) const;
-    // SF_TEMP_BRIDGE_CPUProductRendererBlocked owner=Phase4-print-route:
-    // reason=legacy declaration for blocked CPU implementation; allowed=unreachable legacy CPU
-    // implementation only; output_impact=none; hash_impact=none; resource_impact=none;
-    // removal=Phase4 print cutover.
-    AutoExposureResult computeAutoExposure(
-        const OFX::RenderArguments& args,
-        OFX::Image* srcImg,
-        const OfxRectI& fullBounds,
-        const ExposureParams& exposureParams) const;
     WorkingStateInfo prepareWorkingState() const;
 
     ParamSnapshot snapshotParams() const;
@@ -162,13 +146,13 @@ private:
     OFX::BooleanParam* _pHalationActive = nullptr;
     OFX::DoubleParam* _pHalationStrengthMaster = nullptr;
     OFX::DoubleParam* _pHalationSizeUmMaster = nullptr;
-    OFX::DoubleParam* _pHalationScatteringStrengthMaster = nullptr;
-    OFX::DoubleParam* _pHalationScatteringSizeUmMaster = nullptr;
+    OFX::DoubleParam* _pHalationSecondaryAmountMaster = nullptr;
+    OFX::DoubleParam* _pHalationSecondarySizeUmMaster = nullptr;
     OFX::PushButtonParam* _pHalationRevertToStock = nullptr;
     OFX::Double3DParam* _pHalationStrength = nullptr;
     OFX::Double3DParam* _pHalationSizeUm = nullptr;
-    OFX::Double3DParam* _pHalationScatteringStrength = nullptr;
-    OFX::Double3DParam* _pHalationScatteringSizeUm = nullptr;
+    OFX::Double3DParam* _pHalationSecondaryAmount = nullptr;
+    OFX::Double3DParam* _pHalationSecondarySizeUm = nullptr;
 
     OFX::BooleanParam* _pGrainActive = nullptr;
     OFX::BooleanParam* _pGrainSublayersActive = nullptr;
@@ -217,10 +201,10 @@ private:
 
     std::unique_ptr<InstanceState> _state;
 
-    double _halationStrengthMasterLast = 0.0;
+    double _halationPrimaryAmountMasterLast = 0.0;
     double _halationSizeUmMasterLast = 0.0;
-    double _halationScatteringStrengthMasterLast = 0.0;
-    double _halationScatteringSizeUmMasterLast = 0.0;
+    double _halationSecondaryAmountMasterLast = 0.0;
+    double _halationSecondarySizeUmMasterLast = 0.0;
     double _grainParticleScaleMasterLast = 0.0;
     double _grainParticleScaleLayersMasterLast = 0.0;
     double _grainDensityMinMasterLast = 0.0;

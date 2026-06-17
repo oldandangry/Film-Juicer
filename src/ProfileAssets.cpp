@@ -176,13 +176,13 @@ namespace Profiles {
                                           : std::array<float, 3>{{65.0f, 65.0f, 65.0f}};
         switch (info.antihalation) {
             case ProfileAntihalation::Strong:
-                digest.halationStrength = {{0.015f, 0.005f, 0.0f}};
+                digest.halationPrimaryAmount = {{0.015f, 0.005f, 0.0f}};
                 break;
             case ProfileAntihalation::Weak:
-                digest.halationStrength = {{0.08f, 0.02f, 0.0f}};
+                digest.halationPrimaryAmount = {{0.08f, 0.02f, 0.0f}};
                 break;
             case ProfileAntihalation::No:
-                digest.halationStrength = {{0.30f, 0.10f, 0.015f}};
+                digest.halationPrimaryAmount = {{0.30f, 0.10f, 0.015f}};
                 break;
             default:
                 digest.halationPresetApplied = false;

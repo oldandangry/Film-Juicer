@@ -52,7 +52,6 @@ namespace JuicerAssets {
 
     struct Library::NeutralFilterDatabasePathSet {
         std::string selectedPath;
-        std::string defaultPath;
         std::uint64_t version = 0;
     };
 
@@ -107,10 +106,6 @@ namespace JuicerAssets {
             bool ready = false;
         };
 
-        struct PrintPaperFolderProfilePayloadCacheEntry {
-            std::shared_ptr<const PrintPaperFolderProfilePayload> payload;
-        };
-
         struct FilterDbRead {
             std::shared_ptr<const ParsedNeutralFilterDb> db;
             bool stop = false;
@@ -119,7 +114,7 @@ namespace JuicerAssets {
         struct ProfileCacheEntry {
             std::string cacheKey;
             ProfileFileStamp stamp;
-            Profiles::AgxFilmProfile profile;
+            Profiles::SpektrafilmProfileJson profile;
         };
 
         constexpr std::size_t kProfileCacheCapacity = 2;
@@ -187,14 +182,14 @@ namespace JuicerAssets {
             return true;
         }
 
-        std::string make_lookup_key(const std::string& paperKey, const std::string& illuminantKey, const std::string& negativeKey) {
+        std::string make_lookup_key(const std::string& printProfileKey, const std::string& illuminantKey, const std::string& filmProfileKey) {
             std::string key;
-            key.reserve(paperKey.size() + illuminantKey.size() + negativeKey.size() + 2);
-            key += to_lower(paperKey);
+            key.reserve(printProfileKey.size() + illuminantKey.size() + filmProfileKey.size() + 2);
+            key += to_lower(printProfileKey);
             key.push_back('\x1f');
             key += to_lower(illuminantKey);
             key.push_back('\x1f');
-            key += to_lower(negativeKey);
+            key += to_lower(filmProfileKey);
             return key;
         }
 
@@ -254,7 +249,7 @@ namespace JuicerAssets {
             std::vector<ProfileCacheEntry>& cache,
             const std::string& cacheKey,
             const ProfileFileStamp& stamp,
-            Profiles::AgxFilmProfile& outProfile) {
+            Profiles::SpektrafilmProfileJson& outProfile) {
             if (cacheKey.empty() || !stamp.valid) {
                 return false;
             }
@@ -279,7 +274,7 @@ namespace JuicerAssets {
             std::vector<ProfileCacheEntry>& cache,
             std::string cacheKey,
             const ProfileFileStamp& stamp,
-            const Profiles::AgxFilmProfile& profile) {
+            const Profiles::SpektrafilmProfileJson& profile) {
             if (cacheKey.empty() || !stamp.valid) {
                 return;
             }
@@ -302,7 +297,7 @@ namespace JuicerAssets {
             }
         }
 
-        bool parse_array_triplet(const Json& arrNode, std::tuple<float, float, float>& outYMC) {
+        bool parse_array_triplet(const Json& arrNode, std::tuple<float, float, float>& outCmyCc) {
             if (!arrNode.is_array() || arrNode.size() < 3) {
                 return false;
             }
@@ -320,7 +315,7 @@ namespace JuicerAssets {
                 vals[i] = v;
             }
 
-            outYMC = std::make_tuple(vals[0], vals[1], vals[2]);
+            outCmyCc = std::make_tuple(vals[0], vals[1], vals[2]);
             return true;
         }
 
@@ -336,18 +331,18 @@ namespace JuicerAssets {
                 if (!paperIt->is_object()) {
                     continue;
                 }
-                const std::string& paperKey = paperIt.key();
+                const std::string& printProfileKey = paperIt.key();
                 for (auto illuminantIt = paperIt->cbegin(); illuminantIt != paperIt->cend(); ++illuminantIt) {
                     if (!illuminantIt->is_object()) {
                         continue;
                     }
                     const std::string& illuminantKey = illuminantIt.key();
                     for (auto negativeIt = illuminantIt->cbegin(); negativeIt != illuminantIt->cend(); ++negativeIt) {
-                        std::tuple<float, float, float> ymc{};
-                        if (!parse_array_triplet(*negativeIt, ymc)) {
+                        std::tuple<float, float, float> cmyCc{};
+                        if (!parse_array_triplet(*negativeIt, cmyCc)) {
                             continue;
                         }
-                        outLookup[make_lookup_key(paperKey, illuminantKey, negativeIt.key())] = ymc;
+                        outLookup[make_lookup_key(printProfileKey, illuminantKey, negativeIt.key())] = cmyCc;
                         ++validEntryCount;
                     }
                 }
@@ -529,7 +524,7 @@ namespace JuicerAssets {
             return read;
         }
 
-        NeutralFilterLookupResult lookup_filter_ymc(
+        NeutralFilterLookupResult lookup_filter_cmy_cc(
             const ParsedNeutralFilterDb& db,
             const std::string& lookupKey,
             NeutralFilterLookupThread threadClass) {
@@ -541,7 +536,7 @@ namespace JuicerAssets {
             }
 
             result.found = true;
-            result.ymc = it->second;
+            result.cmyCc = it->second;
             result.selectedDbVersionHash = db.versionHash;
             trace_neutral_filter_event("hit", db.versionHash, threadClass);
             return result;
@@ -570,10 +565,6 @@ namespace JuicerAssets {
             std::string fileName = request.jsonKey;
             fileName += ".json";
             return data_path_string(request.dataDir, {"profiles", fileName.c_str()});
-        }
-
-        std::string profile_asset_path(const std::string& dataDir, const char* fileName) {
-            return data_path_string(dataDir, {"profiles", fileName});
         }
 
         std::string neutral_print_calibration_path(const std::string& dataDir) {
@@ -693,59 +684,34 @@ namespace JuicerAssets {
             return result;
         }
 
-        std::string paper_dir_for_folder(const std::string& dataDir, const std::string& folderName) {
-            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase4-print-route:
-            // reason=legacy print-folder path compatibility; allowed=Print::load_profile_from_asset
-            // path resolution only; output_impact=blocked print route; hash_impact=none;
-            // resource_impact=print-folder path read; removal=Phase4.
-            if (folderName.empty() || dataDir.empty()) {
-                return {};
-            }
-            fs::path dir = fs::path(dataDir) / "paper" / folderName;
-            dir.make_preferred();
-            std::string result = dir.string();
-#ifdef _WIN32
-            const char separator = '\\';
-#else
-            const char separator = '/';
-#endif
-            if (!result.empty() && result.back() != separator) {
-                result.push_back(separator);
-            }
-            return result;
-        }
-
-        struct FilmStockAssetRequest {
+        struct FilmProfileAssetRequest {
             std::string optionLabel;
             std::string jsonKey;
         };
 
-        FilmStockAsset make_film_stock(FilmStockAssetRequest request) {
-            FilmStockAsset asset;
+        SelectedFilmProfileAsset make_film_profile_asset(FilmProfileAssetRequest request) {
+            SelectedFilmProfileAsset asset;
             asset.optionLabel = std::move(request.optionLabel);
             asset.jsonKey = std::move(request.jsonKey);
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
-        PrintPaperAsset make_print_paper(
+        SelectedPrintProfileAsset make_print_profile_asset(
             std::string optionLabel,
             std::string jsonKey) {
-            PrintPaperAsset asset;
+            SelectedPrintProfileAsset asset;
             asset.optionLabel = std::move(optionLabel);
             asset.jsonKey = std::move(jsonKey);
             asset.version = Library::kProcessAssetVersion;
             return asset;
         }
 
-        void add_print_paper(
-            std::vector<PrintPaperAsset>& assets,
-            std::vector<std::string>& folderNames,
+        void add_print_profile(
+            std::vector<SelectedPrintProfileAsset>& assets,
             std::string optionLabel,
-            std::string folderName,
             std::string jsonKey) {
-            assets.emplace_back(make_print_paper(std::move(optionLabel), std::move(jsonKey)));
-            folderNames.emplace_back(std::move(folderName));
+            assets.emplace_back(make_print_profile_asset(std::move(optionLabel), std::move(jsonKey)));
         }
 
         NeutralFilterDatabaseAsset make_neutral_filter_database(std::uint32_t databaseId) {
@@ -967,57 +933,6 @@ namespace JuicerAssets {
             }
         }
 
-        std::string print_paper_file_path(const std::string& dataDir, const std::string& folderName, const char* fileName) {
-            const std::string paperDir = paper_dir_for_folder(dataDir, folderName);
-            if (paperDir.empty()) {
-                return {};
-            }
-            fs::path path(paperDir);
-            path /= fileName;
-            path.make_preferred();
-            return path.string();
-        }
-
-        std::vector<std::pair<float, float>> load_print_paper_pairs(
-            const std::string& dataDir,
-            const std::string& folderName,
-            const char* fileName) {
-            // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase4-print-route:
-            // reason=legacy print-folder CSV compatibility; allowed=Print::load_profile_from_asset
-            // CSV read only; output_impact=blocked print route; hash_impact=none;
-            // resource_impact=print-folder CSV read; removal=Phase4.
-            const std::string path = print_paper_file_path(dataDir, folderName, fileName);
-            if (path.empty()) {
-                return {};
-            }
-            return load_pairs_silent(path);
-        }
-
-        PrintPaperFolderProfilePayload load_print_paper_folder_profile_payload(
-            const std::string& dataDir,
-            const PrintPaperAsset& asset,
-            const std::string& folderName) {
-            PrintPaperFolderProfilePayload payload;
-            payload.dyeC = load_print_paper_pairs(dataDir, folderName, "dye_density_c.csv");
-            payload.dyeM = load_print_paper_pairs(dataDir, folderName, "dye_density_m.csv");
-            payload.dyeY = load_print_paper_pairs(dataDir, folderName, "dye_density_y.csv");
-            payload.logSensR = load_print_paper_pairs(dataDir, folderName, "log_sensitivity_r.csv");
-            payload.logSensG = load_print_paper_pairs(dataDir, folderName, "log_sensitivity_g.csv");
-            payload.logSensB = load_print_paper_pairs(dataDir, folderName, "log_sensitivity_b.csv");
-            payload.baseMin = load_print_paper_pairs(dataDir, folderName, "dye_density_min.csv");
-            payload.baseMid = load_print_paper_pairs(dataDir, folderName, "dye_density_mid.csv");
-            payload.version = asset.version;
-            return payload;
-        }
-
-        std::string print_paper_folder_profile_payload_key(const PrintPaperAsset& asset, const std::string& folderName) {
-            std::ostringstream key;
-            key << asset.version << '\n'
-                << asset.jsonKey << '\n'
-                << folderName;
-            return key.str();
-        }
-
         void prepare_identity_dichroic_curve(Spectral::Curve& curve) {
             Spectral::assign_reference_axis(curve.lambda_nm);
             curve.linear.assign(static_cast<size_t>(Spectral::gShape.K), 1.0f);
@@ -1113,11 +1028,6 @@ namespace JuicerAssets {
         std::unordered_map<std::string, NeutralFilterCacheEntry> entries;
     };
 
-    struct Library::PrintPaperFolderProfilePayloadCacheState {
-        std::mutex mutex;
-        std::unordered_map<std::string, PrintPaperFolderProfilePayloadCacheEntry> entries;
-    };
-
     struct Library::StaticNoisePayloadCacheState {
         std::mutex mutex;
         std::shared_ptr<const StaticNoisePayloadSet> payloads;
@@ -1145,7 +1055,6 @@ namespace JuicerAssets {
           _dichroicFilterSets(std::make_unique<DichroicFilterAssetSet[]>(kDichroicFilterSetCount)),
           _illuminantFilterAssets(std::make_unique<IlluminantFilterAssetSet>()),
           _neutralFilterCache(std::make_unique<NeutralFilterCacheState>()),
-          _printPaperFolderProfilePayloadCache(std::make_unique<PrintPaperFolderProfilePayloadCacheState>()),
           _staticNoisePayloadCache(std::make_unique<StaticNoisePayloadCacheState>()),
           _dichroicFilterCurveCache(std::make_unique<DichroicFilterCurveCacheState>()),
           _illuminantFilterCurveCache(std::make_unique<IlluminantFilterCurveCacheState>()),
@@ -1189,7 +1098,6 @@ namespace JuicerAssets {
         const bool traceCatalog = JTRACE_ENABLED(1);
         _filmStocks.clear();
         _printPapers.clear();
-        _printPaperFolderNames.clear();
 
         _spektrafilmProfileCatalog = Spektrafilm::build_profile_catalog(_dataDir);
         if (!_spektrafilmProfileCatalog.valid) {
@@ -1201,14 +1109,13 @@ namespace JuicerAssets {
 
         _filmStocks.reserve(_spektrafilmProfileCatalog.filmProfiles.size());
         for (const Spektrafilm::ProfileCatalogEntry& entry : _spektrafilmProfileCatalog.filmProfiles) {
-            _filmStocks.emplace_back(make_film_stock(FilmStockAssetRequest{entry.label, entry.key}));
+            _filmStocks.emplace_back(make_film_profile_asset(FilmProfileAssetRequest{entry.label, entry.key}));
             _filmStocks.back().version = entry.sourceVersion;
         }
 
         _printPapers.reserve(_spektrafilmProfileCatalog.printProfiles.size());
-        _printPaperFolderNames.reserve(_spektrafilmProfileCatalog.printProfiles.size());
         for (const Spektrafilm::ProfileCatalogEntry& entry : _spektrafilmProfileCatalog.printProfiles) {
-            add_print_paper(_printPapers, _printPaperFolderNames, entry.label, std::string{}, entry.key);
+            add_print_profile(_printPapers, entry.label, entry.key);
             _printPapers.back().version = entry.sourceVersion;
         }
 
@@ -1223,26 +1130,19 @@ namespace JuicerAssets {
     }
 
     void Library::load_neutral_filter_databases() {
-        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase4-print-route:
-        // reason=legacy neutral-filter database; allowed=JuicerEffect::applyNeutralFilters only;
-        // output_impact=blocked print route; hash_impact=none on direct route;
-        // resource_impact=legacy neutral DB load; removal=Phase4.
-        const std::string phase2bNeutralInventoryPath = neutral_print_calibration_path(_dataDir);
-        (void)phase2bNeutralInventoryPath;
-        auto makePaths = [this](const char* selectedFileName) {
+        auto makePaths = [this]() {
             NeutralFilterDatabasePathSet paths;
-            paths.selectedPath = profile_asset_path(_dataDir, selectedFileName);
-            paths.defaultPath = profile_asset_path(_dataDir, "enlarger_neutral_ymc_filters.json");
+            paths.selectedPath = neutral_print_calibration_path(_dataDir);
             paths.version = Library::kProcessAssetVersion;
             return paths;
         };
 
         _neutralFilterDatabases[0] = make_neutral_filter_database(0);
-        _neutralFilterDatabasePaths[0] = makePaths("enlarger_neutral_ymc_filters.json");
+        _neutralFilterDatabasePaths[0] = makePaths();
         _neutralFilterDatabases[1] = make_neutral_filter_database(1);
-        _neutralFilterDatabasePaths[1] = makePaths("enlarger_neutral_ymc_filters_thorlabs.json");
+        _neutralFilterDatabasePaths[1] = makePaths();
         _neutralFilterDatabases[2] = make_neutral_filter_database(2);
-        _neutralFilterDatabasePaths[2] = makePaths("enlarger_neutral_ymc_filters_edmund.json");
+        _neutralFilterDatabasePaths[2] = makePaths();
     }
 
     NeutralFilterLookupResult Library::lookup_neutral_filter_path(
@@ -1250,12 +1150,12 @@ namespace JuicerAssets {
         NeutralFilterLookupResult result;
         const NeutralFilterLookupKey& key = lookup.lookupKey;
 
-        if (key.paperKey.empty() || key.illuminantKey.empty() || key.negativeKey.empty()) {
+        if (key.printProfileKey.empty() || key.illuminantKey.empty() || key.filmProfileKey.empty()) {
             trace_neutral_filter_event("miss", "none", lookup.threadClass, "missing_lookup_key", &lookup.jsonPath);
             return result;
         }
 
-        const std::string lookupKey = make_lookup_key(key.paperKey, key.illuminantKey, key.negativeKey);
+        const std::string lookupKey = make_lookup_key(key.printProfileKey, key.illuminantKey, key.filmProfileKey);
         const std::string cacheKey = normalize_path_for_cache_key(lookup.jsonPath);
         if (cacheKey.empty()) {
             trace_neutral_filter_event("miss", "none", lookup.threadClass, "empty_path", &lookup.jsonPath);
@@ -1281,7 +1181,7 @@ namespace JuicerAssets {
             return result;
         }
 
-        return lookup_filter_ymc(*dbRead.db, lookupKey, lookup.threadClass);
+        return lookup_filter_cmy_cc(*dbRead.db, lookupKey, lookup.threadClass);
     }
 
     NeutralFilterLookupResult Library::lookup_neutral_filters(
@@ -1299,17 +1199,8 @@ namespace JuicerAssets {
             return {};
         }
 
-        NeutralFilterLookupResult result = lookup_neutral_filter_path(
-            NeutralFilterPathLookup{paths.selectedPath, lookupKey, threadClass});
-        if (result.found || paths.selectedPath == paths.defaultPath) {
-            return result;
-        }
-        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase4-print-route:
-        // reason=legacy neutral-filter fallback lookup; allowed=JuicerEffect::applyNeutralFilters
-        // miss lookup only; output_impact=blocked print route; hash_impact=none;
-        // resource_impact=legacy neutral DB read; removal=Phase4.
         return lookup_neutral_filter_path(
-            NeutralFilterPathLookup{paths.defaultPath, lookupKey, threadClass});
+            NeutralFilterPathLookup{paths.selectedPath, lookupKey, threadClass});
     }
 
     void Library::load_static_noise_assets() {
@@ -1331,10 +1222,10 @@ namespace JuicerAssets {
         return _spektrafilmProfileCatalog;
     }
 
-    const FilmStockAsset& Library::film_profile_for_key(const std::string& key) {
+    const SelectedFilmProfileAsset& Library::film_profile_for_key(const std::string& key) {
         ensure_catalogs();
-        static const FilmStockAsset empty{};
-        for (const FilmStockAsset& asset : _filmStocks) {
+        static const SelectedFilmProfileAsset empty{};
+        for (const SelectedFilmProfileAsset& asset : _filmStocks) {
             if (asset.jsonKey == key) {
                 return asset;
             }
@@ -1342,10 +1233,10 @@ namespace JuicerAssets {
         return empty;
     }
 
-    const PrintPaperAsset& Library::print_profile_for_key(const std::string& key) {
+    const SelectedPrintProfileAsset& Library::print_profile_for_key(const std::string& key) {
         ensure_catalogs();
-        static const PrintPaperAsset empty{};
-        for (const PrintPaperAsset& asset : _printPapers) {
+        static const SelectedPrintProfileAsset empty{};
+        for (const SelectedPrintProfileAsset& asset : _printPapers) {
             if (asset.jsonKey == key) {
                 return asset;
             }
@@ -1370,41 +1261,7 @@ namespace JuicerAssets {
         return _selectedProfileAssets->selected_profiles_for_route(_spektrafilmProfileCatalog, request);
     }
 
-    std::string Library::print_paper_folder_name_for_asset(const PrintPaperAsset& asset) {
-        ensure_catalogs();
-        const size_t count = std::min(_printPapers.size(), _printPaperFolderNames.size());
-        for (size_t i = 0; i < count; ++i) {
-            const PrintPaperAsset& candidate = _printPapers[i];
-            if (candidate.version == asset.version && candidate.jsonKey == asset.jsonKey) {
-                return _printPaperFolderNames[i];
-            }
-        }
-        return {};
-    }
-
-    std::shared_ptr<const PrintPaperFolderProfilePayload> Library::print_paper_folder_profile_payload(
-        const PrintPaperAsset& asset) {
-        // SF_TEMP_BRIDGE_Phase2BPrintFolderCsvBridge owner=Phase4-print-route:
-        // reason=legacy print-folder payload cache; allowed=Print::load_profile_from_asset only;
-        // output_impact=blocked print route; hash_impact=none;
-        // resource_impact=cached print-folder CSV payload; removal=Phase4.
-        const std::string folderName = print_paper_folder_name_for_asset(asset);
-        const std::string cacheKey = print_paper_folder_profile_payload_key(asset, folderName);
-        std::lock_guard<std::mutex> lock(_printPaperFolderProfilePayloadCache->mutex);
-        PrintPaperFolderProfilePayloadCacheEntry& entry =
-            _printPaperFolderProfilePayloadCache->entries[cacheKey];
-        if (!entry.payload) {
-            entry.payload =
-                std::make_shared<PrintPaperFolderProfilePayload>(load_print_paper_folder_profile_payload(_dataDir, asset, folderName));
-        }
-        return entry.payload;
-    }
-
     const NeutralFilterDatabaseAsset& Library::neutral_filter_database_for_dichroic_set(int dichroicSetChoice) {
-        // SF_TEMP_BRIDGE_Phase2BOldNeutralLookup owner=Phase4-print-route:
-        // reason=legacy neutral-filter database selection; allowed=JuicerEffect::applyNeutralFilters
-        // only; output_impact=blocked print route; hash_impact=none;
-        // resource_impact=legacy neutral DB selection; removal=Phase4.
         ensure_neutral_filter_databases();
         if (dichroicSetChoice < 0 || dichroicSetChoice >= static_cast<int>(_neutralFilterDatabases.size())) {
             dichroicSetChoice = 0;
@@ -1597,34 +1454,26 @@ namespace JuicerAssets {
         return assets;
     }
 
-    bool Library::load_agx_film_profile(const FilmStockAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
-        // reason=legacy Agx film carrier; allowed=load_film_profile_into_base print bootstrap only;
-        // output_impact=blocked print route; hash_impact=none on direct route;
-        // resource_impact=Agx film JSON load; removal=Phase4.
+    bool Library::load_spektrafilm_film_profile(const SelectedFilmProfileAsset& asset, Profiles::SpektrafilmProfileJson& outProfile) {
         const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
-            outProfile = Profiles::AgxFilmProfile{};
+            outProfile = Profiles::SpektrafilmProfileJson{};
             return false;
         }
-        return load_agx_profile_path(jsonPath, outProfile);
+        return load_spektrafilm_profile_path(jsonPath, outProfile);
     }
 
-    bool Library::load_agx_print_profile(const PrintPaperAsset& asset, Profiles::AgxFilmProfile& outProfile) {
-        // SF_TEMP_BRIDGE_ProfileKeyToLegacyRenderAsset owner=Phase4-print-route:
-        // reason=legacy Agx print carrier; allowed=Print::load_profile_from_asset only;
-        // output_impact=blocked print route; hash_impact=none on direct route;
-        // resource_impact=Agx print JSON load; removal=Phase4.
+    bool Library::load_spektrafilm_print_profile(const SelectedPrintProfileAsset& asset, Profiles::SpektrafilmProfileJson& outProfile) {
         const std::string jsonPath = profile_path_for_key(ProfilePathRequest{_dataDir, asset.jsonKey});
         if (jsonPath.empty()) {
-            outProfile = Profiles::AgxFilmProfile{};
+            outProfile = Profiles::SpektrafilmProfileJson{};
             return false;
         }
-        return load_agx_profile_path(jsonPath, outProfile);
+        return load_spektrafilm_profile_path(jsonPath, outProfile);
     }
 
-    bool Library::load_agx_profile_path(const std::string& jsonPath, Profiles::AgxFilmProfile& outProfile) {
-        outProfile = Profiles::AgxFilmProfile{};
+    bool Library::load_spektrafilm_profile_path(const std::string& jsonPath, Profiles::SpektrafilmProfileJson& outProfile) {
+        outProfile = Profiles::SpektrafilmProfileJson{};
 
         const std::string cacheKey = normalize_path_for_cache_key(jsonPath);
         const ProfileFileStamp stamp = read_profile_file_stamp(jsonPath);
@@ -1635,8 +1484,8 @@ namespace JuicerAssets {
             }
         }
 
-        Profiles::AgxFilmProfile parsedProfile;
-        if (!Profiles::load_agx_film_profile_json(jsonPath, parsedProfile)) {
+        Profiles::SpektrafilmProfileJson parsedProfile;
+        if (!Profiles::load_spektrafilm_profile_json(jsonPath, parsedProfile)) {
             return false;
         }
 
@@ -1653,10 +1502,6 @@ namespace JuicerAssets {
             if (_neutralFilterCache) {
                 std::lock_guard<std::mutex> lock(_neutralFilterCache->mutex);
                 _neutralFilterCache->entries.clear();
-            }
-            if (_printPaperFolderProfilePayloadCache) {
-                std::lock_guard<std::mutex> lock(_printPaperFolderProfilePayloadCache->mutex);
-                _printPaperFolderProfilePayloadCache->entries.clear();
             }
             if (_staticNoisePayloadCache) {
                 std::lock_guard<std::mutex> lock(_staticNoisePayloadCache->mutex);

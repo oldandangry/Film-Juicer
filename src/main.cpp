@@ -374,8 +374,8 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamEnlargerDichroicSet);
-            p->setLabel("Enlarger dichroics");
+            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(kParamDichroicFilterSet);
+            p->setLabel("Dichroic filter set");
             p->setHint("Select the spektrafilm custom/reference dichroic model or a measured C/M/Y resource set.");
             p->appendOption("Spektrafilm Custom");
             p->appendOption("Durst Digital Light");
@@ -422,25 +422,21 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         if (grpHalation) {
             grpHalation->setLabel("Halation");
             grpHalation->setOpen(false);
-            // SF_PHASE6_BLOCKED_LegacyHalationUi owner=Phase6 Exact optics;
-            // allowed_call_sites=restored-instance active-toggle preflight only;
-            // output_hash_resource_impact=active toggle requests blocked typed SpatialOptics, low-level fields none;
-            // cleanup_symbol=SF_PHASE6_BLOCKED_LegacyHalationUi; disposition=replace_when_Exact_is_exposed.
             grpHalation->setIsSecret(true);
         }
         {
             OFX::BooleanParamDescriptor* p = desc.defineBooleanParam(JuicerParams::kHalationActive);
             p->setLabel("Add halation");
             p->setDefault(false);
-            p->setHint("Add halation to the negative (scattering in raw exposure).");
+            p->setHint("Add halation to the negative raw exposure.");
             if (grpHalation)
                 p->setParent(*grpHalation);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationScatteringStrengthMaster);
-            p->setLabel("Scattering strength (M)");
-            p->setHint("Master control for scattering strength; adjusts RGB values together.");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSecondaryAmountMaster);
+            p->setLabel("Secondary amount (M)");
+            p->setHint("Master control for the secondary halation amount; adjusts RGB values together.");
             p->setDefault((1.0 + 2.0 + 4.0) / 3.0);
             p->setRange(0.0, 100.0);
             p->setDisplayRange(0.0, 25.0);
@@ -449,9 +445,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationScatteringSizeUmMaster);
-            p->setLabel("Scattering size (M)");
-            p->setHint("Master control for scattering size; adjusts RGB values together.");
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kHalationSecondarySizeUmMaster);
+            p->setLabel("Secondary size (M)");
+            p->setHint("Master control for the secondary halation size; adjusts RGB values together.");
             p->setDefault((30.0 + 20.0 + 15.0) / 3.0);
             p->setRange(0.0, 1000.0);
             p->setDisplayRange(0.0, 500.0);
@@ -496,9 +492,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 p->setParent(*grpHalationAdvanced);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationScatteringStrength);
-            p->setLabel("Scattering strength (%)");
-            p->setHint("Fraction of scattered light (0-100, percentage) per channel.");
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationSecondaryAmount);
+            p->setLabel("Secondary amount (%)");
+            p->setHint("Secondary halation amount (0-100, percentage) per channel.");
             p->setDefault(1.0, 2.0, 4.0);
             p->setRange(0.0, 0.0, 0.0, 100.0, 100.0, 100.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 10.0, 10.0, 10.0);
@@ -508,9 +504,9 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationScatteringSizeUm);
-            p->setLabel("Scattering size (\xC2\xB5m)");
-            p->setHint("Sigma of the scattering blur in micrometers per channel.");
+            OFX::Double3DParamDescriptor* p = desc.defineDouble3DParam(JuicerParams::kHalationSecondarySizeUm);
+            p->setLabel("Secondary size (\xC2\xB5m)");
+            p->setHint("Sigma of the secondary halation blur in micrometers per channel.");
             p->setDefault(30.0, 20.0, 15.0);
             p->setRange(0.0, 0.0, 0.0, 1000.0, 1000.0, 1000.0);
             p->setDisplayRange(0.0, 0.0, 0.0, 300.0, 300.0, 300.0);
@@ -982,19 +978,19 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalFactor);
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kPrintShadowCompensationFactor);
             p->setLabel("Compensation removal factor");
             p->setDefault(0.0);
             p->setRange(0.0, 1.0);
             p->setDisplayRange(0.0, 0.2);
             p->setIncrement(0.05);
-            p->setHint("Remove viewing glare compensation from print curves. 0.2 = 20% underexposed shadows. Intended as alternative to stochastic glare (set GlarePercent=0).");
+            p->setHint("Apply print shadow compensation to density curves. 0.2 = 20% underexposed shadows. Intended as alternative to stochastic glare (set GlarePercent=0).");
             if (grpGlare)
                 p->setParent(*grpGlare);
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalDensity);
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kPrintShadowCompensationDensity);
             p->setLabel("Compensation removal density");
             p->setDefault(1.2);
             p->setRange(0.0, 3.0);
@@ -1005,7 +1001,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             p->setEvaluateOnChange(true);
         }
         {
-            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kGlareCompensationRemovalTransition);
+            OFX::DoubleParamDescriptor* p = desc.defineDoubleParam(JuicerParams::kPrintShadowCompensationTransition);
             p->setLabel("Compensation removal transition");
             p->setDefault(0.3);
             p->setRange(0.0, 2.0);

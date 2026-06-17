@@ -171,15 +171,15 @@ namespace {
 
     __device__ __forceinline__ void compute_dir_corrections_device(
         const JuicerCuda::DirPayload& dir,
-        const float dYMC[3],
-        float outYMC[3]) {
-        if (!outYMC) {
+        const float layerDensities[3],
+        float outLayerCorrections[3]) {
+        if (!outLayerCorrections) {
             return;
         }
         if (!dir.active) {
-            outYMC[0] = 0.0f;
-            outYMC[1] = 0.0f;
-            outYMC[2] = 0.0f;
+            outLayerCorrections[0] = 0.0f;
+            outLayerCorrections[1] = 0.0f;
+            outLayerCorrections[2] = 0.0f;
             return;
         }
 
@@ -189,9 +189,9 @@ namespace {
             return isfinite(silver) ? fmaxf(0.0f, silver) : 0.0f;
         };
 
-        const float nB = silver_density(dYMC[0], dir.dMax[0]);
-        const float nG = silver_density(dYMC[1], dir.dMax[1]);
-        const float nR = silver_density(dYMC[2], dir.dMax[2]);
+        const float nB = silver_density(layerDensities[0], dir.dMax[0]);
+        const float nG = silver_density(layerDensities[1], dir.dMax[1]);
+        const float nR = silver_density(layerDensities[2], dir.dMax[2]);
 
         float aY = dir.M[0] * nB + dir.M[3] * nG + dir.M[6] * nR;
         float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
@@ -213,9 +213,9 @@ namespace {
                 return 10.0f;
             return v;
         };
-        outYMC[0] = clamp_corr(aY);
-        outYMC[1] = clamp_corr(aM);
-        outYMC[2] = clamp_corr(aC);
+        outLayerCorrections[0] = clamp_corr(aY);
+        outLayerCorrections[1] = clamp_corr(aM);
+        outLayerCorrections[2] = clamp_corr(aC);
     }
 
     template <typename Params>
@@ -252,10 +252,10 @@ namespace {
                 compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
 
                 const float D_cmy[3] = {layerPre[2], layerPre[1], layerPre[0]};
-                const float dYMC[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
+                const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
 
                 float outCorr[3] = {0.0f, 0.0f, 0.0f};
-                compute_dir_corrections_device(params.filmDevelop.dir, dYMC, outCorr);
+                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr);
 
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
                 corrY[idx] = outCorr[0];

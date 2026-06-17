@@ -389,7 +389,7 @@ namespace JuicerCuda {
             float* Ax = nullptr;
             float* Ay = nullptr;
             float* Az = nullptr;
-            float* baseMin = nullptr;
+            float* baseDensityMin = nullptr;
             int K = 0;
             int hasBaseline = 0;
             float invYn = 1.0f;
@@ -503,7 +503,7 @@ namespace JuicerCuda {
         int wangCount = 0;
         int wangColors = 0;
 
-        // Print pipeline (PrintBypass=false) payloads.
+        // Print-route payloads.
         DeviceCurve printDcC;
         DeviceCurve printDcM;
         DeviceCurve printDcY;

@@ -21,9 +21,9 @@ namespace Profiles {
         float percent = 0.0f;
         float roughness = 0.0f;
         float blur = 0.0f;
-        float compensationRemovalFactor = 0.0f;
-        float compensationRemovalDensity = 0.0f;
-        float compensationRemovalTransition = 0.0f;
+        float printShadowCompensationFactor = 0.0f;
+        float printShadowCompensationDensity = 0.0f;
+        float printShadowCompensationTransition = 0.0f;
     };
 
     struct GrainMetadata {
@@ -39,7 +39,7 @@ namespace Profiles {
         float chromaSharedWeight = 0.0f; // sqrt(1 - chroma)
         float chromaIndWeight = 1.0f;    // sqrt(chroma)
         float blur = 0.0f;               // Grain blur sigma in pixels.
-        float blurDyeCloudsUm = 0.0f;    // Dye-cloud blur sigma scale in pixels (legacy _um name).
+        float blurDyeCloudsUm = 0.0f;    // Dye-cloud blur sigma scale in pixels.
         float sizeMixWeight = 0.30f;
         float sizeMixWeightMid = 0.0f;
         float sizeMixScale = 3.0f;
@@ -55,22 +55,17 @@ namespace Profiles {
         float gateScratchAmount = 0.0f;
     };
 
-    // SF_PHASE6_BLOCKED_LegacyHalationRuntime owner=legacy broad renderer;
-    // allowed_call_sites=hard-blocked broad UI/profile/WorkingState source only;
-    // output_hash_resource_impact=none on typed focused routes;
-    // cleanup_symbol=SF_PHASE6_BLOCKED_LegacyHalationRuntime; disposition=delete_with_legacy_renderer.
+    // UI halation controls; profile-derived defaults come from ProfileDigest antihalation presets.
     struct HalationMetadata {
         bool active = false;
-        std::array<float, 3> strength{{0.0f, 0.0f, 0.0f}};
+        std::array<float, 3> primaryAmount{{0.0f, 0.0f, 0.0f}};
         std::array<float, 3> sizeUm{{0.0f, 0.0f, 0.0f}};
-        std::array<float, 3> scatteringStrength{{0.0f, 0.0f, 0.0f}};
-        std::array<float, 3> scatteringSizeUm{{0.0f, 0.0f, 0.0f}};
+        std::array<float, 3> secondaryAmount{{0.0f, 0.0f, 0.0f}};
+        std::array<float, 3> secondarySizeUm{{0.0f, 0.0f, 0.0f}};
     };
 
-    // SF_PHASE5_BLOCKED_LegacyDirProfile owner=legacy broad renderer;
-    // allowed_call_sites=hard-blocked WorkingState source only; output_hash_resource_impact=none;
-    // cleanup_symbol=SF_PHASE5_BLOCKED_LegacyDirProfile; disposition=delete_with_legacy_renderer.
-    struct DirCouplersProfile {
+    // Profile-authored DIR coefficients consumed by the recipe-owned DIR runtime.
+    struct DirProfile {
         bool hasData = false;
         bool active = false;
         float amount = 1.0f;
@@ -87,12 +82,12 @@ namespace Profiles {
         std::array<std::vector<std::array<float, 3>>, 3> gaussianModel{};
     };
 
-    struct AgxFilmProfile {
+    struct SpektrafilmProfileJson {
         std::vector<std::pair<float, float>> dyeC;
         std::vector<std::pair<float, float>> dyeM;
         std::vector<std::pair<float, float>> dyeY;
-        std::vector<std::pair<float, float>> baseMin;
-        std::vector<std::pair<float, float>> baseMid;
+        std::vector<std::pair<float, float>> baseDensityMin;
+        std::vector<std::pair<float, float>> baseDensityMid;
         float dyeDensityMinFactor = 1.0f;
         std::array<float, 3> gammaFactor{{1.0f, 1.0f, 1.0f}};
         bool hasGammaFactor = false;
@@ -118,7 +113,7 @@ namespace Profiles {
         std::array<std::array<std::vector<std::pair<float, float>>, 3>, 3> densityCurvesLayers{}; // [layer][channel]
         bool hasDensityCurvesLayers = false;
 
-        DirCouplersProfile dirCouplers;
+        DirProfile dirCouplers;
         MaskingCouplersProfile maskingCouplers;
 
         std::array<float, 3> cameraFilterUV{{1.0f, 410.0f, 8.0f}};
@@ -135,7 +130,7 @@ namespace Profiles {
         bool hasHalation = false;
     };
 
-    bool load_agx_film_profile_json(const std::string& jsonPath, AgxFilmProfile& outProfile);
+    bool load_spektrafilm_profile_json(const std::string& jsonPath, SpektrafilmProfileJson& outProfile);
 
     bool load_profile_info(const std::string& jsonPath, ProfileInfoSummary& outInfo);
 

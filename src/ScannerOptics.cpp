@@ -355,7 +355,7 @@ namespace {
             << " static=" << key.staticKey.hash
             << " tablesHash=" << key.staticKey.tablesHash
             << " densityRangeHash=" << key.staticKey.densityRangeHash
-            << " glareHash=" << key.effectsKey.glareHash
+            << " glareRuntimeHash=" << key.effectsKey.glareRuntimeHash
             << " colorHash=" << key.effectsKey.colorRuntimeHash
             << " lutRes=" << key.staticKey.lutResolution
             << " useLut=" << (settings.useLut ? 1 : 0)
@@ -423,13 +423,13 @@ namespace Scanner {
         const float* Ax = tables->Ax.data();
         const float* Ay = tables->Ay.data();
         const float* Az = tables->Az.data();
-        const float* baseMin = tables->baseMin.data();
+        const float* baseDensityMin = tables->baseDensityMin.data();
 
         const bool useBaseline = tables->hasBaseline;
 
         double X = 0.0, Y = 0.0, Z = 0.0;
         for (int i = 0; i < K; ++i) {
-            const double baseSpectral = (useBaseline) ? static_cast<double>(baseMin[i]) : 0.0;
+            const double baseSpectral = (useBaseline) ? static_cast<double>(baseDensityMin[i]) : 0.0;
             const double Dlambda = D_denorm[0] * static_cast<double>(epsC[i]) + D_denorm[1] * static_cast<double>(epsM[i]) + D_denorm[2] * static_cast<double>(epsY[i]) + baseSpectral;
 
             const double transmittance = std::pow(10.0, -Dlambda);
@@ -514,7 +514,7 @@ namespace ScannerOptics {
 
         Runtime& runtime = *ctx.runtime;
         const std::uint64_t prevStatic = runtime.key.staticKey.hash;
-        const std::uint64_t prevGlareHash = runtime.key.effectsKey.glareHash;
+        const std::uint64_t prevGlareHash = runtime.key.effectsKey.glareRuntimeHash;
         const Scanner::ScannerRuntimeKey prevRuntimeKey = runtime.key.runtimeKey;
         runtime.key = ctx.scannerKey;
         const bool staticKeyChanged = (prevStatic != ctx.scannerKey.staticKey.hash);
@@ -567,7 +567,7 @@ namespace ScannerOptics {
             JTRACE("SCAN", "FATAL: scanner glare hash missing or invalid");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
-        if (medium.effectsKey.glareHash != expectedGlareHash) {
+        if (medium.effectsKey.glareRuntimeHash != expectedGlareHash) {
             JTRACE("SCAN", "FATAL: scanner glare hash mismatch");
             throw OFX::Exception::Suite(kOfxStatErrFatal);
         }
@@ -669,7 +669,7 @@ namespace ScannerOptics {
                     << " colorHash=" << ctx.scannerKey.effectsKey.colorRuntimeHash
                     << " tablesHash=" << ctx.scannerKey.staticKey.tablesHash
                     << " densityRangeHash=" << ctx.scannerKey.staticKey.densityRangeHash
-                    << " glareHash=" << ctx.scannerKey.effectsKey.glareHash;
+                    << " glareRuntimeHash=" << ctx.scannerKey.effectsKey.glareRuntimeHash;
                 JTRACE("SCAN", oss.str());
             }
             for (std::uint32_t z = 0; z < res; ++z) {
@@ -715,12 +715,12 @@ namespace ScannerOptics {
             const std::uint64_t seedFields[4] = {
                 ctx.seedBase,
                 static_cast<std::uint64_t>(ctx.runtimeKey.frameBoundsVersion),
-                medium.effectsKey.glareHash,
+                medium.effectsKey.glareRuntimeHash,
                 static_cast<std::uint64_t>(medium.medium)};
             const std::uint64_t glareSeed = Hash::hash_bytes(seedFields, sizeof(seedFields));
             const bool dimsChanged = runtime.glare.width != width || runtime.glare.height != height;
             const bool seedChanged = runtime.glare.seedHash != glareSeed;
-            const bool glareParamsChanged = prevGlareHash != ctx.scannerKey.effectsKey.glareHash;
+            const bool glareParamsChanged = prevGlareHash != ctx.scannerKey.effectsKey.glareRuntimeHash;
             if (!runtime.glare.valid || dimsChanged || seedChanged || glareParamsChanged || frameBoundsChanged) {
                 const size_t channelSize = total;
                 if (runtime.glare.amount.size() != channelSize) {

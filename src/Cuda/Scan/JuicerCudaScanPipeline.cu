@@ -40,8 +40,8 @@ namespace {
         double Y = 0.0;
         double Z = 0.0;
         for (int i = 0; i < medium.K; ++i) {
-            const double baseSpectral = (medium.hasBaseline && medium.baseMin)
-                                            ? static_cast<double>(ldg_f(medium.baseMin + i))
+            const double baseSpectral = (medium.hasBaseline && medium.baseDensityMin)
+                                            ? static_cast<double>(ldg_f(medium.baseDensityMin + i))
                                             : 0.0;
             const double Dlambda =
                 D_denorm0 * static_cast<double>(ldg_f(medium.epsC + i)) +
@@ -1953,8 +1953,8 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     const JuicerCuda::HalationPayload& halation = params.halation;
     const JuicerCuda::HalationKernelPayload& halKernels = params.halationKernels;
     const bool doHalation = (halation.active != 0) &&
-                            (halation.strength[0] > 0.0f || halation.strength[1] > 0.0f || halation.strength[2] > 0.0f ||
-                             halation.scatteringStrength[0] > 0.0f || halation.scatteringStrength[1] > 0.0f || halation.scatteringStrength[2] > 0.0f);
+                            (halation.primaryAmount[0] > 0.0f || halation.primaryAmount[1] > 0.0f || halation.primaryAmount[2] > 0.0f ||
+                             halation.secondaryAmount[0] > 0.0f || halation.secondaryAmount[1] > 0.0f || halation.secondaryAmount[2] > 0.0f);
     if (doHalation) {
         auto apply_halation_pass = [&](float* plane, const float* k, int radius, float strength) -> cudaError_t {
             if (!plane || !k || radius <= 0 || !(strength > 0.0f)) {
@@ -1977,23 +1977,23 @@ extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
             return cudaGetLastError();
         };
 
-        err = apply_halation_pass(dRgbR, halKernels.halationKernel[0], halKernels.halationRadius[0], halation.strength[0]);
+        err = apply_halation_pass(dRgbR, halKernels.halationKernel[0], halKernels.halationRadius[0], halation.primaryAmount[0]);
         if (err != cudaSuccess)
             return err;
-        err = apply_halation_pass(dRgbG, halKernels.halationKernel[1], halKernels.halationRadius[1], halation.strength[1]);
+        err = apply_halation_pass(dRgbG, halKernels.halationKernel[1], halKernels.halationRadius[1], halation.primaryAmount[1]);
         if (err != cudaSuccess)
             return err;
-        err = apply_halation_pass(dRgbB, halKernels.halationKernel[2], halKernels.halationRadius[2], halation.strength[2]);
+        err = apply_halation_pass(dRgbB, halKernels.halationKernel[2], halKernels.halationRadius[2], halation.primaryAmount[2]);
         if (err != cudaSuccess)
             return err;
 
-        err = apply_halation_pass(dRgbR, halKernels.scatteringKernel[0], halKernels.scatteringRadius[0], halation.scatteringStrength[0]);
+        err = apply_halation_pass(dRgbR, halKernels.scatteringKernel[0], halKernels.scatteringRadius[0], halation.secondaryAmount[0]);
         if (err != cudaSuccess)
             return err;
-        err = apply_halation_pass(dRgbG, halKernels.scatteringKernel[1], halKernels.scatteringRadius[1], halation.scatteringStrength[1]);
+        err = apply_halation_pass(dRgbG, halKernels.scatteringKernel[1], halKernels.scatteringRadius[1], halation.secondaryAmount[1]);
         if (err != cudaSuccess)
             return err;
-        err = apply_halation_pass(dRgbB, halKernels.scatteringKernel[2], halKernels.scatteringRadius[2], halation.scatteringStrength[2]);
+        err = apply_halation_pass(dRgbB, halKernels.scatteringKernel[2], halKernels.scatteringRadius[2], halation.secondaryAmount[2]);
         if (err != cudaSuccess)
             return err;
     }
