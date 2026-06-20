@@ -371,8 +371,7 @@ namespace {
         if (explicitPath && explicitPath[0] != '\0') {
             try {
                 return std::filesystem::path(explicitPath);
-            }
-            catch (...) {
+            } catch (...) {
                 return {};
             }
         }
@@ -380,8 +379,7 @@ namespace {
             std::filesystem::path path = std::filesystem::temp_directory_path();
             path /= "juicer_dir_profile.txt";
             return path;
-        }
-        catch (...) {
+        } catch (...) {
             return {};
         }
     }
@@ -415,8 +413,7 @@ namespace {
             }
             out << "DIR_PROFILE | " << line << '\n';
             out.flush();
-        }
-        catch (...) {
+        } catch (...) {
         }
     }
 
@@ -509,6 +506,144 @@ namespace {
         return sigma >= 3.0f ? "iir_yvv" : "fir_reflect";
     }
 
+    Spektrafilm::DirFrameExtent spatial_dir_extent_from_rect(const OfxRectI& rect) {
+        Spektrafilm::DirFrameExtent extent{};
+        extent.x = rect.x1;
+        extent.y = rect.y1;
+        extent.width = rect.x2 - rect.x1;
+        extent.height = rect.y2 - rect.y1;
+        return extent;
+    }
+
+    const Spektrafilm::DirGaussianComponentPlan& spatial_dir_component_or_empty(
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        int index) {
+        static const Spektrafilm::DirGaussianComponentPlan kEmpty{};
+        if (index < 0 || index >= descriptor.filterPlan.componentCount) {
+            return kEmpty;
+        }
+        return descriptor.filterPlan.components[static_cast<std::size_t>(index)];
+    }
+
+    void bind_spatial_dir_workspace_metadata(
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest& request) {
+        if (descriptor.hash == 0) {
+            return;
+        }
+        request.needSpatialDir = true;
+        request.spatialDirDescriptorHash = descriptor.hash;
+        request.spatialDirScratchTier = descriptor.scratchTier;
+        request.spatialDirPlaneRoles = descriptor.planeRoles;
+        request.spatialDirTargetScratchTier = descriptor.targetScratchTier;
+        request.spatialDirTargetPlaneRoles = descriptor.targetPlaneRoles;
+    }
+
+    void trace_spatial_dir_descriptor_build(
+        const char* route,
+        const Spektrafilm::SpatialDirDescriptor& descriptor) {
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (!JTRACE_ENABLED(1)) {
+            return;
+        }
+        const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
+        const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.targetPlaneRoles;
+        std::string msg = "event=spatial_dir_descriptor_build route=";
+        msg += nonempty_cstr_or(route, "unknown");
+        msg += " descriptor_hash=";
+        msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
+        msg += " legacy_compatibility_hash=";
+        msg += std::to_string(static_cast<unsigned long long>(descriptor.legacyCompatibilityHash));
+        msg += " dir_recipe_hash=";
+        msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
+        msg += " support=";
+        msg += Spektrafilm::to_cstr(descriptor.support);
+        msg += " source_contract=";
+        msg += Spektrafilm::to_cstr(descriptor.sourceContract);
+        msg += " boundary_mode=";
+        msg += Spektrafilm::to_cstr(descriptor.boundaryMode);
+        msg += " scratch_tier=";
+        msg += Spektrafilm::to_cstr(descriptor.scratchTier);
+        msg += " target_scratch_tier=";
+        msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
+        msg += " approximation=";
+        msg += Spektrafilm::to_cstr(descriptor.approximation);
+        msg += " component_count=";
+        msg += std::to_string(descriptor.filterPlan.componentCount);
+        msg += " render_extent=";
+        msg += std::to_string(descriptor.renderExtent.x) + "," +
+               std::to_string(descriptor.renderExtent.y) + "," +
+               std::to_string(descriptor.renderExtent.width) + "x" +
+               std::to_string(descriptor.renderExtent.height);
+        msg += " full_frame_extent=";
+        msg += std::to_string(descriptor.fullFrameExtent.x) + "," +
+               std::to_string(descriptor.fullFrameExtent.y) + "," +
+               std::to_string(descriptor.fullFrameExtent.width) + "x" +
+               std::to_string(descriptor.fullFrameExtent.height);
+        msg += " filter_domain_extent=";
+        msg += std::to_string(descriptor.filterDomainExtent.x) + "," +
+               std::to_string(descriptor.filterDomainExtent.y) + "," +
+               std::to_string(descriptor.filterDomainExtent.width) + "x" +
+               std::to_string(descriptor.filterDomainExtent.height);
+        msg += " raw_correction_planes=";
+        msg += std::to_string(roles.rawCorrectionPlanes);
+        msg += " filtered_correction_planes=";
+        msg += std::to_string(roles.filteredCorrectionPlanes);
+        msg += " filter_temp_planes=";
+        msg += std::to_string(roles.filterTempPlanes);
+        msg += " iir_forward_temp_planes=";
+        msg += std::to_string(roles.iirForwardTempPlanes);
+        msg += " cached_log_raw_planes=";
+        msg += std::to_string(roles.cachedLogRawPlanes);
+        msg += " SF_TEMP_BRIDGE_corr_planes=";
+        msg += std::to_string(roles.SF_TEMP_BRIDGE_corrPlanes);
+        msg += " SF_TEMP_BRIDGE_mix_planes=";
+        msg += std::to_string(roles.SF_TEMP_BRIDGE_mixPlanes);
+        msg += " SF_TEMP_BRIDGE_tmp_planes=";
+        msg += std::to_string(roles.SF_TEMP_BRIDGE_tmpPlanes);
+        msg += " target_raw_correction_planes=";
+        msg += std::to_string(targetRoles.rawCorrectionPlanes);
+        msg += " target_filtered_correction_planes=";
+        msg += std::to_string(targetRoles.filteredCorrectionPlanes);
+        msg += " target_filter_temp_planes=";
+        msg += std::to_string(targetRoles.filterTempPlanes);
+        msg += " target_iir_forward_temp_planes=";
+        msg += std::to_string(targetRoles.iirForwardTempPlanes);
+        for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
+            const Spektrafilm::DirGaussianComponentPlan& plan =
+                spatial_dir_component_or_empty(descriptor, component);
+            msg += " component";
+            msg += std::to_string(component);
+            msg += "_sigma_px=";
+            msg += std::to_string(plan.sigmaPixels);
+            msg += " component";
+            msg += std::to_string(component);
+            msg += "_weight=";
+            msg += std::to_string(plan.weight);
+            msg += " component";
+            msg += std::to_string(component);
+            msg += "_reference_operator=";
+            msg += Spektrafilm::to_cstr(plan.referenceOperator);
+            msg += " component";
+            msg += std::to_string(component);
+            msg += "_backend=";
+            msg += Spektrafilm::to_cstr(plan.backend);
+            msg += " component";
+            msg += std::to_string(component);
+            msg += "_target_backend=";
+            msg += Spektrafilm::to_cstr(plan.targetBackend);
+            msg += " component";
+            msg += std::to_string(component);
+            msg += "_target_scratch_tier=";
+            msg += Spektrafilm::to_cstr(plan.targetScratchTier);
+        }
+        JTRACE("DIR_DESCRIPTOR", msg);
+#else
+        (void)route;
+        (void)descriptor;
+#endif
+    }
+
     void trace_spatial_dir_profile(
         const char* route,
         int width,
@@ -525,8 +660,12 @@ namespace {
         const std::uint64_t pixels =
             static_cast<std::uint64_t>(std::max(0, width)) *
             static_cast<std::uint64_t>(std::max(0, height));
-        const std::uint64_t scratchBytesApprox = dirActive ? pixels * 7ull * sizeof(float) : 0ull;
+        const int admittedPlaneCount = dirActive ? descriptor.planeRoles.total_float_planes() : 0;
+        const std::uint64_t scratchBytesApprox =
+            dirActive ? pixels * static_cast<std::uint64_t>(std::max(0, admittedPlaneCount)) * sizeof(float) : 0ull;
         const int activeTails = active_tail_component_count(profile);
+        const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
+        const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.targetPlaneRoles;
         std::ostringstream oss;
         oss << std::fixed << std::setprecision(3);
         oss << "route=" << nonempty_cstr_or(route, "unknown")
@@ -534,10 +673,27 @@ namespace {
             << " width=" << width
             << " height=" << height
             << " descriptor_hash=" << descriptor.hash
+            << " legacy_compatibility_hash=" << descriptor.legacyCompatibilityHash
             << " dir_recipe_hash=" << descriptor.dirRecipeHash
+            << " descriptor_support=" << Spektrafilm::to_cstr(descriptor.support)
+            << " source_contract=" << Spektrafilm::to_cstr(descriptor.sourceContract)
+            << " boundary_mode=" << Spektrafilm::to_cstr(descriptor.boundaryMode)
+            << " scratch_tier=" << Spektrafilm::to_cstr(descriptor.scratchTier)
+            << " target_scratch_tier=" << Spektrafilm::to_cstr(descriptor.targetScratchTier)
+            << " approximation_marker=" << Spektrafilm::to_cstr(descriptor.approximation)
+            << " component_count=" << descriptor.filterPlan.componentCount
+            << " render_origin=" << descriptor.renderExtent.x << "," << descriptor.renderExtent.y
+            << " render_extent=" << descriptor.renderExtent.width << "x" << descriptor.renderExtent.height
+            << " full_frame_origin=" << descriptor.fullFrameExtent.x << "," << descriptor.fullFrameExtent.y
+            << " full_frame_extent=" << descriptor.fullFrameExtent.width << "x" << descriptor.fullFrameExtent.height
+            << " filter_domain_origin=" << descriptor.filterDomainExtent.x << "," << descriptor.filterDomainExtent.y
+            << " filter_domain_extent=" << descriptor.filterDomainExtent.width << "x" << descriptor.filterDomainExtent.height
             << " gaussian_sigma_px=" << descriptor.gaussianSigmaPixels
             << " gaussian_radius=" << profile.gaussianRadius
-            << " gaussian_operator=" << dir_filter_operator_label(profile.gaussianSigma, profile.gaussianWeight)
+            << " gaussian_operator=" << Spektrafilm::to_cstr(spatial_dir_component_or_empty(descriptor, 0).referenceOperator)
+            << " gaussian_backend=" << Spektrafilm::to_cstr(spatial_dir_component_or_empty(descriptor, 0).backend)
+            << " gaussian_target_backend=" << Spektrafilm::to_cstr(spatial_dir_component_or_empty(descriptor, 0).targetBackend)
+            << " gaussian_target_scratch_tier=" << Spektrafilm::to_cstr(spatial_dir_component_or_empty(descriptor, 0).targetScratchTier)
             << " gaussian_weight=" << descriptor.gaussianWeight
             << " tail0_sigma_px=" << profile.tailSigma[0]
             << " tail0_radius=" << profile.tailRadius[0]
@@ -576,9 +732,31 @@ namespace {
             << " add_scaled_launches=" << profile.addScaledLaunches
             << " add_scaled_ms=" << profile.addScaled.elapsedMs
             << " scratch_source=" << (dirActive ? (scratchOverflow ? "overflow" : "retained") : "none")
-            << " spatial_dir_planes=" << (dirActive ? 6 : 0)
-            << " shared_tmp_planes=" << (dirActive ? 1 : 0)
+            << " raw_correction_planes=" << (dirActive ? roles.rawCorrectionPlanes : 0)
+            << " filtered_correction_planes=" << (dirActive ? roles.filteredCorrectionPlanes : 0)
+            << " filter_temp_planes=" << (dirActive ? roles.filterTempPlanes : 0)
+            << " iir_forward_temp_planes=" << (dirActive ? roles.iirForwardTempPlanes : 0)
+            << " cached_log_raw_planes=" << (dirActive ? roles.cachedLogRawPlanes : 0)
+            << " SF_TEMP_BRIDGE_corr_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_corrPlanes : 0)
+            << " SF_TEMP_BRIDGE_mix_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_mixPlanes : 0)
+            << " SF_TEMP_BRIDGE_tmp_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_tmpPlanes : 0)
+            << " spatial_dir_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_corrPlanes + roles.SF_TEMP_BRIDGE_mixPlanes : 0)
+            << " shared_tmp_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_tmpPlanes : 0)
+            << " target_raw_correction_planes=" << (dirActive ? targetRoles.rawCorrectionPlanes : 0)
+            << " target_filtered_correction_planes=" << (dirActive ? targetRoles.filteredCorrectionPlanes : 0)
+            << " target_filter_temp_planes=" << (dirActive ? targetRoles.filterTempPlanes : 0)
+            << " target_iir_forward_temp_planes=" << (dirActive ? targetRoles.iirForwardTempPlanes : 0)
             << " scratch_bytes_approx=" << scratchBytesApprox;
+        for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
+            const Spektrafilm::DirGaussianComponentPlan& plan =
+                spatial_dir_component_or_empty(descriptor, component);
+            oss << " component" << component << "_sigma_px=" << plan.sigmaPixels
+                << " component" << component << "_weight=" << plan.weight
+                << " component" << component << "_reference_operator=" << Spektrafilm::to_cstr(plan.referenceOperator)
+                << " component" << component << "_backend=" << Spektrafilm::to_cstr(plan.backend)
+                << " component" << component << "_target_backend=" << Spektrafilm::to_cstr(plan.targetBackend)
+                << " component" << component << "_target_scratch_tier=" << Spektrafilm::to_cstr(plan.targetScratchTier);
+        }
         const std::string line = oss.str();
         write_spatial_dir_profile_line(line);
         JTRACE("DIR_PROFILE", line);
@@ -2050,13 +2228,22 @@ void JuicerProcessor::processImagesCUDA() {
         }
         Spektrafilm::SpatialDirDescriptor directSpatialDir{};
         const auto directSpatialDirDescriptorStart = std::chrono::steady_clock::now();
+        const OfxRectI directFullFrameRect =
+            (_fullFrameExtent.x2 > _fullFrameExtent.x1 && _fullFrameExtent.y2 > _fullFrameExtent.y1)
+                ? _fullFrameExtent
+                : srcBounds;
         if (!Spektrafilm::build_spatial_dir_descriptor(
                 directRecipe->dirCouplers,
                 _pixelSizeUm,
+                spatial_dir_extent_from_rect(win),
+                spatial_dir_extent_from_rect(directFullFrameRect),
+                "direct",
                 directSpatialDir)) {
+            trace_spatial_dir_descriptor_build("direct", directSpatialDir);
             throw_direct_restriction(
                 "ResourceDescriptorMismatch phase=3D-3 field=spatial_dir_descriptor");
         }
+        trace_spatial_dir_descriptor_build("direct", directSpatialDir);
         const double directSpatialDirDescriptorMs =
             dirProfileEnabled ? elapsed_ms_since(directSpatialDirDescriptorStart) : 0.0;
 
@@ -2069,6 +2256,7 @@ void JuicerProcessor::processImagesCUDA() {
         directPreparation.scannerColor = &directPayload->scannerColor;
         directPreparation.scannerLutDescriptor = &scannerDescriptor;
         directPreparation.scannerPostEffects = &scannerPostEffects;
+        directPreparation.spatialDirDescriptor = &directSpatialDir;
         directPreparation.scannerWorkspaceNeedsSpatialDir = directSpatialDir.hash != 0;
         directPreparation.frameWidth = width;
         directPreparation.frameHeight = height;
@@ -2184,7 +2372,7 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
         if (directSpatialDir.hash != 0 || scannerPostEffects.active()) {
             JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest request{};
-            request.needSpatialDir = directSpatialDir.hash != 0;
+            bind_spatial_dir_workspace_metadata(directSpatialDir, request);
             request.needOptics = scannerPostEffects.active();
             request.requestedWidth = width;
             request.requestedHeight = height;
@@ -2417,13 +2605,22 @@ void JuicerProcessor::processImagesCUDA() {
         const bool dirProfileEnabled = spatial_dir_profile_enabled();
         Spektrafilm::SpatialDirDescriptor spatialDir{};
         const auto spatialDirDescriptorStart = std::chrono::steady_clock::now();
+        const OfxRectI printFullFrameRect =
+            (_fullFrameExtent.x2 > _fullFrameExtent.x1 && _fullFrameExtent.y2 > _fullFrameExtent.y1)
+                ? _fullFrameExtent
+                : srcBounds;
         if (!Spektrafilm::build_spatial_dir_descriptor(
                 printRecipe->dirCouplers,
                 _pixelSizeUm,
+                spatial_dir_extent_from_rect(win),
+                spatial_dir_extent_from_rect(printFullFrameRect),
+                "print",
                 spatialDir)) {
+            trace_spatial_dir_descriptor_build("print", spatialDir);
             throw_print_restriction(
                 "ResourceDescriptorMismatch phase=4C field=spatial_dir_descriptor");
         }
+        trace_spatial_dir_descriptor_build("print", spatialDir);
         const double spatialDirDescriptorMs =
             dirProfileEnabled ? elapsed_ms_since(spatialDirDescriptorStart) : 0.0;
 
@@ -2436,6 +2633,7 @@ void JuicerProcessor::processImagesCUDA() {
         preparation.scannerColor = &printPayload->scannerColor;
         preparation.scannerLutDescriptor = &scannerDescriptor;
         preparation.scannerPostEffects = &scannerPostEffects;
+        preparation.spatialDirDescriptor = &spatialDir;
         preparation.scannerWorkspaceNeedsSpatialDir = spatialDir.hash != 0;
         preparation.frameWidth = width;
         preparation.frameHeight = height;
@@ -2617,7 +2815,7 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
         if (spatialDir.hash != 0 || scannerPostEffects.active()) {
             JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest request{};
-            request.needSpatialDir = spatialDir.hash != 0;
+            bind_spatial_dir_workspace_metadata(spatialDir, request);
             request.needOptics = scannerPostEffects.active();
             request.requestedWidth = width;
             request.requestedHeight = height;

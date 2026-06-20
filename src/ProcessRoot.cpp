@@ -213,6 +213,22 @@ namespace JuicerProcess {
             Spectral::set_filter_KG3_from_pairs(kg3Pairs);
         }
 
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        void bind_spatial_dir_workspace_metadata(
+            const Spektrafilm::SpatialDirDescriptor* descriptor,
+            Root::PreparedCudaFrame::WorkspaceRequest& request) noexcept {
+            if (!descriptor || descriptor->hash == 0) {
+                return;
+            }
+            request.needSpatialDir = true;
+            request.spatialDirDescriptorHash = descriptor->hash;
+            request.spatialDirScratchTier = descriptor->scratchTier;
+            request.spatialDirPlaneRoles = descriptor->planeRoles;
+            request.spatialDirTargetScratchTier = descriptor->targetScratchTier;
+            request.spatialDirTargetPlaneRoles = descriptor->targetPlaneRoles;
+        }
+#endif
+
     } // namespace
 
     Root::FramePreparationToken::FramePreparationToken(Root* root) noexcept
@@ -702,10 +718,51 @@ namespace JuicerProcess {
             outError = "frame scratch dimensions invalid";
             return false;
         }
+        if (request.needSpatialDir) {
+            if (request.spatialDirDescriptorHash == 0) {
+                outError = "spatial DIR workspace missing descriptor hash";
+                return false;
+            }
+            if (request.spatialDirScratchTier !=
+                Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch) {
+                outError = "spatial DIR workspace requested unsupported scratch tier";
+                return false;
+            }
+            if (request.spatialDirPlaneRoles.SF_TEMP_BRIDGE_corrPlanes != 3 ||
+                request.spatialDirPlaneRoles.SF_TEMP_BRIDGE_mixPlanes != 3 ||
+                request.spatialDirPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes != 1 ||
+                request.spatialDirPlaneRoles.rawCorrectionPlanes != 0 ||
+                request.spatialDirPlaneRoles.filteredCorrectionPlanes != 0 ||
+                request.spatialDirPlaneRoles.filterTempPlanes != 0 ||
+                request.spatialDirPlaneRoles.iirForwardTempPlanes != 0 ||
+                request.spatialDirPlaneRoles.cachedLogRawPlanes != 0) {
+                outError = "spatial DIR workspace plane roles do not match current bridge scratch";
+                return false;
+            }
+        }
 
         auto requests_match = [](const WorkspaceRequest& a, const WorkspaceRequest& b) noexcept {
             return a.needOptics == b.needOptics &&
                    a.needSpatialDir == b.needSpatialDir &&
+                   a.spatialDirDescriptorHash == b.spatialDirDescriptorHash &&
+                   a.spatialDirScratchTier == b.spatialDirScratchTier &&
+                   a.spatialDirPlaneRoles.rawCorrectionPlanes == b.spatialDirPlaneRoles.rawCorrectionPlanes &&
+                   a.spatialDirPlaneRoles.filteredCorrectionPlanes == b.spatialDirPlaneRoles.filteredCorrectionPlanes &&
+                   a.spatialDirPlaneRoles.filterTempPlanes == b.spatialDirPlaneRoles.filterTempPlanes &&
+                   a.spatialDirPlaneRoles.iirForwardTempPlanes == b.spatialDirPlaneRoles.iirForwardTempPlanes &&
+                   a.spatialDirPlaneRoles.cachedLogRawPlanes == b.spatialDirPlaneRoles.cachedLogRawPlanes &&
+                   a.spatialDirPlaneRoles.SF_TEMP_BRIDGE_corrPlanes == b.spatialDirPlaneRoles.SF_TEMP_BRIDGE_corrPlanes &&
+                   a.spatialDirPlaneRoles.SF_TEMP_BRIDGE_mixPlanes == b.spatialDirPlaneRoles.SF_TEMP_BRIDGE_mixPlanes &&
+                   a.spatialDirPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes == b.spatialDirPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes &&
+                   a.spatialDirTargetScratchTier == b.spatialDirTargetScratchTier &&
+                   a.spatialDirTargetPlaneRoles.rawCorrectionPlanes == b.spatialDirTargetPlaneRoles.rawCorrectionPlanes &&
+                   a.spatialDirTargetPlaneRoles.filteredCorrectionPlanes == b.spatialDirTargetPlaneRoles.filteredCorrectionPlanes &&
+                   a.spatialDirTargetPlaneRoles.filterTempPlanes == b.spatialDirTargetPlaneRoles.filterTempPlanes &&
+                   a.spatialDirTargetPlaneRoles.iirForwardTempPlanes == b.spatialDirTargetPlaneRoles.iirForwardTempPlanes &&
+                   a.spatialDirTargetPlaneRoles.cachedLogRawPlanes == b.spatialDirTargetPlaneRoles.cachedLogRawPlanes &&
+                   a.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_corrPlanes == b.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_corrPlanes &&
+                   a.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_mixPlanes == b.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_mixPlanes &&
+                   a.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes == b.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes &&
                    a.requestedWidth == b.requestedWidth &&
                    a.requestedHeight == b.requestedHeight &&
                    a.needBlurred == b.needBlurred &&
@@ -1061,6 +1118,11 @@ namespace JuicerProcess {
         JuicerCuda::ResourceManager::ScratchRequestBuildRequest request{};
         request.families.needOptics = workspace._request.needOptics;
         request.families.needSpatialDir = workspace._request.needSpatialDir;
+        request.spatialDirDescriptorHash = workspace._request.spatialDirDescriptorHash;
+        request.spatialDirScratchTier = workspace._request.spatialDirScratchTier;
+        request.spatialDirPlaneRoles = workspace._request.spatialDirPlaneRoles;
+        request.spatialDirTargetScratchTier = workspace._request.spatialDirTargetScratchTier;
+        request.spatialDirTargetPlaneRoles = workspace._request.spatialDirTargetPlaneRoles;
         request.extent.requestedWidth = workspace._request.requestedWidth;
         request.extent.requestedHeight = workspace._request.requestedHeight;
         request.attachments.needBlurred = workspace._request.needBlurred;
@@ -1290,6 +1352,108 @@ namespace JuicerProcess {
             outError = "spatial DIR descriptor is invalid";
             return false;
         }
+        const Spektrafilm::DirScratchPlaneRoles& requestRoles = workspace._request.spatialDirPlaneRoles;
+        const Spektrafilm::DirScratchPlaneRoles& descriptorRoles = descriptor.planeRoles;
+        const Spektrafilm::DirScratchPlaneRoles& requestTargetRoles =
+            workspace._request.spatialDirTargetPlaneRoles;
+        const Spektrafilm::DirScratchPlaneRoles& descriptorTargetRoles = descriptor.targetPlaneRoles;
+        const bool rolesMatch =
+            requestRoles.rawCorrectionPlanes == descriptorRoles.rawCorrectionPlanes &&
+            requestRoles.filteredCorrectionPlanes == descriptorRoles.filteredCorrectionPlanes &&
+            requestRoles.filterTempPlanes == descriptorRoles.filterTempPlanes &&
+            requestRoles.iirForwardTempPlanes == descriptorRoles.iirForwardTempPlanes &&
+            requestRoles.cachedLogRawPlanes == descriptorRoles.cachedLogRawPlanes &&
+            requestRoles.SF_TEMP_BRIDGE_corrPlanes == descriptorRoles.SF_TEMP_BRIDGE_corrPlanes &&
+            requestRoles.SF_TEMP_BRIDGE_mixPlanes == descriptorRoles.SF_TEMP_BRIDGE_mixPlanes &&
+            requestRoles.SF_TEMP_BRIDGE_tmpPlanes == descriptorRoles.SF_TEMP_BRIDGE_tmpPlanes;
+        const bool targetRolesMatch =
+            requestTargetRoles.rawCorrectionPlanes == descriptorTargetRoles.rawCorrectionPlanes &&
+            requestTargetRoles.filteredCorrectionPlanes == descriptorTargetRoles.filteredCorrectionPlanes &&
+            requestTargetRoles.filterTempPlanes == descriptorTargetRoles.filterTempPlanes &&
+            requestTargetRoles.iirForwardTempPlanes == descriptorTargetRoles.iirForwardTempPlanes &&
+            requestTargetRoles.cachedLogRawPlanes == descriptorTargetRoles.cachedLogRawPlanes &&
+            requestTargetRoles.SF_TEMP_BRIDGE_corrPlanes == descriptorTargetRoles.SF_TEMP_BRIDGE_corrPlanes &&
+            requestTargetRoles.SF_TEMP_BRIDGE_mixPlanes == descriptorTargetRoles.SF_TEMP_BRIDGE_mixPlanes &&
+            requestTargetRoles.SF_TEMP_BRIDGE_tmpPlanes == descriptorTargetRoles.SF_TEMP_BRIDGE_tmpPlanes;
+        if (workspace._request.spatialDirDescriptorHash != descriptor.hash ||
+            workspace._request.spatialDirScratchTier != descriptor.scratchTier ||
+            workspace._request.spatialDirTargetScratchTier != descriptor.targetScratchTier ||
+            !rolesMatch ||
+            !targetRolesMatch) {
+            outError = "spatial DIR workspace descriptor identity mismatch";
+            return false;
+        }
+        if (descriptor.scratchTier !=
+            Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch) {
+            outError = "spatial DIR descriptor requested unsupported scratch tier";
+            return false;
+        }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (JTRACE_ENABLED(1)) {
+            const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
+            const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.targetPlaneRoles;
+            std::string msg = "event=spatial_dir_admission descriptor_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
+            msg += " legacy_compatibility_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptor.legacyCompatibilityHash));
+            msg += " dir_recipe_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
+            msg += " route=";
+            msg += descriptor.traceRouteLabel ? descriptor.traceRouteLabel : "unknown";
+            msg += " source_contract=";
+            msg += Spektrafilm::to_cstr(descriptor.sourceContract);
+            msg += " boundary_mode=";
+            msg += Spektrafilm::to_cstr(descriptor.boundaryMode);
+            msg += " scratch_tier=";
+            msg += Spektrafilm::to_cstr(descriptor.scratchTier);
+            msg += " target_scratch_tier=";
+            msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
+            msg += " approximation=";
+            msg += Spektrafilm::to_cstr(descriptor.approximation);
+            msg += " component_count=";
+            msg += std::to_string(descriptor.filterPlan.componentCount);
+            msg += " raw_correction_planes=";
+            msg += std::to_string(roles.rawCorrectionPlanes);
+            msg += " filtered_correction_planes=";
+            msg += std::to_string(roles.filteredCorrectionPlanes);
+            msg += " filter_temp_planes=";
+            msg += std::to_string(roles.filterTempPlanes);
+            msg += " iir_forward_temp_planes=";
+            msg += std::to_string(roles.iirForwardTempPlanes);
+            msg += " cached_log_raw_planes=";
+            msg += std::to_string(roles.cachedLogRawPlanes);
+            msg += " SF_TEMP_BRIDGE_corr_planes=";
+            msg += std::to_string(roles.SF_TEMP_BRIDGE_corrPlanes);
+            msg += " SF_TEMP_BRIDGE_mix_planes=";
+            msg += std::to_string(roles.SF_TEMP_BRIDGE_mixPlanes);
+            msg += " SF_TEMP_BRIDGE_tmp_planes=";
+            msg += std::to_string(roles.SF_TEMP_BRIDGE_tmpPlanes);
+            msg += " target_raw_correction_planes=";
+            msg += std::to_string(targetRoles.rawCorrectionPlanes);
+            msg += " target_filtered_correction_planes=";
+            msg += std::to_string(targetRoles.filteredCorrectionPlanes);
+            msg += " target_filter_temp_planes=";
+            msg += std::to_string(targetRoles.filterTempPlanes);
+            msg += " target_iir_forward_temp_planes=";
+            msg += std::to_string(targetRoles.iirForwardTempPlanes);
+            msg += " render_extent=";
+            msg += std::to_string(descriptor.renderExtent.x) + "," +
+                   std::to_string(descriptor.renderExtent.y) + "," +
+                   std::to_string(descriptor.renderExtent.width) + "x" +
+                   std::to_string(descriptor.renderExtent.height);
+            msg += " full_frame_extent=";
+            msg += std::to_string(descriptor.fullFrameExtent.x) + "," +
+                   std::to_string(descriptor.fullFrameExtent.y) + "," +
+                   std::to_string(descriptor.fullFrameExtent.width) + "x" +
+                   std::to_string(descriptor.fullFrameExtent.height);
+            msg += " filter_domain_extent=";
+            msg += std::to_string(descriptor.filterDomainExtent.x) + "," +
+                   std::to_string(descriptor.filterDomainExtent.y) + "," +
+                   std::to_string(descriptor.filterDomainExtent.width) + "x" +
+                   std::to_string(descriptor.filterDomainExtent.height);
+            JTRACE("DIR_DESCRIPTOR", msg);
+        }
+#endif
         if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
             _state->set_failure(
                 "acquire_frame_scratch_workspace",
@@ -2221,6 +2385,11 @@ namespace JuicerProcess {
         view.mixM = scratch.mixM;
         view.mixC = scratch.mixC;
         view.tmp = scratch.tmp;
+        view.descriptorHash = workspace._request.spatialDirDescriptorHash;
+        view.scratchTier = workspace._request.spatialDirScratchTier;
+        view.planeRoles = workspace._request.spatialDirPlaneRoles;
+        view.targetScratchTier = workspace._request.spatialDirTargetScratchTier;
+        view.targetPlaneRoles = workspace._request.spatialDirTargetPlaneRoles;
         view.overflow = _state->scratchWorkspace.overflowActive;
         view.active = view.corrY && view.corrM && view.corrC &&
                       view.mixY && view.mixM && view.mixC && view.tmp;
@@ -2780,7 +2949,18 @@ namespace JuicerProcess {
         if (request.scannerPostEffects) {
             PreparedCudaFrame::WorkspaceRequest scannerWorkspace{};
             scannerWorkspace.needOptics = request.scannerPostEffects->active();
-            scannerWorkspace.needSpatialDir = request.scannerWorkspaceNeedsSpatialDir;
+            if (request.scannerWorkspaceNeedsSpatialDir) {
+                bind_spatial_dir_workspace_metadata(request.spatialDirDescriptor, scannerWorkspace);
+                if (!scannerWorkspace.needSpatialDir) {
+                    outError = "print scanner workspace missing spatial DIR descriptor metadata";
+                    frame._state->set_failure(
+                        "admit_print_scanner_post_effects_phase8",
+                        "CUDA print scanner post-effect admission failed",
+                        false);
+                    frame.abort("print_phase8_scanner_post_effect_admission_failed");
+                    return frame;
+                }
+            }
             scannerWorkspace.requestedWidth = request.frameWidth;
             scannerWorkspace.requestedHeight = request.frameHeight;
             scannerWorkspace.needBlurred =
@@ -2882,7 +3062,18 @@ namespace JuicerProcess {
         if (request.scannerPostEffects) {
             PreparedCudaFrame::WorkspaceRequest scannerWorkspace{};
             scannerWorkspace.needOptics = request.scannerPostEffects->active();
-            scannerWorkspace.needSpatialDir = request.scannerWorkspaceNeedsSpatialDir;
+            if (request.scannerWorkspaceNeedsSpatialDir) {
+                bind_spatial_dir_workspace_metadata(request.spatialDirDescriptor, scannerWorkspace);
+                if (!scannerWorkspace.needSpatialDir) {
+                    outError = "direct scanner workspace missing spatial DIR descriptor metadata";
+                    frame._state->set_failure(
+                        "admit_direct_scanner_post_effects_phase8",
+                        "CUDA direct scanner post-effect admission failed",
+                        false);
+                    frame.abort("direct_phase8_scanner_post_effect_admission_failed");
+                    return frame;
+                }
+            }
             scannerWorkspace.requestedWidth = request.frameWidth;
             scannerWorkspace.requestedHeight = request.frameHeight;
             scannerWorkspace.needBlurred =

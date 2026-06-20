@@ -626,6 +626,135 @@ namespace {
         return std::isfinite(value) && value >= 0.0f;
     }
 
+    bool dir_extent_valid(const Spektrafilm::DirFrameExtent& extent) noexcept {
+        return extent.width > 0 && extent.height > 0;
+    }
+
+    bool dir_extents_match(
+        const Spektrafilm::DirFrameExtent& a,
+        const Spektrafilm::DirFrameExtent& b) noexcept {
+        return a.x == b.x &&
+               a.y == b.y &&
+               a.width == b.width &&
+               a.height == b.height;
+    }
+
+    Spektrafilm::DirReferenceOperator dir_reference_operator_for_sigma(float sigmaPixels) noexcept {
+        if (!(sigmaPixels > 0.0f)) {
+            return Spektrafilm::DirReferenceOperator::Identity;
+        }
+        return sigmaPixels >= 3.0f
+                   ? Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate
+                   : Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect;
+    }
+
+    Spektrafilm::DirFilterBackend dir_target_backend_for_operator(
+        Spektrafilm::DirReferenceOperator referenceOperator) noexcept {
+        switch (referenceOperator) {
+            case Spektrafilm::DirReferenceOperator::Identity:
+            case Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect:
+                return Spektrafilm::DirFilterBackend::SmallFir;
+            case Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate:
+                return Spektrafilm::DirFilterBackend::StrictYvvIir;
+            default:
+                return Spektrafilm::DirFilterBackend::None;
+        }
+    }
+
+    Spektrafilm::DirScratchTier dir_target_scratch_tier_for_operator(
+        Spektrafilm::DirReferenceOperator referenceOperator) noexcept {
+        return referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate
+                   ? Spektrafilm::DirScratchTier::Tier1I
+                   : Spektrafilm::DirScratchTier::Tier1F;
+    }
+
+    Spektrafilm::DirScratchPlaneRoles dir_target_plane_roles_for_tier(
+        Spektrafilm::DirScratchTier scratchTier) noexcept {
+        Spektrafilm::DirScratchPlaneRoles roles{};
+        if (scratchTier == Spektrafilm::DirScratchTier::Tier1F ||
+            scratchTier == Spektrafilm::DirScratchTier::Tier1I) {
+            roles.rawCorrectionPlanes = 3;
+            roles.filteredCorrectionPlanes = 3;
+            roles.filterTempPlanes = 1;
+            if (scratchTier == Spektrafilm::DirScratchTier::Tier1I) {
+                roles.iirForwardTempPlanes = 1;
+            }
+        }
+        return roles;
+    }
+
+    Spektrafilm::DirScratchPlaneRoles dir_bridge_plane_roles() noexcept {
+        Spektrafilm::DirScratchPlaneRoles roles{};
+        roles.SF_TEMP_BRIDGE_corrPlanes = 3;
+        roles.SF_TEMP_BRIDGE_mixPlanes = 3;
+        roles.SF_TEMP_BRIDGE_tmpPlanes = 1;
+        return roles;
+    }
+
+    struct DirComponentBuildInput {
+        float sigmaPixels = 0.0f;
+        float weight = 0.0f;
+    };
+
+    bool add_dir_component(
+        Spektrafilm::DirFilterPlan& plan,
+        DirComponentBuildInput input,
+        Spektrafilm::DirScratchTier& targetScratchTier) noexcept {
+        if (!(input.weight > 0.0f)) {
+            return true;
+        }
+        if (plan.componentCount >= Spektrafilm::DirFilterPlan::kMaxComponents) {
+            return false;
+        }
+        Spektrafilm::DirGaussianComponentPlan& component =
+            plan.components[static_cast<std::size_t>(plan.componentCount)];
+        component.sigmaPixels = input.sigmaPixels;
+        component.weight = input.weight;
+        component.referenceOperator = dir_reference_operator_for_sigma(input.sigmaPixels);
+        component.backend = Spektrafilm::DirFilterBackend::SF_TEMP_BRIDGE_LegacySigmaThreshold;
+        component.targetBackend = dir_target_backend_for_operator(component.referenceOperator);
+        component.targetScratchTier = dir_target_scratch_tier_for_operator(component.referenceOperator);
+        if (component.targetScratchTier == Spektrafilm::DirScratchTier::Tier1I) {
+            targetScratchTier = Spektrafilm::DirScratchTier::Tier1I;
+        } else if (targetScratchTier == Spektrafilm::DirScratchTier::Tier0) {
+            targetScratchTier = Spektrafilm::DirScratchTier::Tier1F;
+        }
+        ++plan.componentCount;
+        return true;
+    }
+
+    void hash_dir_extent(std::uint64_t& hash, const Spektrafilm::DirFrameExtent& extent) {
+        hash_value(hash, extent.x);
+        hash_value(hash, extent.y);
+        hash_value(hash, extent.width);
+        hash_value(hash, extent.height);
+    }
+
+    void hash_dir_plane_roles(std::uint64_t& hash, const Spektrafilm::DirScratchPlaneRoles& roles) {
+        hash_value(hash, roles.rawCorrectionPlanes);
+        hash_value(hash, roles.filteredCorrectionPlanes);
+        hash_value(hash, roles.filterTempPlanes);
+        hash_value(hash, roles.iirForwardTempPlanes);
+        hash_value(hash, roles.cachedLogRawPlanes);
+        hash_value(hash, roles.SF_TEMP_BRIDGE_corrPlanes);
+        hash_value(hash, roles.SF_TEMP_BRIDGE_mixPlanes);
+        hash_value(hash, roles.SF_TEMP_BRIDGE_tmpPlanes);
+    }
+
+    void hash_dir_filter_plan(std::uint64_t& hash, const Spektrafilm::DirFilterPlan& plan) {
+        hash_value(hash, plan.componentCount);
+        for (int i = 0; i < plan.componentCount; ++i) {
+            const Spektrafilm::DirGaussianComponentPlan& component =
+                plan.components[static_cast<std::size_t>(i)];
+            hash_value(hash, component.sigmaPixels);
+            hash_value(hash, component.weight);
+            hash_value(hash, component.referenceOperator);
+            hash_value(hash, component.backend);
+            hash_value(hash, component.targetBackend);
+            hash_value(hash, component.targetScratchTier);
+        }
+    }
+
     float interp_clamped(
         float x,
         const std::vector<float>& xp,
@@ -1518,19 +1647,47 @@ namespace Spektrafilm {
     bool build_spatial_dir_descriptor(
         const DirCouplersRecipe& recipe,
         float pixelSizeUm,
+        Spektrafilm::DirFrameExtent renderExtent,
+        Spektrafilm::DirFrameExtent fullFrameExtent,
+        const char* traceRouteLabel,
         SpatialDirDescriptor& out) {
         out = SpatialDirDescriptor{};
         if (!recipe.active || !(recipe.diffusionSizeUm > 0.0f)) {
             return true;
         }
-        if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0f)) {
+        if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0f) ||
+            !dir_extent_valid(renderExtent) ||
+            !dir_extent_valid(fullFrameExtent)) {
             return false;
         }
+        out.support = Spektrafilm::DirDescriptorSupport::Supported;
         out.dirRecipeHash = recipe.hash;
+        out.sourceContract = Spektrafilm::DirSourceContract::FilmLogRawToInitialDensityCmy;
+        out.boundaryMode = Spektrafilm::DirBoundaryMode::SpektrafilmReferencePerOperator;
+        out.scratchTier = Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch;
+        out.approximation = Spektrafilm::DirApproximationMarker::SF_TEMP_BRIDGE_CurrentCudaSpatialDir;
+        out.renderExtent = renderExtent;
+        out.fullFrameExtent = fullFrameExtent;
+        out.filterDomainExtent = fullFrameExtent;
+        out.traceRouteLabel = traceRouteLabel;
+        out.planeRoles = dir_bridge_plane_roles();
         out.gaussianSigmaPixels = recipe.diffusionSizeUm / pixelSizeUm;
         out.gaussianWeight = 1.0f - recipe.diffusionTailWeight;
         if (!(std::isfinite(out.gaussianSigmaPixels) && out.gaussianSigmaPixels > 0.0f) ||
             !finite_nonnegative(out.gaussianWeight)) {
+            return false;
+        }
+        if (!dir_extents_match(renderExtent, fullFrameExtent)) {
+            out.support = Spektrafilm::DirDescriptorSupport::UnsupportedPartialRenderWindow;
+            out.scratchTier = Spektrafilm::DirScratchTier::Unsupported;
+            out.planeRoles = Spektrafilm::DirScratchPlaneRoles{};
+            return false;
+        }
+        out.targetScratchTier = Spektrafilm::DirScratchTier::Tier0;
+        if (!add_dir_component(
+                out.filterPlan,
+                DirComponentBuildInput{out.gaussianSigmaPixels, out.gaussianWeight},
+                out.targetScratchTier)) {
             return false;
         }
         if (recipe.diffusionTailWeight > 0.0f) {
@@ -1543,14 +1700,56 @@ namespace Spektrafilm {
                     tailSigmaPixels * SpatialDirDescriptor::kExponentialSigmaRatios[component];
                 out.exponentialWeights[component] =
                     recipe.diffusionTailWeight * SpatialDirDescriptor::kExponentialAmplitudes[component];
+                if (!(std::isfinite(out.exponentialSigmaPixels[component]) &&
+                      out.exponentialSigmaPixels[component] > 0.0f) ||
+                    !finite_nonnegative(out.exponentialWeights[component])) {
+                    return false;
+                }
+                if (!add_dir_component(
+                        out.filterPlan,
+                        DirComponentBuildInput{
+                            out.exponentialSigmaPixels[component],
+                            out.exponentialWeights[component]},
+                        out.targetScratchTier)) {
+                    return false;
+                }
             }
         }
+        if (out.filterPlan.componentCount <= 0 ||
+            out.targetScratchTier == Spektrafilm::DirScratchTier::Tier0) {
+            out.support = Spektrafilm::DirDescriptorSupport::UnsupportedScratchTier;
+            return false;
+        }
+        out.targetPlaneRoles = dir_target_plane_roles_for_tier(out.targetScratchTier);
+
+        std::uint64_t legacyHash = Hash::kFnvOffset;
+        hash_value(legacyHash, out.dirRecipeHash);
+        hash_value(legacyHash, out.gaussianSigmaPixels);
+        hash_value(legacyHash, out.gaussianWeight);
+        Hash::hash_bytes_update(legacyHash, out.exponentialSigmaPixels.data(), sizeof(out.exponentialSigmaPixels));
+        Hash::hash_bytes_update(legacyHash, out.exponentialWeights.data(), sizeof(out.exponentialWeights));
+        out.legacyCompatibilityHash = legacyHash;
+
         std::uint64_t hash = Hash::kFnvOffset;
         hash_value(hash, out.dirRecipeHash);
+        hash_value(hash, pixelSizeUm);
+        hash_value(hash, out.sourceContract);
+        hash_value(hash, out.boundaryMode);
+        hash_value(hash, out.scratchTier);
+        hash_value(hash, out.targetScratchTier);
+        hash_value(hash, out.approximation);
+        hash_value(hash, out.support);
+        hash_dir_extent(hash, out.renderExtent);
+        hash_dir_extent(hash, out.fullFrameExtent);
+        hash_dir_extent(hash, out.filterDomainExtent);
+        hash_dir_filter_plan(hash, out.filterPlan);
+        hash_dir_plane_roles(hash, out.planeRoles);
+        hash_dir_plane_roles(hash, out.targetPlaneRoles);
         hash_value(hash, out.gaussianSigmaPixels);
         hash_value(hash, out.gaussianWeight);
         Hash::hash_bytes_update(hash, out.exponentialSigmaPixels.data(), sizeof(out.exponentialSigmaPixels));
         Hash::hash_bytes_update(hash, out.exponentialWeights.data(), sizeof(out.exponentialWeights));
+        hash_value(hash, out.legacyCompatibilityHash);
         out.hash = hash;
         return out.hash != 0;
     }

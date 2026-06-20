@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <functional>
 
+#include "../../RenderRecipe.h"
+
 namespace JuicerCuda {
     namespace ResourceManager {
 
@@ -485,11 +487,21 @@ namespace JuicerCuda {
             ScratchRequestFamilies families{};
             ScratchRequestExtent extent{};
             ScratchRequestAttachments attachments{};
+            std::uint64_t spatialDirDescriptorHash = 0;
+            Spektrafilm::DirScratchTier spatialDirScratchTier = Spektrafilm::DirScratchTier::Tier0;
+            Spektrafilm::DirScratchPlaneRoles spatialDirPlaneRoles{};
+            Spektrafilm::DirScratchTier spatialDirTargetScratchTier = Spektrafilm::DirScratchTier::Tier0;
+            Spektrafilm::DirScratchPlaneRoles spatialDirTargetPlaneRoles{};
         };
 
         struct ScratchRequestDescriptor {
             bool needOptics = false;
             bool needSpatialDir = false;
+            std::uint64_t spatialDirDescriptorHash = 0;
+            Spektrafilm::DirScratchTier spatialDirScratchTier = Spektrafilm::DirScratchTier::Tier0;
+            Spektrafilm::DirScratchPlaneRoles spatialDirPlaneRoles{};
+            Spektrafilm::DirScratchTier spatialDirTargetScratchTier = Spektrafilm::DirScratchTier::Tier0;
+            Spektrafilm::DirScratchPlaneRoles spatialDirTargetPlaneRoles{};
             int requestedWidth = 0;
             int requestedHeight = 0;
             bool needBlurred = false;
@@ -510,6 +522,21 @@ namespace JuicerCuda {
             }
             if (descriptor.requestedWidth <= 0 || descriptor.requestedHeight <= 0) {
                 return false;
+            }
+            if (!descriptor.needSpatialDir) {
+                if (descriptor.spatialDirDescriptorHash != 0 ||
+                    descriptor.spatialDirScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
+                    descriptor.spatialDirPlaneRoles.total_float_planes() != 0 ||
+                    descriptor.spatialDirTargetScratchTier != Spektrafilm::DirScratchTier::Tier0 ||
+                    descriptor.spatialDirTargetPlaneRoles.total_float_planes() != 0) {
+                    return false;
+                }
+            } else {
+                if (descriptor.spatialDirDescriptorHash == 0 ||
+                    descriptor.spatialDirScratchTier == Spektrafilm::DirScratchTier::Tier0 ||
+                    descriptor.spatialDirPlaneRoles.total_float_planes() <= 0) {
+                    return false;
+                }
             }
             if (!descriptor.needOptics &&
                 (descriptor.needBlurred ||
@@ -532,6 +559,25 @@ namespace JuicerCuda {
             };
             mix(descriptor.needOptics ? 1ull : 0ull);
             mix(descriptor.needSpatialDir ? 1ull : 0ull);
+            mix(descriptor.spatialDirDescriptorHash);
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirScratchTier));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetScratchTier));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.rawCorrectionPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.filterTempPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.iirForwardTempPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.cachedLogRawPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.SF_TEMP_BRIDGE_corrPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.SF_TEMP_BRIDGE_mixPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.rawCorrectionPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.filteredCorrectionPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.filterTempPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.iirForwardTempPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_corrPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_mixPlanes));
+            mix(static_cast<std::uint64_t>(descriptor.spatialDirTargetPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes));
             mix(static_cast<std::uint64_t>(descriptor.requestedWidth));
             mix(static_cast<std::uint64_t>(descriptor.requestedHeight));
             mix(descriptor.needBlurred ? 1ull : 0ull);
@@ -547,6 +593,16 @@ namespace JuicerCuda {
             ScratchRequestDescriptor descriptor{};
             descriptor.needOptics = request.families.needOptics;
             descriptor.needSpatialDir = request.families.needSpatialDir;
+            descriptor.spatialDirDescriptorHash =
+                request.families.needSpatialDir ? request.spatialDirDescriptorHash : 0;
+            descriptor.spatialDirScratchTier =
+                request.families.needSpatialDir ? request.spatialDirScratchTier : Spektrafilm::DirScratchTier::Tier0;
+            descriptor.spatialDirPlaneRoles =
+                request.families.needSpatialDir ? request.spatialDirPlaneRoles : Spektrafilm::DirScratchPlaneRoles{};
+            descriptor.spatialDirTargetScratchTier =
+                request.families.needSpatialDir ? request.spatialDirTargetScratchTier : Spektrafilm::DirScratchTier::Tier0;
+            descriptor.spatialDirTargetPlaneRoles =
+                request.families.needSpatialDir ? request.spatialDirTargetPlaneRoles : Spektrafilm::DirScratchPlaneRoles{};
             descriptor.requestedWidth = request.extent.requestedWidth;
             descriptor.requestedHeight = request.extent.requestedHeight;
             descriptor.needBlurred = request.families.needOptics && request.attachments.needBlurred;

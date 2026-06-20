@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "RenderRecipe.h"
 #include "ResourceAssetLibrary.h"
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
@@ -90,6 +91,7 @@ namespace JuicerProcess {
             const Scanner::ColorRuntime* scannerColor = nullptr;
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
+            const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             bool scannerWorkspaceNeedsSpatialDir = false;
             int frameWidth = 0;
             int frameHeight = 0;
@@ -104,6 +106,7 @@ namespace JuicerProcess {
             const Scanner::ColorRuntime* scannerColor = nullptr;
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
+            const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
             bool scannerWorkspaceNeedsSpatialDir = false;
             int frameWidth = 0;
             int frameHeight = 0;
@@ -121,6 +124,11 @@ namespace JuicerProcess {
             struct WorkspaceRequest {
                 bool needOptics = false;
                 bool needSpatialDir = false;
+                std::uint64_t spatialDirDescriptorHash = 0;
+                Spektrafilm::DirScratchTier spatialDirScratchTier = Spektrafilm::DirScratchTier::Tier0;
+                Spektrafilm::DirScratchPlaneRoles spatialDirPlaneRoles{};
+                Spektrafilm::DirScratchTier spatialDirTargetScratchTier = Spektrafilm::DirScratchTier::Tier0;
+                Spektrafilm::DirScratchPlaneRoles spatialDirTargetPlaneRoles{};
                 int requestedWidth = 0;
                 int requestedHeight = 0;
                 bool needBlurred = false;
@@ -304,6 +312,11 @@ namespace JuicerProcess {
                 float* mixM = nullptr;
                 float* mixC = nullptr;
                 float* tmp = nullptr;
+                std::uint64_t descriptorHash = 0;
+                Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
+                Spektrafilm::DirScratchPlaneRoles planeRoles{};
+                Spektrafilm::DirScratchTier targetScratchTier = Spektrafilm::DirScratchTier::Tier0;
+                Spektrafilm::DirScratchPlaneRoles targetPlaneRoles{};
                 bool overflow = false;
                 bool active = false;
             };

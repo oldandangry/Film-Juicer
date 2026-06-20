@@ -367,15 +367,227 @@ struct DirCouplersRecipe {
     std::uint64_t hash = 0;
 };
 
+namespace Spektrafilm {
+
+    enum class DirSourceContract : std::uint8_t {
+        None,
+        FilmLogRawToInitialDensityCmy
+    };
+
+    enum class DirBoundaryMode : std::uint8_t {
+        None,
+        SpektrafilmReferencePerOperator
+    };
+
+    enum class DirReferenceOperator : std::uint8_t {
+        None,
+        Identity,
+        SpektrafilmSmallFirReflect,
+        SpektrafilmLargeYvvReplicate
+    };
+
+    // SF_TEMP_BRIDGE_* DIR markers classify the current CUDA spatial path until Phase 5 removes it.
+    enum class DirFilterBackend : std::uint8_t {
+        None,
+        SmallFir,
+        StrictYvvIir,
+        SF_TEMP_BRIDGE_LegacySigmaThreshold
+    };
+
+    enum class DirScratchTier : std::uint8_t {
+        Tier0,
+        Tier1F,
+        Tier1I,
+        Tier2,
+        Tier3,
+        Unsupported,
+        SF_TEMP_BRIDGE_LegacySpatialDirScratch
+    };
+
+    enum class DirApproximationMarker : std::uint8_t {
+        None,
+        SpektrafilmStrict,
+        SF_TEMP_BRIDGE_CurrentCudaSpatialDir
+    };
+
+    enum class DirDescriptorSupport : std::uint8_t {
+        Supported,
+        Inactive,
+        UnsupportedPartialRenderWindow,
+        UnsupportedScratchTier
+    };
+
+    struct DirFrameExtent {
+        int x = 0;
+        int y = 0;
+        int width = 0;
+        int height = 0;
+    };
+
+    struct DirGaussianComponentPlan {
+        float sigmaPixels = 0.0f;
+        float weight = 0.0f;
+        DirReferenceOperator referenceOperator = DirReferenceOperator::None;
+        DirFilterBackend backend = DirFilterBackend::None;
+        DirFilterBackend targetBackend = DirFilterBackend::None;
+        DirScratchTier targetScratchTier = DirScratchTier::Tier0;
+    };
+
+    struct DirFilterPlan {
+        static constexpr int kMaxComponents = 4;
+
+        int componentCount = 0;
+        std::array<DirGaussianComponentPlan, kMaxComponents> components{};
+    };
+
+    struct DirScratchPlaneRoles {
+        int rawCorrectionPlanes = 0;
+        int filteredCorrectionPlanes = 0;
+        int filterTempPlanes = 0;
+        int iirForwardTempPlanes = 0;
+        int cachedLogRawPlanes = 0;
+        int SF_TEMP_BRIDGE_corrPlanes = 0;
+        int SF_TEMP_BRIDGE_mixPlanes = 0;
+        int SF_TEMP_BRIDGE_tmpPlanes = 0;
+
+        int total_float_planes() const noexcept {
+            return rawCorrectionPlanes +
+                   filteredCorrectionPlanes +
+                   filterTempPlanes +
+                   iirForwardTempPlanes +
+                   cachedLogRawPlanes +
+                   SF_TEMP_BRIDGE_corrPlanes +
+                   SF_TEMP_BRIDGE_mixPlanes +
+                   SF_TEMP_BRIDGE_tmpPlanes;
+        }
+    };
+
+    inline const char* to_cstr(DirSourceContract value) noexcept {
+        switch (value) {
+            case DirSourceContract::None:
+                return "none";
+            case DirSourceContract::FilmLogRawToInitialDensityCmy:
+                return "film_log_raw_to_initial_density_cmy";
+            default:
+                return "unknown";
+        }
+    }
+
+    inline const char* to_cstr(DirBoundaryMode value) noexcept {
+        switch (value) {
+            case DirBoundaryMode::None:
+                return "none";
+            case DirBoundaryMode::SpektrafilmReferencePerOperator:
+                return "spektrafilm_reference_per_operator";
+            default:
+                return "unknown";
+        }
+    }
+
+    inline const char* to_cstr(DirReferenceOperator value) noexcept {
+        switch (value) {
+            case DirReferenceOperator::None:
+                return "none";
+            case DirReferenceOperator::Identity:
+                return "identity";
+            case DirReferenceOperator::SpektrafilmSmallFirReflect:
+                return "spektrafilm_small_fir_reflect";
+            case DirReferenceOperator::SpektrafilmLargeYvvReplicate:
+                return "spektrafilm_large_yvv_replicate";
+            default:
+                return "unknown";
+        }
+    }
+
+    inline const char* to_cstr(DirFilterBackend value) noexcept {
+        switch (value) {
+            case DirFilterBackend::None:
+                return "none";
+            case DirFilterBackend::SmallFir:
+                return "small_fir";
+            case DirFilterBackend::StrictYvvIir:
+                return "strict_yvv_iir";
+            case DirFilterBackend::SF_TEMP_BRIDGE_LegacySigmaThreshold:
+                return "SF_TEMP_BRIDGE_LegacySigmaThreshold";
+            default:
+                return "unknown";
+        }
+    }
+
+    inline const char* to_cstr(DirScratchTier value) noexcept {
+        switch (value) {
+            case DirScratchTier::Tier0:
+                return "Tier0";
+            case DirScratchTier::Tier1F:
+                return "Tier1F";
+            case DirScratchTier::Tier1I:
+                return "Tier1I";
+            case DirScratchTier::Tier2:
+                return "Tier2";
+            case DirScratchTier::Tier3:
+                return "Tier3";
+            case DirScratchTier::Unsupported:
+                return "unsupported";
+            case DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
+                return "SF_TEMP_BRIDGE_LegacySpatialDirScratch";
+            default:
+                return "unknown";
+        }
+    }
+
+    inline const char* to_cstr(DirApproximationMarker value) noexcept {
+        switch (value) {
+            case DirApproximationMarker::None:
+                return "none";
+            case DirApproximationMarker::SpektrafilmStrict:
+                return "spektrafilm_strict";
+            case DirApproximationMarker::SF_TEMP_BRIDGE_CurrentCudaSpatialDir:
+                return "SF_TEMP_BRIDGE_CurrentCudaSpatialDir";
+            default:
+                return "unknown";
+        }
+    }
+
+    inline const char* to_cstr(DirDescriptorSupport value) noexcept {
+        switch (value) {
+            case DirDescriptorSupport::Supported:
+                return "supported";
+            case DirDescriptorSupport::Inactive:
+                return "inactive";
+            case DirDescriptorSupport::UnsupportedPartialRenderWindow:
+                return "unsupported_partial_render_window";
+            case DirDescriptorSupport::UnsupportedScratchTier:
+                return "unsupported_scratch_tier";
+            default:
+                return "unknown";
+        }
+    }
+
+} // namespace Spektrafilm
+
 struct SpatialDirDescriptor {
     static constexpr std::array<float, 3> kExponentialAmplitudes{{0.1633f, 0.6496f, 0.1870f}};
     static constexpr std::array<float, 3> kExponentialSigmaRatios{{0.5360f, 1.5236f, 2.7684f}};
 
     std::uint64_t dirRecipeHash = 0;
+    Spektrafilm::DirSourceContract sourceContract = Spektrafilm::DirSourceContract::None;
+    Spektrafilm::DirBoundaryMode boundaryMode = Spektrafilm::DirBoundaryMode::None;
+    Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
+    Spektrafilm::DirApproximationMarker approximation = Spektrafilm::DirApproximationMarker::None;
+    Spektrafilm::DirDescriptorSupport support = Spektrafilm::DirDescriptorSupport::Inactive;
+    Spektrafilm::DirFrameExtent renderExtent{};
+    Spektrafilm::DirFrameExtent fullFrameExtent{};
+    Spektrafilm::DirFrameExtent filterDomainExtent{};
+    Spektrafilm::DirFilterPlan filterPlan{};
+    Spektrafilm::DirScratchPlaneRoles planeRoles{};
+    Spektrafilm::DirScratchTier targetScratchTier = Spektrafilm::DirScratchTier::Tier0;
+    Spektrafilm::DirScratchPlaneRoles targetPlaneRoles{};
+    const char* traceRouteLabel = nullptr;
     float gaussianSigmaPixels = 0.0f;
     std::array<float, 3> exponentialSigmaPixels{};
     float gaussianWeight = 0.0f;
     std::array<float, 3> exponentialWeights{};
+    std::uint64_t legacyCompatibilityHash = 0;
     std::uint64_t hash = 0;
 };
 
@@ -684,6 +896,9 @@ namespace Spektrafilm {
     bool build_spatial_dir_descriptor(
         const DirCouplersRecipe& recipe,
         float pixelSizeUm,
+        DirFrameExtent renderExtent,
+        DirFrameExtent fullFrameExtent,
+        const char* traceRouteLabel,
         SpatialDirDescriptor& out);
     bool build_exact_optics_execution_plan(
         const SpatialOptics& recipe,
