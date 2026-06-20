@@ -703,8 +703,8 @@ namespace {
         component.sigmaPixels = input.sigmaPixels;
         component.weight = input.weight;
         component.referenceOperator = dir_reference_operator_for_sigma(input.sigmaPixels);
-        component.backend = Spektrafilm::DirFilterBackend::SF_TEMP_BRIDGE_LegacySigmaThreshold;
         component.targetBackend = dir_target_backend_for_operator(component.referenceOperator);
+        component.backend = component.targetBackend;
         component.targetScratchTier = dir_target_scratch_tier_for_operator(component.referenceOperator);
         if (component.targetScratchTier == Spektrafilm::DirScratchTier::Tier1I) {
             targetScratchTier = Spektrafilm::DirScratchTier::Tier1I;
@@ -1656,7 +1656,7 @@ namespace Spektrafilm {
         out.dirRecipeHash = recipe.hash;
         out.sourceContract = Spektrafilm::DirSourceContract::FilmLogRawToInitialDensityCmy;
         out.boundaryMode = Spektrafilm::DirBoundaryMode::SpektrafilmReferencePerOperator;
-        out.approximation = Spektrafilm::DirApproximationMarker::SF_TEMP_BRIDGE_CurrentCudaSpatialDir;
+        out.approximation = Spektrafilm::DirApproximationMarker::SpektrafilmStrict;
         out.renderExtent = renderExtent;
         out.fullFrameExtent = fullFrameExtent;
         out.filterDomainExtent = fullFrameExtent;
