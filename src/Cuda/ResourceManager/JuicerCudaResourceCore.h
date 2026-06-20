@@ -516,6 +516,39 @@ namespace JuicerCuda {
             }
         };
 
+        inline bool spatial_dir_roles_match_tier(
+            Spektrafilm::DirScratchTier tier,
+            const Spektrafilm::DirScratchPlaneRoles& roles) noexcept {
+            switch (tier) {
+                case Spektrafilm::DirScratchTier::Tier0:
+                    return roles.total_float_planes() == 0;
+                case Spektrafilm::DirScratchTier::Tier1F:
+                    return roles.rawCorrectionPlanes == 3 &&
+                           roles.filteredCorrectionPlanes == 3 &&
+                           roles.filterTempPlanes == 1 &&
+                           roles.iirForwardTempPlanes == 0 &&
+                           roles.cachedLogRawPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
+                case Spektrafilm::DirScratchTier::Tier1I:
+                    return roles.rawCorrectionPlanes == 3 &&
+                           roles.filteredCorrectionPlanes == 3 &&
+                           roles.filterTempPlanes == 1 &&
+                           roles.iirForwardTempPlanes == 1 &&
+                           roles.cachedLogRawPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
+                case Spektrafilm::DirScratchTier::Tier2:
+                case Spektrafilm::DirScratchTier::Tier3:
+                case Spektrafilm::DirScratchTier::Unsupported:
+                case Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
+                    return false;
+            }
+            return false;
+        }
+
         inline bool scratch_request_descriptor_is_valid(const ScratchRequestDescriptor& descriptor) noexcept {
             if (!descriptor.has_any_family()) {
                 return false;
@@ -534,7 +567,13 @@ namespace JuicerCuda {
             } else {
                 if (descriptor.spatialDirDescriptorHash == 0 ||
                     descriptor.spatialDirScratchTier == Spektrafilm::DirScratchTier::Tier0 ||
-                    descriptor.spatialDirPlaneRoles.total_float_planes() <= 0) {
+                    !spatial_dir_roles_match_tier(
+                        descriptor.spatialDirScratchTier,
+                        descriptor.spatialDirPlaneRoles) ||
+                    descriptor.spatialDirTargetScratchTier != descriptor.spatialDirScratchTier ||
+                    !spatial_dir_roles_match_tier(
+                        descriptor.spatialDirTargetScratchTier,
+                        descriptor.spatialDirTargetPlaneRoles)) {
                     return false;
                 }
             }

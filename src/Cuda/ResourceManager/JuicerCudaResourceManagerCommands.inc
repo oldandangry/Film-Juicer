@@ -3480,7 +3480,9 @@ bool command_ensure_spatial_dir_scratch(
     const std::size_t growthBytes = estimate_spatial_dir_growth_bytes(
         resources,
         scratchRequest.requestedWidth,
-        scratchRequest.requestedHeight);
+        scratchRequest.requestedHeight,
+        scratchRequest.spatialDirScratchTier,
+        scratchRequest.spatialDirPlaneRoles);
     if (growthBytes == std::numeric_limits<std::size_t>::max()) {
         outError = "spatial dir scratch growth byte estimation overflow";
         return false;
@@ -3501,6 +3503,8 @@ bool command_ensure_spatial_dir_scratch(
                 resources,
                 scratchRequest.requestedWidth,
                 scratchRequest.requestedHeight,
+                scratchRequest.spatialDirScratchTier,
+                scratchRequest.spatialDirPlaneRoles,
                 cudaStreamOpaque,
                 actionError);
         },

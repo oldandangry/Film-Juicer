@@ -683,14 +683,6 @@ namespace {
         return roles;
     }
 
-    Spektrafilm::DirScratchPlaneRoles dir_bridge_plane_roles() noexcept {
-        Spektrafilm::DirScratchPlaneRoles roles{};
-        roles.SF_TEMP_BRIDGE_corrPlanes = 3;
-        roles.SF_TEMP_BRIDGE_mixPlanes = 3;
-        roles.SF_TEMP_BRIDGE_tmpPlanes = 1;
-        return roles;
-    }
-
     struct DirComponentBuildInput {
         float sigmaPixels = 0.0f;
         float weight = 0.0f;
@@ -1664,13 +1656,11 @@ namespace Spektrafilm {
         out.dirRecipeHash = recipe.hash;
         out.sourceContract = Spektrafilm::DirSourceContract::FilmLogRawToInitialDensityCmy;
         out.boundaryMode = Spektrafilm::DirBoundaryMode::SpektrafilmReferencePerOperator;
-        out.scratchTier = Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch;
         out.approximation = Spektrafilm::DirApproximationMarker::SF_TEMP_BRIDGE_CurrentCudaSpatialDir;
         out.renderExtent = renderExtent;
         out.fullFrameExtent = fullFrameExtent;
         out.filterDomainExtent = fullFrameExtent;
         out.traceRouteLabel = traceRouteLabel;
-        out.planeRoles = dir_bridge_plane_roles();
         out.gaussianSigmaPixels = recipe.diffusionSizeUm / pixelSizeUm;
         out.gaussianWeight = 1.0f - recipe.diffusionTailWeight;
         if (!(std::isfinite(out.gaussianSigmaPixels) && out.gaussianSigmaPixels > 0.0f) ||
@@ -1721,6 +1711,8 @@ namespace Spektrafilm {
             return false;
         }
         out.targetPlaneRoles = dir_target_plane_roles_for_tier(out.targetScratchTier);
+        out.scratchTier = out.targetScratchTier;
+        out.planeRoles = out.targetPlaneRoles;
 
         std::uint64_t legacyHash = Hash::kFnvOffset;
         hash_value(legacyHash, out.dirRecipeHash);

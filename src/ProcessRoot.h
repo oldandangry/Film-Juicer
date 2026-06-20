@@ -305,13 +305,14 @@ namespace JuicerProcess {
             };
 
             struct SpatialDirScratchView {
-                float* corrY = nullptr;
-                float* corrM = nullptr;
-                float* corrC = nullptr;
-                float* mixY = nullptr;
-                float* mixM = nullptr;
-                float* mixC = nullptr;
-                float* tmp = nullptr;
+                float* rawCorrectionY = nullptr;
+                float* rawCorrectionM = nullptr;
+                float* rawCorrectionC = nullptr;
+                float* filteredCorrectionY = nullptr;
+                float* filteredCorrectionM = nullptr;
+                float* filteredCorrectionC = nullptr;
+                float* filterTemp = nullptr;
+                float* iirForwardTemp = nullptr;
                 std::uint64_t descriptorHash = 0;
                 Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
                 Spektrafilm::DirScratchPlaneRoles planeRoles{};

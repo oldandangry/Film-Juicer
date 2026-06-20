@@ -2247,7 +2247,9 @@ std::size_t estimate_optics_growth_bytes(
         addPlane(3); // rgbR/rgbG/rgbB
     }
 
-    const bool sharedTmpMatch = resources.sharedTmpPlane &&
+    const bool sharedTmpMatch = scratch.tmp &&
+                                scratch.tmp == resources.sharedTmpPlane &&
+                                resources.sharedTmpPlane &&
                                 resources.sharedTmpCapacityElements >= requiredElements;
     if (!sharedTmpMatch) {
         addPlane(); // shared tmp plane
@@ -2295,48 +2297,47 @@ std::size_t estimate_optics_growth_bytes(
 std::size_t estimate_spatial_dir_growth_bytes(
     JuicerCuda::Resources& resources,
     int width,
-    int height) noexcept {
+    int height,
+    Spektrafilm::DirScratchTier scratchTier,
+    const Spektrafilm::DirScratchPlaneRoles& planeRoles) noexcept {
     const std::size_t planeBytes = plane_bytes_for_extent(width, height);
     if (planeBytes == 0 || planeBytes == std::numeric_limits<std::size_t>::max()) {
         return planeBytes;
+    }
+    if (!spatial_dir_roles_match_tier(scratchTier, planeRoles)) {
+        return std::numeric_limits<std::size_t>::max();
     }
 
     std::lock_guard<std::mutex> lock(resources.m);
     const auto& scratch = resources.spatialDirScratch;
     const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC &&
-                          scratch.mixY && scratch.mixM && scratch.mixC;
+    const bool haveBase = scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC &&
+                          scratch.filteredCorrectionY && scratch.filteredCorrectionM &&
+                          scratch.filteredCorrectionC;
+    const bool haveIirForwardTemp =
+        (scratchTier == Spektrafilm::DirScratchTier::Tier1F && !scratch.iirForwardTemp) ||
+        (scratchTier == Spektrafilm::DirScratchTier::Tier1I && scratch.iirForwardTemp);
+    const bool haveRequiredRoles = haveBase && haveIirForwardTemp;
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
-    const bool sharedTmpMatch = resources.sharedTmpPlane &&
+    const bool sharedTmpMatch = scratch.filterTemp &&
+                                scratch.filterTemp == resources.sharedTmpPlane &&
+                                resources.sharedTmpPlane &&
                                 resources.sharedTmpCapacityElements >= requiredElements;
 
     std::size_t estimate = 0;
-    if (!haveBase || !capacityMatch) {
-        std::size_t next = 0;
-        if (!add_bytes_checked(estimate, planeBytes, next)) {
-            return std::numeric_limits<std::size_t>::max();
+    if (!haveRequiredRoles || !capacityMatch) {
+        const int dedicatedPlanes =
+            planeRoles.rawCorrectionPlanes +
+            planeRoles.filteredCorrectionPlanes +
+            planeRoles.iirForwardTempPlanes +
+            planeRoles.cachedLogRawPlanes;
+        for (int plane = 0; plane < dedicatedPlanes; ++plane) {
+            std::size_t next = 0;
+            if (!add_bytes_checked(estimate, planeBytes, next)) {
+                return std::numeric_limits<std::size_t>::max();
+            }
+            estimate = next;
         }
-        estimate = next;
-        if (!add_bytes_checked(estimate, planeBytes, next)) {
-            return std::numeric_limits<std::size_t>::max();
-        }
-        estimate = next;
-        if (!add_bytes_checked(estimate, planeBytes, next)) {
-            return std::numeric_limits<std::size_t>::max();
-        }
-        estimate = next;
-        if (!add_bytes_checked(estimate, planeBytes, next)) {
-            return std::numeric_limits<std::size_t>::max();
-        }
-        estimate = next;
-        if (!add_bytes_checked(estimate, planeBytes, next)) {
-            return std::numeric_limits<std::size_t>::max();
-        }
-        estimate = next;
-        if (!add_bytes_checked(estimate, planeBytes, next)) {
-            return std::numeric_limits<std::size_t>::max();
-        }
-        estimate = next;
     }
     if (!sharedTmpMatch) {
         std::size_t next = 0;

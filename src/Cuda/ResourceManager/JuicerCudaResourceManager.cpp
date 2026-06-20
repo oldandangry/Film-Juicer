@@ -273,7 +273,14 @@ namespace JuicerCuda {
     bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negativeMedium, void* cudaStreamOpaque, std::string& outError);
     bool ensure_auto_exposure_buffers(Resources& resources, int meterWidth, int meterHeight, void* cudaStreamOpaque, std::string& outError);
     bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError);
-    bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError);
+    bool ensure_spatial_dir_scratch(
+        Resources& resources,
+        int width,
+        int height,
+        Spektrafilm::DirScratchTier scratchTier,
+        const Spektrafilm::DirScratchPlaneRoles& planeRoles,
+        void* cudaStreamOpaque,
+        std::string& outError);
     bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
     bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
@@ -1744,17 +1751,19 @@ namespace JuicerCuda {
                 if (overflow) {
                     snapshot.overflow = true;
                 }
-                if (scratch.corrY)
+                if (scratch.rawCorrectionY)
                     add_snapshot_bytes(snapshot, planeBytes);
-                if (scratch.corrM)
+                if (scratch.rawCorrectionM)
                     add_snapshot_bytes(snapshot, planeBytes);
-                if (scratch.corrC)
+                if (scratch.rawCorrectionC)
                     add_snapshot_bytes(snapshot, planeBytes);
-                if (scratch.mixY)
+                if (scratch.filteredCorrectionY)
                     add_snapshot_bytes(snapshot, planeBytes);
-                if (scratch.mixM)
+                if (scratch.filteredCorrectionM)
                     add_snapshot_bytes(snapshot, planeBytes);
-                if (scratch.mixC)
+                if (scratch.filteredCorrectionC)
+                    add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.iirForwardTemp)
                     add_snapshot_bytes(snapshot, planeBytes);
             }
 

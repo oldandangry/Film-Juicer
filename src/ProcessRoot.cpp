@@ -37,6 +37,65 @@ namespace JuicerProcess {
 
     namespace {
 
+        bool spatial_dir_roles_match_tier(
+            Spektrafilm::DirScratchTier tier,
+            const Spektrafilm::DirScratchPlaneRoles& roles) noexcept {
+            switch (tier) {
+                case Spektrafilm::DirScratchTier::Tier0:
+                    return roles.total_float_planes() == 0;
+                case Spektrafilm::DirScratchTier::Tier1F:
+                    return roles.rawCorrectionPlanes == 3 &&
+                           roles.filteredCorrectionPlanes == 3 &&
+                           roles.filterTempPlanes == 1 &&
+                           roles.iirForwardTempPlanes == 0 &&
+                           roles.cachedLogRawPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
+                case Spektrafilm::DirScratchTier::Tier1I:
+                    return roles.rawCorrectionPlanes == 3 &&
+                           roles.filteredCorrectionPlanes == 3 &&
+                           roles.filterTempPlanes == 1 &&
+                           roles.iirForwardTempPlanes == 1 &&
+                           roles.cachedLogRawPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
+                case Spektrafilm::DirScratchTier::Tier2:
+                case Spektrafilm::DirScratchTier::Tier3:
+                case Spektrafilm::DirScratchTier::Unsupported:
+                case Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
+                    return false;
+            }
+            return false;
+        }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        bool spatial_dir_scratch_has_required_roles(
+            const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch,
+            Spektrafilm::DirScratchTier tier,
+            const Spektrafilm::DirScratchPlaneRoles& roles) noexcept {
+            if (!spatial_dir_roles_match_tier(tier, roles)) {
+                return false;
+            }
+            if (tier == Spektrafilm::DirScratchTier::Tier0) {
+                return true;
+            }
+            const bool tier1Base =
+                scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC &&
+                scratch.filteredCorrectionY && scratch.filteredCorrectionM && scratch.filteredCorrectionC &&
+                scratch.filterTemp;
+            if (!tier1Base) {
+                return false;
+            }
+            if (tier == Spektrafilm::DirScratchTier::Tier1I) {
+                return scratch.iirForwardTemp != nullptr;
+            }
+            return tier == Spektrafilm::DirScratchTier::Tier1F &&
+                   scratch.iirForwardTemp == nullptr;
+        }
+#endif
+
         std::string compute_process_data_dir() {
             namespace fs = std::filesystem;
 
@@ -723,20 +782,17 @@ namespace JuicerProcess {
                 outError = "spatial DIR workspace missing descriptor hash";
                 return false;
             }
-            if (request.spatialDirScratchTier !=
-                Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch) {
-                outError = "spatial DIR workspace requested unsupported scratch tier";
+            if (!spatial_dir_roles_match_tier(
+                    request.spatialDirScratchTier,
+                    request.spatialDirPlaneRoles)) {
+                outError = "spatial DIR workspace plane roles do not match scratch tier";
                 return false;
             }
-            if (request.spatialDirPlaneRoles.SF_TEMP_BRIDGE_corrPlanes != 3 ||
-                request.spatialDirPlaneRoles.SF_TEMP_BRIDGE_mixPlanes != 3 ||
-                request.spatialDirPlaneRoles.SF_TEMP_BRIDGE_tmpPlanes != 1 ||
-                request.spatialDirPlaneRoles.rawCorrectionPlanes != 0 ||
-                request.spatialDirPlaneRoles.filteredCorrectionPlanes != 0 ||
-                request.spatialDirPlaneRoles.filterTempPlanes != 0 ||
-                request.spatialDirPlaneRoles.iirForwardTempPlanes != 0 ||
-                request.spatialDirPlaneRoles.cachedLogRawPlanes != 0) {
-                outError = "spatial DIR workspace plane roles do not match current bridge scratch";
+            if (request.spatialDirTargetScratchTier != request.spatialDirScratchTier ||
+                !spatial_dir_roles_match_tier(
+                    request.spatialDirTargetScratchTier,
+                    request.spatialDirTargetPlaneRoles)) {
+                outError = "spatial DIR workspace target plane roles do not match scratch tier";
                 return false;
             }
         }
@@ -890,15 +946,37 @@ namespace JuicerProcess {
 
         if (request.needSpatialDir) {
             JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = next.spatialDir;
-            if (!alloc_float(spatialDir.corrY, planeBytes, "frame spatial DIR corrY") ||
-                !alloc_float(spatialDir.corrM, planeBytes, "frame spatial DIR corrM") ||
-                !alloc_float(spatialDir.corrC, planeBytes, "frame spatial DIR corrC") ||
-                !alloc_float(spatialDir.mixY, planeBytes, "frame spatial DIR mixY") ||
-                !alloc_float(spatialDir.mixM, planeBytes, "frame spatial DIR mixM") ||
-                !alloc_float(spatialDir.mixC, planeBytes, "frame spatial DIR mixC")) {
+            if (!spatial_dir_roles_match_tier(
+                    request.spatialDirScratchTier,
+                    request.spatialDirPlaneRoles)) {
+                outError = "frame spatial DIR scratch tier/roles invalid";
                 return fail_after_partial_alloc();
             }
-            spatialDir.tmp = next.sharedTmpPlane;
+            if (!alloc_float(spatialDir.rawCorrectionY, planeBytes, "frame spatial DIR rawCorrectionY") ||
+                !alloc_float(spatialDir.rawCorrectionM, planeBytes, "frame spatial DIR rawCorrectionM") ||
+                !alloc_float(spatialDir.rawCorrectionC, planeBytes, "frame spatial DIR rawCorrectionC") ||
+                !alloc_float(
+                    spatialDir.filteredCorrectionY,
+                    planeBytes,
+                    "frame spatial DIR filteredCorrectionY") ||
+                !alloc_float(
+                    spatialDir.filteredCorrectionM,
+                    planeBytes,
+                    "frame spatial DIR filteredCorrectionM") ||
+                !alloc_float(
+                    spatialDir.filteredCorrectionC,
+                    planeBytes,
+                    "frame spatial DIR filteredCorrectionC")) {
+                return fail_after_partial_alloc();
+            }
+            spatialDir.filterTemp = next.sharedTmpPlane;
+            if (request.spatialDirPlaneRoles.iirForwardTempPlanes == 1 &&
+                !alloc_float(
+                    spatialDir.iirForwardTemp,
+                    planeBytes,
+                    "frame spatial DIR iirForwardTemp")) {
+                return fail_after_partial_alloc();
+            }
             spatialDir.width = request.requestedWidth;
             spatialDir.height = request.requestedHeight;
             spatialDir.capacityElements = requiredElements;
@@ -983,12 +1061,25 @@ namespace JuicerProcess {
             workspace.optics.gateMask,
             workspace.optics.gateMaskCapacityElements * sizeof(float),
             "frame scannerScratch.gateMask");
-        retire_ptr(workspace.spatialDir.corrY, planeBytes, "frame spatial DIR corrY");
-        retire_ptr(workspace.spatialDir.corrM, planeBytes, "frame spatial DIR corrM");
-        retire_ptr(workspace.spatialDir.corrC, planeBytes, "frame spatial DIR corrC");
-        retire_ptr(workspace.spatialDir.mixY, planeBytes, "frame spatial DIR mixY");
-        retire_ptr(workspace.spatialDir.mixM, planeBytes, "frame spatial DIR mixM");
-        retire_ptr(workspace.spatialDir.mixC, planeBytes, "frame spatial DIR mixC");
+        retire_ptr(workspace.spatialDir.rawCorrectionY, planeBytes, "frame spatial DIR rawCorrectionY");
+        retire_ptr(workspace.spatialDir.rawCorrectionM, planeBytes, "frame spatial DIR rawCorrectionM");
+        retire_ptr(workspace.spatialDir.rawCorrectionC, planeBytes, "frame spatial DIR rawCorrectionC");
+        retire_ptr(
+            workspace.spatialDir.filteredCorrectionY,
+            planeBytes,
+            "frame spatial DIR filteredCorrectionY");
+        retire_ptr(
+            workspace.spatialDir.filteredCorrectionM,
+            planeBytes,
+            "frame spatial DIR filteredCorrectionM");
+        retire_ptr(
+            workspace.spatialDir.filteredCorrectionC,
+            planeBytes,
+            "frame spatial DIR filteredCorrectionC");
+        retire_ptr(
+            workspace.spatialDir.iirForwardTemp,
+            planeBytes,
+            "frame spatial DIR iirForwardTemp");
         retire_ptr(
             workspace.sharedTmpPlane,
             workspace.sharedTmpCapacityElements * sizeof(float),
@@ -1036,23 +1127,26 @@ namespace JuicerProcess {
         if (workspace.optics.gateMask) {
             cudaFree(workspace.optics.gateMask);
         }
-        if (workspace.spatialDir.corrY) {
-            cudaFree(workspace.spatialDir.corrY);
+        if (workspace.spatialDir.rawCorrectionY) {
+            cudaFree(workspace.spatialDir.rawCorrectionY);
         }
-        if (workspace.spatialDir.corrM) {
-            cudaFree(workspace.spatialDir.corrM);
+        if (workspace.spatialDir.rawCorrectionM) {
+            cudaFree(workspace.spatialDir.rawCorrectionM);
         }
-        if (workspace.spatialDir.corrC) {
-            cudaFree(workspace.spatialDir.corrC);
+        if (workspace.spatialDir.rawCorrectionC) {
+            cudaFree(workspace.spatialDir.rawCorrectionC);
         }
-        if (workspace.spatialDir.mixY) {
-            cudaFree(workspace.spatialDir.mixY);
+        if (workspace.spatialDir.filteredCorrectionY) {
+            cudaFree(workspace.spatialDir.filteredCorrectionY);
         }
-        if (workspace.spatialDir.mixM) {
-            cudaFree(workspace.spatialDir.mixM);
+        if (workspace.spatialDir.filteredCorrectionM) {
+            cudaFree(workspace.spatialDir.filteredCorrectionM);
         }
-        if (workspace.spatialDir.mixC) {
-            cudaFree(workspace.spatialDir.mixC);
+        if (workspace.spatialDir.filteredCorrectionC) {
+            cudaFree(workspace.spatialDir.filteredCorrectionC);
+        }
+        if (workspace.spatialDir.iirForwardTemp) {
+            cudaFree(workspace.spatialDir.iirForwardTemp);
         }
         if (workspace.sharedTmpPlane) {
             cudaFree(workspace.sharedTmpPlane);
@@ -1383,9 +1477,8 @@ namespace JuicerProcess {
             outError = "spatial DIR workspace descriptor identity mismatch";
             return false;
         }
-        if (descriptor.scratchTier !=
-            Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch) {
-            outError = "spatial DIR descriptor requested unsupported scratch tier";
+        if (!spatial_dir_roles_match_tier(descriptor.scratchTier, descriptor.planeRoles)) {
+            outError = "spatial DIR descriptor requested unsupported scratch tier or plane roles";
             return false;
         }
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -1410,6 +1503,7 @@ namespace JuicerProcess {
             msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
             msg += " approximation=";
             msg += Spektrafilm::to_cstr(descriptor.approximation);
+            msg += " scratch_source=pending";
             msg += " component_count=";
             msg += std::to_string(descriptor.filterPlan.componentCount);
             msg += " raw_correction_planes=";
@@ -1460,6 +1554,28 @@ namespace JuicerProcess {
                 "CUDA frame scratch workspace acquisition failed");
             return false;
         }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (JTRACE_ENABLED(1)) {
+            const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
+            std::string msg = "event=spatial_dir_scratch_admission descriptor_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
+            msg += " scratch_source=";
+            msg += _state->scratchWorkspace.overflowActive ? "overflow" : "retained";
+            msg += " scratch_tier=";
+            msg += Spektrafilm::to_cstr(descriptor.scratchTier);
+            msg += " raw_correction_planes=";
+            msg += std::to_string(roles.rawCorrectionPlanes);
+            msg += " filtered_correction_planes=";
+            msg += std::to_string(roles.filteredCorrectionPlanes);
+            msg += " filter_temp_planes=";
+            msg += std::to_string(roles.filterTempPlanes);
+            msg += " iir_forward_temp_planes=";
+            msg += std::to_string(roles.iirForwardTempPlanes);
+            msg += " cached_log_raw_planes=";
+            msg += std::to_string(roles.cachedLogRawPlanes);
+            JTRACE("DIR_DESCRIPTOR", msg);
+        }
+#endif
         if (!_state->scratchWorkspace.overflowActive) {
             const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
                 make_scratch_request_descriptor(workspace);
@@ -2378,21 +2494,24 @@ namespace JuicerProcess {
             _state->scratchWorkspace.overflowActive
                 ? _state->scratchWorkspace.spatialDir
                 : _state->resources->spatialDirScratch;
-        view.corrY = scratch.corrY;
-        view.corrM = scratch.corrM;
-        view.corrC = scratch.corrC;
-        view.mixY = scratch.mixY;
-        view.mixM = scratch.mixM;
-        view.mixC = scratch.mixC;
-        view.tmp = scratch.tmp;
+        view.rawCorrectionY = scratch.rawCorrectionY;
+        view.rawCorrectionM = scratch.rawCorrectionM;
+        view.rawCorrectionC = scratch.rawCorrectionC;
+        view.filteredCorrectionY = scratch.filteredCorrectionY;
+        view.filteredCorrectionM = scratch.filteredCorrectionM;
+        view.filteredCorrectionC = scratch.filteredCorrectionC;
+        view.filterTemp = scratch.filterTemp;
+        view.iirForwardTemp = scratch.iirForwardTemp;
         view.descriptorHash = workspace._request.spatialDirDescriptorHash;
         view.scratchTier = workspace._request.spatialDirScratchTier;
         view.planeRoles = workspace._request.spatialDirPlaneRoles;
         view.targetScratchTier = workspace._request.spatialDirTargetScratchTier;
         view.targetPlaneRoles = workspace._request.spatialDirTargetPlaneRoles;
         view.overflow = _state->scratchWorkspace.overflowActive;
-        view.active = view.corrY && view.corrM && view.corrC &&
-                      view.mixY && view.mixM && view.mixC && view.tmp;
+        view.active = spatial_dir_scratch_has_required_roles(
+            scratch,
+            view.scratchTier,
+            view.planeRoles);
         return view;
     }
 

@@ -957,12 +957,13 @@ namespace JuicerCuda {
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainTriplet, resources.scannerScratch.grainTmpCoarse != nullptr, opticsPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGrainShared, resources.scannerScratch.grainTmpShared != nullptr, opticsPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::OpticsGateMask, resources.scannerScratch.gateMask != nullptr, gateMaskBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrY != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrM != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.corrC != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.mixY != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.mixM != nullptr, spatialDirPlaneBytes);
-        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.mixC != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.rawCorrectionY != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.rawCorrectionM != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.rawCorrectionC != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filteredCorrectionY != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filteredCorrectionM != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.filteredCorrectionC != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.iirForwardTemp != nullptr, spatialDirPlaneBytes);
 
         if (resources.sharedTmpPlane) {
             next.helperSharedBytes = sharedTmpBytes;
@@ -4843,14 +4844,15 @@ namespace JuicerCuda {
 
     static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque = nullptr) noexcept {
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        free_tracked_device_ptr_locked(resources, s.corrY, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.corrM, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.corrC, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.mixY, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.mixM, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, s.mixC, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.rawCorrectionY, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.rawCorrectionM, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.rawCorrectionC, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.filteredCorrectionY, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.filteredCorrectionM, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.filteredCorrectionC, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.iirForwardTemp, cudaStreamOpaque);
 #endif
-        s.tmp = nullptr;
+        s.filterTemp = nullptr;
         s.width = 0;
         s.height = 0;
         s.capacityElements = 0;
@@ -4866,37 +4868,42 @@ namespace JuicerCuda {
         return false;
 #else
         const size_t bytes = s.capacityElements * sizeof(float);
-        if (s.corrY) {
-            if (!retire_ptr_locked(resources, s.corrY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+        if (s.rawCorrectionY) {
+            if (!retire_ptr_locked(resources, s.rawCorrectionY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
                 return false;
-            s.corrY = nullptr;
+            s.rawCorrectionY = nullptr;
         }
-        if (s.corrM) {
-            if (!retire_ptr_locked(resources, s.corrM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+        if (s.rawCorrectionM) {
+            if (!retire_ptr_locked(resources, s.rawCorrectionM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
                 return false;
-            s.corrM = nullptr;
+            s.rawCorrectionM = nullptr;
         }
-        if (s.corrC) {
-            if (!retire_ptr_locked(resources, s.corrC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+        if (s.rawCorrectionC) {
+            if (!retire_ptr_locked(resources, s.rawCorrectionC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
                 return false;
-            s.corrC = nullptr;
+            s.rawCorrectionC = nullptr;
         }
-        if (s.mixY) {
-            if (!retire_ptr_locked(resources, s.mixY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+        if (s.filteredCorrectionY) {
+            if (!retire_ptr_locked(resources, s.filteredCorrectionY, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
                 return false;
-            s.mixY = nullptr;
+            s.filteredCorrectionY = nullptr;
         }
-        if (s.mixM) {
-            if (!retire_ptr_locked(resources, s.mixM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+        if (s.filteredCorrectionM) {
+            if (!retire_ptr_locked(resources, s.filteredCorrectionM, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
                 return false;
-            s.mixM = nullptr;
+            s.filteredCorrectionM = nullptr;
         }
-        if (s.mixC) {
-            if (!retire_ptr_locked(resources, s.mixC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+        if (s.filteredCorrectionC) {
+            if (!retire_ptr_locked(resources, s.filteredCorrectionC, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
                 return false;
-            s.mixC = nullptr;
+            s.filteredCorrectionC = nullptr;
         }
-        s.tmp = nullptr;
+        if (s.iirForwardTemp) {
+            if (!retire_ptr_locked(resources, s.iirForwardTemp, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
+            s.iirForwardTemp = nullptr;
+        }
+        s.filterTemp = nullptr;
         s.width = 0;
         s.height = 0;
         s.capacityElements = 0;
@@ -4932,8 +4939,9 @@ namespace JuicerCuda {
 
     static bool spatial_dir_base_live_locked(const Resources& resources) noexcept {
         const auto& scratch = resources.spatialDirScratch;
-        return scratch.corrY || scratch.corrM || scratch.corrC ||
-               scratch.mixY || scratch.mixM || scratch.mixC;
+        return scratch.rawCorrectionY || scratch.rawCorrectionM || scratch.rawCorrectionC ||
+               scratch.filteredCorrectionY || scratch.filteredCorrectionM ||
+               scratch.filteredCorrectionC || scratch.iirForwardTemp;
     }
 
     static bool retire_shared_tmp_plane_locked(
@@ -4969,7 +4977,7 @@ namespace JuicerCuda {
         resources.sharedTmpHeight = 0;
         resources.sharedTmpCapacityElements = 0;
         resources.scannerScratch.tmp = nullptr;
-        resources.spatialDirScratch.tmp = nullptr;
+        resources.spatialDirScratch.filterTemp = nullptr;
         return true;
 #endif
     }
@@ -5202,10 +5210,10 @@ namespace JuicerCuda {
 #else
         Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
         const std::size_t bytes = scratch.capacityElements * sizeof(float);
-        if (scratch.corrY) {
+        if (scratch.rawCorrectionY) {
             if (!retire_ptr_locked(
                     resources,
-                    scratch.corrY,
+                    scratch.rawCorrectionY,
                     bytes,
                     Resources::RetireKind::DeviceFree,
                     cudaStreamOpaque,
@@ -5214,12 +5222,12 @@ namespace JuicerCuda {
                     true)) {
                 return false;
             }
-            scratch.corrY = nullptr;
+            scratch.rawCorrectionY = nullptr;
         }
-        if (scratch.corrM) {
+        if (scratch.rawCorrectionM) {
             if (!retire_ptr_locked(
                     resources,
-                    scratch.corrM,
+                    scratch.rawCorrectionM,
                     bytes,
                     Resources::RetireKind::DeviceFree,
                     cudaStreamOpaque,
@@ -5228,12 +5236,12 @@ namespace JuicerCuda {
                     true)) {
                 return false;
             }
-            scratch.corrM = nullptr;
+            scratch.rawCorrectionM = nullptr;
         }
-        if (scratch.corrC) {
+        if (scratch.rawCorrectionC) {
             if (!retire_ptr_locked(
                     resources,
-                    scratch.corrC,
+                    scratch.rawCorrectionC,
                     bytes,
                     Resources::RetireKind::DeviceFree,
                     cudaStreamOpaque,
@@ -5242,26 +5250,43 @@ namespace JuicerCuda {
                     true)) {
                 return false;
             }
-            scratch.corrC = nullptr;
+            scratch.rawCorrectionC = nullptr;
         }
-        float** mixPlanes[3] = {&scratch.mixY, &scratch.mixM, &scratch.mixC};
-        for (float** mixPlane : mixPlanes) {
-            if (*mixPlane) {
+        float** filteredPlanes[3] = {
+            &scratch.filteredCorrectionY,
+            &scratch.filteredCorrectionM,
+            &scratch.filteredCorrectionC};
+        for (float** filteredPlane : filteredPlanes) {
+            if (*filteredPlane) {
                 if (!retire_ptr_locked(
                         resources,
-                        *mixPlane,
+                        *filteredPlane,
                         bytes,
                         Resources::RetireKind::DeviceFree,
                         cudaStreamOpaque,
-                        "scratch normalization spatial dir mixture",
+                        "scratch normalization spatial dir filtered correction",
                         outError,
                         true)) {
                     return false;
                 }
-                *mixPlane = nullptr;
+                *filteredPlane = nullptr;
             }
         }
-        scratch.tmp = nullptr;
+        if (scratch.iirForwardTemp) {
+            if (!retire_ptr_locked(
+                    resources,
+                    scratch.iirForwardTemp,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    "scratch normalization spatial dir iir forward temp",
+                    outError,
+                    true)) {
+                return false;
+            }
+            scratch.iirForwardTemp = nullptr;
+        }
+        scratch.filterTemp = nullptr;
         scratch.width = 0;
         scratch.height = 0;
         scratch.capacityElements = 0;
@@ -5991,17 +6016,30 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_spatial_dir_scratch(Resources& resources, int width, int height, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_spatial_dir_scratch(
+        Resources& resources,
+        int width,
+        int height,
+        Spektrafilm::DirScratchTier scratchTier,
+        const Spektrafilm::DirScratchPlaneRoles& planeRoles,
+        void* cudaStreamOpaque,
+        std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)width;
         (void)height;
+        (void)scratchTier;
+        (void)planeRoles;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
         return false;
 #else
         if (width <= 0 || height <= 0) {
             outError = "spatial DIR scratch dimensions invalid";
+            return false;
+        }
+        if (!ResourceManager::spatial_dir_roles_match_tier(scratchTier, planeRoles)) {
+            outError = "spatial DIR scratch request tier/roles invalid";
             return false;
         }
 
@@ -6014,86 +6052,109 @@ namespace JuicerCuda {
         const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
         const bool dimsMatch = (scratch.width == width && scratch.height == height);
         const bool capacityMatch = scratch.capacityElements >= requiredElements;
-        const bool haveBase = scratch.corrY && scratch.corrM && scratch.corrC &&
-                              scratch.mixY && scratch.mixM && scratch.mixC;
-        if (dimsMatch && capacityMatch && haveBase) {
+        auto spatial_dir_scratch_has_required_roles = [&]() noexcept {
+            const bool tier1Base =
+                scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC &&
+                scratch.filteredCorrectionY && scratch.filteredCorrectionM && scratch.filteredCorrectionC;
+            if (!tier1Base) {
+                return false;
+            }
+            return (scratchTier == Spektrafilm::DirScratchTier::Tier1F &&
+                    scratch.iirForwardTemp == nullptr) ||
+                   (scratchTier == Spektrafilm::DirScratchTier::Tier1I &&
+                    scratch.iirForwardTemp);
+        };
+        const bool haveRequiredRoles = spatial_dir_scratch_has_required_roles();
+        if (dimsMatch && capacityMatch && haveRequiredRoles) {
             if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
                 return false;
             }
-            scratch.tmp = resources.sharedTmpPlane;
+            scratch.filterTemp = resources.sharedTmpPlane;
             return true;
         }
 
-        if (scratch.corrY || scratch.corrM || scratch.corrC ||
-            scratch.mixY || scratch.mixM || scratch.mixC) {
-            if (!capacityMatch || !haveBase) {
+        if (scratch.rawCorrectionY || scratch.rawCorrectionM || scratch.rawCorrectionC ||
+            scratch.filteredCorrectionY || scratch.filteredCorrectionM ||
+            scratch.filteredCorrectionC || scratch.iirForwardTemp) {
+            if (!capacityMatch || !haveRequiredRoles) {
                 if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
                     return false;
                 }
             }
         }
 
-        if (capacityMatch && haveBase) {
+        if (capacityMatch && haveRequiredRoles) {
             scratch.width = width;
             scratch.height = height;
             if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
                 return false;
             }
-            scratch.tmp = resources.sharedTmpPlane;
+            scratch.filterTemp = resources.sharedTmpPlane;
             return true;
         }
 
         const size_t bytes = requiredElements * sizeof(float);
         if (!allocate_scratch_device_ptr_locked(
                 resources,
-                scratch.corrY,
+                scratch.rawCorrectionY,
                 bytes,
                 cudaStreamOpaque,
-                "spatial DIR corrY",
+                "spatial DIR rawCorrectionY",
                 outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
         if (!allocate_scratch_device_ptr_locked(
                 resources,
-                scratch.mixY,
+                scratch.filteredCorrectionY,
                 bytes,
                 cudaStreamOpaque,
-                "spatial DIR mixY",
+                "spatial DIR filteredCorrectionY",
                 outError) ||
             !allocate_scratch_device_ptr_locked(
                 resources,
-                scratch.mixM,
+                scratch.filteredCorrectionM,
                 bytes,
                 cudaStreamOpaque,
-                "spatial DIR mixM",
+                "spatial DIR filteredCorrectionM",
                 outError) ||
             !allocate_scratch_device_ptr_locked(
                 resources,
-                scratch.mixC,
+                scratch.filteredCorrectionC,
                 bytes,
                 cudaStreamOpaque,
-                "spatial DIR mixC",
+                "spatial DIR filteredCorrectionC",
                 outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
         if (!allocate_scratch_device_ptr_locked(
                 resources,
-                scratch.corrM,
+                scratch.rawCorrectionM,
                 bytes,
                 cudaStreamOpaque,
-                "spatial DIR corrM",
+                "spatial DIR rawCorrectionM",
                 outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
         if (!allocate_scratch_device_ptr_locked(
                 resources,
-                scratch.corrC,
+                scratch.rawCorrectionC,
                 bytes,
                 cudaStreamOpaque,
-                "spatial DIR corrC",
+                "spatial DIR rawCorrectionC",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+            return false;
+        }
+        if (planeRoles.iirForwardTempPlanes == 1 &&
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.iirForwardTemp,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR iirForwardTemp",
                 outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
@@ -6102,7 +6163,7 @@ namespace JuicerCuda {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
-        scratch.tmp = resources.sharedTmpPlane;
+        scratch.filterTemp = resources.sharedTmpPlane;
 
         scratch.width = width;
         scratch.height = height;

@@ -539,6 +539,17 @@ namespace {
         request.spatialDirTargetPlaneRoles = descriptor.targetPlaneRoles;
     }
 
+    // SF_TEMP_BRIDGE_bind_filtered_correction_to_payload: Phase 5 removes this
+    // once FilmDevelopPayload stops exposing corr* aliases for spatial DIR.
+    void SF_TEMP_BRIDGE_bind_filtered_correction_to_payload(
+        JuicerCuda::FilmDevelopPayload& payload,
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView& scratch) {
+        payload.spatialDir.active = 1;
+        payload.spatialDir.corrY = scratch.filteredCorrectionY;
+        payload.spatialDir.corrM = scratch.filteredCorrectionM;
+        payload.spatialDir.corrC = scratch.filteredCorrectionC;
+    }
+
     void trace_spatial_dir_descriptor_build(
         const char* route,
         const Spektrafilm::SpatialDirDescriptor& descriptor) {
@@ -740,8 +751,8 @@ namespace {
             << " SF_TEMP_BRIDGE_corr_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_corrPlanes : 0)
             << " SF_TEMP_BRIDGE_mix_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_mixPlanes : 0)
             << " SF_TEMP_BRIDGE_tmp_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_tmpPlanes : 0)
-            << " spatial_dir_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_corrPlanes + roles.SF_TEMP_BRIDGE_mixPlanes : 0)
-            << " shared_tmp_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_tmpPlanes : 0)
+            << " spatial_dir_planes=" << (dirActive ? roles.total_float_planes() : 0)
+            << " shared_tmp_planes=" << (dirActive ? roles.filterTempPlanes : 0)
             << " target_raw_correction_planes=" << (dirActive ? targetRoles.rawCorrectionPlanes : 0)
             << " target_filtered_correction_planes=" << (dirActive ? targetRoles.filteredCorrectionPlanes : 0)
             << " target_filter_temp_planes=" << (dirActive ? targetRoles.filterTempPlanes : 0)
@@ -2412,21 +2423,28 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=prepared_spatial_dir");
             }
-            run.filmDevelop.spatialDir.active = 1;
-            run.filmDevelop.spatialDir.corrY = scratch.corrY;
-            run.filmDevelop.spatialDir.corrM = scratch.corrM;
-            run.filmDevelop.spatialDir.corrC = scratch.corrC;
+            SF_TEMP_BRIDGE_bind_filtered_correction_to_payload(run.filmDevelop, scratch);
+            // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
+            // these old wrapper arguments after source/filter/final-develop split lands.
+            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
+            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM = scratch.rawCorrectionM;
+            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC = scratch.rawCorrectionC;
+            // SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrection: Phase 5 removes this alias.
+            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY = scratch.filteredCorrectionY;
+            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
+            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
+            float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
             directDirScratchOverflow = scratch.overflow;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
             const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
                 &run,
-                scratch.corrY,
-                scratch.corrM,
-                scratch.corrC,
-                scratch.mixY,
-                scratch.mixM,
-                scratch.mixC,
-                scratch.tmp,
+                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY,
+                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM,
+                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC,
+                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY,
+                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
+                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
+                SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,
@@ -2855,21 +2873,28 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=prepared_spatial_dir");
             }
-            run.filmDevelop.spatialDir.active = 1;
-            run.filmDevelop.spatialDir.corrY = scratch.corrY;
-            run.filmDevelop.spatialDir.corrM = scratch.corrM;
-            run.filmDevelop.spatialDir.corrC = scratch.corrC;
+            SF_TEMP_BRIDGE_bind_filtered_correction_to_payload(run.filmDevelop, scratch);
+            // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
+            // these old wrapper arguments after source/filter/final-develop split lands.
+            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
+            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM = scratch.rawCorrectionM;
+            float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC = scratch.rawCorrectionC;
+            // SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrection: Phase 5 removes this alias.
+            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY = scratch.filteredCorrectionY;
+            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
+            float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
+            float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
             printDirScratchOverflow = scratch.overflow;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
             const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(
                 &run,
-                scratch.corrY,
-                scratch.corrM,
-                scratch.corrC,
-                scratch.mixY,
-                scratch.mixM,
-                scratch.mixC,
-                scratch.tmp,
+                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY,
+                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionM,
+                SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionC,
+                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionY,
+                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
+                SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
+                SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,
