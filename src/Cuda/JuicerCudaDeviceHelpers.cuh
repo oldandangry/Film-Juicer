@@ -1483,3 +1483,42 @@ static __device__ __forceinline__ void apply_dir_runtime_logE_device(
     logE_BGR[1] = clamp_to_curve_domain_device(logE_BGR[1], densG);
     logE_BGR[2] = clamp_to_curve_domain_device(logE_BGR[2], densR);
 }
+
+static __device__ __forceinline__ bool juicer_cuda_spatial_dir_filtered_correction_active_device(
+    const JuicerCuda::FilmDevelopPayload& develop) {
+    return develop.spatialDir.active &&
+           develop.spatialDir.corrY &&
+           develop.spatialDir.corrM &&
+           develop.spatialDir.corrC;
+}
+
+static __device__ __forceinline__ void juicer_cuda_develop_dir_final_device(
+    const JuicerCuda::FilmDevelopPayload& develop,
+    const float logRawBgr[3],
+    std::size_t pixelIndex,
+    float densityCmy[3]) {
+    // Phase 2 bridge: spatialDir.corrY/M/C are aliases for filteredCorrectionY/M/C only.
+    const float filteredCorrectionY = ldg_f(develop.spatialDir.corrY + pixelIndex);
+    const float filteredCorrectionM = ldg_f(develop.spatialDir.corrM + pixelIndex);
+    const float filteredCorrectionC = ldg_f(develop.spatialDir.corrC + pixelIndex);
+
+    float correctedLogRawB = logRawBgr[0] - filteredCorrectionY;
+    float correctedLogRawG = logRawBgr[1] - filteredCorrectionM;
+    float correctedLogRawR = logRawBgr[2] - filteredCorrectionC;
+
+    const JuicerCuda::DeviceCurveView preCorrectedB = develop.dirDensB;
+    const JuicerCuda::DeviceCurveView preCorrectedG = develop.dirDensG;
+    const JuicerCuda::DeviceCurveView preCorrectedR = develop.dirDensR;
+
+    correctedLogRawB = sanitize_inf_logE_for_curve_device(correctedLogRawB, preCorrectedB);
+    correctedLogRawG = sanitize_inf_logE_for_curve_device(correctedLogRawG, preCorrectedG);
+    correctedLogRawR = sanitize_inf_logE_for_curve_device(correctedLogRawR, preCorrectedR);
+
+    const float densityY = sample_density_at_logE_device(preCorrectedB, correctedLogRawB, develop.gammaFactorB);
+    const float densityM = sample_density_at_logE_device(preCorrectedG, correctedLogRawG, develop.gammaFactorG);
+    const float densityC = sample_density_at_logE_device(preCorrectedR, correctedLogRawR, develop.gammaFactorR);
+
+    densityCmy[0] = densityC;
+    densityCmy[1] = densityM;
+    densityCmy[2] = densityY;
+}

@@ -1671,9 +1671,7 @@ __global__ void develop_film_density_kernel(
     }
 
     const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-    const bool useSpatialDir =
-        dev.spatialDir.active &&
-        dev.spatialDir.corrY && dev.spatialDir.corrM && dev.spatialDir.corrC;
+    const bool useSpatialDir = juicer_cuda_spatial_dir_filtered_correction_active_device(dev);
     for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
         const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
         for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
@@ -1689,30 +1687,7 @@ __global__ void develop_film_density_kernel(
                 compute_logE_raw_device(params, rgbIn, logE_raw);
 
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
-                const float corrY = dev.spatialDir.corrY[idx];
-                const float corrM = dev.spatialDir.corrM[idx];
-                const float corrC = dev.spatialDir.corrC[idx];
-
-                float logE_corr[3] = {
-                    logE_raw[0] - corrY,
-                    logE_raw[1] - corrM,
-                    logE_raw[2] - corrC};
-
-                const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-                const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-                const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
-
-                logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB);
-                logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG);
-                logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR);
-
-                const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
-                const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
-                const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
-
-                D_cmy[0] = DC;
-                D_cmy[1] = DM;
-                D_cmy[2] = DY;
+                juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
@@ -2147,9 +2122,7 @@ __global__ void develop_film_density_from_raw_kernel(
         return;
     }
 
-    const bool useSpatialDir =
-        dev.spatialDir.active &&
-        dev.spatialDir.corrY && dev.spatialDir.corrM && dev.spatialDir.corrC;
+    const bool useSpatialDir = juicer_cuda_spatial_dir_filtered_correction_active_device(dev);
     for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
         for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
@@ -2160,30 +2133,7 @@ __global__ void develop_film_density_from_raw_kernel(
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
 
-                const float corrY = dev.spatialDir.corrY[idx];
-                const float corrM = dev.spatialDir.corrM[idx];
-                const float corrC = dev.spatialDir.corrC[idx];
-
-                float logE_corr[3] = {
-                    logE_raw[0] - corrY,
-                    logE_raw[1] - corrM,
-                    logE_raw[2] - corrC};
-
-                const JuicerCuda::DeviceCurveView cB = dev.dirPrecorrected ? dev.dirDensB : dev.densB;
-                const JuicerCuda::DeviceCurveView cG = dev.dirPrecorrected ? dev.dirDensG : dev.densG;
-                const JuicerCuda::DeviceCurveView cR = dev.dirPrecorrected ? dev.dirDensR : dev.densR;
-
-                logE_corr[0] = sanitize_inf_logE_for_curve_device(logE_corr[0], cB);
-                logE_corr[1] = sanitize_inf_logE_for_curve_device(logE_corr[1], cG);
-                logE_corr[2] = sanitize_inf_logE_for_curve_device(logE_corr[2], cR);
-
-                const float DY = sample_density_at_logE_device(cB, logE_corr[0], dev.gammaFactorB);
-                const float DM = sample_density_at_logE_device(cG, logE_corr[1], dev.gammaFactorG);
-                const float DC = sample_density_at_logE_device(cR, logE_corr[2], dev.gammaFactorR);
-
-                D_cmy[0] = DC;
-                D_cmy[1] = DM;
-                D_cmy[2] = DY;
+                juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
                 float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
