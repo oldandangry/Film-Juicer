@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "Cuda/JuicerCudaDirProfile.h"
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
 #include "openrand/philox.h"
 
@@ -157,6 +158,92 @@ __global__ void optics_blur_vertical_kernel(
 
 namespace {
 
+    struct CudaProfileStageTimer {
+        cudaEvent_t start = nullptr;
+        cudaEvent_t stop = nullptr;
+        bool active = false;
+
+        ~CudaProfileStageTimer() {
+            destroy();
+        }
+
+        cudaError_t begin(cudaStream_t stream) {
+            if (active) {
+                return cudaErrorInvalidValue;
+            }
+            cudaError_t err = cudaEventCreateWithFlags(&start, cudaEventDefault);
+            if (err != cudaSuccess) {
+                return err;
+            }
+            err = cudaEventCreateWithFlags(&stop, cudaEventDefault);
+            if (err != cudaSuccess) {
+                destroy();
+                return err;
+            }
+            err = cudaEventRecord(start, stream);
+            if (err != cudaSuccess) {
+                destroy();
+                return err;
+            }
+            active = true;
+            return cudaSuccess;
+        }
+
+        cudaError_t finish(cudaStream_t stream, JuicerCuda::SpatialDirStageProfile* stage) {
+            if (!active) {
+                return cudaSuccess;
+            }
+            cudaError_t err = cudaEventRecord(stop, stream);
+            if (err != cudaSuccess) {
+                destroy();
+                return err;
+            }
+            err = cudaEventSynchronize(stop);
+            if (err != cudaSuccess) {
+                destroy();
+                return err;
+            }
+            float elapsedMs = 0.0f;
+            err = cudaEventElapsedTime(&elapsedMs, start, stop);
+            if (err == cudaSuccess && stage) {
+                stage->elapsedMs += elapsedMs;
+            }
+            destroy();
+            return err;
+        }
+
+        void destroy() {
+            if (start) {
+                cudaEventDestroy(start);
+                start = nullptr;
+            }
+            if (stop) {
+                cudaEventDestroy(stop);
+                stop = nullptr;
+            }
+            active = false;
+        }
+    };
+
+    __device__ __forceinline__ float clamp_dir_correction_device(float v, unsigned int* clampHits) {
+        float out = v;
+        bool clamped = false;
+        if (!isfinite(out)) {
+            out = 0.0f;
+            clamped = true;
+        } else if (out < -10.0f) {
+            out = -10.0f;
+            clamped = true;
+        } else if (out > 10.0f) {
+            out = 10.0f;
+            clamped = true;
+        }
+        if (clamped && clampHits) {
+            atomicAdd(clampHits, 1u);
+        }
+        return out;
+    }
+
     __device__ __forceinline__ int spatial_dir_reflect_index_device(int index, int size) {
         if (size <= 1) {
             return 0;
@@ -172,7 +259,8 @@ namespace {
     __device__ __forceinline__ void compute_dir_corrections_device(
         const JuicerCuda::DirPayload& dir,
         const float layerDensities[3],
-        float outLayerCorrections[3]) {
+        float outLayerCorrections[3],
+        unsigned int* clampHits) {
         if (!outLayerCorrections) {
             return;
         }
@@ -197,25 +285,9 @@ namespace {
         float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
         float aC = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
 
-        if (!isfinite(aY))
-            aY = 0.0f;
-        if (!isfinite(aM))
-            aM = 0.0f;
-        if (!isfinite(aC))
-            aC = 0.0f;
-
-        auto clamp_corr = [](float v) -> float {
-            if (!isfinite(v))
-                return 0.0f;
-            if (v < -10.0f)
-                return -10.0f;
-            if (v > 10.0f)
-                return 10.0f;
-            return v;
-        };
-        outLayerCorrections[0] = clamp_corr(aY);
-        outLayerCorrections[1] = clamp_corr(aM);
-        outLayerCorrections[2] = clamp_corr(aC);
+        outLayerCorrections[0] = clamp_dir_correction_device(aY, clampHits);
+        outLayerCorrections[1] = clamp_dir_correction_device(aM, clampHits);
+        outLayerCorrections[2] = clamp_dir_correction_device(aC, clampHits);
     }
 
     template <typename Params>
@@ -223,7 +295,8 @@ namespace {
         Params params,
         float* corrY,
         float* corrM,
-        float* corrC) {
+        float* corrC,
+        unsigned int* clampHits) {
         if (!params.src || params.srcRowBytes == 0) {
             return;
         }
@@ -255,7 +328,7 @@ namespace {
                 const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
 
                 float outCorr[3] = {0.0f, 0.0f, 0.0f};
-                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr);
+                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr, clampHits);
 
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
                 corrY[idx] = outCorr[0];
@@ -446,7 +519,8 @@ cudaError_t build_spatial_dir_impl(
     int tailRadius2, // NOLINT(bugprone-easily-swappable-parameters)
     float tailSigma2,
     float tailWeight2,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile) {
     if (!params.src || params.srcRowBytes == 0) {
         return cudaErrorInvalidValue;
     }
@@ -462,22 +536,133 @@ cudaError_t build_spatial_dir_impl(
     }
 
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    cudaError_t err = cudaSuccess;
+    unsigned int* dClampHits = nullptr;
+    CudaProfileStageTimer totalTimer;
+    if (profile) {
+        *profile = JuicerCuda::SpatialDirBuildProfile{};
+        profile->width = params.width;
+        profile->height = params.height;
+        profile->gaussianRadius = gaussianRadius;
+        profile->gaussianSigma = gaussianSigma;
+        profile->gaussianWeight = gaussianWeight;
+        profile->tailRadius[0] = tailRadius0;
+        profile->tailRadius[1] = tailRadius1;
+        profile->tailRadius[2] = tailRadius2;
+        profile->tailSigma[0] = tailSigma0;
+        profile->tailSigma[1] = tailSigma1;
+        profile->tailSigma[2] = tailSigma2;
+        profile->tailWeight[0] = tailWeight0;
+        profile->tailWeight[1] = tailWeight1;
+        profile->tailWeight[2] = tailWeight2;
+        err = totalTimer.begin(stream);
+        if (err != cudaSuccess) {
+            return err;
+        }
+        err = cudaMalloc(&dClampHits, sizeof(unsigned int));
+        if (err != cudaSuccess) {
+            return err;
+        }
+        err = cudaMemsetAsync(dClampHits, 0, sizeof(unsigned int), stream);
+        if (err != cudaSuccess) {
+            cudaFree(dClampHits);
+            return err;
+        }
+    }
+
+    auto finish_profile = [&](cudaError_t result) -> cudaError_t {
+        cudaError_t finalErr = result;
+        if (profile) {
+            const cudaError_t totalErr = totalTimer.finish(stream, &profile->total);
+            profile->total.launches = profile->totalLaunches;
+            if (finalErr == cudaSuccess && totalErr != cudaSuccess) {
+                finalErr = totalErr;
+            }
+            if (dClampHits) {
+                unsigned int clampHits = 0;
+                cudaError_t copyErr = cudaMemcpyAsync(
+                    &clampHits,
+                    dClampHits,
+                    sizeof(clampHits),
+                    cudaMemcpyDeviceToHost,
+                    stream);
+                if (copyErr == cudaSuccess) {
+                    copyErr = cudaStreamSynchronize(stream);
+                }
+                if (copyErr == cudaSuccess) {
+                    profile->correctionClampHits = clampHits;
+                } else if (finalErr == cudaSuccess) {
+                    finalErr = copyErr;
+                }
+                const cudaError_t freeErr = cudaFree(dClampHits);
+                dClampHits = nullptr;
+                if (finalErr == cudaSuccess && freeErr != cudaSuccess) {
+                    finalErr = freeErr;
+                }
+            }
+        }
+        return finalErr;
+    };
+
+    auto mark_launch = [&](JuicerCuda::SpatialDirStageProfile* stage, int* counter) {
+        if (!profile) {
+            return;
+        }
+        if (stage) {
+            ++stage->launches;
+        }
+        if (counter) {
+            ++(*counter);
+        }
+        ++profile->totalLaunches;
+    };
 
     dim3 threads2D(32, 8);
     dim3 blocks2D(
         static_cast<unsigned int>((params.width + threads2D.x - 1) / threads2D.x),
         static_cast<unsigned int>((params.height + threads2D.y - 1) / threads2D.y));
 
-    spatial_dir_corrections_kernel<<<blocks2D, threads2D, 0, stream>>>(params, dCorrY, dCorrM, dCorrC);
-    cudaError_t err = cudaGetLastError();
+    auto launch_corrections = [&]() -> cudaError_t {
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        spatial_dir_corrections_kernel<<<blocks2D, threads2D, 0, stream>>>(
+            params,
+            dCorrY,
+            dCorrM,
+            dCorrC,
+            dClampHits);
+        mark_launch(
+            profile ? &profile->correction : nullptr,
+            profile ? &profile->correctionLaunches : nullptr);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        return profile ? timer.finish(stream, &profile->correction) : cudaSuccess;
+    };
+
+    err = launch_corrections();
     if (err != cudaSuccess) {
-        return err;
+        return finish_profile(err);
     }
 
-    auto blur_plane = [&](const float* plane, float* blurred, const float* k, int r, float sigma) // NOLINT(bugprone-easily-swappable-parameters)
+    auto blur_plane = [&](const float* plane, float* blurred, const float* k, int r, float sigma, // NOLINT(bugprone-easily-swappable-parameters)
+                          JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter)
         -> cudaError_t {
         if (!plane || !blurred || !(sigma > 0.0f)) {
             return cudaErrorInvalidValue;
+        }
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
         }
         if (sigma >= 3.0f) {
             const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
@@ -494,26 +679,80 @@ cudaError_t build_spatial_dir_impl(
             const int threads = 128;
             spatial_dir_iir_horizontal_kernel<<<(params.height + threads - 1) / threads, threads, 0, stream>>>(
                 plane, dTmp, params.width, params.height, B, B1, B2, B3);
+            mark_launch(stage, launchCounter);
             cudaError_t e = cudaGetLastError();
             if (e != cudaSuccess) {
                 return e;
             }
             spatial_dir_iir_vertical_kernel<<<(params.width + threads - 1) / threads, threads, 0, stream>>>(
                 dTmp, blurred, params.width, params.height, B, B1, B2, B3);
-            return cudaGetLastError();
+            mark_launch(stage, launchCounter);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            return profile ? timer.finish(stream, stage) : cudaSuccess;
         }
         if (!k || r <= 0) {
             return cudaErrorInvalidValue;
         }
         spatial_dir_blur_horizontal_reflect_kernel<<<blocks2D, threads2D, 0, stream>>>(
             plane, dTmp, params.width, params.height, k, r);
+        mark_launch(stage, launchCounter);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) {
             return e;
         }
         spatial_dir_blur_vertical_reflect_kernel<<<blocks2D, threads2D, 0, stream>>>(
             dTmp, blurred, params.width, params.height, k, r);
-        return cudaGetLastError();
+        mark_launch(stage, launchCounter);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        return profile ? timer.finish(stream, stage) : cudaSuccess;
+    };
+
+    auto launch_scale_copy = [&](const float* source, float* destination, int count, float weight, int blocks1D, int threads1D)
+        -> cudaError_t {
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        spatial_dir_scale_copy_kernel<<<blocks1D, threads1D, 0, stream>>>(
+            source, destination, count, weight);
+        mark_launch(
+            profile ? &profile->scaleCopy : nullptr,
+            profile ? &profile->scaleCopyLaunches : nullptr);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        return profile ? timer.finish(stream, &profile->scaleCopy) : cudaSuccess;
+    };
+
+    auto launch_add_scaled = [&](const float* source, float* destination, int count, float weight, int blocks1D, int threads1D)
+        -> cudaError_t {
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        spatial_dir_add_scaled_kernel<<<blocks1D, threads1D, 0, stream>>>(
+            source, destination, count, weight);
+        mark_launch(
+            profile ? &profile->addScaled : nullptr,
+            profile ? &profile->addScaledLaunches : nullptr);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        return profile ? timer.finish(stream, &profile->addScaled) : cudaSuccess;
     };
 
     float* originals[3] = {dCorrY, dCorrM, dCorrC};
@@ -527,14 +766,20 @@ cudaError_t build_spatial_dir_impl(
             mixtures[channel],
             dGaussianKernel,
             gaussianRadius,
-            gaussianSigma);
+            gaussianSigma,
+            profile ? &profile->baseFilter : nullptr,
+            profile ? &profile->baseFilterLaunches : nullptr);
         if (err != cudaSuccess)
-            return err;
-        spatial_dir_scale_copy_kernel<<<blocks1D, threads1D, 0, stream>>>(
-            mixtures[channel], mixtures[channel], count, gaussianWeight);
-        err = cudaGetLastError();
+            return finish_profile(err);
+        err = launch_scale_copy(
+            mixtures[channel],
+            mixtures[channel],
+            count,
+            gaussianWeight,
+            blocks1D,
+            threads1D);
         if (err != cudaSuccess)
-            return err;
+            return finish_profile(err);
     }
 
     const float* tailKernels[3] = {dTailKernel0, dTailKernel1, dTailKernel2};
@@ -548,38 +793,46 @@ cudaError_t build_spatial_dir_impl(
         if (!(tailSigmas[component] > 0.0f) ||
             (tailSigmas[component] < 3.0f &&
              (!tailKernels[component] || tailRadii[component] <= 0))) {
-            return cudaErrorInvalidValue;
+            return finish_profile(cudaErrorInvalidValue);
         }
-        spatial_dir_corrections_kernel<<<blocks2D, threads2D, 0, stream>>>(
-            params, dCorrY, dCorrM, dCorrC);
-        err = cudaGetLastError();
+        err = launch_corrections();
         if (err != cudaSuccess)
-            return err;
+            return finish_profile(err);
         for (int channel = 0; channel < 3; ++channel) {
             err = blur_plane(
                 originals[channel],
                 originals[channel],
                 tailKernels[component],
                 tailRadii[component],
-                tailSigmas[component]);
+                tailSigmas[component],
+                profile ? &profile->tailFilter[component] : nullptr,
+                profile ? &profile->tailFilterLaunches[component] : nullptr);
             if (err != cudaSuccess)
-                return err;
-            spatial_dir_add_scaled_kernel<<<blocks1D, threads1D, 0, stream>>>(
-                originals[channel], mixtures[channel], count, tailWeights[component]);
-            err = cudaGetLastError();
+                return finish_profile(err);
+            err = launch_add_scaled(
+                originals[channel],
+                mixtures[channel],
+                count,
+                tailWeights[component],
+                blocks1D,
+                threads1D);
             if (err != cudaSuccess)
-                return err;
+                return finish_profile(err);
         }
     }
     for (int channel = 0; channel < 3; ++channel) {
-        spatial_dir_scale_copy_kernel<<<blocks1D, threads1D, 0, stream>>>(
-            mixtures[channel], originals[channel], count, 1.0f);
-        err = cudaGetLastError();
+        err = launch_scale_copy(
+            mixtures[channel],
+            originals[channel],
+            count,
+            1.0f,
+            blocks1D,
+            threads1D);
         if (err != cudaSuccess)
-            return err;
+            return finish_profile(err);
     }
 
-    return cudaGetLastError();
+    return finish_profile(cudaGetLastError());
 }
 
 extern "C" cudaError_t juicer_cuda_build_spatial_dir(
@@ -607,7 +860,8 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile) {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
@@ -636,7 +890,8 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
         tailRadius2,
         tailSigma2,
         tailWeight2,
-        cudaStreamOpaque);
+        cudaStreamOpaque,
+        profile);
 }
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
@@ -664,7 +919,8 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile) {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
@@ -693,7 +949,8 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
         tailRadius2,
         tailSigma2,
         tailWeight2,
-        cudaStreamOpaque);
+        cudaStreamOpaque,
+        profile);
 }
 
 extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
@@ -721,7 +978,8 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    void* cudaStreamOpaque) {
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile) {
     if (!hParams) {
         return cudaErrorInvalidValue;
     }
@@ -750,7 +1008,8 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
         tailRadius2,
         tailSigma2,
         tailWeight2,
-        cudaStreamOpaque);
+        cudaStreamOpaque,
+        profile);
 }
 
 namespace {

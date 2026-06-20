@@ -7,7 +7,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cctype>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <string>
+#include <sstream>
 #include <mutex>
 #include <limits>
 
@@ -22,6 +28,7 @@
 #endif
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+#include "Cuda/JuicerCudaDirProfile.h"
 #include "Cuda/JuicerCudaDirectFilmPayloads.h"
 #include "Cuda/JuicerCudaResources.h"
 #include "Cuda/JuicerCudaPayloads.h"
@@ -109,7 +116,8 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    void* cudaStreamOpaque);
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile);
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     const JuicerCuda::DirectPipelineRunParams* hParams,
@@ -136,7 +144,8 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    void* cudaStreamOpaque);
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile);
 
 extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     const JuicerCuda::PrintPipelineRunParams* hParams,
@@ -163,7 +172,8 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
-    void* cudaStreamOpaque);
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile);
 
 extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     const JuicerCuda::PipelineRunParams* hParams,
@@ -339,6 +349,241 @@ namespace {
     inline std::uint64_t bool_to_u64(bool value) {
         return value ? 1ull : 0ull;
     }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    bool spatial_dir_profile_enabled() {
+        static const bool enabled = []() {
+            const char* value = std::getenv("JUICER_DIR_PROFILE");
+            if (!value || value[0] == '\0') {
+                return false;
+            }
+            return std::strcmp(value, "0") != 0 &&
+                   std::strcmp(value, "false") != 0 &&
+                   std::strcmp(value, "FALSE") != 0 &&
+                   std::strcmp(value, "off") != 0 &&
+                   std::strcmp(value, "OFF") != 0;
+        }();
+        return enabled;
+    }
+
+    std::filesystem::path spatial_dir_profile_path() {
+        const char* explicitPath = std::getenv("JUICER_DIR_PROFILE_PATH");
+        if (explicitPath && explicitPath[0] != '\0') {
+            try {
+                return std::filesystem::path(explicitPath);
+            }
+            catch (...) {
+                return {};
+            }
+        }
+        try {
+            std::filesystem::path path = std::filesystem::temp_directory_path();
+            path /= "juicer_dir_profile.txt";
+            return path;
+        }
+        catch (...) {
+            return {};
+        }
+    }
+
+    void write_spatial_dir_profile_line(const std::string& line) {
+        static std::mutex profileMutex;
+        static bool headerWritten = false;
+        const std::filesystem::path path = spatial_dir_profile_path();
+        if (path.empty()) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(profileMutex);
+        try {
+            const std::filesystem::path parent = path.parent_path();
+            if (!parent.empty()) {
+                std::error_code ec;
+                std::filesystem::create_directories(parent, ec);
+            }
+
+            std::ofstream out(path, std::ios::out | std::ios::app | std::ios::binary);
+            if (!out.is_open()) {
+                return;
+            }
+            if (!headerWritten) {
+                const auto now = std::chrono::system_clock::now();
+                const auto secs =
+                    std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+                out << "INIT | dir_profile enabled time_s=" << secs << '\n';
+                headerWritten = true;
+            }
+            out << "DIR_PROFILE | " << line << '\n';
+            out.flush();
+        }
+        catch (...) {
+        }
+    }
+
+    double elapsed_ms_since(std::chrono::steady_clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - start)
+            .count();
+    }
+
+    struct CudaEventElapsedTimer {
+        cudaEvent_t start = nullptr;
+        cudaEvent_t stop = nullptr;
+        bool active = false;
+
+        ~CudaEventElapsedTimer() {
+            destroy();
+        }
+
+        bool begin(void* streamOpaque) {
+            const cudaStream_t stream =
+                streamOpaque ? reinterpret_cast<cudaStream_t>(streamOpaque) : nullptr;
+            cudaError_t err = cudaEventCreateWithFlags(&start, cudaEventDefault);
+            if (err != cudaSuccess) {
+                destroy();
+                return false;
+            }
+            err = cudaEventCreateWithFlags(&stop, cudaEventDefault);
+            if (err != cudaSuccess) {
+                destroy();
+                return false;
+            }
+            err = cudaEventRecord(start, stream);
+            if (err != cudaSuccess) {
+                destroy();
+                return false;
+            }
+            active = true;
+            return true;
+        }
+
+        float finish(void* streamOpaque) {
+            if (!active) {
+                return -1.0f;
+            }
+            const cudaStream_t stream =
+                streamOpaque ? reinterpret_cast<cudaStream_t>(streamOpaque) : nullptr;
+            cudaError_t err = cudaEventRecord(stop, stream);
+            if (err != cudaSuccess) {
+                destroy();
+                return -1.0f;
+            }
+            err = cudaEventSynchronize(stop);
+            if (err != cudaSuccess) {
+                destroy();
+                return -1.0f;
+            }
+            float elapsedMs = -1.0f;
+            err = cudaEventElapsedTime(&elapsedMs, start, stop);
+            destroy();
+            return err == cudaSuccess ? elapsedMs : -1.0f;
+        }
+
+        void destroy() {
+            if (start) {
+                cudaEventDestroy(start);
+                start = nullptr;
+            }
+            if (stop) {
+                cudaEventDestroy(stop);
+                stop = nullptr;
+            }
+            active = false;
+        }
+    };
+
+    int active_tail_component_count(const JuicerCuda::SpatialDirBuildProfile& profile) {
+        int count = 0;
+        for (float weight : profile.tailWeight) {
+            if (weight > 0.0f) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    const char* dir_filter_operator_label(float sigma, float weight) {
+        if (!(weight > 0.0f) || !(sigma > 0.0f)) {
+            return "none";
+        }
+        return sigma >= 3.0f ? "iir_yvv" : "fir_reflect";
+    }
+
+    void trace_spatial_dir_profile(
+        const char* route,
+        int width,
+        int height,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const JuicerCuda::SpatialDirBuildProfile& profile,
+        bool dirActive,
+        bool scratchOverflow,
+        double descriptorMs,
+        double prepareMs,
+        double buildHostMs,
+        float pipelineCudaMs,
+        double pipelineLaunchHostMs) {
+        const std::uint64_t pixels =
+            static_cast<std::uint64_t>(std::max(0, width)) *
+            static_cast<std::uint64_t>(std::max(0, height));
+        const std::uint64_t scratchBytesApprox = dirActive ? pixels * 7ull * sizeof(float) : 0ull;
+        const int activeTails = active_tail_component_count(profile);
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(3);
+        oss << "route=" << nonempty_cstr_or(route, "unknown")
+            << " dir_active=" << bool_to_i32(dirActive)
+            << " width=" << width
+            << " height=" << height
+            << " descriptor_hash=" << descriptor.hash
+            << " dir_recipe_hash=" << descriptor.dirRecipeHash
+            << " gaussian_sigma_px=" << descriptor.gaussianSigmaPixels
+            << " gaussian_radius=" << profile.gaussianRadius
+            << " gaussian_operator=" << dir_filter_operator_label(profile.gaussianSigma, profile.gaussianWeight)
+            << " gaussian_weight=" << descriptor.gaussianWeight
+            << " tail0_sigma_px=" << profile.tailSigma[0]
+            << " tail0_radius=" << profile.tailRadius[0]
+            << " tail0_operator=" << dir_filter_operator_label(profile.tailSigma[0], profile.tailWeight[0])
+            << " tail0_weight=" << profile.tailWeight[0]
+            << " tail1_sigma_px=" << profile.tailSigma[1]
+            << " tail1_radius=" << profile.tailRadius[1]
+            << " tail1_operator=" << dir_filter_operator_label(profile.tailSigma[1], profile.tailWeight[1])
+            << " tail1_weight=" << profile.tailWeight[1]
+            << " tail2_sigma_px=" << profile.tailSigma[2]
+            << " tail2_radius=" << profile.tailRadius[2]
+            << " tail2_operator=" << dir_filter_operator_label(profile.tailSigma[2], profile.tailWeight[2])
+            << " tail2_weight=" << profile.tailWeight[2]
+            << " active_tail_components=" << activeTails
+            << " expected_correction_launches=" << (dirActive ? (1 + activeTails) : 0)
+            << " descriptor_ms=" << descriptorMs
+            << " prepare_ms=" << prepareMs
+            << " build_host_ms=" << buildHostMs
+            << " build_cuda_ms=" << profile.total.elapsedMs
+            << " pipeline_cuda_ms=" << pipelineCudaMs
+            << " pipeline_launch_host_ms=" << pipelineLaunchHostMs
+            << " total_launches=" << profile.totalLaunches
+            << " correction_launches=" << profile.correctionLaunches
+            << " correction_ms=" << profile.correction.elapsedMs
+            << " correction_clamp_hits=" << profile.correctionClampHits
+            << " base_filter_launches=" << profile.baseFilterLaunches
+            << " base_filter_ms=" << profile.baseFilter.elapsedMs
+            << " tail0_filter_launches=" << profile.tailFilterLaunches[0]
+            << " tail0_filter_ms=" << profile.tailFilter[0].elapsedMs
+            << " tail1_filter_launches=" << profile.tailFilterLaunches[1]
+            << " tail1_filter_ms=" << profile.tailFilter[1].elapsedMs
+            << " tail2_filter_launches=" << profile.tailFilterLaunches[2]
+            << " tail2_filter_ms=" << profile.tailFilter[2].elapsedMs
+            << " scale_copy_launches=" << profile.scaleCopyLaunches
+            << " scale_copy_ms=" << profile.scaleCopy.elapsedMs
+            << " add_scaled_launches=" << profile.addScaledLaunches
+            << " add_scaled_ms=" << profile.addScaled.elapsedMs
+            << " scratch_source=" << (dirActive ? (scratchOverflow ? "overflow" : "retained") : "none")
+            << " spatial_dir_planes=" << (dirActive ? 6 : 0)
+            << " shared_tmp_planes=" << (dirActive ? 1 : 0)
+            << " scratch_bytes_approx=" << scratchBytesApprox;
+        const std::string line = oss.str();
+        write_spatial_dir_profile_line(line);
+        JTRACE("DIR_PROFILE", line);
+    }
+#endif
 
     inline void apply_glare_override_fields(
         Profiles::ProfileGlare& dstGlare,
@@ -1774,6 +2019,7 @@ void JuicerProcessor::processImagesCUDA() {
             throw_direct_restriction("UnsupportedDirectComponentCountForPhase3C");
         }
         JTRACE("PHASE3D", "direct_negative branch accepted; restrictions=clear");
+        const bool dirProfileEnabled = spatial_dir_profile_enabled();
 
         Scanner::ScannerSpectralLutDescriptor scannerDescriptor{};
         std::string scannerDescriptorDiagnostic;
@@ -1803,6 +2049,7 @@ void JuicerProcessor::processImagesCUDA() {
             throw_direct_restriction(scannerDescriptorDiagnostic.c_str());
         }
         Spektrafilm::SpatialDirDescriptor directSpatialDir{};
+        const auto directSpatialDirDescriptorStart = std::chrono::steady_clock::now();
         if (!Spektrafilm::build_spatial_dir_descriptor(
                 directRecipe->dirCouplers,
                 _pixelSizeUm,
@@ -1810,6 +2057,8 @@ void JuicerProcessor::processImagesCUDA() {
             throw_direct_restriction(
                 "ResourceDescriptorMismatch phase=3D-3 field=spatial_dir_descriptor");
         }
+        const double directSpatialDirDescriptorMs =
+            dirProfileEnabled ? elapsed_ms_since(directSpatialDirDescriptorStart) : 0.0;
 
         JuicerProcess::Root::DirectCudaPreparationRequest directPreparation{};
         directPreparation.recipe = directRecipe;
@@ -1943,8 +2192,16 @@ void JuicerProcessor::processImagesCUDA() {
                 scannerPostEffects.glareActive && scannerPostEffects.glareBlurSigmaPx > 0.0f;
             focusedWorkspace = preparedFrame.bind_workspace_request(request);
         }
+        JuicerCuda::SpatialDirBuildProfile directDirProfile{};
+        bool directDirProfileCaptured = false;
+        bool directDirScratchOverflow = false;
+        double directDirPrepareMs = 0.0;
+        double directDirBuildHostMs = 0.0;
+        double directPipelineLaunchHostMs = 0.0;
+        float directPipelineCudaMs = -1.0f;
         if (directSpatialDir.hash != 0) {
             std::string spatialError;
+            const auto directDirPrepareStart = std::chrono::steady_clock::now();
             if (!preparedFrame.prepare_spatial_dir_resources(
                     directSpatialDir,
                     focusedWorkspace,
@@ -1955,6 +2212,9 @@ void JuicerProcessor::processImagesCUDA() {
                     "direct_spatial_dir_prepare",
                     "direct spatial DIR preparation failed",
                     spatialError);
+            }
+            if (dirProfileEnabled) {
+                directDirPrepareMs = elapsed_ms_since(directDirPrepareStart);
             }
             const auto scratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
             const auto resources =
@@ -1968,6 +2228,8 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmDevelop.spatialDir.corrY = scratch.corrY;
             run.filmDevelop.spatialDir.corrM = scratch.corrM;
             run.filmDevelop.spatialDir.corrC = scratch.corrC;
+            directDirScratchOverflow = scratch.overflow;
+            const auto directDirBuildStart = std::chrono::steady_clock::now();
             const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
                 &run,
                 scratch.corrY,
@@ -1993,7 +2255,11 @@ void JuicerProcessor::processImagesCUDA() {
                 resources.exponential[2].radius,
                 resources.exponential[2].sigma,
                 directSpatialDir.exponentialWeights[2],
-                _pCudaStream);
+                _pCudaStream,
+                dirProfileEnabled ? &directDirProfile : nullptr);
+            if (dirProfileEnabled) {
+                directDirBuildHostMs = elapsed_ms_since(directDirBuildStart);
+            }
             if (dirError != cudaSuccess) {
                 preparedFrame.abort("direct_spatial_dir_launch_failed");
                 throw_cuda_stage_fatal(
@@ -2001,6 +2267,7 @@ void JuicerProcessor::processImagesCUDA() {
                     "direct spatial DIR build failed",
                     dirError);
             }
+            directDirProfileCaptured = dirProfileEnabled;
         }
 
         const JuicerCuda::Resources::DeviceScanMedium& scanMedium = *prepared.scanMedium;
@@ -2047,6 +2314,11 @@ void JuicerProcessor::processImagesCUDA() {
             throw_submission_fatal("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
         cudaError_t launchError = cudaSuccess;
+        const auto directPipelineLaunchStart = std::chrono::steady_clock::now();
+        CudaEventElapsedTimer directPipelineCudaTimer;
+        if (dirProfileEnabled) {
+            directPipelineCudaTimer.begin(_pCudaStream);
+        }
         if (scannerPostEffects.active()) {
             const auto post = preparedFrame.scanner_post_effects_resources(
                 focusedWorkspace,
@@ -2072,9 +2344,30 @@ void JuicerProcessor::processImagesCUDA() {
         } else {
             launchError = juicer_cuda_negative_direct_pipeline(&run, _pCudaStream);
         }
+        if (dirProfileEnabled) {
+            directPipelineLaunchHostMs = elapsed_ms_since(directPipelineLaunchStart);
+            if (launchError == cudaSuccess) {
+                directPipelineCudaMs = directPipelineCudaTimer.finish(_pCudaStream);
+            }
+        }
         if (launchError != cudaSuccess) {
             preparedFrame.abort("direct_negative_pipeline_launch_failed");
             throw_cuda_stage_fatal("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
+        }
+        if (dirProfileEnabled) {
+            trace_spatial_dir_profile(
+                "direct",
+                width,
+                height,
+                directSpatialDir,
+                directDirProfile,
+                directDirProfileCaptured,
+                directDirScratchOverflow,
+                directSpatialDirDescriptorMs,
+                directDirPrepareMs,
+                directDirBuildHostMs,
+                directPipelineCudaMs,
+                directPipelineLaunchHostMs);
         }
         JTRACE("PHASE3D", "direct_negative kernel launch accepted");
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, _pCudaStream, scanError)) {
@@ -2121,7 +2414,9 @@ void JuicerProcessor::processImagesCUDA() {
                 scannerDescriptorDiagnostic)) {
             throw_print_restriction(scannerDescriptorDiagnostic.c_str());
         }
+        const bool dirProfileEnabled = spatial_dir_profile_enabled();
         Spektrafilm::SpatialDirDescriptor spatialDir{};
+        const auto spatialDirDescriptorStart = std::chrono::steady_clock::now();
         if (!Spektrafilm::build_spatial_dir_descriptor(
                 printRecipe->dirCouplers,
                 _pixelSizeUm,
@@ -2129,6 +2424,8 @@ void JuicerProcessor::processImagesCUDA() {
             throw_print_restriction(
                 "ResourceDescriptorMismatch phase=4C field=spatial_dir_descriptor");
         }
+        const double spatialDirDescriptorMs =
+            dirProfileEnabled ? elapsed_ms_since(spatialDirDescriptorStart) : 0.0;
 
         JuicerProcess::Root::PrintCudaPreparationRequest preparation{};
         preparation.recipe = printRecipe;
@@ -2328,8 +2625,16 @@ void JuicerProcessor::processImagesCUDA() {
                 scannerPostEffects.glareActive && scannerPostEffects.glareBlurSigmaPx > 0.0f;
             focusedWorkspace = preparedFrame.bind_workspace_request(request);
         }
+        JuicerCuda::SpatialDirBuildProfile printDirProfile{};
+        bool printDirProfileCaptured = false;
+        bool printDirScratchOverflow = false;
+        double printDirPrepareMs = 0.0;
+        double printDirBuildHostMs = 0.0;
+        double printPipelineLaunchHostMs = 0.0;
+        float printPipelineCudaMs = -1.0f;
         if (spatialDir.hash != 0) {
             std::string spatialError;
+            const auto printDirPrepareStart = std::chrono::steady_clock::now();
             if (!preparedFrame.prepare_spatial_dir_resources(
                     spatialDir,
                     focusedWorkspace,
@@ -2340,6 +2645,9 @@ void JuicerProcessor::processImagesCUDA() {
                     "print_spatial_dir_prepare",
                     "print spatial DIR preparation failed",
                     spatialError);
+            }
+            if (dirProfileEnabled) {
+                printDirPrepareMs = elapsed_ms_since(printDirPrepareStart);
             }
             const auto scratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
             const auto resources =
@@ -2353,6 +2661,8 @@ void JuicerProcessor::processImagesCUDA() {
             run.filmDevelop.spatialDir.corrY = scratch.corrY;
             run.filmDevelop.spatialDir.corrM = scratch.corrM;
             run.filmDevelop.spatialDir.corrC = scratch.corrC;
+            printDirScratchOverflow = scratch.overflow;
+            const auto printDirBuildStart = std::chrono::steady_clock::now();
             const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(
                 &run,
                 scratch.corrY,
@@ -2378,7 +2688,11 @@ void JuicerProcessor::processImagesCUDA() {
                 resources.exponential[2].radius,
                 resources.exponential[2].sigma,
                 spatialDir.exponentialWeights[2],
-                _pCudaStream);
+                _pCudaStream,
+                dirProfileEnabled ? &printDirProfile : nullptr);
+            if (dirProfileEnabled) {
+                printDirBuildHostMs = elapsed_ms_since(printDirBuildStart);
+            }
             if (dirError != cudaSuccess) {
                 preparedFrame.abort("print_spatial_dir_launch_failed");
                 throw_cuda_stage_fatal(
@@ -2386,6 +2700,7 @@ void JuicerProcessor::processImagesCUDA() {
                     "print spatial DIR build failed",
                     dirError);
             }
+            printDirProfileCaptured = dirProfileEnabled;
         }
 
         const JuicerCuda::Resources::DeviceScanMedium& scanMedium = *prepared.scanMedium;
@@ -2442,6 +2757,11 @@ void JuicerProcessor::processImagesCUDA() {
                 scanError);
         }
         cudaError_t launchError = cudaSuccess;
+        const auto printPipelineLaunchStart = std::chrono::steady_clock::now();
+        CudaEventElapsedTimer printPipelineCudaTimer;
+        if (dirProfileEnabled) {
+            printPipelineCudaTimer.begin(_pCudaStream);
+        }
         if (scannerPostEffects.active()) {
             const auto post = preparedFrame.scanner_post_effects_resources(
                 focusedWorkspace,
@@ -2479,12 +2799,33 @@ void JuicerProcessor::processImagesCUDA() {
         } else {
             launchError = juicer_cuda_print_focused_pipeline(&run, _pCudaStream);
         }
+        if (dirProfileEnabled) {
+            printPipelineLaunchHostMs = elapsed_ms_since(printPipelineLaunchStart);
+            if (launchError == cudaSuccess) {
+                printPipelineCudaMs = printPipelineCudaTimer.finish(_pCudaStream);
+            }
+        }
         if (launchError != cudaSuccess) {
             preparedFrame.abort("print_pipeline_launch_failed");
             throw_cuda_stage_fatal(
                 "print_pipeline_launch",
                 "focused print pipeline launch failed",
                 launchError);
+        }
+        if (dirProfileEnabled) {
+            trace_spatial_dir_profile(
+                "print",
+                width,
+                height,
+                spatialDir,
+                printDirProfile,
+                printDirProfileCaptured,
+                printDirScratchOverflow,
+                spatialDirDescriptorMs,
+                printDirPrepareMs,
+                printDirBuildHostMs,
+                printPipelineCudaMs,
+                printPipelineLaunchHostMs);
         }
         if (!preparedFrame.finalize_scan_error_stage(
                 run.scanStage.scanErrorFlag,

@@ -2221,6 +2221,7 @@ namespace JuicerProcess {
         view.mixM = scratch.mixM;
         view.mixC = scratch.mixC;
         view.tmp = scratch.tmp;
+        view.overflow = _state->scratchWorkspace.overflowActive;
         view.active = view.corrY && view.corrM && view.corrC &&
                       view.mixY && view.mixM && view.mixC && view.tmp;
         return view;

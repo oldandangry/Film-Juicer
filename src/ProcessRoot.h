@@ -304,6 +304,7 @@ namespace JuicerProcess {
                 float* mixM = nullptr;
                 float* mixC = nullptr;
                 float* tmp = nullptr;
+                bool overflow = false;
                 bool active = false;
             };
 
