@@ -661,6 +661,10 @@ namespace {
         Hash::hash_bytes_update(hash, recipe.gammaInterlayerRToGb.data(), sizeof(recipe.gammaInterlayerRToGb));
         Hash::hash_bytes_update(hash, recipe.gammaInterlayerGToRb.data(), sizeof(recipe.gammaInterlayerGToRb));
         Hash::hash_bytes_update(hash, recipe.gammaInterlayerBToRg.data(), sizeof(recipe.gammaInterlayerBToRg));
+        for (const auto& row : recipe.matrixRgb) {
+            Hash::hash_bytes_update(hash, row.data(), sizeof(float) * row.size());
+        }
+        Hash::hash_bytes_update(hash, recipe.densityMaxRgb.data(), sizeof(recipe.densityMaxRgb));
         hash_value(hash, recipe.precorrectedDensityCurvesHash);
         if (recipe.diffusionSizeUm > 0.0f) {
             hash_value(hash, recipe.diffusionSizeUm);
