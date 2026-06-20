@@ -93,13 +93,14 @@ extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
 
 extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     const JuicerCuda::PipelineRunParams* hParams,
-    float* dCorrY,
-    float* dCorrM,
-    float* dCorrC,
-    float* dMixY,
-    float* dMixM,
-    float* dMixC,
-    float* dTmp,
+    float* rawCorrectionY,
+    float* rawCorrectionM,
+    float* rawCorrectionC,
+    float* filteredCorrectionY,
+    float* filteredCorrectionM,
+    float* filteredCorrectionC,
+    float* filterTemp,
+    float* iirForwardTemp,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -121,13 +122,14 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
 
 extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     const JuicerCuda::DirectPipelineRunParams* hParams,
-    float* dCorrY,
-    float* dCorrM,
-    float* dCorrC,
-    float* dMixY,
-    float* dMixM,
-    float* dMixC,
-    float* dTmp,
+    float* rawCorrectionY,
+    float* rawCorrectionM,
+    float* rawCorrectionC,
+    float* filteredCorrectionY,
+    float* filteredCorrectionM,
+    float* filteredCorrectionC,
+    float* filterTemp,
+    float* iirForwardTemp,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -149,13 +151,14 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
 
 extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     const JuicerCuda::PrintPipelineRunParams* hParams,
-    float* dCorrY,
-    float* dCorrM,
-    float* dCorrC,
-    float* dMixY,
-    float* dMixM,
-    float* dMixC,
-    float* dTmp,
+    float* rawCorrectionY,
+    float* rawCorrectionM,
+    float* rawCorrectionC,
+    float* filteredCorrectionY,
+    float* filteredCorrectionM,
+    float* filteredCorrectionC,
+    float* filterTemp,
+    float* iirForwardTemp,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -719,11 +722,19 @@ namespace {
             << " tail2_operator=" << dir_filter_operator_label(profile.tailSigma[2], profile.tailWeight[2])
             << " tail2_weight=" << profile.tailWeight[2]
             << " active_tail_components=" << activeTails
-            << " expected_correction_launches=" << (dirActive ? (1 + activeTails) : 0)
+            << " expected_correction_launches=" << (dirActive ? 1 : 0)
             << " descriptor_ms=" << descriptorMs
             << " prepare_ms=" << prepareMs
             << " build_host_ms=" << buildHostMs
             << " build_cuda_ms=" << profile.total.elapsedMs
+            << " dir_source_launches=" << profile.correctionLaunches
+            << " dir_source_ms=" << profile.correction.elapsedMs
+            << " dir_filter_bank_launches="
+            << (profile.baseFilterLaunches + profile.tailFilterLaunches[0] +
+                profile.tailFilterLaunches[1] + profile.tailFilterLaunches[2])
+            << " dir_filter_bank_ms="
+            << (profile.baseFilter.elapsedMs + profile.tailFilter[0].elapsedMs +
+                profile.tailFilter[1].elapsedMs + profile.tailFilter[2].elapsedMs)
             << " pipeline_cuda_ms=" << pipelineCudaMs
             << " pipeline_launch_host_ms=" << pipelineLaunchHostMs
             << " total_launches=" << profile.totalLaunches
@@ -2434,6 +2445,8 @@ void JuicerProcessor::processImagesCUDA() {
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
             float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
+            float* SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp =
+                scratch.iirForwardTemp;
             directDirScratchOverflow = scratch.overflow;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
             const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
@@ -2445,6 +2458,7 @@ void JuicerProcessor::processImagesCUDA() {
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
                 SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
+                SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,
@@ -2884,6 +2898,8 @@ void JuicerProcessor::processImagesCUDA() {
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
             float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
+            float* SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp =
+                scratch.iirForwardTemp;
             printDirScratchOverflow = scratch.overflow;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
             const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(
@@ -2895,6 +2911,7 @@ void JuicerProcessor::processImagesCUDA() {
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
                 SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
+                SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,
