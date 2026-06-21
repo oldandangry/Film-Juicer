@@ -225,25 +225,6 @@ namespace {
         }
     };
 
-    __device__ __forceinline__ float clamp_dir_correction_device(float v, unsigned int* clampHits) {
-        float out = v;
-        bool clamped = false;
-        if (!isfinite(out)) {
-            out = 0.0f;
-            clamped = true;
-        } else if (out < -10.0f) {
-            out = -10.0f;
-            clamped = true;
-        } else if (out > 10.0f) {
-            out = 10.0f;
-            clamped = true;
-        }
-        if (clamped && clampHits) {
-            atomicAdd(clampHits, 1u);
-        }
-        return out;
-    }
-
     __device__ __forceinline__ int spatial_dir_reflect_index_device(int index, int size) {
         if (size <= 1) {
             return 0;
@@ -270,11 +251,10 @@ namespace {
             outLayerCorrections[2] = 0.0f;
             return;
         }
+        (void)clampHits;
 
         auto silver_density = [&](float density, float dmax) -> float {
-            const float finiteDensity = isfinite(density) ? density : 0.0f;
-            const float silver = dir.positive ? dmax - finiteDensity : finiteDensity;
-            return isfinite(silver) ? fmaxf(0.0f, silver) : 0.0f;
+            return dir.positive ? dmax - density : density;
         };
 
         const float nB = silver_density(layerDensities[0], dir.dMax[0]);
@@ -285,9 +265,9 @@ namespace {
         float aM = dir.M[1] * nB + dir.M[4] * nG + dir.M[7] * nR;
         float aC = dir.M[2] * nB + dir.M[5] * nG + dir.M[8] * nR;
 
-        outLayerCorrections[0] = clamp_dir_correction_device(aY, clampHits);
-        outLayerCorrections[1] = clamp_dir_correction_device(aM, clampHits);
-        outLayerCorrections[2] = clamp_dir_correction_device(aC, clampHits);
+        outLayerCorrections[0] = aY;
+        outLayerCorrections[1] = aM;
+        outLayerCorrections[2] = aC;
     }
 
     template <typename Params>
