@@ -28,6 +28,7 @@ namespace JuicerCuda {
         int scaleCopyLaunches = 0;
         int addScaledLaunches = 0;
         int totalLaunches = 0;
+        const char* SF_TEMP_BRIDGE_name = nullptr;
         SpatialDirStageProfile total{};
         SpatialDirStageProfile correction{};
         SpatialDirStageProfile baseFilter{};

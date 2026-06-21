@@ -814,7 +814,7 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     }
     // SF_TEMP_BRIDGE_build_spatial_dir: Phase 5 removes this generic wrapper
     // after host call sites use split source/filter/final-develop helpers.
-    return build_spatial_dir_impl(
+    cudaError_t result = build_spatial_dir_impl(
         *hParams,
         rawCorrectionY,
         rawCorrectionM,
@@ -842,9 +842,13 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
         tailWeight2,
         cudaStreamOpaque,
         profile);
+    if (profile) {
+        profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_spatial_dir";
+    }
+    return result;
 }
 
-extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
+cudaError_t SF_TEMP_BRIDGE_build_direct_spatial_dir(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     float* rawCorrectionY,
     float* rawCorrectionM,
@@ -877,8 +881,70 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     }
     // SF_TEMP_BRIDGE_build_direct_spatial_dir: Phase 5 removes this wrapper
     // after direct route calls the split source/filter/final-develop helpers.
-    return build_spatial_dir_impl(
+    cudaError_t result = build_spatial_dir_impl(
         *hParams,
+        rawCorrectionY,
+        rawCorrectionM,
+        rawCorrectionC,
+        filteredCorrectionY,
+        filteredCorrectionM,
+        filteredCorrectionC,
+        filterTemp,
+        iirForwardTemp,
+        dGaussianKernel,
+        gaussianRadius,
+        gaussianSigma,
+        gaussianWeight,
+        dTailKernel0,
+        tailRadius0,
+        tailSigma0,
+        tailWeight0,
+        dTailKernel1,
+        tailRadius1,
+        tailSigma1,
+        tailWeight1,
+        dTailKernel2,
+        tailRadius2,
+        tailSigma2,
+        tailWeight2,
+        cudaStreamOpaque,
+        profile);
+    if (profile) {
+        profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_direct_spatial_dir";
+    }
+    return result;
+}
+
+extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* rawCorrectionY,
+    float* rawCorrectionM,
+    float* rawCorrectionC,
+    float* filteredCorrectionY,
+    float* filteredCorrectionM,
+    float* filteredCorrectionC,
+    float* filterTemp,
+    float* iirForwardTemp,
+    const float* dGaussianKernel,
+    int gaussianRadius,
+    float gaussianSigma,
+    float gaussianWeight,
+    const float* dTailKernel0,
+    int tailRadius0,
+    float tailSigma0,
+    float tailWeight0,
+    const float* dTailKernel1,
+    int tailRadius1,
+    float tailSigma1,
+    float tailWeight1,
+    const float* dTailKernel2,
+    int tailRadius2,
+    float tailSigma2,
+    float tailWeight2,
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile) {
+    return SF_TEMP_BRIDGE_build_direct_spatial_dir(
+        hParams,
         rawCorrectionY,
         rawCorrectionM,
         rawCorrectionC,
@@ -907,7 +973,7 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
         profile);
 }
 
-extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
+cudaError_t SF_TEMP_BRIDGE_build_print_spatial_dir(
     const JuicerCuda::PrintPipelineRunParams* hParams,
     float* rawCorrectionY,
     float* rawCorrectionM,
@@ -940,8 +1006,70 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     }
     // SF_TEMP_BRIDGE_build_print_spatial_dir: Phase 5 removes this wrapper
     // after print route calls the split source/filter/final-develop helpers.
-    return build_spatial_dir_impl(
+    cudaError_t result = build_spatial_dir_impl(
         *hParams,
+        rawCorrectionY,
+        rawCorrectionM,
+        rawCorrectionC,
+        filteredCorrectionY,
+        filteredCorrectionM,
+        filteredCorrectionC,
+        filterTemp,
+        iirForwardTemp,
+        dGaussianKernel,
+        gaussianRadius,
+        gaussianSigma,
+        gaussianWeight,
+        dTailKernel0,
+        tailRadius0,
+        tailSigma0,
+        tailWeight0,
+        dTailKernel1,
+        tailRadius1,
+        tailSigma1,
+        tailWeight1,
+        dTailKernel2,
+        tailRadius2,
+        tailSigma2,
+        tailWeight2,
+        cudaStreamOpaque,
+        profile);
+    if (profile) {
+        profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_print_spatial_dir";
+    }
+    return result;
+}
+
+extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* rawCorrectionY,
+    float* rawCorrectionM,
+    float* rawCorrectionC,
+    float* filteredCorrectionY,
+    float* filteredCorrectionM,
+    float* filteredCorrectionC,
+    float* filterTemp,
+    float* iirForwardTemp,
+    const float* dGaussianKernel,
+    int gaussianRadius,
+    float gaussianSigma,
+    float gaussianWeight,
+    const float* dTailKernel0,
+    int tailRadius0,
+    float tailSigma0,
+    float tailWeight0,
+    const float* dTailKernel1,
+    int tailRadius1,
+    float tailSigma1,
+    float tailWeight1,
+    const float* dTailKernel2,
+    int tailRadius2,
+    float tailSigma2,
+    float tailWeight2,
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildProfile* profile) {
+    return SF_TEMP_BRIDGE_build_print_spatial_dir(
+        hParams,
         rawCorrectionY,
         rawCorrectionM,
         rawCorrectionC,

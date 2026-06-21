@@ -658,6 +658,38 @@ namespace {
 #endif
     }
 
+    void trace_spatial_dir_bridge_use(
+        const char* route,
+        const char* bridgeName,
+        const Spektrafilm::SpatialDirDescriptor& descriptor) {
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (!JTRACE_ENABLED(1)) {
+            return;
+        }
+        std::string msg = "event=spatial_dir_bridge_use route=";
+        msg += nonempty_cstr_or(route, "unknown");
+        msg += " bridge=";
+        msg += nonempty_cstr_or(bridgeName, "none");
+        msg += " descriptor_hash=";
+        msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
+        msg += " dir_recipe_hash=";
+        msg += std::to_string(static_cast<unsigned long long>(descriptor.dirRecipeHash));
+        msg += " support=";
+        msg += Spektrafilm::to_cstr(descriptor.support);
+        msg += " source_contract=";
+        msg += Spektrafilm::to_cstr(descriptor.sourceContract);
+        msg += " scratch_tier=";
+        msg += Spektrafilm::to_cstr(descriptor.scratchTier);
+        msg += " component_count=";
+        msg += std::to_string(descriptor.filterPlan.componentCount);
+        JTRACE("DIR_BRIDGE", msg);
+#else
+        (void)route;
+        (void)bridgeName;
+        (void)descriptor;
+#endif
+    }
+
     void trace_spatial_dir_profile(
         const char* route,
         int width,
@@ -684,6 +716,8 @@ namespace {
         oss << std::fixed << std::setprecision(3);
         oss << "route=" << nonempty_cstr_or(route, "unknown")
             << " dir_active=" << bool_to_i32(dirActive)
+            << " spatial_dir_bridge="
+            << (dirActive ? nonempty_cstr_or(profile.SF_TEMP_BRIDGE_name, "unreported") : "none")
             << " width=" << width
             << " height=" << height
             << " descriptor_hash=" << descriptor.hash
@@ -2449,6 +2483,10 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTemp;
             directDirScratchOverflow = scratch.overflow;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
+            trace_spatial_dir_bridge_use(
+                "direct",
+                "SF_TEMP_BRIDGE_build_direct_spatial_dir",
+                directSpatialDir);
             const cudaError_t dirError = juicer_cuda_build_direct_spatial_dir(
                 &run,
                 SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY,
@@ -2902,6 +2940,10 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTemp;
             printDirScratchOverflow = scratch.overflow;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
+            trace_spatial_dir_bridge_use(
+                "print",
+                "SF_TEMP_BRIDGE_build_print_spatial_dir",
+                spatialDir);
             const cudaError_t dirError = juicer_cuda_build_print_spatial_dir(
                 &run,
                 SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY,
