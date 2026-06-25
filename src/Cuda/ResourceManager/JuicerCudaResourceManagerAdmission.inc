@@ -2314,10 +2314,14 @@ std::size_t estimate_spatial_dir_growth_bytes(
     const bool haveBase = scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC &&
                           scratch.filteredCorrectionY && scratch.filteredCorrectionM &&
                           scratch.filteredCorrectionC;
-    const bool haveIirForwardTemp =
-        (scratchTier == Spektrafilm::DirScratchTier::Tier1F && !scratch.iirForwardTemp) ||
-        (scratchTier == Spektrafilm::DirScratchTier::Tier1I && scratch.iirForwardTemp);
-    const bool haveRequiredRoles = haveBase && haveIirForwardTemp;
+    const bool haveTierTemps =
+        (scratchTier == Spektrafilm::DirScratchTier::Tier1F &&
+         !scratch.filterTempM && !scratch.filterTempC &&
+         !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC) ||
+        (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels &&
+         scratch.filterTempM && scratch.filterTempC &&
+         scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC);
+    const bool haveRequiredRoles = haveBase && haveTierTemps;
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool sharedTmpMatch = scratch.filterTemp &&
                                 scratch.filterTemp == resources.sharedTmpPlane &&
@@ -2329,6 +2333,7 @@ std::size_t estimate_spatial_dir_growth_bytes(
         const int dedicatedPlanes =
             planeRoles.rawCorrectionPlanes +
             planeRoles.filteredCorrectionPlanes +
+            std::max(0, planeRoles.filterTempPlanes - 1) +
             planeRoles.iirForwardTempPlanes +
             planeRoles.cachedLogRawPlanes;
         for (int plane = 0; plane < dedicatedPlanes; ++plane) {

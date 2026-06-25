@@ -531,11 +531,11 @@ namespace JuicerCuda {
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
-                case Spektrafilm::DirScratchTier::Tier1I:
+                case Spektrafilm::DirScratchTier::Tier1IChannels:
                     return roles.rawCorrectionPlanes == 3 &&
                            roles.filteredCorrectionPlanes == 3 &&
-                           roles.filterTempPlanes == 1 &&
-                           roles.iirForwardTempPlanes == 1 &&
+                           roles.filterTempPlanes == 3 &&
+                           roles.iirForwardTempPlanes == 3 &&
                            roles.cachedLogRawPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&

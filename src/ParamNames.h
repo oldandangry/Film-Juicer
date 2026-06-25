@@ -11,6 +11,7 @@ namespace JuicerParams {
     inline constexpr const char kDirCouplersGroup[] = "Couplers";
     inline constexpr const char kDirCouplersActive[] = "CouplersActive";
     inline constexpr const char kDirCouplersAmount[] = "CouplersAmount";
+    inline constexpr const char kDirTailMode[] = "DirTailMode";
     inline constexpr const char kHalationActive[] = "HalationActive";
     inline constexpr const char kHalationStrengthMaster[] = "HalationStrengthMaster";
     inline constexpr const char kHalationSizeUmMaster[] = "HalationSizeUmMaster";

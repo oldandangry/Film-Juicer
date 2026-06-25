@@ -757,6 +757,7 @@ namespace {
     inline void mix_coupler_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
         mix_hash_field(h, p.couplersActive, mix);
         mix_hash_field_scaled(h, p.couplersAmount, 10000.0, mix);
+        mix_hash_field(h, p.dirTailMode, mix);
     }
 
     Spektrafilm::GrainContract focused_grain_contract_from_snapshot(const ParamSnapshot& p) {
@@ -1411,6 +1412,7 @@ namespace {
         // Phase 3D-3 direct production consumes only typed recipe controls.
         input.dirCouplers.active = params.couplersActive != 0;
         input.dirCouplers.amount = static_cast<float>(params.couplersAmount);
+        input.dirCouplers.tailMode = static_cast<Spektrafilm::DirTailMode>(params.dirTailMode);
         input.spatialOptics.scatterHalationActive = params.exactScatterHalationActive != 0;
         input.directRoutePrintProfileExcluded = selected.directRoutePrintProfileExcluded;
         input.directRouteNeutralCalibrationExcluded =
@@ -1540,6 +1542,7 @@ namespace {
         input.filmFoundation.cameraFilterIR = params.cameraFilterIR;
         input.filmFoundation.dirCouplers.active = params.couplersActive != 0;
         input.filmFoundation.dirCouplers.amount = static_cast<float>(params.couplersAmount);
+        input.filmFoundation.dirCouplers.tailMode = static_cast<Spektrafilm::DirTailMode>(params.dirTailMode);
         input.filmFoundation.spatialOptics.scatterHalationActive =
             params.exactScatterHalationActive != 0;
         if (selected.filmProfile) {

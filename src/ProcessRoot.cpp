@@ -52,11 +52,11 @@ namespace JuicerProcess {
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
-                case Spektrafilm::DirScratchTier::Tier1I:
+                case Spektrafilm::DirScratchTier::Tier1IChannels:
                     return roles.rawCorrectionPlanes == 3 &&
                            roles.filteredCorrectionPlanes == 3 &&
-                           roles.filterTempPlanes == 1 &&
-                           roles.iirForwardTempPlanes == 1 &&
+                           roles.filterTempPlanes == 3 &&
+                           roles.iirForwardTempPlanes == 3 &&
                            roles.cachedLogRawPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
@@ -88,11 +88,14 @@ namespace JuicerProcess {
             if (!tier1Base) {
                 return false;
             }
-            if (tier == Spektrafilm::DirScratchTier::Tier1I) {
-                return scratch.iirForwardTemp != nullptr;
+            if (tier == Spektrafilm::DirScratchTier::Tier1IChannels) {
+                return scratch.filterTempM && scratch.filterTempC &&
+                       scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
             }
             return tier == Spektrafilm::DirScratchTier::Tier1F &&
-                   scratch.iirForwardTemp == nullptr;
+                   scratch.iirForwardTemp == nullptr &&
+                   scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
+                   scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
         }
 #endif
 
@@ -970,11 +973,37 @@ namespace JuicerProcess {
                 return fail_after_partial_alloc();
             }
             spatialDir.filterTemp = next.sharedTmpPlane;
+            if (request.spatialDirPlaneRoles.filterTempPlanes == 3 &&
+                (!alloc_float(
+                     spatialDir.filterTempM,
+                     planeBytes,
+                     "frame spatial DIR filterTempM") ||
+                 !alloc_float(
+                     spatialDir.filterTempC,
+                     planeBytes,
+                     "frame spatial DIR filterTempC"))) {
+                return fail_after_partial_alloc();
+            }
             if (request.spatialDirPlaneRoles.iirForwardTempPlanes == 1 &&
                 !alloc_float(
                     spatialDir.iirForwardTemp,
                     planeBytes,
                     "frame spatial DIR iirForwardTemp")) {
+                return fail_after_partial_alloc();
+            }
+            if (request.spatialDirPlaneRoles.iirForwardTempPlanes == 3 &&
+                (!alloc_float(
+                     spatialDir.iirForwardTemp,
+                     planeBytes,
+                     "frame spatial DIR iirForwardTemp") ||
+                 !alloc_float(
+                     spatialDir.iirForwardTempM,
+                     planeBytes,
+                     "frame spatial DIR iirForwardTempM") ||
+                 !alloc_float(
+                     spatialDir.iirForwardTempC,
+                     planeBytes,
+                     "frame spatial DIR iirForwardTempC"))) {
                 return fail_after_partial_alloc();
             }
             spatialDir.width = request.requestedWidth;
@@ -1077,9 +1106,25 @@ namespace JuicerProcess {
             planeBytes,
             "frame spatial DIR filteredCorrectionC");
         retire_ptr(
+            workspace.spatialDir.filterTempM,
+            planeBytes,
+            "frame spatial DIR filterTempM");
+        retire_ptr(
+            workspace.spatialDir.filterTempC,
+            planeBytes,
+            "frame spatial DIR filterTempC");
+        retire_ptr(
             workspace.spatialDir.iirForwardTemp,
             planeBytes,
             "frame spatial DIR iirForwardTemp");
+        retire_ptr(
+            workspace.spatialDir.iirForwardTempM,
+            planeBytes,
+            "frame spatial DIR iirForwardTempM");
+        retire_ptr(
+            workspace.spatialDir.iirForwardTempC,
+            planeBytes,
+            "frame spatial DIR iirForwardTempC");
         retire_ptr(
             workspace.sharedTmpPlane,
             workspace.sharedTmpCapacityElements * sizeof(float),
@@ -1145,8 +1190,20 @@ namespace JuicerProcess {
         if (workspace.spatialDir.filteredCorrectionC) {
             cudaFree(workspace.spatialDir.filteredCorrectionC);
         }
+        if (workspace.spatialDir.filterTempM) {
+            cudaFree(workspace.spatialDir.filterTempM);
+        }
+        if (workspace.spatialDir.filterTempC) {
+            cudaFree(workspace.spatialDir.filterTempC);
+        }
         if (workspace.spatialDir.iirForwardTemp) {
             cudaFree(workspace.spatialDir.iirForwardTemp);
+        }
+        if (workspace.spatialDir.iirForwardTempM) {
+            cudaFree(workspace.spatialDir.iirForwardTempM);
+        }
+        if (workspace.spatialDir.iirForwardTempC) {
+            cudaFree(workspace.spatialDir.iirForwardTempC);
         }
         if (workspace.sharedTmpPlane) {
             cudaFree(workspace.sharedTmpPlane);
@@ -2501,7 +2558,11 @@ namespace JuicerProcess {
         view.filteredCorrectionM = scratch.filteredCorrectionM;
         view.filteredCorrectionC = scratch.filteredCorrectionC;
         view.filterTemp = scratch.filterTemp;
+        view.filterTempM = scratch.filterTempM;
+        view.filterTempC = scratch.filterTempC;
         view.iirForwardTemp = scratch.iirForwardTemp;
+        view.iirForwardTempM = scratch.iirForwardTempM;
+        view.iirForwardTempC = scratch.iirForwardTempC;
         view.descriptorHash = workspace._request.spatialDirDescriptorHash;
         view.scratchTier = workspace._request.spatialDirScratchTier;
         view.planeRoles = workspace._request.spatialDirPlaneRoles;

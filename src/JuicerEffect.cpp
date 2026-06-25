@@ -370,7 +370,8 @@ namespace {
 
     inline bool is_coupler_param_name(const char* changedName) {
         return param_name_is(changedName, JuicerParams::kDirCouplersActive) ||
-               param_name_is(changedName, JuicerParams::kDirCouplersAmount);
+               param_name_is(changedName, JuicerParams::kDirCouplersAmount) ||
+               param_name_is(changedName, JuicerParams::kDirTailMode);
     }
 
     inline bool halation_revert_param_changed(const std::string& paramName) {
@@ -1097,9 +1098,11 @@ namespace {
     inline void read_coupler_snapshot_values(
         OFX::BooleanParam* couplersActiveParam,
         OFX::DoubleParam* couplersAmountParam,
+        OFX::ChoiceParam* dirTailModeParam,
         ParamSnapshot& snapshot) {
         snapshot.couplersActive = read_bool_param_as_i32(couplersActiveParam, true);
         snapshot.couplersAmount = read_double_param_or(couplersAmountParam, snapshot.couplersAmount);
+        snapshot.dirTailMode = read_choice_param_or(dirTailModeParam, snapshot.dirTailMode);
     }
 
     template <size_t N>
@@ -1850,6 +1853,7 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
 
         _pCouplersActive = fetchBooleanParam(JuicerParams::kDirCouplersActive);
         _pCouplersAmount = fetchDoubleParam(JuicerParams::kDirCouplersAmount);
+        _pDirTailMode = fetchChoiceParam(JuicerParams::kDirTailMode);
 
         _pScannerLensBlur = fetchDoubleParam(JuicerParams::kScannerLensBlurSigmaPx);
         _pScannerUnsharp = fetchDouble2DParam(JuicerParams::kScannerUnsharpMask);
@@ -2691,7 +2695,7 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.cameraFilmFormatLongEdgeMm = read_camera_film_format_mm_or_default(_pCameraFilmFormat);
     P.exactScatterHalationActive = read_bool_param_or(_pHalationActive, false) ? 1 : 0;
     P.grainControls = gatherGrainUi();
-    read_coupler_snapshot_values(_pCouplersActive, _pCouplersAmount, P);
+    read_coupler_snapshot_values(_pCouplersActive, _pCouplersAmount, _pDirTailMode, P);
     read_scanner_snapshot_values(
         _pScannerLensBlur,
         _pScannerUnsharp,

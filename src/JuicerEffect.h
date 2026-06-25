@@ -125,6 +125,7 @@ private:
 
     OFX::BooleanParam* _pCouplersActive = nullptr;
     OFX::DoubleParam* _pCouplersAmount = nullptr;
+    OFX::ChoiceParam* _pDirTailMode = nullptr;
 
     // Scanner and print params
     OFX::DoubleParam* _pScannerLensBlur = nullptr;

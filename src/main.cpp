@@ -226,6 +226,16 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
                 p->setParent(*grpCouplers);
             p->setEvaluateOnChange(true);
         }
+        {
+            OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kDirTailMode);
+            p->setLabel("DIR quality");
+            p->appendOption("Full Quality (Spektrafilm)");
+            p->appendOption("Fast (2-Gaussian Tail)");
+            p->setDefault(0);
+            if (grpCouplers)
+                p->setParent(*grpCouplers);
+            p->setEvaluateOnChange(true);
+        }
     }
 
     // Scanner optics and math

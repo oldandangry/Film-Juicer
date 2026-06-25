@@ -88,6 +88,16 @@ namespace {
         return index >= 0 && index <= 6;
     }
 
+    bool dir_tail_mode_valid(Spektrafilm::DirTailMode value) noexcept {
+        switch (value) {
+            case Spektrafilm::DirTailMode::SpektrafilmStrict:
+            case Spektrafilm::DirTailMode::AcceptedTwoGaussianTail:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     std::array<float, 3> copy_filter_triplet(const std::array<double, 3>& values, bool active) {
         std::array<float, 3> out{{active ? static_cast<float>(values[0]) : 0.0f,
                                   static_cast<float>(values[1]),
@@ -655,7 +665,7 @@ namespace {
             case Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect:
                 return Spektrafilm::DirFilterBackend::SmallFir;
             case Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate:
-                return Spektrafilm::DirFilterBackend::StrictYvvIir;
+                return Spektrafilm::DirFilterBackend::StrictYvvChannels;
             default:
                 return Spektrafilm::DirFilterBackend::None;
         }
@@ -664,7 +674,7 @@ namespace {
     Spektrafilm::DirScratchTier dir_target_scratch_tier_for_operator(
         Spektrafilm::DirReferenceOperator referenceOperator) noexcept {
         return referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate
-                   ? Spektrafilm::DirScratchTier::Tier1I
+                   ? Spektrafilm::DirScratchTier::Tier1IChannels
                    : Spektrafilm::DirScratchTier::Tier1F;
     }
 
@@ -672,12 +682,13 @@ namespace {
         Spektrafilm::DirScratchTier scratchTier) noexcept {
         Spektrafilm::DirScratchPlaneRoles roles{};
         if (scratchTier == Spektrafilm::DirScratchTier::Tier1F ||
-            scratchTier == Spektrafilm::DirScratchTier::Tier1I) {
+            scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels) {
             roles.rawCorrectionPlanes = 3;
             roles.filteredCorrectionPlanes = 3;
-            roles.filterTempPlanes = 1;
-            if (scratchTier == Spektrafilm::DirScratchTier::Tier1I) {
-                roles.iirForwardTempPlanes = 1;
+            roles.filterTempPlanes =
+                scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels ? 3 : 1;
+            if (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels) {
+                roles.iirForwardTempPlanes = 3;
             }
         }
         return roles;
@@ -706,8 +717,8 @@ namespace {
         component.targetBackend = dir_target_backend_for_operator(component.referenceOperator);
         component.backend = component.targetBackend;
         component.targetScratchTier = dir_target_scratch_tier_for_operator(component.referenceOperator);
-        if (component.targetScratchTier == Spektrafilm::DirScratchTier::Tier1I) {
-            targetScratchTier = Spektrafilm::DirScratchTier::Tier1I;
+        if (component.targetScratchTier == Spektrafilm::DirScratchTier::Tier1IChannels) {
+            targetScratchTier = Spektrafilm::DirScratchTier::Tier1IChannels;
         } else if (targetScratchTier == Spektrafilm::DirScratchTier::Tier0) {
             targetScratchTier = Spektrafilm::DirScratchTier::Tier1F;
         }
@@ -792,6 +803,7 @@ namespace {
             hash_value(hash, recipe.diffusionTailWeight);
             if (recipe.diffusionTailWeight > 0.0f) {
                 hash_value(hash, recipe.diffusionTailUm);
+                hash_value(hash, recipe.tailMode);
             }
         }
         return hash;
@@ -809,7 +821,8 @@ namespace {
             !finite_nonnegative(controls.diffusionSizeUm) ||
             !finite_nonnegative(controls.diffusionTailUm) ||
             !std::isfinite(controls.diffusionTailWeight) ||
-            controls.diffusionTailWeight < 0.0f || controls.diffusionTailWeight > 1.0f) {
+            controls.diffusionTailWeight < 0.0f || controls.diffusionTailWeight > 1.0f ||
+            !dir_tail_mode_valid(controls.tailMode)) {
             return false;
         }
 
@@ -828,6 +841,7 @@ namespace {
         out.diffusionSizeUm = controls.diffusionSizeUm;
         out.diffusionTailUm = controls.diffusionTailUm;
         out.diffusionTailWeight = controls.diffusionTailWeight;
+        out.tailMode = controls.tailMode;
 
         out.matrixRgb[0][0] = out.gammaSameLayerRgb[0] * out.inhibitionSameLayer;
         out.matrixRgb[1][1] = out.gammaSameLayerRgb[1] * out.inhibitionSameLayer;
@@ -1649,7 +1663,8 @@ namespace Spektrafilm {
         }
         if (!(std::isfinite(pixelSizeUm) && pixelSizeUm > 0.0f) ||
             !dir_extent_valid(renderExtent) ||
-            !dir_extent_valid(fullFrameExtent)) {
+            !dir_extent_valid(fullFrameExtent) ||
+            !dir_tail_mode_valid(recipe.tailMode)) {
             return false;
         }
         out.support = Spektrafilm::DirDescriptorSupport::Supported;
@@ -1657,6 +1672,11 @@ namespace Spektrafilm {
         out.sourceContract = Spektrafilm::DirSourceContract::FilmLogRawToInitialDensityCmy;
         out.boundaryMode = Spektrafilm::DirBoundaryMode::SpektrafilmReferencePerOperator;
         out.approximation = Spektrafilm::DirApproximationMarker::SpektrafilmStrict;
+        out.tailMode = recipe.tailMode;
+        if (recipe.diffusionTailWeight > 0.0f &&
+            recipe.tailMode == Spektrafilm::DirTailMode::AcceptedTwoGaussianTail) {
+            out.approximation = Spektrafilm::DirApproximationMarker::AcceptedTwoGaussianTail;
+        }
         out.renderExtent = renderExtent;
         out.fullFrameExtent = fullFrameExtent;
         out.filterDomainExtent = fullFrameExtent;
@@ -1685,11 +1705,22 @@ namespace Spektrafilm {
             if (!(std::isfinite(tailSigmaPixels) && tailSigmaPixels > 0.0f)) {
                 return false;
             }
-            for (std::size_t component = 0; component < out.exponentialSigmaPixels.size(); ++component) {
+            const bool useTwoGaussianTail =
+                recipe.tailMode == Spektrafilm::DirTailMode::AcceptedTwoGaussianTail;
+            const std::size_t tailComponentCount =
+                useTwoGaussianTail ? SpatialDirDescriptor::kTwoGaussianTailSigmaRatios.size()
+                                   : SpatialDirDescriptor::kExponentialSigmaRatios.size();
+            for (std::size_t component = 0; component < tailComponentCount; ++component) {
+                const float sigmaRatio = useTwoGaussianTail
+                                             ? SpatialDirDescriptor::kTwoGaussianTailSigmaRatios[component]
+                                             : SpatialDirDescriptor::kExponentialSigmaRatios[component];
+                const float amplitude = useTwoGaussianTail
+                                            ? SpatialDirDescriptor::kTwoGaussianTailAmplitudes[component]
+                                            : SpatialDirDescriptor::kExponentialAmplitudes[component];
                 out.exponentialSigmaPixels[component] =
-                    tailSigmaPixels * SpatialDirDescriptor::kExponentialSigmaRatios[component];
+                    tailSigmaPixels * sigmaRatio;
                 out.exponentialWeights[component] =
-                    recipe.diffusionTailWeight * SpatialDirDescriptor::kExponentialAmplitudes[component];
+                    recipe.diffusionTailWeight * amplitude;
                 if (!(std::isfinite(out.exponentialSigmaPixels[component]) &&
                       out.exponentialSigmaPixels[component] > 0.0f) ||
                     !finite_nonnegative(out.exponentialWeights[component])) {
@@ -1730,6 +1761,7 @@ namespace Spektrafilm {
         hash_value(hash, out.scratchTier);
         hash_value(hash, out.targetScratchTier);
         hash_value(hash, out.approximation);
+        hash_value(hash, out.tailMode);
         hash_value(hash, out.support);
         hash_dir_extent(hash, out.renderExtent);
         hash_dir_extent(hash, out.fullFrameExtent);

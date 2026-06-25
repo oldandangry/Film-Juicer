@@ -100,7 +100,11 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     float* filteredCorrectionM,
     float* filteredCorrectionC,
     float* filterTemp,
+    float* filterTempM,
+    float* filterTempC,
     float* iirForwardTemp,
+    float* iirForwardTempM,
+    float* iirForwardTempC,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -129,7 +133,11 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     float* filteredCorrectionM,
     float* filteredCorrectionC,
     float* filterTemp,
+    float* filterTempM,
+    float* filterTempC,
     float* iirForwardTemp,
+    float* iirForwardTempM,
+    float* iirForwardTempC,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -158,7 +166,11 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     float* filteredCorrectionM,
     float* filteredCorrectionC,
     float* filterTemp,
+    float* filterTempM,
+    float* filterTempC,
     float* iirForwardTemp,
+    float* iirForwardTempM,
+    float* iirForwardTempC,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -582,6 +594,8 @@ namespace {
         msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
         msg += " approximation=";
         msg += Spektrafilm::to_cstr(descriptor.approximation);
+        msg += " dir_tail_mode=";
+        msg += Spektrafilm::to_cstr(descriptor.tailMode);
         msg += " component_count=";
         msg += std::to_string(descriptor.filterPlan.componentCount);
         msg += " render_extent=";
@@ -680,6 +694,8 @@ namespace {
         msg += Spektrafilm::to_cstr(descriptor.sourceContract);
         msg += " scratch_tier=";
         msg += Spektrafilm::to_cstr(descriptor.scratchTier);
+        msg += " dir_tail_mode=";
+        msg += Spektrafilm::to_cstr(descriptor.tailMode);
         msg += " component_count=";
         msg += std::to_string(descriptor.filterPlan.componentCount);
         JTRACE("DIR_BRIDGE", msg);
@@ -729,6 +745,7 @@ namespace {
             << " scratch_tier=" << Spektrafilm::to_cstr(descriptor.scratchTier)
             << " target_scratch_tier=" << Spektrafilm::to_cstr(descriptor.targetScratchTier)
             << " approximation_marker=" << Spektrafilm::to_cstr(descriptor.approximation)
+            << " dir_tail_mode=" << Spektrafilm::to_cstr(descriptor.tailMode)
             << " component_count=" << descriptor.filterPlan.componentCount
             << " render_origin=" << descriptor.renderExtent.x << "," << descriptor.renderExtent.y
             << " render_extent=" << descriptor.renderExtent.width << "x" << descriptor.renderExtent.height
@@ -797,12 +814,16 @@ namespace {
             << " SF_TEMP_BRIDGE_mix_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_mixPlanes : 0)
             << " SF_TEMP_BRIDGE_tmp_planes=" << (dirActive ? roles.SF_TEMP_BRIDGE_tmpPlanes : 0)
             << " spatial_dir_planes=" << (dirActive ? roles.total_float_planes() : 0)
-            << " shared_tmp_planes=" << (dirActive ? roles.filterTempPlanes : 0)
+            << " shared_tmp_planes=" << (dirActive && roles.filterTempPlanes > 0 ? 1 : 0)
             << " target_raw_correction_planes=" << (dirActive ? targetRoles.rawCorrectionPlanes : 0)
             << " target_filtered_correction_planes=" << (dirActive ? targetRoles.filteredCorrectionPlanes : 0)
             << " target_filter_temp_planes=" << (dirActive ? targetRoles.filterTempPlanes : 0)
             << " target_iir_forward_temp_planes=" << (dirActive ? targetRoles.iirForwardTempPlanes : 0)
             << " scratch_bytes_approx=" << scratchBytesApprox;
+        if (descriptor.tailMode == Spektrafilm::DirTailMode::AcceptedTwoGaussianTail) {
+            oss << " tail_fit_amplitudes=0.6235,0.3765"
+                << " tail_fit_sigma_ratios=0.9401,2.5177";
+        }
         for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
             const Spektrafilm::DirGaussianComponentPlan& plan =
                 spatial_dir_component_or_empty(descriptor, component);
@@ -2479,8 +2500,14 @@ void JuicerProcessor::processImagesCUDA() {
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
             float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
+            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM = scratch.filterTempM;
+            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC = scratch.filterTempC;
             float* SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp =
                 scratch.iirForwardTemp;
+            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM =
+                scratch.iirForwardTempM;
+            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
+                scratch.iirForwardTempC;
             directDirScratchOverflow = scratch.overflow;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
@@ -2496,7 +2523,11 @@ void JuicerProcessor::processImagesCUDA() {
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
                 SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
+                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM,
+                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC,
                 SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
+                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM,
+                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,
@@ -2936,8 +2967,14 @@ void JuicerProcessor::processImagesCUDA() {
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM = scratch.filteredCorrectionM;
             float* SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC = scratch.filteredCorrectionC;
             float* SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp = scratch.filterTemp;
+            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM = scratch.filterTempM;
+            float* SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC = scratch.filterTempC;
             float* SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp =
                 scratch.iirForwardTemp;
+            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM =
+                scratch.iirForwardTempM;
+            float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
+                scratch.iirForwardTempC;
             printDirScratchOverflow = scratch.overflow;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
@@ -2953,7 +2990,11 @@ void JuicerProcessor::processImagesCUDA() {
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionM,
                 SF_TEMP_BRIDGE_map_legacy_mix_planes_to_filteredCorrectionC,
                 SF_TEMP_BRIDGE_map_legacy_tmp_plane_to_filterTemp,
+                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempM,
+                SF_TEMP_BRIDGE_map_channel_tmp_plane_to_filterTempC,
                 SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
+                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM,
+                SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,

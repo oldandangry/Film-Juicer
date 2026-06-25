@@ -312,7 +312,11 @@ namespace JuicerProcess {
                 float* filteredCorrectionM = nullptr;
                 float* filteredCorrectionC = nullptr;
                 float* filterTemp = nullptr;
+                float* filterTempM = nullptr;
+                float* filterTempC = nullptr;
                 float* iirForwardTemp = nullptr;
+                float* iirForwardTempM = nullptr;
+                float* iirForwardTempC = nullptr;
                 std::uint64_t descriptorHash = 0;
                 Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
                 Spektrafilm::DirScratchPlaneRoles planeRoles{};

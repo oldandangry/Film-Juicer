@@ -473,7 +473,11 @@ namespace JuicerCuda {
             float* filteredCorrectionM = nullptr;
             float* filteredCorrectionC = nullptr;
             float* filterTemp = nullptr;
+            float* filterTempM = nullptr;
+            float* filterTempC = nullptr;
             float* iirForwardTemp = nullptr;
+            float* iirForwardTempM = nullptr;
+            float* iirForwardTempC = nullptr;
             int width = 0;
             int height = 0;
             std::size_t capacityElements = 0;

@@ -378,6 +378,7 @@ struct ParamSnapshot {
     double glareBlurSigmaPx = 0.5;
     double printDminFactor = 0.4;
     int couplersActive = 1;
+    int dirTailMode = 0;
     double couplersAmount = 1.0;
     double ratioR = 1.0, ratioG = 1.0, ratioB = 1.0;
     double sigma = 2.0, high = 0.0;

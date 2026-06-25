@@ -101,6 +101,11 @@ namespace Spektrafilm {
         NormalizeBaseThenAddPreflashThenScaleExposureAndCorrection
     };
 
+    enum class DirTailMode : std::uint8_t {
+        SpektrafilmStrict = 0,
+        AcceptedTwoGaussianTail = 1
+    };
+
     enum class SpatialOpticsDomain : std::uint8_t {
         FilmLinearExposure,
         PrintLinearExposure
@@ -340,6 +345,7 @@ struct FilmDevelopRecipe {
 struct DirCouplersControls {
     bool active = true;
     float amount = 1.0f;
+    Spektrafilm::DirTailMode tailMode = Spektrafilm::DirTailMode::SpektrafilmStrict;
     float inhibitionSameLayer = 1.0f;
     float inhibitionInterlayer = 1.0f;
     float diffusionSizeUm = 20.0f;
@@ -351,6 +357,7 @@ struct DirCouplersRecipe {
     Spektrafilm::ProfilePolarity polarity = Spektrafilm::ProfilePolarity::Unsupported;
     bool active = false;
     float amount = 1.0f;
+    Spektrafilm::DirTailMode tailMode = Spektrafilm::DirTailMode::SpektrafilmStrict;
     float inhibitionSameLayer = 1.0f;
     float inhibitionInterlayer = 1.0f;
     std::array<float, 3> gammaSameLayerRgb{};
@@ -390,14 +397,14 @@ namespace Spektrafilm {
     enum class DirFilterBackend : std::uint8_t {
         None,
         SmallFir,
-        StrictYvvIir,
+        StrictYvvChannels,
         SF_TEMP_BRIDGE_LegacySigmaThreshold
     };
 
     enum class DirScratchTier : std::uint8_t {
         Tier0,
         Tier1F,
-        Tier1I,
+        Tier1IChannels,
         Tier2,
         Tier3,
         Unsupported,
@@ -407,6 +414,7 @@ namespace Spektrafilm {
     enum class DirApproximationMarker : std::uint8_t {
         None,
         SpektrafilmStrict,
+        AcceptedTwoGaussianTail,
         SF_TEMP_BRIDGE_CurrentCudaSpatialDir
     };
 
@@ -505,8 +513,8 @@ namespace Spektrafilm {
                 return "none";
             case DirFilterBackend::SmallFir:
                 return "small_fir";
-            case DirFilterBackend::StrictYvvIir:
-                return "strict_yvv_iir";
+            case DirFilterBackend::StrictYvvChannels:
+                return "strict_yvv_channels";
             case DirFilterBackend::SF_TEMP_BRIDGE_LegacySigmaThreshold:
                 return "SF_TEMP_BRIDGE_LegacySigmaThreshold";
             default:
@@ -520,8 +528,8 @@ namespace Spektrafilm {
                 return "Tier0";
             case DirScratchTier::Tier1F:
                 return "Tier1F";
-            case DirScratchTier::Tier1I:
-                return "Tier1I";
+            case DirScratchTier::Tier1IChannels:
+                return "Tier1IChannels";
             case DirScratchTier::Tier2:
                 return "Tier2";
             case DirScratchTier::Tier3:
@@ -541,8 +549,21 @@ namespace Spektrafilm {
                 return "none";
             case DirApproximationMarker::SpektrafilmStrict:
                 return "spektrafilm_strict";
+            case DirApproximationMarker::AcceptedTwoGaussianTail:
+                return "accepted_two_gaussian_tail";
             case DirApproximationMarker::SF_TEMP_BRIDGE_CurrentCudaSpatialDir:
                 return "SF_TEMP_BRIDGE_CurrentCudaSpatialDir";
+            default:
+                return "unknown";
+        }
+    }
+
+    inline const char* to_cstr(DirTailMode value) noexcept {
+        switch (value) {
+            case DirTailMode::SpektrafilmStrict:
+                return "spektrafilm_strict";
+            case DirTailMode::AcceptedTwoGaussianTail:
+                return "accepted_two_gaussian_tail";
             default:
                 return "unknown";
         }
@@ -568,12 +589,15 @@ namespace Spektrafilm {
 struct SpatialDirDescriptor {
     static constexpr std::array<float, 3> kExponentialAmplitudes{{0.1633f, 0.6496f, 0.1870f}};
     static constexpr std::array<float, 3> kExponentialSigmaRatios{{0.5360f, 1.5236f, 2.7684f}};
+    static constexpr std::array<float, 2> kTwoGaussianTailAmplitudes{{0.6235f, 0.3765f}};
+    static constexpr std::array<float, 2> kTwoGaussianTailSigmaRatios{{0.9401f, 2.5177f}};
 
     std::uint64_t dirRecipeHash = 0;
     Spektrafilm::DirSourceContract sourceContract = Spektrafilm::DirSourceContract::None;
     Spektrafilm::DirBoundaryMode boundaryMode = Spektrafilm::DirBoundaryMode::None;
     Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
     Spektrafilm::DirApproximationMarker approximation = Spektrafilm::DirApproximationMarker::None;
+    Spektrafilm::DirTailMode tailMode = Spektrafilm::DirTailMode::SpektrafilmStrict;
     Spektrafilm::DirDescriptorSupport support = Spektrafilm::DirDescriptorSupport::Inactive;
     Spektrafilm::DirFrameExtent renderExtent{};
     Spektrafilm::DirFrameExtent fullFrameExtent{};
