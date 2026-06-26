@@ -329,6 +329,24 @@ namespace JuicerProcess {
             struct SpatialDirPreparedView {
                 KernelView gaussian{};
                 KernelView exponential[3]{};
+                int fftForwardPlan = 0;
+                int fftInversePlan = 0;
+                float* fftRealBuffer = nullptr;
+                void* fftSpectrum = nullptr;
+                const void* fftTransfer = nullptr;
+                int fftWidth = 0;
+                int fftHeight = 0;
+                int fftPadPixels = 0;
+                int fftComplexWidth = 0;
+                std::size_t fftRealBufferBytes = 0;
+                std::size_t fftSpectrumBytes = 0;
+                std::size_t fftTransferBytes = 0;
+                std::size_t fftWorkAreaBytes = 0;
+                std::size_t fftForwardWorkBytes = 0;
+                std::size_t fftInverseWorkBytes = 0;
+                double fftSetupMs = 0.0;
+                bool fftActive = false;
+                bool fftSetupCreated = false;
                 std::uint64_t descriptorHash = 0;
                 bool active = false;
             };

@@ -3535,6 +3535,28 @@ bool command_ensure_spatial_dir_kernel(
         outError);
 }
 
+bool command_ensure_spatial_dir_fft(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const Spektrafilm::SpatialDirDescriptor& descriptor,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_fft")) {
+        return false;
+    }
+    return execute_snapshot_wrapped_command(
+        transaction,
+        resources,
+        [&](std::string& actionError) {
+            return JuicerCuda::ensure_spatial_dir_fft(
+                resources,
+                descriptor,
+                cudaStreamOpaque,
+                actionError);
+        },
+        outError);
+}
+
 bool command_ensure_gaussian_kernel(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,

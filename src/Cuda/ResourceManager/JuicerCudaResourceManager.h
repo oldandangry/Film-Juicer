@@ -217,6 +217,13 @@ namespace JuicerCuda {
             void* cudaStreamOpaque,
             std::string& outError);
 
+        bool command_ensure_spatial_dir_fft(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const Spektrafilm::SpatialDirDescriptor& descriptor,
+            void* cudaStreamOpaque,
+            std::string& outError);
+
         bool command_ensure_gaussian_kernel(
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,

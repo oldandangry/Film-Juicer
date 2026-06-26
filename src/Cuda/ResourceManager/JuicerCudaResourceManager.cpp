@@ -282,6 +282,11 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         std::string& outError);
     bool ensure_spatial_dir_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
+    bool ensure_spatial_dir_fft(
+        Resources& resources,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        void* cudaStreamOpaque,
+        std::string& outError);
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
     bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
     bool ensure_print_illuminant_filtered(

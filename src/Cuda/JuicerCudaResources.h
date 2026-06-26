@@ -483,6 +483,28 @@ namespace JuicerCuda {
             std::size_t capacityElements = 0;
         };
 
+        struct DeviceSpatialDirFft {
+            int forwardPlan = 0;
+            int inversePlan = 0;
+            float* realBuffer = nullptr;
+            void* spectrum = nullptr;
+            void* transfer = nullptr;
+            void* workArea = nullptr;
+            int width = 0;
+            int height = 0;
+            int padPixels = 0;
+            int complexWidth = 0;
+            std::uint64_t descriptorHash = 0;
+            std::size_t realBufferBytes = 0;
+            std::size_t spectrumBytes = 0;
+            std::size_t transferBytes = 0;
+            std::size_t workAreaBytes = 0;
+            std::size_t forwardWorkBytes = 0;
+            std::size_t inverseWorkBytes = 0;
+            double lastSetupMs = 0.0;
+            bool lastSetupCreated = false;
+        };
+
         DeviceGaussianKernel scannerLensBlurKernel;
         DeviceGaussianKernel scannerUnsharpKernel;
         DeviceGaussianKernel scannerGlareKernel;
@@ -495,6 +517,7 @@ namespace JuicerCuda {
         DeviceOpticsScratch scannerScratch;
         std::array<DeviceGaussianKernel, 4> spatialDirKernels{};
         DeviceSpatialDirScratch spatialDirScratch;
+        DeviceSpatialDirFft spatialDirFft;
         std::uint64_t retainedScratchLeaseGeneration = 0;
 
         std::uint8_t* stbnData = nullptr;

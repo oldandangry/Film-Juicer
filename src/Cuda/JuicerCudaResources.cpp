@@ -24,6 +24,7 @@
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
 #include <cuda_runtime.h>
 #include <cuda.h>
+#include <cufft.h>
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -542,6 +543,7 @@ namespace JuicerCuda {
     static void free_auto_exposure(Resources& resources) noexcept;
     static void free_optics_scratch(Resources& resources, Resources::DeviceOpticsScratch& s, void* cudaStreamOpaque) noexcept;
     static void free_spatial_dir_scratch(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque) noexcept;
+    static void free_spatial_dir_fft(Resources& resources, Resources::DeviceSpatialDirFft& fft, void* cudaStreamOpaque) noexcept;
     static void free_shared_tmp_plane(Resources& resources) noexcept;
 
 } // namespace JuicerCuda
@@ -2179,6 +2181,7 @@ namespace JuicerCuda {
                 free_gaussian_kernel(kernel);
             }
             free_spatial_dir_scratch(*this, spatialDirScratch, nullptr);
+            free_spatial_dir_fft(*this, spatialDirFft, nullptr);
             free_shared_tmp_plane(*this);
             free_stbn(*this);
             free_wang(*this);
@@ -4866,6 +4869,25 @@ namespace JuicerCuda {
         s.capacityElements = 0;
     }
 
+    static void free_spatial_dir_fft(Resources& resources, Resources::DeviceSpatialDirFft& fft, void* cudaStreamOpaque = nullptr) noexcept {
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+        if (fft.forwardPlan != 0) {
+            (void)cufftDestroy(static_cast<cufftHandle>(fft.forwardPlan));
+        }
+        if (fft.inversePlan != 0) {
+            (void)cufftDestroy(static_cast<cufftHandle>(fft.inversePlan));
+        }
+        free_tracked_device_ptr_locked(resources, fft.realBuffer, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, fft.spectrum, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, fft.transfer, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, fft.workArea, cudaStreamOpaque);
+#else
+        (void)resources;
+        (void)cudaStreamOpaque;
+#endif
+        fft = Resources::DeviceSpatialDirFft{};
+    }
+
     static bool retire_spatial_dir_scratch_locked(Resources& resources, Resources::DeviceSpatialDirScratch& s, void* cudaStreamOpaque, const char* label, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
@@ -6267,6 +6289,317 @@ namespace JuicerCuda {
         scratch.width = width;
         scratch.height = height;
         scratch.capacityElements = requiredElements;
+        return true;
+#endif
+    }
+
+#if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
+    static const char* cufft_status_name(cufftResult status) noexcept {
+        switch (status) {
+            case CUFFT_SUCCESS:
+                return "CUFFT_SUCCESS";
+            case CUFFT_INVALID_PLAN:
+                return "CUFFT_INVALID_PLAN";
+            case CUFFT_ALLOC_FAILED:
+                return "CUFFT_ALLOC_FAILED";
+            case CUFFT_INVALID_TYPE:
+                return "CUFFT_INVALID_TYPE";
+            case CUFFT_INVALID_VALUE:
+                return "CUFFT_INVALID_VALUE";
+            case CUFFT_INTERNAL_ERROR:
+                return "CUFFT_INTERNAL_ERROR";
+            case CUFFT_EXEC_FAILED:
+                return "CUFFT_EXEC_FAILED";
+            case CUFFT_SETUP_FAILED:
+                return "CUFFT_SETUP_FAILED";
+            case CUFFT_INVALID_SIZE:
+                return "CUFFT_INVALID_SIZE";
+            case CUFFT_UNALIGNED_DATA:
+                return "CUFFT_UNALIGNED_DATA";
+            case CUFFT_INVALID_DEVICE:
+                return "CUFFT_INVALID_DEVICE";
+            case CUFFT_NO_WORKSPACE:
+                return "CUFFT_NO_WORKSPACE";
+            case CUFFT_NOT_IMPLEMENTED:
+                return "CUFFT_NOT_IMPLEMENTED";
+            case CUFFT_NOT_SUPPORTED:
+                return "CUFFT_NOT_SUPPORTED";
+            default:
+                return "CUFFT_UNKNOWN";
+        }
+    }
+
+    static bool checked_size_mul(std::size_t a, std::size_t b, std::size_t& out) noexcept {
+        if (a != 0 && b > std::numeric_limits<std::size_t>::max() / a) {
+            return false;
+        }
+        out = a * b;
+        return true;
+    }
+
+    static bool checked_fft_byte_count(
+        int width,
+        int height,
+        std::size_t elementBytes,
+        std::size_t& out) noexcept {
+        if (width <= 0 || height <= 0 || elementBytes == 0) {
+            return false;
+        }
+        std::size_t elements = 0;
+        if (!checked_size_mul(
+                static_cast<std::size_t>(width),
+                static_cast<std::size_t>(height),
+                elements)) {
+            return false;
+        }
+        return checked_size_mul(elements, elementBytes, out);
+    }
+
+    static std::vector<cufftComplex> build_spatial_dir_fft_transfer_host(
+        const Spektrafilm::SpatialDirDescriptor& descriptor) {
+        constexpr double kPi = 3.141592653589793238462643383279502884;
+        std::vector<cufftComplex> transfer(
+            static_cast<std::size_t>(descriptor.fftHeight) *
+            static_cast<std::size_t>(descriptor.fftComplexWidth));
+
+        for (int y = 0; y < descriptor.fftHeight; ++y) {
+            const int fy = y <= descriptor.fftHeight / 2 ? y : y - descriptor.fftHeight;
+            const double omegaY =
+                2.0 * kPi * static_cast<double>(fy) / static_cast<double>(descriptor.fftHeight);
+            for (int x = 0; x < descriptor.fftComplexWidth; ++x) {
+                const double omegaX =
+                    2.0 * kPi * static_cast<double>(x) / static_cast<double>(descriptor.fftWidth);
+                const double radius2 = omegaX * omegaX + omegaY * omegaY;
+                double response = 0.0;
+                for (int component = 0; component < descriptor.filterPlan.componentCount; ++component) {
+                    const Spektrafilm::DirGaussianComponentPlan& plan =
+                        descriptor.filterPlan.components[static_cast<std::size_t>(component)];
+                    if (!(plan.weight > 0.0f)) {
+                        continue;
+                    }
+                    if (!(plan.sigmaPixels > 0.0f)) {
+                        response += static_cast<double>(plan.weight);
+                    } else {
+                        const double sigma = static_cast<double>(plan.sigmaPixels);
+                        response += static_cast<double>(plan.weight) *
+                                    std::exp(-0.5 * sigma * sigma * radius2);
+                    }
+                }
+                transfer[static_cast<std::size_t>(y) *
+                             static_cast<std::size_t>(descriptor.fftComplexWidth) +
+                         static_cast<std::size_t>(x)] =
+                    cufftComplex{static_cast<float>(response), 0.0f};
+            }
+        }
+        return transfer;
+    }
+#endif
+
+    bool ensure_spatial_dir_fft(
+        Resources& resources,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)descriptor;
+        (void)cudaStreamOpaque;
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        if (descriptor.approximation != Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
+            return true;
+        }
+        if (descriptor.hash == 0 || descriptor.fftWidth <= 0 || descriptor.fftHeight <= 0 ||
+            descriptor.fftComplexWidth <= 0 || descriptor.fftPadPixels < 0 ||
+            descriptor.filterPlan.componentCount <= 0) {
+            outError = "spatial DIR FFT descriptor is invalid";
+            return false;
+        }
+
+        const cudaStream_t stream =
+            cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+        std::lock_guard<std::mutex> lock(resources.m);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+
+        Resources::DeviceSpatialDirFft& fft = resources.spatialDirFft;
+        const bool descriptorHit =
+            fft.descriptorHash == descriptor.hash &&
+            fft.forwardPlan != 0 &&
+            fft.inversePlan != 0 &&
+            fft.realBuffer &&
+            fft.spectrum &&
+            fft.transfer &&
+            fft.width == descriptor.fftWidth &&
+            fft.height == descriptor.fftHeight &&
+            fft.padPixels == descriptor.fftPadPixels &&
+            fft.complexWidth == descriptor.fftComplexWidth;
+        if (descriptorHit) {
+            cufftResult status = cufftSetStream(static_cast<cufftHandle>(fft.forwardPlan), stream);
+            if (status == CUFFT_SUCCESS) {
+                status = cufftSetStream(static_cast<cufftHandle>(fft.inversePlan), stream);
+            }
+            if (status != CUFFT_SUCCESS) {
+                outError = std::string("spatial DIR FFT stream bind failed: ") +
+                           cufft_status_name(status);
+                return false;
+            }
+            fft.lastSetupCreated = false;
+            fft.lastSetupMs = 0.0;
+            return true;
+        }
+
+        const auto setupStart = std::chrono::steady_clock::now();
+        free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
+
+        std::size_t realBytes = 0;
+        std::size_t spectrumBytes = 0;
+        if (!checked_fft_byte_count(
+                descriptor.fftWidth,
+                descriptor.fftHeight,
+                sizeof(float),
+                realBytes) ||
+            !checked_fft_byte_count(
+                descriptor.fftComplexWidth,
+                descriptor.fftHeight,
+                sizeof(cufftComplex),
+                spectrumBytes)) {
+            outError = "spatial DIR FFT byte count overflow";
+            return false;
+        }
+
+        cufftHandle forwardPlan = 0;
+        cufftHandle inversePlan = 0;
+        cufftResult status = cufftCreate(&forwardPlan);
+        if (status == CUFFT_SUCCESS) {
+            status = cufftCreate(&inversePlan);
+        }
+        if (status == CUFFT_SUCCESS) {
+            status = cufftSetAutoAllocation(forwardPlan, 0);
+        }
+        if (status == CUFFT_SUCCESS) {
+            status = cufftSetAutoAllocation(inversePlan, 0);
+        }
+        std::size_t forwardWorkBytes = 0;
+        std::size_t inverseWorkBytes = 0;
+        if (status == CUFFT_SUCCESS) {
+            status = cufftMakePlan2d(
+                forwardPlan,
+                descriptor.fftHeight,
+                descriptor.fftWidth,
+                CUFFT_R2C,
+                &forwardWorkBytes);
+        }
+        if (status == CUFFT_SUCCESS) {
+            status = cufftMakePlan2d(
+                inversePlan,
+                descriptor.fftHeight,
+                descriptor.fftWidth,
+                CUFFT_C2R,
+                &inverseWorkBytes);
+        }
+        if (status != CUFFT_SUCCESS) {
+            if (forwardPlan != 0) {
+                (void)cufftDestroy(forwardPlan);
+            }
+            if (inversePlan != 0) {
+                (void)cufftDestroy(inversePlan);
+            }
+            outError = std::string("spatial DIR FFT plan creation failed: ") +
+                       cufft_status_name(status);
+            return false;
+        }
+
+        fft.forwardPlan = static_cast<int>(forwardPlan);
+        fft.inversePlan = static_cast<int>(inversePlan);
+        fft.forwardWorkBytes = forwardWorkBytes;
+        fft.inverseWorkBytes = inverseWorkBytes;
+        fft.workAreaBytes = std::max(forwardWorkBytes, inverseWorkBytes);
+
+        if (fft.workAreaBytes > 0 &&
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                fft.workArea,
+                fft.workAreaBytes,
+                cudaStreamOpaque,
+                "spatial DIR FFT cuFFT work area",
+                outError)) {
+            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
+            return false;
+        }
+        if (fft.workArea) {
+            status = cufftSetWorkArea(static_cast<cufftHandle>(fft.forwardPlan), fft.workArea);
+            if (status == CUFFT_SUCCESS) {
+                status = cufftSetWorkArea(static_cast<cufftHandle>(fft.inversePlan), fft.workArea);
+            }
+        }
+        if (status == CUFFT_SUCCESS) {
+            status = cufftSetStream(static_cast<cufftHandle>(fft.forwardPlan), stream);
+        }
+        if (status == CUFFT_SUCCESS) {
+            status = cufftSetStream(static_cast<cufftHandle>(fft.inversePlan), stream);
+        }
+        if (status != CUFFT_SUCCESS) {
+            outError = std::string("spatial DIR FFT plan setup failed: ") +
+                       cufft_status_name(status);
+            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
+            return false;
+        }
+
+        if (!allocate_scratch_device_ptr_locked(
+                resources,
+                fft.realBuffer,
+                realBytes,
+                cudaStreamOpaque,
+                "spatial DIR FFT real buffer",
+                outError) ||
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                fft.spectrum,
+                spectrumBytes,
+                cudaStreamOpaque,
+                "spatial DIR FFT spectrum",
+                outError) ||
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                fft.transfer,
+                spectrumBytes,
+                cudaStreamOpaque,
+                "spatial DIR FFT transfer",
+                outError)) {
+            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
+            return false;
+        }
+
+        const std::vector<cufftComplex> transferHost =
+            build_spatial_dir_fft_transfer_host(descriptor);
+        const cudaError_t copyErr = cudaMemcpy(
+            fft.transfer,
+            transferHost.data(),
+            spectrumBytes,
+            cudaMemcpyHostToDevice);
+        if (copyErr != cudaSuccess) {
+            outError = std::string("spatial DIR FFT transfer upload failed: ") +
+                       cudaGetErrorString(copyErr);
+            free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
+            return false;
+        }
+
+        fft.width = descriptor.fftWidth;
+        fft.height = descriptor.fftHeight;
+        fft.padPixels = descriptor.fftPadPixels;
+        fft.complexWidth = descriptor.fftComplexWidth;
+        fft.descriptorHash = descriptor.hash;
+        fft.realBufferBytes = realBytes;
+        fft.spectrumBytes = spectrumBytes;
+        fft.transferBytes = spectrumBytes;
+        fft.lastSetupCreated = true;
+        fft.lastSetupMs =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - setupStart)
+                .count();
         return true;
 #endif
     }

@@ -121,6 +121,16 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
+    int acceptedFftActive,
+    int fftForwardPlan,
+    int fftInversePlan,
+    float* fftRealBuffer,
+    void* fftSpectrum,
+    const void* fftTransfer,
+    int fftWidth,
+    int fftHeight,
+    int fftPadPixels,
+    int fftComplexWidth,
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile);
 
@@ -154,6 +164,16 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
+    int acceptedFftActive,
+    int fftForwardPlan,
+    int fftInversePlan,
+    float* fftRealBuffer,
+    void* fftSpectrum,
+    const void* fftTransfer,
+    int fftWidth,
+    int fftHeight,
+    int fftPadPixels,
+    int fftComplexWidth,
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile);
 
@@ -187,6 +207,16 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     int tailRadius2,
     float tailSigma2,
     float tailWeight2,
+    int acceptedFftActive,
+    int fftForwardPlan,
+    int fftInversePlan,
+    float* fftRealBuffer,
+    void* fftSpectrum,
+    const void* fftTransfer,
+    int fftWidth,
+    int fftHeight,
+    int fftPadPixels,
+    int fftComplexWidth,
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile);
 
@@ -554,6 +584,24 @@ namespace {
         request.spatialDirTargetPlaneRoles = descriptor.targetPlaneRoles;
     }
 
+    void copy_spatial_dir_fft_profile_details(
+        JuicerCuda::SpatialDirBuildProfile& profile,
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirPreparedView& resources) {
+        profile.fftActive = resources.fftActive ? 1 : 0;
+        profile.fftPadPixels = resources.fftPadPixels;
+        profile.fftWidth = resources.fftWidth;
+        profile.fftHeight = resources.fftHeight;
+        profile.fftComplexWidth = resources.fftComplexWidth;
+        profile.fftRealBufferBytes = static_cast<std::uint64_t>(resources.fftRealBufferBytes);
+        profile.fftSpectrumBytes = static_cast<std::uint64_t>(resources.fftSpectrumBytes);
+        profile.fftTransferBytes = static_cast<std::uint64_t>(resources.fftTransferBytes);
+        profile.fftWorkAreaBytes = static_cast<std::uint64_t>(resources.fftWorkAreaBytes);
+        profile.fftForwardWorkBytes = static_cast<std::uint64_t>(resources.fftForwardWorkBytes);
+        profile.fftInverseWorkBytes = static_cast<std::uint64_t>(resources.fftInverseWorkBytes);
+        profile.fftSetupMs = resources.fftSetupMs;
+        profile.fftSetupCreated = resources.fftSetupCreated ? 1 : 0;
+    }
+
     // SF_TEMP_BRIDGE_bind_filtered_correction_to_payload: Phase 5 removes this
     // once FilmDevelopPayload stops exposing corr* aliases for spatial DIR.
     void SF_TEMP_BRIDGE_bind_filtered_correction_to_payload(
@@ -596,6 +644,20 @@ namespace {
         msg += Spektrafilm::to_cstr(descriptor.approximation);
         msg += " dir_tail_mode=";
         msg += Spektrafilm::to_cstr(descriptor.tailMode);
+        msg += " fft_mode=";
+        msg += descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
+                   ? "accepted_fft_replicate_pad_smooth"
+                   : "none";
+        msg += " fft_pad_pixels=";
+        msg += std::to_string(descriptor.fftPadPixels);
+        msg += " fft_pad_sigma=";
+        msg += std::to_string(descriptor.fftPadSigma);
+        msg += " fft_width=";
+        msg += std::to_string(descriptor.fftWidth);
+        msg += " fft_height=";
+        msg += std::to_string(descriptor.fftHeight);
+        msg += " fft_complex_width=";
+        msg += std::to_string(descriptor.fftComplexWidth);
         msg += " component_count=";
         msg += std::to_string(descriptor.filterPlan.componentCount);
         msg += " render_extent=";
@@ -696,6 +758,16 @@ namespace {
         msg += Spektrafilm::to_cstr(descriptor.scratchTier);
         msg += " dir_tail_mode=";
         msg += Spektrafilm::to_cstr(descriptor.tailMode);
+        msg += " fft_mode=";
+        msg += descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
+                   ? "accepted_fft_replicate_pad_smooth"
+                   : "none";
+        msg += " fft_pad_pixels=";
+        msg += std::to_string(descriptor.fftPadPixels);
+        msg += " fft_width=";
+        msg += std::to_string(descriptor.fftWidth);
+        msg += " fft_height=";
+        msg += std::to_string(descriptor.fftHeight);
         msg += " component_count=";
         msg += std::to_string(descriptor.filterPlan.componentCount);
         JTRACE("DIR_BRIDGE", msg);
@@ -725,6 +797,11 @@ namespace {
         const int admittedPlaneCount = dirActive ? descriptor.planeRoles.total_float_planes() : 0;
         const std::uint64_t scratchBytesApprox =
             dirActive ? pixels * static_cast<std::uint64_t>(std::max(0, admittedPlaneCount)) * sizeof(float) : 0ull;
+        const std::uint64_t fftScratchBytes =
+            profile.fftRealBufferBytes + profile.fftSpectrumBytes;
+        const std::uint64_t fftRetainedBytes =
+            profile.fftRealBufferBytes + profile.fftSpectrumBytes +
+            profile.fftTransferBytes + profile.fftWorkAreaBytes;
         const int activeTails = active_tail_component_count(profile);
         const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
         const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.targetPlaneRoles;
@@ -746,6 +823,29 @@ namespace {
             << " target_scratch_tier=" << Spektrafilm::to_cstr(descriptor.targetScratchTier)
             << " approximation_marker=" << Spektrafilm::to_cstr(descriptor.approximation)
             << " dir_tail_mode=" << Spektrafilm::to_cstr(descriptor.tailMode)
+            << " fft_mode="
+            << (descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
+                    ? "accepted_fft_replicate_pad_smooth"
+                    : "none")
+            << " fft_setup_status="
+            << (profile.fftActive ? (profile.fftSetupCreated ? "created" : "reused") : "none")
+            << " fft_setup_ms=" << profile.fftSetupMs
+            << " fft_pad_pixels=" << descriptor.fftPadPixels
+            << " fft_pad_sigma=" << descriptor.fftPadSigma
+            << " fft_width=" << descriptor.fftWidth
+            << " fft_height=" << descriptor.fftHeight
+            << " fft_complex_width=" << descriptor.fftComplexWidth
+            << " fft_profile_width=" << profile.fftWidth
+            << " fft_profile_height=" << profile.fftHeight
+            << " fft_profile_complex_width=" << profile.fftComplexWidth
+            << " fft_workspace_bytes=" << profile.fftWorkAreaBytes
+            << " fft_forward_work_bytes=" << profile.fftForwardWorkBytes
+            << " fft_inverse_work_bytes=" << profile.fftInverseWorkBytes
+            << " fft_scratch_bytes=" << fftScratchBytes
+            << " fft_real_buffer_bytes=" << profile.fftRealBufferBytes
+            << " fft_spectrum_bytes=" << profile.fftSpectrumBytes
+            << " fft_transfer_bytes=" << profile.fftTransferBytes
+            << " fft_retained_bytes=" << fftRetainedBytes
             << " component_count=" << descriptor.filterPlan.componentCount
             << " render_origin=" << descriptor.renderExtent.x << "," << descriptor.renderExtent.y
             << " render_extent=" << descriptor.renderExtent.width << "x" << descriptor.renderExtent.height
@@ -782,10 +882,12 @@ namespace {
             << " dir_source_ms=" << profile.correction.elapsedMs
             << " dir_filter_bank_launches="
             << (profile.baseFilterLaunches + profile.tailFilterLaunches[0] +
-                profile.tailFilterLaunches[1] + profile.tailFilterLaunches[2])
+                profile.tailFilterLaunches[1] + profile.tailFilterLaunches[2] +
+                profile.fftFilterLaunches)
             << " dir_filter_bank_ms="
             << (profile.baseFilter.elapsedMs + profile.tailFilter[0].elapsedMs +
-                profile.tailFilter[1].elapsedMs + profile.tailFilter[2].elapsedMs)
+                profile.tailFilter[1].elapsedMs + profile.tailFilter[2].elapsedMs +
+                profile.fftFilter.elapsedMs)
             << " pipeline_cuda_ms=" << pipelineCudaMs
             << " pipeline_launch_host_ms=" << pipelineLaunchHostMs
             << " total_launches=" << profile.totalLaunches
@@ -800,6 +902,8 @@ namespace {
             << " tail1_filter_ms=" << profile.tailFilter[1].elapsedMs
             << " tail2_filter_launches=" << profile.tailFilterLaunches[2]
             << " tail2_filter_ms=" << profile.tailFilter[2].elapsedMs
+            << " fft_filter_launches=" << profile.fftFilterLaunches
+            << " fft_filter_ms=" << profile.fftFilter.elapsedMs
             << " scale_copy_launches=" << profile.scaleCopyLaunches
             << " scale_copy_ms=" << profile.scaleCopy.elapsedMs
             << " add_scaled_launches=" << profile.addScaledLaunches
@@ -820,10 +924,6 @@ namespace {
             << " target_filter_temp_planes=" << (dirActive ? targetRoles.filterTempPlanes : 0)
             << " target_iir_forward_temp_planes=" << (dirActive ? targetRoles.iirForwardTempPlanes : 0)
             << " scratch_bytes_approx=" << scratchBytesApprox;
-        if (descriptor.tailMode == Spektrafilm::DirTailMode::AcceptedTwoGaussianTail) {
-            oss << " tail_fit_amplitudes=0.6235,0.3765"
-                << " tail_fit_sigma_ratios=0.9401,2.5177";
-        }
         for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
             const Spektrafilm::DirGaussianComponentPlan& plan =
                 spatial_dir_component_or_empty(descriptor, component);
@@ -2544,8 +2644,21 @@ void JuicerProcessor::processImagesCUDA() {
                 resources.exponential[2].radius,
                 resources.exponential[2].sigma,
                 directSpatialDir.exponentialWeights[2],
+                resources.fftActive ? 1 : 0,
+                resources.fftForwardPlan,
+                resources.fftInversePlan,
+                resources.fftRealBuffer,
+                resources.fftSpectrum,
+                resources.fftTransfer,
+                resources.fftWidth,
+                resources.fftHeight,
+                resources.fftPadPixels,
+                resources.fftComplexWidth,
                 _pCudaStream,
                 dirProfileEnabled ? &directDirProfile : nullptr);
+            if (dirProfileEnabled) {
+                copy_spatial_dir_fft_profile_details(directDirProfile, resources);
+            }
             if (dirProfileEnabled) {
                 directDirBuildHostMs = elapsed_ms_since(directDirBuildStart);
             }
@@ -3011,8 +3124,21 @@ void JuicerProcessor::processImagesCUDA() {
                 resources.exponential[2].radius,
                 resources.exponential[2].sigma,
                 spatialDir.exponentialWeights[2],
+                resources.fftActive ? 1 : 0,
+                resources.fftForwardPlan,
+                resources.fftInversePlan,
+                resources.fftRealBuffer,
+                resources.fftSpectrum,
+                resources.fftTransfer,
+                resources.fftWidth,
+                resources.fftHeight,
+                resources.fftPadPixels,
+                resources.fftComplexWidth,
                 _pCudaStream,
                 dirProfileEnabled ? &printDirProfile : nullptr);
+            if (dirProfileEnabled) {
+                copy_spatial_dir_fft_profile_details(printDirProfile, resources);
+            }
             if (dirProfileEnabled) {
                 printDirBuildHostMs = elapsed_ms_since(printDirBuildStart);
             }

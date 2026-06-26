@@ -984,13 +984,6 @@ namespace JuicerProcess {
                      "frame spatial DIR filterTempC"))) {
                 return fail_after_partial_alloc();
             }
-            if (request.spatialDirPlaneRoles.iirForwardTempPlanes == 1 &&
-                !alloc_float(
-                    spatialDir.iirForwardTemp,
-                    planeBytes,
-                    "frame spatial DIR iirForwardTemp")) {
-                return fail_after_partial_alloc();
-            }
             if (request.spatialDirPlaneRoles.iirForwardTempPlanes == 3 &&
                 (!alloc_float(
                      spatialDir.iirForwardTemp,
@@ -1560,6 +1553,20 @@ namespace JuicerProcess {
             msg += Spektrafilm::to_cstr(descriptor.targetScratchTier);
             msg += " approximation=";
             msg += Spektrafilm::to_cstr(descriptor.approximation);
+            msg += " fft_mode=";
+            msg += descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
+                       ? "accepted_fft_replicate_pad_smooth"
+                       : "none";
+            msg += " fft_pad_pixels=";
+            msg += std::to_string(descriptor.fftPadPixels);
+            msg += " fft_pad_sigma=";
+            msg += std::to_string(descriptor.fftPadSigma);
+            msg += " fft_width=";
+            msg += std::to_string(descriptor.fftWidth);
+            msg += " fft_height=";
+            msg += std::to_string(descriptor.fftHeight);
+            msg += " fft_complex_width=";
+            msg += std::to_string(descriptor.fftComplexWidth);
             msg += " scratch_source=pending";
             msg += " component_count=";
             msg += std::to_string(descriptor.filterPlan.componentCount);
@@ -1620,6 +1627,18 @@ namespace JuicerProcess {
             msg += _state->scratchWorkspace.overflowActive ? "overflow" : "retained";
             msg += " scratch_tier=";
             msg += Spektrafilm::to_cstr(descriptor.scratchTier);
+            msg += " fft_mode=";
+            msg += descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
+                       ? "accepted_fft_replicate_pad_smooth"
+                       : "none";
+            msg += " fft_pad_pixels=";
+            msg += std::to_string(descriptor.fftPadPixels);
+            msg += " fft_width=";
+            msg += std::to_string(descriptor.fftWidth);
+            msg += " fft_height=";
+            msg += std::to_string(descriptor.fftHeight);
+            msg += " fft_complex_width=";
+            msg += std::to_string(descriptor.fftComplexWidth);
             msg += " raw_correction_planes=";
             msg += std::to_string(roles.rawCorrectionPlanes);
             msg += " filtered_correction_planes=";
@@ -1653,29 +1672,43 @@ namespace JuicerProcess {
                 return false;
             }
         }
-        const float sigmas[4] = {
-            descriptor.gaussianSigmaPixels,
-            descriptor.exponentialSigmaPixels[0],
-            descriptor.exponentialSigmaPixels[1],
-            descriptor.exponentialSigmaPixels[2]};
-        for (int slot = 0; slot < 4; ++slot) {
-            if (slot > 0 && !(descriptor.exponentialWeights[slot - 1] > 0.0f)) {
-                continue;
-            }
-            if (sigmas[slot] >= 3.0f) {
-                continue;
-            }
-            if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
+        if (descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
+            if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_fft(
                     _state->transaction,
                     *_state->resources,
-                    _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
-                    sigmas[slot],
+                    descriptor,
                     cudaStreamOpaque,
                     outError)) {
                 _state->set_failure(
-                    "command_ensure_spatial_dir_kernel",
-                    "CUDA spatial DIR kernel upload failed");
+                    "command_ensure_spatial_dir_fft",
+                    "CUDA spatial DIR FFT preparation failed");
                 return false;
+            }
+        } else {
+            const float sigmas[4] = {
+                descriptor.gaussianSigmaPixels,
+                descriptor.exponentialSigmaPixels[0],
+                descriptor.exponentialSigmaPixels[1],
+                descriptor.exponentialSigmaPixels[2]};
+            for (int slot = 0; slot < 4; ++slot) {
+                if (slot > 0 && !(descriptor.exponentialWeights[slot - 1] > 0.0f)) {
+                    continue;
+                }
+                if (sigmas[slot] >= 3.0f) {
+                    continue;
+                }
+                if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_kernel(
+                        _state->transaction,
+                        *_state->resources,
+                        _state->resources->spatialDirKernels[static_cast<std::size_t>(slot)],
+                        sigmas[slot],
+                        cudaStreamOpaque,
+                        outError)) {
+                    _state->set_failure(
+                        "command_ensure_spatial_dir_kernel",
+                        "CUDA spatial DIR kernel upload failed");
+                    return false;
+                }
             }
         }
         _state->spatialDirDescriptor = descriptor;
@@ -2599,6 +2632,40 @@ namespace JuicerProcess {
                 _state->spatialDirDescriptor.exponentialSigmaPixels[slot]};
         }
         view.descriptorHash = descriptorHash;
+        if (_state->spatialDirDescriptor.approximation ==
+            Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
+            const auto& fft = _state->resources->spatialDirFft;
+            view.fftForwardPlan = fft.forwardPlan;
+            view.fftInversePlan = fft.inversePlan;
+            view.fftRealBuffer = fft.realBuffer;
+            view.fftSpectrum = fft.spectrum;
+            view.fftTransfer = fft.transfer;
+            view.fftWidth = fft.width;
+            view.fftHeight = fft.height;
+            view.fftPadPixels = fft.padPixels;
+            view.fftComplexWidth = fft.complexWidth;
+            view.fftRealBufferBytes = fft.realBufferBytes;
+            view.fftSpectrumBytes = fft.spectrumBytes;
+            view.fftTransferBytes = fft.transferBytes;
+            view.fftWorkAreaBytes = fft.workAreaBytes;
+            view.fftForwardWorkBytes = fft.forwardWorkBytes;
+            view.fftInverseWorkBytes = fft.inverseWorkBytes;
+            view.fftSetupMs = fft.lastSetupMs;
+            view.fftSetupCreated = fft.lastSetupCreated;
+            view.fftActive =
+                fft.descriptorHash == descriptorHash &&
+                fft.forwardPlan != 0 &&
+                fft.inversePlan != 0 &&
+                fft.realBuffer &&
+                fft.spectrum &&
+                fft.transfer &&
+                fft.width == _state->spatialDirDescriptor.fftWidth &&
+                fft.height == _state->spatialDirDescriptor.fftHeight &&
+                fft.padPixels == _state->spatialDirDescriptor.fftPadPixels &&
+                fft.complexWidth == _state->spatialDirDescriptor.fftComplexWidth;
+            view.active = view.fftActive;
+            return view;
+        }
         view.active = view.gaussian.sigma >= 3.0f ||
                       (view.gaussian.weights && view.gaussian.radius > 0);
         for (int slot = 0; slot < 3; ++slot) {

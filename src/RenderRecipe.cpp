@@ -91,7 +91,7 @@ namespace {
     bool dir_tail_mode_valid(Spektrafilm::DirTailMode value) noexcept {
         switch (value) {
             case Spektrafilm::DirTailMode::SpektrafilmStrict:
-            case Spektrafilm::DirTailMode::AcceptedTwoGaussianTail:
+            case Spektrafilm::DirTailMode::AcceptedFftReplicatePadSmooth:
                 return true;
             default:
                 return false;
@@ -692,6 +692,92 @@ namespace {
             }
         }
         return roles;
+    }
+
+    bool dir_tail_mode_is_accepted_fft(Spektrafilm::DirTailMode value) noexcept {
+        return value == Spektrafilm::DirTailMode::AcceptedFftReplicatePadSmooth;
+    }
+
+    bool integer_has_only_fft_smooth_factors(int value) noexcept {
+        if (value <= 0) {
+            return false;
+        }
+        for (int factor : {2, 3, 5, 7}) {
+            while ((value % factor) == 0) {
+                value /= factor;
+            }
+        }
+        return value == 1;
+    }
+
+    int next_fft_smooth_size(int requested) noexcept {
+        constexpr int kMaxTransform = 1 << 30;
+        if (requested <= 0 || requested > kMaxTransform) {
+            return 0;
+        }
+        for (int value = requested; value <= kMaxTransform; ++value) {
+            if (integer_has_only_fft_smooth_factors(value)) {
+                return value;
+            }
+        }
+        return 0;
+    }
+
+    bool configure_accepted_fft_descriptor(SpatialDirDescriptor& descriptor) noexcept {
+        float maxSigma = 0.0f;
+        for (int component = 0; component < descriptor.filterPlan.componentCount; ++component) {
+            const Spektrafilm::DirGaussianComponentPlan& plan =
+                descriptor.filterPlan.components[static_cast<std::size_t>(component)];
+            if (plan.weight > 0.0f) {
+                maxSigma = std::max(maxSigma, plan.sigmaPixels);
+            }
+        }
+        if (!(std::isfinite(maxSigma) && maxSigma > 0.0f)) {
+            return false;
+        }
+        const double requestedPad =
+            static_cast<double>(SpatialDirDescriptor::kAcceptedFftPadSigma) *
+                static_cast<double>(maxSigma) +
+            0.5;
+        if (!(std::isfinite(requestedPad) && requestedPad > 0.0 &&
+              requestedPad <= static_cast<double>(std::numeric_limits<int>::max() / 2))) {
+            return false;
+        }
+        const int padPixels = static_cast<int>(requestedPad);
+        const long long paddedWidth =
+            static_cast<long long>(descriptor.fullFrameExtent.width) +
+            2ll * static_cast<long long>(padPixels);
+        const long long paddedHeight =
+            static_cast<long long>(descriptor.fullFrameExtent.height) +
+            2ll * static_cast<long long>(padPixels);
+        if (paddedWidth <= 0 || paddedHeight <= 0 ||
+            paddedWidth > static_cast<long long>(std::numeric_limits<int>::max()) ||
+            paddedHeight > static_cast<long long>(std::numeric_limits<int>::max())) {
+            return false;
+        }
+        const int fftWidth = next_fft_smooth_size(static_cast<int>(paddedWidth));
+        const int fftHeight = next_fft_smooth_size(static_cast<int>(paddedHeight));
+        if (fftWidth <= 0 || fftHeight <= 0) {
+            return false;
+        }
+
+        descriptor.approximation = Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth;
+        descriptor.fftPadPixels = padPixels;
+        descriptor.fftWidth = fftWidth;
+        descriptor.fftHeight = fftHeight;
+        descriptor.fftComplexWidth = (fftWidth / 2) + 1;
+        descriptor.fftPadSigma = SpatialDirDescriptor::kAcceptedFftPadSigma;
+        descriptor.targetScratchTier = Spektrafilm::DirScratchTier::Tier1F;
+        for (int component = 0; component < descriptor.filterPlan.componentCount; ++component) {
+            Spektrafilm::DirGaussianComponentPlan& plan =
+                descriptor.filterPlan.components[static_cast<std::size_t>(component)];
+            if (plan.weight > 0.0f) {
+                plan.backend = Spektrafilm::DirFilterBackend::AcceptedFftReplicatePadSmooth;
+                plan.targetBackend = Spektrafilm::DirFilterBackend::AcceptedFftReplicatePadSmooth;
+                plan.targetScratchTier = Spektrafilm::DirScratchTier::Tier1F;
+            }
+        }
+        return true;
     }
 
     struct DirComponentBuildInput {
@@ -1673,10 +1759,6 @@ namespace Spektrafilm {
         out.boundaryMode = Spektrafilm::DirBoundaryMode::SpektrafilmReferencePerOperator;
         out.approximation = Spektrafilm::DirApproximationMarker::SpektrafilmStrict;
         out.tailMode = recipe.tailMode;
-        if (recipe.diffusionTailWeight > 0.0f &&
-            recipe.tailMode == Spektrafilm::DirTailMode::AcceptedTwoGaussianTail) {
-            out.approximation = Spektrafilm::DirApproximationMarker::AcceptedTwoGaussianTail;
-        }
         out.renderExtent = renderExtent;
         out.fullFrameExtent = fullFrameExtent;
         out.filterDomainExtent = fullFrameExtent;
@@ -1705,18 +1787,10 @@ namespace Spektrafilm {
             if (!(std::isfinite(tailSigmaPixels) && tailSigmaPixels > 0.0f)) {
                 return false;
             }
-            const bool useTwoGaussianTail =
-                recipe.tailMode == Spektrafilm::DirTailMode::AcceptedTwoGaussianTail;
-            const std::size_t tailComponentCount =
-                useTwoGaussianTail ? SpatialDirDescriptor::kTwoGaussianTailSigmaRatios.size()
-                                   : SpatialDirDescriptor::kExponentialSigmaRatios.size();
+            const std::size_t tailComponentCount = SpatialDirDescriptor::kExponentialSigmaRatios.size();
             for (std::size_t component = 0; component < tailComponentCount; ++component) {
-                const float sigmaRatio = useTwoGaussianTail
-                                             ? SpatialDirDescriptor::kTwoGaussianTailSigmaRatios[component]
-                                             : SpatialDirDescriptor::kExponentialSigmaRatios[component];
-                const float amplitude = useTwoGaussianTail
-                                            ? SpatialDirDescriptor::kTwoGaussianTailAmplitudes[component]
-                                            : SpatialDirDescriptor::kExponentialAmplitudes[component];
+                const float sigmaRatio = SpatialDirDescriptor::kExponentialSigmaRatios[component];
+                const float amplitude = SpatialDirDescriptor::kExponentialAmplitudes[component];
                 out.exponentialSigmaPixels[component] =
                     tailSigmaPixels * sigmaRatio;
                 out.exponentialWeights[component] =
@@ -1739,6 +1813,10 @@ namespace Spektrafilm {
         if (out.filterPlan.componentCount <= 0 ||
             out.targetScratchTier == Spektrafilm::DirScratchTier::Tier0) {
             out.support = Spektrafilm::DirDescriptorSupport::UnsupportedScratchTier;
+            return false;
+        }
+        if (dir_tail_mode_is_accepted_fft(recipe.tailMode) &&
+            !configure_accepted_fft_descriptor(out)) {
             return false;
         }
         out.targetPlaneRoles = dir_target_plane_roles_for_tier(out.targetScratchTier);
@@ -1773,6 +1851,11 @@ namespace Spektrafilm {
         hash_value(hash, out.gaussianWeight);
         Hash::hash_bytes_update(hash, out.exponentialSigmaPixels.data(), sizeof(out.exponentialSigmaPixels));
         Hash::hash_bytes_update(hash, out.exponentialWeights.data(), sizeof(out.exponentialWeights));
+        hash_value(hash, out.fftPadPixels);
+        hash_value(hash, out.fftWidth);
+        hash_value(hash, out.fftHeight);
+        hash_value(hash, out.fftComplexWidth);
+        hash_value(hash, out.fftPadSigma);
         hash_value(hash, out.legacyCompatibilityHash);
         out.hash = hash;
         return out.hash != 0;

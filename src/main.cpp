@@ -230,7 +230,7 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
             OFX::ChoiceParamDescriptor* p = desc.defineChoiceParam(JuicerParams::kDirTailMode);
             p->setLabel("DIR quality");
             p->appendOption("Full Quality (Spektrafilm)");
-            p->appendOption("Fast (2-Gaussian Tail)");
+            p->appendOption("Fast (Padded FFT Approximation)");
             p->setDefault(0);
             if (grpCouplers)
                 p->setParent(*grpCouplers);

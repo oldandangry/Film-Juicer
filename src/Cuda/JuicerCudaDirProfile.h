@@ -25,6 +25,20 @@ namespace JuicerCuda {
         int correctionLaunches = 0;
         int baseFilterLaunches = 0;
         int tailFilterLaunches[3] = {0, 0, 0};
+        int fftFilterLaunches = 0;
+        int fftPadPixels = 0;
+        int fftWidth = 0;
+        int fftHeight = 0;
+        int fftComplexWidth = 0;
+        std::uint64_t fftRealBufferBytes = 0;
+        std::uint64_t fftSpectrumBytes = 0;
+        std::uint64_t fftTransferBytes = 0;
+        std::uint64_t fftWorkAreaBytes = 0;
+        std::uint64_t fftForwardWorkBytes = 0;
+        std::uint64_t fftInverseWorkBytes = 0;
+        double fftSetupMs = 0.0;
+        int fftSetupCreated = 0;
+        int fftActive = 0;
         int scaleCopyLaunches = 0;
         int addScaledLaunches = 0;
         int totalLaunches = 0;
@@ -33,6 +47,7 @@ namespace JuicerCuda {
         SpatialDirStageProfile correction{};
         SpatialDirStageProfile baseFilter{};
         SpatialDirStageProfile tailFilter[3]{};
+        SpatialDirStageProfile fftFilter{};
         SpatialDirStageProfile scaleCopy{};
         SpatialDirStageProfile addScaled{};
     };

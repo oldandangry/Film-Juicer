@@ -103,7 +103,7 @@ namespace Spektrafilm {
 
     enum class DirTailMode : std::uint8_t {
         SpektrafilmStrict = 0,
-        AcceptedTwoGaussianTail = 1
+        AcceptedFftReplicatePadSmooth = 1
     };
 
     enum class SpatialOpticsDomain : std::uint8_t {
@@ -398,6 +398,7 @@ namespace Spektrafilm {
         None,
         SmallFir,
         StrictYvvChannels,
+        AcceptedFftReplicatePadSmooth,
         SF_TEMP_BRIDGE_LegacySigmaThreshold
     };
 
@@ -414,7 +415,7 @@ namespace Spektrafilm {
     enum class DirApproximationMarker : std::uint8_t {
         None,
         SpektrafilmStrict,
-        AcceptedTwoGaussianTail,
+        AcceptedFftReplicatePadSmooth,
         SF_TEMP_BRIDGE_CurrentCudaSpatialDir
     };
 
@@ -515,6 +516,8 @@ namespace Spektrafilm {
                 return "small_fir";
             case DirFilterBackend::StrictYvvChannels:
                 return "strict_yvv_channels";
+            case DirFilterBackend::AcceptedFftReplicatePadSmooth:
+                return "accepted_fft_replicate_pad_smooth";
             case DirFilterBackend::SF_TEMP_BRIDGE_LegacySigmaThreshold:
                 return "SF_TEMP_BRIDGE_LegacySigmaThreshold";
             default:
@@ -549,8 +552,8 @@ namespace Spektrafilm {
                 return "none";
             case DirApproximationMarker::SpektrafilmStrict:
                 return "spektrafilm_strict";
-            case DirApproximationMarker::AcceptedTwoGaussianTail:
-                return "accepted_two_gaussian_tail";
+            case DirApproximationMarker::AcceptedFftReplicatePadSmooth:
+                return "accepted_fft_replicate_pad_smooth";
             case DirApproximationMarker::SF_TEMP_BRIDGE_CurrentCudaSpatialDir:
                 return "SF_TEMP_BRIDGE_CurrentCudaSpatialDir";
             default:
@@ -562,8 +565,8 @@ namespace Spektrafilm {
         switch (value) {
             case DirTailMode::SpektrafilmStrict:
                 return "spektrafilm_strict";
-            case DirTailMode::AcceptedTwoGaussianTail:
-                return "accepted_two_gaussian_tail";
+            case DirTailMode::AcceptedFftReplicatePadSmooth:
+                return "accepted_fft_replicate_pad_smooth";
             default:
                 return "unknown";
         }
@@ -589,8 +592,7 @@ namespace Spektrafilm {
 struct SpatialDirDescriptor {
     static constexpr std::array<float, 3> kExponentialAmplitudes{{0.1633f, 0.6496f, 0.1870f}};
     static constexpr std::array<float, 3> kExponentialSigmaRatios{{0.5360f, 1.5236f, 2.7684f}};
-    static constexpr std::array<float, 2> kTwoGaussianTailAmplitudes{{0.6235f, 0.3765f}};
-    static constexpr std::array<float, 2> kTwoGaussianTailSigmaRatios{{0.9401f, 2.5177f}};
+    static constexpr float kAcceptedFftPadSigma = 3.0f;
 
     std::uint64_t dirRecipeHash = 0;
     Spektrafilm::DirSourceContract sourceContract = Spektrafilm::DirSourceContract::None;
@@ -611,6 +613,11 @@ struct SpatialDirDescriptor {
     std::array<float, 3> exponentialSigmaPixels{};
     float gaussianWeight = 0.0f;
     std::array<float, 3> exponentialWeights{};
+    int fftPadPixels = 0;
+    int fftWidth = 0;
+    int fftHeight = 0;
+    int fftComplexWidth = 0;
+    float fftPadSigma = 0.0f;
     std::uint64_t legacyCompatibilityHash = 0;
     std::uint64_t hash = 0;
 };
