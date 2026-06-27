@@ -62,6 +62,16 @@ namespace JuicerProcess {
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
                 case Spektrafilm::DirScratchTier::Tier2:
+                    return roles.rawCorrectionPlanes == 3 &&
+                           roles.filteredCorrectionPlanes == 3 &&
+                           ((roles.filterTempPlanes == 1 &&
+                             roles.iirForwardTempPlanes == 0) ||
+                            (roles.filterTempPlanes == 3 &&
+                             roles.iirForwardTempPlanes == 3)) &&
+                           roles.cachedLogRawPlanes == 3 &&
+                           roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
+                           roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
                 case Spektrafilm::DirScratchTier::Tier3:
                 case Spektrafilm::DirScratchTier::Unsupported:
                 case Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
@@ -90,10 +100,23 @@ namespace JuicerProcess {
             }
             if (tier == Spektrafilm::DirScratchTier::Tier1IChannels) {
                 return scratch.filterTempM && scratch.filterTempC &&
-                       scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+                       scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC &&
+                       scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
+            }
+            if (tier == Spektrafilm::DirScratchTier::Tier2) {
+                const bool tier2FftShape =
+                    scratch.iirForwardTemp == nullptr &&
+                    scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
+                    scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
+                const bool tier2StrictChannelShape =
+                    scratch.filterTempM && scratch.filterTempC &&
+                    scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+                return scratch.logRawB && scratch.logRawG && scratch.logRawR &&
+                       (tier2FftShape || tier2StrictChannelShape);
             }
             return tier == Spektrafilm::DirScratchTier::Tier1F &&
                    scratch.iirForwardTemp == nullptr &&
+                   scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr &&
                    scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
                    scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
         }
@@ -999,6 +1022,21 @@ namespace JuicerProcess {
                      "frame spatial DIR iirForwardTempC"))) {
                 return fail_after_partial_alloc();
             }
+            if (request.spatialDirPlaneRoles.cachedLogRawPlanes == 3 &&
+                (!alloc_float(
+                     spatialDir.logRawB,
+                     planeBytes,
+                     "frame spatial DIR logRawB") ||
+                 !alloc_float(
+                     spatialDir.logRawG,
+                     planeBytes,
+                     "frame spatial DIR logRawG") ||
+                 !alloc_float(
+                     spatialDir.logRawR,
+                     planeBytes,
+                     "frame spatial DIR logRawR"))) {
+                return fail_after_partial_alloc();
+            }
             spatialDir.width = request.requestedWidth;
             spatialDir.height = request.requestedHeight;
             spatialDir.capacityElements = requiredElements;
@@ -1118,6 +1156,9 @@ namespace JuicerProcess {
             workspace.spatialDir.iirForwardTempC,
             planeBytes,
             "frame spatial DIR iirForwardTempC");
+        retire_ptr(workspace.spatialDir.logRawB, planeBytes, "frame spatial DIR logRawB");
+        retire_ptr(workspace.spatialDir.logRawG, planeBytes, "frame spatial DIR logRawG");
+        retire_ptr(workspace.spatialDir.logRawR, planeBytes, "frame spatial DIR logRawR");
         retire_ptr(
             workspace.sharedTmpPlane,
             workspace.sharedTmpCapacityElements * sizeof(float),
@@ -1197,6 +1238,15 @@ namespace JuicerProcess {
         }
         if (workspace.spatialDir.iirForwardTempC) {
             cudaFree(workspace.spatialDir.iirForwardTempC);
+        }
+        if (workspace.spatialDir.logRawB) {
+            cudaFree(workspace.spatialDir.logRawB);
+        }
+        if (workspace.spatialDir.logRawG) {
+            cudaFree(workspace.spatialDir.logRawG);
+        }
+        if (workspace.spatialDir.logRawR) {
+            cudaFree(workspace.spatialDir.logRawR);
         }
         if (workspace.sharedTmpPlane) {
             cudaFree(workspace.sharedTmpPlane);
@@ -1619,6 +1669,8 @@ namespace JuicerProcess {
             msg += std::to_string(targetRoles.filterTempPlanes);
             msg += " target_iir_forward_temp_planes=";
             msg += std::to_string(targetRoles.iirForwardTempPlanes);
+            msg += " target_cached_log_raw_planes=";
+            msg += std::to_string(targetRoles.cachedLogRawPlanes);
             msg += " render_extent=";
             msg += std::to_string(descriptor.renderExtent.x) + "," +
                    std::to_string(descriptor.renderExtent.y) + "," +
@@ -2621,6 +2673,9 @@ namespace JuicerProcess {
         view.iirForwardTemp = scratch.iirForwardTemp;
         view.iirForwardTempM = scratch.iirForwardTempM;
         view.iirForwardTempC = scratch.iirForwardTempC;
+        view.logRawB = scratch.logRawB;
+        view.logRawG = scratch.logRawG;
+        view.logRawR = scratch.logRawR;
         view.descriptorHash = workspace._request.spatialDirDescriptorHash;
         view.scratchTier = workspace._request.spatialDirScratchTier;
         view.planeRoles = workspace._request.spatialDirPlaneRoles;

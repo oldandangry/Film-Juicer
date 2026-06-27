@@ -1203,10 +1203,9 @@ namespace {
 
         float D_cmy[3] = {0.0f, 0.0f, 0.0f};
         if (useSpatialDir) {
-            float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-            compute_logE_raw_device(params, rgbIn, logE_raw);
-
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+            float logE_raw[3] = {0.0f, 0.0f, 0.0f};
+            juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
             juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
         } else {
             float logE_raw[3] = {0.0f, 0.0f, 0.0f};
@@ -2079,12 +2078,13 @@ cudaError_t profile_focused_pipeline_stages_impl(
         return cudaErrorInvalidValue;
     }
 
-    JuicerCuda::PipelineRunParams params{};
-    if constexpr (requires { focusedParams.printExpose; focusedParams.printDevelop; }) {
-        params = profile_params_from_print(focusedParams);
-    } else {
-        params = profile_params_from_direct(focusedParams);
-    }
+    const JuicerCuda::PipelineRunParams params = [&]() {
+        if constexpr (requires { focusedParams.printExpose; focusedParams.printDevelop; }) {
+            return profile_params_from_print(focusedParams);
+        } else {
+            return profile_params_from_direct(focusedParams);
+        }
+    }();
 
     cudaStream_t stream =
         cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;

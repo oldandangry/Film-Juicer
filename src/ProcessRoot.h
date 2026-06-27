@@ -317,6 +317,9 @@ namespace JuicerProcess {
                 float* iirForwardTemp = nullptr;
                 float* iirForwardTempM = nullptr;
                 float* iirForwardTempC = nullptr;
+                float* logRawB = nullptr;
+                float* logRawG = nullptr;
+                float* logRawR = nullptr;
                 std::uint64_t descriptorHash = 0;
                 Spektrafilm::DirScratchTier scratchTier = Spektrafilm::DirScratchTier::Tier0;
                 Spektrafilm::DirScratchPlaneRoles planeRoles{};

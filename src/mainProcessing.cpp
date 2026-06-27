@@ -121,6 +121,9 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -164,6 +167,9 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -207,6 +213,9 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -618,15 +627,19 @@ namespace {
         profile.fftSetupCreated = resources.fftSetupCreated ? 1 : 0;
     }
 
-    // SF_TEMP_BRIDGE_bind_filtered_correction_to_payload: Phase 5 removes this
-    // once FilmDevelopPayload stops exposing corr* aliases for spatial DIR.
-    void SF_TEMP_BRIDGE_bind_filtered_correction_to_payload(
+    // SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload: Phase 5 removes
+    // this once FilmDevelopPayload stops exposing corr* aliases for spatial DIR
+    // and cached log raw.
+    void SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(
         JuicerCuda::FilmDevelopPayload& payload,
         const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView& scratch) {
         payload.spatialDir.active = 1;
         payload.spatialDir.corrY = scratch.filteredCorrectionY;
         payload.spatialDir.corrM = scratch.filteredCorrectionM;
         payload.spatialDir.corrC = scratch.filteredCorrectionC;
+        payload.spatialDir.logRawB = scratch.logRawB;
+        payload.spatialDir.logRawG = scratch.logRawG;
+        payload.spatialDir.logRawR = scratch.logRawR;
     }
 
     void trace_spatial_dir_descriptor_build(
@@ -986,6 +999,7 @@ namespace {
             << " target_filtered_correction_planes=" << (dirActive ? targetRoles.filteredCorrectionPlanes : 0)
             << " target_filter_temp_planes=" << (dirActive ? targetRoles.filterTempPlanes : 0)
             << " target_iir_forward_temp_planes=" << (dirActive ? targetRoles.iirForwardTempPlanes : 0)
+            << " target_cached_log_raw_planes=" << (dirActive ? targetRoles.cachedLogRawPlanes : 0)
             << " scratch_bytes_approx=" << scratchBytesApprox;
         for (int component = 0; component < Spektrafilm::DirFilterPlan::kMaxComponents; ++component) {
             const Spektrafilm::DirGaussianComponentPlan& plan =
@@ -2654,7 +2668,12 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=prepared_spatial_dir");
             }
-            SF_TEMP_BRIDGE_bind_filtered_correction_to_payload(run.filmDevelop, scratch);
+            if (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR) {
+                preparedFrame.abort("direct_spatial_dir_cached_log_raw_missing");
+                throw_direct_restriction(
+                    "MissingRequiredResource phase=3D-3 field=spatial_dir_cached_log_raw");
+            }
+            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, scratch);
             // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
             // these old wrapper arguments after source/filter/final-develop split lands.
             float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
@@ -2673,6 +2692,9 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTempM;
             float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
                 scratch.iirForwardTempC;
+            float* cachedLogRawB = scratch.logRawB;
+            float* cachedLogRawG = scratch.logRawG;
+            float* cachedLogRawR = scratch.logRawR;
             directDirScratchOverflow = scratch.overflow;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
@@ -2693,6 +2715,9 @@ void JuicerProcessor::processImagesCUDA() {
                 SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
                 SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM,
                 SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC,
+                cachedLogRawB,
+                cachedLogRawG,
+                cachedLogRawR,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,
@@ -3166,7 +3191,12 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=prepared_spatial_dir");
             }
-            SF_TEMP_BRIDGE_bind_filtered_correction_to_payload(run.filmDevelop, scratch);
+            if (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR) {
+                preparedFrame.abort("print_spatial_dir_cached_log_raw_missing");
+                throw_print_restriction(
+                    "MissingRequiredResource phase=4C field=spatial_dir_cached_log_raw");
+            }
+            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, scratch);
             // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
             // these old wrapper arguments after source/filter/final-develop split lands.
             float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
@@ -3185,6 +3215,9 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTempM;
             float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
                 scratch.iirForwardTempC;
+            float* cachedLogRawB = scratch.logRawB;
+            float* cachedLogRawG = scratch.logRawG;
+            float* cachedLogRawR = scratch.logRawR;
             printDirScratchOverflow = scratch.overflow;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
@@ -3205,6 +3238,9 @@ void JuicerProcessor::processImagesCUDA() {
                 SF_TEMP_BRIDGE_map_legacy_iir_forward_plane_to_iirForwardTemp,
                 SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempM,
                 SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC,
+                cachedLogRawB,
+                cachedLogRawG,
+                cachedLogRawR,
                 resources.gaussian.weights,
                 resources.gaussian.radius,
                 resources.gaussian.sigma,

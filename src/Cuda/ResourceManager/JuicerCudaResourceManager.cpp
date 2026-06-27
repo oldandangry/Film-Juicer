@@ -1770,6 +1770,20 @@ namespace JuicerCuda {
                     add_snapshot_bytes(snapshot, planeBytes);
                 if (scratch.iirForwardTemp)
                     add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.iirForwardTempM)
+                    add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.iirForwardTempC)
+                    add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.filterTempM)
+                    add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.filterTempC)
+                    add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.logRawB)
+                    add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.logRawG)
+                    add_snapshot_bytes(snapshot, planeBytes);
+                if (scratch.logRawR)
+                    add_snapshot_bytes(snapshot, planeBytes);
             }
 
             void add_resources_active_bytes_locked(
@@ -2456,7 +2470,7 @@ namespace JuicerCuda {
 
             const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.spatialDirPlaneRoles;
             const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.spatialDirTargetPlaneRoles;
-            const std::string msg = trace_event_prefix("scratch_request", transaction, commandName) + " request_generation=" + std::to_string(static_cast<unsigned long long>(descriptor.generation)) + " need_optics=" + std::to_string(descriptor.needOptics ? 1 : 0) + " need_spatial_dir=" + std::to_string(descriptor.needSpatialDir ? 1 : 0) + " spatial_dir_descriptor_hash=" + std::to_string(static_cast<unsigned long long>(descriptor.spatialDirDescriptorHash)) + " spatial_dir_scratch_tier=" + Spektrafilm::to_cstr(descriptor.spatialDirScratchTier) + " spatial_dir_target_scratch_tier=" + Spektrafilm::to_cstr(descriptor.spatialDirTargetScratchTier) + " raw_correction_planes=" + std::to_string(roles.rawCorrectionPlanes) + " filtered_correction_planes=" + std::to_string(roles.filteredCorrectionPlanes) + " filter_temp_planes=" + std::to_string(roles.filterTempPlanes) + " iir_forward_temp_planes=" + std::to_string(roles.iirForwardTempPlanes) + " cached_log_raw_planes=" + std::to_string(roles.cachedLogRawPlanes) + " SF_TEMP_BRIDGE_corr_planes=" + std::to_string(roles.SF_TEMP_BRIDGE_corrPlanes) + " SF_TEMP_BRIDGE_mix_planes=" + std::to_string(roles.SF_TEMP_BRIDGE_mixPlanes) + " SF_TEMP_BRIDGE_tmp_planes=" + std::to_string(roles.SF_TEMP_BRIDGE_tmpPlanes) + " target_raw_correction_planes=" + std::to_string(targetRoles.rawCorrectionPlanes) + " target_filtered_correction_planes=" + std::to_string(targetRoles.filteredCorrectionPlanes) + " target_filter_temp_planes=" + std::to_string(targetRoles.filterTempPlanes) + " target_iir_forward_temp_planes=" + std::to_string(targetRoles.iirForwardTempPlanes) + " requested_width=" + std::to_string(descriptor.requestedWidth) + " requested_height=" + std::to_string(descriptor.requestedHeight) + " need_blurred=" + std::to_string(descriptor.needBlurred ? 1 : 0) + " need_aux=" + std::to_string(descriptor.needAux ? 1 : 0) + " need_grain_triplet=" + std::to_string(descriptor.needGrainTriplet ? 1 : 0) + " need_grain_shared=" + std::to_string(descriptor.needGrainShared ? 1 : 0) + " need_gate_mask=" + std::to_string(descriptor.needGateMask ? 1 : 0) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(reason);
+            const std::string msg = trace_event_prefix("scratch_request", transaction, commandName) + " request_generation=" + std::to_string(static_cast<unsigned long long>(descriptor.generation)) + " need_optics=" + std::to_string(descriptor.needOptics ? 1 : 0) + " need_spatial_dir=" + std::to_string(descriptor.needSpatialDir ? 1 : 0) + " spatial_dir_descriptor_hash=" + std::to_string(static_cast<unsigned long long>(descriptor.spatialDirDescriptorHash)) + " spatial_dir_scratch_tier=" + Spektrafilm::to_cstr(descriptor.spatialDirScratchTier) + " spatial_dir_target_scratch_tier=" + Spektrafilm::to_cstr(descriptor.spatialDirTargetScratchTier) + " raw_correction_planes=" + std::to_string(roles.rawCorrectionPlanes) + " filtered_correction_planes=" + std::to_string(roles.filteredCorrectionPlanes) + " filter_temp_planes=" + std::to_string(roles.filterTempPlanes) + " iir_forward_temp_planes=" + std::to_string(roles.iirForwardTempPlanes) + " cached_log_raw_planes=" + std::to_string(roles.cachedLogRawPlanes) + " SF_TEMP_BRIDGE_corr_planes=" + std::to_string(roles.SF_TEMP_BRIDGE_corrPlanes) + " SF_TEMP_BRIDGE_mix_planes=" + std::to_string(roles.SF_TEMP_BRIDGE_mixPlanes) + " SF_TEMP_BRIDGE_tmp_planes=" + std::to_string(roles.SF_TEMP_BRIDGE_tmpPlanes) + " target_raw_correction_planes=" + std::to_string(targetRoles.rawCorrectionPlanes) + " target_filtered_correction_planes=" + std::to_string(targetRoles.filteredCorrectionPlanes) + " target_filter_temp_planes=" + std::to_string(targetRoles.filterTempPlanes) + " target_iir_forward_temp_planes=" + std::to_string(targetRoles.iirForwardTempPlanes) + " target_cached_log_raw_planes=" + std::to_string(targetRoles.cachedLogRawPlanes) + " requested_width=" + std::to_string(descriptor.requestedWidth) + " requested_height=" + std::to_string(descriptor.requestedHeight) + " need_blurred=" + std::to_string(descriptor.needBlurred ? 1 : 0) + " need_aux=" + std::to_string(descriptor.needAux ? 1 : 0) + " need_grain_triplet=" + std::to_string(descriptor.needGrainTriplet ? 1 : 0) + " need_grain_shared=" + std::to_string(descriptor.needGrainShared ? 1 : 0) + " need_gate_mask=" + std::to_string(descriptor.needGateMask ? 1 : 0) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(reason);
             JTRACE("MSSRQ", msg);
 #endif
         }

@@ -277,6 +277,9 @@ namespace {
         float* rawCorrectionY,
         float* rawCorrectionM,
         float* rawCorrectionC,
+        float* logRawB,
+        float* logRawG,
+        float* logRawR,
         unsigned int* clampHits) {
         if (!params.src || params.srcRowBytes == 0) {
             return;
@@ -315,6 +318,9 @@ namespace {
                 rawCorrectionY[idx] = outCorr[0];
                 rawCorrectionM[idx] = outCorr[1];
                 rawCorrectionC[idx] = outCorr[2];
+                logRawB[idx] = logE_raw[0];
+                logRawG[idx] = logE_raw[1];
+                logRawR[idx] = logE_raw[2];
             }
         }
     }
@@ -587,6 +593,9 @@ cudaError_t build_spatial_dir_impl(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -627,6 +636,9 @@ cudaError_t build_spatial_dir_impl(
     if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC || !filteredCorrectionY ||
         !filteredCorrectionM || !filteredCorrectionC || !filterTemp ||
         !(gaussianSigma > 0.0f) || !(gaussianWeight >= 0.0f)) {
+        return cudaErrorInvalidValue;
+    }
+    if (!logRawB || !logRawG || !logRawR) {
         return cudaErrorInvalidValue;
     }
     const bool haveChannelYvvScratch =
@@ -737,6 +749,9 @@ cudaError_t build_spatial_dir_impl(
             rawCorrectionY,
             rawCorrectionM,
             rawCorrectionC,
+            logRawB,
+            logRawG,
+            logRawR,
             dClampHits);
         mark_launch(
             profile ? &profile->correction : nullptr,
@@ -1068,6 +1083,9 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -1115,6 +1133,9 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
         iirForwardTemp,
         iirForwardTempM,
         iirForwardTempC,
+        logRawB,
+        logRawG,
+        logRawR,
         dGaussianKernel,
         gaussianRadius,
         gaussianSigma,
@@ -1163,6 +1184,9 @@ cudaError_t SF_TEMP_BRIDGE_build_direct_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -1210,6 +1234,9 @@ cudaError_t SF_TEMP_BRIDGE_build_direct_spatial_dir(
         iirForwardTemp,
         iirForwardTempM,
         iirForwardTempC,
+        logRawB,
+        logRawG,
+        logRawR,
         dGaussianKernel,
         gaussianRadius,
         gaussianSigma,
@@ -1258,6 +1285,9 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -1300,6 +1330,9 @@ extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir(
         iirForwardTemp,
         iirForwardTempM,
         iirForwardTempC,
+        logRawB,
+        logRawG,
+        logRawR,
         dGaussianKernel,
         gaussianRadius,
         gaussianSigma,
@@ -1344,6 +1377,9 @@ cudaError_t SF_TEMP_BRIDGE_build_print_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -1391,6 +1427,9 @@ cudaError_t SF_TEMP_BRIDGE_build_print_spatial_dir(
         iirForwardTemp,
         iirForwardTempM,
         iirForwardTempC,
+        logRawB,
+        logRawG,
+        logRawR,
         dGaussianKernel,
         gaussianRadius,
         gaussianSigma,
@@ -1439,6 +1478,9 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     float* iirForwardTemp,
     float* iirForwardTempM,
     float* iirForwardTempC,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
     const float* dGaussianKernel,
     int gaussianRadius,
     float gaussianSigma,
@@ -1481,6 +1523,9 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
         iirForwardTemp,
         iirForwardTempM,
         iirForwardTempC,
+        logRawB,
+        logRawG,
+        logRawR,
         dGaussianKernel,
         gaussianRadius,
         gaussianSigma,
@@ -2224,10 +2269,9 @@ __global__ void develop_film_density_kernel(
             const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
             float D_cmy[3] = {0.0f, 0.0f, 0.0f};
             if (useSpatialDir) {
-                float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_raw_device(params, rgbIn, logE_raw);
-
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
+                float logE_raw[3] = {0.0f, 0.0f, 0.0f};
+                juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
                 juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
@@ -2672,8 +2716,7 @@ __global__ void develop_film_density_from_raw_kernel(
             float D_cmy[3] = {0.0f, 0.0f, 0.0f};
             if (useSpatialDir) {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
-
+                juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
                 juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};

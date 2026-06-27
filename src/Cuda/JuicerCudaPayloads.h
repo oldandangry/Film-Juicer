@@ -105,6 +105,9 @@ namespace JuicerCuda {
         const float* JUICER_RESTRICT corrY = nullptr;
         const float* JUICER_RESTRICT corrM = nullptr;
         const float* JUICER_RESTRICT corrC = nullptr;
+        const float* JUICER_RESTRICT logRawB = nullptr;
+        const float* JUICER_RESTRICT logRawG = nullptr;
+        const float* JUICER_RESTRICT logRawR = nullptr;
     };
 
     struct HighlightBoostPayload {

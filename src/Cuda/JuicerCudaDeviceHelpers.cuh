@@ -1533,6 +1533,15 @@ static __device__ __forceinline__ bool juicer_cuda_spatial_dir_filtered_correcti
            develop.spatialDir.corrC;
 }
 
+static __device__ __forceinline__ void juicer_cuda_load_spatial_dir_cached_log_raw_device(
+    const JuicerCuda::FilmDevelopPayload& develop,
+    std::size_t pixelIndex,
+    float logRawBgr[3]) {
+    logRawBgr[0] = ldg_f(develop.spatialDir.logRawB + pixelIndex);
+    logRawBgr[1] = ldg_f(develop.spatialDir.logRawG + pixelIndex);
+    logRawBgr[2] = ldg_f(develop.spatialDir.logRawR + pixelIndex);
+}
+
 static __device__ __forceinline__ void juicer_cuda_develop_dir_final_device(
     const JuicerCuda::FilmDevelopPayload& develop,
     const float logRawBgr[3],

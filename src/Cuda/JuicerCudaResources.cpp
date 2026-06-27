@@ -970,6 +970,9 @@ namespace JuicerCuda {
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.iirForwardTemp != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.iirForwardTempM != nullptr, spatialDirPlaneBytes);
         add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.iirForwardTempC != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawB != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawG != nullptr, spatialDirPlaneBytes);
+        add_candidate_plane(ResourceManager::ScratchPolicyCandidate::SpatialDirBase, resources.spatialDirScratch.logRawR != nullptr, spatialDirPlaneBytes);
 
         if (resources.sharedTmpPlane) {
             next.helperSharedBytes = sharedTmpBytes;
@@ -4862,6 +4865,9 @@ namespace JuicerCuda {
         free_tracked_device_ptr_locked(resources, s.iirForwardTemp, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.iirForwardTempM, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, s.iirForwardTempC, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.logRawB, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.logRawG, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, s.logRawR, cudaStreamOpaque);
 #endif
         s.filterTemp = nullptr;
         s.width = 0;
@@ -4953,6 +4959,21 @@ namespace JuicerCuda {
                 return false;
             s.iirForwardTempC = nullptr;
         }
+        if (s.logRawB) {
+            if (!retire_ptr_locked(resources, s.logRawB, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
+            s.logRawB = nullptr;
+        }
+        if (s.logRawG) {
+            if (!retire_ptr_locked(resources, s.logRawG, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
+            s.logRawG = nullptr;
+        }
+        if (s.logRawR) {
+            if (!retire_ptr_locked(resources, s.logRawR, bytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, label, outError, true))
+                return false;
+            s.logRawR = nullptr;
+        }
         s.filterTemp = nullptr;
         s.width = 0;
         s.height = 0;
@@ -4992,7 +5013,8 @@ namespace JuicerCuda {
         return scratch.rawCorrectionY || scratch.rawCorrectionM || scratch.rawCorrectionC ||
                scratch.filteredCorrectionY || scratch.filteredCorrectionM ||
                scratch.filteredCorrectionC || scratch.filterTempM || scratch.filterTempC ||
-               scratch.iirForwardTemp || scratch.iirForwardTempM || scratch.iirForwardTempC;
+               scratch.iirForwardTemp || scratch.iirForwardTempM || scratch.iirForwardTempC ||
+               scratch.logRawB || scratch.logRawG || scratch.logRawR;
     }
 
     static bool retire_shared_tmp_plane_locked(
@@ -5369,6 +5391,23 @@ namespace JuicerCuda {
                     return false;
                 }
                 *forwardPlane = nullptr;
+            }
+        }
+        float** logRawPlanes[3] = {&scratch.logRawB, &scratch.logRawG, &scratch.logRawR};
+        for (float** logRawPlane : logRawPlanes) {
+            if (*logRawPlane) {
+                if (!retire_ptr_locked(
+                        resources,
+                        *logRawPlane,
+                        bytes,
+                        Resources::RetireKind::DeviceFree,
+                        cudaStreamOpaque,
+                        "scratch normalization spatial dir log raw",
+                        outError,
+                        true)) {
+                    return false;
+                }
+                *logRawPlane = nullptr;
             }
         }
         scratch.filterTemp = nullptr;
@@ -6147,10 +6186,19 @@ namespace JuicerCuda {
             return (scratchTier == Spektrafilm::DirScratchTier::Tier1F &&
                     scratch.iirForwardTemp == nullptr &&
                     scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
-                    scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr) ||
+                    scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr &&
+                    scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
                    (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels &&
                     scratch.filterTempM && scratch.filterTempC &&
-                    scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC);
+                    scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC &&
+                    scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+                   (scratchTier == Spektrafilm::DirScratchTier::Tier2 &&
+                    ((scratch.iirForwardTemp == nullptr &&
+                      scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
+                      scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr) ||
+                     (scratch.filterTempM && scratch.filterTempC &&
+                      scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC)) &&
+                    scratch.logRawB && scratch.logRawG && scratch.logRawR);
         };
         const bool haveRequiredRoles = spatial_dir_scratch_has_required_roles();
         if (dimsMatch && capacityMatch && haveRequiredRoles) {
@@ -6164,7 +6212,8 @@ namespace JuicerCuda {
         if (scratch.rawCorrectionY || scratch.rawCorrectionM || scratch.rawCorrectionC ||
             scratch.filteredCorrectionY || scratch.filteredCorrectionM ||
             scratch.filteredCorrectionC || scratch.filterTempM || scratch.filterTempC ||
-            scratch.iirForwardTemp || scratch.iirForwardTempM || scratch.iirForwardTempC) {
+            scratch.iirForwardTemp || scratch.iirForwardTempM || scratch.iirForwardTempC ||
+            scratch.logRawB || scratch.logRawG || scratch.logRawR) {
             if (!capacityMatch || !haveRequiredRoles) {
                 if (!retire_spatial_dir_scratch_locked(resources, scratch, cudaStreamOpaque, "spatial DIR scratch", outError)) {
                     return false;
@@ -6276,6 +6325,31 @@ namespace JuicerCuda {
                  bytes,
                  cudaStreamOpaque,
                  "spatial DIR iirForwardTempC",
+                 outError))) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+            return false;
+        }
+        if (planeRoles.cachedLogRawPlanes == 3 &&
+            (!allocate_scratch_device_ptr_locked(
+                 resources,
+                 scratch.logRawB,
+                 bytes,
+                 cudaStreamOpaque,
+                 "spatial DIR logRawB",
+                 outError) ||
+             !allocate_scratch_device_ptr_locked(
+                 resources,
+                 scratch.logRawG,
+                 bytes,
+                 cudaStreamOpaque,
+                 "spatial DIR logRawG",
+                 outError) ||
+             !allocate_scratch_device_ptr_locked(
+                 resources,
+                 scratch.logRawR,
+                 bytes,
+                 cudaStreamOpaque,
+                 "spatial DIR logRawR",
                  outError))) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;

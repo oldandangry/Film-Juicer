@@ -2317,10 +2317,18 @@ std::size_t estimate_spatial_dir_growth_bytes(
     const bool haveTierTemps =
         (scratchTier == Spektrafilm::DirScratchTier::Tier1F &&
          !scratch.filterTempM && !scratch.filterTempC &&
-         !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC) ||
+         !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC &&
+         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
         (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels &&
          scratch.filterTempM && scratch.filterTempC &&
-         scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC);
+         scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC &&
+         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
+        (scratchTier == Spektrafilm::DirScratchTier::Tier2 &&
+         ((!scratch.filterTempM && !scratch.filterTempC &&
+           !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC) ||
+          (scratch.filterTempM && scratch.filterTempC &&
+           scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC)) &&
+         scratch.logRawB && scratch.logRawG && scratch.logRawR);
     const bool haveRequiredRoles = haveBase && haveTierTemps;
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool sharedTmpMatch = scratch.filterTemp &&
