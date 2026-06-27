@@ -52,4 +52,34 @@ namespace JuicerCuda {
         SpatialDirStageProfile addScaled{};
     };
 
+    struct PrintDevelopBreakdownProfile {
+        int captured = 0;
+        const char* profileKind = nullptr;
+        const char* profileNote = nullptr;
+        SpatialDirStageProfile total{};
+        SpatialDirStageProfile spectralIntegrate{};
+        SpatialDirStageProfile exposureScale{};
+        SpatialDirStageProfile logEncode{};
+        SpatialDirStageProfile densityCurve{};
+    };
+
+    struct CompositePipelineProfile {
+        int width = 0;
+        int height = 0;
+        int captured = 0;
+        int totalLaunches = 0;
+        const char* profileKind = nullptr;
+        const char* profileNote = nullptr;
+        SpatialDirStageProfile total{};
+        SpatialDirStageProfile filmRaw{};
+        SpatialDirStageProfile filmDevelop{};
+        SpatialDirStageProfile printDevelop{};
+        SpatialDirStageProfile scannerLinear{};
+        SpatialDirStageProfile outputEncode{};
+        SpatialDirStageProfile glare{};
+        SpatialDirStageProfile lensBlur{};
+        SpatialDirStageProfile unsharp{};
+        PrintDevelopBreakdownProfile printDevelopBreakdown{};
+    };
+
 } // namespace JuicerCuda

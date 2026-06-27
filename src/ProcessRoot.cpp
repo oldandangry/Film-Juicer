@@ -1480,6 +1480,31 @@ namespace JuicerProcess {
         return true;
     }
 
+    bool Root::PreparedCudaFrame::try_stage_profile_optical_workspace(
+        const WorkspaceLeaseMarker& workspace,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!validate_workspace_lease_marker(workspace, outError)) {
+            return false;
+        }
+        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+            return false;
+        }
+        if (_state->scratchWorkspace.overflowActive) {
+            return true;
+        }
+
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
+        return JuicerCuda::ResourceManager::command_ensure_optics_scratch(
+            _state->transaction,
+            *_state->resources,
+            scratchRequest,
+            cudaStreamOpaque,
+            outError);
+    }
+
     bool Root::PreparedCudaFrame::prepare_spatial_dir_resources(
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         const WorkspaceLeaseMarker& workspace,

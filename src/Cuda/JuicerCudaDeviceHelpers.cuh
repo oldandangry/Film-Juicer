@@ -1289,48 +1289,45 @@ static __device__ __forceinline__ void compute_logE_and_layer_pre_device(
 }
 
 static __device__ __forceinline__ float density_to_light_sample_agx_device(float density, float illuminant) {
-    // pow(10, -d) = exp2(-d * log2(10))
-    constexpr double kLog2_10 = 3.32192809488736234787;
-    const double transmitted = exp2(-static_cast<double>(density) * kLog2_10) * static_cast<double>(illuminant);
-    const float out = static_cast<float>(transmitted);
-    return isnan(out) ? 0.0f : out;
+    constexpr float kLog2_10 = 3.32192809488736234787f;
+    const float transmitted = exp2f(-density * kLog2_10) * illuminant;
+    return isnan(transmitted) ? 0.0f : transmitted;
 }
 
-static __device__ __forceinline__ void apply_print_pipeline_device(
+static __device__ __forceinline__ bool print_spectral_integrate_device(
     const JuicerCuda::PrintExposePayload& expose,
-    const JuicerCuda::PrintDevelopPayload& develop,
-    float D_cmy[3]) {
-    if (!expose.active || !D_cmy) {
-        return;
+    const float D_cmy[3],
+    float rawPrint[3]) {
+    if (!D_cmy || !rawPrint) {
+        return false;
     }
 
     const int K = expose.printIllumK;
     if (K <= 0 || !expose.printIllumFiltered) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
 
     const int negK = expose.negTables.K;
     if (negK != K || !expose.negTables.epsC || !expose.negTables.epsM || !expose.negTables.epsY) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
 
     const bool haveBaseline = (expose.negTables.hasBaseline != 0) && expose.negTables.baseDensityMin;
 
     if (!expose.printSensC.y || !expose.printSensM.y || !expose.printSensY.y) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
     if (expose.printSensC.n < K || expose.printSensM.n < K || expose.printSensY.n < K) {
-        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
-        return;
+        rawPrint[0] = rawPrint[1] = rawPrint[2] = 0.0f;
+        return false;
     }
 
-    // Negative density -> filtered enlarger light -> raw print exposures (C/M/Y).
-    double accumC = 0.0;
-    double accumM = 0.0;
-    double accumY = 0.0;
+    float accumC = 0.0f;
+    float accumM = 0.0f;
+    float accumY = 0.0f;
     for (int i = 0; i < K; ++i) {
         const float sC = ldg_f(expose.printSensC.y + i);
         const float sM = ldg_f(expose.printSensM.y + i);
@@ -1351,19 +1348,27 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
             baseD;
 
         const float e = density_to_light_sample_agx_device(densitySpectral, ldg_f(expose.printIllumFiltered + i));
-        const double e64 = static_cast<double>(e);
 
         if (activeC)
-            accumC += e64 * static_cast<double>(sC);
+            accumC += e * sC;
         if (activeM)
-            accumM += e64 * static_cast<double>(sM);
+            accumM += e * sM;
         if (activeY)
-            accumY += e64 * static_cast<double>(sY);
+            accumY += e * sY;
     }
 
-    float rawC = static_cast<float>(accumC);
-    float rawM = static_cast<float>(accumM);
-    float rawY = static_cast<float>(accumY);
+    rawPrint[0] = accumC;
+    rawPrint[1] = accumM;
+    rawPrint[2] = accumY;
+    return true;
+}
+
+static __device__ __forceinline__ void print_apply_exposure_scale_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    float rawPrint[3]) {
+    if (!rawPrint) {
+        return;
+    }
 
     float expPrint = expose.printExposure;
     if (!isfinite(expPrint)) {
@@ -1378,38 +1383,74 @@ static __device__ __forceinline__ void apply_print_pipeline_device(
         kMid = 1.0f;
     }
 
-    rawC *= kMid;
-    rawM *= kMid;
-    rawY *= kMid;
+    rawPrint[0] *= kMid;
+    rawPrint[1] *= kMid;
+    rawPrint[2] *= kMid;
 
     const float preflash = expose.printPreflashExposure;
     if (isfinite(preflash) && preflash > 0.0f) {
-        rawC += expose.printPreflashRaw[0] * preflash;
-        rawM += expose.printPreflashRaw[1] * preflash;
-        rawY += expose.printPreflashRaw[2] * preflash;
+        rawPrint[0] += expose.printPreflashRaw[0] * preflash;
+        rawPrint[1] += expose.printPreflashRaw[1] * preflash;
+        rawPrint[2] += expose.printPreflashRaw[2] * preflash;
     }
 
-    rawC *= expPrint;
-    rawM *= expPrint;
-    rawY *= expPrint;
+    rawPrint[0] *= expPrint;
+    rawPrint[1] *= expPrint;
+    rawPrint[2] *= expPrint;
 
     float routeCorrectionScale = expose.routeCorrectionScale;
     if (!isfinite(routeCorrectionScale) || !(routeCorrectionScale > 0.0f)) {
         routeCorrectionScale = 1.0f;
     }
-    rawC *= routeCorrectionScale;
-    rawM *= routeCorrectionScale;
-    rawY *= routeCorrectionScale;
+    rawPrint[0] *= routeCorrectionScale;
+    rawPrint[1] *= routeCorrectionScale;
+    rawPrint[2] *= routeCorrectionScale;
+}
 
-    // RAW -> log10(raw + eps) -> print density curves.
+static __device__ __forceinline__ void print_log_encode_device(
+    const float rawPrint[3],
+    float logPrint[3]) {
+    if (!rawPrint || !logPrint) {
+        return;
+    }
+
     constexpr float kLogEps = 1e-10f;
-    const float logC = log10f(rawC + kLogEps);
-    const float logM = log10f(rawM + kLogEps);
-    const float logY = log10f(rawY + kLogEps);
+    logPrint[0] = log10f(rawPrint[0] + kLogEps);
+    logPrint[1] = log10f(rawPrint[1] + kLogEps);
+    logPrint[2] = log10f(rawPrint[2] + kLogEps);
+}
 
-    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logC, develop.printGammaC);
-    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logM, develop.printGammaM);
-    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logY, develop.printGammaY);
+static __device__ __forceinline__ void print_sample_density_curves_device(
+    const JuicerCuda::PrintDevelopPayload& develop,
+    const float logPrint[3],
+    float D_cmy[3]) {
+    if (!logPrint || !D_cmy) {
+        return;
+    }
+
+    D_cmy[0] = sample_density_at_logE_device(develop.printDcC, logPrint[0], develop.printGammaC);
+    D_cmy[1] = sample_density_at_logE_device(develop.printDcM, logPrint[1], develop.printGammaM);
+    D_cmy[2] = sample_density_at_logE_device(develop.printDcY, logPrint[2], develop.printGammaY);
+}
+
+static __device__ __forceinline__ void apply_print_pipeline_device(
+    const JuicerCuda::PrintExposePayload& expose,
+    const JuicerCuda::PrintDevelopPayload& develop,
+    float D_cmy[3]) {
+    if (!expose.active || !D_cmy) {
+        return;
+    }
+
+    float rawPrint[3] = {0.0f, 0.0f, 0.0f};
+    if (!print_spectral_integrate_device(expose, D_cmy, rawPrint)) {
+        D_cmy[0] = D_cmy[1] = D_cmy[2] = 0.0f;
+        return;
+    }
+
+    print_apply_exposure_scale_device(expose, rawPrint);
+    float logPrint[3] = {0.0f, 0.0f, 0.0f};
+    print_log_encode_device(rawPrint, logPrint);
+    print_sample_density_curves_device(develop, logPrint, D_cmy);
 }
 
 static __device__ __forceinline__ float clamp_to_curve_domain_device(float logE, const JuicerCuda::DeviceCurveView& c) {

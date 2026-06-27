@@ -49,6 +49,22 @@ extern "C" cudaError_t juicer_cuda_print_focused_pipeline(
     const JuicerCuda::PrintPipelineRunParams* hParams,
     void* cudaStreamOpaque);
 
+extern "C" cudaError_t juicer_cuda_profile_direct_focused_pipeline_stages(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* dPlane0,
+    float* dPlane1,
+    float* dPlane2,
+    JuicerCuda::CompositePipelineProfile* profile,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_profile_print_focused_pipeline_stages(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dPlane0,
+    float* dPlane1,
+    float* dPlane2,
+    JuicerCuda::CompositePipelineProfile* profile,
+    void* cudaStreamOpaque);
+
 extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_effects(
     const JuicerCuda::DirectPipelineRunParams* hParams,
     float* dRgbR,
@@ -790,7 +806,8 @@ namespace {
         double prepareMs,
         double buildHostMs,
         float pipelineCudaMs,
-        double pipelineLaunchHostMs) {
+        double pipelineLaunchHostMs,
+        const JuicerCuda::CompositePipelineProfile& compositeProfile) {
         const std::uint64_t pixels =
             static_cast<std::uint64_t>(std::max(0, width)) *
             static_cast<std::uint64_t>(std::max(0, height));
@@ -805,6 +822,8 @@ namespace {
         const int activeTails = active_tail_component_count(profile);
         const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
         const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.targetPlaneRoles;
+        const JuicerCuda::PrintDevelopBreakdownProfile& printBreakdown =
+            compositeProfile.printDevelopBreakdown;
         std::ostringstream oss;
         oss << std::fixed << std::setprecision(3);
         oss << "route=" << nonempty_cstr_or(route, "unknown")
@@ -890,6 +909,50 @@ namespace {
                 profile.fftFilter.elapsedMs)
             << " pipeline_cuda_ms=" << pipelineCudaMs
             << " pipeline_launch_host_ms=" << pipelineLaunchHostMs
+            << " composite_profile_captured=" << compositeProfile.captured
+            << " composite_profile_kind=" << nonempty_cstr_or(compositeProfile.profileKind, "none")
+            << " composite_profile_note=" << nonempty_cstr_or(compositeProfile.profileNote, "none")
+            << " composite_profile_width=" << compositeProfile.width
+            << " composite_profile_height=" << compositeProfile.height
+            << " composite_profile_total_launches=" << compositeProfile.totalLaunches
+            << " composite_profile_total_ms=" << compositeProfile.total.elapsedMs
+            << " composite_film_raw_launches=" << compositeProfile.filmRaw.launches
+            << " composite_film_raw_ms=" << compositeProfile.filmRaw.elapsedMs
+            << " composite_film_develop_launches=" << compositeProfile.filmDevelop.launches
+            << " composite_film_develop_ms=" << compositeProfile.filmDevelop.elapsedMs
+            << " composite_print_develop_launches=" << compositeProfile.printDevelop.launches
+            << " composite_print_develop_ms=" << compositeProfile.printDevelop.elapsedMs
+            << " print_develop_profile_captured=" << printBreakdown.captured
+            << " print_develop_profile_kind=" << nonempty_cstr_or(printBreakdown.profileKind, "none")
+            << " print_develop_profile_note=" << nonempty_cstr_or(printBreakdown.profileNote, "none")
+            << " print_develop_total_launches=" << printBreakdown.total.launches
+            << " print_develop_total_ms=" << printBreakdown.total.elapsedMs
+            << " print_develop_spectral_integrate_launches="
+            << printBreakdown.spectralIntegrate.launches
+            << " print_develop_spectral_integrate_ms="
+            << printBreakdown.spectralIntegrate.elapsedMs
+            << " print_develop_exposure_scale_launches="
+            << printBreakdown.exposureScale.launches
+            << " print_develop_exposure_scale_ms="
+            << printBreakdown.exposureScale.elapsedMs
+            << " print_develop_log_encode_launches=" << printBreakdown.logEncode.launches
+            << " print_develop_log_encode_ms=" << printBreakdown.logEncode.elapsedMs
+            << " print_develop_density_curve_launches="
+            << printBreakdown.densityCurve.launches
+            << " print_develop_density_curve_ms="
+            << printBreakdown.densityCurve.elapsedMs
+            << " composite_scanner_linear_launches=" << compositeProfile.scannerLinear.launches
+            << " composite_scanner_linear_ms=" << compositeProfile.scannerLinear.elapsedMs
+            << " composite_output_encode_launches=" << compositeProfile.outputEncode.launches
+            << " composite_output_encode_ms=" << compositeProfile.outputEncode.elapsedMs
+            << " composite_glare_launches=" << compositeProfile.glare.launches
+            << " composite_glare_ms=" << compositeProfile.glare.elapsedMs
+            << " composite_lens_blur_launches=" << compositeProfile.lensBlur.launches
+            << " composite_lens_blur_ms=" << compositeProfile.lensBlur.elapsedMs
+            << " composite_unsharp_launches=" << compositeProfile.unsharp.launches
+            << " composite_unsharp_ms=" << compositeProfile.unsharp.elapsedMs
+            << " composite_grain_launches=0"
+            << " composite_grain_ms=0.000"
             << " total_launches=" << profile.totalLaunches
             << " correction_launches=" << profile.correctionLaunches
             << " correction_ms=" << profile.correction.elapsedMs
@@ -2546,11 +2609,12 @@ void JuicerProcessor::processImagesCUDA() {
         run.filmExpose.routeCorrectionScale = scannerCorrection.exposureScale;
         run.filmDevelop = directFilmPayloads.filmDevelop;
 
+        const bool directCompositeProfileRequested = dirProfileEnabled;
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
-        if (directSpatialDir.hash != 0 || scannerPostEffects.active()) {
+        if (directSpatialDir.hash != 0 || scannerPostEffects.active() || directCompositeProfileRequested) {
             JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest request{};
             bind_spatial_dir_workspace_metadata(directSpatialDir, request);
-            request.needOptics = scannerPostEffects.active();
+            request.needOptics = scannerPostEffects.active() || directCompositeProfileRequested;
             request.requestedWidth = width;
             request.requestedHeight = height;
             request.needBlurred =
@@ -2564,6 +2628,7 @@ void JuicerProcessor::processImagesCUDA() {
         double directDirBuildHostMs = 0.0;
         double directPipelineLaunchHostMs = 0.0;
         float directPipelineCudaMs = -1.0f;
+        JuicerCuda::CompositePipelineProfile directCompositeProfile{};
         if (directSpatialDir.hash != 0) {
             std::string spatialError;
             const auto directDirPrepareStart = std::chrono::steady_clock::now();
@@ -2715,6 +2780,35 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.abort("direct_scan_error_stage_failed");
             throw_submission_fatal("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
+        if (directCompositeProfileRequested) {
+            std::string profileWorkspaceError;
+            if (preparedFrame.try_stage_profile_optical_workspace(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    profileWorkspaceError)) {
+                const auto profileScratch = preparedFrame.scanner_workspace(focusedWorkspace);
+                if (profileScratch.active) {
+                    const cudaError_t profileError = juicer_cuda_profile_direct_focused_pipeline_stages(
+                        &run,
+                        profileScratch.rgbR,
+                        profileScratch.rgbG,
+                        profileScratch.rgbB,
+                        &directCompositeProfile,
+                        _pCudaStream);
+                    if (profileError != cudaSuccess) {
+                        directCompositeProfile = JuicerCuda::CompositePipelineProfile{};
+                        directCompositeProfile.profileKind = "focused_split_attribution";
+                        directCompositeProfile.profileNote = "profile_failed";
+                    }
+                } else {
+                    directCompositeProfile.profileKind = "focused_split_attribution";
+                    directCompositeProfile.profileNote = "missing_profile_scratch";
+                }
+            } else {
+                directCompositeProfile.profileKind = "focused_split_attribution";
+                directCompositeProfile.profileNote = "profile_workspace_failed";
+            }
+        }
         cudaError_t launchError = cudaSuccess;
         const auto directPipelineLaunchStart = std::chrono::steady_clock::now();
         CudaEventElapsedTimer directPipelineCudaTimer;
@@ -2769,7 +2863,8 @@ void JuicerProcessor::processImagesCUDA() {
                 directDirPrepareMs,
                 directDirBuildHostMs,
                 directPipelineCudaMs,
-                directPipelineLaunchHostMs);
+                directPipelineLaunchHostMs,
+                directCompositeProfile);
         }
         JTRACE("PHASE3D", "direct_negative kernel launch accepted");
         if (!preparedFrame.finalize_scan_error_stage(run.scanStage.scanErrorFlag, _pCudaStream, scanError)) {
@@ -3026,11 +3121,12 @@ void JuicerProcessor::processImagesCUDA() {
         run.printExpose.routeCorrectionScale = scannerCorrection.exposureScale;
         run.printDevelop = printPayloads.develop;
 
+        const bool printCompositeProfileRequested = dirProfileEnabled;
         JuicerProcess::Root::PreparedCudaFrame::WorkspaceLeaseMarker focusedWorkspace{};
-        if (spatialDir.hash != 0 || scannerPostEffects.active()) {
+        if (spatialDir.hash != 0 || scannerPostEffects.active() || printCompositeProfileRequested) {
             JuicerProcess::Root::PreparedCudaFrame::WorkspaceRequest request{};
             bind_spatial_dir_workspace_metadata(spatialDir, request);
-            request.needOptics = scannerPostEffects.active();
+            request.needOptics = scannerPostEffects.active() || printCompositeProfileRequested;
             request.requestedWidth = width;
             request.requestedHeight = height;
             request.needBlurred =
@@ -3044,6 +3140,7 @@ void JuicerProcessor::processImagesCUDA() {
         double printDirBuildHostMs = 0.0;
         double printPipelineLaunchHostMs = 0.0;
         float printPipelineCudaMs = -1.0f;
+        JuicerCuda::CompositePipelineProfile printCompositeProfile{};
         if (spatialDir.hash != 0) {
             std::string spatialError;
             const auto printDirPrepareStart = std::chrono::steady_clock::now();
@@ -3205,6 +3302,35 @@ void JuicerProcessor::processImagesCUDA() {
                 "print scan error stage failed",
                 scanError);
         }
+        if (printCompositeProfileRequested) {
+            std::string profileWorkspaceError;
+            if (preparedFrame.try_stage_profile_optical_workspace(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    profileWorkspaceError)) {
+                const auto profileScratch = preparedFrame.scanner_workspace(focusedWorkspace);
+                if (profileScratch.active) {
+                    const cudaError_t profileError = juicer_cuda_profile_print_focused_pipeline_stages(
+                        &run,
+                        profileScratch.rgbR,
+                        profileScratch.rgbG,
+                        profileScratch.rgbB,
+                        &printCompositeProfile,
+                        _pCudaStream);
+                    if (profileError != cudaSuccess) {
+                        printCompositeProfile = JuicerCuda::CompositePipelineProfile{};
+                        printCompositeProfile.profileKind = "focused_split_attribution";
+                        printCompositeProfile.profileNote = "profile_failed";
+                    }
+                } else {
+                    printCompositeProfile.profileKind = "focused_split_attribution";
+                    printCompositeProfile.profileNote = "missing_profile_scratch";
+                }
+            } else {
+                printCompositeProfile.profileKind = "focused_split_attribution";
+                printCompositeProfile.profileNote = "profile_workspace_failed";
+            }
+        }
         cudaError_t launchError = cudaSuccess;
         const auto printPipelineLaunchStart = std::chrono::steady_clock::now();
         CudaEventElapsedTimer printPipelineCudaTimer;
@@ -3274,7 +3400,8 @@ void JuicerProcessor::processImagesCUDA() {
                 printDirPrepareMs,
                 printDirBuildHostMs,
                 printPipelineCudaMs,
-                printPipelineLaunchHostMs);
+                printPipelineLaunchHostMs,
+                printCompositeProfile);
         }
         if (!preparedFrame.finalize_scan_error_stage(
                 run.scanStage.scanErrorFlag,

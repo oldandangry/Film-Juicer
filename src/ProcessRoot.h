@@ -432,6 +432,10 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            bool try_stage_profile_optical_workspace(
+                const WorkspaceLeaseMarker& workspace,
+                void* cudaStreamOpaque,
+                std::string& outError);
             bool prepare_spatial_dir_resources(
                 const Spektrafilm::SpatialDirDescriptor& descriptor,
                 const WorkspaceLeaseMarker& workspace,
