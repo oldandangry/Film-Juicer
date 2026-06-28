@@ -14,6 +14,16 @@ void snapshot_bucket_state_locked(
     const ScratchBucketEntry& bucketEntry,
     const ScratchBucketKey& bucketKey,
     ScratchPolicySnapshot& outSnapshot) noexcept;
+bool enforce_pressure_gate(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    PressureLane lane,
+    std::size_t requestBytes,
+    bool criticalCurrentFrame,
+    const ScratchRequestDescriptor* scratchRequest,
+    bool& outRequestReclaimPass,
+    std::string& outError);
 
 ScratchPolicyState& scratch_policy_state() {
     static ScratchPolicyState state{};
@@ -161,7 +171,8 @@ bool is_allocator_oom_error(const std::string& error) noexcept {
         return false;
     }
     return contains_ascii_case_insensitive(error, "out of memory") ||
-           contains_ascii_case_insensitive(error, "memory allocation");
+           contains_ascii_case_insensitive(error, "memory allocation") ||
+           contains_ascii_case_insensitive(error, "CUFFT_ALLOC_FAILED");
 }
 
 bool tier_circuit_should_count_failure(const std::string& error) noexcept {
@@ -897,6 +908,61 @@ bool run_canonical_scratch_checkpoint(
                           : "eligible_live_retained_scratch_observed")));
     outError.clear();
     return true;
+}
+
+bool run_large_scratch_transition_checkpoint(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    const ScratchRequestDescriptor& scratchRequest,
+    bool usesSpatialDirFft,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    outError.clear();
+
+    JuicerCuda::LargeScratchTransitionReclaimStats reclaimStats{};
+    if (!JuicerCuda::reclaim_large_scratch_transition(
+            resources,
+            scratchRequest,
+            usesSpatialDirFft,
+            cudaStreamOpaque,
+            reclaimStats,
+            outError)) {
+        trace_large_scratch_transition_checkpoint(
+            transaction,
+            commandName,
+            scratchRequest,
+            usesSpatialDirFft,
+            reclaimStats,
+            "large_scratch_transition_checkpoint_failed");
+        return false;
+    }
+
+    trace_large_scratch_transition_checkpoint(
+        transaction,
+        commandName,
+        scratchRequest,
+        usesSpatialDirFft,
+        reclaimStats,
+        "large_scratch_transition_checkpoint");
+
+    if (reclaimStats.opticsRetiredBytes > 0 ||
+        reclaimStats.spatialDirRetiredBytes > 0 ||
+        reclaimStats.sharedTmpRetiredBytes > 0 ||
+        reclaimStats.fftReleasedBytes > 0 ||
+        reclaimStats.reclaimedBytes > 0) {
+        publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+    }
+
+    ScratchCheckpointObservation observation{};
+    return run_canonical_scratch_checkpoint(
+        transaction,
+        resources,
+        commandName,
+        &scratchRequest,
+        ScratchCheckpointInvocation::OuterPhaseCheckpoint,
+        observation,
+        outError);
 }
 
 std::uint64_t transient_reservation_cap_bytes(
@@ -2311,33 +2377,39 @@ std::size_t estimate_spatial_dir_growth_bytes(
     std::lock_guard<std::mutex> lock(resources.m);
     const auto& scratch = resources.spatialDirScratch;
     const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    const bool haveBase = scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC &&
-                          scratch.filteredCorrectionY && scratch.filteredCorrectionM &&
-                          scratch.filteredCorrectionC;
-    const bool haveTierTemps =
-        (scratchTier == Spektrafilm::DirScratchTier::Tier1F &&
-         !scratch.filterTempM && !scratch.filterTempC &&
-         !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC &&
-         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
-        (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels &&
-         scratch.filterTempM && scratch.filterTempC &&
-         scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC &&
-         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
-        (scratchTier == Spektrafilm::DirScratchTier::Tier2 &&
-         ((!scratch.filterTempM && !scratch.filterTempC &&
-           !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC) ||
-          (scratch.filterTempM && scratch.filterTempC &&
-           scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC)) &&
-         scratch.logRawB && scratch.logRawG && scratch.logRawR);
-    const bool haveRequiredRoles = haveBase && haveTierTemps;
+    const bool haveRaw = scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
+    const bool haveFiltered = scratch.filteredCorrectionY && scratch.filteredCorrectionM &&
+                              scratch.filteredCorrectionC;
+    const bool haveBase = haveRaw && haveFiltered;
+    const bool hasChannelTemps =
+        scratch.filterTempM && scratch.filterTempC &&
+        scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+    const bool hasNoChannelTemps =
+        !scratch.filterTempM && !scratch.filterTempC &&
+        !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC;
+    const bool channelTempsMatch =
+        (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
+        (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
+    const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
+    const bool hasNoCachedLogRaw = !scratch.logRawB && !scratch.logRawG && !scratch.logRawR;
+    const bool cachedLogRawMatch =
+        (planeRoles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
+        (planeRoles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
+    const bool haveRequiredRoles = haveBase && channelTempsMatch && cachedLogRawMatch;
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
-    const bool sharedTmpMatch = scratch.filterTemp &&
-                                scratch.filterTemp == resources.sharedTmpPlane &&
-                                resources.sharedTmpPlane &&
-                                resources.sharedTmpCapacityElements >= requiredElements;
+    const bool filterTempsCompatible =
+        planeRoles.filterTempPlanes == 3 ||
+        (!scratch.filterTempM && !scratch.filterTempC);
+    const bool iirForwardTempsCompatible =
+        planeRoles.iirForwardTempPlanes == 3 ||
+        (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
+    const bool haveRetainedFinalRoles =
+        haveFiltered && cachedLogRawMatch && filterTempsCompatible && iirForwardTempsCompatible;
+    const bool sharedTmpMatch =
+        resources.sharedTmpPlane && resources.sharedTmpCapacityElements >= requiredElements;
 
     std::size_t estimate = 0;
-    if (!haveRequiredRoles || !capacityMatch) {
+    if (!capacityMatch) {
         const int dedicatedPlanes =
             planeRoles.rawCorrectionPlanes +
             planeRoles.filteredCorrectionPlanes +
@@ -2351,6 +2423,46 @@ std::size_t estimate_spatial_dir_growth_bytes(
             }
             estimate = next;
         }
+    } else if (!haveRequiredRoles) {
+        if (haveRetainedFinalRoles) {
+            auto addMissingPlane = [&](const float* ptr) {
+                if (ptr) {
+                    return true;
+                }
+                std::size_t next = 0;
+                if (!add_bytes_checked(estimate, planeBytes, next)) {
+                    return false;
+                }
+                estimate = next;
+                return true;
+            };
+            if (!addMissingPlane(scratch.rawCorrectionY) ||
+                !addMissingPlane(scratch.rawCorrectionM) ||
+                !addMissingPlane(scratch.rawCorrectionC) ||
+                (planeRoles.filterTempPlanes == 3 &&
+                 (!addMissingPlane(scratch.filterTempM) ||
+                  !addMissingPlane(scratch.filterTempC))) ||
+                (planeRoles.iirForwardTempPlanes == 3 &&
+                 (!addMissingPlane(scratch.iirForwardTemp) ||
+                  !addMissingPlane(scratch.iirForwardTempM) ||
+                  !addMissingPlane(scratch.iirForwardTempC)))) {
+                return std::numeric_limits<std::size_t>::max();
+            }
+        } else {
+            const int dedicatedPlanes =
+                planeRoles.rawCorrectionPlanes +
+                planeRoles.filteredCorrectionPlanes +
+                std::max(0, planeRoles.filterTempPlanes - 1) +
+                planeRoles.iirForwardTempPlanes +
+                planeRoles.cachedLogRawPlanes;
+            for (int plane = 0; plane < dedicatedPlanes; ++plane) {
+                std::size_t next = 0;
+                if (!add_bytes_checked(estimate, planeBytes, next)) {
+                    return std::numeric_limits<std::size_t>::max();
+                }
+                estimate = next;
+            }
+        }
     }
     if (!sharedTmpMatch) {
         std::size_t next = 0;
@@ -2360,6 +2472,69 @@ std::size_t estimate_spatial_dir_growth_bytes(
         estimate = next;
     }
     return estimate;
+}
+
+std::size_t estimate_scratch_request_allocation_bytes(
+    const ScratchRequestDescriptor& descriptor) noexcept {
+    if (!scratch_request_descriptor_is_valid(descriptor)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t planeBytes =
+        plane_bytes_for_extent(descriptor.requestedWidth, descriptor.requestedHeight);
+    if (planeBytes == 0 || planeBytes == std::numeric_limits<std::size_t>::max()) {
+        return planeBytes;
+    }
+
+    std::size_t total = planeBytes; // shared tmp plane, allocated once per frame scratch workspace.
+    auto add_bytes = [&](std::size_t bytes) noexcept {
+        std::size_t next = 0;
+        if (!add_bytes_checked(total, bytes, next)) {
+            total = std::numeric_limits<std::size_t>::max();
+            return;
+        }
+        total = next;
+    };
+    auto add_plane = [&](int count) noexcept {
+        for (int index = 0; index < count; ++index) {
+            add_bytes(planeBytes);
+        }
+    };
+
+    if (descriptor.needOptics) {
+        add_plane(3); // rgbR/rgbG/rgbB
+        if (descriptor.needBlurred) {
+            add_plane(1);
+        }
+        if (descriptor.needAux) {
+            add_plane(1);
+        }
+        if (descriptor.needGrainTriplet) {
+            add_plane(3);
+        }
+        if (descriptor.needGrainShared) {
+            add_plane(1);
+        }
+        if (descriptor.needGateMask) {
+            const std::size_t gateBytes = plane_bytes_for_extent(
+                (descriptor.requestedWidth + 1) / 2,
+                (descriptor.requestedHeight + 1) / 2);
+            if (gateBytes == 0 || gateBytes == std::numeric_limits<std::size_t>::max()) {
+                return gateBytes;
+            }
+            add_bytes(gateBytes);
+        }
+    }
+
+    if (descriptor.needSpatialDir) {
+        const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.spatialDirPlaneRoles;
+        add_plane(roles.rawCorrectionPlanes);
+        add_plane(roles.filteredCorrectionPlanes);
+        add_plane(std::max(0, roles.filterTempPlanes - 1)); // filterTemp aliases shared tmp.
+        add_plane(roles.iirForwardTempPlanes);
+        add_plane(roles.cachedLogRawPlanes);
+    }
+
+    return total;
 }
 
 void trim_large_frame_quarantine_decay_locked(
@@ -3007,6 +3182,229 @@ bool run_reap_pass_for_pressure(
         true,
         reason);
     publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+    return true;
+}
+
+void trace_active_frame_vram_admission(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const PressureCheckpoint& checkpoint,
+    const ManagerMemorySnapshot& memory,
+    std::uint64_t requestBytes,
+    std::uint64_t reserveBytes,
+    std::uint64_t requiredBytes,
+    std::uint64_t admissionHeadroomBytes,
+    const char* admissionHeadroomMode,
+    bool allowed,
+    const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (allowed ? !JTRACE_ENABLED(2) : !JTRACE_ENABLED(1)) {
+        return;
+    }
+    const std::string msg =
+        trace_event_prefix("active_frame_vram_admission", transaction, commandName) +
+        " allowed=" + std::to_string(allowed ? 1 : 0) +
+        " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) +
+        " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBytes)) +
+        " required_bytes=" + std::to_string(static_cast<unsigned long long>(requiredBytes)) +
+        " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) +
+        " effective_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) +
+        " admission_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(admissionHeadroomBytes)) +
+        " admission_headroom=" + trace_or_unspecified(admissionHeadroomMode) +
+        " retire_pending_bytes=" + std::to_string(static_cast<unsigned long long>(memory.retirePendingBytes)) +
+        " manager_active_bytes=" + std::to_string(static_cast<unsigned long long>(memory.activeBytes)) +
+        " transient_non_manager_bytes=" + std::to_string(static_cast<unsigned long long>(memory.transientNonManagerBytes)) +
+        trace_device_context_fields(transaction) +
+        trace_resolved_policy_fields(transaction) +
+        " reason=" + trace_or_unspecified(reason);
+    JTRACE("MSADM", msg);
+#else
+    (void)transaction;
+    (void)commandName;
+    (void)checkpoint;
+    (void)memory;
+    (void)requestBytes;
+    (void)reserveBytes;
+    (void)requiredBytes;
+    (void)admissionHeadroomBytes;
+    (void)admissionHeadroomMode;
+    (void)allowed;
+    (void)reason;
+#endif
+}
+
+std::string make_active_frame_vram_exhausted_error(
+    const char* commandName,
+    std::uint64_t requestBytes,
+    std::uint64_t reserveBytes,
+    std::uint64_t requiredBytes,
+    std::uint64_t driverFreeBytes,
+    std::uint64_t effectiveHeadroomBytes,
+    std::uint64_t admissionHeadroomBytes,
+    const char* admissionHeadroomMode,
+    std::uint64_t retirePendingBytes,
+    const char* reason) {
+    return std::string(kScratchExhaustedPrefix) +
+           " command=" + trace_or_unknown(commandName) +
+           " reason=" + trace_or_unspecified(reason) +
+           " request_bytes=" + std::to_string(static_cast<unsigned long long>(requestBytes)) +
+           " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(reserveBytes)) +
+           " required_bytes=" + std::to_string(static_cast<unsigned long long>(requiredBytes)) +
+           " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(driverFreeBytes)) +
+           " effective_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(effectiveHeadroomBytes)) +
+           " admission_headroom_bytes=" + std::to_string(static_cast<unsigned long long>(admissionHeadroomBytes)) +
+           " admission_headroom=" + trace_or_unspecified(admissionHeadroomMode) +
+           " retire_pending_bytes=" + std::to_string(static_cast<unsigned long long>(retirePendingBytes));
+}
+
+enum class ActiveFrameAdmissionHeadroom : std::uint8_t {
+    DriverFreeOnly,
+    AllocatorEffective
+};
+
+const char* to_cstr(ActiveFrameAdmissionHeadroom mode) noexcept {
+    switch (mode) {
+        case ActiveFrameAdmissionHeadroom::DriverFreeOnly:
+            return "driver_free";
+        case ActiveFrameAdmissionHeadroom::AllocatorEffective:
+            return "allocator_effective";
+        default:
+            return "unknown";
+    }
+}
+
+bool active_frame_admission_uses_allocator_headroom(
+    ActiveFrameAdmissionHeadroom mode,
+    const PressureCheckpoint& checkpoint) noexcept {
+    return mode == ActiveFrameAdmissionHeadroom::AllocatorEffective &&
+           checkpoint.input.headroomSource == HeadroomSource::AllocatorPool;
+}
+
+std::uint64_t active_frame_admission_headroom_bytes(
+    ActiveFrameAdmissionHeadroom mode,
+    const PressureCheckpoint& checkpoint) noexcept {
+    return active_frame_admission_uses_allocator_headroom(mode, checkpoint)
+               ? checkpoint.input.effectiveHeadroomBytes
+               : checkpoint.input.driverFreeBytes;
+}
+
+const char* active_frame_admission_insufficient_reason(
+    ActiveFrameAdmissionHeadroom mode,
+    const PressureCheckpoint& checkpoint) noexcept {
+    return active_frame_admission_uses_allocator_headroom(mode, checkpoint)
+               ? "insufficient_effective_headroom"
+               : "insufficient_driver_free_vram";
+}
+
+bool admit_active_frame_vram_growth(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    std::size_t requestBytes,
+    const ScratchRequestDescriptor* scratchRequest,
+    bool pressureGateAlreadyRun,
+    ActiveFrameAdmissionHeadroom headroomMode,
+    std::string& outError) {
+    outError.clear();
+    if (requestBytes == 0) {
+        return true;
+    }
+
+    bool requestPreReclaim = false;
+    if (!pressureGateAlreadyRun &&
+        !enforce_pressure_gate(
+            transaction,
+            resources,
+            commandName,
+            PressureLane::Builder,
+            requestBytes,
+            true,
+            scratchRequest,
+            requestPreReclaim,
+            outError)) {
+        return false;
+    }
+
+    ManagerMemorySnapshot memory = snapshot_manager_memory(resources);
+    const bool forceReap =
+        requestPreReclaim ||
+        memory.retirePendingBytes > 0 ||
+        requestBytes >= static_cast<std::size_t>(128ull * 1024ull * 1024ull);
+    if (forceReap) {
+        std::string reclaimError;
+        if (!run_reap_pass_for_pressure(
+                transaction,
+                resources,
+                commandName,
+                "active_frame_vram_admission",
+                reclaimError)) {
+            outError = admission_error_or_message(reclaimError, "active-frame VRAM admission reclaim failed");
+            return false;
+        }
+        memory = snapshot_manager_memory(resources);
+    }
+
+    PressureCheckpoint checkpoint =
+        evaluate_pressure_checkpoint(transaction, resources, requestBytes, true, commandName);
+    const std::uint64_t requestBytes64 = static_cast<std::uint64_t>(
+        std::min<std::size_t>(
+            requestBytes,
+            static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())));
+    const std::uint64_t reserveBytes =
+        std::max<std::uint64_t>(
+            transaction.resolvedPressurePolicy.reserveBytes,
+            checkpoint.decision.effectiveReserveBytes);
+    std::uint64_t requiredBytes = 0;
+    const bool requiredOk = add_u64_checked(requestBytes64, reserveBytes, requiredBytes);
+    const std::uint64_t admissionHeadroomBytes =
+        active_frame_admission_headroom_bytes(headroomMode, checkpoint);
+    const char* admissionHeadroomMode = to_cstr(headroomMode);
+    if (!checkpoint.headroom.sampleSuccess || !requiredOk ||
+        admissionHeadroomBytes < requiredBytes) {
+        const char* reason = !checkpoint.headroom.sampleSuccess
+                                 ? "headroom_sample_failed"
+                                 : (!requiredOk ? "required_byte_count_overflow"
+                                                : active_frame_admission_insufficient_reason(
+                                                      headroomMode,
+                                                      checkpoint));
+        trace_active_frame_vram_admission(
+            transaction,
+            commandName,
+            checkpoint,
+            memory,
+            requestBytes64,
+            reserveBytes,
+            requiredBytes,
+            admissionHeadroomBytes,
+            admissionHeadroomMode,
+            false,
+            reason);
+        outError = make_active_frame_vram_exhausted_error(
+            commandName,
+            requestBytes64,
+            reserveBytes,
+            requiredBytes,
+            checkpoint.input.driverFreeBytes,
+            checkpoint.input.effectiveHeadroomBytes,
+            admissionHeadroomBytes,
+            admissionHeadroomMode,
+            memory.retirePendingBytes,
+            reason);
+        return false;
+    }
+
+    trace_active_frame_vram_admission(
+        transaction,
+        commandName,
+        checkpoint,
+        memory,
+        requestBytes64,
+        reserveBytes,
+        requiredBytes,
+        admissionHeadroomBytes,
+        admissionHeadroomMode,
+        true,
+        forceReap ? "admitted_after_reap" : "admitted");
     return true;
 }
 

@@ -78,7 +78,7 @@ namespace {
         }
     };
 
-    JuicerCuda::PipelineRunParams profile_params_from_direct(
+    JuicerCuda::PipelineRunParams focused_params_from_direct(
         const JuicerCuda::DirectPipelineRunParams& params) {
         JuicerCuda::PipelineRunParams out{};
         out.src = params.src;
@@ -96,9 +96,9 @@ namespace {
         return out;
     }
 
-    JuicerCuda::PipelineRunParams profile_params_from_print(
+    JuicerCuda::PipelineRunParams focused_params_from_print(
         const JuicerCuda::PrintPipelineRunParams& params) {
-        JuicerCuda::PipelineRunParams out = profile_params_from_direct(
+        JuicerCuda::PipelineRunParams out = focused_params_from_direct(
             JuicerCuda::DirectPipelineRunParams{
                 params.src,
                 params.srcRowBytes,
@@ -116,113 +116,25 @@ namespace {
         return out;
     }
 
-    __device__ __forceinline__ void scan_spectral_to_log_xyz_device(
-        const JuicerCuda::ScanTablesPayload& medium,
-        const double D_norm[3],
-        double logXYZ[3]) {
-        if (!D_norm || !logXYZ) {
-            return;
-        }
-        if (!medium.epsC || !medium.epsM || !medium.epsY || !medium.Ax || !medium.Ay || !medium.Az || medium.K <= 0) {
-            logXYZ[0] = logXYZ[1] = logXYZ[2] = nan("");
-            return;
-        }
-
-        double D_denorm0;
-        double D_denorm1;
-        double D_denorm2;
-        if (medium.mediumIsNegative) {
-            D_denorm0 = D_norm[0] / static_cast<double>(medium.inv_max_cmy[0]) - static_cast<double>(medium.min_cmy[0]);
-            D_denorm1 = D_norm[1] / static_cast<double>(medium.inv_max_cmy[1]) - static_cast<double>(medium.min_cmy[1]);
-            D_denorm2 = D_norm[2] / static_cast<double>(medium.inv_max_cmy[2]) - static_cast<double>(medium.min_cmy[2]);
-        } else {
-            D_denorm0 = D_norm[0] / static_cast<double>(medium.inv_max_cmy[0]) + static_cast<double>(medium.min_cmy[0]);
-            D_denorm1 = D_norm[1] / static_cast<double>(medium.inv_max_cmy[1]) + static_cast<double>(medium.min_cmy[1]);
-            D_denorm2 = D_norm[2] / static_cast<double>(medium.inv_max_cmy[2]) + static_cast<double>(medium.min_cmy[2]);
-        }
-
-        double X = 0.0;
-        double Y = 0.0;
-        double Z = 0.0;
-        for (int i = 0; i < medium.K; ++i) {
-            const double baseSpectral = (medium.hasBaseline && medium.baseDensityMin)
-                                            ? static_cast<double>(ldg_f(medium.baseDensityMin + i))
-                                            : 0.0;
-            const double Dlambda =
-                D_denorm0 * static_cast<double>(ldg_f(medium.epsC + i)) +
-                D_denorm1 * static_cast<double>(ldg_f(medium.epsM + i)) +
-                D_denorm2 * static_cast<double>(ldg_f(medium.epsY + i)) +
-                baseSpectral;
-
-            const double transmittance = pow(10.0, -Dlambda);
-
-            const double ax = static_cast<double>(ldg_f(medium.Ax + i));
-            const double ay = static_cast<double>(ldg_f(medium.Ay + i));
-            const double az = static_cast<double>(ldg_f(medium.Az + i));
-
-            if (isfinite(ax)) {
-                const double out = transmittance * ax;
-                if (!isnan(out))
-                    X += out;
-            }
-            if (isfinite(ay)) {
-                const double out = transmittance * ay;
-                if (!isnan(out))
-                    Y += out;
-            }
-            if (isfinite(az)) {
-                const double out = transmittance * az;
-                if (!isnan(out))
-                    Z += out;
-            }
-        }
-
-        const double invNormalization = static_cast<double>(medium.invYn);
-        const double XYZ0 = X * invNormalization;
-        const double XYZ1 = Y * invNormalization;
-        const double XYZ2 = Z * invNormalization;
-
-        constexpr double kEps = 1e-10;
-        logXYZ[0] = log10(fmax(XYZ0, 0.0) + kEps);
-        logXYZ[1] = log10(fmax(XYZ1, 0.0) + kEps);
-        logXYZ[2] = log10(fmax(XYZ2, 0.0) + kEps);
+    JuicerCuda::PipelineRunParams profile_params_from_direct(
+        const JuicerCuda::DirectPipelineRunParams& params) {
+        JuicerCuda::PipelineRunParams out = focused_params_from_direct(params);
+        out.scanStage.scanErrorFlag = nullptr;
+        return out;
     }
 
-    __device__ __forceinline__ void scan_log_xyz_device(
+    JuicerCuda::PipelineRunParams profile_params_from_print(
+        const JuicerCuda::PrintPipelineRunParams& params) {
+        JuicerCuda::PipelineRunParams out = focused_params_from_print(params);
+        out.scanStage.scanErrorFlag = nullptr;
+        return out;
+    }
+
+    __device__ __forceinline__ bool scan_log2_xyz_device(
         const JuicerCuda::ScanStagePayload& scanStage,
         const double D_norm[3],
-        double logXYZ[3]) {
-        if (!logXYZ) {
-            return;
-        }
-
-        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
-        const bool canonicalReady =
-            scanStage.scannerUseLut &&
-            scanStage.scanLutLog10XYZ &&
-            scanStage.scanLutSlopeC &&
-            scanStage.scanLutSlopeM &&
-            scanStage.scanLutSlopeY &&
-            scanStage.scanLutCellMin &&
-            scanStage.scanLutCellMax &&
-            scanStage.scanLutRes >= 2 &&
-            D_norm_finite;
-        if (canonicalReady) {
-            sample_pchip_scan_lut_device(
-                scanStage.scanLutLog10XYZ,
-                scanStage.scanLutSlopeC,
-                scanStage.scanLutSlopeM,
-                scanStage.scanLutSlopeY,
-                scanStage.scanLutCellMin,
-                scanStage.scanLutCellMax,
-                scanStage.scanLutRes,
-                D_norm,
-                logXYZ);
-        } else if (scanStage.scannerUseLut && scanStage.scanLutLog2XYZ && scanStage.scanLutRes > 0 && D_norm_finite) {
-            sample_cubic_scan_lut_device(scanStage.scanLutLog2XYZ, scanStage.scanLutRes, D_norm, logXYZ);
-        } else {
-            scan_spectral_to_log_xyz_device(scanStage.scanTables, D_norm, logXYZ);
-        }
+        float log2XYZ[3]) {
+        return sample_pchip_float_log2_scan_lut_device(scanStage, D_norm, log2XYZ);
     }
 
     __device__ __forceinline__ double clamp01d_device(double v) {
@@ -1252,20 +1164,12 @@ namespace {
             D_norm[2] = (static_cast<double>(D_cmy[2]) - static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
         }
 
-        const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
-        double logXYZ[3] = {0.0, 0.0, 0.0};
-        scan_log_xyz_device(scan, D_norm, logXYZ);
-
-        const bool useLutLog2 =
-            scan.scannerUseLut &&
-            !scan.scanLutLog10XYZ &&
-            scan.scanLutLog2XYZ &&
-            scan.scanLutRes > 0 &&
-            D_norm_finite;
+        float log2XYZ[3] = {nanf(""), nanf(""), nanf("")};
+        (void)scan_log2_xyz_device(scan, D_norm, log2XYZ);
         double xyz[3] = {
-            useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
-            useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
-            useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])};
+            static_cast<double>(exp2f(log2XYZ[0])),
+            static_cast<double>(exp2f(log2XYZ[1])),
+            static_cast<double>(exp2f(log2XYZ[2]))};
 
         if (scan.correctionActive) {
             const double correctedY = fmin(fmax(
@@ -1368,20 +1272,12 @@ namespace {
                     D_norm[2] = static_cast<double>(D_cmy[2]) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
                 }
 
-                const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
-                double logXYZ[3] = {0.0, 0.0, 0.0};
-                scan_log_xyz_device(scan, D_norm, logXYZ);
-
-                const bool useLutLog2 =
-                    scan.scannerUseLut &&
-                    !scan.scanLutLog10XYZ &&
-                    scan.scanLutLog2XYZ &&
-                    scan.scanLutRes > 0 &&
-                    D_norm_finite;
+                float log2XYZ[3] = {nanf(""), nanf(""), nanf("")};
+                (void)scan_log2_xyz_device(scan, D_norm, log2XYZ);
                 double xyz[3] = {
-                    useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
-                    useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
-                    useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])};
+                    static_cast<double>(exp2f(log2XYZ[0])),
+                    static_cast<double>(exp2f(log2XYZ[1])),
+                    static_cast<double>(exp2f(log2XYZ[2]))};
 
                 if (glarePercent) {
                     const double glare = static_cast<double>(glarePercent[idx]) * 0.01;
@@ -1438,20 +1334,12 @@ namespace {
                     D_norm[2] = (static_cast<double>(D_cmy[2]) - static_cast<double>(scan.scanTables.min_cmy[2])) * static_cast<double>(scan.scanTables.inv_max_cmy[2]);
                 }
 
-                const bool D_norm_finite = isfinite(D_norm[0]) && isfinite(D_norm[1]) && isfinite(D_norm[2]);
-                double logXYZ[3] = {0.0, 0.0, 0.0};
-                scan_log_xyz_device(scan, D_norm, logXYZ);
-
-                const bool useLutLog2 =
-                    scan.scannerUseLut &&
-                    !scan.scanLutLog10XYZ &&
-                    scan.scanLutLog2XYZ &&
-                    scan.scanLutRes > 0 &&
-                    D_norm_finite;
+                float log2XYZ[3] = {nanf(""), nanf(""), nanf("")};
+                (void)scan_log2_xyz_device(scan, D_norm, log2XYZ);
                 double xyz[3] = {
-                    useLutLog2 ? exp2(logXYZ[0]) : pow(10.0, logXYZ[0]),
-                    useLutLog2 ? exp2(logXYZ[1]) : pow(10.0, logXYZ[1]),
-                    useLutLog2 ? exp2(logXYZ[2]) : pow(10.0, logXYZ[2])};
+                    static_cast<double>(exp2f(log2XYZ[0])),
+                    static_cast<double>(exp2f(log2XYZ[1])),
+                    static_cast<double>(exp2f(log2XYZ[2]))};
 
                 if (scan.correctionActive) {
                     const double correctedY = fmin(fmax(
@@ -1471,6 +1359,116 @@ namespace {
                 mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgbOut);
 
                 if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
+                    outR[idx] = 0.0f;
+                    outG[idx] = 0.0f;
+                    outB[idx] = 0.0f;
+                    continue;
+                }
+
+                outR[idx] = static_cast<float>(rgbOut[0]);
+                outG[idx] = static_cast<float>(rgbOut[1]);
+                outB[idx] = static_cast<float>(rgbOut[2]);
+            }
+        }
+    }
+
+    __global__ void apply_print_pipeline_to_density_kernel(
+        JuicerCuda::PipelineRunParams params,
+        float* ioC,
+        float* ioM,
+        float* ioY) {
+        if (!ioC || !ioM || !ioY || !params.printExpose.active) {
+            return;
+        }
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+                const size_t idx =
+                    static_cast<size_t>(y) * static_cast<size_t>(params.width) +
+                    static_cast<size_t>(x);
+                float D_cmy[3] = {ioC[idx], ioM[idx], ioY[idx]};
+                apply_print_pipeline_device(params.printExpose, params.printDevelop, D_cmy);
+                ioC[idx] = D_cmy[0];
+                ioM[idx] = D_cmy[1];
+                ioY[idx] = D_cmy[2];
+            }
+        }
+    }
+
+    __global__ void scan_linear_density_rgb_kernel(
+        JuicerCuda::PipelineRunParams params,
+        const float* inC,
+        const float* inM,
+        const float* inY,
+        const float* glarePercent,
+        float* outR,
+        float* outG,
+        float* outB) {
+        const JuicerCuda::ScanStagePayload& scan = params.scanStage;
+        if (!inC || !inM || !inY || !outR || !outG || !outB) {
+            return;
+        }
+        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+                const size_t idx =
+                    static_cast<size_t>(y) * static_cast<size_t>(params.width) +
+                    static_cast<size_t>(x);
+                const float D_cmy[3] = {inC[idx], inM[idx], inY[idx]};
+
+                double D_norm[3];
+                if (scan.scanTables.mediumIsNegative) {
+                    D_norm[0] = (static_cast<double>(D_cmy[0]) +
+                                 static_cast<double>(scan.scanTables.min_cmy[0])) *
+                                static_cast<double>(scan.scanTables.inv_max_cmy[0]);
+                    D_norm[1] = (static_cast<double>(D_cmy[1]) +
+                                 static_cast<double>(scan.scanTables.min_cmy[1])) *
+                                static_cast<double>(scan.scanTables.inv_max_cmy[1]);
+                    D_norm[2] = (static_cast<double>(D_cmy[2]) +
+                                 static_cast<double>(scan.scanTables.min_cmy[2])) *
+                                static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+                } else {
+                    D_norm[0] = (static_cast<double>(D_cmy[0]) -
+                                 static_cast<double>(scan.scanTables.min_cmy[0])) *
+                                static_cast<double>(scan.scanTables.inv_max_cmy[0]);
+                    D_norm[1] = (static_cast<double>(D_cmy[1]) -
+                                 static_cast<double>(scan.scanTables.min_cmy[1])) *
+                                static_cast<double>(scan.scanTables.inv_max_cmy[1]);
+                    D_norm[2] = (static_cast<double>(D_cmy[2]) -
+                                 static_cast<double>(scan.scanTables.min_cmy[2])) *
+                                static_cast<double>(scan.scanTables.inv_max_cmy[2]);
+                }
+
+                float log2XYZ[3] = {nanf(""), nanf(""), nanf("")};
+                (void)scan_log2_xyz_device(scan, D_norm, log2XYZ);
+                double xyz[3] = {
+                    static_cast<double>(exp2f(log2XYZ[0])),
+                    static_cast<double>(exp2f(log2XYZ[1])),
+                    static_cast<double>(exp2f(log2XYZ[2]))};
+
+                if (scan.correctionActive) {
+                    const double correctedY = fmin(fmax(
+                                                       static_cast<double>(scan.correctionSlope) * xyz[1] +
+                                                           static_cast<double>(scan.correctionOffset),
+                                                       0.0),
+                                                   1.0);
+                    const double scale = correctedY / (xyz[1] + 1e-10);
+                    xyz[0] *= scale;
+                    xyz[1] *= scale;
+                    xyz[2] *= scale;
+                }
+                if (glarePercent) {
+                    const double glare = static_cast<double>(glarePercent[idx]) * 0.01;
+                    xyz[0] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[0]);
+                    xyz[1] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[1]);
+                    xyz[2] += glare * static_cast<double>(scan.scanColor.illuminantXYZ[2]);
+                }
+
+                double adapted[3];
+                mat3_mul_vec_double_device(scan.scanColor.cat02, xyz, adapted);
+                double rgbOut[3];
+                mat3_mul_vec_double_device(scan.scanColor.xyzToRgb, adapted, rgbOut);
+
+                if (!isfinite(rgbOut[0]) || !isfinite(rgbOut[1]) || !isfinite(rgbOut[2])) {
+                    signal_scan_error_device(scan.scanErrorFlag);
                     outR[idx] = 0.0f;
                     outG[idx] = 0.0f;
                     outB[idx] = 0.0f;
@@ -1874,21 +1872,32 @@ struct FocusedScannerPostEffectOptions {
     int glareRadius = 0;
 };
 
+struct FocusedRgbPlanes {
+    float* r = nullptr;
+    float* g = nullptr;
+    float* b = nullptr;
+};
+
+cudaError_t blur_plane_in_place(
+    float* plane,
+    float* tmp,
+    int width,
+    int height,
+    const float* kernel,
+    int radius,
+    dim3 blocks,
+    dim3 threads,
+    cudaStream_t stream);
+
 template <typename Params>
-cudaError_t launch_focused_scanner_post_effects(
+cudaError_t launch_focused_scan_linear_rgb(
     const Params* hParams,
-    float* dRgbR,
-    float* dRgbG,
-    float* dRgbB,
+    FocusedRgbPlanes rgb,
     float* dTmp,
     float* dScratchBlurred,
-    const float* dLensBlurKernel,
-    int lensBlurRadius,
-    const float* dUnsharpKernel,
-    int unsharpRadius,
     const FocusedScannerPostEffectOptions& options,
     void* cudaStreamOpaque) {
-    if (!hParams || !hParams->src || !hParams->dst || !dRgbR || !dRgbG || !dRgbB || !dTmp) {
+    if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
     }
     Params params = *hParams;
@@ -1905,45 +1914,15 @@ cudaError_t launch_focused_scanner_post_effects(
     dim3 blocks(
         static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
         static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
-    auto blur_plane_in_place = [&](float* plane, float* tmp, const float* kernel, int radius) {
-        if (!plane || !tmp || !kernel || radius <= 0) {
-            return cudaSuccess;
-        }
-        const int kernelLength = 2 * radius + 1;
-        const size_t horizontalShared =
-            (static_cast<size_t>(kernelLength) +
-             static_cast<size_t>(threads.y) * static_cast<size_t>(threads.x + 2 * radius)) *
-            sizeof(float);
-        const size_t verticalShared =
-            (static_cast<size_t>(kernelLength) +
-             static_cast<size_t>(threads.x) * static_cast<size_t>(threads.y + 2 * radius)) *
-            sizeof(float);
-        optics_blur_horizontal_kernel<<<blocks, threads, horizontalShared, stream>>>(
-            plane,
-            tmp,
-            params.width,
-            params.height,
-            kernel,
-            radius);
-        cudaError_t error = cudaGetLastError();
-        if (error != cudaSuccess) {
-            return error;
-        }
-        optics_blur_vertical_kernel<<<blocks, threads, verticalShared, stream>>>(
-            tmp,
-            plane,
-            params.width,
-            params.height,
-            kernel,
-            radius);
-        return cudaGetLastError();
-    };
 
     const bool doGlare =
         std::isfinite(static_cast<double>(options.glarePercent)) &&
         options.glarePercent > 0.0f &&
         std::isfinite(static_cast<double>(options.glareRoughness));
     if (doGlare) {
+        if (!dTmp) {
+            return cudaErrorInvalidValue;
+        }
         if (options.glareRadius > 0 && options.glareKernel && !dScratchBlurred) {
             return cudaErrorInvalidValue;
         }
@@ -1966,41 +1945,303 @@ cudaError_t launch_focused_scanner_post_effects(
             error = blur_plane_in_place(
                 dTmp,
                 dScratchBlurred,
+                params.width,
+                params.height,
                 options.glareKernel,
-                options.glareRadius);
+                options.glareRadius,
+                blocks,
+                threads,
+                stream);
             if (error != cudaSuccess) {
                 return error;
             }
         }
         params.scanStage.glarePercent = dTmp;
     }
-    params.scanStage.linearRgbR = dRgbR;
-    params.scanStage.linearRgbG = dRgbG;
-    params.scanStage.linearRgbB = dRgbB;
+    params.scanStage.linearRgbR = rgb.r;
+    params.scanStage.linearRgbG = rgb.g;
+    params.scanStage.linearRgbB = rgb.b;
     pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
+    return cudaGetLastError();
+}
+
+template <typename Params>
+cudaError_t launch_focused_spatial_dir_final_develop_density(
+    const Params* hParams,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque) {
+    if (!hParams || !dDensityC || !dDensityM || !dDensityY) {
+        return cudaErrorInvalidValue;
+    }
+    Params focusedParams = *hParams;
+    if (!focusedParams.src || !focusedParams.dst) {
+        return cudaErrorInvalidValue;
+    }
+    if (focusedParams.width <= 0 || focusedParams.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(focusedParams.nComponents == 3 || focusedParams.nComponents == 4) ||
+        focusedParams.srcRowBytes == 0 || focusedParams.dstRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+
+    JuicerCuda::PipelineRunParams params = [&]() {
+        if constexpr (requires { focusedParams.printExpose; focusedParams.printDevelop; }) {
+            return focused_params_from_print(focusedParams);
+        } else {
+            return focused_params_from_direct(focusedParams);
+        }
+    }();
+    const JuicerCuda::SpatialDirPayload& spatialDir = params.filmDevelop.spatialDir;
+    if (!spatialDir.active || !spatialDir.corrY || !spatialDir.corrM ||
+        !spatialDir.corrC || !spatialDir.logRawB || !spatialDir.logRawG ||
+        !spatialDir.logRawR) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream =
+        cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    dim3 threads(32, 8);
+    dim3 blocks(
+        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
+        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+
+    develop_film_density_from_raw_kernel<<<blocks, threads, 0, stream>>>(
+        params,
+        dDensityC,
+        dDensityM,
+        dDensityY,
+        dDensityC,
+        dDensityM,
+        dDensityY);
     cudaError_t error = cudaGetLastError();
     if (error != cudaSuccess) {
         return error;
     }
 
+    if constexpr (requires { focusedParams.printExpose; focusedParams.printDevelop; }) {
+        apply_print_pipeline_to_density_kernel<<<blocks, threads, 0, stream>>>(
+            params,
+            dDensityC,
+            dDensityM,
+            dDensityY);
+        error = cudaGetLastError();
+    }
+    return error;
+}
+
+template <typename Params>
+cudaError_t launch_focused_scan_linear_density_rgb(
+    const Params* hParams,
+    const float* dDensityC,
+    const float* dDensityM,
+    const float* dDensityY,
+    FocusedRgbPlanes rgb,
+    float* dTmp,
+    float* dScratchBlurred,
+    const FocusedScannerPostEffectOptions& options,
+    void* cudaStreamOpaque) {
+    if (!hParams || !dDensityC || !dDensityM || !dDensityY || !rgb.r || !rgb.g || !rgb.b) {
+        return cudaErrorInvalidValue;
+    }
+    Params focusedParams = *hParams;
+    if (!focusedParams.src || !focusedParams.dst) {
+        return cudaErrorInvalidValue;
+    }
+    if (focusedParams.width <= 0 || focusedParams.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(focusedParams.nComponents == 3 || focusedParams.nComponents == 4) ||
+        focusedParams.srcRowBytes == 0 || focusedParams.dstRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+
+    JuicerCuda::PipelineRunParams params = [&]() {
+        if constexpr (requires { focusedParams.printExpose; focusedParams.printDevelop; }) {
+            return focused_params_from_print(focusedParams);
+        } else {
+            return focused_params_from_direct(focusedParams);
+        }
+    }();
+    cudaStream_t stream =
+        cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    dim3 threads(32, 8);
+    dim3 blocks(
+        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
+        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+
+    const float* glarePercent = nullptr;
+    const bool doGlare =
+        std::isfinite(static_cast<double>(options.glarePercent)) &&
+        options.glarePercent > 0.0f &&
+        std::isfinite(static_cast<double>(options.glareRoughness));
+    if (doGlare) {
+        if (!dTmp) {
+            return cudaErrorInvalidValue;
+        }
+        if (options.glareRadius > 0 && options.glareKernel && !dScratchBlurred) {
+            return cudaErrorInvalidValue;
+        }
+        const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
+        optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(
+            dTmp,
+            params.width,
+            params.height,
+            options.glareSeed,
+            mediumId,
+            options.glareOriginX,
+            options.glareOriginY,
+            options.glarePercent,
+            options.glareRoughness);
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            return error;
+        }
+        if (options.glareRadius > 0 && options.glareKernel) {
+            error = blur_plane_in_place(
+                dTmp,
+                dScratchBlurred,
+                params.width,
+                params.height,
+                options.glareKernel,
+                options.glareRadius,
+                blocks,
+                threads,
+                stream);
+            if (error != cudaSuccess) {
+                return error;
+            }
+        }
+        glarePercent = dTmp;
+    }
+
+    scan_linear_density_rgb_kernel<<<blocks, threads, 0, stream>>>(
+        params,
+        dDensityC,
+        dDensityM,
+        dDensityY,
+        glarePercent,
+        rgb.r,
+        rgb.g,
+        rgb.b);
+    return cudaGetLastError();
+}
+
+cudaError_t blur_plane_in_place(
+    float* plane,
+    float* tmp,
+    int width,
+    int height,
+    const float* kernel,
+    int radius,
+    dim3 blocks,
+    dim3 threads,
+    cudaStream_t stream) {
+    if (!plane || !tmp || !kernel || radius <= 0) {
+        return cudaSuccess;
+    }
+    const int kernelLength = 2 * radius + 1;
+    const size_t horizontalShared =
+        (static_cast<size_t>(kernelLength) +
+         static_cast<size_t>(threads.y) * static_cast<size_t>(threads.x + 2 * radius)) *
+        sizeof(float);
+    const size_t verticalShared =
+        (static_cast<size_t>(kernelLength) +
+         static_cast<size_t>(threads.x) * static_cast<size_t>(threads.y + 2 * radius)) *
+        sizeof(float);
+    optics_blur_horizontal_kernel<<<blocks, threads, horizontalShared, stream>>>(
+        plane,
+        tmp,
+        width,
+        height,
+        kernel,
+        radius);
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        return error;
+    }
+    optics_blur_vertical_kernel<<<blocks, threads, verticalShared, stream>>>(
+        tmp,
+        plane,
+        width,
+        height,
+        kernel,
+        radius);
+    return cudaGetLastError();
+}
+
+template <typename Params>
+cudaError_t launch_focused_scanner_post_output(
+    const Params* hParams,
+    FocusedRgbPlanes rgb,
+    float* dTmp,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    void* cudaStreamOpaque) {
+    if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
+        return cudaErrorInvalidValue;
+    }
+    Params params = *hParams;
+    if (params.width <= 0 || params.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(params.nComponents == 3 || params.nComponents == 4) ||
+        params.srcRowBytes == 0 || params.dstRowBytes == 0) {
+        return cudaErrorInvalidValue;
+    }
+    cudaStream_t stream =
+        cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    dim3 threads(32, 8);
+    dim3 blocks(
+        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
+        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+
+    auto blur_plane = [&](float* plane, const float* kernel, int radius) {
+        return blur_plane_in_place(
+            plane,
+            dTmp,
+            params.width,
+            params.height,
+            kernel,
+            radius,
+            blocks,
+            threads,
+            stream);
+    };
+    if (lensBlurRadius > 0 && dLensBlurKernel && !dTmp) {
+        return cudaErrorInvalidValue;
+    }
+    if (unsharpRadius > 0 && dUnsharpKernel &&
+        std::isfinite(static_cast<double>(unsharpAmount)) &&
+        unsharpAmount > 0.0f &&
+        !dTmp) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaError_t error = cudaSuccess;
     if (lensBlurRadius > 0 && dLensBlurKernel) {
-        error = blur_plane_in_place(dRgbR, dTmp, dLensBlurKernel, lensBlurRadius);
+        error = blur_plane(rgb.r, dLensBlurKernel, lensBlurRadius);
         if (error != cudaSuccess) {
             return error;
         }
-        error = blur_plane_in_place(dRgbG, dTmp, dLensBlurKernel, lensBlurRadius);
+        error = blur_plane(rgb.g, dLensBlurKernel, lensBlurRadius);
         if (error != cudaSuccess) {
             return error;
         }
-        error = blur_plane_in_place(dRgbB, dTmp, dLensBlurKernel, lensBlurRadius);
+        error = blur_plane(rgb.b, dLensBlurKernel, lensBlurRadius);
         if (error != cudaSuccess) {
             return error;
         }
     }
 
     if (unsharpRadius > 0 && dUnsharpKernel &&
-        std::isfinite(static_cast<double>(options.unsharpAmount)) &&
-        options.unsharpAmount > 0.0f) {
+        std::isfinite(static_cast<double>(unsharpAmount)) &&
+        unsharpAmount > 0.0f) {
         auto unsharp_plane_in_place = [&](float* plane) {
             const int kernelLength = 2 * unsharpRadius + 1;
             const size_t horizontalShared =
@@ -2031,23 +2272,23 @@ cudaError_t launch_focused_scanner_post_effects(
                 params.height,
                 dUnsharpKernel,
                 unsharpRadius,
-                options.unsharpAmount);
+                unsharpAmount);
             return cudaGetLastError();
         };
-        error = unsharp_plane_in_place(dRgbR);
+        error = unsharp_plane_in_place(rgb.r);
         if (error != cudaSuccess) {
             return error;
         }
-        error = unsharp_plane_in_place(dRgbG);
+        error = unsharp_plane_in_place(rgb.g);
         if (error != cudaSuccess) {
             return error;
         }
-        error = unsharp_plane_in_place(dRgbB);
+        error = unsharp_plane_in_place(rgb.b);
         if (error != cudaSuccess) {
             return error;
         }
     }
-    focused_scan_output_encode_kernel<<<blocks, threads, 0, stream>>>(params, dRgbR, dRgbG, dRgbB);
+    focused_scan_output_encode_kernel<<<blocks, threads, 0, stream>>>(params, rgb.r, rgb.g, rgb.b);
     return cudaGetLastError();
 }
 
@@ -2278,46 +2519,65 @@ extern "C" cudaError_t juicer_cuda_profile_print_focused_pipeline_stages(
         cudaStreamOpaque);
 }
 
-extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_effects(
+extern "C" cudaError_t juicer_cuda_direct_focused_spatial_dir_final_develop_density(
     const JuicerCuda::DirectPipelineRunParams* hParams,
-    float* dRgbR,
-    float* dRgbG,
-    float* dRgbB,
-    float* dTmp,
-    float* dScratchBlurred,
-    const float* dLensBlurKernel,
-    int lensBlurRadius,
-    const float* dUnsharpKernel,
-    int unsharpRadius,
-    float unsharpAmount,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
     void* cudaStreamOpaque) {
-    return launch_focused_scanner_post_effects(
+    return launch_focused_spatial_dir_final_develop_density(
         hParams,
-        dRgbR,
-        dRgbG,
-        dRgbB,
-        dTmp,
-        dScratchBlurred,
-        dLensBlurKernel,
-        lensBlurRadius,
-        dUnsharpKernel,
-        unsharpRadius,
-        FocusedScannerPostEffectOptions{unsharpAmount},
+        dDensityC,
+        dDensityM,
+        dDensityY,
         cudaStreamOpaque);
 }
 
-extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_effects(
+extern "C" cudaError_t juicer_cuda_print_focused_spatial_dir_final_develop_density(
     const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dDensityC,
+    float* dDensityM,
+    float* dDensityY,
+    void* cudaStreamOpaque) {
+    return launch_focused_spatial_dir_final_develop_density(
+        hParams,
+        dDensityC,
+        dDensityM,
+        dDensityY,
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_density_rgb(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    const float* dDensityC,
+    const float* dDensityM,
+    const float* dDensityY,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    void* cudaStreamOpaque) {
+    return launch_focused_scan_linear_density_rgb(
+        hParams,
+        dDensityC,
+        dDensityM,
+        dDensityY,
+        FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
+        nullptr,
+        nullptr,
+        FocusedScannerPostEffectOptions{},
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_density_rgb(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    const float* dDensityC,
+    const float* dDensityM,
+    const float* dDensityY,
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
     float* dTmp,
     float* dScratchBlurred,
-    const float* dLensBlurKernel,
-    int lensBlurRadius,
-    const float* dUnsharpKernel,
-    int unsharpRadius,
-    float unsharpAmount,
     int glareOriginX,
     int glareOriginY,
     std::uint64_t glareSeed,
@@ -2326,19 +2586,16 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_effects(
     const float* dGlareKernel,
     int glareRadius,
     void* cudaStreamOpaque) {
-    return launch_focused_scanner_post_effects(
+    return launch_focused_scan_linear_density_rgb(
         hParams,
-        dRgbR,
-        dRgbG,
-        dRgbB,
+        dDensityC,
+        dDensityM,
+        dDensityY,
+        FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
         dTmp,
         dScratchBlurred,
-        dLensBlurKernel,
-        lensBlurRadius,
-        dUnsharpKernel,
-        unsharpRadius,
         FocusedScannerPostEffectOptions{
-            unsharpAmount,
+            0.0f,
             glareOriginX,
             glareOriginY,
             glareSeed,
@@ -2346,6 +2603,101 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_effects(
             glareRoughness,
             dGlareKernel,
             glareRadius},
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    void* cudaStreamOpaque) {
+    return launch_focused_scan_linear_rgb(
+        hParams,
+        FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
+        nullptr,
+        nullptr,
+        FocusedScannerPostEffectOptions{},
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    float* dScratchBlurred,
+    int glareOriginX,
+    int glareOriginY,
+    std::uint64_t glareSeed,
+    float glarePercent,
+    float glareRoughness,
+    const float* dGlareKernel,
+    int glareRadius,
+    void* cudaStreamOpaque) {
+    return launch_focused_scan_linear_rgb(
+        hParams,
+        FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
+        dTmp,
+        dScratchBlurred,
+        FocusedScannerPostEffectOptions{
+            0.0f,
+            glareOriginX,
+            glareOriginY,
+            glareSeed,
+            glarePercent,
+            glareRoughness,
+            dGlareKernel,
+            glareRadius},
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    void* cudaStreamOpaque) {
+    return launch_focused_scanner_post_output(
+        hParams,
+        FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
+        dTmp,
+        dLensBlurKernel,
+        lensBlurRadius,
+        dUnsharpKernel,
+        unsharpRadius,
+        unsharpAmount,
+        cudaStreamOpaque);
+}
+
+extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* dRgbR,
+    float* dRgbG,
+    float* dRgbB,
+    float* dTmp,
+    const float* dLensBlurKernel,
+    int lensBlurRadius,
+    const float* dUnsharpKernel,
+    int unsharpRadius,
+    float unsharpAmount,
+    void* cudaStreamOpaque) {
+    return launch_focused_scanner_post_output(
+        hParams,
+        FocusedRgbPlanes{dRgbR, dRgbG, dRgbB},
+        dTmp,
+        dLensBlurKernel,
+        lensBlurRadius,
+        dUnsharpKernel,
+        unsharpRadius,
+        unsharpAmount,
         cudaStreamOpaque);
 }
 

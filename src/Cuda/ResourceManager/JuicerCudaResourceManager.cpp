@@ -287,6 +287,12 @@ namespace JuicerCuda {
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         void* cudaStreamOpaque,
         std::string& outError);
+    bool estimate_spatial_dir_fft_growth_bytes(
+        Resources& resources,
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        void* cudaStreamOpaque,
+        std::size_t& outGrowthBytes,
+        std::string& outError);
     bool ensure_gaussian_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
     bool ensure_halation_kernel(Resources& resources, Resources::DeviceGaussianKernel& kernel, float sigma, void* cudaStreamOpaque, std::string& outError);
     bool ensure_print_illuminant_filtered(
@@ -1145,7 +1151,6 @@ namespace JuicerCuda {
             constexpr const char* kBurstDebtThrottleNonCriticalPrefix = "burst_debt_throttle_noncritical:";
             constexpr const char* kTierCircuitOpenPrefix = "tier_circuit_open:";
             constexpr const char* kTierCircuitHalfOpenBusyPrefix = "tier_circuit_half_open_busy:";
-            constexpr const char* kPrivateLutFallbackFailedPrefix = "private_lut_fallback_failed:";
             constexpr std::uint64_t kTransientReservationCapDefaultBytes = 512ull * 1024ull * 1024ull;
             constexpr std::uint64_t kTransientReservationThresholdDefaultBytes = 64ull * 1024ull * 1024ull;
             constexpr std::uint64_t kScratchBuilderReservationCapDefaultBytes = 256ull * 1024ull * 1024ull;
@@ -1646,13 +1651,11 @@ namespace JuicerCuda {
                     return;
                 }
                 bool overflow = false;
-                const std::uint64_t bytes = bytes_for_count_u64(count, sizeof(double), overflow);
+                const std::uint64_t bytes = bytes_for_count_u64(count, sizeof(float), overflow);
                 if (overflow) {
                     snapshot.overflow = true;
                 }
-                if (lut.log2XYZ)
-                    add_snapshot_bytes(snapshot, bytes);
-                if (lut.log10XYZ)
+                if (lut.log2PchipXYZ)
                     add_snapshot_bytes(snapshot, bytes);
                 if (lut.slopeC)
                     add_snapshot_bytes(snapshot, bytes);
@@ -1674,7 +1677,7 @@ namespace JuicerCuda {
                     return;
                 }
                 bool cellOverflow = false;
-                const std::uint64_t cellBytes = bytes_for_count_u64(cellCount, sizeof(double), cellOverflow);
+                const std::uint64_t cellBytes = bytes_for_count_u64(cellCount, sizeof(float), cellOverflow);
                 if (cellOverflow) {
                     snapshot.overflow = true;
                 }
@@ -2513,6 +2516,52 @@ namespace JuicerCuda {
             const ResolvedPressurePolicy& policy = transaction.resolvedPressurePolicy;
             const std::string msg = trace_event_prefix("scratch_checkpoint", transaction, commandName) + " invocation=" + to_cstr(invocation) + " request_active=" + std::to_string(observation.requestActive ? 1 : 0) + " pressure_policy_enabled=" + std::to_string(pressure_policy_enabled(policy) ? 1 : 0) + " policy_source=" + std::string(to_cstr(policy.policySource)) + " policy_device_id=" + std::to_string(policy.policyDeviceId) + " soft_target_bytes=" + std::to_string(static_cast<unsigned long long>(policy.softTargetBytes)) + " reserve_bytes=" + std::to_string(static_cast<unsigned long long>(policy.reserveBytes)) + " reader_matches_submission_policy=1" + " stage1_over_target=" + std::to_string(observation.stage1OverTarget ? 1 : 0) + " stage2_evaluated=" + std::to_string(observation.stage2Evaluated ? 1 : 0) + " stage2_skipped_no_shed_cache=" + std::to_string(observation.stage2SkippedByNoShedCache ? 1 : 0) + " over_target_not_reducible=" + std::to_string(observation.overTargetButNotReducible ? 1 : 0) + " shedding_attempted=" + std::to_string(observation.sheddingAttempted ? 1 : 0) + " shedding_progressed=" + std::to_string(observation.sheddingProgressed ? 1 : 0) + " shedding_partial_failure=" + std::to_string(observation.sheddingPartialFailure ? 1 : 0) + " shedding_target_reached=" + std::to_string(observation.sheddingTargetReached ? 1 : 0) + " shedding_orphaned_shared_tmp_retired=" + std::to_string(observation.sheddingOrphanedSharedTmpRetired ? 1 : 0) + " request_generation=" + std::to_string(static_cast<unsigned long long>(observation.requestDescriptorGeneration)) + " retained_generation=" + std::to_string(static_cast<unsigned long long>(observation.retainedScratchGeneration)) + " scratch_target_bytes=" + std::to_string(static_cast<unsigned long long>(observation.scratchTargetBytes)) + " hysteresis_bytes=" + std::to_string(static_cast<unsigned long long>(observation.hysteresisBytes)) + " policy_live_retained_bytes=" + std::to_string(static_cast<unsigned long long>(observation.policyLiveRetainedBytes)) + " reclaimable_live_bytes=" + std::to_string(static_cast<unsigned long long>(observation.reclaimableLiveBytes)) + " shed_retired_action_count=" + std::to_string(static_cast<unsigned long long>(observation.shedRetiredActionCount)) + " shed_retired_live_bytes=" + std::to_string(static_cast<unsigned long long>(observation.shedRetiredLiveBytes)) + " total_live_retained_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.totalLiveRetainedBytes)) + " retire_pending_scratch_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.retirePendingScratchBytes)) + " helper_shared_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.helperSharedBytes)) + " helper_non_policy_bytes=" + std::to_string(static_cast<unsigned long long>(observation.residency.helperNonPolicyTotalBytes)) + " optics_base_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBase))) + " optics_blurred_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsBlurred))) + " optics_aux_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsAux))) + " optics_grain_triplet_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainTriplet))) + " optics_grain_shared_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGrainShared))) + " optics_gate_mask_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::OpticsGateMask))) + " spatial_dir_base_bytes=" + std::to_string(static_cast<unsigned long long>(bytes_for_candidate(ScratchPolicyCandidate::SpatialDirBase))) + " optics_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBase)) + " optics_blurred_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsBlurred)) + " optics_aux_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsAux)) + " optics_grain_triplet_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainTriplet)) + " optics_grain_shared_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGrainShared)) + " optics_gate_mask_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::OpticsGateMask)) + " spatial_dir_base_eligible_now=" + std::to_string(eligible_now(ScratchPolicyCandidate::SpatialDirBase)) + " shared_tmp_eligible_now=" + std::to_string(observation.eligibility.sharedTmpEligibleNow ? 1 : 0) + " scan_error_flag_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorFlag))) + " scan_error_host_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::ScanErrorHost))) + " auto_exposure_scale_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureExposureScale))) + " auto_exposure_ev_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureAutoEV))) + " auto_exposure_valid_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureValid))) + " auto_exposure_max_y_bits_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureMaxYBits))) + " auto_exposure_histogram_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureHistogram))) + " auto_exposure_weights_x_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureWeightsX))) + " auto_exposure_weights_y_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposureWeightsY))) + " auto_exposure_partials_a_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposurePartialsA))) + " auto_exposure_partials_b_bytes=" + std::to_string(static_cast<unsigned long long>(helper_non_policy_bytes(ScratchHelperNonPolicyAllocation::AutoExposurePartialsB))) + trace_device_context_fields(transaction) + " reason=" + trace_or_unspecified(reason);
             JTRACE("MSSCP", msg);
+#endif
+        }
+
+        void trace_large_scratch_transition_checkpoint(
+            const SubmissionTransaction& transaction,
+            const char* commandName,
+            const ScratchRequestDescriptor& scratchRequest,
+            bool usesSpatialDirFft,
+            const JuicerCuda::LargeScratchTransitionReclaimStats& stats,
+            const char* reason) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (!JTRACE_ENABLED(2)) {
+                return;
+            }
+
+            const std::string msg =
+                trace_event_prefix("large_scratch_transition_checkpoint", transaction, commandName) +
+                " request_generation=" +
+                std::to_string(static_cast<unsigned long long>(scratchRequest.generation)) +
+                " requested_width=" + std::to_string(scratchRequest.requestedWidth) +
+                " requested_height=" + std::to_string(scratchRequest.requestedHeight) +
+                " need_optics=" + std::to_string(scratchRequest.needOptics ? 1 : 0) +
+                " need_spatial_dir=" + std::to_string(scratchRequest.needSpatialDir ? 1 : 0) +
+                " uses_spatial_dir_fft=" + std::to_string(usesSpatialDirFft ? 1 : 0) +
+                " pending_scratch_bytes_before=" +
+                std::to_string(static_cast<unsigned long long>(stats.pendingScratchBytesBefore)) +
+                " optics_retired_bytes=" +
+                std::to_string(static_cast<unsigned long long>(stats.opticsRetiredBytes)) +
+                " spatial_dir_retired_bytes=" +
+                std::to_string(static_cast<unsigned long long>(stats.spatialDirRetiredBytes)) +
+                " shared_tmp_retired_bytes=" +
+                std::to_string(static_cast<unsigned long long>(stats.sharedTmpRetiredBytes)) +
+                " fft_released_bytes=" +
+                std::to_string(static_cast<unsigned long long>(stats.fftReleasedBytes)) +
+                " reclaimed_bytes=" +
+                std::to_string(static_cast<unsigned long long>(stats.reclaimedBytes)) +
+                trace_device_context_fields(transaction) +
+                " reason=" + trace_or_unspecified(reason);
+            JTRACE("MSLTC", msg);
+#else
+            (void)transaction;
+            (void)commandName;
+            (void)scratchRequest;
+            (void)usesSpatialDirFft;
+            (void)stats;
+            (void)reason;
 #endif
         }
 
@@ -3708,10 +3757,6 @@ namespace JuicerCuda {
             constexpr std::uint32_t kMaxAllocatorBackendPreference = 3u;
             constexpr std::uint32_t kMinAsyncMempoolReleaseThresholdMB = 0u;
             constexpr std::uint32_t kMaxAsyncMempoolReleaseThresholdMB = 4096u;
-            constexpr std::uint32_t kMinPrivateLutFallbackPerMediumCap = 0u;
-            constexpr std::uint32_t kMaxPrivateLutFallbackPerMediumCap = 1u;
-            constexpr std::uint32_t kMinPrivateLutFallbackPerInstanceCap = 0u;
-            constexpr std::uint32_t kMaxPrivateLutFallbackPerInstanceCap = 2u;
             constexpr std::uint64_t kMinPinnedStagingMaxBytes = 8ull * kMiB;
             constexpr std::uint64_t kMaxPinnedStagingMaxBytes = 2048ull * kMiB;
             constexpr std::uint64_t kMinPinnedStagingTrimBatchBytes = 1ull * kMiB;
@@ -3817,17 +3862,6 @@ namespace JuicerCuda {
                 raw.asyncMempoolReleaseThresholdMB,
                 kMinAsyncMempoolReleaseThresholdMB,
                 kMaxAsyncMempoolReleaseThresholdMB);
-            out.privateLutFallbackPerMediumCap = std::clamp(
-                raw.privateLutFallbackPerMediumCap,
-                kMinPrivateLutFallbackPerMediumCap,
-                kMaxPrivateLutFallbackPerMediumCap);
-            out.privateLutFallbackPerInstanceCap = std::clamp(
-                raw.privateLutFallbackPerInstanceCap,
-                kMinPrivateLutFallbackPerInstanceCap,
-                kMaxPrivateLutFallbackPerInstanceCap);
-            out.privateLutFallbackPerInstanceCap = std::max(
-                out.privateLutFallbackPerInstanceCap,
-                out.privateLutFallbackPerMediumCap);
             out.pinnedUploadStagingMaxBytes = std::clamp(
                 raw.pinnedUploadStagingMaxBytes,
                 kMinPinnedStagingMaxBytes,

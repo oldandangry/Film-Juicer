@@ -98,27 +98,23 @@ namespace JuicerProcess {
             if (!tier1Base) {
                 return false;
             }
-            if (tier == Spektrafilm::DirScratchTier::Tier1IChannels) {
-                return scratch.filterTempM && scratch.filterTempC &&
-                       scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC &&
-                       scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
-            }
-            if (tier == Spektrafilm::DirScratchTier::Tier2) {
-                const bool tier2FftShape =
-                    scratch.iirForwardTemp == nullptr &&
-                    scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
-                    scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
-                const bool tier2StrictChannelShape =
-                    scratch.filterTempM && scratch.filterTempC &&
-                    scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
-                return scratch.logRawB && scratch.logRawG && scratch.logRawR &&
-                       (tier2FftShape || tier2StrictChannelShape);
-            }
-            return tier == Spektrafilm::DirScratchTier::Tier1F &&
-                   scratch.iirForwardTemp == nullptr &&
-                   scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr &&
-                   scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
-                   scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
+            const bool hasChannelTemps =
+                scratch.filterTempM && scratch.filterTempC &&
+                scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+            const bool hasNoChannelTemps =
+                scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
+                scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
+                scratch.iirForwardTempC == nullptr;
+            const bool channelTempsMatch =
+                (roles.filterTempPlanes == 1 && roles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
+                (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3 && hasChannelTemps);
+            const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
+            const bool hasNoCachedLogRaw =
+                scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
+            const bool cachedLogRawMatch =
+                (roles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
+                (roles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
+            return channelTempsMatch && cachedLogRawMatch;
         }
 #endif
 
@@ -299,18 +295,25 @@ namespace JuicerProcess {
         }
 
 #if defined(JUICER_ENABLE_CUDA) && !defined(__APPLE__)
-        void bind_spatial_dir_workspace_metadata(
-            const Spektrafilm::SpatialDirDescriptor* descriptor,
-            Root::PreparedCudaFrame::WorkspaceRequest& request) noexcept {
-            if (!descriptor || descriptor->hash == 0) {
-                return;
-            }
-            request.needSpatialDir = true;
-            request.spatialDirDescriptorHash = descriptor->hash;
-            request.spatialDirScratchTier = descriptor->scratchTier;
-            request.spatialDirPlaneRoles = descriptor->planeRoles;
-            request.spatialDirTargetScratchTier = descriptor->targetScratchTier;
-            request.spatialDirTargetPlaneRoles = descriptor->targetPlaneRoles;
+        JuicerCuda::ResourceManager::ScratchRequestDescriptor make_workspace_scratch_request_descriptor(
+            const Root::PreparedCudaFrame::WorkspaceRequest& workspace) noexcept {
+            JuicerCuda::ResourceManager::ScratchRequestBuildRequest request{};
+            request.families.needOptics = workspace.needOptics;
+            request.families.needSpatialDir = workspace.needSpatialDir;
+            request.spatialDirDescriptorHash = workspace.spatialDirDescriptorHash;
+            request.spatialDirScratchTier = workspace.spatialDirScratchTier;
+            request.spatialDirPlaneRoles = workspace.spatialDirPlaneRoles;
+            request.spatialDirTargetScratchTier = workspace.spatialDirTargetScratchTier;
+            request.spatialDirTargetPlaneRoles = workspace.spatialDirTargetPlaneRoles;
+            request.extent.requestedWidth = workspace.requestedWidth;
+            request.extent.requestedHeight = workspace.requestedHeight;
+            request.attachments.needBlurred = workspace.needBlurred;
+            request.attachments.needAux = workspace.needAux;
+            request.attachments.needGrainTriplet = workspace.needGrainTriplet;
+            request.attachments.needGrainShared = workspace.needGrainShared;
+            request.attachments.needGateMask = workspace.needGateMask;
+            return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
+                request);
         }
 #endif
 
@@ -428,6 +431,18 @@ namespace JuicerProcess {
         bool ensure_scratch_workspace(
             const WorkspaceRequest& request,
             void* cudaStreamOpaque,
+            std::string& outError);
+        bool release_overflow_spatial_dir_build_scratch_after_build(
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirBuildScratchReleaseStats& outStats,
+            std::string& outError);
+        bool release_overflow_spatial_dir_cached_log_raw_after_final_develop(
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirCachedLogRawReleaseStats& outStats,
+            std::string& outError);
+        bool release_overflow_spatial_dir_stage_after_scan_linear(
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirStageReleaseStats& outStats,
             std::string& outError);
         bool release_scratch_workspace_after_use(
             void* cudaStreamOpaque,
@@ -890,6 +905,15 @@ namespace JuicerProcess {
             return false;
         }
         const std::size_t planeBytes = requiredElements * sizeof(float);
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_workspace_scratch_request_descriptor(request);
+        if (!JuicerCuda::ResourceManager::command_admit_frame_scratch_overflow(
+                transaction,
+                *resources,
+                scratchRequest,
+                outError)) {
+            return false;
+        }
 
         FrameScratchWorkspace next{};
         next.request = request;
@@ -1043,6 +1067,316 @@ namespace JuicerProcess {
         }
 
         scratchWorkspace = next;
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_build_scratch_after_build(
+        void* cudaStreamOpaque,
+        JuicerCuda::SpatialDirBuildScratchReleaseStats& outStats,
+        std::string& outError) {
+        outStats = JuicerCuda::SpatialDirBuildScratchReleaseStats{};
+        outError.clear();
+        FrameScratchWorkspace& workspace = scratchWorkspace;
+        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
+            return true;
+        }
+        if (!resources) {
+            outError = "CUDA resources unavailable for overflow spatial DIR build scratch release";
+            return false;
+        }
+        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
+        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
+        if (planeBytes == 0) {
+            return true;
+        }
+
+        remember_stream(cudaStreamOpaque);
+        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
+        bool retiredAll = true;
+        auto retire_ptr = [&](float*& ptr, const char* label, std::size_t& retiredBytes) {
+            if (!ptr || !retiredAll) {
+                return;
+            }
+            void* raw = ptr;
+            std::string localError;
+            if (JuicerCuda::retire_frame_scratch_allocation(
+                    *resources,
+                    raw,
+                    planeBytes,
+                    retireStreamOpaque,
+                    label,
+                    localError)) {
+                ptr = nullptr;
+                retiredBytes += planeBytes;
+                return;
+            }
+            retiredAll = false;
+            outError = localError.empty()
+                           ? std::string(label ? label : "overflow spatial DIR build scratch") +
+                                 " retire failed"
+                           : localError;
+        };
+
+        retire_ptr(
+            spatialDir.rawCorrectionY,
+            "overflow spatial DIR build rawCorrectionY",
+            outStats.rawCorrectionRetiredBytes);
+        retire_ptr(
+            spatialDir.rawCorrectionM,
+            "overflow spatial DIR build rawCorrectionM",
+            outStats.rawCorrectionRetiredBytes);
+        retire_ptr(
+            spatialDir.rawCorrectionC,
+            "overflow spatial DIR build rawCorrectionC",
+            outStats.rawCorrectionRetiredBytes);
+        retire_ptr(
+            spatialDir.filterTempM,
+            "overflow spatial DIR build filterTempM",
+            outStats.filterTempRetiredBytes);
+        retire_ptr(
+            spatialDir.filterTempC,
+            "overflow spatial DIR build filterTempC",
+            outStats.filterTempRetiredBytes);
+        retire_ptr(
+            spatialDir.iirForwardTemp,
+            "overflow spatial DIR build iirForwardTemp",
+            outStats.iirForwardTempRetiredBytes);
+        retire_ptr(
+            spatialDir.iirForwardTempM,
+            "overflow spatial DIR build iirForwardTempM",
+            outStats.iirForwardTempRetiredBytes);
+        retire_ptr(
+            spatialDir.iirForwardTempC,
+            "overflow spatial DIR build iirForwardTempC",
+            outStats.iirForwardTempRetiredBytes);
+        if (!retiredAll) {
+            if (outError.empty()) {
+                outError = "overflow spatial DIR build scratch retire failed";
+            }
+            return false;
+        }
+
+        const float* sharedTmp = workspace.sharedTmpPlane;
+        spatialDir.filterTemp = nullptr;
+        const bool opticsKeepsSharedTmp =
+            sharedTmp && workspace.optics.tmp == sharedTmp &&
+            (workspace.optics.rgbR || workspace.optics.rgbG || workspace.optics.rgbB ||
+             workspace.optics.blurred || workspace.optics.aux || workspace.optics.grainTmp ||
+             workspace.optics.grainTmpShared || workspace.optics.grainTmpMid ||
+             workspace.optics.grainTmpCoarse || workspace.optics.gateMask);
+        if (sharedTmp && !opticsKeepsSharedTmp) {
+            void* raw = workspace.sharedTmpPlane;
+            std::string localError;
+            if (!JuicerCuda::retire_frame_scratch_allocation(
+                    *resources,
+                    raw,
+                    workspace.sharedTmpCapacityElements * sizeof(float),
+                    retireStreamOpaque,
+                    "overflow spatial DIR build shared tmp plane",
+                    localError)) {
+                outError = localError.empty()
+                               ? "overflow spatial DIR build shared tmp retire failed"
+                               : localError;
+                return false;
+            }
+            outStats.sharedTmpRetiredBytes =
+                workspace.sharedTmpCapacityElements * sizeof(float);
+            workspace.sharedTmpPlane = nullptr;
+            workspace.sharedTmpWidth = 0;
+            workspace.sharedTmpHeight = 0;
+            workspace.sharedTmpCapacityElements = 0;
+            if (workspace.optics.tmp == sharedTmp) {
+                workspace.optics.tmp = nullptr;
+            }
+        }
+
+        const bool syncBeforeReap =
+            outStats.rawCorrectionRetiredBytes > 0 ||
+            outStats.filterTempRetiredBytes > 0 ||
+            outStats.iirForwardTempRetiredBytes > 0 ||
+            outStats.sharedTmpRetiredBytes > 0;
+        if (!syncBeforeReap) {
+            return true;
+        }
+
+        const cudaStream_t stream = retireStreamOpaque
+                                        ? reinterpret_cast<cudaStream_t>(retireStreamOpaque)
+                                        : nullptr;
+        const cudaError_t syncErr = cudaStreamSynchronize(stream);
+        if (syncErr != cudaSuccess) {
+            outError = std::string("cudaStreamSynchronize(overflow spatial DIR build scratch) failed: ") +
+                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+            return false;
+        }
+        return JuicerCuda::reap_retired_allocations(
+            *resources,
+            outStats.reclaimedBytes,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_cached_log_raw_after_final_develop(
+        void* cudaStreamOpaque,
+        JuicerCuda::SpatialDirCachedLogRawReleaseStats& outStats,
+        std::string& outError) {
+        outStats = JuicerCuda::SpatialDirCachedLogRawReleaseStats{};
+        outError.clear();
+        FrameScratchWorkspace& workspace = scratchWorkspace;
+        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
+            return true;
+        }
+        if (!resources) {
+            outError = "CUDA resources unavailable for overflow spatial DIR cached log raw release";
+            return false;
+        }
+        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
+        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
+        if (planeBytes == 0) {
+            return true;
+        }
+
+        remember_stream(cudaStreamOpaque);
+        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
+        bool retiredAll = true;
+        auto retire_ptr = [&](float*& ptr, const char* label) {
+            if (!ptr || !retiredAll) {
+                return;
+            }
+            void* raw = ptr;
+            std::string localError;
+            if (JuicerCuda::retire_frame_scratch_allocation(
+                    *resources,
+                    raw,
+                    planeBytes,
+                    retireStreamOpaque,
+                    label,
+                    localError)) {
+                ptr = nullptr;
+                outStats.cachedLogRawRetiredBytes += planeBytes;
+                return;
+            }
+            retiredAll = false;
+            outError = localError.empty()
+                           ? std::string(label ? label : "overflow spatial DIR cached log raw") +
+                                 " retire failed"
+                           : localError;
+        };
+
+        retire_ptr(spatialDir.logRawB, "overflow spatial DIR final logRawB");
+        retire_ptr(spatialDir.logRawG, "overflow spatial DIR final logRawG");
+        retire_ptr(spatialDir.logRawR, "overflow spatial DIR final logRawR");
+        if (!retiredAll) {
+            if (outError.empty()) {
+                outError = "overflow spatial DIR cached log raw retire failed";
+            }
+            return false;
+        }
+        if (outStats.cachedLogRawRetiredBytes == 0) {
+            return true;
+        }
+
+        const cudaStream_t stream = retireStreamOpaque
+                                        ? reinterpret_cast<cudaStream_t>(retireStreamOpaque)
+                                        : nullptr;
+        const cudaError_t syncErr = cudaStreamSynchronize(stream);
+        if (syncErr != cudaSuccess) {
+            outError = std::string("cudaStreamSynchronize(overflow spatial DIR cached log raw) failed: ") +
+                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+            return false;
+        }
+        return JuicerCuda::reap_retired_allocations(
+            *resources,
+            outStats.reclaimedBytes,
+            outError);
+    }
+
+    bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_stage_after_scan_linear(
+        void* cudaStreamOpaque,
+        JuicerCuda::SpatialDirStageReleaseStats& outStats,
+        std::string& outError) {
+        outStats = JuicerCuda::SpatialDirStageReleaseStats{};
+        outError.clear();
+        FrameScratchWorkspace& workspace = scratchWorkspace;
+        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
+            return true;
+        }
+        if (!resources) {
+            outError = "CUDA resources unavailable for overflow spatial DIR stage release";
+            return false;
+        }
+        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
+        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
+        if (planeBytes == 0) {
+            workspace.request.needSpatialDir = false;
+            spatialDir = JuicerCuda::Resources::DeviceSpatialDirScratch{};
+            return true;
+        }
+
+        remember_stream(cudaStreamOpaque);
+        void* retireStreamOpaque = cudaStreamOpaque ? cudaStreamOpaque : lastCudaStreamOpaque;
+        bool retiredAll = true;
+        auto retire_ptr = [&](float*& ptr, const char* label) {
+            if (!ptr || !retiredAll) {
+                return;
+            }
+            void* raw = ptr;
+            std::string localError;
+            if (JuicerCuda::retire_frame_scratch_allocation(
+                    *resources,
+                    raw,
+                    planeBytes,
+                    retireStreamOpaque,
+                    label,
+                    localError)) {
+                ptr = nullptr;
+                outStats.retiredBytes += planeBytes;
+                return;
+            }
+            retiredAll = false;
+            outError = localError.empty()
+                           ? std::string(label ? label : "overflow spatial DIR stage") +
+                                 " retire failed"
+                           : localError;
+        };
+
+        retire_ptr(spatialDir.rawCorrectionY, "overflow spatial DIR rawCorrectionY");
+        retire_ptr(spatialDir.rawCorrectionM, "overflow spatial DIR rawCorrectionM");
+        retire_ptr(spatialDir.rawCorrectionC, "overflow spatial DIR rawCorrectionC");
+        retire_ptr(spatialDir.filteredCorrectionY, "overflow spatial DIR filteredCorrectionY");
+        retire_ptr(spatialDir.filteredCorrectionM, "overflow spatial DIR filteredCorrectionM");
+        retire_ptr(spatialDir.filteredCorrectionC, "overflow spatial DIR filteredCorrectionC");
+        retire_ptr(spatialDir.filterTempM, "overflow spatial DIR filterTempM");
+        retire_ptr(spatialDir.filterTempC, "overflow spatial DIR filterTempC");
+        retire_ptr(spatialDir.iirForwardTemp, "overflow spatial DIR iirForwardTemp");
+        retire_ptr(spatialDir.iirForwardTempM, "overflow spatial DIR iirForwardTempM");
+        retire_ptr(spatialDir.iirForwardTempC, "overflow spatial DIR iirForwardTempC");
+        retire_ptr(spatialDir.logRawB, "overflow spatial DIR logRawB");
+        retire_ptr(spatialDir.logRawG, "overflow spatial DIR logRawG");
+        retire_ptr(spatialDir.logRawR, "overflow spatial DIR logRawR");
+        if (!retiredAll) {
+            if (outError.empty()) {
+                outError = "overflow spatial DIR stage retire failed";
+            }
+            return false;
+        }
+
+        const cudaStream_t stream = retireStreamOpaque
+                                        ? reinterpret_cast<cudaStream_t>(retireStreamOpaque)
+                                        : nullptr;
+        const cudaError_t syncErr = cudaStreamSynchronize(stream);
+        if (syncErr != cudaSuccess) {
+            outError = std::string("cudaStreamSynchronize(overflow spatial DIR stage) failed: ") +
+                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+            return false;
+        }
+        if (!JuicerCuda::reap_retired_allocations(
+                *resources,
+                outStats.reclaimedBytes,
+                outError)) {
+            return false;
+        }
+        spatialDir = JuicerCuda::Resources::DeviceSpatialDirScratch{};
+        workspace.request.needSpatialDir = false;
+        spatialDirDescriptor = Spektrafilm::SpatialDirDescriptor{};
         return true;
     }
 
@@ -1309,23 +1643,7 @@ namespace JuicerProcess {
 
     JuicerCuda::ResourceManager::ScratchRequestDescriptor Root::PreparedCudaFrame::make_scratch_request_descriptor(
         const WorkspaceLeaseMarker& workspace) noexcept {
-        JuicerCuda::ResourceManager::ScratchRequestBuildRequest request{};
-        request.families.needOptics = workspace._request.needOptics;
-        request.families.needSpatialDir = workspace._request.needSpatialDir;
-        request.spatialDirDescriptorHash = workspace._request.spatialDirDescriptorHash;
-        request.spatialDirScratchTier = workspace._request.spatialDirScratchTier;
-        request.spatialDirPlaneRoles = workspace._request.spatialDirPlaneRoles;
-        request.spatialDirTargetScratchTier = workspace._request.spatialDirTargetScratchTier;
-        request.spatialDirTargetPlaneRoles = workspace._request.spatialDirTargetPlaneRoles;
-        request.extent.requestedWidth = workspace._request.requestedWidth;
-        request.extent.requestedHeight = workspace._request.requestedHeight;
-        request.attachments.needBlurred = workspace._request.needBlurred;
-        request.attachments.needAux = workspace._request.needAux;
-        request.attachments.needGrainTriplet = workspace._request.needGrainTriplet;
-        request.attachments.needGrainShared = workspace._request.needGrainShared;
-        request.attachments.needGateMask = workspace._request.needGateMask;
-        return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
-            request);
+        return make_workspace_scratch_request_descriptor(workspace._request);
     }
 
     bool Root::PreparedCudaFrame::workspace_marker_matches_current_frame(
@@ -1382,6 +1700,14 @@ namespace JuicerProcess {
             }
             return false;
         }
+        if (!_state->root->shed_post_frame_scratch(
+                _state->transaction,
+                *_state->resources,
+                cudaStreamOpaque,
+                "command_shed_post_frame_scratch_finish",
+                outError)) {
+            return false;
+        }
 
         if (!_state->root->commit_submission(_state->transaction, cudaStreamOpaque, outError)) {
             return false;
@@ -1416,6 +1742,26 @@ namespace JuicerProcess {
                         releaseError) &&
                     JTRACE_ENABLED(1)) {
                     std::string msg = "frame_auto_exposure_retire_failed abort=1";
+                    if (reason && reason[0]) {
+                        msg += " reason=";
+                        msg += reason;
+                    }
+                    if (!releaseError.empty()) {
+                        msg += " error=";
+                        msg += releaseError;
+                    }
+                    JTRACE("CUDA", msg);
+                }
+                if (_state->root && _state->resources && _state->transaction.active &&
+                    !_state->transaction.committed &&
+                    !_state->root->shed_post_frame_scratch(
+                        _state->transaction,
+                        *_state->resources,
+                        _state->lastCudaStreamOpaque,
+                        "command_shed_post_frame_scratch_abort",
+                        releaseError) &&
+                    JTRACE_ENABLED(1)) {
+                    std::string msg = "frame_post_frame_scratch_shed_failed abort=1";
                     if (reason && reason[0]) {
                         msg += " reason=";
                         msg += reason;
@@ -1501,9 +1847,13 @@ namespace JuicerProcess {
             return false;
         }
         if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
                 "acquire_frame_scratch_workspace",
-                "CUDA frame scratch workspace acquisition failed");
+                marksContextLoss
+                    ? "CUDA frame scratch workspace acquisition failed"
+                    : "CUDA frame scratch workspace admission failed",
+                marksContextLoss);
             return false;
         }
         if (_state->scratchWorkspace.overflowActive) {
@@ -1690,9 +2040,13 @@ namespace JuicerProcess {
         }
 #endif
         if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+            const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
                 "acquire_frame_scratch_workspace",
-                "CUDA frame scratch workspace acquisition failed");
+                marksContextLoss
+                    ? "CUDA frame scratch workspace acquisition failed"
+                    : "CUDA frame scratch workspace admission failed",
+                marksContextLoss);
             return false;
         }
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -1729,9 +2083,9 @@ namespace JuicerProcess {
             JTRACE("DIR_DESCRIPTOR", msg);
         }
 #endif
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
         if (!_state->scratchWorkspace.overflowActive) {
-            const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-                make_scratch_request_descriptor(workspace);
             if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
                     _state->transaction,
                     *_state->resources,
@@ -1754,11 +2108,17 @@ namespace JuicerProcess {
                     _state->transaction,
                     *_state->resources,
                     descriptor,
+                    scratchRequest,
                     cudaStreamOpaque,
                     outError)) {
+                const bool marksContextLoss =
+                    !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
                 _state->set_failure(
                     "command_ensure_spatial_dir_fft",
-                    "CUDA spatial DIR FFT preparation failed");
+                    marksContextLoss
+                        ? "CUDA spatial DIR FFT preparation failed"
+                        : "CUDA spatial DIR FFT admission failed",
+                    marksContextLoss);
                 return false;
             }
         } else {
@@ -1792,18 +2152,210 @@ namespace JuicerProcess {
         return true;
     }
 
-    bool Root::PreparedCudaFrame::admit_scanner_post_effects(
+    bool Root::PreparedCudaFrame::release_spatial_dir_build_scratch_after_build(
+        const WorkspaceLeaseMarker& workspace,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!validate_workspace_lease_marker(workspace, outError)) {
+            return false;
+        }
+        if (!workspace._request.needSpatialDir) {
+            return true;
+        }
+        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+            return true;
+        }
+
+        JuicerCuda::SpatialDirBuildScratchReleaseStats releaseStats{};
+        const bool overflow = _state->scratchWorkspace.overflowActive;
+        bool ok = false;
+        if (overflow) {
+            ok = _state->release_overflow_spatial_dir_build_scratch_after_build(
+                cudaStreamOpaque,
+                releaseStats,
+                outError);
+        } else {
+            _state->remember_stream(cudaStreamOpaque);
+            ok = JuicerCuda::ResourceManager::command_release_spatial_dir_build_scratch_stage(
+                _state->transaction,
+                *_state->resources,
+                cudaStreamOpaque,
+                releaseStats,
+                outError);
+        }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (JTRACE_ENABLED(1)) {
+            const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
+            std::string msg = "event=spatial_dir_build_scratch_release_after_build";
+            msg += " descriptor_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
+            msg += " scratch_source=";
+            msg += overflow ? "overflow" : "retained";
+            msg += " ok=";
+            msg += ok ? "1" : "0";
+            msg += " pending_scratch_bytes_before=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.pendingScratchBytesBefore));
+            msg += " raw_correction_retired_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.rawCorrectionRetiredBytes));
+            msg += " filter_temp_retired_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.filterTempRetiredBytes));
+            msg += " iir_forward_temp_retired_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.iirForwardTempRetiredBytes));
+            msg += " shared_tmp_retired_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.sharedTmpRetiredBytes));
+            msg += " reclaimed_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.reclaimedBytes));
+            if (!outError.empty()) {
+                msg += " error=";
+                msg += outError;
+            }
+            JTRACE("DIR_DESCRIPTOR", msg);
+        }
+#endif
+        if (!ok) {
+            _state->set_failure(
+                "release_spatial_dir_build_scratch_after_build",
+                "CUDA spatial DIR build scratch release failed");
+        }
+        return ok;
+    }
+
+    bool Root::PreparedCudaFrame::release_spatial_dir_stage_after_scan_linear(
+        const WorkspaceLeaseMarker& workspace,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!validate_workspace_lease_marker(workspace, outError)) {
+            return false;
+        }
+        if (!workspace._request.needSpatialDir) {
+            return true;
+        }
+        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+            return true;
+        }
+
+        JuicerCuda::SpatialDirStageReleaseStats releaseStats{};
+        const bool overflow = _state->scratchWorkspace.overflowActive;
+        bool ok = false;
+        if (overflow) {
+            ok = _state->release_overflow_spatial_dir_stage_after_scan_linear(
+                cudaStreamOpaque,
+                releaseStats,
+                outError);
+        } else {
+            _state->remember_stream(cudaStreamOpaque);
+            ok = JuicerCuda::ResourceManager::command_release_spatial_dir_scratch_stage(
+                _state->transaction,
+                *_state->resources,
+                cudaStreamOpaque,
+                releaseStats,
+                outError);
+            if (ok) {
+                _state->scratchWorkspace.request.needSpatialDir = false;
+                _state->spatialDirDescriptor = Spektrafilm::SpatialDirDescriptor{};
+            }
+        }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (JTRACE_ENABLED(1)) {
+            const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
+            std::string msg = "event=spatial_dir_stage_release_after_scan_linear";
+            msg += " descriptor_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
+            msg += " scratch_source=";
+            msg += overflow ? "overflow" : "retained";
+            msg += " ok=";
+            msg += ok ? "1" : "0";
+            msg += " retired_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.retiredBytes));
+            msg += " reclaimed_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.reclaimedBytes));
+            if (!outError.empty()) {
+                msg += " error=";
+                msg += outError;
+            }
+            JTRACE("DIR_DESCRIPTOR", msg);
+        }
+#endif
+        if (!ok) {
+            _state->set_failure(
+                "release_spatial_dir_stage_after_scan_linear",
+                "CUDA spatial DIR stage release failed");
+        }
+        return ok;
+    }
+
+    bool Root::PreparedCudaFrame::release_spatial_dir_cached_log_raw_after_final_develop(
+        const WorkspaceLeaseMarker& workspace,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!validate_workspace_lease_marker(workspace, outError)) {
+            return false;
+        }
+        if (!workspace._request.needSpatialDir) {
+            return true;
+        }
+        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+            return true;
+        }
+
+        JuicerCuda::SpatialDirCachedLogRawReleaseStats releaseStats{};
+        const bool overflow = _state->scratchWorkspace.overflowActive;
+        bool ok = false;
+        if (overflow) {
+            ok = _state->release_overflow_spatial_dir_cached_log_raw_after_final_develop(
+                cudaStreamOpaque,
+                releaseStats,
+                outError);
+        } else {
+            _state->remember_stream(cudaStreamOpaque);
+            ok = JuicerCuda::ResourceManager::command_release_spatial_dir_cached_log_raw_stage(
+                _state->transaction,
+                *_state->resources,
+                cudaStreamOpaque,
+                releaseStats,
+                outError);
+        }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (JTRACE_ENABLED(1)) {
+            const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
+            std::string msg = "event=spatial_dir_cached_log_raw_release_after_final_develop";
+            msg += " descriptor_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
+            msg += " scratch_source=";
+            msg += overflow ? "overflow" : "retained";
+            msg += " ok=";
+            msg += ok ? "1" : "0";
+            msg += " pending_scratch_bytes_before=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.pendingScratchBytesBefore));
+            msg += " cached_log_raw_retired_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.cachedLogRawRetiredBytes));
+            msg += " reclaimed_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(releaseStats.reclaimedBytes));
+            if (!outError.empty()) {
+                msg += " error=";
+                msg += outError;
+            }
+            JTRACE("DIR_DESCRIPTOR", msg);
+        }
+#endif
+        if (!ok) {
+            _state->set_failure(
+                "release_spatial_dir_cached_log_raw_after_final_develop",
+                "CUDA spatial DIR cached log raw release failed");
+        }
+        return ok;
+    }
+
+    bool Root::PreparedCudaFrame::prepare_scanner_post_effects(
         const Scanner::ScannerPostEffectsDescriptor& descriptor,
-        const WorkspaceRequest& request,
         void* cudaStreamOpaque,
         std::string& outError) {
         outError.clear();
         if (!descriptor.active()) {
             return true;
-        }
-        const WorkspaceLeaseMarker workspace = bind_workspace_request(request);
-        if (!stage_optical_workspace(workspace, cudaStreamOpaque, outError)) {
-            return false;
         }
         if (descriptor.lensBlurSigmaPx > 0.0f &&
             !build_gaussian_kernel_slot(
@@ -2002,6 +2554,37 @@ namespace JuicerProcess {
             _state->set_failure(
                 failureStageTag,
                 "CUDA scratch phase checkpoint failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool Root::PreparedCudaFrame::checkpoint_large_scratch_transition(
+        const WorkspaceLeaseMarker& workspace,
+        bool usesSpatialDirFft,
+        void* cudaStreamOpaque,
+        const char* stageTag,
+        std::string& outError) {
+        if (!validate_workspace_lease_marker(workspace, outError)) {
+            return false;
+        }
+
+        _state->remember_stream(cudaStreamOpaque);
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_scratch_request_descriptor(workspace);
+        const char* failureStageTag =
+            stageTag ? stageTag : "command_checkpoint_large_scratch_transition";
+        if (!JuicerCuda::ResourceManager::command_checkpoint_large_scratch_transition(
+                _state->transaction,
+                *_state->resources,
+                scratchRequest,
+                usesSpatialDirFft,
+                cudaStreamOpaque,
+                failureStageTag,
+                outError)) {
+            _state->set_failure(
+                failureStageTag,
+                "CUDA large scratch transition checkpoint failed");
             return false;
         }
         return true;
@@ -3274,36 +3857,15 @@ namespace JuicerProcess {
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
         if (request.scannerPostEffects) {
-            PreparedCudaFrame::WorkspaceRequest scannerWorkspace{};
-            scannerWorkspace.needOptics = request.scannerPostEffects->active();
-            if (request.scannerWorkspaceNeedsSpatialDir) {
-                bind_spatial_dir_workspace_metadata(request.spatialDirDescriptor, scannerWorkspace);
-                if (!scannerWorkspace.needSpatialDir) {
-                    outError = "print scanner workspace missing spatial DIR descriptor metadata";
-                    frame._state->set_failure(
-                        "admit_print_scanner_post_effects_phase8",
-                        "CUDA print scanner post-effect admission failed",
-                        false);
-                    frame.abort("print_phase8_scanner_post_effect_admission_failed");
-                    return frame;
-                }
-            }
-            scannerWorkspace.requestedWidth = request.frameWidth;
-            scannerWorkspace.requestedHeight = request.frameHeight;
-            scannerWorkspace.needBlurred =
-                request.scannerPostEffects->glareActive &&
-                request.scannerPostEffects->glareBlurSigmaPx > 0.0f;
-            if (
-                !frame.admit_scanner_post_effects(
+            if (!frame.prepare_scanner_post_effects(
                     *request.scannerPostEffects,
-                    scannerWorkspace,
                     cudaStreamOpaque,
                     outError)) {
                 frame._state->set_failure(
-                    "admit_print_scanner_post_effects_phase8",
-                    "CUDA print scanner post-effect admission failed",
+                    "prepare_print_scanner_post_effects_phase8",
+                    "CUDA print scanner post-effect preparation failed",
                     false);
-                frame.abort("print_phase8_scanner_post_effect_admission_failed");
+                frame.abort("print_phase8_scanner_post_effect_preparation_failed");
                 return frame;
             }
         }
@@ -3387,36 +3949,15 @@ namespace JuicerProcess {
         frame._state->focusedFilmRawConfig = request.filmRawConfig;
         frame._state->focusedScannerColor = request.scannerColor;
         if (request.scannerPostEffects) {
-            PreparedCudaFrame::WorkspaceRequest scannerWorkspace{};
-            scannerWorkspace.needOptics = request.scannerPostEffects->active();
-            if (request.scannerWorkspaceNeedsSpatialDir) {
-                bind_spatial_dir_workspace_metadata(request.spatialDirDescriptor, scannerWorkspace);
-                if (!scannerWorkspace.needSpatialDir) {
-                    outError = "direct scanner workspace missing spatial DIR descriptor metadata";
-                    frame._state->set_failure(
-                        "admit_direct_scanner_post_effects_phase8",
-                        "CUDA direct scanner post-effect admission failed",
-                        false);
-                    frame.abort("direct_phase8_scanner_post_effect_admission_failed");
-                    return frame;
-                }
-            }
-            scannerWorkspace.requestedWidth = request.frameWidth;
-            scannerWorkspace.requestedHeight = request.frameHeight;
-            scannerWorkspace.needBlurred =
-                request.scannerPostEffects->glareActive &&
-                request.scannerPostEffects->glareBlurSigmaPx > 0.0f;
-            if (
-                !frame.admit_scanner_post_effects(
+            if (!frame.prepare_scanner_post_effects(
                     *request.scannerPostEffects,
-                    scannerWorkspace,
                     cudaStreamOpaque,
                     outError)) {
                 frame._state->set_failure(
-                    "admit_direct_scanner_post_effects_phase8",
-                    "CUDA direct scanner post-effect admission failed",
+                    "prepare_direct_scanner_post_effects_phase8",
+                    "CUDA direct scanner post-effect preparation failed",
                     false);
-                frame.abort("direct_phase8_scanner_post_effect_admission_failed");
+                frame.abort("direct_phase8_scanner_post_effect_preparation_failed");
                 return frame;
             }
         }
@@ -3452,6 +3993,20 @@ namespace JuicerProcess {
         void* cudaStreamOpaque,
         std::string& outError) {
         return JuicerCuda::ResourceManager::commit_submission(transaction, cudaStreamOpaque, outError);
+    }
+
+    bool Root::shed_post_frame_scratch(
+        JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+        JuicerCuda::Resources& resources,
+        void* cudaStreamOpaque,
+        const char* commandName,
+        std::string& outError) {
+        return JuicerCuda::ResourceManager::command_shed_post_frame_scratch(
+            transaction,
+            resources,
+            cudaStreamOpaque,
+            commandName,
+            outError);
     }
 
     void Root::rollback_submission(

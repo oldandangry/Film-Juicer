@@ -185,6 +185,49 @@ namespace JuicerCuda {
             const char* commandName,
             std::string& outError);
 
+        bool command_checkpoint_large_scratch_transition(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const ScratchRequestDescriptor& scratchRequest,
+            bool usesSpatialDirFft,
+            void* cudaStreamOpaque,
+            const char* commandName,
+            std::string& outError);
+
+        bool command_admit_frame_scratch_overflow(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            const ScratchRequestDescriptor& scratchRequest,
+            std::string& outError);
+
+        bool command_release_spatial_dir_scratch_stage(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirStageReleaseStats& outStats,
+            std::string& outError);
+
+        bool command_release_spatial_dir_build_scratch_stage(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirBuildScratchReleaseStats& outStats,
+            std::string& outError);
+
+        bool command_release_spatial_dir_cached_log_raw_stage(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirCachedLogRawReleaseStats& outStats,
+            std::string& outError);
+
+        bool command_shed_post_frame_scratch(
+            SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            void* cudaStreamOpaque,
+            const char* commandName,
+            std::string& outError);
+
         bool command_ensure_print_illuminant_filtered(
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
@@ -221,6 +264,7 @@ namespace JuicerCuda {
             SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
             const Spektrafilm::SpatialDirDescriptor& descriptor,
+            const ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             std::string& outError);
 

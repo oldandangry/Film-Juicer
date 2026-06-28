@@ -92,9 +92,6 @@ namespace JuicerProcess {
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
-            bool scannerWorkspaceNeedsSpatialDir = false;
-            int frameWidth = 0;
-            int frameHeight = 0;
         };
 
         struct PrintCudaPreparationRequest {
@@ -107,9 +104,6 @@ namespace JuicerProcess {
             const Scanner::ScannerSpectralLutDescriptor* scannerLutDescriptor = nullptr;
             const Scanner::ScannerPostEffectsDescriptor* scannerPostEffects = nullptr;
             const Spektrafilm::SpatialDirDescriptor* spatialDirDescriptor = nullptr;
-            bool scannerWorkspaceNeedsSpatialDir = false;
-            int frameWidth = 0;
-            int frameHeight = 0;
         };
 
         class PreparedCudaFrame final {
@@ -444,6 +438,18 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            bool release_spatial_dir_build_scratch_after_build(
+                const WorkspaceLeaseMarker& workspace,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool release_spatial_dir_cached_log_raw_after_final_develop(
+                const WorkspaceLeaseMarker& workspace,
+                void* cudaStreamOpaque,
+                std::string& outError);
+            bool release_spatial_dir_stage_after_scan_linear(
+                const WorkspaceLeaseMarker& workspace,
+                void* cudaStreamOpaque,
+                std::string& outError);
             bool build_print_illuminant_filter_curve(
                 const WorkingState& workingState,
                 const Print::Runtime& printRt,
@@ -461,6 +467,12 @@ namespace JuicerProcess {
                 std::string& outError);
             bool checkpoint_scratch_phase(
                 const WorkspaceLeaseMarker& workspace,
+                const char* stageTag,
+                std::string& outError);
+            bool checkpoint_large_scratch_transition(
+                const WorkspaceLeaseMarker& workspace,
+                bool usesSpatialDirFft,
+                void* cudaStreamOpaque,
                 const char* stageTag,
                 std::string& outError);
             bool build_lens_blur_kernel(
@@ -548,9 +560,8 @@ namespace JuicerProcess {
                 float sigma,
                 void* cudaStreamOpaque,
                 std::string& outError);
-            bool admit_scanner_post_effects(
+            bool prepare_scanner_post_effects(
                 const Scanner::ScannerPostEffectsDescriptor& descriptor,
-                const WorkspaceRequest& request,
                 void* cudaStreamOpaque,
                 std::string& outError);
 
@@ -589,6 +600,12 @@ namespace JuicerProcess {
         bool commit_submission(
             JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
             void* cudaStreamOpaque,
+            std::string& outError);
+        bool shed_post_frame_scratch(
+            JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+            JuicerCuda::Resources& resources,
+            void* cudaStreamOpaque,
+            const char* commandName,
             std::string& outError);
         void rollback_submission(
             JuicerCuda::ResourceManager::SubmissionTransaction& transaction,

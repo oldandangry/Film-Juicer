@@ -1028,8 +1028,6 @@ namespace JuicerCuda {
             std::uint32_t hostAssetIdleTrimMs = 5000;
             std::uint32_t allocatorBackendPreference = 3;
             std::uint32_t asyncMempoolReleaseThresholdMB = 256;
-            std::uint32_t privateLutFallbackPerMediumCap = 1;
-            std::uint32_t privateLutFallbackPerInstanceCap = 2;
             std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
             std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
             std::uint32_t lutBuilderBytesInFlightLimitMB = 128;
@@ -1096,8 +1094,6 @@ namespace JuicerCuda {
             std::uint32_t hostAssetIdleTrimMs = 5000;
             std::uint32_t allocatorBackendPreference = 3;
             std::uint32_t asyncMempoolReleaseThresholdMB = 256;
-            std::uint32_t privateLutFallbackPerMediumCap = 1;
-            std::uint32_t privateLutFallbackPerInstanceCap = 2;
             std::uint32_t pinnedUploadStagingIdleTrimMs = 5000;
             std::uint32_t scratchBuilderBytesInFlightLimitMB = 256;
             std::uint32_t lutBuilderBytesInFlightLimitMB = 128;

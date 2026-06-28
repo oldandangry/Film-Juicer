@@ -2477,88 +2477,110 @@ bool ensure_scan_lut(Resources& resources, const WorkingState& ws, bool negative
         if (!validate_resource_owner_locked(resources, outError, true)) {
             return false;
         }
-        if (dst->log2XYZ && dst->res == res && dst->hash == expectedHash) {
+        if (dst->canonical_ready() && dst->res == res && dst->hash == expectedHash) {
             return true;
         }
     }
 
-    // Build CPU LUT first (can overlap with any in-flight GPU work) before we synchronize to
-    // safely retire the previous device buffer.
-    std::vector<double> cpu;
-    if (!Precompute::build_scan_lut_cpu(medium, res, cpu, outError)) {
+    Precompute::CanonicalScanLutCpu cpu;
+    if (!Precompute::build_canonical_scan_lut_cpu(medium, res, cpu, outError)) {
+        return false;
+    }
+
+    struct NextCanonicalScanLut {
+        float* log2PchipXYZ = nullptr;
+        float* slopeC = nullptr;
+        float* slopeM = nullptr;
+        float* slopeY = nullptr;
+        float* cellMin = nullptr;
+        float* cellMax = nullptr;
+    } next;
+    auto free_next = [&]() {
+        cudaFree(next.log2PchipXYZ);
+        cudaFree(next.slopeC);
+        cudaFree(next.slopeM);
+        cudaFree(next.slopeY);
+        cudaFree(next.cellMin);
+        cudaFree(next.cellMax);
+        next = {};
+    };
+    auto upload_next = [&](float*& destination, const std::vector<float>& source, const char* label) {
+        void* raw = nullptr;
+        if (!alloc_and_upload_bytes(
+                raw,
+                source.data(),
+                source.size() * sizeof(float),
+                cudaStreamOpaque,
+                label,
+                outError)) {
+            return false;
+        }
+        destination = static_cast<float*>(raw);
+        return true;
+    };
+
+    const bool uploaded =
+        upload_next(next.log2PchipXYZ, cpu.log2XYZ, "scan PCHIP log2 XYZ") &&
+        upload_next(next.slopeC, cpu.slopeC, "scan PCHIP C slopes") &&
+        upload_next(next.slopeM, cpu.slopeM, "scan PCHIP M slopes") &&
+        upload_next(next.slopeY, cpu.slopeY, "scan PCHIP Y slopes") &&
+        upload_next(next.cellMin, cpu.cellMin, "scan PCHIP cell minima") &&
+        upload_next(next.cellMax, cpu.cellMax, "scan PCHIP cell maxima");
+    if (!uploaded) {
+        free_next();
         return false;
     }
 
     {
         std::unique_lock<std::mutex> lock(resources.m);
         if (!validate_resource_owner_locked(resources, outError, false)) {
+            free_next();
             return false;
         }
-        if (dst->log2XYZ && dst->res == res && dst->hash == expectedHash) {
+        if (dst->canonical_ready() && dst->res == res && dst->hash == expectedHash) {
+            free_next();
             return true;
         }
 
-        const size_t bytes = cpu.size() * sizeof(double);
-        if (dst->log2XYZ && dst->res == res) {
-            double* const deviceLut = dst->log2XYZ;
-            const bool waitOk = wait_for_frame_use_events_locked(
-                resources,
-                cudaStreamOpaque,
-                "scan LUT",
-                outError);
-            const bool copyOk = waitOk && enqueue_host_to_device_copy(
-                                              HostToDeviceCopyRequest{"ensure_scan_lut", "scan LUT"},
-                                              deviceLut,
-                                              cpu.data(),
-                                              bytes,
-                                              cudaStreamOpaque,
-                                              outError);
-            if (!copyOk) {
+        const std::size_t oldVoxelBytes =
+            static_cast<std::size_t>(dst->res) * dst->res * dst->res * 3u * sizeof(float);
+        const std::size_t oldCellRes = dst->res > 0u ? static_cast<std::size_t>(dst->res - 1u) : 0u;
+        const std::size_t oldCellBytes = oldCellRes * oldCellRes * oldCellRes * 3u * sizeof(float);
+        auto retire_old = [&](float*& pointer, std::size_t bytes, const char* label) {
+            if (!pointer) {
+                return true;
+            }
+            if (!retire_ptr_locked(
+                    resources,
+                    pointer,
+                    bytes,
+                    Resources::RetireKind::DeviceFree,
+                    cudaStreamOpaque,
+                    label,
+                    outError)) {
                 return false;
             }
-            dst->hash = expectedHash;
+            pointer = nullptr;
             return true;
-        }
-
-        if (dst->log2XYZ) {
-            // Retire the previous LUT without blocking the CPU.
-            const size_t count = static_cast<size_t>(dst->res) * static_cast<size_t>(dst->res) * static_cast<size_t>(dst->res) * 3u;
-            const size_t oldBytes = count * sizeof(double);
-            if (!retire_ptr_locked(resources, dst->log2XYZ, oldBytes, Resources::RetireKind::DeviceFree, cudaStreamOpaque, "scan LUT", outError)) {
-                return false;
-            }
-            dst->log2XYZ = nullptr;
-            dst->res = 0;
-            dst->hash = 0;
-        }
-
-        double* dLut = nullptr;
-        lock.unlock();
-        cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&dLut), bytes);
-        const bool allocOk = (err == cudaSuccess);
-        const bool copyOk = allocOk && enqueue_host_to_device_copy(
-                                           HostToDeviceCopyRequest{"ensure_scan_lut", "scan LUT"},
-                                           dLut,
-                                           cpu.data(),
-                                           bytes,
-                                           cudaStreamOpaque,
-                                           outError);
-        if (!relock_resources_after_offlock_upload(resources, &lock, outError)) {
-            if (dLut) {
-                cudaFree(dLut);
-            }
-            return false;
-        }
-        if (!allocOk) {
-            outError = std::string("cudaMalloc(scan LUT) failed: ") + (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
-            return false;
-        }
-        if (!copyOk) {
-            cudaFree(dLut);
+        };
+        dst->hash = 0;
+        if (!retire_old(dst->log2PchipXYZ, oldVoxelBytes, "scan PCHIP log2 XYZ") ||
+            !retire_old(dst->slopeC, oldVoxelBytes, "scan PCHIP C slopes") ||
+            !retire_old(dst->slopeM, oldVoxelBytes, "scan PCHIP M slopes") ||
+            !retire_old(dst->slopeY, oldVoxelBytes, "scan PCHIP Y slopes") ||
+            !retire_old(dst->cellMin, oldCellBytes, "scan PCHIP cell minima") ||
+            !retire_old(dst->cellMax, oldCellBytes, "scan PCHIP cell maxima")) {
+            free_next();
             return false;
         }
 
-        dst->log2XYZ = dLut;
+        dst->log2PchipXYZ = next.log2PchipXYZ;
+        dst->slopeC = next.slopeC;
+        dst->slopeM = next.slopeM;
+        dst->slopeY = next.slopeY;
+        dst->cellMin = next.cellMin;
+        dst->cellMax = next.cellMax;
+        next = {};
         dst->res = res;
         dst->hash = expectedHash;
         return true;

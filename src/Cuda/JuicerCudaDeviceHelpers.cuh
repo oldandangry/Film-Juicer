@@ -30,14 +30,6 @@ static __device__ __forceinline__ float ldg_f(const float* p) {
 #endif
 }
 
-static __device__ __forceinline__ double ldg_d(const double* p) {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 350)
-    return __ldg(p);
-#else
-    return *p;
-#endif
-}
-
 static __device__ __forceinline__ float sample_density_at_logE_device(
     const JuicerCuda::DeviceCurveView& curve,
     float logE,
@@ -473,16 +465,6 @@ static __device__ __forceinline__ float sample_hanatos_integrated_cubic_device(
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-static __device__ __forceinline__ double scan_lut_fetch_device(const double* JUICER_RESTRICT lut, int res, size_t limit, int xi, int yi, int zi, int c) {
-    const size_t sRes = static_cast<size_t>(res);
-    const size_t idx = (static_cast<size_t>(zi) * sRes + static_cast<size_t>(yi)) * sRes + static_cast<size_t>(xi);
-    const size_t base = idx * 3u + static_cast<size_t>(c);
-    if (base >= limit) {
-        return 0.0;
-    }
-    return ldg_d(lut + base);
-}
-
 static __device__ __forceinline__ int reflect_index_repeat_device(int idx, int size) {
     if (size <= 1) {
         return 0;
@@ -497,71 +479,9 @@ static __device__ __forceinline__ int reflect_index_repeat_device(int idx, int s
     return idx;
 }
 
-static __device__ __forceinline__ void sample_cubic_scan_lut_device(const double* JUICER_RESTRICT lut, int resRaw, const double D_norm[3], double out[3]) {
-    if (!out) {
-        return;
-    }
-    if (!lut || !D_norm) {
-        out[0] = out[1] = out[2] = 0.0;
-        return;
-    }
-
-    const int res = (resRaw > 1) ? resRaw : 1;
-    const double scale = (res > 1) ? static_cast<double>(res - 1) : 1.0;
-    const double fx = D_norm[0] * scale;
-    const double fy = D_norm[1] * scale;
-    const double fz = D_norm[2] * scale;
-
-    const int xBase = static_cast<int>(floor(fx));
-    const int yBase = static_cast<int>(floor(fy));
-    const int zBase = static_cast<int>(floor(fz));
-    const double tx = fx - static_cast<double>(xBase);
-    const double ty = fy - static_cast<double>(yBase);
-    const double tz = fz - static_cast<double>(zBase);
-
-    double wx[4], wy[4], wz[4];
-    wx[0] = mitchell_weight_device(tx + 1.0);
-    wx[1] = mitchell_weight_device(tx);
-    wx[2] = mitchell_weight_device(tx - 1.0);
-    wx[3] = mitchell_weight_device(tx - 2.0);
-    wy[0] = mitchell_weight_device(ty + 1.0);
-    wy[1] = mitchell_weight_device(ty);
-    wy[2] = mitchell_weight_device(ty - 1.0);
-    wy[3] = mitchell_weight_device(ty - 2.0);
-    wz[0] = mitchell_weight_device(tz + 1.0);
-    wz[1] = mitchell_weight_device(tz);
-    wz[2] = mitchell_weight_device(tz - 1.0);
-    wz[3] = mitchell_weight_device(tz - 2.0);
-
-    const size_t sRes = static_cast<size_t>(res);
-    const size_t limit = sRes * sRes * sRes * 3u;
-
-    double sum[3] = {0.0, 0.0, 0.0};
-    double wsum = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        const int xi = reflect_index_device(xBase - 1 + i, res);
-        for (int j = 0; j < 4; ++j) {
-            const int yj = reflect_index_device(yBase - 1 + j, res);
-            for (int k = 0; k < 4; ++k) {
-                const int zk = reflect_index_device(zBase - 1 + k, res);
-                const double w = wx[i] * wy[j] * wz[k];
-                wsum += w;
-                sum[0] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 0);
-                sum[1] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 1);
-                sum[2] += w * scan_lut_fetch_device(lut, res, limit, xi, yj, zk, 2);
-            }
-        }
-    }
-
-    const double inv = (wsum != 0.0) ? (1.0 / wsum) : 0.0;
-    out[0] = sum[0] * inv;
-    out[1] = sum[1] * inv;
-    out[2] = sum[2] * inv;
-}
-
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-static __device__ __forceinline__ double scan_lut_fetch_cmy_device(
-    const double* JUICER_RESTRICT lut,
+static __device__ __forceinline__ float scan_lut_fetch_float_cmy_device(
+    const float* JUICER_RESTRICT lut,
     int res,
     int c,
     int m,
@@ -571,11 +491,11 @@ static __device__ __forceinline__ double scan_lut_fetch_cmy_device(
     const size_t index =
         ((static_cast<size_t>(c) * sRes + static_cast<size_t>(m)) * sRes + static_cast<size_t>(y)) * 3u +
         static_cast<size_t>(output);
-    return ldg_d(lut + index);
+    return ldg_f(lut + index);
 }
 
-static __device__ __forceinline__ double scan_lut_fetch_cell_cmy_device(
-    const double* JUICER_RESTRICT lut,
+static __device__ __forceinline__ float scan_lut_fetch_float_cell_cmy_device(
+    const float* JUICER_RESTRICT lut,
     int cellRes,
     int c,
     int m,
@@ -585,143 +505,157 @@ static __device__ __forceinline__ double scan_lut_fetch_cell_cmy_device(
     const size_t index =
         ((static_cast<size_t>(c) * sRes + static_cast<size_t>(m)) * sRes + static_cast<size_t>(y)) * 3u +
         static_cast<size_t>(output);
-    return ldg_d(lut + index);
+    return ldg_f(lut + index);
 }
 
-static __device__ __forceinline__ void pchip_coordinate_device(
-    double normalized,
+static __device__ __forceinline__ void pchip_coordinate_float_device(
+    float normalized,
     int res,
     int& base,
-    double& fraction) {
-    double coordinate = normalized * static_cast<double>(res - 1);
-    coordinate = fmin(static_cast<double>(res - 1), fmax(0.0, coordinate));
-    if (coordinate >= static_cast<double>(res - 1)) {
+    float& fraction) {
+    float coordinate = normalized * static_cast<float>(res - 1);
+    coordinate = fminf(static_cast<float>(res - 1), fmaxf(0.0f, coordinate));
+    if (coordinate >= static_cast<float>(res - 1)) {
         base = res - 2;
-        fraction = 1.0;
+        fraction = 1.0f;
         return;
     }
-    base = static_cast<int>(floor(coordinate));
-    fraction = coordinate - static_cast<double>(base);
+    base = static_cast<int>(floorf(coordinate));
+    fraction = coordinate - static_cast<float>(base);
 }
 
-static __device__ __forceinline__ double hermite_value_device(
-    double y0,
-    double y1,
-    double m0,
-    double m1,
-    double t) {
-    const double t2 = t * t;
-    const double t3 = t2 * t;
-    const double h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-    const double h10 = t3 - 2.0 * t2 + t;
-    const double h01 = -2.0 * t3 + 3.0 * t2;
-    const double h11 = t3 - t2;
+static __device__ __forceinline__ float hermite_value_float_device(
+    float y0,
+    float y1,
+    float m0,
+    float m1,
+    float t) {
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float h00 = 2.0f * t3 - 3.0f * t2 + 1.0f;
+    const float h10 = t3 - 2.0f * t2 + t;
+    const float h01 = -2.0f * t3 + 3.0f * t2;
+    const float h11 = t3 - t2;
     return h00 * y0 + h10 * m0 + h01 * y1 + h11 * m1;
 }
 
-static __device__ __forceinline__ double linear_mix_device(double v0, double v1, double t) {
+static __device__ __forceinline__ float linear_mix_float_device(float v0, float v1, float t) {
     return v0 + t * (v1 - v0);
 }
 
-static __device__ __forceinline__ double bilinear_mix_device(
-    double v00,
-    double v10,
-    double v01,
-    double v11,
-    double tc,
-    double tm) {
-    return linear_mix_device(
-        linear_mix_device(v00, v10, tc),
-        linear_mix_device(v01, v11, tc),
+static __device__ __forceinline__ float bilinear_mix_float_device(
+    float v00,
+    float v10,
+    float v01,
+    float v11,
+    float tc,
+    float tm) {
+    return linear_mix_float_device(
+        linear_mix_float_device(v00, v10, tc),
+        linear_mix_float_device(v01, v11, tc),
         tm);
 }
 
-static __device__ __forceinline__ void sample_pchip_scan_lut_device(
-    const double* JUICER_RESTRICT values,
-    const double* JUICER_RESTRICT slopeC,
-    const double* JUICER_RESTRICT slopeM,
-    const double* JUICER_RESTRICT slopeY,
-    const double* JUICER_RESTRICT cellMin,
-    const double* JUICER_RESTRICT cellMax,
-    int res,
+static __device__ __forceinline__ bool sample_pchip_float_log2_scan_lut_device(
+    const JuicerCuda::ScanStagePayload& scanStage,
     const double normalizedCmy[3],
-    double out[3]) {
+    float out[3]) {
+    if (!scanStage.scannerUseLut ||
+        !scanStage.scanLutLog2PchipXYZ ||
+        !scanStage.scanLutPchipSlopeC ||
+        !scanStage.scanLutPchipSlopeM ||
+        !scanStage.scanLutPchipSlopeY ||
+        !scanStage.scanLutPchipCellMin ||
+        !scanStage.scanLutPchipCellMax ||
+        scanStage.scanLutRes < 2 ||
+        !normalizedCmy ||
+        !out ||
+        !isfinite(normalizedCmy[0]) ||
+        !isfinite(normalizedCmy[1]) ||
+        !isfinite(normalizedCmy[2])) {
+        return false;
+    }
+
     int c = 0;
     int m = 0;
     int y = 0;
-    double tc = 0.0;
-    double tm = 0.0;
-    double ty = 0.0;
-    pchip_coordinate_device(normalizedCmy[0], res, c, tc);
-    pchip_coordinate_device(normalizedCmy[1], res, m, tm);
-    pchip_coordinate_device(normalizedCmy[2], res, y, ty);
+    float tc = 0.0f;
+    float tm = 0.0f;
+    float ty = 0.0f;
+    pchip_coordinate_float_device(static_cast<float>(normalizedCmy[0]), scanStage.scanLutRes, c, tc);
+    pchip_coordinate_float_device(static_cast<float>(normalizedCmy[1]), scanStage.scanLutRes, m, tm);
+    pchip_coordinate_float_device(static_cast<float>(normalizedCmy[2]), scanStage.scanLutRes, y, ty);
 
+    const int res = scanStage.scanLutRes;
     const int cellRes = res - 1;
     for (int output = 0; output < 3; ++output) {
-        const double v000 = hermite_value_device(
-            scan_lut_fetch_cmy_device(values, res, c, m, y, output),
-            scan_lut_fetch_cmy_device(values, res, c + 1, m, y, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c, m, y, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m, y, output),
+        const float v000 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m, y, output),
             tc);
-        const double v010 = hermite_value_device(
-            scan_lut_fetch_cmy_device(values, res, c, m + 1, y, output),
-            scan_lut_fetch_cmy_device(values, res, c + 1, m + 1, y, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c, m + 1, y, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m + 1, y, output),
+        const float v010 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m + 1, y, output),
             tc);
-        const double v001 = hermite_value_device(
-            scan_lut_fetch_cmy_device(values, res, c, m, y + 1, output),
-            scan_lut_fetch_cmy_device(values, res, c + 1, m, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c, m, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m, y + 1, output),
+        const float v001 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m, y + 1, output),
             tc);
-        const double v011 = hermite_value_device(
-            scan_lut_fetch_cmy_device(values, res, c, m + 1, y + 1, output),
-            scan_lut_fetch_cmy_device(values, res, c + 1, m + 1, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c, m + 1, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeC, res, c + 1, m + 1, y + 1, output),
+        const float v011 = hermite_value_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutLog2PchipXYZ, res, c + 1, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeC, res, c + 1, m + 1, y + 1, output),
             tc);
 
-        const double sm00 = linear_mix_device(
-            scan_lut_fetch_cmy_device(slopeM, res, c, m, y, output),
-            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m, y, output),
+        const float sm00 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m, y, output),
             tc);
-        const double sm10 = linear_mix_device(
-            scan_lut_fetch_cmy_device(slopeM, res, c, m + 1, y, output),
-            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m + 1, y, output),
+        const float sm10 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m + 1, y, output),
             tc);
-        const double sm01 = linear_mix_device(
-            scan_lut_fetch_cmy_device(slopeM, res, c, m, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m, y + 1, output),
+        const float sm01 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m, y + 1, output),
             tc);
-        const double sm11 = linear_mix_device(
-            scan_lut_fetch_cmy_device(slopeM, res, c, m + 1, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeM, res, c + 1, m + 1, y + 1, output),
+        const float sm11 = linear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeM, res, c + 1, m + 1, y + 1, output),
             tc);
-        const double vy0 = hermite_value_device(v000, v010, sm00, sm10, tm);
-        const double vy1 = hermite_value_device(v001, v011, sm01, sm11, tm);
+        const float vy0 = hermite_value_float_device(v000, v010, sm00, sm10, tm);
+        const float vy1 = hermite_value_float_device(v001, v011, sm01, sm11, tm);
 
-        const double sy0 = bilinear_mix_device(
-            scan_lut_fetch_cmy_device(slopeY, res, c, m, y, output),
-            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m, y, output),
-            scan_lut_fetch_cmy_device(slopeY, res, c, m + 1, y, output),
-            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m + 1, y, output),
+        const float sy0 = bilinear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m + 1, y, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m + 1, y, output),
             tc,
             tm);
-        const double sy1 = bilinear_mix_device(
-            scan_lut_fetch_cmy_device(slopeY, res, c, m, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeY, res, c, m + 1, y + 1, output),
-            scan_lut_fetch_cmy_device(slopeY, res, c + 1, m + 1, y + 1, output),
+        const float sy1 = bilinear_mix_float_device(
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c, m + 1, y + 1, output),
+            scan_lut_fetch_float_cmy_device(scanStage.scanLutPchipSlopeY, res, c + 1, m + 1, y + 1, output),
             tc,
             tm);
 
-        const double interpolated = hermite_value_device(vy0, vy1, sy0, sy1, ty);
-        const double minimum = scan_lut_fetch_cell_cmy_device(cellMin, cellRes, c, m, y, output);
-        const double maximum = scan_lut_fetch_cell_cmy_device(cellMax, cellRes, c, m, y, output);
-        out[output] = fmin(maximum, fmax(minimum, interpolated));
+        const float interpolated = hermite_value_float_device(vy0, vy1, sy0, sy1, ty);
+        const float minimum =
+            scan_lut_fetch_float_cell_cmy_device(scanStage.scanLutPchipCellMin, cellRes, c, m, y, output);
+        const float maximum =
+            scan_lut_fetch_float_cell_cmy_device(scanStage.scanLutPchipCellMax, cellRes, c, m, y, output);
+        out[output] = fminf(maximum, fmaxf(minimum, interpolated));
     }
+    return true;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 

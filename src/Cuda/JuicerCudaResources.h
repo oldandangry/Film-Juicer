@@ -406,27 +406,22 @@ namespace JuicerCuda {
         DeviceScanMedium scanPrint;
 
         struct DeviceSpectralLut {
-            double* log2XYZ = nullptr;  // layout: ((z*res + y)*res + x) * 3 + c
-            double* log10XYZ = nullptr; // canonical layout: ((C*res + M)*res + Y) * 3 + XYZ
-            double* slopeC = nullptr;
-            double* slopeM = nullptr;
-            double* slopeY = nullptr;
-            double* cellMin = nullptr; // layout: ((C*(res-1) + M)*(res-1) + Y) * 3 + XYZ
-            double* cellMax = nullptr;
+            float* log2PchipXYZ = nullptr; // canonical layout: ((C*res + M)*res + Y) * 3 + XYZ
+            float* slopeC = nullptr;
+            float* slopeM = nullptr;
+            float* slopeY = nullptr;
+            float* cellMin = nullptr; // layout: ((C*(res-1) + M)*(res-1) + Y) * 3 + XYZ
+            float* cellMax = nullptr;
             std::uint32_t res = 0;
             std::uint64_t hash = 0;
 
             bool canonical_ready() const noexcept {
-                return log10XYZ && slopeC && slopeM && slopeY && cellMin && cellMax && res >= 2u;
+                return log2PchipXYZ && slopeC && slopeM && slopeY && cellMin && cellMax && res >= 2u;
             }
         };
 
         DeviceSpectralLut scanNegativeLut;
         DeviceSpectralLut scanPrintLut;
-        bool privateLutFallbackNegativeActive = false;
-        bool privateLutFallbackPrintActive = false;
-        std::uint64_t privateLutFallbackNegativeHash = 0;
-        std::uint64_t privateLutFallbackPrintHash = 0;
 
         struct DeviceGaussianKernel {
             float* weights = nullptr;
@@ -724,6 +719,75 @@ namespace JuicerCuda {
     bool release_retained_frame_scratch_lease(
         Resources& resources,
         std::uint64_t leaseGeneration,
+        std::string& outError);
+
+    struct SpatialDirStageReleaseStats {
+        std::size_t retiredBytes = 0;
+        std::size_t reclaimedBytes = 0;
+    };
+
+    struct SpatialDirBuildScratchReleaseStats {
+        std::size_t pendingScratchBytesBefore = 0;
+        std::size_t rawCorrectionRetiredBytes = 0;
+        std::size_t filterTempRetiredBytes = 0;
+        std::size_t iirForwardTempRetiredBytes = 0;
+        std::size_t sharedTmpRetiredBytes = 0;
+        std::size_t reclaimedBytes = 0;
+    };
+
+    struct SpatialDirCachedLogRawReleaseStats {
+        std::size_t pendingScratchBytesBefore = 0;
+        std::size_t cachedLogRawRetiredBytes = 0;
+        std::size_t reclaimedBytes = 0;
+    };
+
+    struct LargeScratchTransitionReclaimStats {
+        std::size_t pendingScratchBytesBefore = 0;
+        std::size_t opticsRetiredBytes = 0;
+        std::size_t spatialDirRetiredBytes = 0;
+        std::size_t sharedTmpRetiredBytes = 0;
+        std::size_t fftReleasedBytes = 0;
+        std::size_t reclaimedBytes = 0;
+    };
+
+    struct PostFrameScratchShedStats {
+        std::size_t pendingScratchBytesBefore = 0;
+        std::size_t opticsRetiredBytes = 0;
+        std::size_t spatialDirRetiredBytes = 0;
+        std::size_t sharedTmpRetiredBytes = 0;
+        std::size_t fftReleasedBytes = 0;
+        std::size_t reclaimedBytes = 0;
+    };
+
+    bool release_retained_spatial_dir_scratch_stage(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        void* cudaStreamOpaque,
+        SpatialDirStageReleaseStats& outStats,
+        std::string& outError);
+    bool release_retained_spatial_dir_build_scratch_stage(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        void* cudaStreamOpaque,
+        SpatialDirBuildScratchReleaseStats& outStats,
+        std::string& outError);
+    bool release_retained_spatial_dir_cached_log_raw_stage(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        void* cudaStreamOpaque,
+        SpatialDirCachedLogRawReleaseStats& outStats,
+        std::string& outError);
+    bool reclaim_large_scratch_transition(
+        Resources& resources,
+        const ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        bool usesSpatialDirFft,
+        void* cudaStreamOpaque,
+        LargeScratchTransitionReclaimStats& outStats,
+        std::string& outError);
+    bool shed_retained_scratch_after_frame(
+        Resources& resources,
+        void* cudaStreamOpaque,
+        PostFrameScratchShedStats& outStats,
         std::string& outError);
     bool retire_frame_scratch_allocation(
         Resources& resources,

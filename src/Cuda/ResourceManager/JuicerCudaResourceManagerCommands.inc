@@ -66,6 +66,19 @@ std::string commands_error_or_message(const std::string& error, const char* fall
     return error;
 }
 
+std::string commands_scratch_exhausted_error(
+    const char* commandName,
+    const char* reason,
+    const std::string& detail) {
+    std::string message = std::string(kScratchExhaustedPrefix) +
+                          " command=" + trace_or_unknown(commandName) +
+                          " reason=" + trace_or_unspecified(reason);
+    if (!detail.empty()) {
+        message += " detail=" + detail;
+    }
+    return message;
+}
+
 bool resolve_optional_active_scratch_request(
     const ScratchRequestDescriptor& scratchRequest,
     const char* commandName,
@@ -452,6 +465,17 @@ bool execute_scratch_growth_command(
             return false;
         }
     }
+    if (!admit_active_frame_vram_growth(
+            transaction,
+            resources,
+            commandName,
+            growthBytes,
+            &scratchRequest,
+            true,
+            ActiveFrameAdmissionHeadroom::AllocatorEffective,
+            outError)) {
+        return false;
+    }
 
     BuilderReservationClaim builderClaim{};
     if (!acquire_builder_reservation_with_wait(
@@ -776,48 +800,6 @@ const JuicerCuda::Resources::DeviceSpectralLut& commands_select_scan_lut_slot(
         return resources.scanNegativeLut;
     }
     return resources.scanPrintLut;
-}
-
-bool& commands_select_private_lut_fallback_active(
-    JuicerCuda::Resources& resources,
-    bool negativeMedium) noexcept {
-    if (negativeMedium) {
-        return resources.privateLutFallbackNegativeActive;
-    }
-    return resources.privateLutFallbackPrintActive;
-}
-
-std::uint64_t& commands_select_private_lut_fallback_hash(
-    JuicerCuda::Resources& resources,
-    bool negativeMedium) noexcept {
-    if (negativeMedium) {
-        return resources.privateLutFallbackNegativeHash;
-    }
-    return resources.privateLutFallbackPrintHash;
-}
-
-void commands_clear_private_lut_fallback_locked(
-    JuicerCuda::Resources& resources,
-    bool negativeMedium) noexcept {
-    commands_select_private_lut_fallback_active(resources, negativeMedium) = false;
-    commands_select_private_lut_fallback_hash(resources, negativeMedium) = 0;
-}
-
-void commands_sync_private_lut_fallback_locked(
-    JuicerCuda::Resources& resources,
-    bool negativeMedium) noexcept {
-    bool& active = commands_select_private_lut_fallback_active(resources, negativeMedium);
-    std::uint64_t& hash = commands_select_private_lut_fallback_hash(resources, negativeMedium);
-    const JuicerCuda::Resources::DeviceSpectralLut& lut =
-        commands_select_scan_lut_slot(resources, negativeMedium);
-    if (!active) {
-        hash = 0;
-        return;
-    }
-    if (!lut.log2XYZ || lut.hash == 0 || lut.hash != hash) {
-        active = false;
-        hash = 0;
-    }
 }
 
 std::uint64_t commands_elapsed_ms_since(std::uint64_t nowMs, std::uint64_t earlierMs) noexcept {
@@ -1401,9 +1383,31 @@ UploadWorkEstimate estimate_scan_lut_upload_bytes(
     if (!mul_u64_checked(voxelCount, 3ull, values)) {
         return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
     }
-    std::uint64_t bytes = 0;
-    if (!mul_u64_checked(values, static_cast<std::uint64_t>(sizeof(double)), bytes)) {
+    std::uint64_t voxelBytes = 0;
+    if (!mul_u64_checked(values, static_cast<std::uint64_t>(sizeof(float)), voxelBytes)) {
         return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
+    }
+    std::uint64_t bytes = 0;
+    if (!mul_u64_checked(voxelBytes, 4ull, bytes)) {
+        return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
+    }
+    if (res >= 2u) {
+        std::uint64_t cellCount = 0;
+        const std::uint64_t cellRes = static_cast<std::uint64_t>(res - 1u);
+        if (!mul_u64_checked(cellRes, cellRes, cellCount) ||
+            !mul_u64_checked(cellCount, cellRes, cellCount) ||
+            !mul_u64_checked(cellCount, 3ull, cellCount)) {
+            return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
+        }
+        std::uint64_t cellBytes = 0;
+        if (!mul_u64_checked(cellCount, static_cast<std::uint64_t>(sizeof(float)), cellBytes) ||
+            !mul_u64_checked(cellBytes, 2ull, cellBytes)) {
+            return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
+        }
+        if (std::numeric_limits<std::uint64_t>::max() - bytes < cellBytes) {
+            return {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
+        }
+        bytes += cellBytes;
     }
 
     const Scanner::ScannerMediumRuntime& medium =
@@ -1426,8 +1430,8 @@ UploadWorkEstimate estimate_scan_lut_upload_bytes(
         std::lock_guard<std::mutex> lock(resources.m);
         const JuicerCuda::Resources::DeviceSpectralLut& dst =
             commands_select_scan_lut_slot(resources, negativeMedium);
-        cached = dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
-        canOverwriteInPlace = dst.log2XYZ && dst.res == res;
+        cached = dst.canonical_ready() && dst.res == res && dst.hash == expectedHash;
+        canOverwriteInPlace = dst.canonical_ready() && dst.res == res;
     }
     return commands_uncached_upload_work(
         cached,
@@ -1458,10 +1462,9 @@ bool command_scan_lut_is_cached(
     }
 
     std::lock_guard<std::mutex> lock(resources.m);
-    commands_sync_private_lut_fallback_locked(resources, negativeMedium);
     const JuicerCuda::Resources::DeviceSpectralLut& dst =
         commands_select_scan_lut_slot(resources, negativeMedium);
-    return dst.log2XYZ && dst.res == res && dst.hash == expectedHash;
+    return dst.canonical_ready() && dst.res == res && dst.hash == expectedHash;
 }
 
 UploadWorkEstimate estimate_print_illuminant_upload_bytes(
@@ -2896,164 +2899,6 @@ bool command_retire_all_contexts_idle(std::string& outError) {
 }
 
 namespace {
-#if JUICER_DIAGNOSTICS_COMPILED
-    const char* scan_lut_medium_name(bool negativeMedium) noexcept {
-        return bool_reason(negativeMedium, "negative", "print");
-    }
-#endif
-
-    bool compute_expected_scan_lut_hash(
-        const WorkingState& ws,
-        bool negativeMedium,
-        std::uint64_t& outExpectedHash) noexcept {
-        outExpectedHash = 0;
-        const Scanner::ScannerMediumRuntime* medium = &ws.printMediumRuntime;
-        const Scanner::ScannerStaticKey* staticKey = &ws.printStaticKey;
-        Scanner::ScannerMedium expectedMedium = Scanner::ScannerMedium::Print;
-        if (negativeMedium) {
-            medium = &ws.negativeMediumRuntime;
-            staticKey = &ws.negativeStaticKey;
-            expectedMedium = Scanner::ScannerMedium::Negative;
-        }
-
-        if (!medium->tables || medium->tables->K <= 0) {
-            return false;
-        }
-        if (medium->medium != expectedMedium || staticKey->medium != expectedMedium) {
-            return false;
-        }
-        if (medium->tables->tablesHash == 0 || medium->range.digest == 0) {
-            return false;
-        }
-        if (staticKey->tablesHash != medium->tables->tablesHash ||
-            staticKey->densityRangeHash != medium->range.digest) {
-            return false;
-        }
-        const std::uint32_t res =
-            ResourceManager::normalize_scan_lut_resolution(staticKey->lutResolution);
-        outExpectedHash = ResourceManager::make_scan_lut_key_digest(
-            static_cast<std::uint32_t>(medium->medium),
-            medium->tables->tablesHash,
-            medium->range.digest,
-            res);
-        return outExpectedHash != 0;
-    }
-
-    struct PrivateLutFallbackDecision {
-        bool allowed = false;
-        bool alreadyActive = false;
-        std::uint32_t activeCount = 0;
-        std::uint32_t perMediumCap = 0;
-        std::uint32_t perInstanceCap = 0;
-        const char* reason = "unspecified";
-    };
-
-    PrivateLutFallbackDecision evaluate_private_lut_fallback(
-        JuicerCuda::Resources& resources,
-        bool negativeMedium,
-        std::uint64_t expectedHash,
-        const ResourceManagerConfigEffective& cfg) {
-        PrivateLutFallbackDecision decision{};
-        decision.perMediumCap = cfg.privateLutFallbackPerMediumCap;
-        decision.perInstanceCap = cfg.privateLutFallbackPerInstanceCap;
-
-        if (expectedHash == 0) {
-            decision.reason = "invalid_expected_hash";
-            return decision;
-        }
-
-        std::lock_guard<std::mutex> lock(resources.m);
-        commands_sync_private_lut_fallback_locked(resources, true);
-        commands_sync_private_lut_fallback_locked(resources, false);
-
-        decision.activeCount =
-            bool_u32(resources.privateLutFallbackNegativeActive) +
-            bool_u32(resources.privateLutFallbackPrintActive);
-
-        bool* slotActive = &resources.privateLutFallbackPrintActive;
-        std::uint64_t* slotHash = &resources.privateLutFallbackPrintHash;
-        const JuicerCuda::Resources::DeviceSpectralLut* slotLut = &resources.scanPrintLut;
-        if (negativeMedium) {
-            slotActive = &resources.privateLutFallbackNegativeActive;
-            slotHash = &resources.privateLutFallbackNegativeHash;
-            slotLut = &resources.scanNegativeLut;
-        }
-
-        if (*slotActive && slotLut->log2XYZ && slotLut->hash == expectedHash && *slotHash == expectedHash) {
-            decision.allowed = true;
-            decision.alreadyActive = true;
-            decision.reason = "already_active";
-            return decision;
-        }
-
-        if (decision.perMediumCap == 0 || decision.perInstanceCap == 0) {
-            decision.reason = "disabled";
-            return decision;
-        }
-        if (decision.perMediumCap < 1u) {
-            decision.reason = "per_medium_cap_zero";
-            return decision;
-        }
-        if (!*slotActive && decision.activeCount >= decision.perInstanceCap) {
-            decision.reason = "per_instance_cap_reached";
-            return decision;
-        }
-
-        decision.allowed = true;
-        if (*slotActive) {
-            decision.reason = "slot_reuse";
-        } else {
-            decision.reason = "admit_new";
-        }
-        return decision;
-    }
-
-    void mark_private_lut_fallback_active(
-        JuicerCuda::Resources& resources,
-        bool negativeMedium,
-        std::uint64_t expectedHash) {
-        if (expectedHash == 0) {
-            return;
-        }
-        std::lock_guard<std::mutex> lock(resources.m);
-        if (negativeMedium) {
-            resources.privateLutFallbackNegativeActive = true;
-            resources.privateLutFallbackNegativeHash = expectedHash;
-        } else {
-            resources.privateLutFallbackPrintActive = true;
-            resources.privateLutFallbackPrintHash = expectedHash;
-        }
-    }
-
-    struct PrivateLutFallbackTrace {
-        const char* stage = nullptr;
-        const char* eventName = nullptr;
-        const char* reason = nullptr;
-    };
-
-    void trace_private_lut_fallback(
-        const PrivateLutFallbackTrace& trace,
-        bool negativeMedium,
-        const PrivateLutFallbackDecision& decision) {
-#if JUICER_DIAGNOSTICS_COMPILED
-        if (!JTRACE_ENABLED(2)) {
-            return;
-        }
-        std::string msg =
-            std::string("stage=") + trace_or_unknown(trace.stage) +
-            " event=" + trace_or_unknown(trace.eventName) +
-            " medium=" + scan_lut_medium_name(negativeMedium) +
-            " allowed=" + std::to_string(bool_u32(decision.allowed)) +
-            " already_active=" + std::to_string(bool_u32(decision.alreadyActive)) +
-            " active_count=" + std::to_string(decision.activeCount) +
-            " per_medium_cap=" + std::to_string(decision.perMediumCap) +
-            " per_instance_cap=" + std::to_string(decision.perInstanceCap) +
-            " reason=" + trace_or(trace.reason, decision.reason) +
-            trace_reason_class_field_if_known("reason_class", trace_or(trace.reason, decision.reason));
-        JTRACE("MSLUT", msg);
-#endif
-    }
-
     bool command_ensure_scan_lut_internal(
         SubmissionTransaction& transaction,
         JuicerCuda::Resources& resources,
@@ -3187,93 +3032,7 @@ namespace {
         if (command_scan_lut_is_cached(resources, ws, negativeMedium)) {
             return true;
         }
-        const ResourceManagerConfigEffective& cfg = manager_effective_config();
-        auto try_private_fallback = [&](const char* triggerReason) -> bool {
-            if (!criticalRequest) {
-                return false;
-            }
-            trace_pressure_gate_reader(
-                transaction,
-                PressureGateReaderTrace{
-                    .commandName = stageName,
-                    .path = "private_fallback",
-                    .reason = trace_or(triggerReason, "private_fallback"),
-                    .scratchRequest = activeScratchRequest,
-                    .lane = PressureLane::Upload,
-                    .requestBytes = saturating_u64_to_size_t(uploadEstimate.growthBytes),
-                    .criticalCurrentFrame = criticalRequest});
-
-            std::uint64_t expectedHash = 0;
-            if (!compute_expected_scan_lut_hash(ws, negativeMedium, expectedHash)) {
-                PrivateLutFallbackDecision invalidDecision{};
-                invalidDecision.reason = "invalid_scan_lut_key";
-                trace_private_lut_fallback(
-                    PrivateLutFallbackTrace{
-                        stageName,
-                        "private_fallback_denied",
-                        trace_or(triggerReason, "invalid_scan_lut_key")},
-                    negativeMedium,
-                    invalidDecision);
-                return false;
-            }
-
-            const PrivateLutFallbackDecision decision =
-                evaluate_private_lut_fallback(resources, negativeMedium, expectedHash, cfg);
-            if (!decision.allowed) {
-                trace_private_lut_fallback(
-                    PrivateLutFallbackTrace{
-                        stageName,
-                        "private_fallback_denied",
-                        trace_or(triggerReason, decision.reason)},
-                    negativeMedium,
-                    decision);
-                return false;
-            }
-
-            trace_private_lut_fallback(
-                PrivateLutFallbackTrace{
-                    stageName,
-                    "private_fallback_admit",
-                    trace_or(triggerReason, decision.reason)},
-                negativeMedium,
-                decision);
-
-            std::string fallbackError;
-            const bool fallbackOk = JuicerCuda::ensure_scan_lut(
-                resources,
-                ws,
-                negativeMedium,
-                cudaStreamOpaque,
-                fallbackError);
-            if (!fallbackOk) {
-                trace_private_lut_fallback(
-                    PrivateLutFallbackTrace{
-                        stageName,
-                        "private_fallback_failed",
-                        commands_error_or_cstr(fallbackError, "ensure_failed")},
-                    negativeMedium,
-                    decision);
-                if (!fallbackError.empty()) {
-                    if (!outError.empty()) {
-                        outError += " | ";
-                    }
-                    outError += std::string(kPrivateLutFallbackFailedPrefix) + " " + fallbackError;
-                }
-                return false;
-            }
-
-            mark_private_lut_fallback_active(resources, negativeMedium, expectedHash);
-            trace_private_lut_fallback(
-                PrivateLutFallbackTrace{
-                    stageName,
-                    "private_fallback_served",
-                    trace_or(triggerReason, "served")},
-                negativeMedium,
-                decision);
-            maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
-            return true;
-        };
-        const bool ok = execute_upload_lut_command(
+        return execute_upload_lut_command(
             transaction,
             resources,
             stageName,
@@ -3293,14 +3052,10 @@ namespace {
                     actionError);
             },
             [&](const char* triggerReason) {
-                return try_private_fallback(triggerReason);
+                (void)triggerReason;
+                return false;
             },
             outError);
-        if (ok) {
-            std::lock_guard<std::mutex> lock(resources.m);
-            commands_clear_private_lut_fallback_locked(resources, negativeMedium);
-        }
-        return ok;
     }
 } // namespace
 
@@ -3351,6 +3106,346 @@ bool command_checkpoint_scratch_phase(
         ScratchCheckpointInvocation::OuterPhaseCheckpoint,
         observation,
         outError);
+}
+
+bool command_checkpoint_large_scratch_transition(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
+    bool usesSpatialDirFft,
+    void* cudaStreamOpaque,
+    const char* commandName,
+    std::string& outError) {
+    const char* stageName =
+        trace_or_non_empty(commandName, "command_checkpoint_large_scratch_transition");
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!validate_scratch_request_descriptor_for_manager(
+            scratchRequest,
+            stageName,
+            outError)) {
+        return false;
+    }
+
+    trace_scratch_request_descriptor(transaction, stageName, scratchRequest, "large_transition_declared");
+    return run_large_scratch_transition_checkpoint(
+        transaction,
+        resources,
+        stageName,
+        scratchRequest,
+        usesSpatialDirFft,
+        cudaStreamOpaque,
+        outError);
+}
+
+bool command_admit_frame_scratch_overflow(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
+    std::string& outError) {
+    const char* stageName = "command_admit_frame_scratch_overflow";
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!validate_scratch_request_descriptor_for_manager(
+            scratchRequest,
+            stageName,
+            outError)) {
+        return false;
+    }
+
+    const std::size_t allocationBytes =
+        estimate_scratch_request_allocation_bytes(scratchRequest);
+    if (allocationBytes == std::numeric_limits<std::size_t>::max()) {
+        outError = "frame scratch overflow byte estimation overflow";
+        return false;
+    }
+    return admit_active_frame_vram_growth(
+        transaction,
+        resources,
+        stageName,
+        allocationBytes,
+        &scratchRequest,
+        false,
+        ActiveFrameAdmissionHeadroom::DriverFreeOnly,
+        outError);
+}
+
+bool command_release_spatial_dir_scratch_stage(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirStageReleaseStats& outStats,
+    std::string& outError) {
+    const char* stageName = "command_release_spatial_dir_scratch_stage";
+    outStats = JuicerCuda::SpatialDirStageReleaseStats{};
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    const bool ok = JuicerCuda::release_retained_spatial_dir_scratch_stage(
+        resources,
+        transaction.leaseGeneration,
+        cudaStreamOpaque,
+        outStats,
+        outError);
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (JTRACE_ENABLED(1)) {
+        std::string msg = trace_event_prefix(
+            "spatial_dir_stage_release",
+            transaction,
+            stageName);
+        msg += " scratch_source=retained";
+        msg += " ok=";
+        msg += ok ? "1" : "0";
+        msg += " retired_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.retiredBytes));
+        msg += " reclaimed_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.reclaimedBytes));
+        if (!outError.empty()) {
+            msg += " error=";
+            msg += outError;
+        }
+        JTRACE("MSADM", msg);
+    }
+#endif
+    return ok;
+}
+
+bool command_release_spatial_dir_build_scratch_stage(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirBuildScratchReleaseStats& outStats,
+    std::string& outError) {
+    const char* stageName = "command_release_spatial_dir_build_scratch_stage";
+    outStats = JuicerCuda::SpatialDirBuildScratchReleaseStats{};
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    const bool ok = JuicerCuda::release_retained_spatial_dir_build_scratch_stage(
+        resources,
+        transaction.leaseGeneration,
+        cudaStreamOpaque,
+        outStats,
+        outError);
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (JTRACE_ENABLED(1)) {
+        std::string msg = trace_event_prefix(
+            "spatial_dir_build_scratch_release",
+            transaction,
+            stageName);
+        msg += " scratch_source=retained";
+        msg += " ok=";
+        msg += ok ? "1" : "0";
+        msg += " pending_scratch_bytes_before=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.pendingScratchBytesBefore));
+        msg += " raw_correction_retired_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.rawCorrectionRetiredBytes));
+        msg += " filter_temp_retired_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.filterTempRetiredBytes));
+        msg += " iir_forward_temp_retired_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.iirForwardTempRetiredBytes));
+        msg += " shared_tmp_retired_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.sharedTmpRetiredBytes));
+        msg += " reclaimed_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.reclaimedBytes));
+        if (!outError.empty()) {
+            msg += " error=";
+            msg += outError;
+        }
+        JTRACE("MSADM", msg);
+    }
+#endif
+    return ok;
+}
+
+bool command_release_spatial_dir_cached_log_raw_stage(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirCachedLogRawReleaseStats& outStats,
+    std::string& outError) {
+    const char* stageName = "command_release_spatial_dir_cached_log_raw_stage";
+    outStats = JuicerCuda::SpatialDirCachedLogRawReleaseStats{};
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    const bool ok = JuicerCuda::release_retained_spatial_dir_cached_log_raw_stage(
+        resources,
+        transaction.leaseGeneration,
+        cudaStreamOpaque,
+        outStats,
+        outError);
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (JTRACE_ENABLED(1)) {
+        std::string msg = trace_event_prefix(
+            "spatial_dir_cached_log_raw_release",
+            transaction,
+            stageName);
+        msg += " scratch_source=retained";
+        msg += " ok=";
+        msg += ok ? "1" : "0";
+        msg += " pending_scratch_bytes_before=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.pendingScratchBytesBefore));
+        msg += " cached_log_raw_retired_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.cachedLogRawRetiredBytes));
+        msg += " reclaimed_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.reclaimedBytes));
+        if (!outError.empty()) {
+            msg += " error=";
+            msg += outError;
+        }
+        JTRACE("MSADM", msg);
+    }
+#endif
+    return ok;
+}
+
+void trace_post_frame_scratch_shed(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const PressureCheckpoint& checkpoint,
+    const JuicerCuda::PostFrameScratchShedStats& stats,
+    bool ok,
+    bool shedAttempted,
+    const char* action,
+    const char* reason,
+    const std::string& error) {
+#if JUICER_DIAGNOSTICS_COMPILED
+    if ((ok && !shedAttempted) ? !JTRACE_ENABLED(2) : !JTRACE_ENABLED(1)) {
+        return;
+    }
+    std::string msg =
+        trace_event_prefix("post_frame_scratch_shed", transaction, commandName) +
+        " ok=" + std::to_string(ok ? 1 : 0) +
+        " action=" + trace_or_unspecified(action) +
+        " state=" + to_cstr(checkpoint.decision.state) +
+        " sample_success=" + std::to_string(checkpoint.headroom.sampleSuccess ? 1 : 0) +
+        " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) +
+        " effective_headroom_bytes=" +
+        std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) +
+        " headroom_source=" + to_cstr(checkpoint.input.headroomSource) +
+        " allocator_pool_reserved_bytes=" +
+        std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolReservedBytes)) +
+        " allocator_pool_used_bytes=" +
+        std::to_string(static_cast<unsigned long long>(checkpoint.input.allocatorPoolUsedBytes)) +
+        " manager_active_bytes=" +
+        std::to_string(static_cast<unsigned long long>(checkpoint.memory.activeBytes)) +
+        " retire_pending_bytes=" +
+        std::to_string(static_cast<unsigned long long>(checkpoint.memory.retirePendingBytes)) +
+        " pending_scratch_bytes_before=" +
+        std::to_string(static_cast<unsigned long long>(stats.pendingScratchBytesBefore)) +
+        " optics_retired_bytes=" +
+        std::to_string(static_cast<unsigned long long>(stats.opticsRetiredBytes)) +
+        " spatial_dir_retired_bytes=" +
+        std::to_string(static_cast<unsigned long long>(stats.spatialDirRetiredBytes)) +
+        " shared_tmp_retired_bytes=" +
+        std::to_string(static_cast<unsigned long long>(stats.sharedTmpRetiredBytes)) +
+        " fft_released_bytes=" +
+        std::to_string(static_cast<unsigned long long>(stats.fftReleasedBytes)) +
+        " reclaimed_bytes=" +
+        std::to_string(static_cast<unsigned long long>(stats.reclaimedBytes)) +
+        trace_device_context_fields(transaction) +
+        trace_resolved_policy_fields(transaction) +
+        " reason=" + trace_or_unspecified(reason);
+    if (!error.empty()) {
+        msg += " error=";
+        msg += error;
+    }
+    JTRACE("MSPFS", msg);
+#else
+    (void)transaction;
+    (void)commandName;
+    (void)checkpoint;
+    (void)stats;
+    (void)ok;
+    (void)shedAttempted;
+    (void)action;
+    (void)reason;
+    (void)error;
+#endif
+}
+
+bool command_shed_post_frame_scratch(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    void* cudaStreamOpaque,
+    const char* commandName,
+    std::string& outError) {
+    const char* stageName =
+        trace_or_non_empty(commandName, "command_shed_post_frame_scratch");
+    JuicerCuda::PostFrameScratchShedStats stats{};
+    PressureCheckpoint checkpoint{};
+    outError.clear();
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!pressure_policy_enabled(transaction.resolvedPressurePolicy)) {
+        trace_post_frame_scratch_shed(
+            transaction,
+            stageName,
+            checkpoint,
+            stats,
+            true,
+            false,
+            "keep",
+            "pressure_policy_disabled",
+            outError);
+        return true;
+    }
+
+    checkpoint = evaluate_pressure_checkpoint(transaction, resources, 0, true, stageName);
+    maybe_apply_async_mempool_release_policy(
+        transaction,
+        checkpoint.decision.state,
+        manager_effective_config(),
+        "post_frame_scratch_shed");
+
+    if (!checkpoint.headroom.sampleSuccess) {
+        trace_post_frame_scratch_shed(
+            transaction,
+            stageName,
+            checkpoint,
+            stats,
+            true,
+            false,
+            "keep",
+            "headroom_sample_failed",
+            outError);
+        return true;
+    }
+    if (checkpoint.decision.state == PressureState::Normal) {
+        trace_post_frame_scratch_shed(
+            transaction,
+            stageName,
+            checkpoint,
+            stats,
+            true,
+            false,
+            "keep",
+            "pressure_normal",
+            outError);
+        return true;
+    }
+
+    const bool ok = JuicerCuda::shed_retained_scratch_after_frame(
+        resources,
+        cudaStreamOpaque,
+        stats,
+        outError);
+    publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+    trace_post_frame_scratch_shed(
+        transaction,
+        stageName,
+        checkpoint,
+        stats,
+        ok,
+        true,
+        "shed",
+        ok ? "pressure_shed" : "pressure_shed_failed",
+        outError);
+    return ok;
 }
 
 bool command_ensure_print_illuminant_filtered(
@@ -3488,7 +3583,14 @@ bool command_ensure_spatial_dir_scratch(
         return false;
     }
     if (growthBytes == 0) {
-        return true;
+        return JuicerCuda::ensure_spatial_dir_scratch(
+            resources,
+            scratchRequest.requestedWidth,
+            scratchRequest.requestedHeight,
+            scratchRequest.spatialDirScratchTier,
+            scratchRequest.spatialDirPlaneRoles,
+            cudaStreamOpaque,
+            outError);
     }
     return execute_scratch_growth_command(
         transaction,
@@ -3539,12 +3641,49 @@ bool command_ensure_spatial_dir_fft(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
     const Spektrafilm::SpatialDirDescriptor& descriptor,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     std::string& outError) {
-    if (!ensure_active_for_command(transaction, outError, "command_ensure_spatial_dir_fft")) {
+    const char* stageName = "command_ensure_spatial_dir_fft";
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
-    return execute_snapshot_wrapped_command(
+    if (!validate_scratch_request_for_family(
+            scratchRequest,
+            stageName,
+            ScratchWorkClass::SpatialDir,
+            outError)) {
+        return false;
+    }
+    std::size_t growthBytes = 0;
+    if (!JuicerCuda::estimate_spatial_dir_fft_growth_bytes(
+            resources,
+            descriptor,
+            cudaStreamOpaque,
+            growthBytes,
+            outError)) {
+        if (is_allocator_oom_error(outError)) {
+            outError = commands_scratch_exhausted_error(
+                stageName,
+                "fft_plan_sizing_allocator_failure",
+                outError);
+        }
+        return false;
+    }
+    if (growthBytes > 0 &&
+        !admit_active_frame_vram_growth(
+            transaction,
+            resources,
+            stageName,
+            growthBytes,
+            &scratchRequest,
+            false,
+            ActiveFrameAdmissionHeadroom::AllocatorEffective,
+            outError)) {
+        return false;
+    }
+    std::string actionError;
+    const bool ok = execute_snapshot_wrapped_command(
         transaction,
         resources,
         [&](std::string& actionError) {
@@ -3554,7 +3693,16 @@ bool command_ensure_spatial_dir_fft(
                 cudaStreamOpaque,
                 actionError);
         },
-        outError);
+        actionError);
+    if (!ok && is_allocator_oom_error(actionError)) {
+        outError = commands_scratch_exhausted_error(
+            stageName,
+            "fft_workspace_allocator_failure",
+            actionError);
+        return false;
+    }
+    outError = actionError;
+    return ok;
 }
 
 bool command_ensure_gaussian_kernel(
