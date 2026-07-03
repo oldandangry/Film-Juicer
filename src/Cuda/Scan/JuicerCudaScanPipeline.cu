@@ -1087,6 +1087,49 @@ namespace {
     }
 
     template <typename Params>
+    __device__ __forceinline__ bool load_spatial_dir_log_raw_for_final_develop_device(
+        const Params& params,
+        std::size_t pixelIndex,
+        const float* rgbIn,
+        float logE_raw[3]) {
+        const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
+        if (juicer_cuda_spatial_dir_cached_log_raw_active_device(dev)) {
+            juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, pixelIndex, logE_raw);
+            return true;
+        }
+
+        if (rgbIn) {
+            float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
+            float layerPre[3] = {0.0f, 0.0f, 0.0f};
+            compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+            return true;
+        }
+
+        const int nC = params.nComponents;
+        if (!params.src || params.srcRowBytes == 0 || params.width <= 0 ||
+            !(nC == 3 || nC == 4)) {
+            return false;
+        }
+
+        const int y = static_cast<int>(pixelIndex / static_cast<std::size_t>(params.width));
+        const int x =
+            static_cast<int>(pixelIndex - static_cast<std::size_t>(y) *
+                                              static_cast<std::size_t>(params.width));
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+        const char* srcRow =
+            reinterpret_cast<const char*>(params.src) +
+            static_cast<std::size_t>(y) * params.srcRowBytes;
+        const float* srcPix =
+            reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+
+        const float sourceRgb[3] = {srcPix[0], srcPix[1], srcPix[2]};
+        float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
+        float layerPre[3] = {0.0f, 0.0f, 0.0f};
+        compute_logE_and_layer_pre_device(params, sourceRgb, logE_raw, logE_sanitized, layerPre);
+        return true;
+    }
+
+    template <typename Params>
     __global__ void pipeline_direct_kernel(Params params) {
         const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
         const JuicerCuda::ScanStagePayload& scan = params.scanStage;
@@ -1117,12 +1160,12 @@ namespace {
         if (useSpatialDir) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
             float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-            if (juicer_cuda_spatial_dir_cached_log_raw_active_device(dev)) {
-                juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
-            } else {
-                float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
-                float layerPre[3] = {0.0f, 0.0f, 0.0f};
-                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+            if (!load_spatial_dir_log_raw_for_final_develop_device(
+                    params,
+                    idx,
+                    rgbIn,
+                    logE_raw)) {
+                return;
             }
             juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
         } else {
@@ -1245,6 +1288,48 @@ namespace {
         if (nC == 4) {
             dstPix[3] = srcPix[3];
         }
+    }
+
+    template <typename Params>
+    __global__ void focused_spatial_dir_final_develop_density_kernel(
+        Params params,
+        float* outC,
+        float* outM,
+        float* outY) {
+        const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
+        if (!outC || !outM || !outY ||
+            !juicer_cuda_spatial_dir_filtered_correction_active_device(dev)) {
+            return;
+        }
+
+        const int nC = params.nComponents;
+        if (!(nC == 3 || nC == 4)) {
+            return;
+        }
+
+        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
+        if (x >= params.width || y >= params.height) {
+            return;
+        }
+
+        const std::size_t idx =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(params.width) +
+            static_cast<std::size_t>(x);
+        float logE_raw[3] = {0.0f, 0.0f, 0.0f};
+        if (!load_spatial_dir_log_raw_for_final_develop_device(
+                params,
+                idx,
+                nullptr,
+                logE_raw)) {
+            return;
+        }
+
+        float D_cmy[3] = {0.0f, 0.0f, 0.0f};
+        juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
+        outC[idx] = D_cmy[0];
+        outM[idx] = D_cmy[1];
+        outY[idx] = D_cmy[2];
     }
 
     __global__ void scan_linear_rgb_kernel(
@@ -2010,14 +2095,11 @@ cudaError_t launch_focused_spatial_dir_final_develop_density(
         cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
     dim3 threads(32, 8);
     dim3 blocks(
-        static_cast<unsigned int>((params.width + threads.x - 1) / threads.x),
-        static_cast<unsigned int>((params.height + threads.y - 1) / threads.y));
+        (params.width + threads.x - 1) / threads.x,
+        (params.height + threads.y - 1) / threads.y);
 
-    develop_film_density_from_raw_kernel<<<blocks, threads, 0, stream>>>(
+    focused_spatial_dir_final_develop_density_kernel<<<blocks, threads, 0, stream>>>(
         params,
-        dDensityC,
-        dDensityM,
-        dDensityY,
         dDensityC,
         dDensityM,
         dDensityY);
