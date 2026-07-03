@@ -287,6 +287,7 @@ namespace {
         if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC) {
             return;
         }
+        const bool cacheLogRaw = logRawB && logRawG && logRawR;
 
         const int nC = params.nComponents;
         if (!(nC == 3 || nC == 4)) {
@@ -294,9 +295,17 @@ namespace {
         }
 
         const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
-        for (int y = blockIdx.y * blockDim.y + threadIdx.y; y < params.height; y += blockDim.y * gridDim.y) {
+        const int yStart =
+            static_cast<int>(blockIdx.y) * static_cast<int>(blockDim.y) +
+            static_cast<int>(threadIdx.y);
+        const int yStep = static_cast<int>(blockDim.y) * static_cast<int>(gridDim.y);
+        const int xStart =
+            static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) +
+            static_cast<int>(threadIdx.x);
+        const int xStep = static_cast<int>(blockDim.x) * static_cast<int>(gridDim.x);
+        for (int y = yStart; y < params.height; y += yStep) {
             const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
-            for (int x = blockIdx.x * blockDim.x + threadIdx.x; x < params.width; x += blockDim.x * gridDim.x) {
+            for (int x = xStart; x < params.width; x += xStep) {
                 const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
                 if (!srcPix) {
                     continue;
@@ -318,6 +327,113 @@ namespace {
                 rawCorrectionY[idx] = outCorr[0];
                 rawCorrectionM[idx] = outCorr[1];
                 rawCorrectionC[idx] = outCorr[2];
+                if (cacheLogRaw) {
+                    logRawB[idx] = logE_raw[0];
+                    logRawG[idx] = logE_raw[1];
+                    logRawR[idx] = logE_raw[2];
+                }
+            }
+        }
+    }
+
+    template <typename Params>
+    __global__ void dir_raw_correction_channel_source_build_kernel(
+        Params params,
+        int correctionChannel,
+        float* rawCorrection,
+        unsigned int* clampHits) {
+        if (!params.src || params.srcRowBytes == 0 || !rawCorrection) {
+            return;
+        }
+        if (correctionChannel < 0 || correctionChannel >= 3) {
+            return;
+        }
+
+        const int nC = params.nComponents;
+        if (!(nC == 3 || nC == 4)) {
+            return;
+        }
+
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+        const int yStart =
+            static_cast<int>(blockIdx.y) * static_cast<int>(blockDim.y) +
+            static_cast<int>(threadIdx.y);
+        const int yStep = static_cast<int>(blockDim.y) * static_cast<int>(gridDim.y);
+        const int xStart =
+            static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) +
+            static_cast<int>(threadIdx.x);
+        const int xStep = static_cast<int>(blockDim.x) * static_cast<int>(gridDim.x);
+        for (int y = yStart; y < params.height; y += yStep) {
+            const char* srcRow =
+                reinterpret_cast<const char*>(params.src) +
+                static_cast<std::size_t>(y) * params.srcRowBytes;
+            for (int x = xStart; x < params.width; x += xStep) {
+                const float* srcPix =
+                    reinterpret_cast<const float*>(
+                        srcRow + static_cast<std::size_t>(x) * pixelBytes);
+                if (!srcPix) {
+                    continue;
+                }
+
+                const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
+                float logE_raw[3] = {0.0f, 0.0f, 0.0f};
+                float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
+                float layerPre[3] = {0.0f, 0.0f, 0.0f};
+                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+
+                const float D_cmy[3] = {layerPre[2], layerPre[1], layerPre[0]};
+                const float layerDensities[3] = {D_cmy[2], D_cmy[1], D_cmy[0]};
+
+                float outCorr[3] = {0.0f, 0.0f, 0.0f};
+                compute_dir_corrections_device(params.filmDevelop.dir, layerDensities, outCorr, clampHits);
+
+                const size_t idx =
+                    static_cast<size_t>(y) * static_cast<size_t>(params.width) +
+                    static_cast<size_t>(x);
+                rawCorrection[idx] = outCorr[correctionChannel];
+            }
+        }
+    }
+
+    template <typename Params>
+    __global__ void dir_cached_log_raw_build_kernel(
+        Params params,
+        float* logRawB,
+        float* logRawG,
+        float* logRawR) {
+        if (!params.src || params.srcRowBytes == 0 || !logRawB || !logRawG || !logRawR) {
+            return;
+        }
+
+        const int nC = params.nComponents;
+        if (!(nC == 3 || nC == 4)) {
+            return;
+        }
+
+        const std::size_t pixelBytes = static_cast<std::size_t>(nC) * sizeof(float);
+        const int yStart =
+            static_cast<int>(blockIdx.y) * static_cast<int>(blockDim.y) +
+            static_cast<int>(threadIdx.y);
+        const int yStep = static_cast<int>(blockDim.y) * static_cast<int>(gridDim.y);
+        const int xStart =
+            static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) +
+            static_cast<int>(threadIdx.x);
+        const int xStep = static_cast<int>(blockDim.x) * static_cast<int>(gridDim.x);
+        for (int y = yStart; y < params.height; y += yStep) {
+            const char* srcRow = reinterpret_cast<const char*>(params.src) + static_cast<std::size_t>(y) * params.srcRowBytes;
+            for (int x = xStart; x < params.width; x += xStep) {
+                const float* srcPix = reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
+                if (!srcPix) {
+                    continue;
+                }
+
+                const float rgbIn[3] = {srcPix[0], srcPix[1], srcPix[2]};
+                float logE_raw[3] = {0.0f, 0.0f, 0.0f};
+                float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
+                float layerPre[3] = {0.0f, 0.0f, 0.0f};
+                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+
+                const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
                 logRawB[idx] = logE_raw[0];
                 logRawG[idx] = logE_raw[1];
                 logRawR[idx] = logE_raw[2];
@@ -501,6 +617,89 @@ namespace {
             y1 = value;
         }
     }
+
+    __global__ void spatial_dir_iir_horizontal_single_kernel(
+        const float* input,
+        float* output,
+        int width,
+        int height,
+        double B,
+        double B1,
+        double B2,
+        double B3) {
+        const int y = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        if (y >= height || width <= 0 || !input || !output) {
+            return;
+        }
+        const size_t row = static_cast<size_t>(y) * static_cast<size_t>(width);
+        double w1 = static_cast<double>(input[row]);
+        double w2 = w1;
+        double w3 = w1;
+        for (int x = 0; x < width; ++x) {
+            const size_t index = row + static_cast<size_t>(x);
+            const double w = B * static_cast<double>(input[index]) + B1 * w1 + B2 * w2 + B3 * w3;
+            output[index] = static_cast<float>(w);
+            w3 = w2;
+            w2 = w1;
+            w1 = w;
+        }
+        double y1 = static_cast<double>(output[row + static_cast<size_t>(width - 1)]);
+        double y2 = y1;
+        double y3 = y1;
+        for (int x = width - 1; x >= 0; --x) {
+            const size_t index = row + static_cast<size_t>(x);
+            const double value = B * static_cast<double>(output[index]) + B1 * y1 + B2 * y2 + B3 * y3;
+            output[index] = static_cast<float>(value);
+            y3 = y2;
+            y2 = y1;
+            y1 = value;
+        }
+    }
+
+    __global__ void spatial_dir_iir_vertical_accumulate_single_kernel(
+        const float* input,
+        float* forwardTemp,
+        float* inOut,
+        int width,
+        int height,
+        double B,
+        double B1,
+        double B2,
+        double B3,
+        float weight,
+        int initialize) {
+        const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+        if (x >= width || height <= 0 || !input || !forwardTemp || !inOut) {
+            return;
+        }
+        const size_t visualTop =
+            static_cast<size_t>(height - 1) * static_cast<size_t>(width) + static_cast<size_t>(x);
+        double w1 = static_cast<double>(input[visualTop]);
+        double w2 = w1;
+        double w3 = w1;
+        for (int y = height - 1; y >= 0; --y) {
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const double w = B * static_cast<double>(input[index]) + B1 * w1 + B2 * w2 + B3 * w3;
+            forwardTemp[index] = static_cast<float>(w);
+            w3 = w2;
+            w2 = w1;
+            w1 = w;
+        }
+        double y1 = static_cast<double>(forwardTemp[static_cast<size_t>(x)]);
+        double y2 = y1;
+        double y3 = y1;
+        for (int y = 0; y < height; ++y) {
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const double value =
+                B * static_cast<double>(forwardTemp[index]) + B1 * y1 + B2 * y2 + B3 * y3;
+            const float blurred = isfinite(value) ? static_cast<float>(value) : 0.0f;
+            const float weighted = blurred * weight;
+            inOut[index] = initialize ? weighted : inOut[index] + weighted;
+            y3 = y2;
+            y2 = y1;
+            y1 = value;
+        }
+    }
     // NOLINTEND(bugprone-easily-swappable-parameters)
 
     __global__ void spatial_dir_fft_pad_replicate_kernel(
@@ -633,16 +832,22 @@ cudaError_t build_spatial_dir_impl(
     if (!(params.nComponents == 3 || params.nComponents == 4)) {
         return cudaErrorInvalidValue;
     }
-    if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC || !filteredCorrectionY ||
-        !filteredCorrectionM || !filteredCorrectionC || !filterTemp ||
+    const bool haveComponentStreamedYvvScratch =
+        rawCorrectionY && !rawCorrectionM && !rawCorrectionC &&
+        filteredCorrectionY && filteredCorrectionM && filteredCorrectionC && filterTemp &&
+        !filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
+    if (!rawCorrectionY || (!haveComponentStreamedYvvScratch && (!rawCorrectionM || !rawCorrectionC)) ||
+        !filteredCorrectionY || !filteredCorrectionM || !filteredCorrectionC || !filterTemp ||
         !(gaussianSigma > 0.0f) || !(gaussianWeight >= 0.0f)) {
-        return cudaErrorInvalidValue;
-    }
-    if (!logRawB || !logRawG || !logRawR) {
         return cudaErrorInvalidValue;
     }
     const bool haveChannelYvvScratch =
         filterTempM && filterTempC && iirForwardTemp && iirForwardTempM && iirForwardTempC;
+    const bool haveLowScratchPairYvvScratch =
+        filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
+    const bool haveCompactSequentialYvvScratch =
+        filterTemp && iirForwardTemp && !filterTempM && !filterTempC &&
+        !iirForwardTempM && !iirForwardTempC;
 
     cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
     cudaError_t err = cudaSuccess;
@@ -763,12 +968,40 @@ cudaError_t build_spatial_dir_impl(
         return profile ? timer.finish(stream, &profile->correction) : cudaSuccess;
     };
 
-    err = launch_corrections();
-    if (err != cudaSuccess) {
-        return finish_profile(err);
+    auto launch_streamed_channel_corrections = [&](int channel) -> cudaError_t {
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        dir_raw_correction_channel_source_build_kernel<<<blocks2D, threads2D, 0, stream>>>(
+            params,
+            channel,
+            rawCorrectionY,
+            dClampHits);
+        mark_launch(
+            profile ? &profile->correction : nullptr,
+            profile ? &profile->correctionLaunches : nullptr);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        return profile ? timer.finish(stream, &profile->correction) : cudaSuccess;
+    };
+
+    if (!haveComponentStreamedYvvScratch) {
+        err = launch_corrections();
+        if (err != cudaSuccess) {
+            return finish_profile(err);
+        }
     }
 
     if (acceptedFftActive) {
+        if (haveComponentStreamedYvvScratch) {
+            return finish_profile(cudaErrorInvalidValue);
+        }
         if (fftForwardPlan == 0 || fftInversePlan == 0 || !fftRealBuffer ||
             !fftSpectrum || !fftTransfer || fftWidth <= 0 || fftHeight <= 0 ||
             fftComplexWidth <= 0 || fftPadPixels < 0 ||
@@ -988,16 +1221,300 @@ cudaError_t build_spatial_dir_impl(
 
     const float* rawCorrections[3] = {rawCorrectionY, rawCorrectionM, rawCorrectionC};
     float* filteredCorrections[3] = {filteredCorrectionY, filteredCorrectionM, filteredCorrectionC};
+    auto accumulate_yvv_low_scratch_pair = [&](float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+        if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC ||
+            !filteredCorrectionY || !filteredCorrectionM || !filteredCorrectionC ||
+            !(sigma > 0.0f) || !(weight >= 0.0f) || !haveLowScratchPairYvvScratch) {
+            return cudaErrorInvalidValue;
+        }
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
+        const double q2 = q * q;
+        const double q3 = q2 * q;
+        const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q2 + 0.422205 * q3;
+        const double b1 = 2.44413 * q + 2.85619 * q2 + 1.26661 * q3;
+        const double b2 = -(1.4281 * q2 + 1.26661 * q3);
+        const double b3 = 0.422205 * q3;
+        const double B1 = b1 / b0;
+        const double B2 = b2 / b0;
+        const double B3 = b3 / b0;
+        const double B = 1.0 - (b1 + b2 + b3) / b0;
+        const int threads = 128;
+        const dim3 horizontalPairBlocks(
+            static_cast<unsigned int>((params.height + threads - 1) / threads),
+            2);
+        const dim3 verticalPairBlocks(
+            static_cast<unsigned int>((params.width + threads - 1) / threads),
+            2);
+        spatial_dir_iir_horizontal_channels_kernel<<<
+            horizontalPairBlocks,
+            threads,
+            0,
+            stream>>>(
+            rawCorrectionY,
+            rawCorrectionM,
+            nullptr,
+            filterTemp,
+            filterTempM,
+            nullptr,
+            params.width,
+            params.height,
+            B,
+            B1,
+            B2,
+            B3);
+        mark_launch(stage, launchCounter);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        spatial_dir_iir_vertical_accumulate_channels_kernel<<<
+            verticalPairBlocks,
+            threads,
+            0,
+            stream>>>(
+            filterTemp,
+            filterTempM,
+            nullptr,
+            filterTemp,
+            filterTempM,
+            nullptr,
+            filteredCorrectionY,
+            filteredCorrectionM,
+            nullptr,
+            params.width,
+            params.height,
+            B,
+            B1,
+            B2,
+            B3,
+            weight,
+            initialize ? 1 : 0);
+        mark_launch(stage, launchCounter);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+
+        const dim3 horizontalSingleBlocks(
+            static_cast<unsigned int>((params.height + threads - 1) / threads));
+        const dim3 verticalSingleBlocks(
+            static_cast<unsigned int>((params.width + threads - 1) / threads));
+        spatial_dir_iir_horizontal_single_kernel<<<
+            horizontalSingleBlocks,
+            threads,
+            0,
+            stream>>>(
+            rawCorrectionC,
+            filterTemp,
+            params.width,
+            params.height,
+            B,
+            B1,
+            B2,
+            B3);
+        mark_launch(stage, launchCounter);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        spatial_dir_iir_vertical_accumulate_single_kernel<<<
+            verticalSingleBlocks,
+            threads,
+            0,
+            stream>>>(
+            filterTemp,
+            filterTemp,
+            filteredCorrectionC,
+            params.width,
+            params.height,
+            B,
+            B1,
+            B2,
+            B3,
+            weight,
+            initialize ? 1 : 0);
+        mark_launch(stage, launchCounter);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        return profile ? timer.finish(stream, stage) : cudaSuccess;
+    };
+
+    auto accumulate_yvv_compact_sequential = [&](float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+        if (!(sigma > 0.0f) || !(weight >= 0.0f) || !haveCompactSequentialYvvScratch) {
+            return cudaErrorInvalidValue;
+        }
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
+        const double q2 = q * q;
+        const double q3 = q2 * q;
+        const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q2 + 0.422205 * q3;
+        const double b1 = 2.44413 * q + 2.85619 * q2 + 1.26661 * q3;
+        const double b2 = -(1.4281 * q2 + 1.26661 * q3);
+        const double b3 = 0.422205 * q3;
+        const double B1 = b1 / b0;
+        const double B2 = b2 / b0;
+        const double B3 = b3 / b0;
+        const double B = 1.0 - (b1 + b2 + b3) / b0;
+        const int threads = 128;
+        const dim3 horizontalBlocks(
+            static_cast<unsigned int>((params.height + threads - 1) / threads));
+        const dim3 verticalBlocks(
+            static_cast<unsigned int>((params.width + threads - 1) / threads));
+        for (int channel = 0; channel < 3; ++channel) {
+            spatial_dir_iir_horizontal_single_kernel<<<
+                horizontalBlocks,
+                threads,
+                0,
+                stream>>>(
+                rawCorrections[channel],
+                filterTemp,
+                params.width,
+                params.height,
+                B,
+                B1,
+                B2,
+                B3);
+            mark_launch(stage, launchCounter);
+            cudaError_t e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+            spatial_dir_iir_vertical_accumulate_single_kernel<<<
+                verticalBlocks,
+                threads,
+                0,
+                stream>>>(
+                filterTemp,
+                iirForwardTemp,
+                filteredCorrections[channel],
+                params.width,
+                params.height,
+                B,
+                B1,
+                B2,
+                B3,
+                weight,
+                initialize ? 1 : 0);
+            mark_launch(stage, launchCounter);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        return profile ? timer.finish(stream, stage) : cudaSuccess;
+    };
+
+    auto accumulate_yvv_component_streamed = [&](float* filteredCorrection, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+        if (!filteredCorrection || !(sigma > 0.0f) || !(weight >= 0.0f) ||
+            !haveComponentStreamedYvvScratch) {
+            return cudaErrorInvalidValue;
+        }
+        CudaProfileStageTimer timer;
+        if (profile) {
+            cudaError_t e = timer.begin(stream);
+            if (e != cudaSuccess) {
+                return e;
+            }
+        }
+        const double q = 0.98711 * static_cast<double>(sigma) - 0.96330;
+        const double q2 = q * q;
+        const double q3 = q2 * q;
+        const double b0 = 1.57825 + 2.44413 * q + 1.4281 * q2 + 0.422205 * q3;
+        const double b1 = 2.44413 * q + 2.85619 * q2 + 1.26661 * q3;
+        const double b2 = -(1.4281 * q2 + 1.26661 * q3);
+        const double b3 = 0.422205 * q3;
+        const double B1 = b1 / b0;
+        const double B2 = b2 / b0;
+        const double B3 = b3 / b0;
+        const double B = 1.0 - (b1 + b2 + b3) / b0;
+        const int threads = 128;
+        const dim3 horizontalBlocks(
+            static_cast<unsigned int>((params.height + threads - 1) / threads));
+        const dim3 verticalBlocks(
+            static_cast<unsigned int>((params.width + threads - 1) / threads));
+        spatial_dir_iir_horizontal_single_kernel<<<
+            horizontalBlocks,
+            threads,
+            0,
+            stream>>>(
+            rawCorrectionY,
+            filterTemp,
+            params.width,
+            params.height,
+            B,
+            B1,
+            B2,
+            B3);
+        mark_launch(stage, launchCounter);
+        cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        spatial_dir_iir_vertical_accumulate_single_kernel<<<
+            verticalBlocks,
+            threads,
+            0,
+            stream>>>(
+            filterTemp,
+            filterTemp,
+            filteredCorrection,
+            params.width,
+            params.height,
+            B,
+            B1,
+            B2,
+            B3,
+            weight,
+            initialize ? 1 : 0);
+        mark_launch(stage, launchCounter);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) {
+            return e;
+        }
+        return profile ? timer.finish(stream, stage) : cudaSuccess;
+    };
+
     auto accumulate_component = [&](const float* k, int r, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter)
         -> cudaError_t {
         if (sigma >= 3.0f) {
-            return accumulate_yvv_channels(
-                rawCorrectionY,
-                rawCorrectionM,
-                rawCorrectionC,
-                filteredCorrectionY,
-                filteredCorrectionM,
-                filteredCorrectionC,
+            if (haveChannelYvvScratch) {
+                return accumulate_yvv_channels(
+                    rawCorrectionY,
+                    rawCorrectionM,
+                    rawCorrectionC,
+                    filteredCorrectionY,
+                    filteredCorrectionM,
+                    filteredCorrectionC,
+                    sigma,
+                    weight,
+                    initialize,
+                    stage,
+                    launchCounter);
+            }
+            if (haveLowScratchPairYvvScratch) {
+                return accumulate_yvv_low_scratch_pair(
+                    sigma,
+                    weight,
+                    initialize,
+                    stage,
+                    launchCounter);
+            }
+            return accumulate_yvv_compact_sequential(
                 sigma,
                 weight,
                 initialize,
@@ -1021,6 +1538,91 @@ cudaError_t build_spatial_dir_impl(
         }
         return cudaSuccess;
     };
+
+    auto accumulate_streamed_component = [&](int channel, const float* k, int r, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter)
+        -> cudaError_t {
+        if (channel < 0 || channel >= 3 || !(weight >= 0.0f)) {
+            return cudaErrorInvalidValue;
+        }
+        float* filteredCorrection = filteredCorrections[static_cast<std::size_t>(channel)];
+        if (sigma >= 3.0f) {
+            return accumulate_yvv_component_streamed(
+                filteredCorrection,
+                sigma,
+                weight,
+                initialize,
+                stage,
+                launchCounter);
+        }
+        return accumulate_fir_plane(
+            rawCorrectionY,
+            filteredCorrection,
+            k,
+            r,
+            sigma,
+            weight,
+            initialize,
+            stage,
+            launchCounter);
+    };
+
+    if (haveComponentStreamedYvvScratch) {
+        for (int channel = 0; channel < 3; ++channel) {
+            err = launch_streamed_channel_corrections(channel);
+            if (err != cudaSuccess) {
+                return finish_profile(err);
+            }
+            bool channelAccumulatorInitialized = false;
+            if (gaussianWeight > 0.0f) {
+                err = accumulate_streamed_component(
+                    channel,
+                    dGaussianKernel,
+                    gaussianRadius,
+                    gaussianSigma,
+                    gaussianWeight,
+                    true,
+                    profile ? &profile->baseFilter : nullptr,
+                    profile ? &profile->baseFilterLaunches : nullptr);
+                if (err != cudaSuccess) {
+                    return finish_profile(err);
+                }
+                channelAccumulatorInitialized = true;
+            }
+            const float* streamedTailKernels[3] = {dTailKernel0, dTailKernel1, dTailKernel2};
+            const int streamedTailRadii[3] = {tailRadius0, tailRadius1, tailRadius2};
+            const float streamedTailSigmas[3] = {tailSigma0, tailSigma1, tailSigma2};
+            const float streamedTailWeights[3] = {tailWeight0, tailWeight1, tailWeight2};
+            for (int component = 0; component < 3; ++component) {
+                if (!(streamedTailWeights[component] > 0.0f)) {
+                    continue;
+                }
+                if (!(streamedTailSigmas[component] > 0.0f) ||
+                    (streamedTailSigmas[component] < 3.0f &&
+                     (!streamedTailKernels[component] || streamedTailRadii[component] <= 0))) {
+                    return finish_profile(cudaErrorInvalidValue);
+                }
+                const bool initializeComponent = !channelAccumulatorInitialized;
+                err = accumulate_streamed_component(
+                    channel,
+                    streamedTailKernels[component],
+                    streamedTailRadii[component],
+                    streamedTailSigmas[component],
+                    streamedTailWeights[component],
+                    initializeComponent,
+                    profile ? &profile->tailFilter[component] : nullptr,
+                    profile ? &profile->tailFilterLaunches[component] : nullptr);
+                if (err != cudaSuccess) {
+                    return finish_profile(err);
+                }
+                channelAccumulatorInitialized = true;
+            }
+            if (!channelAccumulatorInitialized) {
+                return finish_profile(cudaErrorInvalidValue);
+            }
+        }
+        return finish_profile(cudaGetLastError());
+    }
+
     bool accumulatorInitialized = false;
     if (gaussianWeight > 0.0f) {
         err = accumulate_component(
@@ -1067,6 +1669,36 @@ cudaError_t build_spatial_dir_impl(
     }
 
     return finish_profile(cudaGetLastError());
+}
+
+template <typename Params>
+cudaError_t build_spatial_dir_cached_log_raw_impl(
+    const Params& params,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque) {
+    if (!params.src || params.srcRowBytes == 0 || !logRawB || !logRawG || !logRawR) {
+        return cudaErrorInvalidValue;
+    }
+    if (params.width <= 0 || params.height <= 0) {
+        return cudaSuccess;
+    }
+    if (!(params.nComponents == 3 || params.nComponents == 4)) {
+        return cudaErrorInvalidValue;
+    }
+
+    cudaStream_t stream = cudaStreamOpaque ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque) : nullptr;
+    dim3 threads2D(32, 8);
+    dim3 blocks2D(
+        static_cast<unsigned int>((params.width + threads2D.x - 1) / threads2D.x),
+        static_cast<unsigned int>((params.height + threads2D.y - 1) / threads2D.y));
+    dir_cached_log_raw_build_kernel<<<blocks2D, threads2D, 0, stream>>>(
+        params,
+        logRawB,
+        logRawG,
+        logRawR);
+    return cudaGetLastError();
 }
 
 extern "C" cudaError_t juicer_cuda_build_spatial_dir(
@@ -1168,6 +1800,23 @@ extern "C" cudaError_t juicer_cuda_build_spatial_dir(
         profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_spatial_dir";
     }
     return result;
+}
+
+extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque) {
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+    return build_spatial_dir_cached_log_raw_impl(
+        *hParams,
+        logRawB,
+        logRawG,
+        logRawR,
+        cudaStreamOpaque);
 }
 
 cudaError_t SF_TEMP_BRIDGE_build_direct_spatial_dir(
@@ -1462,6 +2111,23 @@ cudaError_t SF_TEMP_BRIDGE_build_print_spatial_dir(
         profile->SF_TEMP_BRIDGE_name = "SF_TEMP_BRIDGE_build_print_spatial_dir";
     }
     return result;
+}
+
+extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque) {
+    if (!hParams) {
+        return cudaErrorInvalidValue;
+    }
+    return build_spatial_dir_cached_log_raw_impl(
+        *hParams,
+        logRawB,
+        logRawG,
+        logRawR,
+        cudaStreamOpaque);
 }
 
 extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
@@ -2271,7 +2937,13 @@ __global__ void develop_film_density_kernel(
             if (useSpatialDir) {
                 const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-                juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
+                if (juicer_cuda_spatial_dir_cached_log_raw_active_device(dev)) {
+                    juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
+                } else {
+                    float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
+                    float layerPre[3] = {0.0f, 0.0f, 0.0f};
+                    compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+                }
                 juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
@@ -2716,7 +3388,13 @@ __global__ void develop_film_density_from_raw_kernel(
             float D_cmy[3] = {0.0f, 0.0f, 0.0f};
             if (useSpatialDir) {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-                juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
+                if (juicer_cuda_spatial_dir_cached_log_raw_active_device(dev)) {
+                    juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
+                } else {
+                    float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
+                    float layerPre[3] = {0.0f, 0.0f, 0.0f};
+                    compute_logE_from_film_raw_device(params, filmRaw, logE_raw, logE_sanitized, layerPre);
+                }
                 juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
             } else {
                 float logE_raw[3] = {0.0f, 0.0f, 0.0f};

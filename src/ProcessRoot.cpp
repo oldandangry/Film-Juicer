@@ -1,6 +1,7 @@
 #include "ProcessRoot.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -53,21 +54,35 @@ namespace JuicerProcess {
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
                 case Spektrafilm::DirScratchTier::Tier1IChannels:
-                    return roles.rawCorrectionPlanes == 3 &&
-                           roles.filteredCorrectionPlanes == 3 &&
-                           roles.filterTempPlanes == 3 &&
-                           roles.iirForwardTempPlanes == 3 &&
+                    return roles.filteredCorrectionPlanes == 3 &&
+                           ((roles.rawCorrectionPlanes == 1 &&
+                             roles.filterTempPlanes == 1 &&
+                             roles.iirForwardTempPlanes == 0) ||
+                            (roles.rawCorrectionPlanes == 3 &&
+                             ((roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 1) ||
+                              (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
+                               roles.iirForwardTempPlanes == 3)))) &&
                            roles.cachedLogRawPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
                 case Spektrafilm::DirScratchTier::Tier2:
-                    return roles.rawCorrectionPlanes == 3 &&
-                           roles.filteredCorrectionPlanes == 3 &&
-                           ((roles.filterTempPlanes == 1 &&
+                    return roles.filteredCorrectionPlanes == 3 &&
+                           ((roles.rawCorrectionPlanes == 1 &&
+                             roles.filterTempPlanes == 1 &&
                              roles.iirForwardTempPlanes == 0) ||
-                            (roles.filterTempPlanes == 3 &&
-                             roles.iirForwardTempPlanes == 3)) &&
+                            (roles.rawCorrectionPlanes == 3 &&
+                             ((roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 1) ||
+                              (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
+                               roles.iirForwardTempPlanes == 3)))) &&
                            roles.cachedLogRawPlanes == 3 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
@@ -91,8 +106,15 @@ namespace JuicerProcess {
             if (tier == Spektrafilm::DirScratchTier::Tier0) {
                 return true;
             }
+            const bool hasThreeRaw =
+                scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
+            const bool hasStreamedRaw =
+                scratch.rawCorrectionY && scratch.rawCorrectionM == nullptr && scratch.rawCorrectionC == nullptr;
+            const bool rawCorrectionMatch =
+                (roles.rawCorrectionPlanes == 3 && hasThreeRaw) ||
+                (roles.rawCorrectionPlanes == 1 && hasStreamedRaw);
             const bool tier1Base =
-                scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC &&
+                rawCorrectionMatch &&
                 scratch.filteredCorrectionY && scratch.filteredCorrectionM && scratch.filteredCorrectionC &&
                 scratch.filterTemp;
             if (!tier1Base) {
@@ -101,12 +123,22 @@ namespace JuicerProcess {
             const bool hasChannelTemps =
                 scratch.filterTempM && scratch.filterTempC &&
                 scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+            const bool hasCompactSequentialTemps =
+                scratch.iirForwardTemp &&
+                scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
+                scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
+            const bool hasLowScratchPairTemps =
+                scratch.filterTempM && scratch.filterTempC == nullptr &&
+                scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
+                scratch.iirForwardTempC == nullptr;
             const bool hasNoChannelTemps =
                 scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
                 scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
                 scratch.iirForwardTempC == nullptr;
             const bool channelTempsMatch =
                 (roles.filterTempPlanes == 1 && roles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
+                (roles.filterTempPlanes == 1 && roles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
+                (roles.filterTempPlanes == 2 && roles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
                 (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3 && hasChannelTemps);
             const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
             const bool hasNoCachedLogRaw =
@@ -115,6 +147,121 @@ namespace JuicerProcess {
                 (roles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
                 (roles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
             return channelTempsMatch && cachedLogRawMatch;
+        }
+
+        bool spatial_dir_scratch_has_final_develop_roles(
+            const JuicerCuda::Resources::DeviceSpatialDirScratch& scratch,
+            const Spektrafilm::DirScratchPlaneRoles& targetRoles) noexcept {
+            if (!scratch.filteredCorrectionY || !scratch.filteredCorrectionM ||
+                !scratch.filteredCorrectionC) {
+                return false;
+            }
+            const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
+            const bool hasNoCachedLogRaw =
+                scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
+            const bool cachedLogRawMatch =
+                (targetRoles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
+                (targetRoles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
+            if (!cachedLogRawMatch) {
+                return false;
+            }
+            const bool filterTempsCompatible =
+                targetRoles.filterTempPlanes == 3 ||
+                (targetRoles.filterTempPlanes == 2 && !scratch.filterTempC) ||
+                (!scratch.filterTempM && !scratch.filterTempC);
+            const bool iirForwardTempsCompatible =
+                targetRoles.iirForwardTempPlanes == 3 ||
+                (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
+            return filterTempsCompatible && iirForwardTempsCompatible;
+        }
+
+        bool dir_plane_roles_equal(
+            const Spektrafilm::DirScratchPlaneRoles& a,
+            const Spektrafilm::DirScratchPlaneRoles& b) noexcept {
+            return a.rawCorrectionPlanes == b.rawCorrectionPlanes &&
+                   a.filteredCorrectionPlanes == b.filteredCorrectionPlanes &&
+                   a.filterTempPlanes == b.filterTempPlanes &&
+                   a.iirForwardTempPlanes == b.iirForwardTempPlanes &&
+                   a.cachedLogRawPlanes == b.cachedLogRawPlanes &&
+                   a.SF_TEMP_BRIDGE_corrPlanes == b.SF_TEMP_BRIDGE_corrPlanes &&
+                   a.SF_TEMP_BRIDGE_mixPlanes == b.SF_TEMP_BRIDGE_mixPlanes &&
+                   a.SF_TEMP_BRIDGE_tmpPlanes == b.SF_TEMP_BRIDGE_tmpPlanes;
+        }
+
+        bool spatial_dir_descriptor_has_strict_yvv(
+            const Spektrafilm::SpatialDirDescriptor& descriptor) noexcept {
+            if (descriptor.approximation != Spektrafilm::DirApproximationMarker::SpektrafilmStrict ||
+                descriptor.scratchTier != Spektrafilm::DirScratchTier::Tier1IChannels ||
+                descriptor.targetScratchTier != Spektrafilm::DirScratchTier::Tier2) {
+                return false;
+            }
+            for (int component = 0; component < descriptor.filterPlan.componentCount; ++component) {
+                const Spektrafilm::DirGaussianComponentPlan& plan =
+                    descriptor.filterPlan.components[static_cast<std::size_t>(component)];
+                if (plan.weight > 0.0f &&
+                    plan.referenceOperator == Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        Spektrafilm::DirScratchPlaneRoles strict_yvv_low_scratch_plane_roles() noexcept {
+            Spektrafilm::DirScratchPlaneRoles roles{};
+            roles.rawCorrectionPlanes = 3;
+            roles.filteredCorrectionPlanes = 3;
+            roles.filterTempPlanes = 2;
+            roles.iirForwardTempPlanes = 0;
+            roles.cachedLogRawPlanes = 0;
+            return roles;
+        }
+
+        Spektrafilm::DirScratchPlaneRoles strict_yvv_component_streamed_plane_roles() noexcept {
+            Spektrafilm::DirScratchPlaneRoles roles{};
+            roles.rawCorrectionPlanes = 1;
+            roles.filteredCorrectionPlanes = 3;
+            roles.filterTempPlanes = 1;
+            roles.iirForwardTempPlanes = 0;
+            roles.cachedLogRawPlanes = 0;
+            return roles;
+        }
+
+        Root::PreparedCudaFrame::WorkspaceRequest strict_yvv_workspace_candidate(
+            const Root::PreparedCudaFrame::WorkspaceRequest& base,
+            const Spektrafilm::DirScratchPlaneRoles& buildRoles,
+            Spektrafilm::DirScratchTier targetTier,
+            const Spektrafilm::DirScratchPlaneRoles& targetRoles) noexcept {
+            Root::PreparedCudaFrame::WorkspaceRequest candidate = base;
+            candidate.spatialDirScratchTier = Spektrafilm::DirScratchTier::Tier1IChannels;
+            candidate.spatialDirPlaneRoles = buildRoles;
+            candidate.spatialDirTargetScratchTier = targetTier;
+            candidate.spatialDirTargetPlaneRoles = targetRoles;
+            return candidate;
+        }
+
+        [[maybe_unused]] const char* strict_yvv_candidate_label(
+            const Spektrafilm::DirScratchPlaneRoles& roles) noexcept {
+            if (roles.rawCorrectionPlanes == 3 &&
+                roles.filterTempPlanes == 3 &&
+                roles.iirForwardTempPlanes == 3) {
+                return "strict_yvv_channels";
+            }
+            if (roles.rawCorrectionPlanes == 3 &&
+                roles.filterTempPlanes == 2 &&
+                roles.iirForwardTempPlanes == 0) {
+                return "strict_yvv_low_scratch_pair";
+            }
+            if (roles.rawCorrectionPlanes == 1 &&
+                roles.filterTempPlanes == 1 &&
+                roles.iirForwardTempPlanes == 0) {
+                return "strict_yvv_component_streamed";
+            }
+            if (roles.rawCorrectionPlanes == 3 &&
+                roles.filterTempPlanes == 1 &&
+                roles.iirForwardTempPlanes == 1) {
+                return "strict_yvv_compact_sequential";
+            }
+            return "unknown";
         }
 #endif
 
@@ -315,6 +462,7 @@ namespace JuicerProcess {
             return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
                 request);
         }
+
 #endif
 
     } // namespace
@@ -428,6 +576,7 @@ namespace JuicerProcess {
         bool release_auto_exposure_workspace_after_use(
             void* cudaStreamOpaque,
             std::string& outError);
+        JuicerCuda::ResourceManager::ScratchRequestDescriptor post_frame_scratch_request_descriptor() const noexcept;
         bool ensure_scratch_workspace(
             const WorkspaceRequest& request,
             void* cudaStreamOpaque,
@@ -435,6 +584,10 @@ namespace JuicerProcess {
         bool release_overflow_spatial_dir_build_scratch_after_build(
             void* cudaStreamOpaque,
             JuicerCuda::SpatialDirBuildScratchReleaseStats& outStats,
+            std::string& outError);
+        bool stage_overflow_spatial_dir_cached_log_raw_for_final_develop(
+            void* cudaStreamOpaque,
+            JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
             std::string& outError);
         bool release_overflow_spatial_dir_cached_log_raw_after_final_develop(
             void* cudaStreamOpaque,
@@ -829,8 +982,7 @@ namespace JuicerProcess {
                 outError = "spatial DIR workspace plane roles do not match scratch tier";
                 return false;
             }
-            if (request.spatialDirTargetScratchTier != request.spatialDirScratchTier ||
-                !spatial_dir_roles_match_tier(
+            if (!spatial_dir_roles_match_tier(
                     request.spatialDirTargetScratchTier,
                     request.spatialDirTargetPlaneRoles)) {
                 outError = "spatial DIR workspace target plane roles do not match scratch tier";
@@ -1003,8 +1155,6 @@ namespace JuicerProcess {
                 return fail_after_partial_alloc();
             }
             if (!alloc_float(spatialDir.rawCorrectionY, planeBytes, "frame spatial DIR rawCorrectionY") ||
-                !alloc_float(spatialDir.rawCorrectionM, planeBytes, "frame spatial DIR rawCorrectionM") ||
-                !alloc_float(spatialDir.rawCorrectionC, planeBytes, "frame spatial DIR rawCorrectionC") ||
                 !alloc_float(
                     spatialDir.filteredCorrectionY,
                     planeBytes,
@@ -1019,16 +1169,24 @@ namespace JuicerProcess {
                     "frame spatial DIR filteredCorrectionC")) {
                 return fail_after_partial_alloc();
             }
+            if (request.spatialDirPlaneRoles.rawCorrectionPlanes == 3 &&
+                (!alloc_float(spatialDir.rawCorrectionM, planeBytes, "frame spatial DIR rawCorrectionM") ||
+                 !alloc_float(spatialDir.rawCorrectionC, planeBytes, "frame spatial DIR rawCorrectionC"))) {
+                return fail_after_partial_alloc();
+            }
             spatialDir.filterTemp = next.sharedTmpPlane;
+            if (request.spatialDirPlaneRoles.filterTempPlanes >= 2 &&
+                !alloc_float(
+                    spatialDir.filterTempM,
+                    planeBytes,
+                    "frame spatial DIR filterTempM")) {
+                return fail_after_partial_alloc();
+            }
             if (request.spatialDirPlaneRoles.filterTempPlanes == 3 &&
-                (!alloc_float(
-                     spatialDir.filterTempM,
-                     planeBytes,
-                     "frame spatial DIR filterTempM") ||
-                 !alloc_float(
-                     spatialDir.filterTempC,
-                     planeBytes,
-                     "frame spatial DIR filterTempC"))) {
+                !alloc_float(
+                    spatialDir.filterTempC,
+                    planeBytes,
+                    "frame spatial DIR filterTempC")) {
                 return fail_after_partial_alloc();
             }
             if (request.spatialDirPlaneRoles.iirForwardTempPlanes == 3 &&
@@ -1044,6 +1202,13 @@ namespace JuicerProcess {
                      spatialDir.iirForwardTempC,
                      planeBytes,
                      "frame spatial DIR iirForwardTempC"))) {
+                return fail_after_partial_alloc();
+            }
+            if (request.spatialDirPlaneRoles.iirForwardTempPlanes == 1 &&
+                !alloc_float(
+                    spatialDir.iirForwardTemp,
+                    planeBytes,
+                    "frame spatial DIR iirForwardTemp")) {
                 return fail_after_partial_alloc();
             }
             if (request.spatialDirPlaneRoles.cachedLogRawPlanes == 3 &&
@@ -1212,6 +1377,90 @@ namespace JuicerProcess {
             *resources,
             outStats.reclaimedBytes,
             outError);
+    }
+
+    bool Root::PreparedCudaFrame::State::stage_overflow_spatial_dir_cached_log_raw_for_final_develop(
+        void* cudaStreamOpaque,
+        JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
+        std::string& outError) {
+        outStats = JuicerCuda::SpatialDirCachedLogRawStageStats{};
+        outError.clear();
+        FrameScratchWorkspace& workspace = scratchWorkspace;
+        if (!workspace.overflowActive || !workspace.request.needSpatialDir) {
+            return true;
+        }
+        if (workspace.request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3) {
+            outError = "overflow spatial DIR cached log raw target roles invalid";
+            return false;
+        }
+        if (!resources) {
+            outError = "CUDA resources unavailable for overflow spatial DIR cached log raw stage";
+            return false;
+        }
+
+        JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir = workspace.spatialDir;
+        if (!spatialDir.filteredCorrectionY || !spatialDir.filteredCorrectionM ||
+            !spatialDir.filteredCorrectionC || spatialDir.capacityElements == 0) {
+            outError = "overflow spatial DIR cached log raw stage missing filtered correction residency";
+            return false;
+        }
+        if (spatialDir.logRawB && spatialDir.logRawG && spatialDir.logRawR) {
+            return true;
+        }
+        const std::size_t planeBytes = spatialDir.capacityElements * sizeof(float);
+        if (planeBytes == 0) {
+            outError = "overflow spatial DIR cached log raw stage byte count invalid";
+            return false;
+        }
+
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+            make_workspace_scratch_request_descriptor(workspace.request);
+        if (!JuicerCuda::ResourceManager::command_admit_spatial_dir_cached_log_raw_overflow(
+                transaction,
+                *resources,
+                scratchRequest,
+                outError)) {
+            return false;
+        }
+
+        auto free_log_raw = [&]() noexcept {
+            if (spatialDir.logRawB) {
+                cudaFree(spatialDir.logRawB);
+                spatialDir.logRawB = nullptr;
+            }
+            if (spatialDir.logRawG) {
+                cudaFree(spatialDir.logRawG);
+                spatialDir.logRawG = nullptr;
+            }
+            if (spatialDir.logRawR) {
+                cudaFree(spatialDir.logRawR);
+                spatialDir.logRawR = nullptr;
+            }
+        };
+        auto alloc_float = [&](float*& ptr, const char* label) {
+            if (ptr) {
+                return true;
+            }
+            cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&ptr), planeBytes);
+            if (err == cudaSuccess && ptr) {
+                outStats.cachedLogRawAllocatedBytes += planeBytes;
+                return true;
+            }
+            outError = std::string("cudaMalloc(") + (label ? label : "overflow spatial DIR logRaw") +
+                       ") failed: " +
+                       (cudaGetErrorString(err) ? cudaGetErrorString(err) : "(unknown)");
+            ptr = nullptr;
+            return false;
+        };
+
+        if (!alloc_float(spatialDir.logRawB, "overflow spatial DIR final logRawB") ||
+            !alloc_float(spatialDir.logRawG, "overflow spatial DIR final logRawG") ||
+            !alloc_float(spatialDir.logRawR, "overflow spatial DIR final logRawR")) {
+            free_log_raw();
+            return false;
+        }
+        remember_stream(cudaStreamOpaque);
+        return true;
     }
 
     bool Root::PreparedCudaFrame::State::release_overflow_spatial_dir_cached_log_raw_after_final_develop(
@@ -1633,6 +1882,14 @@ namespace JuicerProcess {
                !_state->transaction.committed;
     }
 
+    JuicerCuda::ResourceManager::ScratchRequestDescriptor
+    Root::PreparedCudaFrame::State::post_frame_scratch_request_descriptor() const noexcept {
+        if (!scratchWorkspace.retainedLeaseActive && !scratchWorkspace.overflowActive) {
+            return JuicerCuda::ResourceManager::ScratchRequestDescriptor{};
+        }
+        return make_workspace_scratch_request_descriptor(scratchWorkspace.request);
+    }
+
     Root::PreparedCudaFrame::WorkspaceLeaseMarker Root::PreparedCudaFrame::bind_workspace_request(
         const WorkspaceRequest& request) const noexcept {
         if (!active()) {
@@ -1682,6 +1939,8 @@ namespace JuicerProcess {
             return false;
         }
         _state->remember_stream(cudaStreamOpaque);
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
+            _state->post_frame_scratch_request_descriptor();
         std::string releaseError;
         if (!_state->release_scan_error_stage_after_use(cudaStreamOpaque, releaseError)) {
             outError = releaseError.empty() ? "frame scan-error stage release failed" : releaseError;
@@ -1703,6 +1962,7 @@ namespace JuicerProcess {
         if (!_state->root->shed_post_frame_scratch(
                 _state->transaction,
                 *_state->resources,
+                postFrameScratchRequest,
                 cudaStreamOpaque,
                 "command_shed_post_frame_scratch_finish",
                 outError)) {
@@ -1719,6 +1979,8 @@ namespace JuicerProcess {
         if (_state) {
             try {
                 std::string releaseError;
+                const JuicerCuda::ResourceManager::ScratchRequestDescriptor postFrameScratchRequest =
+                    _state->post_frame_scratch_request_descriptor();
                 (void)_state->release_scan_error_stage_after_use(
                     _state->lastCudaStreamOpaque,
                     releaseError);
@@ -1757,6 +2019,7 @@ namespace JuicerProcess {
                     !_state->root->shed_post_frame_scratch(
                         _state->transaction,
                         *_state->resources,
+                        postFrameScratchRequest,
                         _state->lastCudaStreamOpaque,
                         "command_shed_post_frame_scratch_abort",
                         releaseError) &&
@@ -1921,39 +2184,72 @@ namespace JuicerProcess {
             outError = "spatial DIR descriptor is invalid";
             return false;
         }
-        const Spektrafilm::DirScratchPlaneRoles& requestRoles = workspace._request.spatialDirPlaneRoles;
-        const Spektrafilm::DirScratchPlaneRoles& descriptorRoles = descriptor.planeRoles;
-        const Spektrafilm::DirScratchPlaneRoles& requestTargetRoles =
-            workspace._request.spatialDirTargetPlaneRoles;
-        const Spektrafilm::DirScratchPlaneRoles& descriptorTargetRoles = descriptor.targetPlaneRoles;
-        const bool rolesMatch =
-            requestRoles.rawCorrectionPlanes == descriptorRoles.rawCorrectionPlanes &&
-            requestRoles.filteredCorrectionPlanes == descriptorRoles.filteredCorrectionPlanes &&
-            requestRoles.filterTempPlanes == descriptorRoles.filterTempPlanes &&
-            requestRoles.iirForwardTempPlanes == descriptorRoles.iirForwardTempPlanes &&
-            requestRoles.cachedLogRawPlanes == descriptorRoles.cachedLogRawPlanes &&
-            requestRoles.SF_TEMP_BRIDGE_corrPlanes == descriptorRoles.SF_TEMP_BRIDGE_corrPlanes &&
-            requestRoles.SF_TEMP_BRIDGE_mixPlanes == descriptorRoles.SF_TEMP_BRIDGE_mixPlanes &&
-            requestRoles.SF_TEMP_BRIDGE_tmpPlanes == descriptorRoles.SF_TEMP_BRIDGE_tmpPlanes;
-        const bool targetRolesMatch =
-            requestTargetRoles.rawCorrectionPlanes == descriptorTargetRoles.rawCorrectionPlanes &&
-            requestTargetRoles.filteredCorrectionPlanes == descriptorTargetRoles.filteredCorrectionPlanes &&
-            requestTargetRoles.filterTempPlanes == descriptorTargetRoles.filterTempPlanes &&
-            requestTargetRoles.iirForwardTempPlanes == descriptorTargetRoles.iirForwardTempPlanes &&
-            requestTargetRoles.cachedLogRawPlanes == descriptorTargetRoles.cachedLogRawPlanes &&
-            requestTargetRoles.SF_TEMP_BRIDGE_corrPlanes == descriptorTargetRoles.SF_TEMP_BRIDGE_corrPlanes &&
-            requestTargetRoles.SF_TEMP_BRIDGE_mixPlanes == descriptorTargetRoles.SF_TEMP_BRIDGE_mixPlanes &&
-            requestTargetRoles.SF_TEMP_BRIDGE_tmpPlanes == descriptorTargetRoles.SF_TEMP_BRIDGE_tmpPlanes;
         if (workspace._request.spatialDirDescriptorHash != descriptor.hash ||
             workspace._request.spatialDirScratchTier != descriptor.scratchTier ||
-            workspace._request.spatialDirTargetScratchTier != descriptor.targetScratchTier ||
-            !rolesMatch ||
-            !targetRolesMatch) {
+            workspace._request.spatialDirTargetScratchTier != descriptor.targetScratchTier) {
             outError = "spatial DIR workspace descriptor identity mismatch";
             return false;
         }
         if (!spatial_dir_roles_match_tier(descriptor.scratchTier, descriptor.planeRoles)) {
             outError = "spatial DIR descriptor requested unsupported scratch tier or plane roles";
+            return false;
+        }
+        if (!spatial_dir_roles_match_tier(descriptor.targetScratchTier, descriptor.targetPlaneRoles)) {
+            outError = "spatial DIR descriptor requested unsupported target scratch tier or plane roles";
+            return false;
+        }
+
+        std::array<WorkspaceRequest, 3> scratchCandidates{};
+        int scratchCandidateCount = 0;
+        auto add_scratch_candidate = [&](const WorkspaceRequest& candidate) {
+            if (scratchCandidateCount >= static_cast<int>(scratchCandidates.size())) {
+                return;
+            }
+            if (!spatial_dir_roles_match_tier(
+                    candidate.spatialDirScratchTier,
+                    candidate.spatialDirPlaneRoles) ||
+                !spatial_dir_roles_match_tier(
+                    candidate.spatialDirTargetScratchTier,
+                    candidate.spatialDirTargetPlaneRoles)) {
+                return;
+            }
+            for (int index = 0; index < scratchCandidateCount; ++index) {
+                const WorkspaceRequest& existing = scratchCandidates[static_cast<std::size_t>(index)];
+                if (existing.spatialDirScratchTier == candidate.spatialDirScratchTier &&
+                    existing.spatialDirTargetScratchTier == candidate.spatialDirTargetScratchTier &&
+                    dir_plane_roles_equal(existing.spatialDirPlaneRoles, candidate.spatialDirPlaneRoles) &&
+                    dir_plane_roles_equal(
+                        existing.spatialDirTargetPlaneRoles,
+                        candidate.spatialDirTargetPlaneRoles)) {
+                    return;
+                }
+            }
+            scratchCandidates[static_cast<std::size_t>(scratchCandidateCount)] = candidate;
+            ++scratchCandidateCount;
+        };
+        add_scratch_candidate(workspace._request);
+        if (spatial_dir_descriptor_has_strict_yvv(descriptor)) {
+            Spektrafilm::DirScratchPlaneRoles lowScratchBuild =
+                strict_yvv_low_scratch_plane_roles();
+            Spektrafilm::DirScratchPlaneRoles lowScratchTarget = lowScratchBuild;
+            lowScratchTarget.cachedLogRawPlanes = descriptor.targetPlaneRoles.cachedLogRawPlanes;
+            add_scratch_candidate(strict_yvv_workspace_candidate(
+                workspace._request,
+                lowScratchBuild,
+                descriptor.targetScratchTier,
+                lowScratchTarget));
+
+            Spektrafilm::DirScratchPlaneRoles streamedBuild =
+                strict_yvv_component_streamed_plane_roles();
+            Spektrafilm::DirScratchPlaneRoles streamedTarget = streamedBuild;
+            add_scratch_candidate(strict_yvv_workspace_candidate(
+                workspace._request,
+                streamedBuild,
+                Spektrafilm::DirScratchTier::Tier1IChannels,
+                streamedTarget));
+        }
+        if (scratchCandidateCount <= 0) {
+            outError = "spatial DIR descriptor produced no supported scratch candidates";
             return false;
         }
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -2039,25 +2335,121 @@ namespace JuicerProcess {
             JTRACE("DIR_DESCRIPTOR", msg);
         }
 #endif
-        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+        bool scratchPrepared = false;
+        WorkspaceRequest admittedRequest{};
+        std::string scratchAdmissionError;
+        for (int candidateIndex = 0; candidateIndex < scratchCandidateCount; ++candidateIndex) {
+            const WorkspaceRequest& candidate =
+                scratchCandidates[static_cast<std::size_t>(candidateIndex)];
+#if JUICER_DIAGNOSTICS_COMPILED
+            if (JTRACE_ENABLED(1)) {
+                const Spektrafilm::DirScratchPlaneRoles& roles = candidate.spatialDirPlaneRoles;
+                const Spektrafilm::DirScratchPlaneRoles& targetRoles =
+                    candidate.spatialDirTargetPlaneRoles;
+                std::string msg = "event=spatial_dir_scratch_candidate descriptor_hash=";
+                msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
+                msg += " candidate_index=";
+                msg += std::to_string(candidateIndex);
+                msg += " strict_yvv_shape=";
+                msg += strict_yvv_candidate_label(roles);
+                msg += " scratch_tier=";
+                msg += Spektrafilm::to_cstr(candidate.spatialDirScratchTier);
+                msg += " target_scratch_tier=";
+                msg += Spektrafilm::to_cstr(candidate.spatialDirTargetScratchTier);
+                msg += " raw_correction_planes=";
+                msg += std::to_string(roles.rawCorrectionPlanes);
+                msg += " filtered_correction_planes=";
+                msg += std::to_string(roles.filteredCorrectionPlanes);
+                msg += " filter_temp_planes=";
+                msg += std::to_string(roles.filterTempPlanes);
+                msg += " iir_forward_temp_planes=";
+                msg += std::to_string(roles.iirForwardTempPlanes);
+                msg += " cached_log_raw_planes=";
+                msg += std::to_string(roles.cachedLogRawPlanes);
+                msg += " target_raw_correction_planes=";
+                msg += std::to_string(targetRoles.rawCorrectionPlanes);
+                msg += " target_filtered_correction_planes=";
+                msg += std::to_string(targetRoles.filteredCorrectionPlanes);
+                msg += " target_filter_temp_planes=";
+                msg += std::to_string(targetRoles.filterTempPlanes);
+                msg += " target_iir_forward_temp_planes=";
+                msg += std::to_string(targetRoles.iirForwardTempPlanes);
+                msg += " target_cached_log_raw_planes=";
+                msg += std::to_string(targetRoles.cachedLogRawPlanes);
+                JTRACE("DIR_DESCRIPTOR", msg);
+            }
+#endif
+            if (_state->scratchWorkspace.retainedLeaseActive &&
+                !_state->scratchWorkspace.overflowActive) {
+                _state->scratchWorkspace.request = candidate;
+            } else if (!_state->ensure_scratch_workspace(candidate, cudaStreamOpaque, scratchAdmissionError)) {
+                if (JuicerCuda::ResourceManager::error_is_scratch_exhausted(scratchAdmissionError) &&
+                    candidateIndex + 1 < scratchCandidateCount) {
+                    continue;
+                }
+                outError = scratchAdmissionError;
+                break;
+            }
+
+            const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+                make_workspace_scratch_request_descriptor(candidate);
+            if (!_state->scratchWorkspace.overflowActive) {
+                if (descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth &&
+                    !JuicerCuda::ResourceManager::command_preflight_spatial_dir_fft_peak(
+                        _state->transaction,
+                        *_state->resources,
+                        descriptor,
+                        scratchRequest,
+                        cudaStreamOpaque,
+                        scratchAdmissionError)) {
+                    outError = scratchAdmissionError;
+                    break;
+                }
+                if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
+                        _state->transaction,
+                        *_state->resources,
+                        scratchRequest,
+                        cudaStreamOpaque,
+                        scratchAdmissionError)) {
+                    if (JuicerCuda::ResourceManager::error_is_scratch_exhausted(scratchAdmissionError) &&
+                        candidateIndex + 1 < scratchCandidateCount) {
+                        continue;
+                    }
+                    outError = scratchAdmissionError;
+                    break;
+                }
+            }
+            admittedRequest = candidate;
+            scratchPrepared = true;
+            outError.clear();
+            break;
+        }
+        if (!scratchPrepared) {
+            if (outError.empty()) {
+                outError = scratchAdmissionError.empty()
+                               ? "spatial DIR scratch admission failed"
+                               : scratchAdmissionError;
+            }
             const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
-                "acquire_frame_scratch_workspace",
+                "command_ensure_spatial_dir_scratch",
                 marksContextLoss
-                    ? "CUDA frame scratch workspace acquisition failed"
-                    : "CUDA frame scratch workspace admission failed",
+                    ? "CUDA spatial DIR scratch allocation failed"
+                    : "CUDA spatial DIR scratch deferred by contention policy",
                 marksContextLoss);
             return false;
         }
 #if JUICER_DIAGNOSTICS_COMPILED
         if (JTRACE_ENABLED(1)) {
-            const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
+            const Spektrafilm::DirScratchPlaneRoles& roles = admittedRequest.spatialDirPlaneRoles;
             std::string msg = "event=spatial_dir_scratch_admission descriptor_hash=";
             msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
             msg += " scratch_source=";
             msg += _state->scratchWorkspace.overflowActive ? "overflow" : "retained";
             msg += " scratch_tier=";
-            msg += Spektrafilm::to_cstr(descriptor.scratchTier);
+            msg += Spektrafilm::to_cstr(admittedRequest.spatialDirScratchTier);
+            msg += " strict_yvv_shape=";
+            msg += strict_yvv_candidate_label(roles);
             msg += " fft_mode=";
             msg += descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
                        ? "accepted_fft_replicate_pad_smooth"
@@ -2084,25 +2476,7 @@ namespace JuicerProcess {
         }
 #endif
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
-        if (!_state->scratchWorkspace.overflowActive) {
-            if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_scratch(
-                    _state->transaction,
-                    *_state->resources,
-                    scratchRequest,
-                    cudaStreamOpaque,
-                    outError)) {
-                const bool marksContextLoss =
-                    !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
-                _state->set_failure(
-                    "command_ensure_spatial_dir_scratch",
-                    marksContextLoss
-                        ? "CUDA spatial DIR scratch allocation failed"
-                        : "CUDA spatial DIR scratch deferred by contention policy",
-                    marksContextLoss);
-                return false;
-            }
-        }
+            make_workspace_scratch_request_descriptor(admittedRequest);
         if (descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
             if (!JuicerCuda::ResourceManager::command_ensure_spatial_dir_fft(
                     _state->transaction,
@@ -2282,6 +2656,82 @@ namespace JuicerProcess {
             _state->set_failure(
                 "release_spatial_dir_stage_after_scan_linear",
                 "CUDA spatial DIR stage release failed");
+        }
+        return ok;
+    }
+
+    bool Root::PreparedCudaFrame::stage_spatial_dir_cached_log_raw_for_final_develop(
+        const WorkspaceLeaseMarker& workspace,
+        void* cudaStreamOpaque,
+        std::string& outError) {
+        outError.clear();
+        if (!validate_workspace_lease_marker(workspace, outError)) {
+            return false;
+        }
+        const WorkspaceRequest& effectiveRequest =
+            (_state->scratchWorkspace.request.needSpatialDir &&
+             _state->scratchWorkspace.request.spatialDirDescriptorHash ==
+                 workspace._request.spatialDirDescriptorHash)
+                ? _state->scratchWorkspace.request
+                : workspace._request;
+        if (!effectiveRequest.needSpatialDir ||
+            effectiveRequest.spatialDirTargetPlaneRoles.cachedLogRawPlanes == 0) {
+            return true;
+        }
+        if (effectiveRequest.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3) {
+            outError = "spatial DIR cached log raw final target roles invalid";
+            return false;
+        }
+        if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
+            outError = "spatial DIR cached log raw staging requires an active scratch workspace";
+            return false;
+        }
+
+        JuicerCuda::SpatialDirCachedLogRawStageStats stageStats{};
+        const bool overflow = _state->scratchWorkspace.overflowActive;
+        bool ok = false;
+        if (overflow) {
+            ok = _state->stage_overflow_spatial_dir_cached_log_raw_for_final_develop(
+                cudaStreamOpaque,
+                stageStats,
+                outError);
+        } else {
+            _state->remember_stream(cudaStreamOpaque);
+            const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
+                make_workspace_scratch_request_descriptor(effectiveRequest);
+            ok = JuicerCuda::ResourceManager::command_ensure_spatial_dir_cached_log_raw_stage(
+                _state->transaction,
+                *_state->resources,
+                scratchRequest,
+                cudaStreamOpaque,
+                stageStats,
+                outError);
+        }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (JTRACE_ENABLED(1)) {
+            const std::uint64_t descriptorHash = workspace._request.spatialDirDescriptorHash;
+            std::string msg = "event=spatial_dir_cached_log_raw_stage_for_final_develop";
+            msg += " descriptor_hash=";
+            msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
+            msg += " scratch_source=";
+            msg += overflow ? "overflow" : "retained";
+            msg += " ok=";
+            msg += ok ? "1" : "0";
+            msg += " pending_scratch_bytes_before=";
+            msg += std::to_string(static_cast<unsigned long long>(stageStats.pendingScratchBytesBefore));
+            msg += " cached_log_raw_allocated_bytes=";
+            msg += std::to_string(static_cast<unsigned long long>(stageStats.cachedLogRawAllocatedBytes));
+            if (!outError.empty()) {
+                msg += " error=";
+                msg += outError;
+            }
+            JTRACE("DIR_DESCRIPTOR", msg);
+        }
+#endif
+        if (!ok) {
+            _state->set_failure(
+                "stage_spatial_dir_cached_log_raw_for_final_develop",
+                "CUDA spatial DIR cached log raw staging failed");
         }
         return ok;
     }
@@ -3244,6 +3694,12 @@ namespace JuicerProcess {
             _state->scratchWorkspace.overflowActive
                 ? _state->scratchWorkspace.spatialDir
                 : _state->resources->spatialDirScratch;
+        const WorkspaceRequest& effectiveRequest =
+            (_state->scratchWorkspace.request.needSpatialDir &&
+             _state->scratchWorkspace.request.spatialDirDescriptorHash ==
+                 workspace._request.spatialDirDescriptorHash)
+                ? _state->scratchWorkspace.request
+                : workspace._request;
         view.rawCorrectionY = scratch.rawCorrectionY;
         view.rawCorrectionM = scratch.rawCorrectionM;
         view.rawCorrectionC = scratch.rawCorrectionC;
@@ -3259,16 +3715,20 @@ namespace JuicerProcess {
         view.logRawB = scratch.logRawB;
         view.logRawG = scratch.logRawG;
         view.logRawR = scratch.logRawR;
-        view.descriptorHash = workspace._request.spatialDirDescriptorHash;
-        view.scratchTier = workspace._request.spatialDirScratchTier;
-        view.planeRoles = workspace._request.spatialDirPlaneRoles;
-        view.targetScratchTier = workspace._request.spatialDirTargetScratchTier;
-        view.targetPlaneRoles = workspace._request.spatialDirTargetPlaneRoles;
+        view.descriptorHash = effectiveRequest.spatialDirDescriptorHash;
+        view.scratchTier = effectiveRequest.spatialDirScratchTier;
+        view.planeRoles = effectiveRequest.spatialDirPlaneRoles;
+        view.targetScratchTier = effectiveRequest.spatialDirTargetScratchTier;
+        view.targetPlaneRoles = effectiveRequest.spatialDirTargetPlaneRoles;
         view.overflow = _state->scratchWorkspace.overflowActive;
-        view.active = spatial_dir_scratch_has_required_roles(
-            scratch,
-            view.scratchTier,
-            view.planeRoles);
+        view.active =
+            spatial_dir_scratch_has_required_roles(
+                scratch,
+                view.scratchTier,
+                view.planeRoles) ||
+            spatial_dir_scratch_has_final_develop_roles(
+                scratch,
+                view.targetPlaneRoles);
         return view;
     }
 
@@ -3998,12 +4458,14 @@ namespace JuicerProcess {
     bool Root::shed_post_frame_scratch(
         JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
         JuicerCuda::Resources& resources,
+        const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
         void* cudaStreamOpaque,
         const char* commandName,
         std::string& outError) {
         return JuicerCuda::ResourceManager::command_shed_post_frame_scratch(
             transaction,
             resources,
+            scratchRequest,
             cudaStreamOpaque,
             commandName,
             outError);

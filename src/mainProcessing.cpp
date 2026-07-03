@@ -302,6 +302,20 @@ extern "C" cudaError_t juicer_cuda_build_print_spatial_dir(
     void* cudaStreamOpaque,
     JuicerCuda::SpatialDirBuildProfile* profile);
 
+extern "C" cudaError_t juicer_cuda_build_direct_spatial_dir_cached_log_raw(
+    const JuicerCuda::DirectPipelineRunParams* hParams,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque);
+
+extern "C" cudaError_t juicer_cuda_build_print_spatial_dir_cached_log_raw(
+    const JuicerCuda::PrintPipelineRunParams* hParams,
+    float* logRawB,
+    float* logRawG,
+    float* logRawR,
+    void* cudaStreamOpaque);
+
 extern "C" cudaError_t juicer_cuda_negative_pipeline_optics(
     const JuicerCuda::PipelineRunParams* hParams,
     float* dRgbR,
@@ -511,6 +525,34 @@ namespace {
         }
     }
 
+    void trace_spatial_dir_profile_diagnostics_smoke_once(const std::filesystem::path& profilePath) {
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (!JTRACE_ENABLED(1)) {
+            return;
+        }
+        static std::mutex smokeMutex;
+        static bool smokeWritten = false;
+        std::lock_guard<std::mutex> lock(smokeMutex);
+        if (smokeWritten) {
+            return;
+        }
+        smokeWritten = true;
+
+        std::string msg =
+            "event=dir_profile_diagnostics_smoke diagnostics_compiled=1 diagnostics_level=";
+        msg += std::to_string(JuicerLogging::diagnostics_level());
+        msg += " dir_profile_path=";
+        try {
+            msg += profilePath.string();
+        } catch (...) {
+            msg += "unavailable";
+        }
+        JTRACE("DSMOKE", msg);
+#else
+        (void)profilePath;
+#endif
+    }
+
     void write_spatial_dir_profile_line(const std::string& line) {
         static std::mutex profileMutex;
         static bool headerWritten = false;
@@ -537,10 +579,12 @@ namespace {
                     std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
                 out << "INIT | dir_profile enabled time_s=" << secs << '\n';
                 headerWritten = true;
+                trace_spatial_dir_profile_diagnostics_smoke_once(path);
             }
             out << "DIR_PROFILE | " << line << '\n';
             out.flush();
         } catch (...) {
+            return;
         }
     }
 
@@ -632,6 +676,35 @@ namespace {
         }
         return sigma >= 3.0f ? "iir_yvv" : "fir_reflect";
     }
+
+    const char* strict_yvv_shape_label(
+        const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const Spektrafilm::DirScratchPlaneRoles& roles) {
+        if (descriptor.approximation != Spektrafilm::DirApproximationMarker::SpektrafilmStrict ||
+            descriptor.scratchTier != Spektrafilm::DirScratchTier::Tier1IChannels) {
+            return "none";
+        }
+        if (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3) {
+            return "strict_yvv_channels";
+        }
+        if (roles.filterTempPlanes == 2 && roles.iirForwardTempPlanes == 0) {
+            return "strict_yvv_low_scratch_pair";
+        }
+        if (roles.rawCorrectionPlanes == 1 &&
+            roles.filterTempPlanes == 1 &&
+            roles.iirForwardTempPlanes == 0) {
+            return "strict_yvv_component_streamed";
+        }
+        if (roles.filterTempPlanes == 1 && roles.iirForwardTempPlanes == 1) {
+            return "strict_yvv_compact_sequential";
+        }
+        return "unknown";
+    }
+
+    struct SpatialDirProfileAdmittedRoles {
+        Spektrafilm::DirScratchPlaneRoles roles;
+        Spektrafilm::DirScratchPlaneRoles targetRoles;
+    };
 
     Spektrafilm::DirFrameExtent spatial_dir_extent_from_rect(const OfxRectI& rect) {
         Spektrafilm::DirFrameExtent extent{};
@@ -869,6 +942,7 @@ namespace {
         int width,
         int height,
         const Spektrafilm::SpatialDirDescriptor& descriptor,
+        const SpatialDirProfileAdmittedRoles& admittedRoles,
         const JuicerCuda::SpatialDirBuildProfile& profile,
         bool dirActive,
         bool scratchOverflow,
@@ -881,7 +955,7 @@ namespace {
         const std::uint64_t pixels =
             static_cast<std::uint64_t>(std::max(0, width)) *
             static_cast<std::uint64_t>(std::max(0, height));
-        const int admittedPlaneCount = dirActive ? descriptor.planeRoles.total_float_planes() : 0;
+        const int admittedPlaneCount = dirActive ? admittedRoles.roles.total_float_planes() : 0;
         const std::uint64_t scratchBytesApprox =
             dirActive ? pixels * static_cast<std::uint64_t>(std::max(0, admittedPlaneCount)) * sizeof(float) : 0ull;
         const std::uint64_t fftScratchBytes =
@@ -890,8 +964,12 @@ namespace {
             profile.fftRealBufferBytes + profile.fftSpectrumBytes +
             profile.fftTransferBytes + profile.fftWorkAreaBytes;
         const int activeTails = active_tail_component_count(profile);
-        const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.planeRoles;
-        const Spektrafilm::DirScratchPlaneRoles& targetRoles = descriptor.targetPlaneRoles;
+        const Spektrafilm::DirScratchPlaneRoles& roles = admittedRoles.roles;
+        const Spektrafilm::DirScratchPlaneRoles& targetRoles = admittedRoles.targetRoles;
+        const int expectedCorrectionLaunches =
+            dirActive ? (roles.rawCorrectionPlanes == 1 ? 3 : 1) : 0;
+        const Spektrafilm::DirScratchTier admittedTargetScratchTier =
+            targetRoles.cachedLogRawPlanes == 3 ? descriptor.targetScratchTier : descriptor.scratchTier;
         const JuicerCuda::PrintDevelopBreakdownProfile& printBreakdown =
             compositeProfile.printDevelopBreakdown;
         std::ostringstream oss;
@@ -909,9 +987,10 @@ namespace {
             << " source_contract=" << Spektrafilm::to_cstr(descriptor.sourceContract)
             << " boundary_mode=" << Spektrafilm::to_cstr(descriptor.boundaryMode)
             << " scratch_tier=" << Spektrafilm::to_cstr(descriptor.scratchTier)
-            << " target_scratch_tier=" << Spektrafilm::to_cstr(descriptor.targetScratchTier)
+            << " target_scratch_tier=" << Spektrafilm::to_cstr(admittedTargetScratchTier)
             << " approximation_marker=" << Spektrafilm::to_cstr(descriptor.approximation)
             << " dir_tail_mode=" << Spektrafilm::to_cstr(descriptor.tailMode)
+            << " strict_yvv_shape=" << strict_yvv_shape_label(descriptor, roles)
             << " fft_mode="
             << (descriptor.approximation == Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth
                     ? "accepted_fft_replicate_pad_smooth"
@@ -962,7 +1041,7 @@ namespace {
             << " tail2_operator=" << dir_filter_operator_label(profile.tailSigma[2], profile.tailWeight[2])
             << " tail2_weight=" << profile.tailWeight[2]
             << " active_tail_components=" << activeTails
-            << " expected_correction_launches=" << (dirActive ? 1 : 0)
+            << " expected_correction_launches=" << expectedCorrectionLaunches
             << " descriptor_ms=" << descriptorMs
             << " prepare_ms=" << prepareMs
             << " build_host_ms=" << buildHostMs
@@ -1541,10 +1620,6 @@ namespace {
     }
 
 #if JUICER_DIAGNOSTICS_COMPILED
-    const char* runtime_lease_outcome_label(bool waitedForLease) {
-        return waitedForLease ? "wait_acquired" : "acquired";
-    }
-
     const char* submission_snapshot_action_label(bool reusingSnapshotLatch) {
         return reusingSnapshotLatch ? "reuse" : "new";
     }
@@ -2708,6 +2783,8 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerCuda::SpatialDirBuildProfile directDirProfile{};
         bool directDirProfileCaptured = false;
         bool directDirScratchOverflow = false;
+        Spektrafilm::DirScratchPlaneRoles directDirAdmittedRoles = directSpatialDir.planeRoles;
+        Spektrafilm::DirScratchPlaneRoles directDirAdmittedTargetRoles = directSpatialDir.targetPlaneRoles;
         double directDirPrepareMs = 0.0;
         double directDirBuildHostMs = 0.0;
         double directPipelineLaunchHostMs = 0.0;
@@ -2742,12 +2819,6 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=prepared_spatial_dir");
             }
-            if (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR) {
-                preparedFrame.abort("direct_spatial_dir_cached_log_raw_missing");
-                throw_direct_restriction(
-                    "MissingRequiredResource phase=3D-3 field=spatial_dir_cached_log_raw");
-            }
-            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, scratch);
             // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
             // these old wrapper arguments after source/filter/final-develop split lands.
             float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
@@ -2766,10 +2837,12 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTempM;
             float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
                 scratch.iirForwardTempC;
-            float* cachedLogRawB = scratch.logRawB;
-            float* cachedLogRawG = scratch.logRawG;
-            float* cachedLogRawR = scratch.logRawR;
+            float* cachedLogRawB = nullptr;
+            float* cachedLogRawG = nullptr;
+            float* cachedLogRawR = nullptr;
             directDirScratchOverflow = scratch.overflow;
+            directDirAdmittedRoles = scratch.planeRoles;
+            directDirAdmittedTargetRoles = scratch.targetPlaneRoles;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
                 "direct",
@@ -2844,10 +2917,47 @@ void JuicerProcessor::processImagesCUDA() {
                     "direct spatial DIR build scratch release failed",
                     releaseError);
             }
+            if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    releaseError)) {
+                preparedFrame.abort("direct_spatial_dir_cached_log_raw_stage_failed");
+                throw_submission_fatal(
+                    "direct_spatial_dir_cached_log_raw_stage",
+                    "direct spatial DIR cached log raw staging failed",
+                    releaseError);
+            }
+            const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
+            const bool directDirRequiresCachedLogRaw =
+                directDirAdmittedTargetRoles.cachedLogRawPlanes == 3;
+            if (!finalScratch.active ||
+                (directDirRequiresCachedLogRaw &&
+                 (!finalScratch.logRawB || !finalScratch.logRawG || !finalScratch.logRawR))) {
+                preparedFrame.abort("direct_spatial_dir_cached_log_raw_missing");
+                throw_direct_restriction(
+                    "MissingRequiredResource phase=3D-3 field=spatial_dir_cached_log_raw");
+            }
+            if (directDirRequiresCachedLogRaw) {
+                const cudaError_t logRawError =
+                    juicer_cuda_build_direct_spatial_dir_cached_log_raw(
+                        &run,
+                        finalScratch.logRawB,
+                        finalScratch.logRawG,
+                        finalScratch.logRawR,
+                        _pCudaStream);
+                if (logRawError != cudaSuccess) {
+                    preparedFrame.abort("direct_spatial_dir_cached_log_raw_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "direct_spatial_dir_cached_log_raw_launch",
+                        "direct spatial DIR cached log raw build failed",
+                        logRawError);
+                }
+            }
+            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
             if (scannerPostEffects.active()) {
-                directSpatialDirDensityC = scratch.filteredCorrectionC;
-                directSpatialDirDensityM = scratch.filteredCorrectionM;
-                directSpatialDirDensityY = scratch.filteredCorrectionY;
+                directSpatialDirDensityC = finalScratch.filteredCorrectionC;
+                directSpatialDirDensityM = finalScratch.filteredCorrectionM;
+                directSpatialDirDensityY = finalScratch.filteredCorrectionY;
                 if (!directSpatialDirDensityC || !directSpatialDirDensityM ||
                     !directSpatialDirDensityY) {
                     preparedFrame.abort("direct_spatial_dir_density_binding_failed");
@@ -3052,12 +3162,29 @@ void JuicerProcessor::processImagesCUDA() {
             preparedFrame.abort("direct_negative_pipeline_launch_failed");
             throw_cuda_stage_fatal("direct_negative_pipeline_launch", "direct negative pipeline launch failed", launchError);
         }
+        if (directSpatialDir.hash != 0 && !scannerPostEffects.active()) {
+            std::string releaseError;
+            if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    releaseError)) {
+                preparedFrame.abort("direct_spatial_dir_cached_log_raw_release_failed");
+                throw_submission_fatal(
+                    "direct_spatial_dir_cached_log_raw_release",
+                    "direct spatial DIR cached log raw release failed",
+                    releaseError);
+            }
+            run.filmDevelop.spatialDir.logRawB = nullptr;
+            run.filmDevelop.spatialDir.logRawG = nullptr;
+            run.filmDevelop.spatialDir.logRawR = nullptr;
+        }
         if (dirProfileEnabled) {
             trace_spatial_dir_profile(
                 "direct",
                 width,
                 height,
                 directSpatialDir,
+                SpatialDirProfileAdmittedRoles{directDirAdmittedRoles, directDirAdmittedTargetRoles},
                 directDirProfile,
                 directDirProfileCaptured,
                 directDirScratchOverflow,
@@ -3351,6 +3478,8 @@ void JuicerProcessor::processImagesCUDA() {
         JuicerCuda::SpatialDirBuildProfile printDirProfile{};
         bool printDirProfileCaptured = false;
         bool printDirScratchOverflow = false;
+        Spektrafilm::DirScratchPlaneRoles printDirAdmittedRoles = spatialDir.planeRoles;
+        Spektrafilm::DirScratchPlaneRoles printDirAdmittedTargetRoles = spatialDir.targetPlaneRoles;
         double printDirPrepareMs = 0.0;
         double printDirBuildHostMs = 0.0;
         double printPipelineLaunchHostMs = 0.0;
@@ -3385,12 +3514,6 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=prepared_spatial_dir");
             }
-            if (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR) {
-                preparedFrame.abort("print_spatial_dir_cached_log_raw_missing");
-                throw_print_restriction(
-                    "MissingRequiredResource phase=4C field=spatial_dir_cached_log_raw");
-            }
-            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, scratch);
             // SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrection: Phase 5 removes
             // these old wrapper arguments after source/filter/final-develop split lands.
             float* SF_TEMP_BRIDGE_map_legacy_corr_planes_to_rawCorrectionY = scratch.rawCorrectionY;
@@ -3409,10 +3532,12 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTempM;
             float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
                 scratch.iirForwardTempC;
-            float* cachedLogRawB = scratch.logRawB;
-            float* cachedLogRawG = scratch.logRawG;
-            float* cachedLogRawR = scratch.logRawR;
+            float* cachedLogRawB = nullptr;
+            float* cachedLogRawG = nullptr;
+            float* cachedLogRawR = nullptr;
             printDirScratchOverflow = scratch.overflow;
+            printDirAdmittedRoles = scratch.planeRoles;
+            printDirAdmittedTargetRoles = scratch.targetPlaneRoles;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
                 "print",
@@ -3487,10 +3612,47 @@ void JuicerProcessor::processImagesCUDA() {
                     "print spatial DIR build scratch release failed",
                     releaseError);
             }
+            if (!preparedFrame.stage_spatial_dir_cached_log_raw_for_final_develop(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    releaseError)) {
+                preparedFrame.abort("print_spatial_dir_cached_log_raw_stage_failed");
+                throw_submission_fatal(
+                    "print_spatial_dir_cached_log_raw_stage",
+                    "print spatial DIR cached log raw staging failed",
+                    releaseError);
+            }
+            const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
+            const bool printDirRequiresCachedLogRaw =
+                printDirAdmittedTargetRoles.cachedLogRawPlanes == 3;
+            if (!finalScratch.active ||
+                (printDirRequiresCachedLogRaw &&
+                 (!finalScratch.logRawB || !finalScratch.logRawG || !finalScratch.logRawR))) {
+                preparedFrame.abort("print_spatial_dir_cached_log_raw_missing");
+                throw_print_restriction(
+                    "MissingRequiredResource phase=4C field=spatial_dir_cached_log_raw");
+            }
+            if (printDirRequiresCachedLogRaw) {
+                const cudaError_t logRawError =
+                    juicer_cuda_build_print_spatial_dir_cached_log_raw(
+                        &run,
+                        finalScratch.logRawB,
+                        finalScratch.logRawG,
+                        finalScratch.logRawR,
+                        _pCudaStream);
+                if (logRawError != cudaSuccess) {
+                    preparedFrame.abort("print_spatial_dir_cached_log_raw_launch_failed");
+                    throw_cuda_stage_fatal(
+                        "print_spatial_dir_cached_log_raw_launch",
+                        "print spatial DIR cached log raw build failed",
+                        logRawError);
+                }
+            }
+            SF_TEMP_BRIDGE_bind_spatial_dir_final_develop_to_payload(run.filmDevelop, finalScratch);
             if (scannerPostEffects.active()) {
-                printSpatialDirDensityC = scratch.filteredCorrectionC;
-                printSpatialDirDensityM = scratch.filteredCorrectionM;
-                printSpatialDirDensityY = scratch.filteredCorrectionY;
+                printSpatialDirDensityC = finalScratch.filteredCorrectionC;
+                printSpatialDirDensityM = finalScratch.filteredCorrectionM;
+                printSpatialDirDensityY = finalScratch.filteredCorrectionY;
                 if (!printSpatialDirDensityC || !printSpatialDirDensityM ||
                     !printSpatialDirDensityY) {
                     preparedFrame.abort("print_spatial_dir_density_binding_failed");
@@ -3731,12 +3893,29 @@ void JuicerProcessor::processImagesCUDA() {
                 "focused print pipeline launch failed",
                 launchError);
         }
+        if (spatialDir.hash != 0 && !scannerPostEffects.active()) {
+            std::string releaseError;
+            if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
+                    focusedWorkspace,
+                    _pCudaStream,
+                    releaseError)) {
+                preparedFrame.abort("print_spatial_dir_cached_log_raw_release_failed");
+                throw_submission_fatal(
+                    "print_spatial_dir_cached_log_raw_release",
+                    "print spatial DIR cached log raw release failed",
+                    releaseError);
+            }
+            run.filmDevelop.spatialDir.logRawB = nullptr;
+            run.filmDevelop.spatialDir.logRawG = nullptr;
+            run.filmDevelop.spatialDir.logRawR = nullptr;
+        }
         if (dirProfileEnabled) {
             trace_spatial_dir_profile(
                 "print",
                 width,
                 height,
                 spatialDir,
+                SpatialDirProfileAdmittedRoles{printDirAdmittedRoles, printDirAdmittedTargetRoles},
                 printDirProfile,
                 printDirProfileCaptured,
                 printDirScratchOverflow,

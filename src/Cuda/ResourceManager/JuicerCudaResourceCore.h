@@ -532,21 +532,35 @@ namespace JuicerCuda {
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
                 case Spektrafilm::DirScratchTier::Tier1IChannels:
-                    return roles.rawCorrectionPlanes == 3 &&
-                           roles.filteredCorrectionPlanes == 3 &&
-                           roles.filterTempPlanes == 3 &&
-                           roles.iirForwardTempPlanes == 3 &&
+                    return roles.filteredCorrectionPlanes == 3 &&
+                           ((roles.rawCorrectionPlanes == 1 &&
+                             roles.filterTempPlanes == 1 &&
+                             roles.iirForwardTempPlanes == 0) ||
+                            (roles.rawCorrectionPlanes == 3 &&
+                             ((roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 1) ||
+                              (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
+                               roles.iirForwardTempPlanes == 3)))) &&
                            roles.cachedLogRawPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
                 case Spektrafilm::DirScratchTier::Tier2:
-                    return roles.rawCorrectionPlanes == 3 &&
-                           roles.filteredCorrectionPlanes == 3 &&
-                           ((roles.filterTempPlanes == 1 &&
+                    return roles.filteredCorrectionPlanes == 3 &&
+                           ((roles.rawCorrectionPlanes == 1 &&
+                             roles.filterTempPlanes == 1 &&
                              roles.iirForwardTempPlanes == 0) ||
-                            (roles.filterTempPlanes == 3 &&
-                             roles.iirForwardTempPlanes == 3)) &&
+                            (roles.rawCorrectionPlanes == 3 &&
+                             ((roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 1) ||
+                              (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
+                               roles.iirForwardTempPlanes == 3)))) &&
                            roles.cachedLogRawPlanes == 3 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
@@ -580,7 +594,6 @@ namespace JuicerCuda {
                     !spatial_dir_roles_match_tier(
                         descriptor.spatialDirScratchTier,
                         descriptor.spatialDirPlaneRoles) ||
-                    descriptor.spatialDirTargetScratchTier != descriptor.spatialDirScratchTier ||
                     !spatial_dir_roles_match_tier(
                         descriptor.spatialDirTargetScratchTier,
                         descriptor.spatialDirTargetPlaneRoles)) {
@@ -717,7 +730,7 @@ namespace JuicerCuda {
 
         // Trace schema contract: single source of truth for submission traces.
         // Bump only when required trace fields/tags or their required semantics change.
-        constexpr std::uint32_t kTraceSchemaVersion = 5u;
+        constexpr std::uint32_t kTraceSchemaVersion = 6u;
         constexpr std::uint32_t kSubmissionKeySchemaVersion = 2u;
 
         constexpr std::uint32_t sanitize_submission_key_schema_version(std::uint32_t value) noexcept {

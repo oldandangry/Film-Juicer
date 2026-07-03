@@ -50,6 +50,127 @@ std::uint32_t bool_u32(bool value) noexcept {
     return 0u;
 }
 
+bool admission_retry_error_is_effective_headroom_denial(const std::string& error) noexcept {
+    return error.rfind(kScratchExhaustedPrefix, 0) == 0 &&
+           error.find("reason=insufficient_effective_headroom") != std::string::npos;
+}
+
+bool admission_retry_reclaim_progressed(
+    const JuicerCuda::AdmissionRetryOpticsReclaimStats& stats) noexcept {
+    return stats.opticsRetiredBytes > 0 ||
+           stats.sharedTmpRetiredBytes > 0 ||
+           stats.reclaimedBytes > 0;
+}
+
+bool admission_retry_optics_reclaim_is_allowed(
+    ScratchWorkClass workClass,
+    const ScratchRequestDescriptor& scratchRequest,
+    const std::string& admissionError) noexcept {
+    return workClass == ScratchWorkClass::SpatialDir &&
+           scratchRequest.needSpatialDir &&
+           scratchRequest.needOptics &&
+           admission_retry_error_is_effective_headroom_denial(admissionError);
+}
+
+void trace_admission_retry_optics_reclaim(
+    const SubmissionTransaction& transaction,
+    const char* commandName,
+    const JuicerCuda::AdmissionRetryOpticsReclaimStats& stats,
+    bool ok,
+    bool retryAllowed,
+    const char* reason,
+    const std::string& error) {
+#if JUICER_DIAGNOSTICS_COMPILED
+    if ((ok && !retryAllowed) ? !JTRACE_ENABLED(2) : !JTRACE_ENABLED(1)) {
+        return;
+    }
+    std::string msg = trace_event_prefix(
+        "admission_retry_optics_reclaim",
+        transaction,
+        commandName);
+    msg += " ok=";
+    msg += ok ? "1" : "0";
+    msg += " retry_allowed=";
+    msg += retryAllowed ? "1" : "0";
+    msg += " pending_scratch_bytes_before=";
+    msg += std::to_string(static_cast<unsigned long long>(stats.pendingScratchBytesBefore));
+    msg += " optics_retired_bytes=";
+    msg += std::to_string(static_cast<unsigned long long>(stats.opticsRetiredBytes));
+    msg += " shared_tmp_retired_bytes=";
+    msg += std::to_string(static_cast<unsigned long long>(stats.sharedTmpRetiredBytes));
+    msg += " reclaimed_bytes=";
+    msg += std::to_string(static_cast<unsigned long long>(stats.reclaimedBytes));
+    if (!error.empty()) {
+        msg += " error=";
+        msg += error;
+    }
+    msg += " reason=";
+    msg += trace_or_unspecified(reason);
+    JTRACE("MSADM", msg);
+#else
+    (void)transaction;
+    (void)commandName;
+    (void)stats;
+    (void)ok;
+    (void)retryAllowed;
+    (void)reason;
+    (void)error;
+#endif
+}
+
+bool try_reclaim_retained_optics_for_admission_retry(
+    const SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const char* commandName,
+    ScratchWorkClass workClass,
+    const ScratchRequestDescriptor& scratchRequest,
+    const std::string& admissionError,
+    void* cudaStreamOpaque,
+    bool captureMemorySnapshots,
+    std::string& outError) {
+    outError = admissionError;
+    if (!admission_retry_optics_reclaim_is_allowed(
+            workClass,
+            scratchRequest,
+            admissionError)) {
+        return false;
+    }
+
+    JuicerCuda::AdmissionRetryOpticsReclaimStats stats{};
+    std::string reclaimError;
+    const bool ok = JuicerCuda::reclaim_retained_optics_for_admission_retry(
+        resources,
+        transaction.leaseGeneration,
+        scratchRequest,
+        cudaStreamOpaque,
+        stats,
+        reclaimError);
+    const bool progressed = ok && admission_retry_reclaim_progressed(stats);
+    trace_admission_retry_optics_reclaim(
+        transaction,
+        commandName,
+        stats,
+        ok,
+        progressed,
+        progressed ? "retry_after_optics_reclaim" : (ok ? "no_reclaim_progress" : "reclaim_failed"),
+        reclaimError);
+    if (!ok) {
+        outError = admissionError;
+        if (!reclaimError.empty()) {
+            outError += " | admission_retry_optics_reclaim_failed: " + reclaimError;
+        }
+        return false;
+    }
+    if (!progressed) {
+        return false;
+    }
+    if (captureMemorySnapshots) {
+        publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+    }
+    outError.clear();
+    return true;
+}
+
 void registry_snapshot_context_keys(std::vector<DeviceContextKey>& outKeys);
 
 const char* commands_error_or_cstr(const std::string& error, const char* fallback) noexcept {
@@ -435,6 +556,7 @@ bool execute_scratch_growth_command(
     std::size_t growthBytes,
     ScratchWorkClass workClass,
     const ScratchRequestDescriptor& scratchRequest,
+    void* cudaStreamOpaque,
     bool captureMemorySnapshots,
     Action&& action,
     std::string& outError) {
@@ -474,7 +596,30 @@ bool execute_scratch_growth_command(
             true,
             ActiveFrameAdmissionHeadroom::AllocatorEffective,
             outError)) {
-        return false;
+        const std::string admissionError = outError;
+        if (!try_reclaim_retained_optics_for_admission_retry(
+                transaction,
+                resources,
+                commandName,
+                workClass,
+                scratchRequest,
+                admissionError,
+                cudaStreamOpaque,
+                captureMemorySnapshots,
+                outError)) {
+            return false;
+        }
+        if (!admit_active_frame_vram_growth(
+                transaction,
+                resources,
+                commandName,
+                growthBytes,
+                &scratchRequest,
+                true,
+                ActiveFrameAdmissionHeadroom::AllocatorEffective,
+                outError)) {
+            return false;
+        }
     }
 
     BuilderReservationClaim builderClaim{};
@@ -2968,6 +3113,7 @@ bool command_ensure_current_medium_uploaded(
             outError)) {
         return false;
     }
+    (void)activeScratchRequest;
 
     const UploadWorkEstimate uploadEstimate =
         estimate_upload_core_request_bytes(resources, ws, true, negativeMedium);
@@ -3172,6 +3318,54 @@ bool command_admit_frame_scratch_overflow(
         outError);
 }
 
+bool command_admit_spatial_dir_cached_log_raw_overflow(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
+    std::string& outError) {
+    const char* stageName = "command_admit_spatial_dir_cached_log_raw_overflow";
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!validate_scratch_request_for_family(
+            scratchRequest,
+            stageName,
+            ScratchWorkClass::SpatialDir,
+            outError)) {
+        return false;
+    }
+    if (scratchRequest.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3) {
+        outError = "spatial DIR cached log raw overflow requested without Tier2 target roles";
+        return false;
+    }
+
+    const std::size_t planeBytes =
+        plane_bytes_for_extent(scratchRequest.requestedWidth, scratchRequest.requestedHeight);
+    if (planeBytes == 0 || planeBytes == std::numeric_limits<std::size_t>::max()) {
+        outError = "spatial DIR cached log raw overflow byte estimation overflow";
+        return false;
+    }
+    std::size_t allocationBytes = 0;
+    for (int plane = 0; plane < 3; ++plane) {
+        std::size_t next = 0;
+        if (!add_bytes_checked(allocationBytes, planeBytes, next)) {
+            outError = "spatial DIR cached log raw overflow byte estimation overflow";
+            return false;
+        }
+        allocationBytes = next;
+    }
+
+    return admit_active_frame_vram_growth(
+        transaction,
+        resources,
+        stageName,
+        allocationBytes,
+        &scratchRequest,
+        false,
+        ActiveFrameAdmissionHeadroom::DriverFreeOnly,
+        outError);
+}
+
 bool command_release_spatial_dir_scratch_stage(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
@@ -3302,14 +3496,171 @@ bool command_release_spatial_dir_cached_log_raw_stage(
     return ok;
 }
 
+bool command_ensure_spatial_dir_cached_log_raw_stage(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
+    void* cudaStreamOpaque,
+    JuicerCuda::SpatialDirCachedLogRawStageStats& outStats,
+    std::string& outError) {
+    const char* stageName = "command_ensure_spatial_dir_cached_log_raw_stage";
+    outStats = JuicerCuda::SpatialDirCachedLogRawStageStats{};
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!validate_scratch_request_for_family(
+            scratchRequest,
+            stageName,
+            ScratchWorkClass::SpatialDir,
+            outError)) {
+        return false;
+    }
+    if (scratchRequest.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3) {
+        outError = "spatial DIR cached log raw stage requested without Tier2 target roles";
+        return false;
+    }
+
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+    const std::size_t growthBytes = estimate_spatial_dir_cached_log_raw_stage_growth_bytes(
+        resources,
+        scratchRequest.requestedWidth,
+        scratchRequest.requestedHeight);
+    if (growthBytes == std::numeric_limits<std::size_t>::max()) {
+        outError = "spatial DIR cached log raw stage growth byte estimation overflow";
+        return false;
+    }
+
+    auto action = [&](std::string& actionError) {
+        return JuicerCuda::ensure_retained_spatial_dir_cached_log_raw_stage(
+            resources,
+            transaction.leaseGeneration,
+            scratchRequest,
+            cudaStreamOpaque,
+            outStats,
+            actionError);
+    };
+
+    const bool ok = growthBytes == 0
+                        ? action(outError)
+                        : execute_scratch_growth_command(
+                              transaction,
+                              resources,
+                              stageName,
+                              growthBytes,
+                              ScratchWorkClass::SpatialDir,
+                              scratchRequest,
+                              cudaStreamOpaque,
+                              captureMemorySnapshots,
+                              action,
+                              outError);
+#if JUICER_DIAGNOSTICS_COMPILED
+    if (JTRACE_ENABLED(1)) {
+        std::string msg = trace_event_prefix(
+            "spatial_dir_cached_log_raw_stage",
+            transaction,
+            stageName);
+        msg += " scratch_source=retained";
+        msg += " ok=";
+        msg += ok ? "1" : "0";
+        msg += " growth_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(growthBytes));
+        msg += " pending_scratch_bytes_before=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.pendingScratchBytesBefore));
+        msg += " cached_log_raw_allocated_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(outStats.cachedLogRawAllocatedBytes));
+        if (!outError.empty()) {
+            msg += " error=";
+            msg += outError;
+        }
+        JTRACE("MSADM", msg);
+    }
+#endif
+    return ok;
+}
+
+std::size_t post_frame_spatial_dir_build_bytes(
+    const ScratchRequestDescriptor& scratchRequest) noexcept {
+    if (!scratchRequest.needSpatialDir) {
+        return 0;
+    }
+    const std::size_t planeBytes =
+        plane_bytes_for_extent(scratchRequest.requestedWidth, scratchRequest.requestedHeight);
+    if (planeBytes == 0 || planeBytes == std::numeric_limits<std::size_t>::max()) {
+        return planeBytes;
+    }
+    const int planes = scratchRequest.spatialDirPlaneRoles.total_float_planes();
+    if (planes <= 0) {
+        return 0;
+    }
+    const std::size_t planeCount = static_cast<std::size_t>(planes);
+    if (planeBytes > (std::numeric_limits<std::size_t>::max() / planeCount)) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return planeBytes * planeCount;
+}
+
+std::uint64_t post_frame_effective_reserve_bytes(
+    const PressureCheckpoint& checkpoint) noexcept {
+    if (checkpoint.input.effectiveReserveBytes > 0) {
+        return checkpoint.input.effectiveReserveBytes;
+    }
+    if (checkpoint.decision.effectiveReserveBytes > 0) {
+        return checkpoint.decision.effectiveReserveBytes;
+    }
+    return checkpoint.input.reserveBytes;
+}
+
+std::uint64_t post_frame_driver_free_floor_bytes(
+    const PressureCheckpoint& checkpoint) noexcept {
+    constexpr std::uint64_t kDriverFreeFloorBytes = 512ull * 1024ull * 1024ull;
+    const std::uint64_t reserveBytes = post_frame_effective_reserve_bytes(checkpoint);
+    if (reserveBytes > (std::numeric_limits<std::uint64_t>::max() / 2u)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return std::max(kDriverFreeFloorBytes, reserveBytes * 2u);
+}
+
+bool post_frame_large_spatial_dir_shed_required(
+    const ScratchRequestDescriptor& scratchRequest,
+    const PressureCheckpoint& checkpoint,
+    std::size_t requestBuildBytes) noexcept {
+    if (!scratchRequest.needSpatialDir ||
+        !is_large_frame_extent(scratchRequest.requestedWidth, scratchRequest.requestedHeight) ||
+        !checkpoint.headroom.sampleSuccess) {
+        return false;
+    }
+    if (requestBuildBytes == std::numeric_limits<std::size_t>::max()) {
+        return true;
+    }
+    if (requestBuildBytes == 0) {
+        return false;
+    }
+
+    const std::uint64_t reserveBytes = post_frame_effective_reserve_bytes(checkpoint);
+    std::uint64_t requiredBytes = 0;
+    if (!add_u64_checked(
+            static_cast<std::uint64_t>(requestBuildBytes),
+            reserveBytes,
+            requiredBytes)) {
+        return true;
+    }
+
+    return checkpoint.input.driverFreeBytes <= post_frame_driver_free_floor_bytes(checkpoint) ||
+           checkpoint.input.effectiveHeadroomBytes < requiredBytes;
+}
+
 void trace_post_frame_scratch_shed(
     const SubmissionTransaction& transaction,
     const char* commandName,
     const PressureCheckpoint& checkpoint,
+    const ScratchRequestDescriptor& scratchRequest,
+    std::size_t requestBuildBytes,
+    bool requestLowHeadroom,
     const JuicerCuda::PostFrameScratchShedStats& stats,
     bool ok,
     bool shedAttempted,
-    const char* action,
     const char* reason,
     const std::string& error) {
 #if JUICER_DIAGNOSTICS_COMPILED
@@ -3319,9 +3670,17 @@ void trace_post_frame_scratch_shed(
     std::string msg =
         trace_event_prefix("post_frame_scratch_shed", transaction, commandName) +
         " ok=" + std::to_string(ok ? 1 : 0) +
-        " action=" + trace_or_unspecified(action) +
+        " action=" + std::string(shedAttempted ? "shed" : "keep") +
         " state=" + to_cstr(checkpoint.decision.state) +
         " sample_success=" + std::to_string(checkpoint.headroom.sampleSuccess ? 1 : 0) +
+        " request_width=" + std::to_string(scratchRequest.requestedWidth) +
+        " request_height=" + std::to_string(scratchRequest.requestedHeight) +
+        " request_large_frame=" +
+        std::to_string(
+            is_large_frame_extent(scratchRequest.requestedWidth, scratchRequest.requestedHeight) ? 1 : 0) +
+        " request_spatial_dir_build_bytes=" +
+        std::to_string(static_cast<unsigned long long>(requestBuildBytes)) +
+        " request_low_headroom=" + std::to_string(requestLowHeadroom ? 1 : 0) +
         " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) +
         " effective_headroom_bytes=" +
         std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) +
@@ -3358,10 +3717,12 @@ void trace_post_frame_scratch_shed(
     (void)transaction;
     (void)commandName;
     (void)checkpoint;
+    (void)scratchRequest;
+    (void)requestBuildBytes;
+    (void)requestLowHeadroom;
     (void)stats;
     (void)ok;
     (void)shedAttempted;
-    (void)action;
     (void)reason;
     (void)error;
 #endif
@@ -3370,6 +3731,7 @@ void trace_post_frame_scratch_shed(
 bool command_shed_post_frame_scratch(
     SubmissionTransaction& transaction,
     JuicerCuda::Resources& resources,
+    const ScratchRequestDescriptor& scratchRequest,
     void* cudaStreamOpaque,
     const char* commandName,
     std::string& outError) {
@@ -3381,15 +3743,29 @@ bool command_shed_post_frame_scratch(
     if (!ensure_active_for_command(transaction, outError, stageName)) {
         return false;
     }
+    const ScratchRequestDescriptor* activeScratchRequest = nullptr;
+    if (!resolve_optional_active_scratch_request(
+            scratchRequest,
+            stageName,
+            activeScratchRequest,
+            outError)) {
+        return false;
+    }
+    (void)activeScratchRequest;
+    const std::size_t requestBuildBytes =
+        post_frame_spatial_dir_build_bytes(scratchRequest);
+    bool requestLowHeadroom = false;
     if (!pressure_policy_enabled(transaction.resolvedPressurePolicy)) {
         trace_post_frame_scratch_shed(
             transaction,
             stageName,
             checkpoint,
+            scratchRequest,
+            requestBuildBytes,
+            requestLowHeadroom,
             stats,
             true,
             false,
-            "keep",
             "pressure_policy_disabled",
             outError);
         return true;
@@ -3401,32 +3777,42 @@ bool command_shed_post_frame_scratch(
         checkpoint.decision.state,
         manager_effective_config(),
         "post_frame_scratch_shed");
+    requestLowHeadroom = post_frame_large_spatial_dir_shed_required(
+        scratchRequest,
+        checkpoint,
+        requestBuildBytes);
 
     if (!checkpoint.headroom.sampleSuccess) {
         trace_post_frame_scratch_shed(
             transaction,
             stageName,
             checkpoint,
+            scratchRequest,
+            requestBuildBytes,
+            requestLowHeadroom,
             stats,
             true,
             false,
-            "keep",
             "headroom_sample_failed",
             outError);
         return true;
     }
     if (checkpoint.decision.state == PressureState::Normal) {
-        trace_post_frame_scratch_shed(
-            transaction,
-            stageName,
-            checkpoint,
-            stats,
-            true,
-            false,
-            "keep",
-            "pressure_normal",
-            outError);
-        return true;
+        if (!requestLowHeadroom) {
+            trace_post_frame_scratch_shed(
+                transaction,
+                stageName,
+                checkpoint,
+                scratchRequest,
+                requestBuildBytes,
+                requestLowHeadroom,
+                stats,
+                true,
+                false,
+                "pressure_normal",
+                outError);
+            return true;
+        }
     }
 
     const bool ok = JuicerCuda::shed_retained_scratch_after_frame(
@@ -3435,15 +3821,24 @@ bool command_shed_post_frame_scratch(
         stats,
         outError);
     publish_manager_memory_snapshot(snapshot_manager_memory(resources));
+    const char* reason = nullptr;
+    if (!ok) {
+        reason = requestLowHeadroom ? "large_frame_low_headroom_shed_failed"
+                                    : "pressure_shed_failed";
+    } else {
+        reason = requestLowHeadroom ? "large_frame_low_headroom" : "pressure_shed";
+    }
     trace_post_frame_scratch_shed(
         transaction,
         stageName,
         checkpoint,
+        scratchRequest,
+        requestBuildBytes,
+        requestLowHeadroom,
         stats,
         ok,
         true,
-        "shed",
-        ok ? "pressure_shed" : "pressure_shed_failed",
+        reason,
         outError);
     return ok;
 }
@@ -3536,6 +3931,7 @@ bool command_ensure_optics_scratch(
         growthBytes,
         ScratchWorkClass::Optics,
         scratchRequest,
+        cudaStreamOpaque,
         captureMemorySnapshots,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_optics_scratch(
@@ -3592,13 +3988,14 @@ bool command_ensure_spatial_dir_scratch(
             cudaStreamOpaque,
             outError);
     }
-    return execute_scratch_growth_command(
+    const bool preferredOk = execute_scratch_growth_command(
         transaction,
         resources,
         "command_ensure_spatial_dir_scratch",
         growthBytes,
         ScratchWorkClass::SpatialDir,
         scratchRequest,
+        cudaStreamOpaque,
         captureMemorySnapshots,
         [&](std::string& actionError) {
             return JuicerCuda::ensure_spatial_dir_scratch(
@@ -3611,6 +4008,145 @@ bool command_ensure_spatial_dir_scratch(
                 actionError);
         },
         outError);
+    return preferredOk;
+}
+
+bool command_preflight_spatial_dir_fft_peak(
+    SubmissionTransaction& transaction,
+    JuicerCuda::Resources& resources,
+    const Spektrafilm::SpatialDirDescriptor& descriptor,
+    const ScratchRequestDescriptor& scratchRequest,
+    void* cudaStreamOpaque,
+    std::string& outError) {
+    const char* stageName = "command_preflight_spatial_dir_fft_peak";
+    if (!ensure_active_for_command(transaction, outError, stageName)) {
+        return false;
+    }
+    if (!validate_scratch_request_for_family(
+            scratchRequest,
+            stageName,
+            ScratchWorkClass::SpatialDir,
+            outError)) {
+        return false;
+    }
+    if (descriptor.approximation != Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
+        return true;
+    }
+
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
+
+    const std::size_t scratchGrowthBytes = estimate_spatial_dir_growth_bytes(
+        resources,
+        scratchRequest.requestedWidth,
+        scratchRequest.requestedHeight,
+        scratchRequest.spatialDirScratchTier,
+        scratchRequest.spatialDirPlaneRoles);
+    if (scratchGrowthBytes == std::numeric_limits<std::size_t>::max()) {
+        outError = "spatial DIR FFT peak preflight scratch growth byte estimation overflow";
+        return false;
+    }
+
+    std::size_t fftGrowthBytes = 0;
+    if (!JuicerCuda::estimate_spatial_dir_fft_growth_bytes(
+            resources,
+            descriptor,
+            cudaStreamOpaque,
+            fftGrowthBytes,
+            outError)) {
+        if (is_allocator_oom_error(outError)) {
+            outError = commands_scratch_exhausted_error(
+                stageName,
+                "fft_plan_sizing_allocator_failure",
+                outError);
+        }
+        return false;
+    }
+
+    std::size_t combinedGrowthBytes = 0;
+    if (!add_bytes_checked(scratchGrowthBytes, fftGrowthBytes, combinedGrowthBytes)) {
+        outError = "spatial DIR FFT peak preflight byte count overflow";
+        return false;
+    }
+
+    auto trace_peak_preflight = [&](bool ok, const char* reason, const std::string& error) {
+#if JUICER_DIAGNOSTICS_COMPILED
+        if ((ok && error.empty()) ? !JTRACE_ENABLED(2) : !JTRACE_ENABLED(1)) {
+            return;
+        }
+        std::string msg = trace_event_prefix(
+            "spatial_dir_fft_peak_preflight",
+            transaction,
+            stageName);
+        msg += " ok=";
+        msg += ok ? "1" : "0";
+        msg += " scratch_growth_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(scratchGrowthBytes));
+        msg += " fft_growth_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(fftGrowthBytes));
+        msg += " combined_growth_bytes=";
+        msg += std::to_string(static_cast<unsigned long long>(combinedGrowthBytes));
+        if (!error.empty()) {
+            msg += " error=";
+            msg += error;
+        }
+        msg += " reason=";
+        msg += trace_or_unspecified(reason);
+        JTRACE("MSADM", msg);
+#else
+        (void)ok;
+        (void)reason;
+        (void)error;
+#endif
+    };
+
+    if (combinedGrowthBytes == 0) {
+        trace_peak_preflight(true, "cached", outError);
+        return true;
+    }
+
+    bool usedRetry = false;
+    if (!admit_active_frame_vram_growth(
+            transaction,
+            resources,
+            stageName,
+            combinedGrowthBytes,
+            &scratchRequest,
+            false,
+            ActiveFrameAdmissionHeadroom::AllocatorEffective,
+            outError)) {
+        const std::string admissionError = outError;
+        if (!try_reclaim_retained_optics_for_admission_retry(
+                transaction,
+                resources,
+                stageName,
+                ScratchWorkClass::SpatialDir,
+                scratchRequest,
+                admissionError,
+                cudaStreamOpaque,
+                captureMemorySnapshots,
+                outError)) {
+            trace_peak_preflight(false, "admission_denied", outError);
+            return false;
+        }
+        usedRetry = true;
+        if (!admit_active_frame_vram_growth(
+                transaction,
+                resources,
+                stageName,
+                combinedGrowthBytes,
+                &scratchRequest,
+                true,
+                ActiveFrameAdmissionHeadroom::AllocatorEffective,
+                outError)) {
+            trace_peak_preflight(false, "retry_admission_denied", outError);
+            return false;
+        }
+    }
+
+    trace_peak_preflight(true, usedRetry ? "admitted_after_retry" : "admitted", outError);
+    return true;
 }
 
 bool command_ensure_spatial_dir_kernel(
@@ -3655,6 +4191,9 @@ bool command_ensure_spatial_dir_fft(
             outError)) {
         return false;
     }
+    const bool captureMemorySnapshots =
+        should_collect_manager_memory_snapshots(transaction.resolvedPressurePolicy);
+    maybe_publish_manager_memory_snapshot(resources, captureMemorySnapshots);
     std::size_t growthBytes = 0;
     if (!JuicerCuda::estimate_spatial_dir_fft_growth_bytes(
             resources,
@@ -3680,7 +4219,30 @@ bool command_ensure_spatial_dir_fft(
             false,
             ActiveFrameAdmissionHeadroom::AllocatorEffective,
             outError)) {
-        return false;
+        const std::string admissionError = outError;
+        if (!try_reclaim_retained_optics_for_admission_retry(
+                transaction,
+                resources,
+                stageName,
+                ScratchWorkClass::SpatialDir,
+                scratchRequest,
+                admissionError,
+                cudaStreamOpaque,
+                captureMemorySnapshots,
+                outError)) {
+            return false;
+        }
+        if (!admit_active_frame_vram_growth(
+                transaction,
+                resources,
+                stageName,
+                growthBytes,
+                &scratchRequest,
+                true,
+                ActiveFrameAdmissionHeadroom::AllocatorEffective,
+                outError)) {
+            return false;
+        }
     }
     std::string actionError;
     const bool ok = execute_snapshot_wrapped_command(

@@ -5048,8 +5048,15 @@ namespace JuicerCuda {
     static bool spatial_dir_scratch_has_required_roles_locked(
         const Resources::DeviceSpatialDirScratch& scratch,
         const Spektrafilm::DirScratchPlaneRoles& planeRoles) noexcept {
+        const bool hasThreeRaw =
+            scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
+        const bool hasStreamedRaw =
+            scratch.rawCorrectionY && scratch.rawCorrectionM == nullptr && scratch.rawCorrectionC == nullptr;
+        const bool rawCorrectionMatch =
+            (planeRoles.rawCorrectionPlanes == 3 && hasThreeRaw) ||
+            (planeRoles.rawCorrectionPlanes == 1 && hasStreamedRaw);
         const bool tier1Base =
-            scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC &&
+            rawCorrectionMatch &&
             scratch.filteredCorrectionY && scratch.filteredCorrectionM && scratch.filteredCorrectionC;
         if (!tier1Base) {
             return false;
@@ -5057,12 +5064,22 @@ namespace JuicerCuda {
         const bool hasChannelTemps =
             scratch.filterTempM && scratch.filterTempC &&
             scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+        const bool hasCompactSequentialTemps =
+            scratch.iirForwardTemp &&
+            scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
+            scratch.iirForwardTempM == nullptr && scratch.iirForwardTempC == nullptr;
+        const bool hasLowScratchPairTemps =
+            scratch.filterTempM && scratch.filterTempC == nullptr &&
+            scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
+            scratch.iirForwardTempC == nullptr;
         const bool hasNoChannelTemps =
             scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
             scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
             scratch.iirForwardTempC == nullptr;
         const bool channelTempsMatch =
             (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
+            (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
+            (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
             (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
         const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
         const bool hasNoCachedLogRaw =
@@ -5091,9 +5108,12 @@ namespace JuicerCuda {
         }
         const bool filterTempsCompatible =
             planeRoles.filterTempPlanes == 3 ||
+            (planeRoles.filterTempPlanes == 2 && !scratch.filterTempC) ||
             (!scratch.filterTempM && !scratch.filterTempC);
         const bool iirForwardTempsCompatible =
             planeRoles.iirForwardTempPlanes == 3 ||
+            (planeRoles.iirForwardTempPlanes == 1 &&
+             scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC) ||
             (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
         return filterTempsCompatible && iirForwardTempsCompatible;
     }
@@ -6082,6 +6102,104 @@ namespace JuicerCuda {
 #endif
     }
 
+    bool ensure_retained_spatial_dir_cached_log_raw_stage(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        const ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        SpatialDirCachedLogRawStageStats& outStats,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)leaseGeneration;
+        (void)scratchRequest;
+        (void)cudaStreamOpaque;
+        outStats = SpatialDirCachedLogRawStageStats{};
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outStats = SpatialDirCachedLogRawStageStats{};
+        outError.clear();
+        if (leaseGeneration == 0) {
+            outError = "retained spatial DIR cached log raw stage lease generation is invalid";
+            return false;
+        }
+        if (!ResourceManager::scratch_request_descriptor_is_valid(scratchRequest)) {
+            outError = "retained spatial DIR cached log raw stage request invalid";
+            return false;
+        }
+        if (scratchRequest.requestedWidth <= 0 || scratchRequest.requestedHeight <= 0) {
+            outError = "retained spatial DIR cached log raw stage dimensions invalid";
+            return false;
+        }
+
+        const std::size_t widthElements = static_cast<std::size_t>(scratchRequest.requestedWidth);
+        const std::size_t heightElements = static_cast<std::size_t>(scratchRequest.requestedHeight);
+        if (widthElements > (std::numeric_limits<std::size_t>::max() / heightElements)) {
+            outError = "retained spatial DIR cached log raw stage element count overflow";
+            return false;
+        }
+        const std::size_t requiredElements = widthElements * heightElements;
+        if (requiredElements == 0 ||
+            requiredElements > (std::numeric_limits<std::size_t>::max() / sizeof(float))) {
+            outError = "retained spatial DIR cached log raw stage byte count overflow";
+            return false;
+        }
+        const std::size_t bytes = requiredElements * sizeof(float);
+
+        std::lock_guard<std::mutex> lock(resources.m);
+        reap_retire_queue_locked(resources);
+        if (!validate_resource_owner_locked(resources, outError, true)) {
+            return false;
+        }
+        if (resources.retainedScratchLeaseGeneration != leaseGeneration) {
+            outError = "retained spatial DIR cached log raw stage lease generation mismatch";
+            return false;
+        }
+
+        Resources::DeviceSpatialDirScratch& scratch = resources.spatialDirScratch;
+        outStats.pendingScratchBytesBefore = resources.retireScratchBytes;
+        if (scratch.width != scratchRequest.requestedWidth ||
+            scratch.height != scratchRequest.requestedHeight ||
+            scratch.capacityElements < requiredElements ||
+            !scratch.filteredCorrectionY || !scratch.filteredCorrectionM ||
+            !scratch.filteredCorrectionC) {
+            outError = "retained spatial DIR cached log raw stage missing filtered correction residency";
+            return false;
+        }
+        if (scratch.logRawB && scratch.logRawG && scratch.logRawR) {
+            return true;
+        }
+
+        auto ensure_plane = [&](float*& ptr, const char* label) {
+            if (ptr) {
+                return true;
+            }
+            if (!allocate_scratch_device_ptr_locked(
+                    resources,
+                    ptr,
+                    bytes,
+                    cudaStreamOpaque,
+                    label,
+                    outError)) {
+                return false;
+            }
+            outStats.cachedLogRawAllocatedBytes += bytes;
+            return true;
+        };
+
+        if (!ensure_plane(scratch.logRawB, "retained spatial DIR final logRawB") ||
+            !ensure_plane(scratch.logRawG, "retained spatial DIR final logRawG") ||
+            !ensure_plane(scratch.logRawR, "retained spatial DIR final logRawR")) {
+            free_tracked_device_ptr_locked(resources, scratch.logRawB, cudaStreamOpaque);
+            free_tracked_device_ptr_locked(resources, scratch.logRawG, cudaStreamOpaque);
+            free_tracked_device_ptr_locked(resources, scratch.logRawR, cudaStreamOpaque);
+            return false;
+        }
+        return true;
+#endif
+    }
+
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
@@ -6216,6 +6334,99 @@ namespace JuicerCuda {
         const cudaError_t syncErr = cudaStreamSynchronize(stream);
         if (syncErr != cudaSuccess) {
             outError = std::string("cudaStreamSynchronize(large scratch transition) failed: ") +
+                       (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
+            return false;
+        }
+        return reap_retired_allocations(resources, outStats.reclaimedBytes, outError);
+#endif
+    }
+
+    bool reclaim_retained_optics_for_admission_retry(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        const ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        AdmissionRetryOpticsReclaimStats& outStats,
+        std::string& outError) {
+#if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
+        (void)resources;
+        (void)leaseGeneration;
+        (void)scratchRequest;
+        (void)cudaStreamOpaque;
+        outStats = AdmissionRetryOpticsReclaimStats{};
+        outError = "CUDA is not enabled";
+        return false;
+#else
+        outStats = AdmissionRetryOpticsReclaimStats{};
+        outError.clear();
+        if (leaseGeneration == 0) {
+            outError = "admission retry optics reclaim lease generation is invalid";
+            return false;
+        }
+        if (!ResourceManager::scratch_request_descriptor_is_valid(scratchRequest)) {
+            outError = "admission retry optics reclaim request descriptor is invalid";
+            return false;
+        }
+        if (!scratchRequest.needSpatialDir) {
+            outError = "admission retry optics reclaim requires spatial DIR scratch";
+            return false;
+        }
+
+        bool syncBeforeReap = false;
+        {
+            std::lock_guard<std::mutex> lock(resources.m);
+            reap_retire_queue_locked(resources);
+            if (!validate_resource_owner_locked(resources, outError, true)) {
+                return false;
+            }
+            outStats.pendingScratchBytesBefore = resources.retireScratchBytes;
+            if (resources.retainedScratchLeaseGeneration != 0 &&
+                resources.retainedScratchLeaseGeneration != leaseGeneration) {
+                return true;
+            }
+
+            Resources::DeviceOpticsScratch& optics = resources.scannerScratch;
+            if (optics_any_live_locked(optics)) {
+                outStats.opticsRetiredBytes = optics_stage_live_bytes_locked(optics);
+                if (!retire_optics_scratch_locked(
+                        resources,
+                        optics,
+                        cudaStreamOpaque,
+                        "admission retry optics scratch",
+                        outError)) {
+                    return false;
+                }
+            }
+
+            const std::size_t sharedTmpBytesBefore =
+                resources.sharedTmpPlane ? resources.sharedTmpCapacityElements * sizeof(float) : 0;
+            if (!retire_orphaned_shared_tmp_plane_locked(
+                    resources,
+                    cudaStreamOpaque,
+                    "admission retry shared tmp plane",
+                    outError)) {
+                return false;
+            }
+            if (sharedTmpBytesBefore > 0 && !resources.sharedTmpPlane) {
+                outStats.sharedTmpRetiredBytes = sharedTmpBytesBefore;
+            }
+
+            syncBeforeReap =
+                outStats.pendingScratchBytesBefore > 0 ||
+                outStats.opticsRetiredBytes > 0 ||
+                outStats.sharedTmpRetiredBytes > 0;
+        }
+
+        if (!syncBeforeReap) {
+            return true;
+        }
+
+        const cudaStream_t stream = cudaStreamOpaque
+                                        ? reinterpret_cast<cudaStream_t>(cudaStreamOpaque)
+                                        : nullptr;
+        const cudaError_t syncErr = cudaStreamSynchronize(stream);
+        if (syncErr != cudaSuccess) {
+            outError = std::string("cudaStreamSynchronize(admission retry optics reclaim) failed: ") +
                        (cudaGetErrorString(syncErr) ? cudaGetErrorString(syncErr) : "(unknown)");
             return false;
         }
@@ -6885,8 +7096,13 @@ namespace JuicerCuda {
                     outError);
             };
             if (!ensure_plane(scratch.rawCorrectionY, "spatial DIR rawCorrectionY") ||
-                !ensure_plane(scratch.rawCorrectionM, "spatial DIR rawCorrectionM") ||
-                !ensure_plane(scratch.rawCorrectionC, "spatial DIR rawCorrectionC") ||
+                (planeRoles.rawCorrectionPlanes == 3 &&
+                 (!ensure_plane(scratch.rawCorrectionM, "spatial DIR rawCorrectionM") ||
+                  !ensure_plane(scratch.rawCorrectionC, "spatial DIR rawCorrectionC"))) ||
+                (planeRoles.iirForwardTempPlanes == 1 &&
+                 !ensure_plane(scratch.iirForwardTemp, "spatial DIR iirForwardTemp")) ||
+                (planeRoles.filterTempPlanes == 2 &&
+                 !ensure_plane(scratch.filterTempM, "spatial DIR filterTempM")) ||
                 (planeRoles.filterTempPlanes == 3 &&
                  (!ensure_plane(scratch.filterTempM, "spatial DIR filterTempM") ||
                   !ensure_plane(scratch.filterTempC, "spatial DIR filterTempC"))) ||
@@ -6965,53 +7181,60 @@ namespace JuicerCuda {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
-        if (!allocate_scratch_device_ptr_locked(
-                resources,
-                scratch.rawCorrectionM,
-                bytes,
-                cudaStreamOpaque,
-                "spatial DIR rawCorrectionM",
-                outError)) {
-            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
-            return false;
+        if (planeRoles.rawCorrectionPlanes == 3) {
+            if (!allocate_scratch_device_ptr_locked(
+                    resources,
+                    scratch.rawCorrectionM,
+                    bytes,
+                    cudaStreamOpaque,
+                    "spatial DIR rawCorrectionM",
+                    outError) ||
+                !allocate_scratch_device_ptr_locked(
+                    resources,
+                    scratch.rawCorrectionC,
+                    bytes,
+                    cudaStreamOpaque,
+                    "spatial DIR rawCorrectionC",
+                    outError)) {
+                free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+                return false;
+            }
         }
-        if (!allocate_scratch_device_ptr_locked(
+        if (planeRoles.filterTempPlanes >= 2 &&
+            !allocate_scratch_device_ptr_locked(
                 resources,
-                scratch.rawCorrectionC,
+                scratch.filterTempM,
                 bytes,
                 cudaStreamOpaque,
-                "spatial DIR rawCorrectionC",
+                "spatial DIR filterTempM",
                 outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
         if (planeRoles.filterTempPlanes == 3 &&
-            (!allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.filterTempM,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR filterTempM",
-                 outError) ||
-             !allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.filterTempC,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR filterTempC",
-                 outError))) {
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.filterTempC,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR filterTempC",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+            return false;
+        }
+        if (planeRoles.iirForwardTempPlanes >= 1 &&
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.iirForwardTemp,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR iirForwardTemp",
+                outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
         if (planeRoles.iirForwardTempPlanes == 3 &&
             (!allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.iirForwardTemp,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR iirForwardTemp",
-                 outError) ||
-             !allocate_scratch_device_ptr_locked(
                  resources,
                  scratch.iirForwardTempM,
                  bytes,

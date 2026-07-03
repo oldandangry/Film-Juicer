@@ -1467,6 +1467,13 @@ static __device__ __forceinline__ bool juicer_cuda_spatial_dir_filtered_correcti
            develop.spatialDir.corrC;
 }
 
+static __device__ __forceinline__ bool juicer_cuda_spatial_dir_cached_log_raw_active_device(
+    const JuicerCuda::FilmDevelopPayload& develop) {
+    return develop.spatialDir.logRawB &&
+           develop.spatialDir.logRawG &&
+           develop.spatialDir.logRawR;
+}
+
 static __device__ __forceinline__ void juicer_cuda_load_spatial_dir_cached_log_raw_device(
     const JuicerCuda::FilmDevelopPayload& develop,
     std::size_t pixelIndex,

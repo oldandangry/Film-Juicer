@@ -1117,7 +1117,13 @@ namespace {
         if (useSpatialDir) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(params.width) + static_cast<size_t>(x);
             float logE_raw[3] = {0.0f, 0.0f, 0.0f};
-            juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
+            if (juicer_cuda_spatial_dir_cached_log_raw_active_device(dev)) {
+                juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, idx, logE_raw);
+            } else {
+                float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
+                float layerPre[3] = {0.0f, 0.0f, 0.0f};
+                compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+            }
             juicer_cuda_develop_dir_final_device(dev, logE_raw, idx, D_cmy);
         } else {
             float logE_raw[3] = {0.0f, 0.0f, 0.0f};
@@ -1996,8 +2002,7 @@ cudaError_t launch_focused_spatial_dir_final_develop_density(
     }();
     const JuicerCuda::SpatialDirPayload& spatialDir = params.filmDevelop.spatialDir;
     if (!spatialDir.active || !spatialDir.corrY || !spatialDir.corrM ||
-        !spatialDir.corrC || !spatialDir.logRawB || !spatialDir.logRawG ||
-        !spatialDir.logRawR) {
+        !spatialDir.corrC) {
         return cudaErrorInvalidValue;
     }
 

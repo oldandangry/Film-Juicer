@@ -2377,18 +2377,33 @@ std::size_t estimate_spatial_dir_growth_bytes(
     std::lock_guard<std::mutex> lock(resources.m);
     const auto& scratch = resources.spatialDirScratch;
     const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    const bool haveRaw = scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
+    const bool hasThreeRaw = scratch.rawCorrectionY && scratch.rawCorrectionM && scratch.rawCorrectionC;
+    const bool hasStreamedRaw =
+        scratch.rawCorrectionY && !scratch.rawCorrectionM && !scratch.rawCorrectionC;
+    const bool haveRaw =
+        (planeRoles.rawCorrectionPlanes == 3 && hasThreeRaw) ||
+        (planeRoles.rawCorrectionPlanes == 1 && hasStreamedRaw);
     const bool haveFiltered = scratch.filteredCorrectionY && scratch.filteredCorrectionM &&
                               scratch.filteredCorrectionC;
     const bool haveBase = haveRaw && haveFiltered;
     const bool hasChannelTemps =
         scratch.filterTempM && scratch.filterTempC &&
         scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+    const bool hasCompactSequentialTemps =
+        scratch.iirForwardTemp &&
+        !scratch.filterTempM && !scratch.filterTempC &&
+        !scratch.iirForwardTempM && !scratch.iirForwardTempC;
+    const bool hasLowScratchPairTemps =
+        scratch.filterTempM && !scratch.filterTempC &&
+        !scratch.iirForwardTemp && !scratch.iirForwardTempM &&
+        !scratch.iirForwardTempC;
     const bool hasNoChannelTemps =
         !scratch.filterTempM && !scratch.filterTempC &&
         !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC;
     const bool channelTempsMatch =
         (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
+        (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
+        (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
         (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
     const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
     const bool hasNoCachedLogRaw = !scratch.logRawB && !scratch.logRawG && !scratch.logRawR;
@@ -2399,6 +2414,7 @@ std::size_t estimate_spatial_dir_growth_bytes(
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool filterTempsCompatible =
         planeRoles.filterTempPlanes == 3 ||
+        (planeRoles.filterTempPlanes == 2 && !scratch.filterTempC) ||
         (!scratch.filterTempM && !scratch.filterTempC);
     const bool iirForwardTempsCompatible =
         planeRoles.iirForwardTempPlanes == 3 ||
@@ -2437,8 +2453,13 @@ std::size_t estimate_spatial_dir_growth_bytes(
                 return true;
             };
             if (!addMissingPlane(scratch.rawCorrectionY) ||
-                !addMissingPlane(scratch.rawCorrectionM) ||
-                !addMissingPlane(scratch.rawCorrectionC) ||
+                (planeRoles.rawCorrectionPlanes == 3 &&
+                 (!addMissingPlane(scratch.rawCorrectionM) ||
+                  !addMissingPlane(scratch.rawCorrectionC))) ||
+                (planeRoles.iirForwardTempPlanes == 1 &&
+                 !addMissingPlane(scratch.iirForwardTemp)) ||
+                (planeRoles.filterTempPlanes == 2 &&
+                 !addMissingPlane(scratch.filterTempM)) ||
                 (planeRoles.filterTempPlanes == 3 &&
                  (!addMissingPlane(scratch.filterTempM) ||
                   !addMissingPlane(scratch.filterTempC))) ||
@@ -2470,6 +2491,45 @@ std::size_t estimate_spatial_dir_growth_bytes(
             return std::numeric_limits<std::size_t>::max();
         }
         estimate = next;
+    }
+    return estimate;
+}
+
+std::size_t estimate_spatial_dir_cached_log_raw_stage_growth_bytes(
+    JuicerCuda::Resources& resources,
+    int width,
+    int height) noexcept {
+    const std::size_t planeBytes = plane_bytes_for_extent(width, height);
+    if (planeBytes == 0 || planeBytes == std::numeric_limits<std::size_t>::max()) {
+        return planeBytes;
+    }
+
+    std::lock_guard<std::mutex> lock(resources.m);
+    const auto& scratch = resources.spatialDirScratch;
+    const std::size_t requiredElements = planeBytes / sizeof(float);
+    if (scratch.width != width || scratch.height != height ||
+        scratch.capacityElements < requiredElements ||
+        !scratch.filteredCorrectionY || !scratch.filteredCorrectionM ||
+        !scratch.filteredCorrectionC) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+
+    std::size_t estimate = 0;
+    auto add_missing_plane = [&](const float* ptr) {
+        if (ptr) {
+            return true;
+        }
+        std::size_t next = 0;
+        if (!add_bytes_checked(estimate, planeBytes, next)) {
+            return false;
+        }
+        estimate = next;
+        return true;
+    };
+    if (!add_missing_plane(scratch.logRawB) ||
+        !add_missing_plane(scratch.logRawG) ||
+        !add_missing_plane(scratch.logRawR)) {
+        return std::numeric_limits<std::size_t>::max();
     }
     return estimate;
 }

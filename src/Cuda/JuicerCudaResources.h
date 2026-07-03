@@ -741,12 +741,24 @@ namespace JuicerCuda {
         std::size_t reclaimedBytes = 0;
     };
 
+    struct SpatialDirCachedLogRawStageStats {
+        std::size_t pendingScratchBytesBefore = 0;
+        std::size_t cachedLogRawAllocatedBytes = 0;
+    };
+
     struct LargeScratchTransitionReclaimStats {
         std::size_t pendingScratchBytesBefore = 0;
         std::size_t opticsRetiredBytes = 0;
         std::size_t spatialDirRetiredBytes = 0;
         std::size_t sharedTmpRetiredBytes = 0;
         std::size_t fftReleasedBytes = 0;
+        std::size_t reclaimedBytes = 0;
+    };
+
+    struct AdmissionRetryOpticsReclaimStats {
+        std::size_t pendingScratchBytesBefore = 0;
+        std::size_t opticsRetiredBytes = 0;
+        std::size_t sharedTmpRetiredBytes = 0;
         std::size_t reclaimedBytes = 0;
     };
 
@@ -777,12 +789,26 @@ namespace JuicerCuda {
         void* cudaStreamOpaque,
         SpatialDirCachedLogRawReleaseStats& outStats,
         std::string& outError);
+    bool ensure_retained_spatial_dir_cached_log_raw_stage(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        const ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        SpatialDirCachedLogRawStageStats& outStats,
+        std::string& outError);
     bool reclaim_large_scratch_transition(
         Resources& resources,
         const ResourceManager::ScratchRequestDescriptor& scratchRequest,
         bool usesSpatialDirFft,
         void* cudaStreamOpaque,
         LargeScratchTransitionReclaimStats& outStats,
+        std::string& outError);
+    bool reclaim_retained_optics_for_admission_retry(
+        Resources& resources,
+        std::uint64_t leaseGeneration,
+        const ResourceManager::ScratchRequestDescriptor& scratchRequest,
+        void* cudaStreamOpaque,
+        AdmissionRetryOpticsReclaimStats& outStats,
         std::string& outError);
     bool shed_retained_scratch_after_frame(
         Resources& resources,

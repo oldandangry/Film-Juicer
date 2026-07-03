@@ -688,9 +688,8 @@ namespace {
             roles.filteredCorrectionPlanes = 3;
             roles.filterTempPlanes =
                 scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels ? 3 : 1;
-            if (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels) {
-                roles.iirForwardTempPlanes = 3;
-            }
+            roles.iirForwardTempPlanes =
+                scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels ? 3 : 0;
             if (scratchTier == Spektrafilm::DirScratchTier::Tier2) {
                 roles.cachedLogRawPlanes = 3;
             }
@@ -698,13 +697,27 @@ namespace {
         return roles;
     }
 
-    bool dir_filter_plan_targets_strict_yvv_channels(
+    [[maybe_unused]] Spektrafilm::DirScratchPlaneRoles dir_compact_sequential_plane_roles_for_tier(
+        Spektrafilm::DirScratchTier scratchTier) noexcept {
+        Spektrafilm::DirScratchPlaneRoles roles = dir_target_plane_roles_for_tier(scratchTier);
+        if (scratchTier == Spektrafilm::DirScratchTier::Tier1IChannels ||
+            scratchTier == Spektrafilm::DirScratchTier::Tier2) {
+            roles.filterTempPlanes = 1;
+            roles.iirForwardTempPlanes = 1;
+        }
+        return roles;
+    }
+
+    bool dir_filter_plan_targets_strict_yvv(
         const Spektrafilm::DirFilterPlan& plan) noexcept {
         for (int component = 0; component < plan.componentCount; ++component) {
             const Spektrafilm::DirGaussianComponentPlan& componentPlan =
                 plan.components[static_cast<std::size_t>(component)];
             if (componentPlan.weight > 0.0f &&
-                componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvChannels) {
+                (componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvChannels ||
+                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvLowScratch ||
+                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvComponentStreamed ||
+                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvCompactSequential)) {
                 return true;
             }
         }
@@ -722,7 +735,7 @@ namespace {
 
     Spektrafilm::DirScratchTier dir_cached_log_raw_base_tier_for_descriptor(
         const SpatialDirDescriptor& descriptor) noexcept {
-        return dir_filter_plan_targets_strict_yvv_channels(descriptor.filterPlan)
+        return dir_filter_plan_targets_strict_yvv(descriptor.filterPlan)
                    ? Spektrafilm::DirScratchTier::Tier1IChannels
                    : Spektrafilm::DirScratchTier::Tier1F;
     }
@@ -734,6 +747,20 @@ namespace {
                 dir_cached_log_raw_base_tier_for_descriptor(descriptor));
         }
         return dir_target_plane_roles_for_tier(descriptor.targetScratchTier);
+    }
+
+    Spektrafilm::DirScratchTier dir_build_scratch_tier_for_descriptor(
+        const SpatialDirDescriptor& descriptor) noexcept {
+        if (descriptor.targetScratchTier == Spektrafilm::DirScratchTier::Tier2) {
+            return dir_cached_log_raw_base_tier_for_descriptor(descriptor);
+        }
+        return descriptor.targetScratchTier;
+    }
+
+    Spektrafilm::DirScratchPlaneRoles dir_build_plane_roles_for_descriptor(
+        const SpatialDirDescriptor& descriptor) noexcept {
+        return dir_target_plane_roles_for_tier(
+            dir_build_scratch_tier_for_descriptor(descriptor));
     }
 
     bool dir_tail_mode_is_accepted_fft(Spektrafilm::DirTailMode value) noexcept {
@@ -1874,8 +1901,8 @@ namespace Spektrafilm {
         }
         configure_cached_log_raw_descriptor(out);
         out.targetPlaneRoles = dir_target_plane_roles_for_descriptor(out);
-        out.scratchTier = out.targetScratchTier;
-        out.planeRoles = out.targetPlaneRoles;
+        out.scratchTier = dir_build_scratch_tier_for_descriptor(out);
+        out.planeRoles = dir_build_plane_roles_for_descriptor(out);
 
         std::uint64_t legacyHash = Hash::kFnvOffset;
         hash_value(legacyHash, out.dirRecipeHash);

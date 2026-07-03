@@ -219,7 +219,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <AdditionalLibraryDirectories Condition="'$(JuicerEnableCudaBuild)'=='1'">$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;cufft.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(JuicerIsReleaseBuild)'=='1' and '$(Platform)'=='x64'">
@@ -252,7 +252,7 @@
       </ModuleDefinitionFile>
       <OutputFile>$(OutDir)juicer.ofx</OutputFile>
       <AdditionalLibraryDirectories Condition="'$(JuicerEnableCudaBuild)'=='1'">$(CudaToolkitDir)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(JuicerEnableCudaBuild)'=='1'">cudart.lib;cufft.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions Condition="'$(PlatformToolset)'=='ClangCl'">$(JuicerClangReleaseLinkOptions) %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>

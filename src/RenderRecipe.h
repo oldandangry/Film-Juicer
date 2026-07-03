@@ -398,6 +398,9 @@ namespace Spektrafilm {
         None,
         SmallFir,
         StrictYvvChannels,
+        StrictYvvLowScratch,
+        StrictYvvComponentStreamed,
+        StrictYvvCompactSequential,
         AcceptedFftReplicatePadSmooth,
         SF_TEMP_BRIDGE_LegacySigmaThreshold
     };
@@ -516,6 +519,12 @@ namespace Spektrafilm {
                 return "small_fir";
             case DirFilterBackend::StrictYvvChannels:
                 return "strict_yvv_channels";
+            case DirFilterBackend::StrictYvvLowScratch:
+                return "strict_yvv_low_scratch_pair";
+            case DirFilterBackend::StrictYvvComponentStreamed:
+                return "strict_yvv_component_streamed";
+            case DirFilterBackend::StrictYvvCompactSequential:
+                return "strict_yvv_compact_sequential";
             case DirFilterBackend::AcceptedFftReplicatePadSmooth:
                 return "accepted_fft_replicate_pad_smooth";
             case DirFilterBackend::SF_TEMP_BRIDGE_LegacySigmaThreshold:

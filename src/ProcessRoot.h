@@ -442,6 +442,10 @@ namespace JuicerProcess {
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
                 std::string& outError);
+            bool stage_spatial_dir_cached_log_raw_for_final_develop(
+                const WorkspaceLeaseMarker& workspace,
+                void* cudaStreamOpaque,
+                std::string& outError);
             bool release_spatial_dir_cached_log_raw_after_final_develop(
                 const WorkspaceLeaseMarker& workspace,
                 void* cudaStreamOpaque,
@@ -604,6 +608,7 @@ namespace JuicerProcess {
         bool shed_post_frame_scratch(
             JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
             JuicerCuda::Resources& resources,
+            const JuicerCuda::ResourceManager::ScratchRequestDescriptor& scratchRequest,
             void* cudaStreamOpaque,
             const char* commandName,
             std::string& outError);
