@@ -126,6 +126,7 @@ namespace JuicerProcess {
                 int requestedWidth = 0;
                 int requestedHeight = 0;
                 bool needBlurred = false;
+                bool aliasScannerRgbFromSpatialDirFiltered = false;
                 bool needAux = false;
                 bool needGrainTriplet = false;
                 bool needGrainShared = false;
@@ -364,6 +365,7 @@ namespace JuicerProcess {
                 int gateMaskHeight = 0;
                 std::uint64_t gateMaskHash = 0;
                 bool active = false;
+                bool rgbAliasedFromSpatialDirFiltered = false;
                 bool hasGateMask = false;
             };
 
@@ -550,6 +552,8 @@ namespace JuicerProcess {
 
             static JuicerCuda::ResourceManager::ScratchRequestDescriptor make_scratch_request_descriptor(
                 const WorkspaceLeaseMarker& workspace) noexcept;
+            const WorkspaceRequest& active_workspace_request(
+                const WorkspaceLeaseMarker& workspace) const noexcept;
             bool workspace_marker_matches_current_frame(const WorkspaceLeaseMarker& workspace) const noexcept;
             bool validate_workspace_lease_marker(
                 const WorkspaceLeaseMarker& workspace,

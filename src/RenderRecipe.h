@@ -398,6 +398,7 @@ namespace Spektrafilm {
         None,
         SmallFir,
         StrictYvvChannels,
+        StrictYvvChannelsAliasedForward,
         StrictYvvLowScratch,
         StrictYvvComponentStreamed,
         StrictYvvCompactSequential,
@@ -519,6 +520,8 @@ namespace Spektrafilm {
                 return "small_fir";
             case DirFilterBackend::StrictYvvChannels:
                 return "strict_yvv_channels";
+            case DirFilterBackend::StrictYvvChannelsAliasedForward:
+                return "strict_yvv_channels_aliased_forward";
             case DirFilterBackend::StrictYvvLowScratch:
                 return "strict_yvv_low_scratch_pair";
             case DirFilterBackend::StrictYvvComponentStreamed:

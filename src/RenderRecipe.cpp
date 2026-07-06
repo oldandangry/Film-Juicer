@@ -665,7 +665,7 @@ namespace {
             case Spektrafilm::DirReferenceOperator::SpektrafilmSmallFirReflect:
                 return Spektrafilm::DirFilterBackend::SmallFir;
             case Spektrafilm::DirReferenceOperator::SpektrafilmLargeYvvReplicate:
-                return Spektrafilm::DirFilterBackend::StrictYvvChannels;
+                return Spektrafilm::DirFilterBackend::StrictYvvChannelsAliasedForward;
             default:
                 return Spektrafilm::DirFilterBackend::None;
         }
@@ -697,6 +697,30 @@ namespace {
         return roles;
     }
 
+    Spektrafilm::DirScratchPlaneRoles strict_yvv_channels_aliased_forward_plane_roles() noexcept {
+        Spektrafilm::DirScratchPlaneRoles roles =
+            dir_target_plane_roles_for_tier(Spektrafilm::DirScratchTier::Tier1IChannels);
+        roles.iirForwardTempPlanes = 0;
+        roles.cachedLogRawPlanes = 0;
+        return roles;
+    }
+
+    Spektrafilm::DirScratchPlaneRoles dir_accepted_fft_build_plane_roles() noexcept {
+        Spektrafilm::DirScratchPlaneRoles roles{};
+        roles.rawCorrectionPlanes = 1;
+        roles.filteredCorrectionPlanes = 3;
+        roles.filterTempPlanes = 0;
+        roles.iirForwardTempPlanes = 0;
+        roles.cachedLogRawPlanes = 0;
+        return roles;
+    }
+
+    Spektrafilm::DirScratchPlaneRoles dir_accepted_fft_target_plane_roles() noexcept {
+        Spektrafilm::DirScratchPlaneRoles roles = dir_accepted_fft_build_plane_roles();
+        roles.cachedLogRawPlanes = 3;
+        return roles;
+    }
+
     [[maybe_unused]] Spektrafilm::DirScratchPlaneRoles dir_compact_sequential_plane_roles_for_tier(
         Spektrafilm::DirScratchTier scratchTier) noexcept {
         Spektrafilm::DirScratchPlaneRoles roles = dir_target_plane_roles_for_tier(scratchTier);
@@ -708,6 +732,20 @@ namespace {
         return roles;
     }
 
+    bool dir_filter_plan_targets_aliased_forward_yvv(
+        const Spektrafilm::DirFilterPlan& plan) noexcept {
+        for (int component = 0; component < plan.componentCount; ++component) {
+            const Spektrafilm::DirGaussianComponentPlan& componentPlan =
+                plan.components[static_cast<std::size_t>(component)];
+            if (componentPlan.weight > 0.0f &&
+                componentPlan.targetBackend ==
+                    Spektrafilm::DirFilterBackend::StrictYvvChannelsAliasedForward) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool dir_filter_plan_targets_strict_yvv(
         const Spektrafilm::DirFilterPlan& plan) noexcept {
         for (int component = 0; component < plan.componentCount; ++component) {
@@ -715,6 +753,7 @@ namespace {
                 plan.components[static_cast<std::size_t>(component)];
             if (componentPlan.weight > 0.0f &&
                 (componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvChannels ||
+                 componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvChannelsAliasedForward ||
                  componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvLowScratch ||
                  componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvComponentStreamed ||
                  componentPlan.targetBackend == Spektrafilm::DirFilterBackend::StrictYvvCompactSequential)) {
@@ -742,7 +781,17 @@ namespace {
 
     Spektrafilm::DirScratchPlaneRoles dir_target_plane_roles_for_descriptor(
         const SpatialDirDescriptor& descriptor) noexcept {
+        if (descriptor.approximation ==
+            Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
+            return dir_accepted_fft_target_plane_roles();
+        }
         if (descriptor.targetScratchTier == Spektrafilm::DirScratchTier::Tier2) {
+            if (dir_filter_plan_targets_aliased_forward_yvv(descriptor.filterPlan)) {
+                Spektrafilm::DirScratchPlaneRoles roles =
+                    strict_yvv_channels_aliased_forward_plane_roles();
+                roles.cachedLogRawPlanes = 3;
+                return roles;
+            }
             return dir_cached_log_raw_roles_for_base_tier(
                 dir_cached_log_raw_base_tier_for_descriptor(descriptor));
         }
@@ -751,6 +800,10 @@ namespace {
 
     Spektrafilm::DirScratchTier dir_build_scratch_tier_for_descriptor(
         const SpatialDirDescriptor& descriptor) noexcept {
+        if (descriptor.approximation ==
+            Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
+            return Spektrafilm::DirScratchTier::Tier1F;
+        }
         if (descriptor.targetScratchTier == Spektrafilm::DirScratchTier::Tier2) {
             return dir_cached_log_raw_base_tier_for_descriptor(descriptor);
         }
@@ -759,6 +812,13 @@ namespace {
 
     Spektrafilm::DirScratchPlaneRoles dir_build_plane_roles_for_descriptor(
         const SpatialDirDescriptor& descriptor) noexcept {
+        if (descriptor.approximation ==
+            Spektrafilm::DirApproximationMarker::AcceptedFftReplicatePadSmooth) {
+            return dir_accepted_fft_build_plane_roles();
+        }
+        if (dir_filter_plan_targets_aliased_forward_yvv(descriptor.filterPlan)) {
+            return strict_yvv_channels_aliased_forward_plane_roles();
+        }
         return dir_target_plane_roles_for_tier(
             dir_build_scratch_tier_for_descriptor(descriptor));
     }

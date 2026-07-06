@@ -1099,9 +1099,7 @@ namespace {
         }
 
         if (rgbIn) {
-            float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
-            float layerPre[3] = {0.0f, 0.0f, 0.0f};
-            compute_logE_and_layer_pre_device(params, rgbIn, logE_raw, logE_sanitized, layerPre);
+            compute_logE_raw_device(params, rgbIn, logE_raw);
             return true;
         }
 
@@ -1123,9 +1121,7 @@ namespace {
             reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
 
         const float sourceRgb[3] = {srcPix[0], srcPix[1], srcPix[2]};
-        float logE_sanitized[3] = {0.0f, 0.0f, 0.0f};
-        float layerPre[3] = {0.0f, 0.0f, 0.0f};
-        compute_logE_and_layer_pre_device(params, sourceRgb, logE_raw, logE_sanitized, layerPre);
+        compute_logE_raw_device(params, sourceRgb, logE_raw);
         return true;
     }
 

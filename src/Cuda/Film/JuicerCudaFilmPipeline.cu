@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "Cuda/JuicerCudaDirProfile.h"
 #include "Cuda/JuicerCudaDeviceHelpers.cuh"
@@ -709,19 +710,20 @@ namespace {
         int srcHeight,
         int fftWidth,
         int fftHeight,
+        int fftRealStride,
         int padPixels) {
         const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
         const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
         if (x >= fftWidth || y >= fftHeight || !in || !out ||
             srcWidth <= 0 || srcHeight <= 0 || fftWidth <= 0 || fftHeight <= 0 ||
-            padPixels < 0) {
+            fftRealStride < fftWidth || padPixels < 0) {
             return;
         }
         int sx = x - padPixels;
         int sy = y - padPixels;
         sx = sx < 0 ? 0 : (sx >= srcWidth ? srcWidth - 1 : sx);
         sy = sy < 0 ? 0 : (sy >= srcHeight ? srcHeight - 1 : sy);
-        out[static_cast<std::size_t>(y) * static_cast<std::size_t>(fftWidth) +
+        out[static_cast<std::size_t>(y) * static_cast<std::size_t>(fftRealStride) +
             static_cast<std::size_t>(x)] =
             in[static_cast<std::size_t>(sy) * static_cast<std::size_t>(srcWidth) +
                static_cast<std::size_t>(sx)];
@@ -752,13 +754,14 @@ namespace {
         int srcHeight,
         int fftWidth,
         int fftHeight,
+        int fftRealStride,
         int padPixels,
         float normalization) {
         const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
         const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
         if (x >= srcWidth || y >= srcHeight || !in || !out ||
             srcWidth <= 0 || srcHeight <= 0 || fftWidth <= 0 || fftHeight <= 0 ||
-            padPixels < 0) {
+            fftRealStride < fftWidth || padPixels < 0) {
             return;
         }
         const int sx = x + padPixels;
@@ -767,7 +770,7 @@ namespace {
             return;
         }
         const float value =
-            in[static_cast<std::size_t>(sy) * static_cast<std::size_t>(fftWidth) +
+            in[static_cast<std::size_t>(sy) * static_cast<std::size_t>(fftRealStride) +
                static_cast<std::size_t>(sx)] *
             normalization;
         out[static_cast<std::size_t>(y) * static_cast<std::size_t>(srcWidth) +
@@ -836,15 +839,29 @@ cudaError_t build_spatial_dir_impl(
         rawCorrectionY && !rawCorrectionM && !rawCorrectionC &&
         filteredCorrectionY && filteredCorrectionM && filteredCorrectionC && filterTemp &&
         !filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
-    if (!rawCorrectionY || (!haveComponentStreamedYvvScratch && (!rawCorrectionM || !rawCorrectionC)) ||
-        !filteredCorrectionY || !filteredCorrectionM || !filteredCorrectionC || !filterTemp ||
+    const bool haveFftComponentStreamedScratch =
+        acceptedFftActive && rawCorrectionY && !rawCorrectionM && !rawCorrectionC &&
+        filteredCorrectionY && filteredCorrectionM && filteredCorrectionC && !filterTemp &&
+        !filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
+    const bool haveComponentStreamedScratch =
+        haveComponentStreamedYvvScratch || haveFftComponentStreamedScratch;
+    if (!rawCorrectionY || (!haveComponentStreamedScratch && (!rawCorrectionM || !rawCorrectionC)) ||
+        !filteredCorrectionY || !filteredCorrectionM || !filteredCorrectionC ||
+        (!haveFftComponentStreamedScratch && !filterTemp) ||
         !(gaussianSigma > 0.0f) || !(gaussianWeight >= 0.0f)) {
         return cudaErrorInvalidValue;
     }
     const bool haveChannelYvvScratch =
         filterTempM && filterTempC && iirForwardTemp && iirForwardTempM && iirForwardTempC;
+    const bool haveAliasedForwardYvvScratch =
+        filterTempM && filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
     const bool haveLowScratchPairYvvScratch =
         filterTempM && !filterTempC && !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
+    const bool haveSingleTempSequentialYvvScratch =
+        rawCorrectionY && rawCorrectionM && rawCorrectionC &&
+        filteredCorrectionY && filteredCorrectionM && filteredCorrectionC &&
+        filterTemp && !filterTempM && !filterTempC &&
+        !iirForwardTemp && !iirForwardTempM && !iirForwardTempC;
     const bool haveCompactSequentialYvvScratch =
         filterTemp && iirForwardTemp && !filterTempM && !filterTempC &&
         !iirForwardTempM && !iirForwardTempC;
@@ -991,7 +1008,7 @@ cudaError_t build_spatial_dir_impl(
         return profile ? timer.finish(stream, &profile->correction) : cudaSuccess;
     };
 
-    if (!haveComponentStreamedYvvScratch) {
+    if (!haveComponentStreamedScratch) {
         err = launch_corrections();
         if (err != cudaSuccess) {
             return finish_profile(err);
@@ -1009,12 +1026,12 @@ cudaError_t build_spatial_dir_impl(
             fftHeight < params.height + 2 * fftPadPixels) {
             return finish_profile(cudaErrorInvalidValue);
         }
-        CudaProfileStageTimer timer;
-        if (profile) {
-            err = timer.begin(stream);
-            if (err != cudaSuccess) {
-                return finish_profile(err);
-            }
+        if (fftComplexWidth > (std::numeric_limits<int>::max() / 2)) {
+            return finish_profile(cudaErrorInvalidValue);
+        }
+        const int fftRealStride = fftComplexWidth * 2;
+        if (fftRealStride < fftWidth) {
+            return finish_profile(cudaErrorInvalidValue);
         }
         const float* rawCorrectionsFft[3] = {rawCorrectionY, rawCorrectionM, rawCorrectionC};
         float* filteredCorrectionsFft[3] = {
@@ -1043,13 +1060,29 @@ cudaError_t build_spatial_dir_impl(
                 profile ? &profile->fftFilterLaunches : nullptr);
         };
         for (int channel = 0; channel < 3; ++channel) {
+            if (haveFftComponentStreamedScratch) {
+                err = launch_streamed_channel_corrections(channel);
+                if (err != cudaSuccess) {
+                    return finish_profile(err);
+                }
+            }
+            CudaProfileStageTimer timer;
+            if (profile) {
+                err = timer.begin(stream);
+                if (err != cudaSuccess) {
+                    return finish_profile(err);
+                }
+            }
+            const float* rawCorrectionForFft =
+                haveFftComponentStreamedScratch ? rawCorrectionY : rawCorrectionsFft[channel];
             spatial_dir_fft_pad_replicate_kernel<<<blocksFft2D, threadsFft2D, 0, stream>>>(
-                rawCorrectionsFft[channel],
+                rawCorrectionForFft,
                 fftRealBuffer,
                 params.width,
                 params.height,
                 fftWidth,
                 fftHeight,
+                fftRealStride,
                 fftPadPixels);
             mark_fft_launch();
             err = cudaGetLastError();
@@ -1082,6 +1115,7 @@ cudaError_t build_spatial_dir_impl(
                 params.height,
                 fftWidth,
                 fftHeight,
+                fftRealStride,
                 fftPadPixels,
                 normalization);
             mark_fft_launch();
@@ -1089,11 +1123,11 @@ cudaError_t build_spatial_dir_impl(
             if (err != cudaSuccess) {
                 return finish_profile(err);
             }
-        }
-        if (profile) {
-            err = timer.finish(stream, &profile->fftFilter);
-            if (err != cudaSuccess) {
-                return finish_profile(err);
+            if (profile) {
+                err = timer.finish(stream, &profile->fftFilter);
+                if (err != cudaSuccess) {
+                    return finish_profile(err);
+                }
             }
         }
         return finish_profile(cudaGetLastError());
@@ -1145,7 +1179,8 @@ cudaError_t build_spatial_dir_impl(
 
     auto accumulate_yvv_channels = [&](const float* raw0, const float* raw1, const float* raw2, float* filtered0, float* filtered1, float* filtered2, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
         if (!raw0 || !raw1 || !raw2 || !filtered0 || !filtered1 || !filtered2 ||
-            !(sigma > 0.0f) || !(weight >= 0.0f) || !haveChannelYvvScratch) {
+            !(sigma > 0.0f) || !(weight >= 0.0f) ||
+            !(haveChannelYvvScratch || haveAliasedForwardYvvScratch)) {
             return cudaErrorInvalidValue;
         }
         CudaProfileStageTimer timer;
@@ -1189,6 +1224,9 @@ cudaError_t build_spatial_dir_impl(
         if (e != cudaSuccess) {
             return e;
         }
+        float* forwardTempY = haveAliasedForwardYvvScratch ? filterTemp : iirForwardTemp;
+        float* forwardTempM = haveAliasedForwardYvvScratch ? filterTempM : iirForwardTempM;
+        float* forwardTempC = haveAliasedForwardYvvScratch ? filterTempC : iirForwardTempC;
         spatial_dir_iir_vertical_accumulate_channels_kernel<<<
             dim3(static_cast<unsigned int>((params.width + threads - 1) / threads), 3),
             threads,
@@ -1197,9 +1235,9 @@ cudaError_t build_spatial_dir_impl(
             filterTemp,
             filterTempM,
             filterTempC,
-            iirForwardTemp,
-            iirForwardTempM,
-            iirForwardTempC,
+            forwardTempY,
+            forwardTempM,
+            forwardTempC,
             filtered0,
             filtered1,
             filtered2,
@@ -1348,8 +1386,9 @@ cudaError_t build_spatial_dir_impl(
         return profile ? timer.finish(stream, stage) : cudaSuccess;
     };
 
-    auto accumulate_yvv_compact_sequential = [&](float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
-        if (!(sigma > 0.0f) || !(weight >= 0.0f) || !haveCompactSequentialYvvScratch) {
+    auto accumulate_yvv_sequential_single_channel = [&](float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter) -> cudaError_t {
+        if (!(sigma > 0.0f) || !(weight >= 0.0f) ||
+            !(haveSingleTempSequentialYvvScratch || haveCompactSequentialYvvScratch)) {
             return cudaErrorInvalidValue;
         }
         CudaProfileStageTimer timer;
@@ -1375,6 +1414,8 @@ cudaError_t build_spatial_dir_impl(
             static_cast<unsigned int>((params.height + threads - 1) / threads));
         const dim3 verticalBlocks(
             static_cast<unsigned int>((params.width + threads - 1) / threads));
+        float* verticalForwardTemp =
+            haveSingleTempSequentialYvvScratch ? filterTemp : iirForwardTemp;
         for (int channel = 0; channel < 3; ++channel) {
             spatial_dir_iir_horizontal_single_kernel<<<
                 horizontalBlocks,
@@ -1400,7 +1441,7 @@ cudaError_t build_spatial_dir_impl(
                 0,
                 stream>>>(
                 filterTemp,
-                iirForwardTemp,
+                verticalForwardTemp,
                 filteredCorrections[channel],
                 params.width,
                 params.height,
@@ -1492,7 +1533,7 @@ cudaError_t build_spatial_dir_impl(
     auto accumulate_component = [&](const float* k, int r, float sigma, float weight, bool initialize, JuicerCuda::SpatialDirStageProfile* stage, int* launchCounter)
         -> cudaError_t {
         if (sigma >= 3.0f) {
-            if (haveChannelYvvScratch) {
+            if (haveChannelYvvScratch || haveAliasedForwardYvvScratch) {
                 return accumulate_yvv_channels(
                     rawCorrectionY,
                     rawCorrectionM,
@@ -1514,7 +1555,7 @@ cudaError_t build_spatial_dir_impl(
                     stage,
                     launchCounter);
             }
-            return accumulate_yvv_compact_sequential(
+            return accumulate_yvv_sequential_single_channel(
                 sigma,
                 weight,
                 initialize,

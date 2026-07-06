@@ -3,6 +3,7 @@
 #include <limits>
 #include <sstream>
 
+#include "GaussianSciPy.h"
 #include "Logging.h"
 #include "RenderRecipe.h"
 
@@ -20,6 +21,16 @@ namespace {
     std::uint64_t hash_nan_preserving_floats(const float* values, std::size_t count) {
         const Hash::FloatSpanHash hashes = Hash::hash_float_span_with_nan_mask(values, count);
         return Hash::hash_uint64_values({hashes.valueHash, hashes.nanMaskHash});
+    }
+
+    float scanner_gaussian_sigma_with_device_kernel_or_zero(float sigma) noexcept {
+        if (!std::isfinite(sigma)) {
+            return sigma;
+        }
+        if (sigma <= 0.0f) {
+            return 0.0f;
+        }
+        return JuicerGaussian::scipy_gaussian_radius(sigma, 4.0f) > 0 ? sigma : 0.0f;
     }
 
     float remove_srgb_cctf(float value) {
@@ -644,11 +655,15 @@ namespace Scanner {
         outDescriptor.glarePercent = outDescriptor.glareActive ? recipe.glarePercent : 0.0f;
         outDescriptor.glareRoughness = outDescriptor.glareActive ? recipe.glareRoughness : 0.0f;
         outDescriptor.glareBlurSigmaPx =
-            outDescriptor.glareActive ? recipe.glareBlurSigmaPx : 0.0f;
+            outDescriptor.glareActive
+                ? scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.glareBlurSigmaPx)
+                : 0.0f;
         outDescriptor.lensBlurSigmaPx =
-            recipe.lensBlurSigmaPx > 0.0f ? recipe.lensBlurSigmaPx : 0.0f;
-        const bool unsharpActive = recipe.unsharpSigmaPx > 0.0f && recipe.unsharpAmount > 0.0f;
-        outDescriptor.unsharpSigmaPx = unsharpActive ? recipe.unsharpSigmaPx : 0.0f;
+            scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.lensBlurSigmaPx);
+        const float unsharpSigmaPx =
+            scanner_gaussian_sigma_with_device_kernel_or_zero(recipe.unsharpSigmaPx);
+        const bool unsharpActive = unsharpSigmaPx > 0.0f && recipe.unsharpAmount > 0.0f;
+        outDescriptor.unsharpSigmaPx = unsharpActive ? unsharpSigmaPx : 0.0f;
         outDescriptor.unsharpAmount = unsharpActive ? recipe.unsharpAmount : 0.0f;
         const float values[] = {
             outDescriptor.glarePercent,

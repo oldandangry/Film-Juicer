@@ -208,6 +208,7 @@ bool resolve_optional_active_scratch_request(
     outActiveScratchRequest = nullptr;
     if (!scratchRequest.has_any_family()) {
         if (scratchRequest.needBlurred ||
+            scratchRequest.aliasScannerRgbFromSpatialDirFiltered ||
             scratchRequest.needAux ||
             scratchRequest.needGrainTriplet ||
             scratchRequest.needGrainShared ||
@@ -3634,8 +3635,10 @@ bool post_frame_large_spatial_dir_shed_required(
     if (requestBuildBytes == std::numeric_limits<std::size_t>::max()) {
         return true;
     }
+    const bool driverFreeLow =
+        checkpoint.input.driverFreeBytes <= post_frame_driver_free_floor_bytes(checkpoint);
     if (requestBuildBytes == 0) {
-        return false;
+        return driverFreeLow;
     }
 
     const std::uint64_t reserveBytes = post_frame_effective_reserve_bytes(checkpoint);
@@ -3647,8 +3650,7 @@ bool post_frame_large_spatial_dir_shed_required(
         return true;
     }
 
-    return checkpoint.input.driverFreeBytes <= post_frame_driver_free_floor_bytes(checkpoint) ||
-           checkpoint.input.effectiveHeadroomBytes < requiredBytes;
+    return driverFreeLow || checkpoint.input.effectiveHeadroomBytes < requiredBytes;
 }
 
 void trace_post_frame_scratch_shed(
@@ -3667,6 +3669,13 @@ void trace_post_frame_scratch_shed(
     if ((ok && !shedAttempted) ? !JTRACE_ENABLED(2) : !JTRACE_ENABLED(1)) {
         return;
     }
+    const bool driverFreeLow =
+        checkpoint.headroom.sampleSuccess &&
+        checkpoint.input.driverFreeBytes <= post_frame_driver_free_floor_bytes(checkpoint);
+    const bool buildBytesZeroAfterStageRelease =
+        scratchRequest.needSpatialDir &&
+        is_large_frame_extent(scratchRequest.requestedWidth, scratchRequest.requestedHeight) &&
+        requestBuildBytes == 0;
     std::string msg =
         trace_event_prefix("post_frame_scratch_shed", transaction, commandName) +
         " ok=" + std::to_string(ok ? 1 : 0) +
@@ -3681,6 +3690,9 @@ void trace_post_frame_scratch_shed(
         " request_spatial_dir_build_bytes=" +
         std::to_string(static_cast<unsigned long long>(requestBuildBytes)) +
         " request_low_headroom=" + std::to_string(requestLowHeadroom ? 1 : 0) +
+        " driver_free_low=" + std::to_string(driverFreeLow ? 1 : 0) +
+        " build_bytes_zero_after_stage_release=" +
+        std::to_string(buildBytesZeroAfterStageRelease ? 1 : 0) +
         " driver_free_bytes=" + std::to_string(static_cast<unsigned long long>(checkpoint.input.driverFreeBytes)) +
         " effective_headroom_bytes=" +
         std::to_string(static_cast<unsigned long long>(checkpoint.input.effectiveHeadroomBytes)) +
@@ -3913,6 +3925,7 @@ bool command_ensure_optics_scratch(
         scratchRequest.requestedWidth,
         scratchRequest.requestedHeight,
         scratchRequest.needBlurred,
+        scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
         scratchRequest.needAux,
         scratchRequest.needGrainTriplet,
         scratchRequest.needGrainShared,
@@ -3921,8 +3934,22 @@ bool command_ensure_optics_scratch(
         outError = "scratch growth byte estimation overflow";
         return false;
     }
-    if (growthBytes == 0) {
+    if (growthBytes == 0 && !scratchRequest.aliasScannerRgbFromSpatialDirFiltered) {
         return true;
+    }
+    if (growthBytes == 0) {
+        return JuicerCuda::ensure_optics_scratch(
+            resources,
+            scratchRequest.requestedWidth,
+            scratchRequest.requestedHeight,
+            scratchRequest.needBlurred,
+            scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
+            scratchRequest.needAux,
+            scratchRequest.needGrainTriplet,
+            scratchRequest.needGrainShared,
+            scratchRequest.needGateMask,
+            cudaStreamOpaque,
+            outError);
     }
     return execute_scratch_growth_command(
         transaction,
@@ -3939,6 +3966,7 @@ bool command_ensure_optics_scratch(
                 scratchRequest.requestedWidth,
                 scratchRequest.requestedHeight,
                 scratchRequest.needBlurred,
+                scratchRequest.aliasScannerRgbFromSpatialDirFiltered,
                 scratchRequest.needAux,
                 scratchRequest.needGrainTriplet,
                 scratchRequest.needGrainShared,
@@ -4081,6 +4109,17 @@ bool command_preflight_spatial_dir_fft_peak(
             stageName);
         msg += " ok=";
         msg += ok ? "1" : "0";
+        msg += " descriptor_hash=";
+        msg += std::to_string(static_cast<unsigned long long>(descriptor.hash));
+        msg += " approximation=";
+        msg += Spektrafilm::to_cstr(descriptor.approximation);
+        msg += " requested_width=";
+        msg += std::to_string(scratchRequest.requestedWidth);
+        msg += " requested_height=";
+        msg += std::to_string(scratchRequest.requestedHeight);
+        msg += " request_kind=exact_fft_peak";
+        msg += " failure_action=";
+        msg += ok ? "none" : "hard_fail_current_request";
         msg += " scratch_growth_bytes=";
         msg += std::to_string(static_cast<unsigned long long>(scratchGrowthBytes));
         msg += " fft_growth_bytes=";

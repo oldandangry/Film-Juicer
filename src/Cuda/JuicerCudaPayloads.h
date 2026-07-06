@@ -102,9 +102,9 @@ namespace JuicerCuda {
 
     struct SpatialDirPayload {
         int active = 0;
-        const float* JUICER_RESTRICT corrY = nullptr;
-        const float* JUICER_RESTRICT corrM = nullptr;
-        const float* JUICER_RESTRICT corrC = nullptr;
+        const float* corrY = nullptr;
+        const float* corrM = nullptr;
+        const float* corrC = nullptr;
         const float* JUICER_RESTRICT logRawB = nullptr;
         const float* JUICER_RESTRICT logRawG = nullptr;
         const float* JUICER_RESTRICT logRawR = nullptr;
@@ -310,9 +310,9 @@ namespace JuicerCuda {
         float correctionSlope = 1.0f;
         float correctionOffset = 0.0f;
         const float* JUICER_RESTRICT glarePercent = nullptr;
-        float* JUICER_RESTRICT linearRgbR = nullptr;
-        float* JUICER_RESTRICT linearRgbG = nullptr;
-        float* JUICER_RESTRICT linearRgbB = nullptr;
+        float* linearRgbR = nullptr;
+        float* linearRgbG = nullptr;
+        float* linearRgbB = nullptr;
         int* scanErrorFlag = nullptr;
     };
 

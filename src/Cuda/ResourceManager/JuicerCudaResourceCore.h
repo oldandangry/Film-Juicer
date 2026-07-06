@@ -477,6 +477,7 @@ namespace JuicerCuda {
 
         struct ScratchRequestAttachments {
             bool needBlurred = false;
+            bool aliasScannerRgbFromSpatialDirFiltered = false;
             bool needAux = false;
             bool needGrainTriplet = false;
             bool needGrainShared = false;
@@ -505,6 +506,7 @@ namespace JuicerCuda {
             int requestedWidth = 0;
             int requestedHeight = 0;
             bool needBlurred = false;
+            bool aliasScannerRgbFromSpatialDirFiltered = false;
             bool needAux = false;
             bool needGrainTriplet = false;
             bool needGrainShared = false;
@@ -523,10 +525,13 @@ namespace JuicerCuda {
                 case Spektrafilm::DirScratchTier::Tier0:
                     return roles.total_float_planes() == 0;
                 case Spektrafilm::DirScratchTier::Tier1F:
-                    return roles.rawCorrectionPlanes == 3 &&
-                           roles.filteredCorrectionPlanes == 3 &&
-                           roles.filterTempPlanes == 1 &&
-                           roles.iirForwardTempPlanes == 0 &&
+                    return roles.filteredCorrectionPlanes == 3 &&
+                           ((roles.rawCorrectionPlanes == 1 &&
+                             roles.filterTempPlanes == 0 &&
+                             roles.iirForwardTempPlanes == 0) ||
+                            (roles.rawCorrectionPlanes == 3 &&
+                             roles.filterTempPlanes == 1 &&
+                             roles.iirForwardTempPlanes == 0)) &&
                            roles.cachedLogRawPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
@@ -538,8 +543,12 @@ namespace JuicerCuda {
                              roles.iirForwardTempPlanes == 0) ||
                             (roles.rawCorrectionPlanes == 3 &&
                              ((roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 1 &&
                                roles.iirForwardTempPlanes == 1) ||
                               (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 0) ||
                               (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 3)))) &&
@@ -550,7 +559,8 @@ namespace JuicerCuda {
                 case Spektrafilm::DirScratchTier::Tier2:
                     return roles.filteredCorrectionPlanes == 3 &&
                            ((roles.rawCorrectionPlanes == 1 &&
-                             roles.filterTempPlanes == 1 &&
+                             (roles.filterTempPlanes == 0 ||
+                              roles.filterTempPlanes == 1) &&
                              roles.iirForwardTempPlanes == 0) ||
                             (roles.rawCorrectionPlanes == 3 &&
                              ((roles.filterTempPlanes == 1 &&
@@ -558,6 +568,8 @@ namespace JuicerCuda {
                               (roles.filterTempPlanes == 1 &&
                                roles.iirForwardTempPlanes == 1) ||
                               (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 0) ||
                               (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 3)))) &&
@@ -602,10 +614,18 @@ namespace JuicerCuda {
             }
             if (!descriptor.needOptics &&
                 (descriptor.needBlurred ||
+                 descriptor.aliasScannerRgbFromSpatialDirFiltered ||
                  descriptor.needAux ||
                  descriptor.needGrainTriplet ||
                  descriptor.needGrainShared ||
                  descriptor.needGateMask)) {
+                return false;
+            }
+            if (descriptor.aliasScannerRgbFromSpatialDirFiltered &&
+                (!descriptor.needOptics ||
+                 !descriptor.needSpatialDir ||
+                 descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
+                 descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0)) {
                 return false;
             }
             return true;
@@ -643,6 +663,7 @@ namespace JuicerCuda {
             mix(static_cast<std::uint64_t>(descriptor.requestedWidth));
             mix(static_cast<std::uint64_t>(descriptor.requestedHeight));
             mix(descriptor.needBlurred ? 1ull : 0ull);
+            mix(descriptor.aliasScannerRgbFromSpatialDirFiltered ? 1ull : 0ull);
             mix(descriptor.needAux ? 1ull : 0ull);
             mix(descriptor.needGrainTriplet ? 1ull : 0ull);
             mix(descriptor.needGrainShared ? 1ull : 0ull);
@@ -668,6 +689,10 @@ namespace JuicerCuda {
             descriptor.requestedWidth = request.extent.requestedWidth;
             descriptor.requestedHeight = request.extent.requestedHeight;
             descriptor.needBlurred = request.families.needOptics && request.attachments.needBlurred;
+            descriptor.aliasScannerRgbFromSpatialDirFiltered =
+                request.families.needOptics &&
+                request.families.needSpatialDir &&
+                request.attachments.aliasScannerRgbFromSpatialDirFiltered;
             descriptor.needAux = request.families.needOptics && request.attachments.needAux;
             descriptor.needGrainTriplet = request.families.needOptics && request.attachments.needGrainTriplet;
             descriptor.needGrainShared = request.families.needOptics && request.attachments.needGrainShared;

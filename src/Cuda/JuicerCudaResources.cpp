@@ -4135,16 +4135,27 @@ namespace JuicerCuda {
         return bits;
     }
 
+    static void hash_shared_gaussian_bytes(
+        std::uint64_t& h,
+        const void* data,
+        std::size_t numBytes) noexcept {
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        for (std::size_t i = 0; i < numBytes; ++i) {
+            h ^= static_cast<std::uint64_t>(bytes[i]);
+            h *= Hash::kFnvPrime;
+        }
+    }
+
     static std::uint64_t make_shared_gaussian_id(const SharedGaussianKey& key) noexcept {
         std::uint64_t h = Hash::kFnvOffset;
-        Hash::hash_bytes_update(h, &key.deviceId, sizeof(key.deviceId));
+        hash_shared_gaussian_bytes(h, &key.deviceId, sizeof(key.deviceId));
         const std::uintptr_t contextBits =
             reinterpret_cast<std::uintptr_t>(key.contextOpaque);
-        Hash::hash_bytes_update(h, &contextBits, sizeof(contextBits));
+        hash_shared_gaussian_bytes(h, &contextBits, sizeof(contextBits));
         const std::uint8_t kindValue = static_cast<std::uint8_t>(key.kind);
-        Hash::hash_bytes_update(h, &kindValue, sizeof(kindValue));
-        Hash::hash_bytes_update(h, &key.radius, sizeof(key.radius));
-        Hash::hash_bytes_update(h, &key.sigmaBits, sizeof(key.sigmaBits));
+        hash_shared_gaussian_bytes(h, &kindValue, sizeof(kindValue));
+        hash_shared_gaussian_bytes(h, &key.radius, sizeof(key.radius));
+        hash_shared_gaussian_bytes(h, &key.sigmaBits, sizeof(key.sigmaBits));
         return h;
     }
 
@@ -4843,8 +4854,12 @@ namespace JuicerCuda {
         if (fft.inversePlan != 0) {
             (void)cufftDestroy(static_cast<cufftHandle>(fft.inversePlan));
         }
+        void* aliasedSpectrum = fft.spectrum;
+        if (aliasedSpectrum == fft.realBuffer) {
+            aliasedSpectrum = nullptr;
+        }
         free_tracked_device_ptr_locked(resources, fft.realBuffer, cudaStreamOpaque);
-        free_tracked_device_ptr_locked(resources, fft.spectrum, cudaStreamOpaque);
+        free_tracked_device_ptr_locked(resources, aliasedSpectrum, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, fft.transfer, cudaStreamOpaque);
         free_tracked_device_ptr_locked(resources, fft.workArea, cudaStreamOpaque);
 #else
@@ -5033,7 +5048,7 @@ namespace JuicerCuda {
         if (fft.realBuffer) {
             bytes += fft.realBufferBytes;
         }
-        if (fft.spectrum) {
+        if (fft.spectrum && fft.spectrum != fft.realBuffer) {
             bytes += fft.spectrumBytes;
         }
         if (fft.transfer) {
@@ -5064,6 +5079,10 @@ namespace JuicerCuda {
         const bool hasChannelTemps =
             scratch.filterTempM && scratch.filterTempC &&
             scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+        const bool hasAliasedForwardTemps =
+            scratch.filterTempM && scratch.filterTempC &&
+            scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
+            scratch.iirForwardTempC == nullptr;
         const bool hasCompactSequentialTemps =
             scratch.iirForwardTemp &&
             scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
@@ -5077,9 +5096,11 @@ namespace JuicerCuda {
             scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
             scratch.iirForwardTempC == nullptr;
         const bool channelTempsMatch =
+            (planeRoles.filterTempPlanes == 0 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
             (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
             (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
             (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
+            (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
             (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
         const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
         const bool hasNoCachedLogRaw =
@@ -5116,6 +5137,11 @@ namespace JuicerCuda {
              scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC) ||
             (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
         return filterTempsCompatible && iirForwardTempsCompatible;
+    }
+
+    static bool spatial_dir_request_needs_shared_tmp_plane(
+        const Spektrafilm::DirScratchPlaneRoles& planeRoles) noexcept {
+        return planeRoles.filterTempPlanes > 0;
     }
 
     static bool retire_shared_tmp_plane_locked(
@@ -6253,7 +6279,9 @@ namespace JuicerCuda {
                 const bool baseLive = optics.rgbR && optics.rgbG && optics.rgbB;
                 const bool capacityMatch = optics.capacityElements >= requiredElements;
                 const bool retireOptics =
-                    !scratchRequest.needOptics || !baseLive || !capacityMatch;
+                    !scratchRequest.needOptics ||
+                    !capacityMatch ||
+                    (scratchRequest.aliasScannerRgbFromSpatialDirFiltered ? baseLive : !baseLive);
                 if (retireOptics) {
                     outStats.opticsRetiredBytes = optics_stage_live_bytes_locked(optics);
                     if (!retire_optics_scratch_locked(
@@ -6777,14 +6805,16 @@ namespace JuicerCuda {
 #endif
     }
 
-    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
+    bool ensure_optics_scratch(Resources& resources, int width, int height, bool needBlurredScratch, bool aliasScannerRgbFromSpatialDirFiltered, bool needAuxScratch, bool needGrainScratch, bool needGrainSharedScratch, bool needGateMask, void* cudaStreamOpaque, std::string& outError) {
 #if !defined(JUICER_ENABLE_CUDA) || defined(__APPLE__)
         (void)resources;
         (void)width;
         (void)height;
         (void)needBlurredScratch;
+        (void)aliasScannerRgbFromSpatialDirFiltered;
         (void)needAuxScratch;
         (void)needGrainScratch;
+        (void)needGrainSharedScratch;
         (void)needGateMask;
         (void)cudaStreamOpaque;
         outError = "CUDA is not enabled";
@@ -6803,7 +6833,11 @@ namespace JuicerCuda {
         const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
         const bool dimsMatch = (resources.scannerScratch.width == width && resources.scannerScratch.height == height);
         const bool capacityMatch = resources.scannerScratch.capacityElements >= requiredElements;
-        const bool haveBase = resources.scannerScratch.rgbR && resources.scannerScratch.rgbG && resources.scannerScratch.rgbB;
+        const bool needScannerRgbScratch = !aliasScannerRgbFromSpatialDirFiltered;
+        const bool haveBase =
+            !needScannerRgbScratch ||
+            (resources.scannerScratch.rgbR && resources.scannerScratch.rgbG &&
+             resources.scannerScratch.rgbB);
 
         if (!capacityMatch || !haveBase) {
             if (resources.scannerScratch.rgbR || resources.scannerScratch.rgbG || resources.scannerScratch.rgbB ||
@@ -6818,35 +6852,37 @@ namespace JuicerCuda {
             }
 
             const size_t bytes = requiredElements * sizeof(float);
-            if (!allocate_scratch_device_ptr_locked(
-                    resources,
-                    resources.scannerScratch.rgbR,
-                    bytes,
-                    cudaStreamOpaque,
-                    "scannerScratch.rgbR",
-                    outError)) {
-                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
-                return false;
-            }
-            if (!allocate_scratch_device_ptr_locked(
-                    resources,
-                    resources.scannerScratch.rgbG,
-                    bytes,
-                    cudaStreamOpaque,
-                    "scannerScratch.rgbG",
-                    outError)) {
-                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
-                return false;
-            }
-            if (!allocate_scratch_device_ptr_locked(
-                    resources,
-                    resources.scannerScratch.rgbB,
-                    bytes,
-                    cudaStreamOpaque,
-                    "scannerScratch.rgbB",
-                    outError)) {
-                free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
-                return false;
+            if (needScannerRgbScratch) {
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.rgbR,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.rgbR",
+                        outError)) {
+                    free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
+                    return false;
+                }
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.rgbG,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.rgbG",
+                        outError)) {
+                    free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
+                    return false;
+                }
+                if (!allocate_scratch_device_ptr_locked(
+                        resources,
+                        resources.scannerScratch.rgbB,
+                        bytes,
+                        cudaStreamOpaque,
+                        "scannerScratch.rgbB",
+                        outError)) {
+                    free_optics_scratch(resources, resources.scannerScratch, cudaStreamOpaque);
+                    return false;
+                }
             }
 
             resources.scannerScratch.capacityElements = requiredElements;
@@ -6863,6 +6899,32 @@ namespace JuicerCuda {
         }
         resources.scannerScratch.tmp = resources.sharedTmpPlane;
         const size_t planeBytes = resources.scannerScratch.capacityElements * sizeof(float);
+
+        if (!needScannerRgbScratch) {
+            auto retire_rgb_plane = [&](float*& ptr, const char* label) {
+                if (!ptr) {
+                    return true;
+                }
+                if (!retire_ptr_locked(
+                        resources,
+                        ptr,
+                        planeBytes,
+                        Resources::RetireKind::DeviceFree,
+                        cudaStreamOpaque,
+                        label,
+                        outError,
+                        true)) {
+                    return false;
+                }
+                ptr = nullptr;
+                return true;
+            };
+            if (!retire_rgb_plane(resources.scannerScratch.rgbR, "scannerScratch.rgbR alias release") ||
+                !retire_rgb_plane(resources.scannerScratch.rgbG, "scannerScratch.rgbG alias release") ||
+                !retire_rgb_plane(resources.scannerScratch.rgbB, "scannerScratch.rgbB alias release")) {
+                return false;
+            }
+        }
 
         if (needBlurredScratch) {
             if (!resources.scannerScratch.blurred) {
@@ -7069,13 +7131,24 @@ namespace JuicerCuda {
         const size_t requiredElements = static_cast<size_t>(width) * static_cast<size_t>(height);
         const bool dimsMatch = (scratch.width == width && scratch.height == height);
         const bool capacityMatch = scratch.capacityElements >= requiredElements;
+        const bool needSharedTmp = spatial_dir_request_needs_shared_tmp_plane(planeRoles);
         const bool haveRequiredRoles =
             spatial_dir_scratch_has_required_roles_locked(scratch, planeRoles);
         if (dimsMatch && capacityMatch && haveRequiredRoles) {
-            if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
-                return false;
+            if (needSharedTmp) {
+                if (!ensure_shared_tmp_plane_locked(
+                        resources,
+                        width,
+                        height,
+                        cudaStreamOpaque,
+                        "shared tmp plane",
+                        outError)) {
+                    return false;
+                }
+                scratch.filterTemp = resources.sharedTmpPlane;
+            } else {
+                scratch.filterTemp = nullptr;
             }
-            scratch.filterTemp = resources.sharedTmpPlane;
             return true;
         }
 
@@ -7113,11 +7186,21 @@ namespace JuicerCuda {
                 free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
                 return false;
             }
-            if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
-                free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
-                return false;
+            if (needSharedTmp) {
+                if (!ensure_shared_tmp_plane_locked(
+                        resources,
+                        width,
+                        height,
+                        cudaStreamOpaque,
+                        "shared tmp plane",
+                        outError)) {
+                    free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+                    return false;
+                }
+                scratch.filterTemp = resources.sharedTmpPlane;
+            } else {
+                scratch.filterTemp = nullptr;
             }
-            scratch.filterTemp = resources.sharedTmpPlane;
             scratch.width = width;
             scratch.height = height;
             scratch.capacityElements = requiredElements;
@@ -7139,10 +7222,20 @@ namespace JuicerCuda {
         if (capacityMatch && haveRequiredRoles) {
             scratch.width = width;
             scratch.height = height;
-            if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
-                return false;
+            if (needSharedTmp) {
+                if (!ensure_shared_tmp_plane_locked(
+                        resources,
+                        width,
+                        height,
+                        cudaStreamOpaque,
+                        "shared tmp plane",
+                        outError)) {
+                    return false;
+                }
+                scratch.filterTemp = resources.sharedTmpPlane;
+            } else {
+                scratch.filterTemp = nullptr;
             }
-            scratch.filterTemp = resources.sharedTmpPlane;
             return true;
         }
 
@@ -7276,11 +7369,21 @@ namespace JuicerCuda {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
-        if (!ensure_shared_tmp_plane_locked(resources, width, height, cudaStreamOpaque, "shared tmp plane", outError)) {
-            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
-            return false;
+        if (needSharedTmp) {
+            if (!ensure_shared_tmp_plane_locked(
+                    resources,
+                    width,
+                    height,
+                    cudaStreamOpaque,
+                    "shared tmp plane",
+                    outError)) {
+                free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+                return false;
+            }
+            scratch.filterTemp = resources.sharedTmpPlane;
+        } else {
+            scratch.filterTemp = nullptr;
         }
-        scratch.filterTemp = resources.sharedTmpPlane;
 
         scratch.width = width;
         scratch.height = height;
@@ -7349,6 +7452,16 @@ namespace JuicerCuda {
             return false;
         }
         return checked_size_mul(elements, elementBytes, out);
+    }
+
+    static int spatial_dir_fft_real_stride(
+        const Spektrafilm::SpatialDirDescriptor& descriptor) noexcept {
+        if (descriptor.fftComplexWidth <= 0 ||
+            descriptor.fftComplexWidth > (std::numeric_limits<int>::max() / 2)) {
+            return 0;
+        }
+        const int stride = descriptor.fftComplexWidth * 2;
+        return stride >= descriptor.fftWidth ? stride : 0;
     }
 
     static std::vector<cufftComplex> build_spatial_dir_fft_transfer_host(
@@ -7428,7 +7541,7 @@ namespace JuicerCuda {
             fft.forwardPlan != 0 &&
             fft.inversePlan != 0 &&
             fft.realBuffer &&
-            fft.spectrum &&
+            fft.spectrum == fft.realBuffer &&
             fft.transfer &&
             fft.width == descriptor.fftWidth &&
             fft.height == descriptor.fftHeight &&
@@ -7438,10 +7551,16 @@ namespace JuicerCuda {
             return true;
         }
 
+        const int realStride = spatial_dir_fft_real_stride(descriptor);
+        if (realStride <= 0) {
+            outError = "spatial DIR FFT in-place real stride is invalid";
+            return false;
+        }
+
         std::size_t realBytes = 0;
         std::size_t spectrumBytes = 0;
         if (!checked_fft_byte_count(
-                descriptor.fftWidth,
+                realStride,
                 descriptor.fftHeight,
                 sizeof(float),
                 realBytes) ||
@@ -7507,7 +7626,6 @@ namespace JuicerCuda {
         add_bytes(std::max(forwardWorkBytes, inverseWorkBytes));
         add_bytes(realBytes);
         add_bytes(spectrumBytes);
-        add_bytes(spectrumBytes);
         if (newBytes == std::numeric_limits<std::size_t>::max()) {
             outError = "spatial DIR FFT growth byte count overflow";
             return false;
@@ -7526,7 +7644,7 @@ namespace JuicerCuda {
         };
         add_current(fft.workArea != nullptr, fft.workAreaBytes);
         add_current(fft.realBuffer != nullptr, fft.realBufferBytes);
-        add_current(fft.spectrum != nullptr, fft.spectrumBytes);
+        add_current(fft.spectrum != nullptr && fft.spectrum != fft.realBuffer, fft.spectrumBytes);
         add_current(fft.transfer != nullptr, fft.transferBytes);
         if (currentBytes == std::numeric_limits<std::size_t>::max()) {
             outError = "spatial DIR FFT resident byte count overflow";
@@ -7573,7 +7691,7 @@ namespace JuicerCuda {
             fft.forwardPlan != 0 &&
             fft.inversePlan != 0 &&
             fft.realBuffer &&
-            fft.spectrum &&
+            fft.spectrum == fft.realBuffer &&
             fft.transfer &&
             fft.width == descriptor.fftWidth &&
             fft.height == descriptor.fftHeight &&
@@ -7597,10 +7715,16 @@ namespace JuicerCuda {
         const auto setupStart = std::chrono::steady_clock::now();
         free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
 
+        const int realStride = spatial_dir_fft_real_stride(descriptor);
+        if (realStride <= 0) {
+            outError = "spatial DIR FFT in-place real stride is invalid";
+            return false;
+        }
+
         std::size_t realBytes = 0;
         std::size_t spectrumBytes = 0;
         if (!checked_fft_byte_count(
-                descriptor.fftWidth,
+                realStride,
                 descriptor.fftHeight,
                 sizeof(float),
                 realBytes) ||
@@ -7700,13 +7824,6 @@ namespace JuicerCuda {
                 outError) ||
             !allocate_scratch_device_ptr_locked(
                 resources,
-                fft.spectrum,
-                spectrumBytes,
-                cudaStreamOpaque,
-                "spatial DIR FFT spectrum",
-                outError) ||
-            !allocate_scratch_device_ptr_locked(
-                resources,
                 fft.transfer,
                 spectrumBytes,
                 cudaStreamOpaque,
@@ -7715,6 +7832,7 @@ namespace JuicerCuda {
             free_spatial_dir_fft(resources, fft, cudaStreamOpaque);
             return false;
         }
+        fft.spectrum = fft.realBuffer;
 
         const std::vector<cufftComplex> transferHost =
             build_spatial_dir_fft_transfer_host(descriptor);
@@ -7736,7 +7854,7 @@ namespace JuicerCuda {
         fft.complexWidth = descriptor.fftComplexWidth;
         fft.descriptorHash = descriptor.hash;
         fft.realBufferBytes = realBytes;
-        fft.spectrumBytes = spectrumBytes;
+        fft.spectrumBytes = 0;
         fft.transferBytes = spectrumBytes;
         fft.lastSetupCreated = true;
         fft.lastSetupMs =

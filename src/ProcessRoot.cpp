@@ -45,10 +45,13 @@ namespace JuicerProcess {
                 case Spektrafilm::DirScratchTier::Tier0:
                     return roles.total_float_planes() == 0;
                 case Spektrafilm::DirScratchTier::Tier1F:
-                    return roles.rawCorrectionPlanes == 3 &&
-                           roles.filteredCorrectionPlanes == 3 &&
-                           roles.filterTempPlanes == 1 &&
-                           roles.iirForwardTempPlanes == 0 &&
+                    return roles.filteredCorrectionPlanes == 3 &&
+                           ((roles.rawCorrectionPlanes == 1 &&
+                             roles.filterTempPlanes == 0 &&
+                             roles.iirForwardTempPlanes == 0) ||
+                            (roles.rawCorrectionPlanes == 3 &&
+                             roles.filterTempPlanes == 1 &&
+                             roles.iirForwardTempPlanes == 0)) &&
                            roles.cachedLogRawPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
@@ -60,8 +63,12 @@ namespace JuicerProcess {
                              roles.iirForwardTempPlanes == 0) ||
                             (roles.rawCorrectionPlanes == 3 &&
                              ((roles.filterTempPlanes == 1 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 1 &&
                                roles.iirForwardTempPlanes == 1) ||
                               (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 0) ||
                               (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 3)))) &&
@@ -72,7 +79,8 @@ namespace JuicerProcess {
                 case Spektrafilm::DirScratchTier::Tier2:
                     return roles.filteredCorrectionPlanes == 3 &&
                            ((roles.rawCorrectionPlanes == 1 &&
-                             roles.filterTempPlanes == 1 &&
+                             (roles.filterTempPlanes == 0 ||
+                              roles.filterTempPlanes == 1) &&
                              roles.iirForwardTempPlanes == 0) ||
                             (roles.rawCorrectionPlanes == 3 &&
                              ((roles.filterTempPlanes == 1 &&
@@ -80,6 +88,8 @@ namespace JuicerProcess {
                               (roles.filterTempPlanes == 1 &&
                                roles.iirForwardTempPlanes == 1) ||
                               (roles.filterTempPlanes == 2 &&
+                               roles.iirForwardTempPlanes == 0) ||
+                              (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 0) ||
                               (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 3)))) &&
@@ -113,16 +123,22 @@ namespace JuicerProcess {
             const bool rawCorrectionMatch =
                 (roles.rawCorrectionPlanes == 3 && hasThreeRaw) ||
                 (roles.rawCorrectionPlanes == 1 && hasStreamedRaw);
+            const bool filterTempMatch =
+                roles.filterTempPlanes == 0 || scratch.filterTemp;
             const bool tier1Base =
                 rawCorrectionMatch &&
                 scratch.filteredCorrectionY && scratch.filteredCorrectionM && scratch.filteredCorrectionC &&
-                scratch.filterTemp;
+                filterTempMatch;
             if (!tier1Base) {
                 return false;
             }
             const bool hasChannelTemps =
                 scratch.filterTempM && scratch.filterTempC &&
                 scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+            const bool hasAliasedForwardTemps =
+                scratch.filterTempM && scratch.filterTempC &&
+                scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
+                scratch.iirForwardTempC == nullptr;
             const bool hasCompactSequentialTemps =
                 scratch.iirForwardTemp &&
                 scratch.filterTempM == nullptr && scratch.filterTempC == nullptr &&
@@ -136,9 +152,11 @@ namespace JuicerProcess {
                 scratch.iirForwardTemp == nullptr && scratch.iirForwardTempM == nullptr &&
                 scratch.iirForwardTempC == nullptr;
             const bool channelTempsMatch =
+                (roles.filterTempPlanes == 0 && roles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
                 (roles.filterTempPlanes == 1 && roles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
                 (roles.filterTempPlanes == 1 && roles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
                 (roles.filterTempPlanes == 2 && roles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
+                (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
                 (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3 && hasChannelTemps);
             const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
             const bool hasNoCachedLogRaw =
@@ -216,6 +234,16 @@ namespace JuicerProcess {
             return roles;
         }
 
+        Spektrafilm::DirScratchPlaneRoles strict_yvv_single_temp_sequential_plane_roles() noexcept {
+            Spektrafilm::DirScratchPlaneRoles roles{};
+            roles.rawCorrectionPlanes = 3;
+            roles.filteredCorrectionPlanes = 3;
+            roles.filterTempPlanes = 1;
+            roles.iirForwardTempPlanes = 0;
+            roles.cachedLogRawPlanes = 0;
+            return roles;
+        }
+
         Spektrafilm::DirScratchPlaneRoles strict_yvv_component_streamed_plane_roles() noexcept {
             Spektrafilm::DirScratchPlaneRoles roles{};
             roles.rawCorrectionPlanes = 1;
@@ -239,8 +267,24 @@ namespace JuicerProcess {
             return candidate;
         }
 
+        bool spatial_dir_alias_target_uses_build_roles(
+            const Root::PreparedCudaFrame::WorkspaceRequest& request) noexcept {
+            return request.aliasScannerRgbFromSpatialDirFiltered &&
+                   request.needSpatialDir &&
+                   request.spatialDirTargetScratchTier == request.spatialDirScratchTier &&
+                   request.spatialDirTargetPlaneRoles.cachedLogRawPlanes == 0 &&
+                   dir_plane_roles_equal(
+                       request.spatialDirTargetPlaneRoles,
+                       request.spatialDirPlaneRoles);
+        }
+
         [[maybe_unused]] const char* strict_yvv_candidate_label(
             const Spektrafilm::DirScratchPlaneRoles& roles) noexcept {
+            if (roles.rawCorrectionPlanes == 3 &&
+                roles.filterTempPlanes == 3 &&
+                roles.iirForwardTempPlanes == 0) {
+                return "strict_yvv_channels_aliased_forward";
+            }
             if (roles.rawCorrectionPlanes == 3 &&
                 roles.filterTempPlanes == 3 &&
                 roles.iirForwardTempPlanes == 3) {
@@ -250,6 +294,16 @@ namespace JuicerProcess {
                 roles.filterTempPlanes == 2 &&
                 roles.iirForwardTempPlanes == 0) {
                 return "strict_yvv_low_scratch_pair";
+            }
+            if (roles.rawCorrectionPlanes == 3 &&
+                roles.filterTempPlanes == 1 &&
+                roles.iirForwardTempPlanes == 0) {
+                return "strict_yvv_single_temp_sequential";
+            }
+            if (roles.rawCorrectionPlanes == 1 &&
+                roles.filterTempPlanes == 0 &&
+                roles.iirForwardTempPlanes == 0) {
+                return "accepted_fft_component_streamed";
             }
             if (roles.rawCorrectionPlanes == 1 &&
                 roles.filterTempPlanes == 1 &&
@@ -262,6 +316,13 @@ namespace JuicerProcess {
                 return "strict_yvv_compact_sequential";
             }
             return "unknown";
+        }
+
+        bool workspace_request_needs_shared_tmp_plane(
+            const Root::PreparedCudaFrame::WorkspaceRequest& request) noexcept {
+            return request.needOptics ||
+                   (request.needSpatialDir &&
+                    request.spatialDirPlaneRoles.filterTempPlanes > 0);
         }
 #endif
 
@@ -455,6 +516,8 @@ namespace JuicerProcess {
             request.extent.requestedWidth = workspace.requestedWidth;
             request.extent.requestedHeight = workspace.requestedHeight;
             request.attachments.needBlurred = workspace.needBlurred;
+            request.attachments.aliasScannerRgbFromSpatialDirFiltered =
+                workspace.aliasScannerRgbFromSpatialDirFiltered;
             request.attachments.needAux = workspace.needAux;
             request.attachments.needGrainTriplet = workspace.needGrainTriplet;
             request.attachments.needGrainShared = workspace.needGrainShared;
@@ -462,6 +525,200 @@ namespace JuicerProcess {
             return JuicerCuda::ResourceManager::make_scratch_request_descriptor(
                 request);
         }
+
+#if JUICER_DIAGNOSTICS_COMPILED
+        void append_workspace_request_trace_fields(
+            std::string& msg,
+            const char* prefix,
+            const Root::PreparedCudaFrame::WorkspaceRequest& request) {
+            const Spektrafilm::DirScratchPlaneRoles& roles = request.spatialDirPlaneRoles;
+            const Spektrafilm::DirScratchPlaneRoles& targetRoles =
+                request.spatialDirTargetPlaneRoles;
+            const std::string fieldPrefix = prefix && prefix[0] ? std::string(prefix) : "request";
+            auto append_i32 = [&](const char* name, int value) {
+                msg += " ";
+                msg += fieldPrefix;
+                msg += "_";
+                msg += name;
+                msg += "=";
+                msg += std::to_string(value);
+            };
+            auto append_u64 = [&](const char* name, std::uint64_t value) {
+                msg += " ";
+                msg += fieldPrefix;
+                msg += "_";
+                msg += name;
+                msg += "=";
+                msg += std::to_string(static_cast<unsigned long long>(value));
+            };
+            auto append_bool = [&](const char* name, bool value) {
+                append_i32(name, value ? 1 : 0);
+            };
+            auto append_cstr = [&](const char* name, const char* value) {
+                msg += " ";
+                msg += fieldPrefix;
+                msg += "_";
+                msg += name;
+                msg += "=";
+                msg += value && value[0] ? value : "unspecified";
+            };
+
+            append_bool("need_optics", request.needOptics);
+            append_bool("need_spatial_dir", request.needSpatialDir);
+            append_u64("spatial_dir_descriptor_hash", request.spatialDirDescriptorHash);
+            append_cstr("spatial_dir_scratch_tier", Spektrafilm::to_cstr(request.spatialDirScratchTier));
+            append_i32("raw_correction_planes", roles.rawCorrectionPlanes);
+            append_i32("filtered_correction_planes", roles.filteredCorrectionPlanes);
+            append_i32("filter_temp_planes", roles.filterTempPlanes);
+            append_i32("iir_forward_temp_planes", roles.iirForwardTempPlanes);
+            append_i32("cached_log_raw_planes", roles.cachedLogRawPlanes);
+            append_cstr("spatial_dir_target_scratch_tier", Spektrafilm::to_cstr(request.spatialDirTargetScratchTier));
+            append_i32("target_raw_correction_planes", targetRoles.rawCorrectionPlanes);
+            append_i32("target_filtered_correction_planes", targetRoles.filteredCorrectionPlanes);
+            append_i32("target_filter_temp_planes", targetRoles.filterTempPlanes);
+            append_i32("target_iir_forward_temp_planes", targetRoles.iirForwardTempPlanes);
+            append_i32("target_cached_log_raw_planes", targetRoles.cachedLogRawPlanes);
+            append_i32("requested_width", request.requestedWidth);
+            append_i32("requested_height", request.requestedHeight);
+            append_bool("need_blurred", request.needBlurred);
+            append_bool(
+                "alias_scanner_rgb_from_spatial_dir_filtered",
+                request.aliasScannerRgbFromSpatialDirFiltered);
+            append_bool("need_aux", request.needAux);
+            append_bool("need_grain_triplet", request.needGrainTriplet);
+            append_bool("need_grain_shared", request.needGrainShared);
+            append_bool("need_gate_mask", request.needGateMask);
+        }
+
+        void trace_workspace_request_mismatch(
+            const JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+            const Root::PreparedCudaFrame::WorkspaceRequest& activeRequest,
+            const Root::PreparedCudaFrame::WorkspaceRequest& requestedRequest) {
+            if (!JTRACE_ENABLED(1)) {
+                return;
+            }
+            std::string msg = "event=frame_scratch_request_mismatch transaction_id=";
+            msg += std::to_string(static_cast<unsigned long long>(transaction.transactionId));
+            msg += " snapshot_id=";
+            msg += std::to_string(static_cast<unsigned long long>(transaction.snapshot.snapshotId));
+            msg += " trace_schema=";
+            msg += std::to_string(transaction.snapshot.traceSchemaVersion);
+            append_workspace_request_trace_fields(msg, "active", activeRequest);
+            append_workspace_request_trace_fields(msg, "requested", requestedRequest);
+            JTRACE("MSADM", msg);
+        }
+
+        void trace_scanner_post_effects_view_inactive(
+            const JuicerCuda::ResourceManager::SubmissionTransaction* transaction,
+            const char* reason,
+            std::uint64_t requestedDescriptorHash,
+            const Scanner::ScannerPostEffectsDescriptor* descriptor,
+            const Root::PreparedCudaFrame::ScannerWorkspaceView* scratch,
+            const Root::PreparedCudaFrame::KernelView* lensBlur,
+            const Root::PreparedCudaFrame::KernelView* unsharp,
+            const Root::PreparedCudaFrame::KernelView* glare) noexcept {
+            if (!JTRACE_ENABLED(1)) {
+                return;
+            }
+
+            try {
+                std::string msg = "event=scanner_post_effects_view_inactive";
+                if (transaction) {
+                    msg += " transaction_id=";
+                    msg += std::to_string(static_cast<unsigned long long>(transaction->transactionId));
+                    msg += " snapshot_id=";
+                    msg += std::to_string(static_cast<unsigned long long>(transaction->snapshot.snapshotId));
+                    msg += " trace_schema=";
+                    msg += std::to_string(transaction->snapshot.traceSchemaVersion);
+                } else {
+                    msg += " transaction_id=0 snapshot_id=0 trace_schema=0";
+                }
+                msg += " reason=";
+                msg += reason && reason[0] ? reason : "unspecified";
+                msg += " requested_hash=";
+                msg += std::to_string(static_cast<unsigned long long>(requestedDescriptorHash));
+                msg += " prepared_hash=";
+                msg += std::to_string(static_cast<unsigned long long>(descriptor ? descriptor->hash : 0));
+                msg += " glare_active=";
+                msg += descriptor && descriptor->glareActive ? "1" : "0";
+                msg += " glare_blur_sigma_px=";
+                msg += descriptor ? std::to_string(descriptor->glareBlurSigmaPx) : "0";
+                msg += " lens_blur_sigma_px=";
+                msg += descriptor ? std::to_string(descriptor->lensBlurSigmaPx) : "0";
+                msg += " unsharp_sigma_px=";
+                msg += descriptor ? std::to_string(descriptor->unsharpSigmaPx) : "0";
+                msg += " unsharp_amount=";
+                msg += descriptor ? std::to_string(descriptor->unsharpAmount) : "0";
+
+                const auto append_scratch_bool = [&](const char* name, const void* value) {
+                    msg += " scratch_";
+                    msg += name;
+                    msg += "=";
+                    msg += value ? "1" : "0";
+                };
+                msg += " scratch_active=";
+                msg += scratch && scratch->active ? "1" : "0";
+                msg += " scratch_rgb_aliased_from_spatial_dir_filtered=";
+                msg += scratch && scratch->rgbAliasedFromSpatialDirFiltered ? "1" : "0";
+                append_scratch_bool("rgb_r", scratch ? scratch->rgbR : nullptr);
+                append_scratch_bool("rgb_g", scratch ? scratch->rgbG : nullptr);
+                append_scratch_bool("rgb_b", scratch ? scratch->rgbB : nullptr);
+                append_scratch_bool("tmp", scratch ? scratch->tmp : nullptr);
+                append_scratch_bool("blurred", scratch ? scratch->blurred : nullptr);
+                append_scratch_bool("aux", scratch ? scratch->aux : nullptr);
+                append_scratch_bool("gate_mask", scratch ? scratch->gateMask : nullptr);
+                msg += " scratch_gate_mask_width=";
+                msg += std::to_string(scratch ? scratch->gateMaskWidth : 0);
+                msg += " scratch_gate_mask_height=";
+                msg += std::to_string(scratch ? scratch->gateMaskHeight : 0);
+
+                const auto append_kernel =
+                    [&](const char* prefix, const Root::PreparedCudaFrame::KernelView* kernel) {
+                        msg += " ";
+                        msg += prefix;
+                        msg += "_kernel=";
+                        msg += kernel && kernel->weights ? "1" : "0";
+                        msg += " ";
+                        msg += prefix;
+                        msg += "_radius=";
+                        msg += std::to_string(kernel ? kernel->radius : 0);
+                    };
+                append_kernel("lens", lensBlur);
+                append_kernel("unsharp", unsharp);
+                append_kernel("glare", glare);
+                JTRACE("CUDA", msg);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+        }
+
+        void trace_scanner_post_rgb_alias(
+            const JuicerCuda::ResourceManager::SubmissionTransaction& transaction,
+            std::uint64_t descriptorHash,
+            std::uint64_t spatialDirDescriptorHash) noexcept {
+            if (!JTRACE_ENABLED(1)) {
+                return;
+            }
+
+            try {
+                std::string msg = "event=scanner_post_rgb_alias";
+                msg += " transaction_id=";
+                msg += std::to_string(static_cast<unsigned long long>(transaction.transactionId));
+                msg += " snapshot_id=";
+                msg += std::to_string(static_cast<unsigned long long>(transaction.snapshot.snapshotId));
+                msg += " trace_schema=";
+                msg += std::to_string(transaction.snapshot.traceSchemaVersion);
+                msg += " descriptor_hash=";
+                msg += std::to_string(static_cast<unsigned long long>(descriptorHash));
+                msg += " spatial_dir_descriptor_hash=";
+                msg += std::to_string(static_cast<unsigned long long>(spatialDirDescriptorHash));
+                msg += " rgb_source=spatial_dir_filtered_alias alias_planes=3";
+                JTRACE("DIR_DESCRIPTOR", msg);
+            } catch (...) {
+                JuicerLogging::discard_current_exception();
+            }
+        }
+#endif
 
 #endif
 
@@ -523,12 +780,14 @@ namespace JuicerProcess {
 
         struct FrameScratchWorkspace {
             WorkspaceRequest request{};
+            WorkspaceRequest postFrameRequest{};
             JuicerCuda::Resources::DeviceOpticsScratch optics{};
             JuicerCuda::Resources::DeviceSpatialDirScratch spatialDir{};
             float* sharedTmpPlane = nullptr;
             int sharedTmpWidth = 0;
             int sharedTmpHeight = 0;
             std::size_t sharedTmpCapacityElements = 0;
+            bool postFrameRequestActive = false;
             bool retainedLeaseActive = false;
             bool overflowActive = false;
         };
@@ -989,6 +1248,14 @@ namespace JuicerProcess {
                 return false;
             }
         }
+        if (request.aliasScannerRgbFromSpatialDirFiltered &&
+            (!request.needOptics ||
+             !request.needSpatialDir ||
+             request.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
+             request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0)) {
+            outError = "scanner RGB spatial DIR alias request is invalid";
+            return false;
+        }
 
         auto requests_match = [](const WorkspaceRequest& a, const WorkspaceRequest& b) noexcept {
             return a.needOptics == b.needOptics &&
@@ -1015,6 +1282,8 @@ namespace JuicerProcess {
                    a.requestedWidth == b.requestedWidth &&
                    a.requestedHeight == b.requestedHeight &&
                    a.needBlurred == b.needBlurred &&
+                   a.aliasScannerRgbFromSpatialDirFiltered ==
+                       b.aliasScannerRgbFromSpatialDirFiltered &&
                    a.needAux == b.needAux &&
                    a.needGrainTriplet == b.needGrainTriplet &&
                    a.needGrainShared == b.needGrainShared &&
@@ -1023,6 +1292,9 @@ namespace JuicerProcess {
 
         if (scratchWorkspace.retainedLeaseActive || scratchWorkspace.overflowActive) {
             if (!requests_match(scratchWorkspace.request, request)) {
+#if JUICER_DIAGNOSTICS_COMPILED
+                trace_workspace_request_mismatch(transaction, scratchWorkspace.request, request);
+#endif
                 outError = "prepared frame scratch workspace request mismatch";
                 return false;
             }
@@ -1041,6 +1313,8 @@ namespace JuicerProcess {
         }
         if (retainedAcquired) {
             scratchWorkspace.request = request;
+            scratchWorkspace.postFrameRequest = request;
+            scratchWorkspace.postFrameRequestActive = true;
             scratchWorkspace.retainedLeaseActive = true;
             return true;
         }
@@ -1069,6 +1343,8 @@ namespace JuicerProcess {
 
         FrameScratchWorkspace next{};
         next.request = request;
+        next.postFrameRequest = request;
+        next.postFrameRequestActive = true;
         next.overflowActive = true;
 
         auto alloc_float = [&](float*& ptr, std::size_t bytes, const char* label) {
@@ -1087,19 +1363,28 @@ namespace JuicerProcess {
             return false;
         };
 
-        if (!alloc_float(next.sharedTmpPlane, planeBytes, "frame shared tmp plane")) {
-            return fail_after_partial_alloc();
+        const bool needSharedTmp = workspace_request_needs_shared_tmp_plane(request);
+        if (needSharedTmp) {
+            if (!alloc_float(next.sharedTmpPlane, planeBytes, "frame shared tmp plane")) {
+                return fail_after_partial_alloc();
+            }
+            next.sharedTmpWidth = request.requestedWidth;
+            next.sharedTmpHeight = request.requestedHeight;
+            next.sharedTmpCapacityElements = requiredElements;
         }
-        next.sharedTmpWidth = request.requestedWidth;
-        next.sharedTmpHeight = request.requestedHeight;
-        next.sharedTmpCapacityElements = requiredElements;
 
         if (request.needOptics) {
             JuicerCuda::Resources::DeviceOpticsScratch& optics = next.optics;
-            if (!alloc_float(optics.rgbR, planeBytes, "frame scannerScratch.rgbR") ||
-                !alloc_float(optics.rgbG, planeBytes, "frame scannerScratch.rgbG") ||
-                !alloc_float(optics.rgbB, planeBytes, "frame scannerScratch.rgbB")) {
+            if (!next.sharedTmpPlane) {
+                outError = "frame optics scratch requires shared tmp plane";
                 return fail_after_partial_alloc();
+            }
+            if (!request.aliasScannerRgbFromSpatialDirFiltered) {
+                if (!alloc_float(optics.rgbR, planeBytes, "frame scannerScratch.rgbR") ||
+                    !alloc_float(optics.rgbG, planeBytes, "frame scannerScratch.rgbG") ||
+                    !alloc_float(optics.rgbB, planeBytes, "frame scannerScratch.rgbB")) {
+                    return fail_after_partial_alloc();
+                }
             }
             optics.tmp = next.sharedTmpPlane;
             optics.width = request.requestedWidth;
@@ -1174,7 +1459,13 @@ namespace JuicerProcess {
                  !alloc_float(spatialDir.rawCorrectionC, planeBytes, "frame spatial DIR rawCorrectionC"))) {
                 return fail_after_partial_alloc();
             }
-            spatialDir.filterTemp = next.sharedTmpPlane;
+            if (request.spatialDirPlaneRoles.filterTempPlanes > 0) {
+                if (!next.sharedTmpPlane) {
+                    outError = "frame spatial DIR filter temp requires shared tmp plane";
+                    return fail_after_partial_alloc();
+                }
+                spatialDir.filterTemp = next.sharedTmpPlane;
+            }
             if (request.spatialDirPlaneRoles.filterTempPlanes >= 2 &&
                 !alloc_float(
                     spatialDir.filterTempM,
@@ -1887,7 +2178,10 @@ namespace JuicerProcess {
         if (!scratchWorkspace.retainedLeaseActive && !scratchWorkspace.overflowActive) {
             return JuicerCuda::ResourceManager::ScratchRequestDescriptor{};
         }
-        return make_workspace_scratch_request_descriptor(scratchWorkspace.request);
+        const WorkspaceRequest& request = scratchWorkspace.postFrameRequestActive
+                                              ? scratchWorkspace.postFrameRequest
+                                              : scratchWorkspace.request;
+        return make_workspace_scratch_request_descriptor(request);
     }
 
     Root::PreparedCudaFrame::WorkspaceLeaseMarker Root::PreparedCudaFrame::bind_workspace_request(
@@ -1901,6 +2195,21 @@ namespace JuicerProcess {
     JuicerCuda::ResourceManager::ScratchRequestDescriptor Root::PreparedCudaFrame::make_scratch_request_descriptor(
         const WorkspaceLeaseMarker& workspace) noexcept {
         return make_workspace_scratch_request_descriptor(workspace._request);
+    }
+
+    const Root::PreparedCudaFrame::WorkspaceRequest&
+    Root::PreparedCudaFrame::active_workspace_request(
+        const WorkspaceLeaseMarker& workspace) const noexcept {
+        if (_state &&
+            (_state->scratchWorkspace.retainedLeaseActive ||
+             _state->scratchWorkspace.overflowActive) &&
+            _state->scratchWorkspace.request.needSpatialDir &&
+            workspace._request.needSpatialDir &&
+            _state->scratchWorkspace.request.spatialDirDescriptorHash ==
+                workspace._request.spatialDirDescriptorHash) {
+            return _state->scratchWorkspace.request;
+        }
+        return workspace._request;
     }
 
     bool Root::PreparedCudaFrame::workspace_marker_matches_current_frame(
@@ -2109,7 +2418,8 @@ namespace JuicerProcess {
         if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
-        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+        const WorkspaceRequest& activeRequest = active_workspace_request(workspace);
+        if (!_state->ensure_scratch_workspace(activeRequest, cudaStreamOpaque, outError)) {
             const bool marksContextLoss = !JuicerCuda::ResourceManager::error_is_scratch_exhausted(outError);
             _state->set_failure(
                 "acquire_frame_scratch_workspace",
@@ -2124,7 +2434,7 @@ namespace JuicerProcess {
         }
 
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
+            make_workspace_scratch_request_descriptor(activeRequest);
         if (!JuicerCuda::ResourceManager::command_ensure_optics_scratch(
                 _state->transaction,
                 *_state->resources,
@@ -2151,7 +2461,8 @@ namespace JuicerProcess {
         if (!validate_workspace_lease_marker(workspace, outError)) {
             return false;
         }
-        if (!_state->ensure_scratch_workspace(workspace._request, cudaStreamOpaque, outError)) {
+        const WorkspaceRequest& activeRequest = active_workspace_request(workspace);
+        if (!_state->ensure_scratch_workspace(activeRequest, cudaStreamOpaque, outError)) {
             return false;
         }
         if (_state->scratchWorkspace.overflowActive) {
@@ -2159,7 +2470,7 @@ namespace JuicerProcess {
         }
 
         const JuicerCuda::ResourceManager::ScratchRequestDescriptor scratchRequest =
-            make_scratch_request_descriptor(workspace);
+            make_workspace_scratch_request_descriptor(activeRequest);
         return JuicerCuda::ResourceManager::command_ensure_optics_scratch(
             _state->transaction,
             *_state->resources,
@@ -2184,9 +2495,17 @@ namespace JuicerProcess {
             outError = "spatial DIR descriptor is invalid";
             return false;
         }
+        const bool targetMatchesDescriptor =
+            workspace._request.spatialDirTargetScratchTier == descriptor.targetScratchTier &&
+            dir_plane_roles_equal(
+                workspace._request.spatialDirTargetPlaneRoles,
+                descriptor.targetPlaneRoles);
+        const bool targetIsFusedScannerPostAlias =
+            spatial_dir_alias_target_uses_build_roles(workspace._request);
         if (workspace._request.spatialDirDescriptorHash != descriptor.hash ||
             workspace._request.spatialDirScratchTier != descriptor.scratchTier ||
-            workspace._request.spatialDirTargetScratchTier != descriptor.targetScratchTier) {
+            !dir_plane_roles_equal(workspace._request.spatialDirPlaneRoles, descriptor.planeRoles) ||
+            (!targetMatchesDescriptor && !targetIsFusedScannerPostAlias)) {
             outError = "spatial DIR workspace descriptor identity mismatch";
             return false;
         }
@@ -2199,7 +2518,7 @@ namespace JuicerProcess {
             return false;
         }
 
-        std::array<WorkspaceRequest, 3> scratchCandidates{};
+        std::array<WorkspaceRequest, 4> scratchCandidates{};
         int scratchCandidateCount = 0;
         auto add_scratch_candidate = [&](const WorkspaceRequest& candidate) {
             if (scratchCandidateCount >= static_cast<int>(scratchCandidates.size())) {
@@ -2229,15 +2548,29 @@ namespace JuicerProcess {
         };
         add_scratch_candidate(workspace._request);
         if (spatial_dir_descriptor_has_strict_yvv(descriptor)) {
+            const bool aliasTarget =
+                spatial_dir_alias_target_uses_build_roles(workspace._request);
             Spektrafilm::DirScratchPlaneRoles lowScratchBuild =
                 strict_yvv_low_scratch_plane_roles();
             Spektrafilm::DirScratchPlaneRoles lowScratchTarget = lowScratchBuild;
-            lowScratchTarget.cachedLogRawPlanes = descriptor.targetPlaneRoles.cachedLogRawPlanes;
+            lowScratchTarget.cachedLogRawPlanes =
+                aliasTarget ? 0 : descriptor.targetPlaneRoles.cachedLogRawPlanes;
             add_scratch_candidate(strict_yvv_workspace_candidate(
                 workspace._request,
                 lowScratchBuild,
-                descriptor.targetScratchTier,
+                aliasTarget ? Spektrafilm::DirScratchTier::Tier1IChannels : descriptor.targetScratchTier,
                 lowScratchTarget));
+
+            Spektrafilm::DirScratchPlaneRoles singleTempBuild =
+                strict_yvv_single_temp_sequential_plane_roles();
+            Spektrafilm::DirScratchPlaneRoles singleTempTarget = singleTempBuild;
+            singleTempTarget.cachedLogRawPlanes =
+                aliasTarget ? 0 : descriptor.targetPlaneRoles.cachedLogRawPlanes;
+            add_scratch_candidate(strict_yvv_workspace_candidate(
+                workspace._request,
+                singleTempBuild,
+                aliasTarget ? Spektrafilm::DirScratchTier::Tier1IChannels : descriptor.targetScratchTier,
+                singleTempTarget));
 
             Spektrafilm::DirScratchPlaneRoles streamedBuild =
                 strict_yvv_component_streamed_plane_roles();
@@ -2382,6 +2715,8 @@ namespace JuicerProcess {
             if (_state->scratchWorkspace.retainedLeaseActive &&
                 !_state->scratchWorkspace.overflowActive) {
                 _state->scratchWorkspace.request = candidate;
+                _state->scratchWorkspace.postFrameRequest = candidate;
+                _state->scratchWorkspace.postFrameRequestActive = true;
             } else if (!_state->ensure_scratch_workspace(candidate, cudaStreamOpaque, scratchAdmissionError)) {
                 if (JuicerCuda::ResourceManager::error_is_scratch_exhausted(scratchAdmissionError) &&
                     candidateIndex + 1 < scratchCandidateCount) {
@@ -3804,7 +4139,11 @@ namespace JuicerProcess {
     Root::PreparedCudaFrame::ScannerWorkspaceView Root::PreparedCudaFrame::scanner_workspace(
         const WorkspaceLeaseMarker& workspace) const noexcept {
         ScannerWorkspaceView view{};
-        if (!workspace_marker_matches_current_frame(workspace) || !workspace._request.needOptics) {
+        if (!workspace_marker_matches_current_frame(workspace)) {
+            return view;
+        }
+        const WorkspaceRequest& activeRequest = active_workspace_request(workspace);
+        if (!activeRequest.needOptics) {
             return view;
         }
         if (!_state->scratchWorkspace.retainedLeaseActive && !_state->scratchWorkspace.overflowActive) {
@@ -3815,9 +4154,21 @@ namespace JuicerProcess {
             _state->scratchWorkspace.overflowActive
                 ? _state->scratchWorkspace.optics
                 : _state->resources->scannerScratch;
-        view.rgbR = scratch.rgbR;
-        view.rgbG = scratch.rgbG;
-        view.rgbB = scratch.rgbB;
+        if (activeRequest.aliasScannerRgbFromSpatialDirFiltered) {
+            const JuicerCuda::Resources::DeviceSpatialDirScratch& spatialDir =
+                _state->scratchWorkspace.overflowActive
+                    ? _state->scratchWorkspace.spatialDir
+                    : _state->resources->spatialDirScratch;
+            view.rgbR = spatialDir.filteredCorrectionC;
+            view.rgbG = spatialDir.filteredCorrectionM;
+            view.rgbB = spatialDir.filteredCorrectionY;
+            view.rgbAliasedFromSpatialDirFiltered =
+                view.rgbR && view.rgbG && view.rgbB;
+        } else {
+            view.rgbR = scratch.rgbR;
+            view.rgbG = scratch.rgbG;
+            view.rgbB = scratch.rgbB;
+        }
         view.tmp = scratch.tmp;
         view.blurred = scratch.blurred;
         view.aux = scratch.aux;
@@ -3839,16 +4190,73 @@ namespace JuicerProcess {
         const WorkspaceLeaseMarker& workspace,
         std::uint64_t descriptorHash) const noexcept {
         ScannerPostEffectsPreparedView view{};
-        if (!_state || descriptorHash == 0 ||
-            _state->scannerPostEffectsDescriptor.hash != descriptorHash) {
-            return view;
-        }
-        view.scratch = scanner_workspace(workspace);
-        if (!view.scratch.active) {
+        if (!_state) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            trace_scanner_post_effects_view_inactive(
+                nullptr,
+                "missing_state",
+                descriptorHash,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr);
+#endif
             return view;
         }
         const Scanner::ScannerPostEffectsDescriptor& descriptor =
             _state->scannerPostEffectsDescriptor;
+        if (descriptorHash == 0) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            trace_scanner_post_effects_view_inactive(
+                &_state->transaction,
+                "requested_hash_zero",
+                descriptorHash,
+                &descriptor,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr);
+#endif
+            return view;
+        }
+        if (descriptor.hash != descriptorHash) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            trace_scanner_post_effects_view_inactive(
+                &_state->transaction,
+                "descriptor_hash_mismatch",
+                descriptorHash,
+                &descriptor,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr);
+#endif
+            return view;
+        }
+        view.scratch = scanner_workspace(workspace);
+        if (!view.scratch.active) {
+#if JUICER_DIAGNOSTICS_COMPILED
+            trace_scanner_post_effects_view_inactive(
+                &_state->transaction,
+                "scanner_scratch_inactive",
+                descriptorHash,
+                &descriptor,
+                &view.scratch,
+                nullptr,
+                nullptr,
+                nullptr);
+#endif
+            return view;
+        }
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (view.scratch.rgbAliasedFromSpatialDirFiltered) {
+            trace_scanner_post_rgb_alias(
+                _state->transaction,
+                descriptorHash,
+                workspace._request.spatialDirDescriptorHash);
+        }
+#endif
         const JuicerCuda::Resources& resources = *_state->resources;
         if (descriptor.lensBlurSigmaPx > 0.0f) {
             view.lensBlur = {
@@ -3869,13 +4277,30 @@ namespace JuicerProcess {
                 resources.scannerGlareKernel.sigma};
         }
         view.descriptorHash = descriptor.hash;
-        view.active =
-            (descriptor.lensBlurSigmaPx <= 0.0f ||
-             (view.lensBlur.weights && view.lensBlur.radius > 0)) &&
-            (descriptor.unsharpSigmaPx <= 0.0f ||
-             (view.unsharp.weights && view.unsharp.radius > 0)) &&
-            (descriptor.glareBlurSigmaPx <= 0.0f ||
-             (view.glare.weights && view.glare.radius > 0));
+        const bool lensReady =
+            descriptor.lensBlurSigmaPx <= 0.0f ||
+            (view.lensBlur.weights && view.lensBlur.radius > 0);
+        const bool unsharpReady =
+            descriptor.unsharpSigmaPx <= 0.0f ||
+            (view.unsharp.weights && view.unsharp.radius > 0);
+        const bool glareReady =
+            !descriptor.glareActive ||
+            descriptor.glareBlurSigmaPx <= 0.0f ||
+            (view.glare.weights && view.glare.radius > 0);
+        view.active = lensReady && unsharpReady && glareReady;
+#if JUICER_DIAGNOSTICS_COMPILED
+        if (!view.active) {
+            trace_scanner_post_effects_view_inactive(
+                &_state->transaction,
+                "scanner_kernel_missing",
+                descriptorHash,
+                &descriptor,
+                &view.scratch,
+                &view.lensBlur,
+                &view.unsharp,
+                &view.glare);
+        }
+#endif
         return view;
     }
 

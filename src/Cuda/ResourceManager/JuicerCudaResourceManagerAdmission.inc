@@ -481,7 +481,8 @@ bool scratch_candidate_required_by_request(
     const ScratchRequestDescriptor& descriptor) noexcept {
     switch (candidate) {
         case ScratchPolicyCandidate::OpticsBase:
-            return descriptor.needOptics;
+            return descriptor.needOptics &&
+                   !descriptor.aliasScannerRgbFromSpatialDirFiltered;
         case ScratchPolicyCandidate::OpticsBlurred:
             return descriptor.needOptics && descriptor.needBlurred;
         case ScratchPolicyCandidate::OpticsAux:
@@ -2278,6 +2279,7 @@ std::size_t estimate_optics_growth_bytes(
     int width,
     int height,
     bool needBlurredScratch,
+    bool aliasScannerRgbFromSpatialDirFiltered,
     bool needAuxScratch,
     bool needGrainScratch,
     bool needGrainSharedScratch,
@@ -2291,7 +2293,9 @@ std::size_t estimate_optics_growth_bytes(
     const auto& scratch = resources.scannerScratch;
     const std::size_t requiredElements = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
-    const bool haveBase = scratch.rgbR && scratch.rgbG && scratch.rgbB;
+    const bool needScannerRgbScratch = !aliasScannerRgbFromSpatialDirFiltered;
+    const bool haveBase =
+        !needScannerRgbScratch || (scratch.rgbR && scratch.rgbG && scratch.rgbB);
     const bool fullRebuild = !capacityMatch || !haveBase;
 
     std::size_t estimate = 0;
@@ -2309,7 +2313,7 @@ std::size_t estimate_optics_growth_bytes(
         addBytes(planeBytes, multiplier);
     };
 
-    if (fullRebuild) {
+    if (needScannerRgbScratch && fullRebuild) {
         addPlane(3); // rgbR/rgbG/rgbB
     }
 
@@ -2389,6 +2393,10 @@ std::size_t estimate_spatial_dir_growth_bytes(
     const bool hasChannelTemps =
         scratch.filterTempM && scratch.filterTempC &&
         scratch.iirForwardTemp && scratch.iirForwardTempM && scratch.iirForwardTempC;
+    const bool hasAliasedForwardTemps =
+        scratch.filterTempM && scratch.filterTempC &&
+        !scratch.iirForwardTemp && !scratch.iirForwardTempM &&
+        !scratch.iirForwardTempC;
     const bool hasCompactSequentialTemps =
         scratch.iirForwardTemp &&
         !scratch.filterTempM && !scratch.filterTempC &&
@@ -2401,9 +2409,11 @@ std::size_t estimate_spatial_dir_growth_bytes(
         !scratch.filterTempM && !scratch.filterTempC &&
         !scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC;
     const bool channelTempsMatch =
+        (planeRoles.filterTempPlanes == 0 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
         (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 0 && hasNoChannelTemps) ||
         (planeRoles.filterTempPlanes == 1 && planeRoles.iirForwardTempPlanes == 1 && hasCompactSequentialTemps) ||
         (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
+        (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
         (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
     const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
     const bool hasNoCachedLogRaw = !scratch.logRawB && !scratch.logRawG && !scratch.logRawR;
@@ -2421,8 +2431,10 @@ std::size_t estimate_spatial_dir_growth_bytes(
         (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
     const bool haveRetainedFinalRoles =
         haveFiltered && cachedLogRawMatch && filterTempsCompatible && iirForwardTempsCompatible;
+    const bool needSharedTmp = planeRoles.filterTempPlanes > 0;
     const bool sharedTmpMatch =
-        resources.sharedTmpPlane && resources.sharedTmpCapacityElements >= requiredElements;
+        !needSharedTmp ||
+        (resources.sharedTmpPlane && resources.sharedTmpCapacityElements >= requiredElements);
 
     std::size_t estimate = 0;
     if (!capacityMatch) {
@@ -2534,6 +2546,12 @@ std::size_t estimate_spatial_dir_cached_log_raw_stage_growth_bytes(
     return estimate;
 }
 
+bool spatial_dir_request_needs_shared_tmp_plane(
+    const ScratchRequestDescriptor& descriptor) noexcept {
+    return descriptor.needSpatialDir &&
+           descriptor.spatialDirPlaneRoles.filterTempPlanes > 0;
+}
+
 std::size_t estimate_scratch_request_allocation_bytes(
     const ScratchRequestDescriptor& descriptor) noexcept {
     if (!scratch_request_descriptor_is_valid(descriptor)) {
@@ -2545,7 +2563,7 @@ std::size_t estimate_scratch_request_allocation_bytes(
         return planeBytes;
     }
 
-    std::size_t total = planeBytes; // shared tmp plane, allocated once per frame scratch workspace.
+    std::size_t total = 0;
     auto add_bytes = [&](std::size_t bytes) noexcept {
         std::size_t next = 0;
         if (!add_bytes_checked(total, bytes, next)) {
@@ -2561,7 +2579,10 @@ std::size_t estimate_scratch_request_allocation_bytes(
     };
 
     if (descriptor.needOptics) {
-        add_plane(3); // rgbR/rgbG/rgbB
+        add_plane(1); // shared tmp plane used by optics tmp.
+        if (!descriptor.aliasScannerRgbFromSpatialDirFiltered) {
+            add_plane(3); // rgbR/rgbG/rgbB
+        }
         if (descriptor.needBlurred) {
             add_plane(1);
         }
@@ -2587,6 +2608,9 @@ std::size_t estimate_scratch_request_allocation_bytes(
 
     if (descriptor.needSpatialDir) {
         const Spektrafilm::DirScratchPlaneRoles& roles = descriptor.spatialDirPlaneRoles;
+        if (!descriptor.needOptics && spatial_dir_request_needs_shared_tmp_plane(descriptor)) {
+            add_plane(1); // filterTemp aliases shared tmp.
+        }
         add_plane(roles.rawCorrectionPlanes);
         add_plane(roles.filteredCorrectionPlanes);
         add_plane(std::max(0, roles.filterTempPlanes - 1)); // filterTemp aliases shared tmp.
