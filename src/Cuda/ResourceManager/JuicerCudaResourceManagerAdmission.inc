@@ -2415,11 +2415,13 @@ std::size_t estimate_spatial_dir_growth_bytes(
         (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
         (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
         (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
-    const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
-    const bool hasNoCachedLogRaw = !scratch.logRawB && !scratch.logRawG && !scratch.logRawR;
     const bool cachedLogRawMatch =
-        (planeRoles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
-        (planeRoles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
+        (planeRoles.cachedLogRawPlanes == 0 &&
+         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
+        (planeRoles.cachedLogRawPlanes == 2 &&
+         scratch.logRawB && scratch.logRawG && !scratch.logRawR) ||
+        (planeRoles.cachedLogRawPlanes == 3 &&
+         scratch.logRawB && scratch.logRawG && scratch.logRawR);
     const bool haveRequiredRoles = haveBase && channelTempsMatch && cachedLogRawMatch;
     const bool capacityMatch = scratch.capacityElements >= requiredElements;
     const bool filterTempsCompatible =
@@ -2429,8 +2431,13 @@ std::size_t estimate_spatial_dir_growth_bytes(
     const bool iirForwardTempsCompatible =
         planeRoles.iirForwardTempPlanes == 3 ||
         (!scratch.iirForwardTemp && !scratch.iirForwardTempM && !scratch.iirForwardTempC);
+    const bool cachedLogRawCompatible =
+        (planeRoles.cachedLogRawPlanes == 0 &&
+         !scratch.logRawB && !scratch.logRawG && !scratch.logRawR) ||
+        (planeRoles.cachedLogRawPlanes == 2 && !scratch.logRawR) ||
+        (planeRoles.cachedLogRawPlanes == 3);
     const bool haveRetainedFinalRoles =
-        haveFiltered && cachedLogRawMatch && filterTempsCompatible && iirForwardTempsCompatible;
+        haveFiltered && cachedLogRawCompatible && filterTempsCompatible && iirForwardTempsCompatible;
     const bool needSharedTmp = planeRoles.filterTempPlanes > 0;
     const bool sharedTmpMatch =
         !needSharedTmp ||
@@ -2478,7 +2485,13 @@ std::size_t estimate_spatial_dir_growth_bytes(
                 (planeRoles.iirForwardTempPlanes == 3 &&
                  (!addMissingPlane(scratch.iirForwardTemp) ||
                   !addMissingPlane(scratch.iirForwardTempM) ||
-                  !addMissingPlane(scratch.iirForwardTempC)))) {
+                  !addMissingPlane(scratch.iirForwardTempC))) ||
+                (planeRoles.cachedLogRawPlanes >= 1 &&
+                 !addMissingPlane(scratch.logRawB)) ||
+                (planeRoles.cachedLogRawPlanes >= 2 &&
+                 !addMissingPlane(scratch.logRawG)) ||
+                (planeRoles.cachedLogRawPlanes >= 3 &&
+                 !addMissingPlane(scratch.logRawR))) {
                 return std::numeric_limits<std::size_t>::max();
             }
         } else {

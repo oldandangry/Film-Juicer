@@ -288,7 +288,7 @@ namespace {
         if (!rawCorrectionY || !rawCorrectionM || !rawCorrectionC) {
             return;
         }
-        const bool cacheLogRaw = logRawB && logRawG && logRawR;
+        const bool cacheLogRaw = logRawB || logRawG || logRawR;
 
         const int nC = params.nComponents;
         if (!(nC == 3 || nC == 4)) {
@@ -329,9 +329,15 @@ namespace {
                 rawCorrectionM[idx] = outCorr[1];
                 rawCorrectionC[idx] = outCorr[2];
                 if (cacheLogRaw) {
-                    logRawB[idx] = logE_raw[0];
-                    logRawG[idx] = logE_raw[1];
-                    logRawR[idx] = logE_raw[2];
+                    if (logRawB) {
+                        logRawB[idx] = logE_raw[0];
+                    }
+                    if (logRawG) {
+                        logRawG[idx] = logE_raw[1];
+                    }
+                    if (logRawR) {
+                        logRawR[idx] = logE_raw[2];
+                    }
                 }
             }
         }

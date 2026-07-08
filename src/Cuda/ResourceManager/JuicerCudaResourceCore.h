@@ -556,7 +556,14 @@ namespace JuicerCuda {
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
-                case Spektrafilm::DirScratchTier::Tier2:
+                case Spektrafilm::DirScratchTier::Tier2: {
+                    const bool aliasedForwardYvv =
+                        roles.rawCorrectionPlanes == 3 &&
+                        roles.filterTempPlanes == 3 &&
+                        roles.iirForwardTempPlanes == 0;
+                    const bool cachedLogRawMatch =
+                        roles.cachedLogRawPlanes == 3 ||
+                        (roles.cachedLogRawPlanes == 2 && aliasedForwardYvv);
                     return roles.filteredCorrectionPlanes == 3 &&
                            ((roles.rawCorrectionPlanes == 1 &&
                              (roles.filterTempPlanes == 0 ||
@@ -573,10 +580,11 @@ namespace JuicerCuda {
                                roles.iirForwardTempPlanes == 0) ||
                               (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 3)))) &&
-                           roles.cachedLogRawPlanes == 3 &&
+                           cachedLogRawMatch &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
+                }
                 case Spektrafilm::DirScratchTier::Tier3:
                 case Spektrafilm::DirScratchTier::Unsupported:
                 case Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
@@ -626,6 +634,7 @@ namespace JuicerCuda {
                  !descriptor.needSpatialDir ||
                  descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
                  (descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0 &&
+                  descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 2 &&
                   descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3))) {
                 return false;
             }

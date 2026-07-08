@@ -1093,13 +1093,26 @@ namespace {
         const float* rgbIn,
         float logE_raw[3]) {
         const JuicerCuda::FilmDevelopPayload& dev = params.filmDevelop;
-        if (juicer_cuda_spatial_dir_cached_log_raw_active_device(dev)) {
-            juicer_cuda_load_spatial_dir_cached_log_raw_device(dev, pixelIndex, logE_raw);
+        int cachedLogRawMask = 0;
+        if (dev.spatialDir.logRawB) {
+            logE_raw[0] = ldg_f(dev.spatialDir.logRawB + pixelIndex);
+            cachedLogRawMask |= kJuicerLogRawMaskB;
+        }
+        if (dev.spatialDir.logRawG) {
+            logE_raw[1] = ldg_f(dev.spatialDir.logRawG + pixelIndex);
+            cachedLogRawMask |= kJuicerLogRawMaskG;
+        }
+        if (dev.spatialDir.logRawR) {
+            logE_raw[2] = ldg_f(dev.spatialDir.logRawR + pixelIndex);
+            cachedLogRawMask |= kJuicerLogRawMaskR;
+        }
+        const int missingLogRawMask = kJuicerLogRawMaskBgr & ~cachedLogRawMask;
+        if (missingLogRawMask == 0) {
             return true;
         }
 
         if (rgbIn) {
-            compute_logE_raw_device(params, rgbIn, logE_raw);
+            compute_logE_raw_selected_device(params, rgbIn, missingLogRawMask, logE_raw);
             return true;
         }
 
@@ -1121,7 +1134,7 @@ namespace {
             reinterpret_cast<const float*>(srcRow + static_cast<std::size_t>(x) * pixelBytes);
 
         const float sourceRgb[3] = {srcPix[0], srcPix[1], srcPix[2]};
-        compute_logE_raw_device(params, sourceRgb, logE_raw);
+        compute_logE_raw_selected_device(params, sourceRgb, missingLogRawMask, logE_raw);
         return true;
     }
 

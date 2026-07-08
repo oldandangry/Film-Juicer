@@ -1190,6 +1190,157 @@ static __device__ __forceinline__ void compute_logE_raw_device(
     compute_logE_raw_from_film_raw_device(params, filmRaw, logE_raw);
 }
 
+static constexpr int kJuicerLogRawMaskB = 0x1;
+static constexpr int kJuicerLogRawMaskG = 0x2;
+static constexpr int kJuicerLogRawMaskR = 0x4;
+static constexpr int kJuicerLogRawMaskBgr =
+    kJuicerLogRawMaskB | kJuicerLogRawMaskG | kJuicerLogRawMaskR;
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+static __device__ __forceinline__ float compute_hanatos_integrated_log_raw_channel_from_quad_device(
+    const JuicerCuda::FilmExposurePayload& expose,
+    float qx,
+    float qy,
+    float sumXYZ,
+    float exposureScale,
+    int lutChannel) {
+    const float raw = sample_hanatos_integrated_cubic_device(
+        expose.hanatosLutIntegrated,
+        expose.hanatosNIntegrated,
+        lutChannel,
+        qx,
+        qy);
+    float exposure = device_sanitize_channel(sumXYZ * (device_isfinite(raw) ? raw : 0.0f));
+    exposure = fmaxf(0.0f, exposure * exposureScale);
+    constexpr float kLogEps = 1e-10f;
+    return log10f(fmaxf(exposure, 0.0f) + kLogEps);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+template <typename Params>
+static __device__ __forceinline__ bool compute_logE_raw_selected_hanatos_integrated_device(
+    const Params& params,
+    const float rgbIn[3],
+    int channelMask,
+    float logE_raw[3]) {
+    const JuicerCuda::FilmExposurePayload& expose = params.filmExpose;
+    const bool allowHanatos = (params.filmRaw.spectralUpsamplingMode == 0);
+    const bool spdReady = expose.tablesAx && expose.tablesAy && expose.tablesAz && expose.tablesK == 81;
+    const bool useHanatos =
+        allowHanatos &&
+        spdReady &&
+        expose.hanatosLut &&
+        (expose.hanatosN > 0) &&
+        (expose.sensB.n >= 81) &&
+        (expose.sensG.n >= 81) &&
+        (expose.sensR.n >= 81);
+    const bool useHanatosIntegrated =
+        useHanatos &&
+        expose.hanatosLutIntegrated &&
+        (expose.hanatosNIntegrated > 0) &&
+        (expose.hanatosNIntegrated == expose.hanatosN);
+    if (!useHanatosIntegrated) {
+        return false;
+    }
+
+    float autoExposureScale = 1.0f;
+    if (expose.exposureScaleDevice) {
+        const float deviceScale = *expose.exposureScaleDevice;
+        if (isfinite(deviceScale) && deviceScale > 0.0f) {
+            autoExposureScale = deviceScale;
+        }
+    }
+    const float autoExposedRgb[3] = {
+        rgbIn[0] * autoExposureScale,
+        rgbIn[1] * autoExposureScale,
+        rgbIn[2] * autoExposureScale};
+
+    float workingXYZ[3] = {0.0f, 0.0f, 0.0f};
+    convert_input_to_working_xyz_device(params.filmRaw, autoExposedRgb, workingXYZ);
+
+    float XYZ[3] = {
+        device_sanitize_channel(workingXYZ[0]),
+        device_sanitize_channel(workingXYZ[1]),
+        device_sanitize_channel(workingXYZ[2])};
+    const float D65[3] = {0.950455f, 1.0f, 1.089058f};
+    float refWhite[3] = {
+        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[0]),
+        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[1]),
+        device_sanitize_channel(params.filmRaw.refIllumWhiteXYZ[2])};
+    if (!(refWhite[1] > 0.0f)) {
+        refWhite[0] = D65[0];
+        refWhite[1] = D65[1];
+        refWhite[2] = D65[2];
+    }
+
+    float adaptedXYZ[3];
+    chromatic_adapt_XYZ_CAT02_device(XYZ, D65, refWhite, adaptedXYZ);
+    adaptedXYZ[0] = device_sanitize_channel(adaptedXYZ[0]);
+    adaptedXYZ[1] = device_sanitize_channel(adaptedXYZ[1]);
+    adaptedXYZ[2] = device_sanitize_channel(adaptedXYZ[2]);
+
+    const float sumXYZ = adaptedXYZ[0] + adaptedXYZ[1] + adaptedXYZ[2];
+    const float denom = fmaxf(sumXYZ, 1e-10f);
+    float x = adaptedXYZ[0] / denom;
+    float y = adaptedXYZ[1] / denom;
+    x = fminf(1.0f, fmaxf(0.0f, x));
+    y = fminf(1.0f, fmaxf(0.0f, y));
+
+    float qx = 0.0f;
+    float qy = 0.0f;
+    tri2quad_device(x, y, qx, qy);
+
+    float manualExposureScale = expose.manualExposureScale;
+    if (!isfinite(manualExposureScale) || !(manualExposureScale > 0.0f)) {
+        manualExposureScale = 1.0f;
+    }
+    float routeCorrectionScale = expose.routeCorrectionScale;
+    if (!isfinite(routeCorrectionScale) || !(routeCorrectionScale > 0.0f)) {
+        routeCorrectionScale = 1.0f;
+    }
+    const float scale = manualExposureScale * routeCorrectionScale;
+
+    if (channelMask & kJuicerLogRawMaskB) {
+        logE_raw[0] =
+            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 2);
+    }
+    if (channelMask & kJuicerLogRawMaskG) {
+        logE_raw[1] =
+            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 1);
+    }
+    if (channelMask & kJuicerLogRawMaskR) {
+        logE_raw[2] =
+            compute_hanatos_integrated_log_raw_channel_from_quad_device(expose, qx, qy, sumXYZ, scale, 0);
+    }
+    return true;
+}
+
+template <typename Params>
+static __device__ __forceinline__ void compute_logE_raw_selected_device(
+    const Params& params,
+    const float rgbIn[3],
+    int channelMask,
+    float logE_raw[3]) {
+    channelMask &= kJuicerLogRawMaskBgr;
+    if (channelMask == 0) {
+        return;
+    }
+    if (channelMask == kJuicerLogRawMaskBgr ||
+        !compute_logE_raw_selected_hanatos_integrated_device(params, rgbIn, channelMask, logE_raw)) {
+        float fullLogRaw[3] = {0.0f, 0.0f, 0.0f};
+        compute_logE_raw_device(params, rgbIn, fullLogRaw);
+        if (channelMask & kJuicerLogRawMaskB) {
+            logE_raw[0] = fullLogRaw[0];
+        }
+        if (channelMask & kJuicerLogRawMaskG) {
+            logE_raw[1] = fullLogRaw[1];
+        }
+        if (channelMask & kJuicerLogRawMaskR) {
+            logE_raw[2] = fullLogRaw[2];
+        }
+    }
+}
+
 template <typename Params>
 static __device__ __forceinline__ void compute_logE_from_film_raw_device(
     const Params& params,

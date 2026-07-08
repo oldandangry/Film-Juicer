@@ -76,7 +76,14 @@ namespace JuicerProcess {
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
-                case Spektrafilm::DirScratchTier::Tier2:
+                case Spektrafilm::DirScratchTier::Tier2: {
+                    const bool aliasedForwardYvv =
+                        roles.rawCorrectionPlanes == 3 &&
+                        roles.filterTempPlanes == 3 &&
+                        roles.iirForwardTempPlanes == 0;
+                    const bool cachedLogRawMatch =
+                        roles.cachedLogRawPlanes == 3 ||
+                        (roles.cachedLogRawPlanes == 2 && aliasedForwardYvv);
                     return roles.filteredCorrectionPlanes == 3 &&
                            ((roles.rawCorrectionPlanes == 1 &&
                              (roles.filterTempPlanes == 0 ||
@@ -93,10 +100,11 @@ namespace JuicerProcess {
                                roles.iirForwardTempPlanes == 0) ||
                               (roles.filterTempPlanes == 3 &&
                                roles.iirForwardTempPlanes == 3)))) &&
-                           roles.cachedLogRawPlanes == 3 &&
+                           cachedLogRawMatch &&
                            roles.SF_TEMP_BRIDGE_corrPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_mixPlanes == 0 &&
                            roles.SF_TEMP_BRIDGE_tmpPlanes == 0;
+                }
                 case Spektrafilm::DirScratchTier::Tier3:
                 case Spektrafilm::DirScratchTier::Unsupported:
                 case Spektrafilm::DirScratchTier::SF_TEMP_BRIDGE_LegacySpatialDirScratch:
@@ -158,12 +166,13 @@ namespace JuicerProcess {
                 (roles.filterTempPlanes == 2 && roles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
                 (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
                 (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3 && hasChannelTemps);
-            const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
-            const bool hasNoCachedLogRaw =
-                scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
             const bool cachedLogRawMatch =
-                (roles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
-                (roles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
+                (roles.cachedLogRawPlanes == 0 &&
+                 scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+                (roles.cachedLogRawPlanes == 2 &&
+                 scratch.logRawB && scratch.logRawG && scratch.logRawR == nullptr) ||
+                (roles.cachedLogRawPlanes == 3 &&
+                 scratch.logRawB && scratch.logRawG && scratch.logRawR);
             return channelTempsMatch && cachedLogRawMatch;
         }
 
@@ -174,12 +183,13 @@ namespace JuicerProcess {
                 !scratch.filteredCorrectionC) {
                 return false;
             }
-            const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
-            const bool hasNoCachedLogRaw =
-                scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
             const bool cachedLogRawMatch =
-                (targetRoles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
-                (targetRoles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
+                (targetRoles.cachedLogRawPlanes == 0 &&
+                 scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+                (targetRoles.cachedLogRawPlanes == 2 &&
+                 scratch.logRawB && scratch.logRawG && scratch.logRawR == nullptr) ||
+                (targetRoles.cachedLogRawPlanes == 3 &&
+                 scratch.logRawB && scratch.logRawG && scratch.logRawR);
             if (!cachedLogRawMatch) {
                 return false;
             }
@@ -264,6 +274,12 @@ namespace JuicerProcess {
             return roles;
         }
 
+        Spektrafilm::DirScratchPlaneRoles strict_yvv_cached_lograw_bg_alias_plane_roles() noexcept {
+            Spektrafilm::DirScratchPlaneRoles roles = strict_yvv_cached_lograw_alias_plane_roles();
+            roles.cachedLogRawPlanes = 2;
+            return roles;
+        }
+
         Root::PreparedCudaFrame::WorkspaceRequest strict_yvv_workspace_candidate(
             const Root::PreparedCudaFrame::WorkspaceRequest& base,
             Spektrafilm::DirScratchTier buildTier,
@@ -295,6 +311,12 @@ namespace JuicerProcess {
                 roles.iirForwardTempPlanes == 0 &&
                 roles.cachedLogRawPlanes == 3) {
                 return "strict_yvv_channels_aliased_forward_cached_lograw";
+            }
+            if (roles.rawCorrectionPlanes == 3 &&
+                roles.filterTempPlanes == 3 &&
+                roles.iirForwardTempPlanes == 0 &&
+                roles.cachedLogRawPlanes == 2) {
+                return "strict_yvv_channels_aliased_forward_cached_lograw_bg";
             }
             if (roles.rawCorrectionPlanes == 3 &&
                 roles.filterTempPlanes == 3 &&
@@ -1269,6 +1291,7 @@ namespace JuicerProcess {
              !request.needSpatialDir ||
              request.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
              (request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0 &&
+              request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 2 &&
               request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3))) {
             outError = "scanner RGB spatial DIR alias request is invalid";
             return false;
@@ -1519,19 +1542,25 @@ namespace JuicerProcess {
                     "frame spatial DIR iirForwardTemp")) {
                 return fail_after_partial_alloc();
             }
-            if (request.spatialDirPlaneRoles.cachedLogRawPlanes == 3 &&
-                (!alloc_float(
-                     spatialDir.logRawB,
-                     planeBytes,
-                     "frame spatial DIR logRawB") ||
-                 !alloc_float(
-                     spatialDir.logRawG,
-                     planeBytes,
-                     "frame spatial DIR logRawG") ||
-                 !alloc_float(
-                     spatialDir.logRawR,
-                     planeBytes,
-                     "frame spatial DIR logRawR"))) {
+            if (request.spatialDirPlaneRoles.cachedLogRawPlanes >= 1 &&
+                !alloc_float(
+                    spatialDir.logRawB,
+                    planeBytes,
+                    "frame spatial DIR logRawB")) {
+                return fail_after_partial_alloc();
+            }
+            if (request.spatialDirPlaneRoles.cachedLogRawPlanes >= 2 &&
+                !alloc_float(
+                    spatialDir.logRawG,
+                    planeBytes,
+                    "frame spatial DIR logRawG")) {
+                return fail_after_partial_alloc();
+            }
+            if (request.spatialDirPlaneRoles.cachedLogRawPlanes >= 3 &&
+                !alloc_float(
+                    spatialDir.logRawR,
+                    planeBytes,
+                    "frame spatial DIR logRawR")) {
                 return fail_after_partial_alloc();
             }
             spatialDir.width = request.requestedWidth;
@@ -2535,7 +2564,7 @@ namespace JuicerProcess {
             return false;
         }
 
-        std::array<WorkspaceRequest, 5> scratchCandidates{};
+        std::array<WorkspaceRequest, 6> scratchCandidates{};
         int scratchCandidateCount = 0;
         auto add_scratch_candidate = [&](const WorkspaceRequest& candidate) {
             if (scratchCandidateCount >= static_cast<int>(scratchCandidates.size())) {
@@ -2576,6 +2605,15 @@ namespace JuicerProcess {
                     cachedLogRawBuild,
                     Spektrafilm::DirScratchTier::Tier2,
                     cachedLogRawTarget));
+                Spektrafilm::DirScratchPlaneRoles cachedLogRawBgBuild =
+                    strict_yvv_cached_lograw_bg_alias_plane_roles();
+                Spektrafilm::DirScratchPlaneRoles cachedLogRawBgTarget = cachedLogRawBgBuild;
+                add_scratch_candidate(strict_yvv_workspace_candidate(
+                    workspace._request,
+                    Spektrafilm::DirScratchTier::Tier2,
+                    cachedLogRawBgBuild,
+                    Spektrafilm::DirScratchTier::Tier2,
+                    cachedLogRawBgTarget));
             }
             add_scratch_candidate(workspace._request);
             Spektrafilm::DirScratchPlaneRoles lowScratchBuild =

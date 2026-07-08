@@ -727,6 +727,11 @@ namespace {
             roles.cachedLogRawPlanes == 3) {
             return "strict_yvv_channels_aliased_forward_cached_lograw";
         }
+        if (roles.filterTempPlanes == 3 &&
+            roles.iirForwardTempPlanes == 0 &&
+            roles.cachedLogRawPlanes == 2) {
+            return "strict_yvv_channels_aliased_forward_cached_lograw_bg";
+        }
         if (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3) {
             return "strict_yvv_channels";
         }
@@ -759,6 +764,9 @@ namespace {
             if (roles.cachedLogRawPlanes == 3 && targetRoles.cachedLogRawPlanes == 3) {
                 return "source_build_cached_fused_scan";
             }
+            if (roles.cachedLogRawPlanes == 2 && targetRoles.cachedLogRawPlanes == 2) {
+                return "source_build_cached_bg_fused_scan";
+            }
             return "recompute_source_rgb_fused_scan";
         }
         if (targetRoles.cachedLogRawPlanes == 0) {
@@ -785,6 +793,9 @@ namespace {
         if (fusedScannerPostSpatialDirHandoff && targetRoles.cachedLogRawPlanes == 3) {
             return "cached_source_build";
         }
+        if (fusedScannerPostSpatialDirHandoff && targetRoles.cachedLogRawPlanes == 2) {
+            return "cached_source_build_bg";
+        }
         if (fusedScannerPostSpatialDirHandoff || targetRoles.cachedLogRawPlanes == 0) {
             return "raw_only";
         }
@@ -798,7 +809,9 @@ namespace {
         bool dirActive,
         const Spektrafilm::DirScratchPlaneRoles& targetRoles,
         bool /*fusedScannerPostSpatialDirHandoff*/) {
-        return dirActive && targetRoles.cachedLogRawPlanes == 3 ? 3 : 0;
+        return dirActive && targetRoles.cachedLogRawPlanes > 0
+                   ? targetRoles.cachedLogRawPlanes
+                   : 0;
     }
 
     int final_develop_staged_cached_lograw_planes(
@@ -820,7 +833,7 @@ namespace {
         const Spektrafilm::DirScratchPlaneRoles& targetRoles,
         bool fusedScannerPostSpatialDirHandoff) {
         if (fusedScannerPostSpatialDirHandoff) {
-            return dirActive && targetRoles.cachedLogRawPlanes == 3 ? "after_fused_scan_linear" : "none";
+            return dirActive && targetRoles.cachedLogRawPlanes > 0 ? "after_fused_scan_linear" : "none";
         }
         return dirActive && targetRoles.cachedLogRawPlanes == 3 ? "after_final_develop" : "none";
     }
@@ -830,8 +843,26 @@ namespace {
         const Spektrafilm::DirScratchPlaneRoles& roles,
         const Spektrafilm::DirScratchPlaneRoles& targetRoles) noexcept {
         return fusedScannerPostSpatialDirHandoff &&
-               roles.cachedLogRawPlanes == 3 &&
-               targetRoles.cachedLogRawPlanes == 3;
+               roles.cachedLogRawPlanes > 0 &&
+               roles.cachedLogRawPlanes == targetRoles.cachedLogRawPlanes;
+    }
+
+    bool spatial_dir_required_cached_log_raw_present(
+        const JuicerProcess::Root::PreparedCudaFrame::SpatialDirScratchView& scratch,
+        int cachedLogRawPlanes) noexcept {
+        if (cachedLogRawPlanes <= 0) {
+            return true;
+        }
+        if (!scratch.logRawB) {
+            return false;
+        }
+        if (cachedLogRawPlanes >= 2 && !scratch.logRawG) {
+            return false;
+        }
+        if (cachedLogRawPlanes >= 3 && !scratch.logRawR) {
+            return false;
+        }
+        return true;
     }
 
     struct SpatialDirProfileAdmittedRoles {
@@ -1138,7 +1169,7 @@ namespace {
         const std::uint64_t finalDevelopStagedCachedLogRawBytesApprox =
             pixels * static_cast<std::uint64_t>(finalDevelopStagedCachedLogRawPlanes) * sizeof(float);
         const Spektrafilm::DirScratchTier admittedTargetScratchTier =
-            targetRoles.cachedLogRawPlanes == 3 ? descriptor.targetScratchTier : descriptor.scratchTier;
+            targetRoles.cachedLogRawPlanes > 0 ? descriptor.targetScratchTier : descriptor.scratchTier;
         const JuicerCuda::PrintDevelopBreakdownProfile& printBreakdown =
             compositeProfile.printDevelopBreakdown;
         const int scannerPostDensityIntermediatePlanes =
@@ -3095,7 +3126,9 @@ void JuicerProcessor::processImagesCUDA() {
                     directDirAdmittedRoles,
                     directDirAdmittedTargetRoles);
             if (directDirUsesSourceBuildCachedLogRaw &&
-                (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR)) {
+                !spatial_dir_required_cached_log_raw_present(
+                    scratch,
+                    directDirAdmittedRoles.cachedLogRawPlanes)) {
                 preparedFrame.abort("direct_spatial_dir_source_build_cached_log_raw_missing");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=spatial_dir_source_build_cached_log_raw");
@@ -3204,7 +3237,9 @@ void JuicerProcessor::processImagesCUDA() {
                     "MissingRequiredResource phase=3D-3 field=spatial_dir_filtered_correction");
             }
             if (directDirRequiresCachedLogRaw &&
-                (!finalScratch.logRawB || !finalScratch.logRawG || !finalScratch.logRawR)) {
+                !spatial_dir_required_cached_log_raw_present(
+                    finalScratch,
+                    directDirAdmittedTargetRoles.cachedLogRawPlanes)) {
                 preparedFrame.abort("direct_spatial_dir_cached_log_raw_missing");
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=spatial_dir_cached_log_raw");
@@ -3884,7 +3919,9 @@ void JuicerProcessor::processImagesCUDA() {
                     printDirAdmittedRoles,
                     printDirAdmittedTargetRoles);
             if (printDirUsesSourceBuildCachedLogRaw &&
-                (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR)) {
+                !spatial_dir_required_cached_log_raw_present(
+                    scratch,
+                    printDirAdmittedRoles.cachedLogRawPlanes)) {
                 preparedFrame.abort("print_spatial_dir_source_build_cached_log_raw_missing");
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=spatial_dir_source_build_cached_log_raw");
@@ -3993,7 +4030,9 @@ void JuicerProcessor::processImagesCUDA() {
                     "MissingRequiredResource phase=4C field=spatial_dir_filtered_correction");
             }
             if (printDirRequiresCachedLogRaw &&
-                (!finalScratch.logRawB || !finalScratch.logRawG || !finalScratch.logRawR)) {
+                !spatial_dir_required_cached_log_raw_present(
+                    finalScratch,
+                    printDirAdmittedTargetRoles.cachedLogRawPlanes)) {
                 preparedFrame.abort("print_spatial_dir_cached_log_raw_missing");
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=spatial_dir_cached_log_raw");

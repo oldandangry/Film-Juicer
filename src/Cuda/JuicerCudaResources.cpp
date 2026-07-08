@@ -5102,12 +5102,13 @@ namespace JuicerCuda {
             (planeRoles.filterTempPlanes == 2 && planeRoles.iirForwardTempPlanes == 0 && hasLowScratchPairTemps) ||
             (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 0 && hasAliasedForwardTemps) ||
             (planeRoles.filterTempPlanes == 3 && planeRoles.iirForwardTempPlanes == 3 && hasChannelTemps);
-        const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
-        const bool hasNoCachedLogRaw =
-            scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
         const bool cachedLogRawMatch =
-            (planeRoles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
-            (planeRoles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
+            (planeRoles.cachedLogRawPlanes == 0 &&
+             scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+            (planeRoles.cachedLogRawPlanes == 2 &&
+             scratch.logRawB && scratch.logRawG && scratch.logRawR == nullptr) ||
+            (planeRoles.cachedLogRawPlanes == 3 &&
+             scratch.logRawB && scratch.logRawG && scratch.logRawR);
         return channelTempsMatch && cachedLogRawMatch;
     }
 
@@ -5118,13 +5119,12 @@ namespace JuicerCuda {
             !scratch.filteredCorrectionC) {
             return false;
         }
-        const bool hasCachedLogRaw = scratch.logRawB && scratch.logRawG && scratch.logRawR;
-        const bool hasNoCachedLogRaw =
-            scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr;
-        const bool cachedLogRawMatch =
-            (planeRoles.cachedLogRawPlanes == 0 && hasNoCachedLogRaw) ||
-            (planeRoles.cachedLogRawPlanes == 3 && hasCachedLogRaw);
-        if (!cachedLogRawMatch) {
+        const bool cachedLogRawCompatible =
+            (planeRoles.cachedLogRawPlanes == 0 &&
+             scratch.logRawB == nullptr && scratch.logRawG == nullptr && scratch.logRawR == nullptr) ||
+            (planeRoles.cachedLogRawPlanes == 2 && scratch.logRawR == nullptr) ||
+            (planeRoles.cachedLogRawPlanes == 3);
+        if (!cachedLogRawCompatible) {
             return false;
         }
         const bool filterTempsCompatible =
@@ -7182,7 +7182,13 @@ namespace JuicerCuda {
                 (planeRoles.iirForwardTempPlanes == 3 &&
                  (!ensure_plane(scratch.iirForwardTemp, "spatial DIR iirForwardTemp") ||
                   !ensure_plane(scratch.iirForwardTempM, "spatial DIR iirForwardTempM") ||
-                  !ensure_plane(scratch.iirForwardTempC, "spatial DIR iirForwardTempC")))) {
+                  !ensure_plane(scratch.iirForwardTempC, "spatial DIR iirForwardTempC"))) ||
+                (planeRoles.cachedLogRawPlanes >= 1 &&
+                 !ensure_plane(scratch.logRawB, "spatial DIR logRawB")) ||
+                (planeRoles.cachedLogRawPlanes >= 2 &&
+                 !ensure_plane(scratch.logRawG, "spatial DIR logRawG")) ||
+                (planeRoles.cachedLogRawPlanes >= 3 &&
+                 !ensure_plane(scratch.logRawR, "spatial DIR logRawR"))) {
                 free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
                 return false;
             }
@@ -7344,28 +7350,36 @@ namespace JuicerCuda {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
-        if (planeRoles.cachedLogRawPlanes == 3 &&
-            (!allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.logRawB,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR logRawB",
-                 outError) ||
-             !allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.logRawG,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR logRawG",
-                 outError) ||
-             !allocate_scratch_device_ptr_locked(
-                 resources,
-                 scratch.logRawR,
-                 bytes,
-                 cudaStreamOpaque,
-                 "spatial DIR logRawR",
-                 outError))) {
+        if (planeRoles.cachedLogRawPlanes >= 1 &&
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.logRawB,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR logRawB",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+            return false;
+        }
+        if (planeRoles.cachedLogRawPlanes >= 2 &&
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.logRawG,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR logRawG",
+                outError)) {
+            free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
+            return false;
+        }
+        if (planeRoles.cachedLogRawPlanes >= 3 &&
+            !allocate_scratch_device_ptr_locked(
+                resources,
+                scratch.logRawR,
+                bytes,
+                cudaStreamOpaque,
+                "spatial DIR logRawR",
+                outError)) {
             free_spatial_dir_scratch(resources, scratch, cudaStreamOpaque);
             return false;
         }
