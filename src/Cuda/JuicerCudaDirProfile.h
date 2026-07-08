@@ -79,6 +79,14 @@ namespace JuicerCuda {
         SpatialDirStageProfile glare{};
         SpatialDirStageProfile lensBlur{};
         SpatialDirStageProfile unsharp{};
+        int aliasRouteCaptured = 0;
+        SpatialDirStageProfile aliasFusedScanLinear{};
+        SpatialDirStageProfile aliasScannerPostOutput{};
+        SpatialDirStageProfile aliasGlare{};
+        SpatialDirStageProfile aliasFinalDevelopScanLinear{};
+        SpatialDirStageProfile aliasLensBlur{};
+        SpatialDirStageProfile aliasUnsharp{};
+        SpatialDirStageProfile aliasOutputEncode{};
         PrintDevelopBreakdownProfile printDevelopBreakdown{};
     };
 

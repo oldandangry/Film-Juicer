@@ -254,13 +254,24 @@ namespace JuicerProcess {
             return roles;
         }
 
+        Spektrafilm::DirScratchPlaneRoles strict_yvv_cached_lograw_alias_plane_roles() noexcept {
+            Spektrafilm::DirScratchPlaneRoles roles{};
+            roles.rawCorrectionPlanes = 3;
+            roles.filteredCorrectionPlanes = 3;
+            roles.filterTempPlanes = 3;
+            roles.iirForwardTempPlanes = 0;
+            roles.cachedLogRawPlanes = 3;
+            return roles;
+        }
+
         Root::PreparedCudaFrame::WorkspaceRequest strict_yvv_workspace_candidate(
             const Root::PreparedCudaFrame::WorkspaceRequest& base,
+            Spektrafilm::DirScratchTier buildTier,
             const Spektrafilm::DirScratchPlaneRoles& buildRoles,
             Spektrafilm::DirScratchTier targetTier,
             const Spektrafilm::DirScratchPlaneRoles& targetRoles) noexcept {
             Root::PreparedCudaFrame::WorkspaceRequest candidate = base;
-            candidate.spatialDirScratchTier = Spektrafilm::DirScratchTier::Tier1IChannels;
+            candidate.spatialDirScratchTier = buildTier;
             candidate.spatialDirPlaneRoles = buildRoles;
             candidate.spatialDirTargetScratchTier = targetTier;
             candidate.spatialDirTargetPlaneRoles = targetRoles;
@@ -272,7 +283,6 @@ namespace JuicerProcess {
             return request.aliasScannerRgbFromSpatialDirFiltered &&
                    request.needSpatialDir &&
                    request.spatialDirTargetScratchTier == request.spatialDirScratchTier &&
-                   request.spatialDirTargetPlaneRoles.cachedLogRawPlanes == 0 &&
                    dir_plane_roles_equal(
                        request.spatialDirTargetPlaneRoles,
                        request.spatialDirPlaneRoles);
@@ -280,6 +290,12 @@ namespace JuicerProcess {
 
         [[maybe_unused]] const char* strict_yvv_candidate_label(
             const Spektrafilm::DirScratchPlaneRoles& roles) noexcept {
+            if (roles.rawCorrectionPlanes == 3 &&
+                roles.filterTempPlanes == 3 &&
+                roles.iirForwardTempPlanes == 0 &&
+                roles.cachedLogRawPlanes == 3) {
+                return "strict_yvv_channels_aliased_forward_cached_lograw";
+            }
             if (roles.rawCorrectionPlanes == 3 &&
                 roles.filterTempPlanes == 3 &&
                 roles.iirForwardTempPlanes == 0) {
@@ -1252,7 +1268,8 @@ namespace JuicerProcess {
             (!request.needOptics ||
              !request.needSpatialDir ||
              request.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
-             request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0)) {
+             (request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0 &&
+              request.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3))) {
             outError = "scanner RGB spatial DIR alias request is invalid";
             return false;
         }
@@ -2518,7 +2535,7 @@ namespace JuicerProcess {
             return false;
         }
 
-        std::array<WorkspaceRequest, 4> scratchCandidates{};
+        std::array<WorkspaceRequest, 5> scratchCandidates{};
         int scratchCandidateCount = 0;
         auto add_scratch_candidate = [&](const WorkspaceRequest& candidate) {
             if (scratchCandidateCount >= static_cast<int>(scratchCandidates.size())) {
@@ -2546,10 +2563,21 @@ namespace JuicerProcess {
             scratchCandidates[static_cast<std::size_t>(scratchCandidateCount)] = candidate;
             ++scratchCandidateCount;
         };
-        add_scratch_candidate(workspace._request);
         if (spatial_dir_descriptor_has_strict_yvv(descriptor)) {
             const bool aliasTarget =
                 spatial_dir_alias_target_uses_build_roles(workspace._request);
+            if (aliasTarget) {
+                Spektrafilm::DirScratchPlaneRoles cachedLogRawBuild =
+                    strict_yvv_cached_lograw_alias_plane_roles();
+                Spektrafilm::DirScratchPlaneRoles cachedLogRawTarget = cachedLogRawBuild;
+                add_scratch_candidate(strict_yvv_workspace_candidate(
+                    workspace._request,
+                    Spektrafilm::DirScratchTier::Tier2,
+                    cachedLogRawBuild,
+                    Spektrafilm::DirScratchTier::Tier2,
+                    cachedLogRawTarget));
+            }
+            add_scratch_candidate(workspace._request);
             Spektrafilm::DirScratchPlaneRoles lowScratchBuild =
                 strict_yvv_low_scratch_plane_roles();
             Spektrafilm::DirScratchPlaneRoles lowScratchTarget = lowScratchBuild;
@@ -2557,6 +2585,7 @@ namespace JuicerProcess {
                 aliasTarget ? 0 : descriptor.targetPlaneRoles.cachedLogRawPlanes;
             add_scratch_candidate(strict_yvv_workspace_candidate(
                 workspace._request,
+                Spektrafilm::DirScratchTier::Tier1IChannels,
                 lowScratchBuild,
                 aliasTarget ? Spektrafilm::DirScratchTier::Tier1IChannels : descriptor.targetScratchTier,
                 lowScratchTarget));
@@ -2568,6 +2597,7 @@ namespace JuicerProcess {
                 aliasTarget ? 0 : descriptor.targetPlaneRoles.cachedLogRawPlanes;
             add_scratch_candidate(strict_yvv_workspace_candidate(
                 workspace._request,
+                Spektrafilm::DirScratchTier::Tier1IChannels,
                 singleTempBuild,
                 aliasTarget ? Spektrafilm::DirScratchTier::Tier1IChannels : descriptor.targetScratchTier,
                 singleTempTarget));
@@ -2577,9 +2607,12 @@ namespace JuicerProcess {
             Spektrafilm::DirScratchPlaneRoles streamedTarget = streamedBuild;
             add_scratch_candidate(strict_yvv_workspace_candidate(
                 workspace._request,
+                Spektrafilm::DirScratchTier::Tier1IChannels,
                 streamedBuild,
                 Spektrafilm::DirScratchTier::Tier1IChannels,
                 streamedTarget));
+        } else {
+            add_scratch_candidate(workspace._request);
         }
         if (scratchCandidateCount <= 0) {
             outError = "spatial DIR descriptor produced no supported scratch candidates";

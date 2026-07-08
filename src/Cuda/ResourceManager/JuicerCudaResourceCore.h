@@ -625,7 +625,8 @@ namespace JuicerCuda {
                 (!descriptor.needOptics ||
                  !descriptor.needSpatialDir ||
                  descriptor.spatialDirPlaneRoles.filteredCorrectionPlanes != 3 ||
-                 descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0)) {
+                 (descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 0 &&
+                  descriptor.spatialDirTargetPlaneRoles.cachedLogRawPlanes != 3))) {
                 return false;
             }
             return true;

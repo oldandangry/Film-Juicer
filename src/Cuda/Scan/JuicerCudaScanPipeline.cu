@@ -1965,6 +1965,36 @@ struct FocusedRgbPlanes {
     float* b = nullptr;
 };
 
+bool alias_profile_active(const JuicerCuda::CompositePipelineProfile* profile) noexcept {
+    return profile && profile->aliasRouteCaptured != 0;
+}
+
+cudaError_t begin_alias_profile_stage(
+    CudaProfileStageTimer& timer,
+    cudaStream_t stream,
+    JuicerCuda::CompositePipelineProfile* profile) {
+    if (!alias_profile_active(profile)) {
+        return cudaSuccess;
+    }
+    return timer.begin(stream);
+}
+
+cudaError_t finish_alias_profile_stage(
+    JuicerCuda::CompositePipelineProfile* profile,
+    JuicerCuda::SpatialDirStageProfile* stage,
+    CudaProfileStageTimer& timer,
+    cudaStream_t stream,
+    int launches) {
+    if (!alias_profile_active(profile) || !stage) {
+        return cudaSuccess;
+    }
+    const cudaError_t error = timer.finish(stream, stage, launches);
+    if (error == cudaSuccess) {
+        profile->totalLaunches += launches;
+    }
+    return error;
+}
+
 cudaError_t blur_plane_in_place(
     float* plane,
     float* tmp,
@@ -1983,6 +2013,7 @@ cudaError_t launch_focused_scan_linear_rgb(
     float* dTmp,
     float* dScratchBlurred,
     const FocusedScannerPostEffectOptions& options,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
@@ -2013,6 +2044,12 @@ cudaError_t launch_focused_scan_linear_rgb(
         if (options.glareRadius > 0 && options.glareKernel && !dScratchBlurred) {
             return cudaErrorInvalidValue;
         }
+        CudaProfileStageTimer glareTimer;
+        cudaError_t profileError = begin_alias_profile_stage(glareTimer, stream, aliasProfile);
+        if (profileError != cudaSuccess) {
+            return profileError;
+        }
+        int glareLaunches = 1;
         const std::uint64_t mediumId = params.scanStage.scanTables.mediumIsNegative ? 0ULL : 1ULL;
         optics_glare_generate_kernel<<<blocks, threads, 0, stream>>>(
             dTmp,
@@ -2042,14 +2079,39 @@ cudaError_t launch_focused_scan_linear_rgb(
             if (error != cudaSuccess) {
                 return error;
             }
+            glareLaunches += 2;
+        }
+        profileError = finish_alias_profile_stage(
+            aliasProfile,
+            aliasProfile ? &aliasProfile->aliasGlare : nullptr,
+            glareTimer,
+            stream,
+            glareLaunches);
+        if (profileError != cudaSuccess) {
+            return profileError;
         }
         params.scanStage.glarePercent = dTmp;
+    }
+
+    CudaProfileStageTimer scanLinearTimer;
+    cudaError_t profileError = begin_alias_profile_stage(scanLinearTimer, stream, aliasProfile);
+    if (profileError != cudaSuccess) {
+        return profileError;
     }
     params.scanStage.linearRgbR = rgb.r;
     params.scanStage.linearRgbG = rgb.g;
     params.scanStage.linearRgbB = rgb.b;
     pipeline_direct_kernel<<<blocks, threads, 0, stream>>>(params);
-    return cudaGetLastError();
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        return error;
+    }
+    return finish_alias_profile_stage(
+        aliasProfile,
+        aliasProfile ? &aliasProfile->aliasFinalDevelopScanLinear : nullptr,
+        scanLinearTimer,
+        stream,
+        1);
 }
 
 template <typename Params>
@@ -2265,6 +2327,7 @@ cudaError_t launch_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     if (!hParams || !hParams->src || !hParams->dst || !rgb.r || !rgb.g || !rgb.b) {
         return cudaErrorInvalidValue;
@@ -2307,7 +2370,13 @@ cudaError_t launch_focused_scanner_post_output(
     }
 
     cudaError_t error = cudaSuccess;
-    if (lensBlurRadius > 0 && dLensBlurKernel) {
+    const bool doLensBlur = lensBlurRadius > 0 && dLensBlurKernel;
+    if (doLensBlur) {
+        CudaProfileStageTimer lensBlurTimer;
+        cudaError_t profileError = begin_alias_profile_stage(lensBlurTimer, stream, aliasProfile);
+        if (profileError != cudaSuccess) {
+            return profileError;
+        }
         error = blur_plane(rgb.r, dLensBlurKernel, lensBlurRadius);
         if (error != cudaSuccess) {
             return error;
@@ -2320,11 +2389,22 @@ cudaError_t launch_focused_scanner_post_output(
         if (error != cudaSuccess) {
             return error;
         }
+        profileError = finish_alias_profile_stage(
+            aliasProfile,
+            aliasProfile ? &aliasProfile->aliasLensBlur : nullptr,
+            lensBlurTimer,
+            stream,
+            6);
+        if (profileError != cudaSuccess) {
+            return profileError;
+        }
     }
 
-    if (unsharpRadius > 0 && dUnsharpKernel &&
+    const bool doUnsharp =
+        unsharpRadius > 0 && dUnsharpKernel &&
         std::isfinite(static_cast<double>(unsharpAmount)) &&
-        unsharpAmount > 0.0f) {
+        unsharpAmount > 0.0f;
+    if (doUnsharp) {
         auto unsharp_plane_in_place = [&](float* plane) {
             const int kernelLength = 2 * unsharpRadius + 1;
             const size_t horizontalShared =
@@ -2358,6 +2438,11 @@ cudaError_t launch_focused_scanner_post_output(
                 unsharpAmount);
             return cudaGetLastError();
         };
+        CudaProfileStageTimer unsharpTimer;
+        cudaError_t profileError = begin_alias_profile_stage(unsharpTimer, stream, aliasProfile);
+        if (profileError != cudaSuccess) {
+            return profileError;
+        }
         error = unsharp_plane_in_place(rgb.r);
         if (error != cudaSuccess) {
             return error;
@@ -2370,9 +2455,32 @@ cudaError_t launch_focused_scanner_post_output(
         if (error != cudaSuccess) {
             return error;
         }
+        profileError = finish_alias_profile_stage(
+            aliasProfile,
+            aliasProfile ? &aliasProfile->aliasUnsharp : nullptr,
+            unsharpTimer,
+            stream,
+            6);
+        if (profileError != cudaSuccess) {
+            return profileError;
+        }
+    }
+    CudaProfileStageTimer outputEncodeTimer;
+    cudaError_t profileError = begin_alias_profile_stage(outputEncodeTimer, stream, aliasProfile);
+    if (profileError != cudaSuccess) {
+        return profileError;
     }
     focused_scan_output_encode_kernel<<<blocks, threads, 0, stream>>>(params, rgb.r, rgb.g, rgb.b);
-    return cudaGetLastError();
+    error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        return error;
+    }
+    return finish_alias_profile_stage(
+        aliasProfile,
+        aliasProfile ? &aliasProfile->aliasOutputEncode : nullptr,
+        outputEncodeTimer,
+        stream,
+        1);
 }
 
 template <typename Params>
@@ -2694,6 +2802,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scan_linear_rgb(
         hParams,
@@ -2701,6 +2810,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
         nullptr,
         nullptr,
         FocusedScannerPostEffectOptions{},
+        aliasProfile,
         cudaStreamOpaque);
 }
 
@@ -2718,6 +2828,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
     float glareRoughness,
     const float* dGlareKernel,
     int glareRadius,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scan_linear_rgb(
         hParams,
@@ -2733,6 +2844,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
             glareRoughness,
             dGlareKernel,
             glareRadius},
+        aliasProfile,
         cudaStreamOpaque);
 }
 
@@ -2747,6 +2859,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
         hParams,
@@ -2757,6 +2870,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
         dUnsharpKernel,
         unsharpRadius,
         unsharpAmount,
+        aliasProfile,
         cudaStreamOpaque);
 }
 
@@ -2771,6 +2885,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque) {
     return launch_focused_scanner_post_output(
         hParams,
@@ -2781,6 +2896,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
         dUnsharpKernel,
         unsharpRadius,
         unsharpAmount,
+        aliasProfile,
         cudaStreamOpaque);
 }
 

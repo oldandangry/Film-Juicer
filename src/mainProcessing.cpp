@@ -70,6 +70,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scan_linear_rgb(
     float* dRgbR,
     float* dRgbG,
     float* dRgbB,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
@@ -86,6 +87,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_scan_linear_rgb(
     float glareRoughness,
     const float* dGlareKernel,
     int glareRadius,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_direct_focused_spatial_dir_final_develop_density(
@@ -142,6 +144,7 @@ extern "C" cudaError_t juicer_cuda_direct_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
@@ -155,6 +158,7 @@ extern "C" cudaError_t juicer_cuda_print_focused_scanner_post_output(
     const float* dUnsharpKernel,
     int unsharpRadius,
     float unsharpAmount,
+    JuicerCuda::CompositePipelineProfile* aliasProfile,
     void* cudaStreamOpaque);
 
 extern "C" cudaError_t juicer_cuda_build_gate_defect_mask(
@@ -660,6 +664,39 @@ namespace {
         }
     };
 
+    struct AliasRouteProfileExtent {
+        int width = 0;
+        int height = 0;
+    };
+
+    void initialize_spatial_dir_rgb_alias_profile(
+        JuicerCuda::CompositePipelineProfile& profile,
+        AliasRouteProfileExtent extent) {
+        profile = JuicerCuda::CompositePipelineProfile{};
+        profile.width = extent.width;
+        profile.height = extent.height;
+        profile.captured = 1;
+        profile.aliasRouteCaptured = 1;
+        profile.profileKind = "focused_alias_real_stage_attribution";
+        profile.profileNote = "spatial_dir_rgb_alias_attributed";
+    }
+
+    void record_alias_route_stage(
+        JuicerCuda::CompositePipelineProfile& profile,
+        JuicerCuda::SpatialDirStageProfile& stage,
+        CudaEventElapsedTimer& timer,
+        void* streamOpaque) {
+        if (!profile.aliasRouteCaptured || !timer.active) {
+            return;
+        }
+        const float elapsedMs = timer.finish(streamOpaque);
+        if (elapsedMs < 0.0f) {
+            return;
+        }
+        stage.elapsedMs = elapsedMs;
+        profile.total.elapsedMs += elapsedMs;
+    }
+
     int active_tail_component_count(const JuicerCuda::SpatialDirBuildProfile& profile) {
         int count = 0;
         for (float weight : profile.tailWeight) {
@@ -681,8 +718,14 @@ namespace {
         const Spektrafilm::SpatialDirDescriptor& descriptor,
         const Spektrafilm::DirScratchPlaneRoles& roles) {
         if (descriptor.approximation != Spektrafilm::DirApproximationMarker::SpektrafilmStrict ||
-            descriptor.scratchTier != Spektrafilm::DirScratchTier::Tier1IChannels) {
+            (descriptor.scratchTier != Spektrafilm::DirScratchTier::Tier1IChannels &&
+             descriptor.scratchTier != Spektrafilm::DirScratchTier::Tier2)) {
             return "none";
+        }
+        if (roles.filterTempPlanes == 3 &&
+            roles.iirForwardTempPlanes == 0 &&
+            roles.cachedLogRawPlanes == 3) {
+            return "strict_yvv_channels_aliased_forward_cached_lograw";
         }
         if (roles.filterTempPlanes == 3 && roles.iirForwardTempPlanes == 3) {
             return "strict_yvv_channels";
@@ -713,6 +756,9 @@ namespace {
             return "none";
         }
         if (fusedScannerPostSpatialDirHandoff) {
+            if (roles.cachedLogRawPlanes == 3 && targetRoles.cachedLogRawPlanes == 3) {
+                return "source_build_cached_fused_scan";
+            }
             return "recompute_source_rgb_fused_scan";
         }
         if (targetRoles.cachedLogRawPlanes == 0) {
@@ -736,6 +782,9 @@ namespace {
         if (!dirActive) {
             return "none";
         }
+        if (fusedScannerPostSpatialDirHandoff && targetRoles.cachedLogRawPlanes == 3) {
+            return "cached_source_build";
+        }
         if (fusedScannerPostSpatialDirHandoff || targetRoles.cachedLogRawPlanes == 0) {
             return "raw_only";
         }
@@ -748,10 +797,7 @@ namespace {
     int final_develop_cached_lograw_planes(
         bool dirActive,
         const Spektrafilm::DirScratchPlaneRoles& targetRoles,
-        bool fusedScannerPostSpatialDirHandoff) {
-        if (fusedScannerPostSpatialDirHandoff) {
-            return 0;
-        }
+        bool /*fusedScannerPostSpatialDirHandoff*/) {
         return dirActive && targetRoles.cachedLogRawPlanes == 3 ? 3 : 0;
     }
 
@@ -774,9 +820,18 @@ namespace {
         const Spektrafilm::DirScratchPlaneRoles& targetRoles,
         bool fusedScannerPostSpatialDirHandoff) {
         if (fusedScannerPostSpatialDirHandoff) {
-            return "none";
+            return dirActive && targetRoles.cachedLogRawPlanes == 3 ? "after_fused_scan_linear" : "none";
         }
         return dirActive && targetRoles.cachedLogRawPlanes == 3 ? "after_final_develop" : "none";
+    }
+
+    bool fused_alias_uses_source_build_cached_log_raw(
+        bool fusedScannerPostSpatialDirHandoff,
+        const Spektrafilm::DirScratchPlaneRoles& roles,
+        const Spektrafilm::DirScratchPlaneRoles& targetRoles) noexcept {
+        return fusedScannerPostSpatialDirHandoff &&
+               roles.cachedLogRawPlanes == 3 &&
+               targetRoles.cachedLogRawPlanes == 3;
     }
 
     struct SpatialDirProfileAdmittedRoles {
@@ -1233,6 +1288,21 @@ namespace {
             << " composite_profile_captured=" << compositeProfile.captured
             << " composite_profile_kind=" << nonempty_cstr_or(compositeProfile.profileKind, "none")
             << " composite_profile_note=" << nonempty_cstr_or(compositeProfile.profileNote, "none")
+            << " alias_route_profile_captured=" << compositeProfile.aliasRouteCaptured
+            << " alias_fused_scan_linear_ms=" << compositeProfile.aliasFusedScanLinear.elapsedMs
+            << " alias_scanner_post_output_ms=" << compositeProfile.aliasScannerPostOutput.elapsedMs
+            << " alias_glare_launches=" << compositeProfile.aliasGlare.launches
+            << " alias_glare_ms=" << compositeProfile.aliasGlare.elapsedMs
+            << " alias_final_develop_scan_linear_launches="
+            << compositeProfile.aliasFinalDevelopScanLinear.launches
+            << " alias_final_develop_scan_linear_ms="
+            << compositeProfile.aliasFinalDevelopScanLinear.elapsedMs
+            << " alias_lens_blur_launches=" << compositeProfile.aliasLensBlur.launches
+            << " alias_lens_blur_ms=" << compositeProfile.aliasLensBlur.elapsedMs
+            << " alias_unsharp_launches=" << compositeProfile.aliasUnsharp.launches
+            << " alias_unsharp_ms=" << compositeProfile.aliasUnsharp.elapsedMs
+            << " alias_output_encode_launches=" << compositeProfile.aliasOutputEncode.launches
+            << " alias_output_encode_ms=" << compositeProfile.aliasOutputEncode.elapsedMs
             << " composite_profile_width=" << compositeProfile.width
             << " composite_profile_height=" << compositeProfile.height
             << " composite_profile_total_launches=" << compositeProfile.totalLaunches
@@ -2963,6 +3033,7 @@ void JuicerProcessor::processImagesCUDA() {
         bool directDirScratchOverflow = false;
         Spektrafilm::DirScratchPlaneRoles directDirAdmittedRoles = directSpatialDir.planeRoles;
         Spektrafilm::DirScratchPlaneRoles directDirAdmittedTargetRoles = directSpatialDir.targetPlaneRoles;
+        bool directDirUsesSourceBuildCachedLogRaw = false;
         double directDirPrepareMs = 0.0;
         double directDirBuildHostMs = 0.0;
         double directPipelineLaunchHostMs = 0.0;
@@ -3015,12 +3086,26 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTempM;
             float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
                 scratch.iirForwardTempC;
-            float* cachedLogRawB = nullptr;
-            float* cachedLogRawG = nullptr;
-            float* cachedLogRawR = nullptr;
             directDirScratchOverflow = scratch.overflow;
             directDirAdmittedRoles = scratch.planeRoles;
             directDirAdmittedTargetRoles = scratch.targetPlaneRoles;
+            directDirUsesSourceBuildCachedLogRaw =
+                fused_alias_uses_source_build_cached_log_raw(
+                    directUseFusedScannerPostSpatialDirHandoff,
+                    directDirAdmittedRoles,
+                    directDirAdmittedTargetRoles);
+            if (directDirUsesSourceBuildCachedLogRaw &&
+                (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR)) {
+                preparedFrame.abort("direct_spatial_dir_source_build_cached_log_raw_missing");
+                throw_direct_restriction(
+                    "MissingRequiredResource phase=3D-3 field=spatial_dir_source_build_cached_log_raw");
+            }
+            float* cachedLogRawB =
+                directDirUsesSourceBuildCachedLogRaw ? scratch.logRawB : nullptr;
+            float* cachedLogRawG =
+                directDirUsesSourceBuildCachedLogRaw ? scratch.logRawG : nullptr;
+            float* cachedLogRawR =
+                directDirUsesSourceBuildCachedLogRaw ? scratch.logRawR : nullptr;
             const auto directDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
                 "direct",
@@ -3109,8 +3194,9 @@ void JuicerProcessor::processImagesCUDA() {
             }
             const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
             const bool directDirRequiresCachedLogRaw =
-                !directUseFusedScannerPostSpatialDirHandoff &&
-                directDirAdmittedTargetRoles.cachedLogRawPlanes == 3;
+                directDirUsesSourceBuildCachedLogRaw ||
+                (!directUseFusedScannerPostSpatialDirHandoff &&
+                 directDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
             if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
                 !finalScratch.filteredCorrectionC) {
                 preparedFrame.abort("direct_spatial_dir_filtered_correction_missing");
@@ -3123,7 +3209,7 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_direct_restriction(
                     "MissingRequiredResource phase=3D-3 field=spatial_dir_cached_log_raw");
             }
-            if (directDirRequiresCachedLogRaw) {
+            if (directDirRequiresCachedLogRaw && !directDirUsesSourceBuildCachedLogRaw) {
                 const cudaError_t logRawError =
                     juicer_cuda_build_direct_spatial_dir_cached_log_raw(
                         &run,
@@ -3226,8 +3312,9 @@ void JuicerProcessor::processImagesCUDA() {
             throw_submission_fatal("direct_scan_error_stage", "direct scan error stage failed", scanError);
         }
         if (directCompositeProfileRequested && directUseFusedScannerPostSpatialDirHandoff) {
-            directCompositeProfile.profileKind = "focused_split_attribution";
-            directCompositeProfile.profileNote = "skipped_spatial_dir_rgb_alias";
+            initialize_spatial_dir_rgb_alias_profile(
+                directCompositeProfile,
+                AliasRouteProfileExtent{width, height});
         } else if (directCompositeProfileRequested) {
             std::string profileWorkspaceError;
             if (preparedFrame.try_stage_profile_optical_workspace(
@@ -3283,6 +3370,8 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_direct_restriction(
                     "MissingRequiredResource phase=8C field=scanner_post_effects");
             }
+            const bool directAliasProfileActive =
+                dirProfileEnabled && directUseFusedScannerPostSpatialDirHandoff;
             if (directSpatialDir.hash != 0 && !directUseFusedScannerPostSpatialDirHandoff) {
                 if (!directSpatialDirDensityReady) {
                     preparedFrame.abort("direct_spatial_dir_density_not_ready");
@@ -3299,12 +3388,24 @@ void JuicerProcessor::processImagesCUDA() {
                     post.scratch.rgbB,
                     _pCudaStream);
             } else {
+                CudaEventElapsedTimer directAliasScanLinearTimer;
+                if (directAliasProfileActive) {
+                    directAliasScanLinearTimer.begin(_pCudaStream);
+                }
                 launchError = juicer_cuda_direct_focused_scan_linear_rgb(
                     &run,
                     post.scratch.rgbR,
                     post.scratch.rgbG,
                     post.scratch.rgbB,
+                    directAliasProfileActive ? &directCompositeProfile : nullptr,
                     _pCudaStream);
+                if (launchError == cudaSuccess && directAliasProfileActive) {
+                    record_alias_route_stage(
+                        directCompositeProfile,
+                        directCompositeProfile.aliasFusedScanLinear,
+                        directAliasScanLinearTimer,
+                        _pCudaStream);
+                }
             }
             if (launchError != cudaSuccess) {
                 preparedFrame.abort("direct_scanner_linear_launch_failed");
@@ -3312,6 +3413,22 @@ void JuicerProcessor::processImagesCUDA() {
                     "direct_scanner_linear_launch",
                     "direct scanner-linear launch failed",
                     launchError);
+            }
+            if (directDirUsesSourceBuildCachedLogRaw) {
+                std::string releaseError;
+                if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
+                        focusedWorkspace,
+                        _pCudaStream,
+                        releaseError)) {
+                    preparedFrame.abort("direct_spatial_dir_cached_log_raw_release_failed");
+                    throw_submission_fatal(
+                        "direct_spatial_dir_cached_log_raw_release",
+                        "direct spatial DIR cached log raw release failed",
+                        releaseError);
+                }
+                run.filmDevelop.spatialDir.logRawB = nullptr;
+                run.filmDevelop.spatialDir.logRawG = nullptr;
+                run.filmDevelop.spatialDir.logRawR = nullptr;
             }
             if (directSpatialDir.hash != 0 && !directUseFusedScannerPostSpatialDirHandoff) {
                 std::string releaseError;
@@ -3327,6 +3444,10 @@ void JuicerProcessor::processImagesCUDA() {
                 }
                 clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
             }
+            CudaEventElapsedTimer directAliasPostOutputTimer;
+            if (directAliasProfileActive) {
+                directAliasPostOutputTimer.begin(_pCudaStream);
+            }
             launchError = juicer_cuda_direct_focused_scanner_post_output(
                 &run,
                 post.scratch.rgbR,
@@ -3338,7 +3459,15 @@ void JuicerProcessor::processImagesCUDA() {
                 post.unsharp.weights,
                 post.unsharp.radius,
                 scannerPostEffects.unsharpAmount,
+                directAliasProfileActive ? &directCompositeProfile : nullptr,
                 _pCudaStream);
+            if (launchError == cudaSuccess && directAliasProfileActive) {
+                record_alias_route_stage(
+                    directCompositeProfile,
+                    directCompositeProfile.aliasScannerPostOutput,
+                    directAliasPostOutputTimer,
+                    _pCudaStream);
+            }
             if (launchError == cudaSuccess &&
                 directSpatialDir.hash != 0 &&
                 directUseFusedScannerPostSpatialDirHandoff) {
@@ -3693,6 +3822,7 @@ void JuicerProcessor::processImagesCUDA() {
         bool printDirScratchOverflow = false;
         Spektrafilm::DirScratchPlaneRoles printDirAdmittedRoles = spatialDir.planeRoles;
         Spektrafilm::DirScratchPlaneRoles printDirAdmittedTargetRoles = spatialDir.targetPlaneRoles;
+        bool printDirUsesSourceBuildCachedLogRaw = false;
         double printDirPrepareMs = 0.0;
         double printDirBuildHostMs = 0.0;
         double printPipelineLaunchHostMs = 0.0;
@@ -3745,12 +3875,26 @@ void JuicerProcessor::processImagesCUDA() {
                 scratch.iirForwardTempM;
             float* SF_TEMP_BRIDGE_map_channel_iir_forward_plane_to_iirForwardTempC =
                 scratch.iirForwardTempC;
-            float* cachedLogRawB = nullptr;
-            float* cachedLogRawG = nullptr;
-            float* cachedLogRawR = nullptr;
             printDirScratchOverflow = scratch.overflow;
             printDirAdmittedRoles = scratch.planeRoles;
             printDirAdmittedTargetRoles = scratch.targetPlaneRoles;
+            printDirUsesSourceBuildCachedLogRaw =
+                fused_alias_uses_source_build_cached_log_raw(
+                    printUseFusedScannerPostSpatialDirHandoff,
+                    printDirAdmittedRoles,
+                    printDirAdmittedTargetRoles);
+            if (printDirUsesSourceBuildCachedLogRaw &&
+                (!scratch.logRawB || !scratch.logRawG || !scratch.logRawR)) {
+                preparedFrame.abort("print_spatial_dir_source_build_cached_log_raw_missing");
+                throw_print_restriction(
+                    "MissingRequiredResource phase=4C field=spatial_dir_source_build_cached_log_raw");
+            }
+            float* cachedLogRawB =
+                printDirUsesSourceBuildCachedLogRaw ? scratch.logRawB : nullptr;
+            float* cachedLogRawG =
+                printDirUsesSourceBuildCachedLogRaw ? scratch.logRawG : nullptr;
+            float* cachedLogRawR =
+                printDirUsesSourceBuildCachedLogRaw ? scratch.logRawR : nullptr;
             const auto printDirBuildStart = std::chrono::steady_clock::now();
             trace_spatial_dir_bridge_use(
                 "print",
@@ -3839,8 +3983,9 @@ void JuicerProcessor::processImagesCUDA() {
             }
             const auto finalScratch = preparedFrame.spatial_dir_scratch(focusedWorkspace);
             const bool printDirRequiresCachedLogRaw =
-                !printUseFusedScannerPostSpatialDirHandoff &&
-                printDirAdmittedTargetRoles.cachedLogRawPlanes == 3;
+                printDirUsesSourceBuildCachedLogRaw ||
+                (!printUseFusedScannerPostSpatialDirHandoff &&
+                 printDirAdmittedTargetRoles.cachedLogRawPlanes == 3);
             if (!finalScratch.filteredCorrectionY || !finalScratch.filteredCorrectionM ||
                 !finalScratch.filteredCorrectionC) {
                 preparedFrame.abort("print_spatial_dir_filtered_correction_missing");
@@ -3853,7 +3998,7 @@ void JuicerProcessor::processImagesCUDA() {
                 throw_print_restriction(
                     "MissingRequiredResource phase=4C field=spatial_dir_cached_log_raw");
             }
-            if (printDirRequiresCachedLogRaw) {
+            if (printDirRequiresCachedLogRaw && !printDirUsesSourceBuildCachedLogRaw) {
                 const cudaError_t logRawError =
                     juicer_cuda_build_print_spatial_dir_cached_log_raw(
                         &run,
@@ -3966,8 +4111,9 @@ void JuicerProcessor::processImagesCUDA() {
                 scanError);
         }
         if (printCompositeProfileRequested && printUseFusedScannerPostSpatialDirHandoff) {
-            printCompositeProfile.profileKind = "focused_split_attribution";
-            printCompositeProfile.profileNote = "skipped_spatial_dir_rgb_alias";
+            initialize_spatial_dir_rgb_alias_profile(
+                printCompositeProfile,
+                AliasRouteProfileExtent{width, height});
         } else if (printCompositeProfileRequested) {
             std::string profileWorkspaceError;
             if (preparedFrame.try_stage_profile_optical_workspace(
@@ -4028,6 +4174,8 @@ void JuicerProcessor::processImagesCUDA() {
                  snapshot.frameToken.value,
                  static_cast<std::uint64_t>(srcBounds.x1),
                  static_cast<std::uint64_t>(srcBounds.y1)});
+            const bool printAliasProfileActive =
+                dirProfileEnabled && printUseFusedScannerPostSpatialDirHandoff;
             if (spatialDir.hash != 0 && !printUseFusedScannerPostSpatialDirHandoff) {
                 if (!printSpatialDirDensityReady) {
                     preparedFrame.abort("print_spatial_dir_density_not_ready");
@@ -4053,6 +4201,10 @@ void JuicerProcessor::processImagesCUDA() {
                     post.glare.radius,
                     _pCudaStream);
             } else {
+                CudaEventElapsedTimer printAliasScanLinearTimer;
+                if (printAliasProfileActive) {
+                    printAliasScanLinearTimer.begin(_pCudaStream);
+                }
                 launchError = juicer_cuda_print_focused_scan_linear_rgb(
                     &run,
                     post.scratch.rgbR,
@@ -4067,7 +4219,15 @@ void JuicerProcessor::processImagesCUDA() {
                     scannerPostEffects.glareRoughness,
                     post.glare.weights,
                     post.glare.radius,
+                    printAliasProfileActive ? &printCompositeProfile : nullptr,
                     _pCudaStream);
+                if (launchError == cudaSuccess && printAliasProfileActive) {
+                    record_alias_route_stage(
+                        printCompositeProfile,
+                        printCompositeProfile.aliasFusedScanLinear,
+                        printAliasScanLinearTimer,
+                        _pCudaStream);
+                }
             }
             if (launchError != cudaSuccess) {
                 preparedFrame.abort("print_scanner_linear_launch_failed");
@@ -4075,6 +4235,22 @@ void JuicerProcessor::processImagesCUDA() {
                     "print_scanner_linear_launch",
                     "print scanner-linear launch failed",
                     launchError);
+            }
+            if (printDirUsesSourceBuildCachedLogRaw) {
+                std::string releaseError;
+                if (!preparedFrame.release_spatial_dir_cached_log_raw_after_final_develop(
+                        focusedWorkspace,
+                        _pCudaStream,
+                        releaseError)) {
+                    preparedFrame.abort("print_spatial_dir_cached_log_raw_release_failed");
+                    throw_submission_fatal(
+                        "print_spatial_dir_cached_log_raw_release",
+                        "print spatial DIR cached log raw release failed",
+                        releaseError);
+                }
+                run.filmDevelop.spatialDir.logRawB = nullptr;
+                run.filmDevelop.spatialDir.logRawG = nullptr;
+                run.filmDevelop.spatialDir.logRawR = nullptr;
             }
             if (spatialDir.hash != 0 && !printUseFusedScannerPostSpatialDirHandoff) {
                 std::string releaseError;
@@ -4090,6 +4266,10 @@ void JuicerProcessor::processImagesCUDA() {
                 }
                 clear_spatial_dir_final_develop_payload_bindings(run.filmDevelop);
             }
+            CudaEventElapsedTimer printAliasPostOutputTimer;
+            if (printAliasProfileActive) {
+                printAliasPostOutputTimer.begin(_pCudaStream);
+            }
             launchError = juicer_cuda_print_focused_scanner_post_output(
                 &run,
                 post.scratch.rgbR,
@@ -4101,7 +4281,15 @@ void JuicerProcessor::processImagesCUDA() {
                 post.unsharp.weights,
                 post.unsharp.radius,
                 scannerPostEffects.unsharpAmount,
+                printAliasProfileActive ? &printCompositeProfile : nullptr,
                 _pCudaStream);
+            if (launchError == cudaSuccess && printAliasProfileActive) {
+                record_alias_route_stage(
+                    printCompositeProfile,
+                    printCompositeProfile.aliasScannerPostOutput,
+                    printAliasPostOutputTimer,
+                    _pCudaStream);
+            }
             if (launchError == cudaSuccess &&
                 spatialDir.hash != 0 &&
                 printUseFusedScannerPostSpatialDirHandoff) {
