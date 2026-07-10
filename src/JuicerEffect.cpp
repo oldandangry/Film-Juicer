@@ -1103,9 +1103,15 @@ namespace {
     inline void read_input_snapshot_values(
         OFX::ChoiceParam* inputColorSpaceParam,
         OFX::BooleanParam* inputCctfDecodingParam,
+        OFX::BooleanParam* hanatos2025AdaptationWindowParam,
+        OFX::BooleanParam* hanatos2025AdaptationSurfaceParam,
         ParamSnapshot& snapshot) {
         snapshot.inputColorSpace = read_choice_param_or(inputColorSpaceParam, snapshot.inputColorSpace);
         snapshot.inputCctfDecoding = read_bool_param_as_i32(inputCctfDecodingParam, false);
+        snapshot.hanatos2025AdaptationWindow =
+            read_bool_param_as_i32(hanatos2025AdaptationWindowParam, true);
+        snapshot.hanatos2025AdaptationSurface =
+            read_bool_param_as_i32(hanatos2025AdaptationSurfaceParam, false);
     }
 
     inline void read_coupler_snapshot_values(
@@ -1928,6 +1934,10 @@ JuicerEffect::JuicerEffect(OfxImageEffectHandle handle)
         _pEnlDichroicSet = fetchChoiceParam(kParamDichroicFilterSet);
         _pInputColorSpace = fetchChoiceParam(JuicerParams::kInputColorSpace);
         _pInputCctfDecoding = fetchBooleanParam(JuicerParams::kInputCctfDecoding);
+        _pHanatos2025AdaptationWindow =
+            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
+        _pHanatos2025AdaptationSurface =
+            fetchBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
         _pScanRoute = fetchStrChoiceParam(JuicerParams::kParamScanRoute);
         _pOutputColorSpace = fetchChoiceParam(kParamOutputColorSpace);
         _pOutputCctfEncoding = fetchBooleanParam(kParamOutputCctfEncoding);
@@ -2786,7 +2796,12 @@ ParamSnapshot JuicerEffect::snapshotParams() const {
     P.glareBlurSigmaPx = glare.blur;
     P.printDminFactor =
         read_sanitized_unit_double(_pPrintDminFactor, P.printDminFactor);
-    read_input_snapshot_values(_pInputColorSpace, _pInputCctfDecoding, P);
+    read_input_snapshot_values(
+        _pInputColorSpace,
+        _pInputCctfDecoding,
+        _pHanatos2025AdaptationWindow,
+        _pHanatos2025AdaptationSurface,
+        P);
     const ExposureParams exposure = gatherExposureParams();
     P.cameraAutoExposureEnabled = exposure.cameraAutoEnabled ? 1 : 0;
     P.cameraMeteringMethod = exposure.meteringMethod;

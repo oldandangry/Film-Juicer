@@ -118,6 +118,8 @@ private:
     OFX::ChoiceParam* _pEnlDichroicSet = nullptr;
     OFX::ChoiceParam* _pInputColorSpace = nullptr;
     OFX::BooleanParam* _pInputCctfDecoding = nullptr;
+    OFX::BooleanParam* _pHanatos2025AdaptationWindow = nullptr;
+    OFX::BooleanParam* _pHanatos2025AdaptationSurface = nullptr;
     OFX::StrChoiceParam* _pScanRoute = nullptr;
     OFX::ChoiceParam* _pOutputColorSpace = nullptr;
     OFX::BooleanParam* _pOutputCctfEncoding = nullptr;

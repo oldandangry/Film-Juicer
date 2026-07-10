@@ -201,6 +201,22 @@ void JuicerPluginFactory::describeInContext(OFX::ImageEffectDescriptor& desc, OF
         p->setDefault(false);
         p->setEvaluateOnChange(true);
     }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kHanatos2025AdaptationWindow);
+        p->setLabel("hanatos2025 adaptation window");
+        p->setHint("Apply the Hanatos 2025 bandpass adaptation window when reconstructing spectra.");
+        p->setDefault(true);
+        p->setEvaluateOnChange(true);
+    }
+    {
+        OFX::BooleanParamDescriptor* p =
+            desc.defineBooleanParam(JuicerParams::kHanatos2025AdaptationSurface);
+        p->setLabel("hanatos2025 adaptation surface");
+        p->setHint("Apply the Hanatos 2025 surface adaptation polynomial when reconstructing spectra.");
+        p->setDefault(false);
+        p->setEvaluateOnChange(true);
+    }
 
     // Recipe-owned spektrafilm DIR controls.
     {

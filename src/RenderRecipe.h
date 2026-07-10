@@ -811,6 +811,8 @@ namespace Spektrafilm {
         int spectralUpsamplingMode = 0;
         int inputColorSpace = 0;
         bool inputCctfDecoding = false;
+        bool applyHanatos2025AdaptationWindow = true;
+        bool applyHanatos2025AdaptationSurface = false;
         bool cameraAutoExposureEnabled = true;
         int cameraMeteringMethod = 0;
         float manualExposureCompensationEv = 0.0f;

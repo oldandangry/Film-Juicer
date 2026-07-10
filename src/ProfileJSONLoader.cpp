@@ -1958,8 +1958,6 @@ namespace Profiles {
             outProfile.info = std::move(info);
             outProfile.data = std::move(data);
             outProfile.digest = build_profile_digest(outProfile.info, role);
-            outProfile.digest.hanatosWindowAuthored = outProfile.data.hasHanatos2025AdaptationWindowParams;
-            outProfile.digest.hanatosSurfaceAuthored = outProfile.data.hasHanatos2025AdaptationSurfaceParams;
             outProfile.sourcePath = jsonPath;
             outProfile.assetVersionToken = build_profile_asset_version_token(outProfile.info, outProfile.data);
             if (outDiagnostic) {

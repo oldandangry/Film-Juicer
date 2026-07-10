@@ -8,6 +8,8 @@ namespace JuicerParams {
     inline constexpr const char kParamScanRoute[] = "ScanRoute";
     inline constexpr const char kInputColorSpace[] = "InputColorSpace";
     inline constexpr const char kInputCctfDecoding[] = "InputCctfDecoding";
+    inline constexpr const char kHanatos2025AdaptationWindow[] = "Hanatos2025AdaptationWindow";
+    inline constexpr const char kHanatos2025AdaptationSurface[] = "Hanatos2025AdaptationSurface";
     inline constexpr const char kDirCouplersGroup[] = "Couplers";
     inline constexpr const char kDirCouplersActive[] = "CouplersActive";
     inline constexpr const char kDirCouplersAmount[] = "CouplersAmount";

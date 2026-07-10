@@ -1306,8 +1306,8 @@ namespace Spektrafilm {
         filmRaw.cameraBandPass.active = input.cameraFilterOverride;
         filmRaw.cameraBandPass.uv = copy_filter_triplet(input.cameraFilterUV, input.cameraFilterOverride);
         filmRaw.cameraBandPass.ir = copy_filter_triplet(input.cameraFilterIR, input.cameraFilterOverride);
-        filmRaw.hanatos.applyWindow = profile.digest.hanatosRuntimeApplyWindowDefault;
-        filmRaw.hanatos.applySurface = profile.digest.hanatosRuntimeApplySurfaceDefault;
+        filmRaw.hanatos.applyWindow = input.applyHanatos2025AdaptationWindow;
+        filmRaw.hanatos.applySurface = input.applyHanatos2025AdaptationSurface;
         filmRaw.hanatos.spectralGaussianBlur = profile.digest.hanatosSpectralGaussianBlurDefault;
         filmRaw.hanatos.windowParams = profile.data.hanatos2025AdaptationWindowParams;
         filmRaw.hanatos.surfaceParams = profile.data.hanatos2025AdaptationSurfaceParams;

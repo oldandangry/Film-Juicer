@@ -680,6 +680,15 @@ namespace {
     }
 
     template <typename MixFn>
+    inline void mix_hanatos_adaptation_hash_fields(uint64_t& h, const ParamSnapshot& p, const MixFn& mix) {
+        if (p.spectralUpsamplingMode == 1) {
+            return;
+        }
+        mix_hash_field(h, p.hanatos2025AdaptationWindow, mix);
+        mix_hash_field(h, p.hanatos2025AdaptationSurface, mix);
+    }
+
+    template <typename MixFn>
     inline void mix_direct_phase3a_recipe_hash_fields(
         uint64_t& h,
         const ParamSnapshot& p,
@@ -1444,6 +1453,8 @@ namespace {
         input.spectralUpsamplingMode = params.spectralUpsamplingMode;
         input.inputColorSpace = params.inputColorSpace;
         input.inputCctfDecoding = params.inputCctfDecoding != 0;
+        input.applyHanatos2025AdaptationWindow = params.hanatos2025AdaptationWindow != 0;
+        input.applyHanatos2025AdaptationSurface = params.hanatos2025AdaptationSurface != 0;
         input.cameraAutoExposureEnabled = params.cameraAutoExposureEnabled != 0;
         input.cameraMeteringMethod = params.cameraMeteringMethod;
         input.manualExposureCompensationEv =
@@ -1555,6 +1566,10 @@ namespace {
         input.filmFoundation.spectralUpsamplingMode = params.spectralUpsamplingMode;
         input.filmFoundation.inputColorSpace = params.inputColorSpace;
         input.filmFoundation.inputCctfDecoding = params.inputCctfDecoding != 0;
+        input.filmFoundation.applyHanatos2025AdaptationWindow =
+            params.hanatos2025AdaptationWindow != 0;
+        input.filmFoundation.applyHanatos2025AdaptationSurface =
+            params.hanatos2025AdaptationSurface != 0;
         input.filmFoundation.cameraAutoExposureEnabled = params.cameraAutoExposureEnabled != 0;
         input.filmFoundation.cameraMeteringMethod = params.cameraMeteringMethod;
         input.filmFoundation.manualExposureCompensationEv =
@@ -1698,6 +1713,7 @@ uint64_t hash_params(const ParamSnapshot& p) {
     mix_glare_print_hash_fields(h, p, hash_mix);
     mix_coupler_hash_fields(h, p, hash_mix);
     mix_output_encoding_hash_fields(h, p, hash_mix);
+    mix_hanatos_adaptation_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
@@ -1709,6 +1725,7 @@ uint64_t hash_params_core(const ParamSnapshot& p) {
     mix_profile_selection_hash_fields(h, p, hash_mix);
     mix_glare_print_hash_fields(h, p, hash_mix);
     mix_output_encoding_hash_fields(h, p, hash_mix);
+    mix_hanatos_adaptation_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_direct_phase3a_recipe_hash_fields(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
@@ -1719,6 +1736,7 @@ static uint64_t hash_params_upload_core(const ParamSnapshot& p) {
     uint64_t h = 0;
     mix_profile_selection_hash_fields(h, p, hash_mix);
     mix_glare_print_hash_fields(h, p, hash_mix);
+    mix_hanatos_adaptation_hash_fields(h, p, hash_mix);
     mix_camera_filter_hash(h, p, hash_mix);
     mix_focused_grain_hash_fields(h, p, hash_mix);
     return h;

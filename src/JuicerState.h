@@ -376,6 +376,8 @@ struct ParamSnapshot {
     std::array<double, 2> couplersGammaInterlayerBToRg{{0.168, 0.226}};
     int inputColorSpace = Spectral::inputColorSpaceToIndex(Spectral::InputColorSpace::DaVinciWideGamut);
     int inputCctfDecoding = 0;
+    int hanatos2025AdaptationWindow = 1;
+    int hanatos2025AdaptationSurface = 0;
     int cameraAutoExposureEnabled = 1;
     int cameraMeteringMethod = 0;
     double cameraExposureCompensationEv = 0.0;
